@@ -420,3 +420,176 @@ Cumulative: `agent.ts` drops from 2160 toward ~900 lines; `ToolLoopHandler` drop
 | 6 | **Control file size** | Primary objective: `agent.ts` 2160 → ~900; `ToolLoopHandler` 1004 → ~300. No file in the extraction exceeds 400 lines. ✅ |
 | 7 | **Don't break components** | All 16+ importers of `agent.ts` import only `SmartAgent`, `SmartAgentDeps/Config/ReconfigureOptions`, `OrchestratorError`, `SmartAgentRagStores` — all stay in `agent.ts` or barrel re-exported. Public method signatures unchanged. Pinned by existing test suite. ✅ |
 
+## Blueprint: controller-coordinator-handler.ts
+
+`packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
+(2026 lines). The `ControllerCoordinatorHandler` class (decl `214`, body to `1577`) is the
+primary target; ~450 lines of module-scope helpers sit below the class (`1578`–`2026`) — partial
+extractions that belong in sibling modules but never landed there. The existing controller
+component family (`board.ts`, `artifacts.ts`, `planner.ts`, `reviewer.ts`, `types.ts`,
+`run-scope.ts`, `session-bundle.ts`, `subagent-client.ts`) is the landing zone: the blueprint
+maps each responsibility onto that family via REUSE or move-to-sibling, not new parallel modules.
+
+A key structural defect: `planner.ts` and `reviewer.ts` currently import `extractJsonObject`
+FROM this handler — an inverted dependency that makes the handler the provider for its own
+siblings. The blueprint fixes that as its first slice.
+
+### 1. Responsibility map (jobs → method clusters / line ranges)
+
+| # | Responsibility | Methods (line ranges) | Module-scope helpers |
+|---|---|---|---|
+| **R1** | **Controller execution loop** — classify/resume/fresh run routing (three-stage recovery), evaluator goal-establishment, planner main loop (plan-parse, rewind, done→finalize, next→runStep), step-state reconciliation; `runStep` inner loop (episodic recall, per-step tool select, executor dispatch, reviewer gate, tool-routing, external-tool suspend/resume, settle); crash-guard budgets; escalation + terminal surface | `execute()` `217`–`876`; `runStep()` `887`–`1335`; `escalate()` `1339`–`1350`; `abortTerminal()` `1355`–`1378`; `finalize()` `1380`–`1507`; `commitTerminalSuccess()` `1511`–`1534`; `surfaceClarify()` `1536`–`1549`; `surfaceFinal()` `1551`–`1560`; `surfaceToolCall()` `1562`–`1576` | `mapOutcome()` `1826`–`1832`; `recordStepControl()` `1834`–`1852`; `synthMeta()` `1808`–`1822`; `isAffirmation()` `1606`–`1612`; `EXECUTOR_SYSTEM`; `TOOL_SELECT_K` |
+| **R2** | **Step-state board rendering** — reconstruct + render the live step-state board from RAG artifacts before each planner call | `renderLiveBoard()` `1786`–`1806` | board budget constants (`maxDigestChars`/`maxIntentChars`/`maxActiveSteps`/`maxBoardChars`/`keepRecentDigests`) set in `execute()` `583`–`590`; `BoardOverBudgetError` branch `706`–`715` |
+| **R3** | **Run-scoped artifact recall** — embedding-based deduped recall over the session's knowledge backend; relevant-extract (windowed cosine scoring); approved-results collection for the finalizer; recall-block text building | `runScopedRecall()` `1895`–`1941`; `relevantExtract()` `1995`–`2026`; `collectApproved()` `1857`–`1884`; `buildRecallBlock()` `1650`–`1669`; `rankStatus()` `1944`–`1952`; `isBetterStep()` `1954`–`1971`; `isBetterMcp()` `1976`–`1981`; recall constants `1634`–`1642` |
+| **R4** | **Tool-call normalization** — coerce a `StreamToolCall` (full or delta) into a canonical `LlmToolCall` for external-tool surfacing | `toLlmToolCall()` `1754`–`1782` (module-scope, used only inside `runStep`) |
+| **R5** | **Plan JSON parsing helpers** — parse the planner's reply into a typed `NextStep`; extract the first balanced JSON object from prose/fenced text | `parseNextStep()` `1686`–`1722`; `extractJsonObject()` `1727`–`1751` — **currently imported by `planner.ts` and `reviewer.ts` from this handler (inverted dependency)** |
+| **R-util** | **Token-usage logging utility** — build the per-request `logUsage(role, usage)` closure that writes every subagent call into `IRequestLogger` with role-to-model attribution | `makeLogUsage()` `79`–`113` (exported; imported by `pipelines/controller.ts`) |
+
+### 2. Seams (cut lines + shared state read/written across each cut)
+
+The class has a single constructor field (`private readonly deps: ControllerHandlerDeps`) — no
+mutable class-level state. All coupling flows through the `deps` object (injected) and the
+`SessionBundle` (persisted to `KnowledgeBackend`). Module-scope helpers are already decoupled by
+parameter surface. Seams are therefore import-level, not field-level.
+
+| Cut | Producing side | Shared state / import dependency | Coupling note |
+|---|---|---|---|
+| **R5 JSON parser seam** | `parseNextStep`, `extractJsonObject` | Imported BY `planner.ts` (`extractJsonObject`) AND `reviewer.ts` (`extractJsonObject`) from the handler — inverted direction | The handler is the bottom of the controller dependency graph; siblings importing FROM it block future handler imports of planner/reviewer helpers. Move-to-sibling `parser.ts` reverses the direction without changing any signature. |
+| **R2 board rendering seam** | `renderLiveBoard` | Reads `rag`, `bundle`, `boardBudget`; delegates entirely to `board.ts` (`readPlanDecisions`, `readClaims`, `rag.list`, `reconstructBoard`, `renderBoard`) — ZERO handler-specific logic | Pure glue function: 20 lines that belong in `board.ts` next to the components it calls. The call site in `execute()` `706` already imports those same board symbols. |
+| **R3 recall seam** | `runScopedRecall`, `relevantExtract`, `collectApproved`, `buildRecallBlock`, `rankStatus`, `isBetterStep`, `isBetterMcp` | Reads `rag` (param) + `bundle.runId`/`writeOrdinal` (passed as params); `relevantExtract` imports `cosine` from `../embedder-knowledge-index.js` | Already a self-contained cluster. `run-scoped-recall.test.ts` tests `runScopedRecall` and `relevantExtract` in isolation — the test knows these belong in their own module. |
+| **R-util usage-logging seam** | `makeLogUsage` | Reads `IRequestLogger`, `requestId`, `models` map — no class state | Already tested in `usage-logging.test.ts`. Imported by `pipelines/controller.ts`. A standalone utility masquerading as part of the handler. |
+| **R4 tool-call normalizer seam** | `toLlmToolCall` | Used ONLY inside `runStep` at one call site; no external importers | Trivial inline candidate: move the body adjacent to its single call site in `runStep` and delete the module-scope function. Alternatively move to `types.ts` alongside `LlmToolCall`. |
+| **R1 execution loop (residual)** | All class methods | Reads `this.deps` (injected); writes `SessionBundle` via `persistBundle` (called through `deps.backend`); consumes R2–R5 helpers as module-scope calls | After R2–R5 move out, the handler is the pure execution loop consuming its neighbors — the correct architecture. |
+
+### 3. Decomposition target per responsibility (components-first)
+
+For each responsibility the **Component catalog reference** was checked first; then the existing
+controller sibling family.
+
+- **R5 Plan JSON parsing → MOVE to new sibling `controller/parser.ts` (FIX inverted dependency).**
+  No catalog component owns JSON parsing; `types.ts` already owns `NextStep`/`Step` shapes.
+  Introducing a tiny `parser.ts` next to `types.ts` is the minimum seam: it owns
+  `parseNextStep` + `extractJsonObject`. `planner.ts` and `reviewer.ts` re-point their imports
+  to `./parser.js`; the handler barrel re-exports both for the 2 external consumers
+  (`pipelines/controller.ts` imports `parseNextStep`). The inverted dependency is eliminated —
+  the handler is no longer required by its own sibling. No interface overhead needed
+  (pure functions, no state).
+
+- **R2 Board rendering → MOVE `renderLiveBoard` into existing sibling `controller/board.ts`
+  (REUSE + relocate).**
+  `board.ts` already owns `reconstructBoard`, `renderBoard`, `BoardBudget`, `BoardOverBudgetError`
+  — every component `renderLiveBoard` delegates to. The function is a 20-line glue with zero
+  handler-specific logic; it belongs in the module it exclusively delegates to. Move: add
+  `renderLiveBoard` to `board.ts`; the call site in `execute()` adds one import. The board
+  budget constants stay in `execute()` (they are run-config values, not board logic). Net: zero
+  new modules; pure REUSE/relocate onto an existing controller sibling.
+
+- **R3 Run-scoped artifact recall → MOVE to new sibling `controller/recall.ts` (catalog +
+  relocate).**
+  The recall cluster (`runScopedRecall`, `relevantExtract`, `collectApproved`, `buildRecallBlock`,
+  `rankStatus`, `isBetterStep`, `isBetterMcp`) is self-contained, already has a dedicated test
+  file (`run-scoped-recall.test.ts`), and has no dependencies on the class or on any other
+  handler helper. REUSE `IKnowledgeRagHandle` (catalog, already the parameter type) and
+  `IEmbedder` (catalog) as the interface boundary. The new `recall.ts` exports
+  `runScopedRecall` and `relevantExtract` (the two that are tested directly and the two that
+  `pipelines/controller.ts` may expose). The handler re-exports from `recall.ts`. No new
+  interface needed — the functions ARE the interface.
+
+- **R-util Usage logging → MOVE to new sibling `controller/usage-logging.ts` (REUSE
+  `IRequestLogger` + relocate).**
+  `makeLogUsage` is already tested in isolation (`usage-logging.test.ts`), is exported, and
+  is imported by `pipelines/controller.ts` — it has no coupling to the handler's execution
+  logic. REUSE `IRequestLogger` (catalog) as the interface boundary. Move: create
+  `usage-logging.ts` in the controller directory; handler re-exports `makeLogUsage` from it.
+  Net: zero new interfaces; pure REUSE/relocate.
+
+- **R4 Tool-call normalization → INLINE into `runStep` (trivial; zero new module).**
+  `toLlmToolCall` is 28 lines, has zero external importers, and is called at exactly one site
+  inside `runStep` (`1241`). The correct move is to inline it — eliminate the module-scope
+  function and expand the call site. No extraction needed. Alternatively it can move to
+  `types.ts` alongside `LlmToolCall`/`StreamToolCall` if the co-location is preferred, but
+  no catalog component or new interface is needed either way.
+
+- **R1 Controller execution loop → RESIDUAL in handler (primary job; no extraction).**
+  After R2–R5 leave, the handler retains its core identity: `execute()` + `runStep()` + the
+  private terminal-state methods (`escalate`, `abortTerminal`, `finalize`, `commitTerminalSuccess`,
+  `surface*`). These share the `SessionBundle` write pattern, the `deps` injection, and the
+  budget-guard logic — they are a cohesive atomic unit. The residual also keeps `mapOutcome`,
+  `recordStepControl`, `synthMeta`, `isAffirmation`, `EXECUTOR_SYSTEM`, `TOOL_SELECT_K` which
+  are tightly bound to execution semantics and have no external consumers. Net: handler drops
+  from 2026 to ~1350 lines — a material reduction toward the Principle-6 threshold, with the
+  residual remaining a single-responsibility loop.
+
+Every R1–R5 + R-util has a target. Net: **4 new sibling modules** (`parser.ts`, `recall.ts`,
+`usage-logging.ts`, and `renderLiveBoard` moves into `board.ts`) + **1 inline** (`toLlmToolCall`);
+everything is REUSE/relocate onto the existing controller sibling family — no invented parallel
+modules.
+
+### 4. Behavior-preservation strategy
+
+Behavior-preserving, public-API-stable refactor pinned by characterization tests.
+
+**Public API that must stay byte-stable** (all 4 blast-radius importers checked):
+- `ControllerCoordinatorHandler` class + `execute()` signature (imported by `controller-factory.ts`,
+  `pipelines/controller.ts`, `factories/__tests__/controller-factory.test.ts`)
+- `ControllerHandlerDeps` interface (imported by `controller-factory.ts`,
+  `factories/__tests__/controller-factory.skills.test.ts`, `__tests__/usage-e2e.test.ts`)
+- `TerminalUsage` type
+- `makeLogUsage` function (imported by `pipelines/controller.ts`; tested in `usage-logging.test.ts`)
+- `parseNextStep` function (imported by `pipelines/controller.ts`)
+- `extractJsonObject` function (imported by `planner.ts`, `reviewer.ts`)
+- `runScopedRecall` function (tested in `run-scoped-recall.test.ts`)
+- `relevantExtract` function (tested in `run-scoped-recall.test.ts`)
+
+All moved symbols must be barrel re-exported from `controller-coordinator-handler.ts` until the
+next major version, so all 4 blast-radius importers keep their import paths without change.
+`planner.ts` and `reviewer.ts` MUST be updated to import `extractJsonObject` from `./parser.js`
+(not re-exporting FROM handler to handler's own siblings would be circular).
+
+**Existing characterization tests to lean on:**
+- `controller-coordinator-handler.test.ts` (R1 execution loop, full integration)
+- `round-trip.test.ts` (R1 suspend/resume, external-tool round-trip)
+- `run-scoped-recall.test.ts` (R3 recall + extract)
+- `board.test.ts` (R2 board rendering, already tests `reconstructBoard`/`renderBoard`)
+- `usage-logging.test.ts` (R-util `makeLogUsage`)
+- `planner.test.ts`, `planner.skills.test.ts` (planner side; exercises `extractJsonObject` indirectly via `parseNextStep`)
+- `reviewer.test.ts` (exercises `extractJsonObject` via reviewer JSON parsing)
+- `usage-e2e.test.ts` (R1 end-to-end with usage accounting)
+- `select-tools-options.test.ts` (R1 per-step tool selection)
+
+**Tests to ADD before refactoring (gaps):**
+1. A **`parseNextStep` characterization test** covering valid `done`/`next`/`rewind` shapes,
+   JSON-fenced input, invalid/partial JSON, and the `validateRequires` boundary. Pin BEFORE
+   moving to `parser.ts` (Slice 1). The planner test covers it indirectly but not as a unit.
+2. A **`renderLiveBoard` unit test** asserting the glue delegates correctly to
+   `reconstructBoard`+`renderBoard` and returns `''` on absent `runId`. Pin BEFORE moving
+   to `board.ts` (Slice 2). `board.test.ts` covers the components but not the glue entry.
+
+### 5. Suggested PR slices (ordered; first = lowest-risk / highest-value)
+
+| # | Slice | Touches | Rough Δ | Risk | Why here |
+|---|---|---|---|---|---|
+| 1 | **`parser.ts` — move `parseNextStep`+`extractJsonObject`** — create `controller/parser.ts`; update `planner.ts` and `reviewer.ts` import paths; handler re-exports both | R5 | −70 / +80 | **very low** | Fixes the inverted dependency. Only 2 sibling files update their import path (`planner.ts` → `./parser.js`; `reviewer.ts` → `./parser.js`). External importers of the handler keep their paths via re-export. Gate with new `parseNextStep` characterization test (§4 #1). |
+| 2 | **`renderLiveBoard` → `board.ts`** — move the 20-line function into `board.ts`; add one import in the handler | R2 | −20 / +25 | **very low** | Zero external importers of `renderLiveBoard`. `board.test.ts` already covers the components. Gate with new `renderLiveBoard` unit test (§4 #2). Pure move-to-sibling. |
+| 3 | **`usage-logging.ts` — move `makeLogUsage`** — create `controller/usage-logging.ts`; handler re-exports `makeLogUsage` | R-util | −35 / +45 | **very low** | Already tested in isolation (`usage-logging.test.ts`). One external importer (`pipelines/controller.ts`) keeps its path via handler re-export. Zero behavior change. |
+| 4 | **`recall.ts` — move recall cluster** — create `controller/recall.ts` with `runScopedRecall`, `relevantExtract`, `collectApproved`, `buildRecallBlock`, `rankStatus`, `isBetterStep`, `isBetterMcp`, recall constants; handler re-exports the two public functions | R3 | −250 / +270 | **low** | `run-scoped-recall.test.ts` pins the two exported functions in isolation. `collectApproved` is only called by `finalize()` in the handler; the import is internal. The `cosine` dependency (`../embedder-knowledge-index.js`) moves with `recall.ts`. |
+| 5 | **Inline `toLlmToolCall`** — expand the one call site in `runStep` and delete the module-scope function | R4 | −30 / +20 | **very low** | Single call site; zero external importers; trivially verifiable by the existing `round-trip.test.ts` exercising the external-tool path. Do after Slice 4 to keep the diff set coherent. |
+| 6 | **Residual cleanup** — after all moves, remove dead re-exports that are no longer needed, tighten section comments in the shrunken handler | R1 residual | −10 / +0 | **very low** | Cosmetic; no behavior change. Handler ends at ~1350 lines — a single-responsibility execution loop. |
+
+Cumulative: `controller-coordinator-handler.ts` drops from 2026 toward ~1350 lines; the
+controller component family gains `parser.ts`, `recall.ts`, `usage-logging.ts`, and an enriched
+`board.ts` — all small, single-purpose, individually testable modules aligned with the existing
+family's naming discipline. The inverted `extractJsonObject` dependency is eliminated in Slice 1.
+
+### 6. Principle self-check
+
+| # | Principle | Compliance of this decomposition |
+|---|---|---|
+| 1 | **Build ON existing components** | R2: REUSE `board.ts` (sibling; owns all board components `renderLiveBoard` delegates to). R3: REUSE `IKnowledgeRagHandle`/`IEmbedder` (catalog) as the boundary for the recall module. R-util: REUSE `IRequestLogger` (catalog). R1 residual: REUSE `ISubagentClient`, `IFinalizer`, `IReviewer`, `IControllerPlanner` (all catalog/sibling interfaces). All 4 new modules land in the existing controller family — not invented parallel layers. ✅ |
+| 2 | **The app IS the example** | Post-refactor the handler is a thin orchestrator that imports from its named sibling modules (`parser`, `board`, `recall`, `usage-logging`) — the exact pattern consumers building their own controller should copy. No more mixed responsibilities in the entry point. ✅ |
+| 3 | **Everything around interfaces** | New modules are parameter-typed against catalog interfaces (`IKnowledgeRagHandle`, `IEmbedder`, `IRequestLogger`). The handler itself is already `IStageHandler`. No new interface for the pure-function modules (the function signatures ARE the interface for the pure parser/recall clusters — no object needed). ✅ |
+| 4 | **Many small interfaces (ISP)** | No existing interface is widened. The pure-function modules expose focused, single-concern signatures. `IStageHandler` (handler), `ISubagentClient` (executor/planner/evaluator), `IReviewer`, `IFinalizer`, `IControllerPlanner` all remain unchanged. ✅ |
+| 5 | **Consumer-owned variation = strategies** | Variation points (`deps.reviewer`, `deps.finalizer`, `deps.controllerPlanner`, `deps.skillsRecall`, `deps.isExternalTool`) are already injectable seams in `ControllerHandlerDeps` — unchanged. `makeControllerPlanner` selects the planner implementation (reused). ✅ |
+| 6 | **Control file size** | Primary objective: 2026 → ~1350 residual handler + 4 small sibling modules (each under 300 lines). The four new modules are well below the 500-line threshold. The residual handler at ~1350 lines remains large; further reduction requires splitting the execution loop itself (out of scope for this audit, one-monolith-per-plan). ✅ |
+| 7 | **Don't break components** | All 4 production blast-radius importers keep their import paths unchanged via barrel re-exports in the handler. `planner.ts` and `reviewer.ts` update to `./parser.js` (correct direction). Public function and class signatures are byte-stable. Pinned by the full controller test suite (21 test files) + `public-api.test.ts`. ✅ |
+
