@@ -35,16 +35,20 @@
 
 - [ ] **Step 1: Enumerate the public interfaces (the contracts package)**
 
-Run:
+Note: the interfaces barrel uses MULTILINE `export { … } from '…'` blocks, so a
+single-line `rg "^export"` only catches the opening line, not the names inside. Read the
+WHOLE barrel (and each package root), don't grep for the opening line:
 ```bash
-rg -n "^export (interface|type|class|function|const) " packages/llm-agent/src/interfaces/index.ts | head -200
-```
-Also list the building-block packages' public exports:
-```bash
+# Full contracts barrel — every exported name, incl. multiline blocks:
+sed -n '1,400p' packages/llm-agent/src/interfaces/index.ts
+sed -n '1,200p' packages/llm-agent/src/index.ts
+# Building-block package roots (read fully):
 for p in llm-agent-mcp llm-agent-rag llm-agent-libs llm-agent-server-libs; do
-  echo "== $p =="; sed -n '1,80p' packages/$p/src/index.ts
+  echo "== $p =="; cat packages/$p/src/index.ts
 done
 ```
+Skim the output for the reusable components/interfaces (the names INSIDE the
+`export { … }` blocks), not just the `from` lines.
 
 - [ ] **Step 2: Write the catalog table**
 
@@ -83,13 +87,19 @@ git commit -m "docs(audit): component catalog reference"
 
 - [ ] **Step 1: Re-sweep the repo (with the binding excludes)**
 
-Run (this is the authoritative file list; `packages/*/src` already excludes node_modules):
+Run (authoritative file list — encodes EVERY binding exclude explicitly, so a future
+generated/vendored file under `src/` cannot sneak in):
 ```bash
-find packages/*/src -name "*.ts" ! -name "*.test.ts" ! -path "*/__tests__/*" ! -name "*.d.ts" \
+find packages/*/src -name "*.ts" \
+  ! -name "*.test.ts" ! -path "*/__tests__/*" \
+  ! -name "*.d.ts" \
+  ! -path "*/node_modules/*" ! -path "*/dist/*" ! -path "*/build/*" \
+  ! -path "*/coverage/*" ! -path "*/generated/*" ! -path "*/vendor/*" \
   | xargs wc -l 2>/dev/null | awk '$1>500 && $2!="total"{print $1"\t"$2}' | sort -rn
 ```
 Expected: ~13 files; `smart-server.ts` (~3.9k) first. If the count drifts from the
-charter's snapshot, use the live result (the threshold is the trigger).
+charter's snapshot, use the live result (the threshold is the trigger). Sanity-check no
+vendored path slipped in (every result must be first-party `packages/*/src/...`).
 
 - [ ] **Step 2: For each file, identify its responsibilities**
 
@@ -335,7 +345,7 @@ git commit -m "docs(audit): blueprint — builder.ts"
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-06-26-monolith-audit.md` (add the synthesis section)
-- Delete: `docs/superpowers/specs/2026-06-26-monolith-audit-design.md` (charter) and `docs/superpowers/plans/2026-06-26-monolith-audit.md` (this plan) — per the repo convention (kept only while active; the audit document is now the lasting artifact, itself active until the refactor campaign completes).
+- **Do NOT delete** the charter spec (`…-monolith-audit-design.md`) or this plan: they preserve audit traceability — future per-monolith plans need to know which constraints were BINDING (charter) versus what the audit CONCLUDED (audit doc). All three (charter + plan + audit) stay active until the refactor campaign completes. Any cleanup is a separate maintainer decision AFTER review, not part of this audit.
 
 - [ ] **Step 1: Write the synthesis**
 
@@ -351,13 +361,15 @@ blueprint; (c) every recommendation is components-first (REUSE named, or EXTRACT
 justified as reusable/interface-bounded); (d) no placeholders/TBD; (e) each blueprint's
 principle self-check is filled. Fix inline.
 
-- [ ] **Step 3: Remove the charter spec + this plan; commit the audit + cleanup**
+- [ ] **Step 3: Commit the finished audit (keep charter + plan for traceability)**
 
 ```bash
-git rm docs/superpowers/specs/2026-06-26-monolith-audit-design.md docs/superpowers/plans/2026-06-26-monolith-audit.md
 git add docs/superpowers/specs/2026-06-26-monolith-audit.md
-git commit -m "docs(audit): synthesis + first-refactor pick; retire charter & plan"
+git commit -m "docs(audit): synthesis + first-refactor pick"
 ```
+(Charter `…-monolith-audit-design.md` and this plan are intentionally NOT removed —
+they record the binding constraints the future refactor plans inherit. Retiring them is
+a separate maintainer decision once the whole monolith campaign is done.)
 
 - [ ] **Step 4: Open the PR**
 
