@@ -52,3 +52,35 @@ The table below is the "components-first" lookup used by later audit tasks to de
 | `ISkillPluginHost` | `@mcp-abap-adt/llm-agent` | Contract for a host that downloads, ingests, and serves skill plugin sources at runtime |
 | `ControllerSkillPipelineBuilder` | `@mcp-abap-adt/llm-agent-server-libs` | Fluent builder for embedding a controller pipeline into a consumer application |
 | `buildAgent` | `@mcp-abap-adt/llm-agent-server-libs` | Async factory: composes and returns a fully-wired pipeline agent (no HTTP listen) |
+
+## Triage
+
+**Sweep command used** (binding excludes: node_modules, tests, dist/build, coverage, generated, vendor, *.d.ts):
+```bash
+find packages/*/src -name "*.ts" \
+  ! -name "*.test.ts" ! -path "*/__tests__/*" \
+  ! -name "*.d.ts" \
+  ! -path "*/node_modules/*" ! -path "*/dist/*" ! -path "*/build/*" \
+  ! -path "*/coverage/*" ! -path "*/generated/*" ! -path "*/vendor/*" \
+  | xargs wc -l 2>/dev/null | awk '$1>500 && $2!="total"{print $1"\t"$2}' | sort -rn
+```
+
+**Priority ordering rationale:** Priority is ranked by a composite score — `lines × #responsibilities × √(blast_radius + 1) × componentFit_multiplier` — where `componentFit_multiplier` is 1.5 for a clean catalog map (known landing zone = low design uncertainty), 1.0 for partial fit, 0.7 for test/harness files. High blast amplifies value (more consumers benefit) and large line count proxies refactor effort. Priority 1 = highest composite score = do first.
+
+**Blast radius** = count of non-test files that import the module directly (by `.js` path in ESM imports); self-imports excluded.
+
+| File / lines | Responsibilities (count · names) | Principle violated | Split risk | Blast radius | Driver (why it grew) | Priority |
+|---|---|---|---|---|---|---|
+| `llm-agent-server-libs/src/smart-agent/smart-server.ts` · 3926 | 6 — HTTP request routing, worker/sub-agent lifecycle, session lifecycle, MCP client init, LLM/embedder factory, knowledge-backend construction | SRP: HTTP server, agent orchestration, session management, infra wiring in one god-class | high | 10 | Every new HTTP endpoint and server feature accumulated in the single class with no extraction discipline | 1 |
+| `llm-agent-libs/src/agent.ts` · 2160 | 6 — LLM request orchestration (process/stream), tool selection + revectorization, session CRUD, history management + summarization, subprompt classification, health-check coordination | SRP: runtime execution, tool catalog, session state, history, classification are orthogonal concerns | high | 20 | Every new agent capability landed in `SmartAgent` without extraction; highest fan-in in the codebase | 2 |
+| `llm-agent-server-libs/src/smart-agent/config.ts` · 1648 | 6 — YAML loading + env-var resolution, LLM config normalization, coordinator/dispatch config resolution, stepper coordinator config parsing, finalizer building, config-template generation | SRP: loader, LLM resolver, pipeline resolvers, template generator are separate concerns | med | 8 | Each new pipeline type added its own parser inline; no per-pipeline config module discipline | 3 |
+| `llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` · 2026 | 5 — controller execution loop (planner→executor→reviewer→finalizer), step-state board rendering, run-scoped artifact recall, tool-call normalization utilities, plan JSON parsing helpers | SRP: stage handler mixed with recall logic, JSON parsers, and board renderer | med | 4 | Controller grew stage-by-stage with recovery paths and helpers added inline; no extraction for utilities | 4 |
+| `llm-agent-libs/src/builder.ts` · 1437 | 4 — `SmartAgentBuilder` fluent wiring (LLM + RAG + MCP → agent), `SmartAgentHandle` type definitions, retrieval-source construction, MCP/prompts config types | SRP: builder logic, handle/config type definitions, retrieval wiring are separable | med | 4 | Fluent builder accumulated all wiring logic and type definitions as features were added | 5 |
+| `llm-agent-libs/src/pipeline/handlers/tool-loop.ts` · 1004 | 5 — tool-loop stage execution, streaming tool-call assembly, tool result processing + error mapping, external tool-call bridging, tool availability tracking | SRP: execution loop, streaming, error mapping, external bridge are distinct concerns | low | 1 | Single handler grew to absorb all tool-call mechanics including streaming and external bridge | 6 |
+| `llm-agent-libs/src/skills/plugin-host/qdrant-store.ts` · 769 | 4 — Qdrant REST client + reader, Postgres catalog store, in-process catalog store, catalog generation lifecycle (upsert/sweep/carry-forward) | SRP: three storage backends + lifecycle management collocated | low | 1 | Multiple backends added to one file for convenience; no per-backend file discipline | 7 |
+| `sap-aicore-llm/src/sap-core-ai-provider.ts` · 554 | 5 — SAP AI Core LLM provider (chat), SAP AI Core embedding provider, model-list retrieval, message format translation, HTTP client management | SRP: `ILlm` and `IEmbedder` are separate interfaces; provider mixes both plus client plumbing | low | 1 | SAP AI Core SDK exposes both LLM and embedding; both were implemented in one convenience class | 8 |
+| `llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` · 536 | 3 — DAG step execution (topological sort + parallel dispatch), ancestor-context building, node output collection | SRP: mostly cohesive; ancestor-context helper is separable | low | 4 | DAG execution complexity grew organically; ancestor-context helper added inline | 9 |
+| `llm-agent-libs/src/pipeline/default-pipeline.ts` · 542 | 3 — `DefaultPipeline` stage execution, session-registry resolution, stage + context construction | SRP: mild; session-registry resolution is separable from pipeline execution | low | 2 | Pipeline stage complexity grew as session handling was added directly | 10 |
+| `llm-agent-libs/src/testing/index.ts` · 543 | 5 — mock LLM factories, mock RAG factories, mock MCP client, mock logging/tracing infra, mock session + deps builders | SRP: all test fixtures in one file (by design for convenience, not a production concern) | low | 0 | Test harness consolidated for ease of import; no production blast | 11 |
+| `llm-agent-mcp/src/client.ts` · 507 | 4 — MCP connection lifecycle (connect/disconnect/retry), transport detection + setup (stdio/sse/stream-http/embedded), tool listing, tool calling (single + batch) | SRP: transport negotiation and tool operations are separable; otherwise cohesive | low | 3 | Natural growth of a single-class MCP client; just crossed the threshold | 12 |
+| `llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts` · 509 | 2 — dev evaluation harness (live/stub LLM modes), plan-quality analysis runner | Wrong location: dev eval harness shipped in production source tree, not a library concern | low | 0 | Eval harness developed inline with the controller and never extracted to scripts/ | 13 |
