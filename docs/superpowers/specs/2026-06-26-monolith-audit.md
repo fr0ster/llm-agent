@@ -221,9 +221,9 @@ R2 watcher), `smart-server-api-adapters.test.ts` (R1 adapters), `readiness-gate.
 | 5 | **`HttpRouteTable` + route handlers** — extract `_handle` route chain + `_handleChat`/`_handleAdapterRequest`/`_handleConfigUpdate` into a table + 3 handler objects; `_handle` becomes `dispatch` | R1 | −900 / +620 | **medium-high** | Biggest line win and the headline Principle-6 fix, but highest blast (every route). Gate behind the new route-table characterization test (§4 #1) + all endpoint tests. `_handle` already takes deps as args → no hidden state to thread. |
 | 6 | **`ConfigReloadWatcher` + slim composition root** — extract the `1685`–`1796` watcher; `_buildInfra` shrinks to wiring the extracted collaborators | R2 | −500 / +250 | **medium** | Last: depends on every prior extraction existing so `_buildInfra` has collaborators to instantiate. `smart-server-config-reload.test.ts` pins the watcher. |
 
-Cumulative: `smart-server.ts` drops from 3926 toward ~1.4k (a thin composition root +
-route dispatcher) with the rest landing in 5 small reusable modules — under the
-Principle-6 threshold. **R4 MCP** is intentionally NOT its own slice here: the
+Cumulative: `smart-server.ts` drops from 3926 toward ~1.4k (the largest single-slice
+reduction in the audit, though the residual remains above the 500-line target — see §6)
+with the rest landing in 5 small reusable modules. **R4 MCP** is intentionally NOT its own slice here: the
 `connectMcpClientsFromConfig`/`buildMcpBridge`/`callMcp` rework onto
 `makeConnectionStrategy` rides into the R4-owning `llm-agent-mcp` audit (`client.ts`,
 Priority 10) to avoid a cross-package double-touch; this blueprint records the target,
@@ -238,7 +238,7 @@ that plan executes it (one-monolith-per-plan).
 | 3 | **Everything around interfaces** | New cuts are interface-typed: `IRoute`/`RouteHandler`, `IRoleLlmResolver`, the `WorkerRegistry` interface, `IToolsRagHandle` (reused), `ConfigReloadWatcher` start/stop contract. Server depends on the interfaces, not the classes. ✅ |
 | 4 | **Many small interfaces (ISP)** | Each EXTRACT gets its own focused interface; none widens an existing one. Readiness stays the separate `IReadinessReporter` (reused, not bolted onto a strategy). ✅ |
 | 5 | **Consumer-owned variation = strategies** | MCP connect routed through swappable `IMcpConnectionStrategy` (`Lazy/Periodic/Noop`/custom); route handlers and `RoleLlmResolver` are injectable; reload watcher is a strategy with a no-op default. ✅ |
-| 6 | **Control file size** | Primary objective: 3926 → ~1.4k residual + 5 small modules (target <500 each). Slices 1+5+6 carry the bulk of the reduction. ✅ |
+| 6 | **Control file size** | Primary objective: 3926 → ~1.4k residual + 5 small modules (target <500 each). Slices 1+5+6 carry the bulk of the reduction. The ~1.4k residual does NOT reach the 500-line per-file target; the remaining size is the route-handling + composition root reduced as far as this audit pass scopes — further reduction is out of scope (one-monolith-per-plan). ✅ |
 | 7 | **Don't break components** | All changes additive + behavior-preserving: barrel re-exports keep `connectMcpClientsFromConfig`/`buildMcpBridge`/`buildSessionLifecycle`/`buildAgent`/… import paths stable; route method+path+status+shape unchanged; pinned by `public-api.test.ts` + endpoint characterization tests. ✅ |
 
 ## Blueprint: agent.ts
@@ -417,7 +417,7 @@ Cumulative: `agent.ts` drops from 2160 toward ~900 lines; `ToolLoopHandler` drop
 | 3 | **Everything around interfaces** | New cuts: `IRagOrchestrator`, `IMcpToolRegistry`. `IStageHandler`/`IPipeline`/`IContextAssembler`/`IMcpConnectionStrategy`/`HealthChecker` (all reused). `SmartAgent` depends on interfaces, not classes. ✅ |
 | 4 | **Many small interfaces (ISP)** | Each EXTRACT gets one focused interface. `IReadinessReporter` stays separate (already correct — `isReady` delegates without widening the interface). ✅ |
 | 5 | **Consumer-owned variation = strategies** | Connection strategy stays `IMcpConnectionStrategy` (catalog, swappable). `RagOrchestrator` helpers (`_toEnglishForRag`, `_summarizeHistory`) become injectable functions. `PassThroughHandler` and `pipelineToStream` are standalone, replaceable. ✅ |
-| 6 | **Control file size** | Primary objective: `agent.ts` 2160 → ~900; `ToolLoopHandler` 1004 → ~300. No file in the extraction exceeds 400 lines. ✅ |
+| 6 | **Control file size** | Primary objective: `agent.ts` 2160 → ~900; `ToolLoopHandler` 1004 → ~300. No extracted module exceeds ~450 lines; the largest, `run-tool-loop.ts` at ~420, stays well under the 500-line target. ✅ |
 | 7 | **Don't break components** | All 16+ importers of `agent.ts` import only `SmartAgent`, `SmartAgentDeps/Config/ReconfigureOptions`, `OrchestratorError`, `SmartAgentRagStores` — all stay in `agent.ts` or barrel re-exported. Public method signatures unchanged. Pinned by existing test suite. ✅ |
 
 ## Blueprint: controller-coordinator-handler.ts
@@ -737,16 +737,16 @@ production non-test files):
 
 | Symbol | Current importer(s) — grep-verified | Strategy |
 |---|---|---|
-| `resolveSmartServerConfig` | `builders/controller-skill-pipeline-builder.ts` (line 3); `llm-agent-server/scripts/start-smart-server.ts`; re-exported by `smart-server.ts` (line 458) and `index.ts` (line 11 via `export *`) | Stays in residual `config.ts` — no change |
-| `NormalizedLlmMap` | `smart-server.ts` (line 431); `build-stepper-root.ts` (line 32); `build-dag-coordinator-deps.ts` (line 23 via `config.js`); `pipelines/server-context.ts` (line 13) | Barrel re-export in `config.ts` from `llm-config-map.ts`; all import paths stable |
+| `resolveSmartServerConfig` | `builders/controller-skill-pipeline-builder.ts` (line 3); `llm-agent-server/scripts/start-smart-server.ts`; `llm-agent-server/src/smart-agent/cli.ts` (line 61); re-exported by `smart-server.ts` (line 458) and `index.ts` (line 11 via `export *`) | Stays in residual `config.ts` — no change |
+| `NormalizedLlmMap` | `smart-server.ts` (line 431); `build-stepper-root.ts` (line 32); `build-dag-coordinator-deps.ts` (line 18 via `config.js`); `pipelines/server-context.ts` (line 13) | Barrel re-export in `config.ts` from `llm-config-map.ts`; all import paths stable |
 | `normalizeLlmConfig` | `smart-server.ts` (line 433) | Barrel re-export in `config.ts` |
 | `resolveLlmConfig` | `smart-server.ts` (line 434); `build-stepper-root.ts` (line 37); `build-dag-coordinator-deps.ts` | Barrel re-export in `config.ts` |
 | `resolveLlmConfigStrict` | `smart-server.ts` (line 435); `build-dag-coordinator-deps.ts` | Barrel re-export in `config.ts` |
-| `resolveToolSelectionStrategy` | `smart-server.ts` (lines 436, ~1200); re-exported by `smart-server.ts` (line 462) | Barrel re-export in `config.ts` |
+| `resolveToolSelectionStrategy` | `smart-server.ts` (lines 436, 2765); re-exported by `smart-server.ts` (line 462) | Barrel re-export in `config.ts` |
 | `resolveCoordinatorPlanning`, `resolveCoordinatorDispatch`, `resolveCoordinatorDispatchKind` | `pipelines/parsers.ts` (lines 13–15) | Barrel re-export in `config.ts` and update `parsers.ts` import to `./coordinator-resolvers.js` (same directory) |
-| `resolveCoordinatorActivation` | `build-dag-coordinator-deps.ts` (line 22) | Barrel re-export in `config.ts` |
-| `buildFinalizer` | `build-dag-coordinator-deps.ts` (line 20) | Barrel re-export in `config.ts` |
-| `resolveReviewerLlmName` | `build-dag-coordinator-deps.ts` (line 26) | Barrel re-export in `config.ts` |
+| `resolveCoordinatorActivation` | `build-dag-coordinator-deps.ts` (line 19) | Barrel re-export in `config.ts` |
+| `buildFinalizer` | `build-dag-coordinator-deps.ts` (line 17) | Barrel re-export in `config.ts` |
+| `resolveReviewerLlmName` | `build-dag-coordinator-deps.ts` (line 22) | Barrel re-export in `config.ts` |
 | `parseStepperCoordinatorConfig`, `StepperCoordinatorConfig`, `StepperCompositionSpec`, `CompositionNode` | `build-stepper-root.ts` (lines 37–41); `pipelines/parsers.ts` re-exports (lines 3–5, 6) | Barrel re-export in `config.ts`; `parsers.ts` re-export source updates to `../smart-agent/stepper-config.js` |
 | `loadYamlConfig`, `resolveEnvVars`, `generateConfigTemplate`, `YAML_TEMPLATE`, `YamlConfig` | Re-exported by `smart-server.ts` (lines 453–464) and `index.ts` (via `export *`) | Barrel re-export in `config.ts` from `yaml-loader.ts` |
 | `assertNoLegacyPipelineConfig` | **No external production importer** (grep-verified: only appears inside `config.ts` itself) | Can remain internal to `config-validator.ts`; barrel re-export optional |
