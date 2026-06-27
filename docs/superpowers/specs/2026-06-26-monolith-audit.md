@@ -797,3 +797,158 @@ all individually testable. The `pipelines/` family gains `coordinator-resolvers.
 | 6 | **Control file size** | Primary objective: 1648 → ~350 residual + 5 modules each under 450 lines (R6 ~450, R4 ~275, R3 ~200, R1 ~145, R2 ~110). Every extracted module is well under the 500-line threshold. ✅ |
 | 7 | **Don't break components** | All 8 blast-radius importers keep their import paths via barrel re-exports in `config.ts`. Only two files update their imports: `parsers.ts` shortens its coordinator-resolver import to `./coordinator-resolvers.js` (same directory, same package); `build-stepper-root.ts` updates to `./stepper-config.js` (same directory). Both are internal to `llm-agent-server-libs`. Public function signatures are byte-stable. Pinned by all 7 existing test suites listed in §4. ✅ |
 
+## Blueprint: builder.ts
+
+`packages/llm-agent-libs/src/builder.ts` (1437 lines). The file is a single exported class
+(`SmartAgentBuilder`) plus its companion config types and one private helper. The class has grown
+to embed ~250 lines of MCP tool-vectorization logic (batch + sequential embed loops for tool
+and skill indexing) directly inside `build()`, which `docs/ARCHITECTURE.md` (lines 1134–1138)
+explicitly flags as a tech-debt extraction target. Beyond that inline block the file divides
+cleanly into four jobs: config/handle types, fluent setter API, MCP+vectorization, and core
+assembly. Blast radius = 4 direct non-test production importers (grep-verified, §4).
+
+### 1. Responsibility map (jobs → method clusters / line ranges)
+
+| # | Responsibility | Code cluster (line ranges) |
+|---|---|---|
+| **R1** | **Config and handle types** — public input/output shapes for the builder: `BuilderMcpConfig`, `BuilderPromptsConfig`, `SmartAgentBuilderConfig`, `SmartAgentHandle` type alias, and the `isModelProvider` type-guard used with the handle | `BuilderMcpConfig` 111–121; `BuilderPromptsConfig` 123–134; `SmartAgentBuilderConfig` 136–154; `SmartAgentHandle` 162–168; `isModelProvider` 174–181 (~71 lines total) |
+| **R2** | **Fluent setter API** — ~50 `with*`/`set*`/`add*`/`create*` methods; private field declarations; constructor. Pure pass-throughs that accumulate injected values into private fields | Private fields 184–250; constructor 251–253; fluent setters 260–706 (~524 lines) |
+| **R3** | **MCP connection + tool/skill vectorization** — normalise `BuilderMcpConfig[]` → `McpConnectionConfig[]`, call `makeConnectionStrategy` + `resolve()`, iterate over connected clients and embed their tool descriptions (batch path → sequential fallback → sequential-only), log embedding usage, then vectorize skill descriptions into the same RAG store. Also includes the `buildRetrievalSource` private helper that wraps a RAG + embedder pair into a `SubAgentRetrievalSource` callback (used by coordinator dispatch wiring in R4) | `buildRetrievalSource` 713–723; MCP config normalisation 955–967; connection setup 963–970; per-client vectorization batch path 973–1051; batch fallback to sequential 1052–1091; sequential-only path 1092–1127; client-level catch 1129–1138; skill vectorization 1245–1276 (~250 lines across the two `build()` blocks) |
+| **R4** | **Core `build()` assembly** — model validation, startup probe, RAG store auto-creation, registry + provider wiring, circuit-breaker wrapping, request-logger setup, SmartAgent config assembly, retry + rate-limiter wrapping, classifier construction, assembler construction, history memory + summarizer, plugin loader, pipeline init, `SmartAgent` construction, model-provider auto-detection, API adapter merge, handle return | Lines 725–938 + 1142–1437, minus R3 sub-ranges; remaining assembly ~450 lines |
+
+Approximate line counts per responsibility: R1 ~71, R2 ~524, R3 ~250, R4 ~450 (post-R3).
+
+### 2. Seams (natural cut lines + shared state / data boundaries)
+
+The class has mutable private fields but they are only read once, inside `build()`. All coupling
+is therefore local to `build()`'s sequential flow — no field mutated after construction.
+
+| Cut | Shared state / type boundary | Coupling note |
+|---|---|---|
+| **R1 config/handle types** | `SmartAgentBuilderConfig` consumed by the constructor; `SmartAgentHandle` is the return type of `build()` | Clean import-level cut. All four importer files reach these types via the `@mcp-abap-adt/llm-agent-libs` barrel — moving the types to `builder-types.ts` with barrel re-export in `builder.ts` + `index.ts` leaves all import paths unchanged. |
+| **R2 setter API** | Setters are the only writers of private fields; `build()` is the only reader | Setters and class state are inseparable by design (fluent builder pattern). Extracting them would require either duplicating the class or an awkward mixin approach. No extraction. |
+| **R3 vectorization block** | Inputs: `mcpClients: IMcpClient[]`, `toolsRag: IRag`, `this._embedder`, `requestLogger`, `log`. Output: side-effect (RAG store populated). All inputs are resolved before the vectorization loop begins (line 939), and no local variable created in the vectorization block is consumed by subsequent R4 steps. | Cleanest cut in the file. The block is a pure function of its arguments — no reads or writes to private fields inside the loop. Extraction does not break the sequential flow; `build()` calls the extracted function and continues. `buildRetrievalSource` (lines 713–723) is a 5-line helper used in R4's coordinator dispatch wiring (line 1291); it is NOT part of R3's vectorization function — it stays in `builder.ts`. |
+| **R4 assembly phases** | Each phase creates local variables fed into the next (e.g. `wrappedMainLlm` → classifier → assembler → pipeline → `SmartAgent` → handle) | Phases are intrinsically sequential with local-variable coupling. No useful seam exists within R4; decomposing it would produce a context-object pass-around that adds more code than it removes. KEEP as one build() body. |
+
+### 3. Decomposition target per responsibility (components-first)
+
+Catalog checked first for each R.
+
+- **R1 Config/handle types → EXTRACT `builder-types.ts`.**
+  No catalog component owns builder config shapes. `BuilderMcpConfig`, `BuilderPromptsConfig`,
+  `SmartAgentBuilderConfig` are the public wiring contract for `SmartAgentBuilder`; `SmartAgentHandle`
+  is its public return type. Moving them to a focused ~70-line companion file (`builder-types.ts`,
+  same directory as `builder.ts`) separates types from implementation, improves discoverability for
+  embed-as-library users who need the config shapes without importing the full builder, and shrinks
+  `builder.ts`'s import section. `isModelProvider` (4-line private guard) moves with `SmartAgentHandle`
+  since it guards that type. `builder.ts` re-exports all R1 symbols so import paths are stable.
+  Zero new interfaces needed — the type shapes ARE the interface.
+
+- **R2 Fluent setter API → KEEP in builder.ts.**
+  Catalog has no "setter mixin" component. The 50 setters are by design inseparable from the private
+  fields they populate — extracting them would create an awkward class-split with no reuse benefit.
+  They add zero logic; they are the public builder surface.
+
+- **R3 MCP connection + tool/skill vectorization → EXTRACT `vectorize-mcp-tools.ts` (PRIME EXTRACT).**
+  `docs/ARCHITECTURE.md` (lines 1134–1138) explicitly names this as the prime tech-debt extraction
+  target: "the builder's MCP block (connect + tool vectorization — pull the vectorization into its
+  own small module consumed by the builder)." No catalog component owns MCP tool vectorization.
+  The extracted module exposes two focused async functions:
+  - `vectorizeMcpTools(clients: IMcpClient[], toolsRag: IRag, requestLogger: IRequestLogger, logger: ILogger | undefined): Promise<void>` — batch + sequential embed paths (lines 973–1139)
+  - `vectorizeSkills(skillManager: ISkillManager, toolsRag: IRag, requestLogger: IRequestLogger, logger: ILogger | undefined): Promise<void>` — skill indexing (lines 1245–1276)
+
+  REUSE catalog interfaces as all parameter types: `IMcpClient`, `IRag`, `IEmbedder`, `isBatchEmbedder`,
+  `IRequestLogger`, `ILogger`, `ISkillManager` — all from `@mcp-abap-adt/llm-agent`. No new interfaces
+  needed; function signatures ARE the contract (Principle 3, pure-function module). Landing zone:
+  `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (co-located with MCP-adjacent code in
+  `llm-agent-libs`). Any future builder variant, server-side worker, or consumer that pre-indexes
+  tools from a different trigger path can import this function without pulling in the full builder.
+
+- **R4 Core assembly → KEEP in residual builder.ts.**
+  `build()` is the public integration entry point — it is the composition root. All catalog
+  components are already instantiated from the catalog: `CircuitBreakerLlm`, `RetryLlm`,
+  `RateLimiterLlm`, `DefaultRequestLogger`, `LlmClassifier`, `ContextAssembler`, `HistoryMemory`,
+  `HistorySummarizer`, `DefaultPipeline`, `SimpleRagRegistry`, `SimpleRagProviderRegistry` — this
+  is exactly "building ON existing components." The sequential assembly cannot be split further
+  without creating a context-object pass-around that adds more lines than it removes and produces
+  an ad-hoc fragment (Principle 1 corollary). After R3 extraction, the residual `build()` is ~450
+  lines — comfortably below the 500-line target per file (though spread across the class body).
+
+Net: **2 EXTRACTs** (`builder-types.ts` ~70 lines, `vectorize-mcp-tools.ts` ~250 lines) + **2 KEEPs**
+(setter API R2, core assembly R4). Post-extraction `builder.ts` drops from 1437 → ~1170 lines
+(imports + R2 setters + R4 assembly + barrel re-exports for R1).
+
+### 4. Behavior-preservation strategy
+
+Behavior-preserving, public-API-stable refactor pinned by existing characterization tests.
+
+**Public API that must stay byte-stable** (all importer claims grep-verified; commands and
+raw results in `.superpowers/sdd/task-7-report.md`):
+
+| Symbol | Current importer(s) — grep-verified | Strategy |
+|---|---|---|
+| `SmartAgentBuilder` | `smart-server.ts:76`; `pipelines/server-context.ts:11`; `pipelines/register-skill-sources.ts:1`; `legacy/flat.ts:2` (re-export) — all via `@mcp-abap-adt/llm-agent-libs` barrel | Stays in `builder.ts`; barrel unchanged |
+| `SmartAgentHandle` | `smart-server.ts:77` — via `@mcp-abap-adt/llm-agent-libs` barrel | Barrel re-export from `builder-types.ts` via `builder.ts`; path stable |
+| `BuilderMcpConfig` | **No external production importer** (grep-verified: only `index.ts:34` barrel export) | Barrel re-export from `builder-types.ts`; optional (no external consumer) |
+| `BuilderPromptsConfig` | **No external production importer** (grep-verified: only `index.ts:35` barrel export) | Barrel re-export from `builder-types.ts`; optional |
+| `SmartAgentBuilderConfig` | **No external production importer** (grep-verified: only `index.ts:37` barrel export) | Barrel re-export from `builder-types.ts`; optional |
+
+All 4 blast-radius importers reach `SmartAgentBuilder` via the `@mcp-abap-adt/llm-agent-libs`
+package barrel (`index.ts` → `builder.js`). None import `./builder.js` directly (grep-verified:
+only `index.ts:39` imports `from './builder.js'` within the package). Import paths are unchanged
+by any extraction — the barrel is the stable public surface.
+
+**Existing characterization tests to lean on** (15 test files exercise `SmartAgentBuilder`,
+grep-verified):
+
+- `builder-tool-selection.test.ts` — direct cover for R3 tool vectorization + RAG selection
+- `builder-startup-validation.test.ts` — direct cover for R4 model validation probe
+- `builder-mcp-failure-logging.test.ts` — direct cover for R3 MCP failure + warning paths
+- `builder-coordinator-dispatch-default.test.ts` — direct cover for R4 coordinator default wiring
+- `builder-context-builder-wiring.test.ts` — direct cover for `buildRetrievalSource` (stays in R4)
+- `builder-api-adapters.test.ts` — R4 API adapter merge
+- `builder-rag-collection-idempotency.test.ts` — R4 RAG registry idempotency
+- `handle-exposes-rag-registry.test.ts` — handle shape (R1 `SmartAgentHandle`)
+- `mcp-clients-di.test.ts` — R2/R3 MCP client DI path (`withMcpClients`)
+- `agent-readiness.test.ts` — R4 builder → readiness
+- `mcp-yaml-vectorization.test.ts` (server-libs) — R3 YAML-driven vectorization path
+- `mcp-single-connect.test.ts` (server-libs) — R3 single-connect path
+- `server-context.test.ts` (server-libs) — R1/R2 `SmartAgentBuilder` as context factory
+- `register-skill-sources.test.ts` (server-libs) — R2 `addRagCollection` + R3 skill wiring
+- `dag.test.ts` (server-libs) — R4 DAG coordinator wiring via builder
+
+`builder-tool-selection.test.ts` and `builder-mcp-failure-logging.test.ts` together pin the
+batch/sequential vectorization paths — the primary targets of the R3 extraction. Run these as
+the gate before and after `vectorize-mcp-tools.ts` extraction.
+
+**Tests to ADD before refactoring (gaps):**
+
+1. **`vectorizeMcpTools` unit test** — pin the batch path (mock `isBatchEmbedder` + `embedBatch`),
+   the sequential fallback (mock `embedBatch` throwing), and the sequential-only path (no batch
+   support). Add BEFORE extracting R3 so the characterization exists in the new module from day 1.
+2. **`vectorizeSkills` unit test** — pin the skills loop (mock `ISkillManager.listSkills`) including
+   the `!result.ok` warning branch. Add alongside #1.
+
+### 5. Suggested PR slices (ordered; lowest-risk first)
+
+| # | Slice | Touches | Rough Δ | Risk | Why here |
+|---|---|---|---|---|---|
+| 1 | **`builder-types.ts` — extract R1** — create `builder-types.ts` with `BuilderMcpConfig`, `BuilderPromptsConfig`, `SmartAgentBuilderConfig`, `SmartAgentHandle`, `isModelProvider`; `builder.ts` re-exports all; `index.ts` unchanged | R1 | −71 / +80 | **very low** | Pure type-only move; zero runtime behavior change. No import paths change (all consumers use barrel). Pinned by `handle-exposes-rag-registry.test.ts` + `builder-startup-validation.test.ts` (they use the types). Lowest risk first frees subsequent slices from type-refactor noise. |
+| 2 | **`vectorize-mcp-tools.ts` — extract R3 (PRIME EXTRACT)** — add characterization tests for `vectorizeMcpTools` + `vectorizeSkills` (gap tests from §4); create `mcp/vectorize-mcp-tools.ts` with both functions; update `build()` to call them; `builder.ts` import added | R3 | −250 / +270 | **low** | Primary tech-debt reduction named in ARCHITECTURE.md. Pinned by `builder-tool-selection.test.ts`, `builder-mcp-failure-logging.test.ts`, `mcp-yaml-vectorization.test.ts`. All existing tests must pass unchanged — function behavior is identical, only location moves. |
+| 3 | **Residual cleanup** — remove any dead comments or section separators in `build()` now that R3 is gone; verify `builder.ts` is now ~1170 lines; no logic changes | residual | −10 / +0 | **very low** | Cosmetic. `builder.ts` ends as the fluent builder API (R2) + composition entry point (R4) — the correct final shape. |
+
+Cumulative: `builder.ts` drops from 1437 → ~1170 lines; the two extracted modules are each
+under 280 lines, cohesive, individually testable, reusable outside the builder. `vectorize-mcp-tools.ts`
+closes the explicit ARCHITECTURE.md tech-debt item.
+
+### 6. Per-blueprint principle self-check
+
+| # | Principle | Compliance of this decomposition |
+|---|---|---|
+| 1 | **Build ON existing components** | R3 EXTRACT uses catalog interfaces (`IMcpClient`, `IRag`, `IEmbedder`, `isBatchEmbedder`, `IRequestLogger`, `ILogger`, `ISkillManager`) as all parameter types — the extracted functions are thin coordinators of catalog components. R4 KEEP already instantiates 10+ catalog components from `llm-agent` and `llm-agent-libs` (`CircuitBreakerLlm`, `RetryLlm`, `RateLimiterLlm`, `DefaultRequestLogger`, etc.). No bespoke parallel abstractions invented. ✅ |
+| 2 | **The app IS the example** | `SmartAgentBuilder` is itself the canonical example of how a consumer assembles a `SmartAgent` from catalog components. After extraction, `build()` becomes a cleaner composition root that delegates vectorization to `vectorize-mcp-tools.ts` — demonstrating the same "compose catalog components" pattern the Architecture Principles mandate. ✅ |
+| 3 | **Everything around interfaces** | R3 extracted functions take only catalog interface types as parameters — no concrete class dependencies. R1 types are shapes (not classes). R4 continues wiring concrete implementations behind catalog interfaces (`ISubpromptClassifier`, `IContextAssembler`, `IHistoryMemory`, etc.). ✅ |
+| 4 | **Many small interfaces (ISP)** | No existing interface is widened. The extracted `vectorize-mcp-tools.ts` module needs no new interface — function signatures ARE the contract for a pure-function module. `builder-types.ts` adds no new interface; it relocates existing type aliases. ✅ |
+| 5 | **Consumer-owned variation = strategies** | R3's vectorization strategy (batch vs. sequential) is already determined by capability detection (`isBatchEmbedder`, `upsertPrecomputedRaw` existence) — extraction preserves this. The `IMcpConnectionStrategy` (which owns reconnect and readiness) is already a consumer-injectable strategy via `withMcpConnectionStrategy()`. No variation point is hardened. ✅ |
+| 6 | **Control file size** | Primary objective: 1437 → ~1170 lines (R1 ~−71, R3 ~−250, barrel re-exports ~+54). Extracted modules: `builder-types.ts` ~70 lines, `vectorize-mcp-tools.ts` ~270 lines — both well under 500 lines. The R2 setter block (~524 lines) is the largest remaining section but is structurally trivial (50 one-liner methods) — not a smell. ✅ |
+| 7 | **Don't break components** | All 4 blast-radius importers reach `SmartAgentBuilder`/`SmartAgentHandle` via the `@mcp-abap-adt/llm-agent-libs` barrel; barrel stays unchanged. `BuilderMcpConfig`/`BuilderPromptsConfig`/`SmartAgentBuilderConfig` have no external production importer — those re-exports are optional. Only `builder.ts` itself adds two new internal imports (`./builder-types.js`, `./mcp/vectorize-mcp-tools.js`). Public function signatures of `SmartAgentBuilder.build()` and all 50 setters are byte-stable. Pinned by all 15 existing test suites listed in §4. ✅ |
