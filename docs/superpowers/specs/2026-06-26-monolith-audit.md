@@ -952,3 +952,57 @@ closes the explicit ARCHITECTURE.md tech-debt item.
 | 5 | **Consumer-owned variation = strategies** | R3's vectorization strategy (batch vs. sequential) is already determined by capability detection (`isBatchEmbedder`, `upsertPrecomputedRaw` existence) — extraction preserves this. The `IMcpConnectionStrategy` (which owns reconnect and readiness) is already a consumer-injectable strategy via `withMcpConnectionStrategy()`. No variation point is hardened. ✅ |
 | 6 | **Control file size** | Primary objective: 1437 → ~1170 lines (R1 ~−71, R3 ~−250, barrel re-exports ~+54). Extracted modules: `builder-types.ts` ~70 lines, `vectorize-mcp-tools.ts` ~270 lines — both well under 500 lines. The residual `builder.ts` at ~1170 lines does NOT reach the 500-line per-file target; the ~524-line R2 setter block cannot be split without violating Principles 1/3/7 (the 50 one-liner setters are inseparable from the builder's own mutable state — splitting them would require duplicating the class or an awkward mixin with no reuse benefit). Further reduction of the residual is out of scope for this audit pass (one-monolith-per-plan). ✅ |
 | 7 | **Don't break components** | All 4 blast-radius importers reach `SmartAgentBuilder`/`SmartAgentHandle` via the `@mcp-abap-adt/llm-agent-libs` barrel; barrel stays unchanged. `BuilderMcpConfig`/`BuilderPromptsConfig`/`SmartAgentBuilderConfig` have no external production importer — those re-exports are optional. Only `builder.ts` itself adds two new internal imports (`./builder-types.js`, `./mcp/vectorize-mcp-tools.js`). Public function signatures of `SmartAgentBuilder.build()` and all 50 setters are byte-stable. Pinned by all 15 existing test suites listed in §4. ✅ |
+
+## Synthesis
+
+### Priority-ordered refactor sequence
+
+The sequence below follows the triage priority ranking exactly (§ Triage — composite score
+rationale). Files ranked 1–5 have full component-first decomposition blueprints in this document
+and are ready to feed per-monolith refactor plans immediately. Files ranked 6–13 are triaged and
+annotated; per the one-monolith-per-plan constraint, their blueprints are deferred until the
+higher-priority refactors are underway or complete.
+
+| Rank | File | Blueprint status | Recommended next action |
+|---|---|---|---|
+| 1 | `llm-agent-server-libs/src/smart-agent/smart-server.ts` (3926 lines) | Full blueprint (§ Blueprint: smart-server.ts) | Open per-monolith refactor plan; start with Slice 1 (`makeKnowledgeBackend` factory) |
+| 2 | `llm-agent-libs/src/agent.ts` (2160 lines) | Full blueprint (§ Blueprint: agent.ts) | Open per-monolith refactor plan after smart-server Slices 1–3 land; different package — can interleave |
+| 3 | `llm-agent-server-libs/src/smart-agent/config.ts` (1648 lines) | Full blueprint (§ Blueprint: config.ts) | Open per-monolith refactor plan; same package as smart-server — do not run concurrently with smart-server plan |
+| 4 | `llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (2026 lines) | Full blueprint (§ Blueprint: controller-coordinator-handler.ts) | Open per-monolith refactor plan; Slice 1 (fix inverted `extractJsonObject` dependency) is safe to start at any time — self-contained, no blast |
+| 5 | `llm-agent-libs/src/builder.ts` (1437 lines) | Full blueprint (§ Blueprint: builder.ts) | Open per-monolith refactor plan; Slice 1 (`builder-types.ts` type extraction) is the correct low-risk entry for the builder campaign |
+| 6 | `llm-agent-libs/src/pipeline/handlers/tool-loop.ts` (1004 lines) | Triaged; blueprint deferred | Draft blueprint when agent.ts Slice 6 (`runToolLoop` convergence) begins — the two share the convergence target and must be authored together |
+| 7 | `llm-agent-libs/src/skills/plugin-host/qdrant-store.ts` (769 lines) | Triaged; blueprint deferred | Draft blueprint after Priority 5 completes; three backends → three focused files is the obvious split direction |
+| 8 | `llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` (536 lines) | Triaged; blueprint deferred | Low urgency; the ancestor-context helper is the only separable seam |
+| 9 | `llm-agent-libs/src/pipeline/default-pipeline.ts` (542 lines) | Triaged; blueprint deferred | Low urgency; session-registry resolution is the separable seam |
+| 10 | `llm-agent-mcp/src/client.ts` (507 lines) | Triaged; blueprint deferred | Coordinate with smart-server.ts R4 MCP rework (that plan executes the R4 catalog-strategy target for `makeConnectionStrategy` adoption) |
+| 11 | `sap-aicore-llm/src/sap-core-ai-provider.ts` (554 lines) | Triaged; blueprint deferred | Split `ILlm` and `IEmbedder` implementations into sibling files; straightforward, isolated, low risk |
+| 12 | `llm-agent-libs/src/testing/index.ts` (543 lines) | Triaged; not a production concern | Consolidation is by design for the test harness; address only if build-time import impact becomes measurable |
+| 13 | `llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts` (509 lines) | Triaged; relocation target | Move to `scripts/` or `experiments/`; this is a relocation, not a refactor — can be done independently at any time |
+
+### First refactor: the highest-value, lowest-risk starting slice
+
+**Start with: `makeKnowledgeBackend` factory — smart-server.ts Slice 1.**
+
+Extract the 15-line knowledge-backend selector (`SmartServer.buildKnowledgeBackend`, lines
+2298–2313 of `smart-server.ts`) into a pure `makeKnowledgeBackend(cfg, embedder)` factory
+function in a new `knowledge/` module; `buildKnowledgeBackend` delegates to it. This is
+Slice 1 of the Blueprint: smart-server.ts §5.
+
+**Justification against the other Slice-1 candidates:**
+
+| Candidate Slice-1 | Blueprint source (priority) | Risk | Rough Δ | Selecting argument |
+|---|---|---|---|---|
+| **`makeKnowledgeBackend` factory** ← this pick | smart-server.ts (Priority 1) | very low | −15/+35 | Attacks the largest, highest-scored monolith; pure factory, single field, existing knowledge tests, zero blast. Correct opening move on the priority-1 file. |
+| `pipelineToStream` free function | agent.ts (Priority 2) | very low | −60/+75 | Same "very low" risk and a clean adapter — but from Priority 2. Picking it would defer the most-impactful monolith by one plan. |
+| `parser.ts` (fix inverted dependency) | controller-coordinator-handler.ts (Priority 4) | very low | −70/+80 | Fixes a real structural defect; but Priority 4 — architectural importance does not outweigh starting on the 3926-line Priority 1 file. |
+| `stepper-config.ts` extraction | config.ts (Priority 3) | low | −434/+450 | Largest single-step line reduction of any Slice-1 — but rated "low" (not "very low") and from Priority 3. |
+| `builder-types.ts` type move | builder.ts (Priority 5) | very low | −71/+80 | Correct first slice for the builder campaign, but lowest-impact of all candidates; Priority 5. |
+
+`makeKnowledgeBackend` wins on three grounds simultaneously: it is on the highest-priority
+monolith (Priority 1, 3926 lines, blast 10), carries the minimum absolute risk of any slice
+in the campaign (15-line pure factory, no blast, fully covered by existing `knowledge-backend`
+and `jsonl-knowledge-backend` tests), and it concretely demonstrates the EXTRACT pattern the
+subsequent smart-server slices (`RoleLlmResolver`, `WorkerRegistry`, `HttpRouteTable`,
+`ConfigReloadWatcher`) repeat at progressively larger scale. Opening on a lower-priority
+file would defer the biggest payoff; opening on a riskier smart-server slice would skip
+the "easiest win first" discipline the PR slice ordering encodes.
