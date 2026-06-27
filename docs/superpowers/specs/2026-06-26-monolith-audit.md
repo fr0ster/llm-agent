@@ -25,13 +25,13 @@ The table below is the "components-first" lookup used by later audit tasks to de
 | `StepperCoordinatorHandler` | `@mcp-abap-adt/llm-agent-server-libs` | Stage handler: cyclic stepper coordinator with suspend/resume and durable bundles |
 | `IPipelinePlugin` | `@mcp-abap-adt/llm-agent` | Contract for a pipeline plugin: `name`, `build(config, context)` returns an `IPipelineInstance` |
 | `IPipelineFactory` | `@mcp-abap-adt/llm-agent` | Contract for a factory that produces a `BuiltCoordinator` from deps |
-| `LinearFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelinePlugin`: builds a single-agent linear coordinator pipeline |
-| `DagFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelinePlugin`: builds a DAG multi-agent coordinator pipeline |
-| `CyclicFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelinePlugin`: builds the cyclic (stepper) coordinator pipeline |
-| `PlannedFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelinePlugin`: builds a planned-react stepper pipeline |
-| `DeepStepperFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelinePlugin`: builds the deep-stepper (nested decomposition) pipeline |
-| `ControllerFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelinePlugin`: builds the full controller pipeline (planner + executor subagents) |
-| `HealthChecker` | `@mcp-abap-adt/llm-agent-libs` | Aggregates readiness of multiple `IReadinessReporter` components; exposes `/health` status |
+| `LinearFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelineFactory`: builds a single-agent linear coordinator pipeline |
+| `DagFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelineFactory`: builds a DAG multi-agent coordinator pipeline |
+| `CyclicFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelineFactory`: builds the cyclic (stepper) coordinator pipeline |
+| `PlannedFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelineFactory`: builds a planned-react stepper pipeline |
+| `DeepStepperFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelineFactory`: builds the deep-stepper (nested decomposition) pipeline |
+| `ControllerFactory` | `@mcp-abap-adt/llm-agent-server-libs` | `IPipelineFactory`: builds the full controller pipeline (planner + executor subagents) |
+| `HealthChecker` | `@mcp-abap-adt/llm-agent-libs` | Server-level health aggregator: wraps `SmartAgent.healthCheck()` (calls it) and adds status rollup, circuit-breaker state, metrics, uptime/version → `HealthStatus` for `/health`. Depends on the agent — never the reverse |
 | `ISessionManager` | `@mcp-abap-adt/llm-agent` | CRUD contract for agent sessions (create, get, list, delete) |
 | `SessionManager` | `@mcp-abap-adt/llm-agent-libs` | Default in-memory `ISessionManager` implementation |
 | `NoopSessionManager` | `@mcp-abap-adt/llm-agent-libs` | No-op `ISessionManager` for single-session or stateless deployments |
@@ -279,7 +279,7 @@ seams.
 | Cut | Methods on the producing side | Shared state read (R) / written (W) | Coupling note |
 |---|---|---|---|
 | **R8 MCP tool listing** | `_listAllTools`, `_resolveActiveClients`, `_revectorizeTools` | R/W **`_activeClients`**; R `deps.connectionStrategy` `deps.ragStores.tools` | `_activeClients` written here and read by R7 healthCheck and R1 (indirectly via `_listAllTools`). Cleanest first cut: a closed 3-method cluster producing `{ tools, toolClientMap }` as a value object. |
-| **R7 Health-check** | `healthCheck`, `isReady` | R `_mainLlm` `_activeClients`; R `deps.ragStores` `deps.connectionStrategy` | Reads R6's `_mainLlm` and R8's `_activeClients`. The logic mirrors `HealthChecker`; seam is natural once R8 exposes `_activeClients` via interface. |
+| **R7 Health-check** | `healthCheck`, `isReady` | R `_mainLlm` `_activeClients`; R `deps.ragStores` `deps.connectionStrategy` | Reads R6's `_mainLlm` and R8's `_activeClients`. This probe logic is what `HealthChecker` *consumes* via `agent.healthCheck()` — extract it *downward* into an agent-health probe, NOT up to `HealthChecker` (would recurse). Seam is natural once R8 exposes `_activeClients` via interface. |
 | **R3 Pass-through** | `streamProcess` lines `717`–`801` | R `_mainLlm`; R `requestLogger` | Only two deps; already a self-contained block. No fields written. Easiest isolated cut. |
 | **R4 Pipeline adapter** | `_runStructuredPipeline` | R `deps.pipeline` only | Zero field deps; already a private method with a clean parameter surface. |
 | **R2 RAG orchestration** | `streamProcess` `817`–`1168`, `_preparePipeline`, `_toEnglishForRag`, `_summarizeHistory` | R `_mainLlm` `_helperLlm` `_classifier` `_classifierLlm`; R `deps.*` (ragStores, embedder, assembler, reranker, queryExpander, skillManager, translateQueryStores, connectionStrategy) | Reads R6 LLM fields and R8 tool listing. Must run after R8 extraction so `_listAllTools` is already behind `IMcpToolRegistry`. R2 produces `{ retrieved, finalTools, skillContent, assembledMessages }` passed to R1. |
@@ -334,12 +334,19 @@ For each responsibility: the **Component catalog reference** was checked first.
   `reconfigure`/`applyConfigUpdate` are 20 lines combined; they propagate to `deps.pipeline`
   (REUSE). No extraction warranted — they are already the right abstraction.
 
-- **R7 Health-check coordination → REUSE `HealthChecker` (catalog).**
-  `healthCheck` (96 lines) reinvents what `HealthChecker` does: aggregate per-component
-  health results. Rework: `SmartAgent.healthCheck` instantiates an ad-hoc `HealthChecker`
-  (or calls a `buildAgentHealthChecker(llm, ragStores, mcpClients)` factory function in
-  `health/agent-health.ts`) and delegates to it. REUSE `IReadinessReporter` + `HealthChecker`
-  (catalog). `isReady()` already delegates correctly (no change).
+- **R7 Health-check coordination → EXTRACT `buildAgentHealthSnapshot` (interface-bounded helper).**
+  ⚠️ Layering: `HealthChecker` (catalog) already *consumes* `SmartAgent.healthCheck()` —
+  `health-checker.ts:30` calls `this.agent.healthCheck()` and adds status rollup + circuit
+  breakers + metrics. So `SmartAgent.healthCheck` must NOT delegate *up* to `HealthChecker`
+  (that recurses / inverts the layer). Instead EXTRACT the per-component probe body
+  (`healthCheck` lines `484`–`578`: LLM ping-or-`healthCheck`, RAG first-store, MCP-client
+  fan-out with timeout/abort merge) *downward* into a pure
+  `buildAgentHealthSnapshot(mainLlm, ragStores, activeClients, options): Promise<{ llm, rag, mcp }>`
+  (an `IAgentHealthProbe`) in `health/agent-health.ts`; `SmartAgent.healthCheck` becomes a thin
+  wrapper that calls it. `HealthChecker` stays the unchanged server-level wrapper above the agent.
+  Reusable: any agent host needing a component snapshot can call the probe directly. REUSE
+  `IReadinessReporter` for `isReady()` — it already delegates to `connectionStrategy` correctly
+  (no change).
 
 - **R8 MCP tool listing + connection → EXTRACT `McpToolRegistry` (interface-bounded, REUSE `IMcpConnectionStrategy`).**
   `_listAllTools`, `_resolveActiveClients`, `_revectorizeTools` form a cohesive 51-line
@@ -350,9 +357,11 @@ For each responsibility: the **Component catalog reference** was checked first.
   injected), eliminating `_activeClients` as a mutable class field.
 
 Every R1–R8 has a catalog REUSE or a named, interface-bounded EXTRACT target.
-Net: **5 EXTRACTs** (all small + reusable: `runToolLoop` convergence function,
-`RagOrchestrator`, `PassThroughHandler` function, `pipelineToStream`, `McpToolRegistry`)
-+ **2 REUSE-only** (`HealthChecker` delegation for R7; R5/R6 already-slim facades).
+Net: **6 EXTRACTs** (all small + reusable: `runToolLoop` convergence function,
+`RagOrchestrator`, `PassThroughHandler` function, `pipelineToStream`, `McpToolRegistry`,
+`buildAgentHealthSnapshot` probe) + R5/R6 already-slim facades (KEEP). R7 REUSEs
+`IReadinessReporter` for `isReady()`; `HealthChecker` is REUSEd unchanged as the
+server-level wrapper that sits *above* the agent (not consumed by it).
 
 ### 4. Behavior-preservation strategy
 
@@ -399,7 +408,7 @@ re-export in `agent.ts` to preserve import paths (Principle 7).
 | 1 | **`pipelineToStream` free function** — extract `_runStructuredPipeline` `2099`–`2159` into `pipeline/pipeline-to-stream.ts`; `SmartAgent` calls it | R4 | −60 / +75 | **very low** | Zero field deps, no public API change, zero blast. Pure adapter pattern. Sets extraction habit. |
 | 2 | **`McpToolRegistry` module** — extract `_listAllTools`/`_resolveActiveClients`/`_revectorizeTools` behind `IMcpToolRegistry`; `SmartAgent` holds an instance | R8 | −51 / +120 | **low** | Closed 3-method cluster, removes `_activeClients` mutable field. Pinned by `mcp-reconnection.test.ts`, `mcp-clients-di.test.ts`. Enables R7 (health uses same client list). |
 | 3 | **`PassThroughHandler` function** — extract `pass` branch `717`–`801` into `pipeline/handlers/pass-through.ts`; `streamProcess` delegates | R3 | −84 / +95 | **low** | Self-contained 80-line block, pinned by `pass-usage.test.ts`. No new interface needed. |
-| 4 | **`HealthChecker` delegation** — rework `healthCheck` to compose `HealthChecker` (catalog); add `buildAgentHealthChecker` factory | R7 | −70 / +50 | **low-med** | Pinned by `agent-readiness.test.ts`. `healthCheck` public signature unchanged. Depends on Slice 2 (client list). |
+| 4 | **`buildAgentHealthSnapshot` probe** — extract `healthCheck` probe body `484`–`578` into `health/agent-health.ts` (`IAgentHealthProbe`); `SmartAgent.healthCheck` delegates *down* to it. NOT a dependency on `HealthChecker` (which calls the agent — would recurse) | R7 | −70 / +50 | **low-med** | Pinned by `agent-readiness.test.ts`. `healthCheck` public signature unchanged; `HealthChecker` untouched. Depends on Slice 2 (client list). |
 | 5 | **`RagOrchestrator` + helpers** — extract `_toEnglishForRag`, `_summarizeHistory`, RAG fan-out block, context assembly coordination into `agent/rag-orchestrator.ts` | R2 | −350 / +280 | **medium** | Largest extraction; pinned by `smart-agent-custom-rag.test.ts`, `tool-reselection.test.ts`, `builder-tool-selection.test.ts`. New gap test (§4 #2) must gate this. Depends on Slice 2 (McpToolRegistry) for the `_listAllTools` call inside `_preparePipeline`. |
 | 6 | **`runToolLoop` convergence** — extract `_runStreamingToolLoop` body into `agent/run-tool-loop.ts`; `ToolLoopHandler` delegates to same function; delete duplicate code in tool-loop.ts | R1 | −760 / +420 | **medium** | Biggest Δ, touches two files simultaneously. New parity test (§4 #1) must gate this. All R1 characterization tests pin it. Last because it depends on all prior extractions (McpToolRegistry for toolClientMap seam, all dependencies explicit). |
 
@@ -412,9 +421,9 @@ Cumulative: `agent.ts` drops from 2160 toward ~900 lines; `ToolLoopHandler` drop
 
 | # | Principle | Compliance of this decomposition |
 |---|---|---|
-| 1 | **Build ON existing components** | R1: CONVERGE onto `ToolLoopHandler` / shared `runToolLoop` (REUSE, not new); R2: REUSE `IContextAssembler`, `IReranker`, `IQueryExpander`; R3: REUSE `IStageHandler` pattern; R4: REUSE `IPipeline` contract; R7: REUSE `HealthChecker`; R8: REUSE `IMcpConnectionStrategy`. All 5 EXTRACTs land in the library as reusable components, not app-local glue. ✅ |
-| 2 | **The app IS the example** | Post-refactor `SmartAgent` is a thin orchestrator that *consumes* `McpToolRegistry`, `RagOrchestrator`, `runToolLoop`, `pipelineToStream`, and `HealthChecker` — the demonstration consumers should copy when building their own agent host. ✅ |
-| 3 | **Everything around interfaces** | New cuts: `IRagOrchestrator`, `IMcpToolRegistry`. `IStageHandler`/`IPipeline`/`IContextAssembler`/`IMcpConnectionStrategy`/`HealthChecker` (all reused). `SmartAgent` depends on interfaces, not classes. ✅ |
+| 1 | **Build ON existing components** | R1: CONVERGE onto `ToolLoopHandler` / shared `runToolLoop` (REUSE, not new); R2: REUSE `IContextAssembler`, `IReranker`, `IQueryExpander`; R3: REUSE `IStageHandler` pattern; R4: REUSE `IPipeline` contract; R7: REUSE `IReadinessReporter` for `isReady()` + EXTRACT the probe `buildAgentHealthSnapshot` (`HealthChecker` stays above the agent, unchanged); R8: REUSE `IMcpConnectionStrategy`. All 6 EXTRACTs land in the library as reusable components, not app-local glue. ✅ |
+| 2 | **The app IS the example** | Post-refactor `SmartAgent` is a thin orchestrator that *consumes* `McpToolRegistry`, `RagOrchestrator`, `runToolLoop`, `pipelineToStream`, and `buildAgentHealthSnapshot` — the demonstration consumers should copy when building their own agent host. (`HealthChecker` consumes the agent at the server layer, not vice-versa.) ✅ |
+| 3 | **Everything around interfaces** | New cuts: `IRagOrchestrator`, `IMcpToolRegistry`, `IAgentHealthProbe`. `IStageHandler`/`IPipeline`/`IContextAssembler`/`IMcpConnectionStrategy`/`IReadinessReporter` (all reused). `SmartAgent` depends on interfaces, not classes. ✅ |
 | 4 | **Many small interfaces (ISP)** | Each EXTRACT gets one focused interface. `IReadinessReporter` stays separate (already correct — `isReady` delegates without widening the interface). ✅ |
 | 5 | **Consumer-owned variation = strategies** | Connection strategy stays `IMcpConnectionStrategy` (catalog, swappable). `RagOrchestrator` helpers (`_toEnglishForRag`, `_summarizeHistory`) become injectable functions. `PassThroughHandler` and `pipelineToStream` are standalone, replaceable. ✅ |
 | 6 | **Control file size** | Primary objective: `agent.ts` 2160 → ~900; `ToolLoopHandler` 1004 → ~300. No extracted module exceeds ~450 lines; the largest, `run-tool-loop.ts` at ~420, stays well under the 500-line target. ✅ |
