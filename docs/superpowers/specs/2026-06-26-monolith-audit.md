@@ -609,3 +609,191 @@ family's naming discipline. The inverted `extractJsonObject` dependency is elimi
 | 6 | **Control file size** | Primary objective: 2026 → ~1350 residual handler + 4 small sibling modules (each under 300 lines). The four new modules are well below the 500-line threshold. The residual handler at ~1350 lines remains large; further reduction requires splitting the execution loop itself (out of scope for this audit, one-monolith-per-plan). ✅ |
 | 7 | **Don't break components** | All 4 production blast-radius importers keep their import paths unchanged via barrel re-exports in the handler. `planner.ts` and `reviewer.ts` update to `./parser.js` (correct direction). Public function and class signatures are byte-stable. Pinned by the full controller test suite (21 test files) + `public-api.test.ts`. ✅ |
 
+## Blueprint: config.ts
+
+`packages/llm-agent-server-libs/src/smart-agent/config.ts` (1648 lines). The file is a
+pure-function module with no class state — all coupling flows through imports, not mutable
+fields. Its six responsibilities are each already expressed as discrete exported functions
+or cohesive clusters of private helpers, making this the lowest-risk decomposition in the
+audit: the extraction targets are already function-shaped; the work is relocation + barrel
+re-export, not re-architecture.
+
+Key structural fact: `parsers.ts` carries a comment `// PERMANENT facade: re-exports the
+pure parsers from config.ts (they STAY there ...)`. That was a prior per-PR decision; this
+blueprint supersedes it — the extraction targets are precisely those parsers.
+
+Blast radius = 8 direct non-test production importers (grep-verified, listed in §4).
+
+### 1. Responsibility map (jobs → function clusters / line ranges)
+
+| # | Responsibility | Functions / types (line ranges) |
+|---|---|---|
+| **R1** | **YAML loading + env-var resolution + template generation** — read a YAML file, substitute `${VAR:-default}` env references recursively, write the starter-template file | `YamlConfig` type `284`, `YAML_TEMPLATE` const `311`–`428`, `resolveEnvVars` `430`–`448`, `loadYamlConfig` `450`–`456`, `generateConfigTemplate` `458`–`460` |
+| **R2** | **LLM config normalization + role resolution** — detect flat vs. map shape, normalise to `NormalizedLlmMap { main, … }`, look up a named role with fallback chain | `LlmConfigMap` `38`, `NormalizedLlmMap` `39`, `isFlatLlmConfig` `48`–`56` (private), `normalizeLlmConfig` `64`–`78`, `resolveLlmConfigStrict` `86`–`92`, `resolveLlmConfig` `102`–`110`, `resolveReviewerLlmName` `117`–`130` |
+| **R3** | **Coordinator/dispatch config resolution + finalizer building** — resolve YAML coordinator knobs to concrete strategy objects (`IPlanning`, `IDispatch`, `IActivation`, `IToolSelectionStrategy`, `IFinalizer`) | `YamlCoordinator` interface `132`–`158`, `resolveCoordinatorPlanning` `160`–`176`, `resolveCoordinatorDispatchKind` `184`–`188`, `resolveCoordinatorDispatch` `190`–`220`, `resolveCoordinatorActivation` `222`–`233`, `resolveToolSelectionStrategy` `235`–`256`, `FinalizerYaml` `462`–`466`, `buildFinalizer` `479`–`503` |
+| **R4** | **Config validation** — fail-loud legacy-shape guard, LLM / RAG / MCP / pipeline-name shape checks | `VALID_PROVIDERS` `258`–`264`, `VALID_RAG_TYPES` `266`–`271`, `ConfigValidationError` `273`–`282`, `get` accessor `505`–`511` (private), `checkLlmRole` `513`–`561` (private), `checkRagStore` `563`–`623` (private), `validateLlmEntry` `626`–`635` (private), `assertNoLegacyPipelineConfig` `648`–`671`, `validateResolvedConfig` `673`–`771` (private) |
+| **R5** | **Top-level config resolution + sub-agent parsing** — integrate R1–R4 + skill-plugins + subagents into the full `SmartServerConfig`; the public integration entry point | `ResolveConfigArgs` `286`–`309`, `ResolveSmartServerConfigOptions` `868`–`881`, `parseSubAgents` `785`–`866` (private), `resolveSmartServerConfig` `883`–`1206` |
+| **R6** | **Stepper coordinator config parsing** — parse `coordinator.flow` YAML into `StepperCoordinatorConfig`; mode preset expansion; nested composition node tree | `StepperMode` `1215`, `CompositionNode` `1225`–`1231`, `StepperCompositionSpec` `1237`–`1259`, `StepperCoordinatorConfig` `1261`–`1323`, `MODES` `1326`–`1330`, `MODE_FLOW_PRESET` `1338`–`1345`, `parseFlowPlan` `1348`–`1368`, `FlowBounds` type `1371`–`1381`, `parseNestedFlowSpec` `1388`–`1435`, `parseSystemPromptOverride` `1438`–`1446`, `parseCompositionNodes` `1449`–`1472`, `parseStepperCoordinatorConfig` `1484`–`1648` |
+
+Approximate line counts per responsibility: R1 ~130, R2 ~95, R3 ~185, R4 ~260, R5 ~375, R6 ~434.
+
+### 2. Seams (cut lines + shared state / data boundaries)
+
+The file has no mutable class state — all coupling is through function parameters, imports,
+and the shared `YamlConfig` / `NormalizedLlmMap` types. Seams are therefore import-level,
+not field-level.
+
+| Cut | Shared state / type boundary | Coupling note |
+|---|---|---|
+| **R1 YAML loader** | `YamlConfig` type consumed by R4 + R5 | Cleanest cut: `YamlConfig` moves with R1 to `yaml-loader.ts`; R4 and the residual R5 import it from there. The private `get` accessor (lines `505`–`511`) is used in both R4 (`validateResolvedConfig`) and R5 (`resolveSmartServerConfig`); it is a 5-line pure function — duplicate in both targets or keep in a shared util. |
+| **R2 LLM map** | `NormalizedLlmMap` consumed by R3 (`buildFinalizer`, `resolveCoordinatorDispatch`), R5 (`resolveSmartServerConfig`), and 4 production files external to config.ts | `NormalizedLlmMap` must move with R2 to `llm-config-map.ts`; R3 and R5 import it from there. Barrel re-exports in `config.ts` keep all external import paths stable. |
+| **R3 coordinator resolvers** | Receives `NormalizedLlmMap` (R2), `SmartServerLlmConfig` (from `smart-server.ts` types), `ILlm` | R3 depends on R2 types — extract R2 first, then R3 can import from `llm-config-map.ts`. No shared mutable state. |
+| **R4 validator** | `YamlConfig` (R1), `VALID_PROVIDERS`/`VALID_RAG_TYPES` (constants); calls `checkLlmRole`/`checkRagStore` (private, stay with R4) | `assertNoLegacyPipelineConfig` and `validateResolvedConfig` are called only inside R5 (`resolveSmartServerConfig`); zero external production importers of either (grep-verified). Safest cut: all are private to the validator module after extraction. |
+| **R5 residual** | Integrates R1 (`loadYamlConfig`, `resolveEnvVars`), R4 (`assertNoLegacyPipelineConfig`, `validateResolvedConfig`), R6 (`parseStepperCoordinatorConfig` not called here — but `parseSubAgents` calls `resolveSmartServerConfig` recursively), plus `parseSkillPluginsConfig` (external import) | After R1–R4, R6 leave, the residual ~350-line `config.ts` is `resolveSmartServerConfig` + `parseSubAgents` + `ResolveConfigArgs` + `ResolveSmartServerConfigOptions` + the private `get` accessor. The recursive `parseSubAgents → resolveSmartServerConfig` call is an intra-R5 detail; no new coupling introduced. |
+| **R6 stepper config** | `PlanNode` from `@mcp-abap-adt/llm-agent` (catalog, already imported); no types shared back to R1–R5 | Cleanest cut of all: R6 has zero shared types with R1–R4 and is not called by R5. It is a fully self-contained 434-line block. The only callers are `build-stepper-root.ts` (imports `parseStepperCoordinatorConfig`, `StepperCompositionSpec`, `StepperCoordinatorConfig`, `NormalizedLlmMap`, `resolveLlmConfig`) and `parsers.ts` (re-exports `parseStepperCoordinatorConfig`, `StepperCoordinatorConfig`). |
+
+### 3. Decomposition target per responsibility (components-first)
+
+For each responsibility: the **Component catalog reference** was checked first.
+
+- **R1 YAML loading → EXTRACT `yaml-loader.ts`.**
+  No catalog component owns YAML file loading or env-var substitution. `resolveEnvVars` and
+  `loadYamlConfig` are pure utility functions with no strategy variation; `YAML_TEMPLATE` +
+  `generateConfigTemplate` are the single point of template ownership. A focused
+  `yaml-loader.ts` module (`YamlConfig` type, `resolveEnvVars`, `loadYamlConfig`,
+  `generateConfigTemplate`, `YAML_TEMPLATE`) is justified as a reusable, zero-dependency
+  FS+env utility. Any future consumer (e.g. a test harness, a config editor) can import
+  it without pulling in all coordinator-resolver or validation logic. Zero catalog REUSE
+  opportunity — the catalog has no generic YAML loader; this is a genuine new small module.
+
+- **R2 LLM config normalization → EXTRACT `llm-config-map.ts`.**
+  No catalog component owns LLM-map normalization. The four exported functions
+  (`normalizeLlmConfig`, `resolveLlmConfig`, `resolveLlmConfigStrict`, `resolveReviewerLlmName`)
+  are already discrete and stateless; they form a cohesive "LLM role resolution" cluster.
+  Extract to `llm-config-map.ts`. The catalog's `makeLlm`/`makeDefaultLlm` (in
+  `llm-agent-libs`) are the factory end; this module is the "which config to pass to the
+  factory" end — they are complementary, not overlapping. `NormalizedLlmMap` moves with the
+  module. REUSE `SmartServerLlmConfig` (imported from `smart-server.ts`) as the input type;
+  no new interfaces needed (the function signatures ARE the interface).
+
+- **R3 Coordinator resolvers + finalizer → EXTRACT `pipelines/coordinator-resolvers.ts`.**
+  `resolveCoordinatorPlanning`, `resolveCoordinatorDispatch`, `resolveCoordinatorDispatchKind`,
+  `resolveCoordinatorActivation`, `resolveToolSelectionStrategy`, `buildFinalizer` return objects
+  implementing catalog interfaces (`IPlanning`, `IDispatch`, `IActivation` from
+  `@mcp-abap-adt/llm-agent-libs`; `IToolSelectionStrategy`, `IFinalizer` from
+  `@mcp-abap-adt/llm-agent`). REUSE these catalog interfaces as the contract.
+  Natural landing zone: the `pipelines/` family alongside `parsers.ts`, which already imports
+  three of these functions from `config.js`. Moving them to `pipelines/coordinator-resolvers.ts`
+  shortens the import chain for `parsers.ts` (same directory) and makes `parsers.ts`'s facade
+  comment (`re-exports the pure parsers from config.ts`) obsolete. `buildFinalizer` belongs
+  here because it is the coordinator's finalizer sub-factory (not a top-level config concern).
+  `YamlCoordinator` interface also moves here as the YAML input shape for the coordinator block.
+
+- **R4 Config validation → EXTRACT `config-validator.ts`.**
+  No catalog component owns YAML config validation. `ConfigValidationError` and
+  `assertNoLegacyPipelineConfig` are exported but have zero external production importers
+  (grep-verified: they appear only inside `config.ts` itself — `assertNoLegacyPipelineConfig`
+  is called by `resolveSmartServerConfig`, `ConfigValidationError` is thrown by
+  `validateResolvedConfig`). All private validators (`checkLlmRole`, `checkRagStore`,
+  `validateLlmEntry`, `validateResolvedConfig`) move with them. `VALID_PROVIDERS` and
+  `VALID_RAG_TYPES` are pure validation constants that move with the validator. The `get`
+  accessor (5-line private YAML-path helper) is duplicated or kept in each caller — trivial.
+  Result: an entirely internal module (`config.ts` imports from `config-validator.ts`;
+  no external importer changes). Very low risk.
+
+- **R5 Top-level resolution → KEEP as residual `config.ts` (integration root; no extraction).**
+  `resolveSmartServerConfig` is the public integration entry point: it calls R1, R4, R6,
+  and `parseSkillPluginsConfig` to produce the full `SmartServerConfig`. `parseSubAgents`
+  is an 80-line recursive sub-routine that can only exist alongside `resolveSmartServerConfig`
+  (it calls it recursively). These cannot be split further without reducing to trivial
+  delegation. After all other extractions, the residual `config.ts` retains:
+  `ResolveConfigArgs`, `ResolveSmartServerConfigOptions`, `parseSubAgents`,
+  `resolveSmartServerConfig`, the 5-line `get` accessor, and barrel re-exports of all moved
+  symbols to preserve import paths. Residual target: ~350 lines. Public API is byte-stable.
+
+- **R6 Stepper config parsing → EXTRACT `smart-agent/stepper-config.ts`.**
+  The 434-line stepper block is the most self-contained cluster in the file: it owns its
+  own types (`StepperMode`, `StepperCompositionSpec`, `StepperCoordinatorConfig`,
+  `CompositionNode`), its own constants (`MODES`, `MODE_FLOW_PRESET`), and a single public
+  entry point (`parseStepperCoordinatorConfig`). REUSE `PlanNode` from `@mcp-abap-adt/llm-agent`
+  (catalog; already imported). Natural landing zone: next to `build-stepper-root.ts`, which
+  consumes this config to build the runtime `Stepper`. The `parsers.ts` "PERMANENT facade"
+  comment is superseded by this blueprint. `parsers.ts` updates its re-export source to
+  `../smart-agent/stepper-config.js`. `build-stepper-root.ts` updates its import to
+  `./stepper-config.js`. All other consumers via the `index.ts` barrel need no changes.
+
+Every R1–R6 has a target. Net: **5 EXTRACTs** (all small + focused: `yaml-loader.ts`,
+`llm-config-map.ts`, `pipelines/coordinator-resolvers.ts`, `config-validator.ts`,
+`smart-agent/stepper-config.ts`) + **1 KEEP** (R5 residual in `config.ts`, the integration
+root). No new god-fragments; all extractions are reusable modules bounded by function
+signatures or catalog interfaces.
+
+### 4. Behavior-preservation strategy
+
+Behavior-preserving, public-API-stable refactor pinned by characterization tests.
+
+**Public API that must stay byte-stable** (every importer claim below grep-verified against
+production non-test files):
+
+| Symbol | Current importer(s) — grep-verified | Strategy |
+|---|---|---|
+| `resolveSmartServerConfig` | `builders/controller-skill-pipeline-builder.ts` (line 3); `llm-agent-server/scripts/start-smart-server.ts`; re-exported by `smart-server.ts` (line 458) and `index.ts` (line 11 via `export *`) | Stays in residual `config.ts` — no change |
+| `NormalizedLlmMap` | `smart-server.ts` (line 431); `build-stepper-root.ts` (line 32); `build-dag-coordinator-deps.ts` (line 23 via `config.js`); `pipelines/server-context.ts` (line 13) | Barrel re-export in `config.ts` from `llm-config-map.ts`; all import paths stable |
+| `normalizeLlmConfig` | `smart-server.ts` (line 433) | Barrel re-export in `config.ts` |
+| `resolveLlmConfig` | `smart-server.ts` (line 434); `build-stepper-root.ts` (line 37); `build-dag-coordinator-deps.ts` | Barrel re-export in `config.ts` |
+| `resolveLlmConfigStrict` | `smart-server.ts` (line 435); `build-dag-coordinator-deps.ts` | Barrel re-export in `config.ts` |
+| `resolveToolSelectionStrategy` | `smart-server.ts` (lines 436, ~1200); re-exported by `smart-server.ts` (line 462) | Barrel re-export in `config.ts` |
+| `resolveCoordinatorPlanning`, `resolveCoordinatorDispatch`, `resolveCoordinatorDispatchKind` | `pipelines/parsers.ts` (lines 13–15) | Barrel re-export in `config.ts` and update `parsers.ts` import to `./coordinator-resolvers.js` (same directory) |
+| `resolveCoordinatorActivation` | `build-dag-coordinator-deps.ts` (line 22) | Barrel re-export in `config.ts` |
+| `buildFinalizer` | `build-dag-coordinator-deps.ts` (line 20) | Barrel re-export in `config.ts` |
+| `resolveReviewerLlmName` | `build-dag-coordinator-deps.ts` (line 26) | Barrel re-export in `config.ts` |
+| `parseStepperCoordinatorConfig`, `StepperCoordinatorConfig`, `StepperCompositionSpec`, `CompositionNode` | `build-stepper-root.ts` (lines 37–41); `pipelines/parsers.ts` re-exports (lines 3–5, 6) | Barrel re-export in `config.ts`; `parsers.ts` re-export source updates to `../smart-agent/stepper-config.js` |
+| `loadYamlConfig`, `resolveEnvVars`, `generateConfigTemplate`, `YAML_TEMPLATE`, `YamlConfig` | Re-exported by `smart-server.ts` (lines 453–464) and `index.ts` (via `export *`) | Barrel re-export in `config.ts` from `yaml-loader.ts` |
+| `assertNoLegacyPipelineConfig` | **No external production importer** (grep-verified: only appears inside `config.ts` itself) | Can remain internal to `config-validator.ts`; barrel re-export optional |
+| `ConfigValidationError` | **No external production importer** (grep-verified: only referenced inside `config.ts`) | Can remain internal to `config-validator.ts`; barrel re-export optional |
+
+**Existing characterization tests to lean on:**
+- `stepper-config.test.ts` (R6 `parseStepperCoordinatorConfig` — direct cover)
+- `llm-map-normalize.test.ts` (R2 `normalizeLlmConfig`, `resolveLlmConfig`)
+- `coordinator-dispatch-resolver.test.ts` (R3 coordinator resolvers)
+- `config-validation.test.ts` (R4 + R5 `resolveSmartServerConfig`, validation)
+- `tool-selection-config.test.ts` (R3 `resolveToolSelectionStrategy`)
+- `build-stepper-root.test.ts` (R6 integration — exercises `parseStepperCoordinatorConfig` via `buildStepperRoot`)
+- `build-dag-coordinator-deps.test.ts` (R2 + R3 integration — exercises `normalizeLlmConfig`, `buildFinalizer`, `resolveCoordinatorActivation`)
+
+**Tests to ADD before refactoring (gaps):**
+1. A **`buildFinalizer` unit test** — `passthrough` / `template` / `llm` branches, including
+   the error case when no LLM config is available. Pin BEFORE extracting R3 (`coordinator-resolvers.ts`).
+2. A **`resolveEnvVars` deep-nesting + fallback test** — array-of-objects with `${VAR:-default}`
+   at multiple depths. Pin BEFORE extracting R1 (`yaml-loader.ts`), though the function is
+   already partially tested via `config-validation.test.ts`.
+
+### 5. Suggested PR slices (ordered; first = lowest-risk / highest-value)
+
+| # | Slice | Touches | Rough Δ | Risk | Why here |
+|---|---|---|---|---|---|
+| 1 | **`stepper-config.ts` — extract R6** — create `smart-agent/stepper-config.ts` with all stepper types + `parseStepperCoordinatorConfig`; `config.ts` barrel re-exports; `build-stepper-root.ts` updates import to `./stepper-config.js`; `parsers.ts` updates re-export source | R6 | −434 / +450 | **low** | Largest single-step line reduction; fully self-contained (zero shared state, no external type dependencies except `PlanNode`); pinned by `stepper-config.test.ts` + `build-stepper-root.test.ts`. Supersedes the "PERMANENT" comment in `parsers.ts`. |
+| 2 | **`yaml-loader.ts` — extract R1** — create `yaml-loader.ts`; move `YamlConfig`, `YAML_TEMPLATE`, `resolveEnvVars`, `loadYamlConfig`, `generateConfigTemplate`; `config.ts` barrel re-exports all | R1 | −130 / +145 | **very low** | Pure FS + env functions, no strategy variation. All external callers go through `smart-server.ts` re-exports or `index.ts` barrel — no import path changes needed. |
+| 3 | **`llm-config-map.ts` — extract R2** — create `llm-config-map.ts`; move `LlmConfigMap`, `NormalizedLlmMap`, `normalizeLlmConfig`, `resolveLlmConfig`, `resolveLlmConfigStrict`, `resolveReviewerLlmName`; `config.ts` barrel re-exports all | R2 | −95 / +110 | **very low** | Discrete exported functions; pinned by `llm-map-normalize.test.ts`. 4 importers of `NormalizedLlmMap` keep their paths via barrel re-export. |
+| 4 | **`config-validator.ts` — extract R4** — create `config-validator.ts`; move `VALID_PROVIDERS`, `VALID_RAG_TYPES`, `ConfigValidationError`, `assertNoLegacyPipelineConfig`, all private validation helpers; `config.ts` imports validators internally | R4 | −260 / +275 | **very low** | Zero external production importers of any moved symbol (grep-verified). `resolveSmartServerConfig` imports `assertNoLegacyPipelineConfig`/`validateResolvedConfig` from `./config-validator.js`. Barrel re-export of `ConfigValidationError`+`assertNoLegacyPipelineConfig` optional (no consumer). |
+| 5 | **`pipelines/coordinator-resolvers.ts` — extract R3** — create `pipelines/coordinator-resolvers.ts`; move `YamlCoordinator`, all `resolveCoordinator*`, `resolveToolSelectionStrategy`, `FinalizerYaml`, `buildFinalizer`; update `parsers.ts` import path; `config.ts` barrel re-exports all | R3 | −185 / +200 | **low** | Pinned by `coordinator-dispatch-resolver.test.ts`. `parsers.ts` updates its import from `../smart-agent/config.js` → `./coordinator-resolvers.js` (same directory, shorter path). `build-dag-coordinator-deps.ts` import remains from `./config.js` (barrel). New `buildFinalizer` unit test (§4 #1) must gate this. |
+| 6 | **Residual cleanup** — remove dead internal boilerplate in `config.ts`; verify `config.ts` is now ~350 lines containing only R5 + barrel re-exports; update `parsers.ts` PERMANENT comment | residual | −10 / +0 | **very low** | Cosmetic. `config.ts` ends as the single integration entry point (`resolveSmartServerConfig`) — the correct thin composition root. |
+
+Cumulative: `config.ts` drops from 1648 lines toward ~350 lines (R5 residual + barrel
+re-exports); the 5 extracted modules are each under 450 lines, all cohesive single-concern,
+all individually testable. The `pipelines/` family gains `coordinator-resolvers.ts` next to
+`parsers.ts`, and the `smart-agent/` family gains `stepper-config.ts` next to
+`build-stepper-root.ts` — both logically co-located with their primary consumers.
+
+### 6. Principle self-check
+
+| # | Principle | Compliance of this decomposition |
+|---|---|---|
+| 1 | **Build ON existing components** | R3: REUSE `IPlanning`, `IDispatch`, `IActivation` (catalog; from `llm-agent-libs`), `IToolSelectionStrategy`, `IFinalizer` (catalog; from `llm-agent`) as return-type contracts for the extracted coordinator resolvers — the modules become thin constructors of catalog components. R6: REUSE `PlanNode` (catalog; `llm-agent`). All 5 EXTRACTs use catalog types as boundaries; none invent parallel abstractions. ✅ |
+| 2 | **The app IS the example** | Post-refactor the residual `config.ts` is a thin composition root that imports from `yaml-loader`, `llm-config-map`, `pipelines/coordinator-resolvers`, `config-validator`, and `stepper-config` — the pattern a consumer building their own config pipeline should copy. ✅ |
+| 3 | **Everything around interfaces** | R3 functions return catalog interface types (`IPlanning`, `IDispatch`, etc.) — the caller sees interfaces, not classes. R2 functions return `NormalizedLlmMap` (a data type bounded by `SmartServerLlmConfig`). No new class-level interfaces needed for the pure-function modules — function signatures ARE the contracts. ✅ |
+| 4 | **Many small interfaces (ISP)** | Each extract is single-concern: YAML loading, LLM-map resolution, coordinator strategy resolution, validation, stepper config parsing are each a focused surface. No existing interface is widened. ✅ |
+| 5 | **Consumer-owned variation = strategies** | Coordinator strategies (`IPlanning`, `IDispatch`, `IActivation`) are already consumer-injectable strategy objects — the extracting does not change that contract. `buildFinalizer` stays async-factory shaped, accepting `makeLlm` as an injectable. ✅ |
+| 6 | **Control file size** | Primary objective: 1648 → ~350 residual + 5 modules each under 450 lines (R6 ~450, R4 ~275, R3 ~200, R1 ~145, R2 ~110). Every extracted module is well under the 500-line threshold. ✅ |
+| 7 | **Don't break components** | All 8 blast-radius importers keep their import paths via barrel re-exports in `config.ts`. Only two files update their imports: `parsers.ts` shortens its coordinator-resolver import to `./coordinator-resolvers.js` (same directory, same package); `build-stepper-root.ts` updates to `./stepper-config.js` (same directory). Both are internal to `llm-agent-server-libs`. Public function signatures are byte-stable. Pinned by all 7 existing test suites listed in §4. ✅ |
+
