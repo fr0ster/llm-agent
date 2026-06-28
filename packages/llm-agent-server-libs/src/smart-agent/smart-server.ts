@@ -452,12 +452,15 @@ export {
 export {
   backfillWorkerCacheFromHandle,
   drainWorkerCache,
+  type IWorkerRegistry,
   resolveWorkerLlmSet,
   type WorkerLlmSet,
+  type WorkerRegistry,
 } from './workers/worker-registry.js';
 
 import {
   backfillWorkerCacheFromHandle,
+  type IWorkerRegistry,
   resolveWorkerLlmSet,
   WorkerRegistry,
 } from './workers/worker-registry.js';
@@ -591,7 +594,7 @@ export class SmartServer {
    * pull from the cache by reference (never reconstructing LLM clients).
    * Constructed in `_buildInfra` after embedder factories are resolved.
    */
-  private _workers!: WorkerRegistry;
+  private _workers!: IWorkerRegistry;
   /**
    * Declarative HTTP route table built once; `_handle` delegates to its
    * `dispatch`. Replaces the former ~300-line if/else route chain.
