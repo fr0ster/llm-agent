@@ -737,7 +737,7 @@ Delete smart-server.ts:3265-3441 (`private async _handleConfigUpdate(...) { ... 
 - [ ] **Step 6: Compile**
 
 Run: `npm run build -w @mcp-abap-adt/llm-agent-server-libs`
-Expected: clean compile (the `implements IConfigUpdateTarget` clause type-checks the 6 methods against the interface — a name/signature mismatch fails here).
+Expected: clean compile. The `_configUpdateTarget(): IConfigUpdateTarget` return type still type-checks the object literal against the interface — a missing/misnamed member or wrong signature fails the build here, exactly as an `implements` clause would.
 
 - [ ] **Step 7: Re-run the pinning tests (post-extraction GREEN)**
 
