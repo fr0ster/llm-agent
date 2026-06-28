@@ -33,7 +33,7 @@
 | `packages/llm-agent-server-libs/src/smart-agent/http/adapter-route-handler.ts` | **NEW.** `handleAdapterRequest(...)` free function — verbatim `_handleAdapterRequest` body (zero `this.`). |
 | `packages/llm-agent-server-libs/src/smart-agent/http/chat-route-handler.ts` | **NEW.** `handleChat(...)` free function — verbatim `_handleChat` body, `this.cfg.*` → `cfg.*` param. |
 | `packages/llm-agent-server-libs/src/smart-agent/http/config-route-handler.ts` | **NEW.** `IConfigUpdateTarget` interface + `AGENT_CONFIG_FIELDS` const + `handleConfigUpdate(req, res, smartAgent, target)` free function — verbatim `_handleConfigUpdate` body, coupling routed through `target`. |
-| `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` | **MODIFY.** Import the 3 free functions; rewire the 3 route closures in `_buildRouteTable`; `class SmartServer implements IConfigUpdateTarget` + add the 6 small target methods; delete the 3 `_handle*` methods and the `AGENT_CONFIG_FIELDS` static. |
+| `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` | **MODIFY.** Import the 3 free functions; rewire the 3 route closures in `_buildRouteTable`; add ONE private `_configUpdateTarget(): IConfigUpdateTarget` helper (object literal — class shape unchanged, NO `implements`, NO new public methods); delete the 3 `_handle*` methods and the `AGENT_CONFIG_FIELDS` static. |
 | `packages/llm-agent-server-libs/src/smart-agent/__tests__/chat-endpoint.test.ts` | **NEW (Task 2 only).** Characterization for the chat handler body — no prior body-level test exists. |
 
 ### Helpers / sources to import (verified)
@@ -528,7 +528,7 @@ git commit -m "refactor: extract chat route handler from smart-server"
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/http/config-route-handler.ts`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`implements IConfigUpdateTarget` + 6 small methods; rewire route closure at 2644; delete method 3265-3441 and the `AGENT_CONFIG_FIELDS` static 3254-3263)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (add private `_configUpdateTarget()` returning the target object literal — NO `implements`, NO new public methods; rewire route closure at 2644; delete method 3265-3441 and the `AGENT_CONFIG_FIELDS` static 3254-3263)
 - Test (pins this handler): `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-endpoints.test.ts` and `packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-config-reload.test.ts`
 
 **Interfaces:**
@@ -545,7 +545,7 @@ git commit -m "refactor: extract chat route handler from smart-server"
   }
   export async function handleConfigUpdate(req: IncomingMessage, res: ServerResponse, smartAgent: SmartAgent, target: IConfigUpdateTarget): Promise<void>;
   ```
-- Consumed by: `SmartServer` (implements `IConfigUpdateTarget`; passes `this`/`rc.server` as `target`).
+- Consumed by: `SmartServer` (builds the target via a PRIVATE `_configUpdateTarget()` object literal closing over its private fields; passes `this._configUpdateTarget()` as `target`). The class does NOT `implements` the interface — the public class shape is unchanged.
 
 > **Pinning coverage (no new test needed):** `config-endpoints.test.ts` characterizes the full PUT `/v1/config` surface — agent-field update + whitelist 400, invalid-JSON 400, 405, model resolve+reconfigure happy path, "no resolver" 400, resolve-failure 500, unknown-model 500, atomicity. `smart-server-config-reload.test.ts` additionally asserts the `_mainLlm` hot-swap AND that `_workers.cache` is cleared + the session registry is drained after PUT — i.e. it pins `setMainLlm` + `drainWorkers` + `invalidateSessions`. Together they cover every `IConfigUpdateTarget` member.
 
@@ -660,7 +660,7 @@ Concretely the mutation block (originally 3394-3435) becomes:
 
 (Preserve the original explanatory comments above each block verbatim.)
 
-- [ ] **Step 3: Make `SmartServer implements IConfigUpdateTarget` and add the 6 methods**
+- [ ] **Step 3: Add a PRIVATE `_configUpdateTarget()` helper (do NOT change the class shape)**
 
 In smart-server.ts, import the handler + interface:
 
@@ -671,44 +671,45 @@ import {
 } from './http/config-route-handler.js';
 ```
 
-Change the class declaration (line 588) from `export class SmartServer {` to:
+**Do NOT make `SmartServer implements IConfigUpdateTarget`, and do NOT add public methods.** `SmartServer` is an exported class — adding `setMainLlm`/`setClassifierLlm`/`setHelperLlm`/`mirrorAgentCfg`/`drainWorkers`/`invalidateSessions` to it (even with the interface unexported) is a NEW PUBLIC surface and violates the byte-stable-public-API constraint. The class declaration `export class SmartServer {` stays UNCHANGED.
+
+Instead add ONE PRIVATE method that returns the target as an object literal closing over the private fields — the same object-literal-deps pattern `ConfigReloadWatcher` is already wired with at smart-server.ts:1335-1337. Place it near the other private helpers (it reads/writes `_mainLlm`/`_classifierLlm`/`_helperLlm` at 606-608, `_workers` at 597, `_lifecycle` at 604, `cfg` at 589):
 
 ```ts
-export class SmartServer implements IConfigUpdateTarget {
-```
-
-Add these methods to the class (place them near the other private helpers; they read/write the existing fields `_mainLlm`/`_classifierLlm`/`_helperLlm` at 606-608, `_workers` at 597, `_lifecycle` at 604, `cfg` at 589):
-
-```ts
-  // ── IConfigUpdateTarget (the PUT /v1/config hot-swap seam) ──
-  get modelResolver(): IModelResolver | undefined {
-    return this.cfg.modelResolver;
-  }
-  setMainLlm(llm: ILlm): void {
-    this._mainLlm = llm;
-  }
-  setClassifierLlm(llm: ILlm): void {
-    this._classifierLlm = llm;
-  }
-  setHelperLlm(llm: ILlm): void {
-    this._helperLlm = llm;
-  }
-  mirrorAgentCfg(patch: Record<string, unknown>): void {
-    const merged: Record<string, unknown> = {
-      ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
-      ...patch,
+  /**
+   * Build the PUT /v1/config hot-swap seam over this server's private state.
+   * The setters write the SAME `_mainLlm`/`_classifierLlm`/`_helperLlm` fields
+   * RoleLlmResolver's live accessors read, so the hot-swap stays observable.
+   * A private object literal — NOT `implements` — so the public class shape is
+   * unchanged (byte-stable public API).
+   */
+  private _configUpdateTarget(): IConfigUpdateTarget {
+    return {
+      modelResolver: this.cfg.modelResolver,
+      setMainLlm: (llm) => {
+        this._mainLlm = llm;
+      },
+      setClassifierLlm: (llm) => {
+        this._classifierLlm = llm;
+      },
+      setHelperLlm: (llm) => {
+        this._helperLlm = llm;
+      },
+      mirrorAgentCfg: (patch) => {
+        const merged: Record<string, unknown> = {
+          ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
+          ...patch,
+        };
+        (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
+      },
+      drainWorkers: () => this._workers.drain(),
+      invalidateSessions: () =>
+        this._lifecycle?.invalidateAll() ?? Promise.resolve(),
     };
-    (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
-  }
-  drainWorkers(): Promise<void> {
-    return this._workers.drain();
-  }
-  invalidateSessions(): Promise<void> {
-    return this._lifecycle?.invalidateAll() ?? Promise.resolve();
   }
 ```
 
-(`IModelResolver` and `ILlm` are already imported in smart-server.ts — lines 22 and 17. The `mirrorAgentCfg` body reproduces the existing merge at 3412-3416; `drainWorkers`/`invalidateSessions` mirror the `ConfigReloadWatcher` wiring at 1335-1337.)
+(`IModelResolver` and `ILlm` are already imported in smart-server.ts — lines 22 and 17 — but are only needed by the interface in config-route-handler.ts now; keep them in smart-server.ts only if still otherwise referenced. The `mirrorAgentCfg` closure reproduces the existing merge at 3412-3416; `drainWorkers`/`invalidateSessions` mirror the `ConfigReloadWatcher` wiring at 1335-1337.)
 
 - [ ] **Step 4: Rewire the config route closure (smart-server.ts:2644)**
 
@@ -718,10 +719,15 @@ Replace:
           await rc.server._handleConfigUpdate(rc.req, rc.res, rc.smartAgent);
 ```
 
-with (pass `rc.server` as the `IConfigUpdateTarget` — `SmartServer` now implements it):
+with (pass the private object-literal target — `_buildRouteTable` is a `SmartServer` method, so the closure captures `this` lexically, exactly like the chat route passes `this.cfg`):
 
 ```ts
-          await handleConfigUpdate(rc.req, rc.res, rc.smartAgent, rc.server);
+          await handleConfigUpdate(
+            rc.req,
+            rc.res,
+            rc.smartAgent,
+            this._configUpdateTarget(),
+          );
 ```
 
 - [ ] **Step 5: Delete the old method + static**
@@ -781,4 +787,6 @@ git commit -m "refactor: extract config-update route handler from smart-server"
 
 **2. Placeholder scan:** No TBD/TODO/"handle edge cases". Body-move steps cite exact source line ranges and enumerate every permitted edit; the adapter body is shown in full, the chat/config bodies are byte-moved with the substitution list spelled out (full re-transcription of 400 lines would itself risk drift — the move + explicit edit list is the precise instruction).
 
-**3. Type consistency:** `IConfigUpdateTarget` and its members (`modelResolver`, `setMainLlm`/`setClassifierLlm`/`setHelperLlm`, `mirrorAgentCfg`, `drainWorkers`, `invalidateSessions`) are named identically in the Task 3 module interface AND the `SmartServer implements` methods. `handleConfigUpdate(req, res, smartAgent, target)`, `handleChat(..., cfg)`, `handleAdapterRequest(...)` signatures match their call-site rewrites. `modelResolver` typed `IModelResolver` (matches `cfg.modelResolver` decl at smart-server.ts:288).
+**3. Type consistency:** `IConfigUpdateTarget` and its members (`modelResolver`, `setMainLlm`/`setClassifierLlm`/`setHelperLlm`, `mirrorAgentCfg`, `drainWorkers`, `invalidateSessions`) are named identically in the Task 3 module interface AND the `SmartServer._configUpdateTarget()` object literal. `handleConfigUpdate(req, res, smartAgent, target)`, `handleChat(..., cfg)`, `handleAdapterRequest(...)` signatures match their call-site rewrites. `modelResolver` typed `IModelResolver` (matches `cfg.modelResolver` decl at smart-server.ts:288).
+
+**4. Public API byte-stable (the P1 review fix):** the config handler is reached through a PRIVATE `_configUpdateTarget()` returning an object literal — `SmartServer` does NOT `implements IConfigUpdateTarget`, so no public method is added and the exported class shape is unchanged.
