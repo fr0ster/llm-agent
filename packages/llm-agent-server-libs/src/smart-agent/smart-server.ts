@@ -35,7 +35,6 @@ import type {
   PluginExports,
   StreamToolCall,
   SubAgentRegistry,
-  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
@@ -57,12 +56,10 @@ import type {
 import {
   ClaudeSkillManager,
   CodexSkillManager,
-  ConfigWatcher,
   FileSystemPluginLoader,
   FileSystemSkillManager,
   getDefaultPluginDirs,
   HealthChecker,
-  type HotReloadableConfig,
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
   KnowledgeRag,
@@ -89,6 +86,7 @@ import {
   resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
+import { ConfigReloadWatcher } from './config-reload-watcher.js';
 import {
   CORS_HEADERS,
   jsonError,
@@ -1303,110 +1301,41 @@ export class SmartServer {
 
     // ---- Config hot-reload (optional) ------------------------------------
     if (this.cfg.configFile) {
-      const watcher = new ConfigWatcher(this.cfg.configFile);
-      watcher.on('reload', (update: HotReloadableConfig) => {
-        log({ event: 'config_reload', update });
-        // Apply agent config updates
-        const agentUpdate: Record<string, unknown> = {};
-        if (update.maxIterations !== undefined)
-          agentUpdate.maxIterations = update.maxIterations;
-        if (update.maxToolCalls !== undefined)
-          agentUpdate.maxToolCalls = update.maxToolCalls;
-        if (update.ragQueryK !== undefined)
-          agentUpdate.ragQueryK = update.ragQueryK;
-        if (update.toolUnavailableTtlMs !== undefined)
-          agentUpdate.toolUnavailableTtlMs = update.toolUnavailableTtlMs;
-        if (update.showReasoning !== undefined)
-          agentUpdate.showReasoning = update.showReasoning;
-        if (update.historyAutoSummarizeLimit !== undefined)
-          agentUpdate.historyAutoSummarizeLimit =
-            update.historyAutoSummarizeLimit;
-        if (update.prompts?.ragTranslate !== undefined)
-          agentUpdate.ragTranslatePrompt = update.prompts.ragTranslate;
-        if (update.prompts?.historySummary !== undefined)
-          agentUpdate.historySummaryPrompt = update.prompts.historySummary;
-        if (update.classificationEnabled !== undefined)
-          agentUpdate.classificationEnabled = update.classificationEnabled;
-        if (Object.keys(agentUpdate).length > 0) {
-          smartAgent.applyConfigUpdate(agentUpdate);
-          // Mirror onto `this.cfg.agent` so freshly-built session graphs
-          // (which read `this.cfg.agent` in `buildSessionAgent`) observe the
-          // update. Deep-merge to preserve untouched startup fields.
-          // Note: `agentUpdate` includes flat fields ONLY whitelisted by
-          // `AGENT_CONFIG_FIELDS` plus the two prompt fields, which we route
-          // into `this.cfg.prompts` separately below.
-          const agentPatch: Record<string, unknown> = {};
-          for (const k of Object.keys(agentUpdate)) {
-            if (k !== 'ragTranslatePrompt' && k !== 'historySummaryPrompt') {
-              agentPatch[k] = agentUpdate[k];
-            }
-          }
+      const reloadWatcher = new ConfigReloadWatcher({
+        configFile: this.cfg.configFile,
+        log,
+        applyAgentUpdate: (u) => smartAgent.applyConfigUpdate(u),
+        mirrorCfg: (agentPatch, prompts) => {
           if (Object.keys(agentPatch).length > 0) {
-            const mergedAgent: Record<string, unknown> = {
+            (this.cfg as { agent?: Record<string, unknown> }).agent = {
               ...((this.cfg as { agent?: Record<string, unknown> }).agent ??
                 {}),
               ...agentPatch,
             };
-            (this.cfg as { agent?: Record<string, unknown> }).agent =
-              mergedAgent;
           }
           if (
-            update.prompts?.ragTranslate !== undefined ||
-            update.prompts?.historySummary !== undefined
+            prompts.ragTranslate !== undefined ||
+            prompts.historySummary !== undefined
           ) {
-            const mergedPrompts: Record<string, unknown> = {
+            const merged: Record<string, unknown> = {
               ...((this.cfg as { prompts?: Record<string, unknown> }).prompts ??
                 {}),
             };
-            if (update.prompts?.ragTranslate !== undefined) {
-              mergedPrompts.ragTranslate = update.prompts.ragTranslate;
-            }
-            if (update.prompts?.historySummary !== undefined) {
-              mergedPrompts.historySummary = update.prompts.historySummary;
-            }
+            if (prompts.ragTranslate !== undefined)
+              merged.ragTranslate = prompts.ragTranslate;
+            if (prompts.historySummary !== undefined)
+              merged.historySummary = prompts.historySummary;
             (this.cfg as { prompts?: Record<string, unknown> }).prompts =
-              mergedPrompts;
+              merged;
           }
-        }
-        // Per-session graphs (built by SessionGraphFactory) captured the OLD
-        // config and the OLD cached worker LLM set. Without invalidation,
-        // existing sessions keep the stale SmartAgent and a fresh acquire on a
-        // cookie-known sessionId still returns it. Clear the worker cache so
-        // the next build reads from the just-applied config, then drop every
-        // session graph. Failures are non-fatal — log and continue.
-        // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing
-        // the cache. Hot-reload runs from a synchronous emitter callback, so
-        // fire-and-forget here — same async-tolerance as the invalidateAll
-        // call below.
-        this._workers.drain().catch((err: unknown) => {
-          log({ event: 'config_reload_drain_error', error: String(err) });
-        });
-        this._lifecycle?.invalidateAll().catch((err: unknown) => {
-          log({ event: 'config_reload_invalidate_error', error: String(err) });
-        });
-        // Apply RAG weight updates
-        if (
-          update.vectorWeight !== undefined ||
-          update.keywordWeight !== undefined
-        ) {
-          for (const store of Object.values(ragStores)) {
-            if (
-              store &&
-              typeof (store as VectorRag).updateWeights === 'function'
-            ) {
-              (store as VectorRag).updateWeights({
-                vectorWeight: update.vectorWeight,
-                keywordWeight: update.keywordWeight,
-              });
-            }
-          }
-        }
+        },
+        drainWorkers: () => this._workers.drain(),
+        invalidateSessions: () =>
+          this._lifecycle?.invalidateAll() ?? Promise.resolve(),
+        ragStores,
       });
-      watcher.on('error', (err: unknown) => {
-        log({ event: 'config_reload_error', error: String(err) });
-      });
-      watcher.start();
-      closeFns.push(() => watcher.stop());
+      reloadWatcher.start();
+      closeFns.push(() => reloadWatcher.stop());
     }
 
     const { requestLogger } = agentHandle;
