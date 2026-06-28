@@ -35,12 +35,10 @@ import type {
   PluginExports,
   StreamToolCall,
   SubAgentRegistry,
-  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
   buildExternalResults,
-  type ExternalToolValidationCode,
   type IRag,
   isMcpUnavailable,
   isReadinessReporter,
@@ -58,20 +56,16 @@ import type {
 import {
   ClaudeSkillManager,
   CodexSkillManager,
-  ConfigWatcher,
   FileSystemPluginLoader,
   FileSystemSkillManager,
   getDefaultPluginDirs,
   HealthChecker,
-  type HotReloadableConfig,
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
   KnowledgeRag,
   makeLlm,
   mergePluginExports,
-  SessionGraphFactory,
   SessionLogger,
-  SessionRegistry,
   SessionRequestLogger,
   SmartAgentBuilder,
   type SmartAgentHandle,
@@ -92,8 +86,24 @@ import {
   resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
+import { ConfigReloadWatcher } from './config-reload-watcher.js';
+import {
+  CORS_HEADERS,
+  jsonError,
+  jsonValidationError,
+  mapStopReason,
+  readBody,
+  writeNotReady,
+} from './http/response-helpers.js';
+import { HttpRouteTable, type RouteContext } from './http/route-table.js';
+import {
+  type IRoleLlmResolver,
+  makeDefaultRoleLlm,
+  RoleLlmResolver,
+} from './llm/role-llm-resolver.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
-import { resolveSessionIdentity } from './session-identity-resolver.js';
+
+export { writeNotReady } from './http/response-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -355,42 +365,6 @@ export interface SmartServerHandle {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
-  if (r === 'stop') return 'stop';
-  if (r === 'tool_calls') return 'tool_calls';
-  return 'length';
-}
-
-function jsonError(message: string, type: string, code?: string): string {
-  return JSON.stringify({
-    error: { message, type, ...(code ? { code } : {}) },
-  });
-}
-
-function jsonValidationError(
-  message: string,
-  code: ExternalToolValidationCode,
-  param: string,
-): string {
-  return JSON.stringify({
-    error: {
-      message,
-      type: 'invalid_request_error',
-      code,
-      param,
-    },
-  });
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}
-
 function resolveSkillManager(
   cfg?: SmartServerSkillsConfig,
 ): ISkillManager | undefined {
@@ -408,12 +382,6 @@ function resolveSkillManager(
       return undefined;
   }
 }
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
 
 // ---------------------------------------------------------------------------
 // SmartServer
@@ -435,13 +403,9 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
-import { makeKnowledgeSemanticIndex } from './embedder-knowledge-index.js';
-import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
+import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
-import type {
-  ISessionMetaStore,
-  SessionMetaRow,
-} from './session-meta-store.js';
+import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
 import type { BuildSkillHostDeps } from './skill-plugins-host-factory.js';
@@ -482,412 +446,57 @@ export {
 } from './skill-plugins-host-factory.js';
 
 // ---------------------------------------------------------------------------
-// Worker-LLM cache + RAG-registry sharing (Task A7)
+// Worker-LLM cache + RAG-registry sharing (Task A7) — relocated to workers/
 // ---------------------------------------------------------------------------
 
-/**
- * GLOBAL per-worker heavy clients — built once, injected by reference per
- * session. In addition to LLM/embedder clients, the worker's OWN declared
- * `toolsRag`/`historyRag`/`mcpClients` (if any) are cached here too — the
- * per-session re-wire MUST prefer the worker's own resources over the
- * parent's injected ones, so we build them once and reuse by reference.
- */
-export interface WorkerLlmSet {
-  mainLlm: ILlm;
-  classifierLlm: ILlm;
-  helperLlm?: ILlm;
-  embedder?: IEmbedder;
-  /** Worker's OWN tools RAG, built from `subCfg.rag` if declared. */
-  toolsRag?: IRag;
-  /** Worker's OWN history RAG (mirrors flat-rag block, separate instance). */
-  historyRag?: IRag;
-  /**
-   * Worker's OWN MCP clients (from `subCfg.mcpClients` DI or built once from
-   * `subCfg.mcp`). Undefined means the worker did not declare any — caller
-   * may fall back to the parent's injected clients.
-   */
-  mcpClients?: IMcpClient[];
-  /**
-   * Shutdown function returned by the builder's `SmartAgentHandle.close()`
-   * for this worker (Fix #21). Disconnects MCP clients (and any other
-   * builder-owned resources) registered to this worker. Captured by
-   * `backfillWorkerCacheFromHandle` so `_drainWorkerCache()` can call it on
-   * config-reload (PUT /v1/config + hot-reload) and on server shutdown —
-   * without this, the per-worker handle is discarded by `buildSubAgent` and
-   * lazy rebuilds (Fix #18) accumulate MCP connections with no close path.
-   */
-  close?: () => Promise<void>;
-}
+export {
+  backfillWorkerCacheFromHandle,
+  drainWorkerCache,
+  type IWorkerRegistry,
+  resolveWorkerLlmSet,
+  type WorkerLlmSet,
+  type WorkerRegistry,
+} from './workers/worker-registry.js';
 
-/**
- * Drain every cached worker's `close` (if any), then clear the cache map.
- * Used by config-reload (PUT /v1/config + hot-reload — Fix #14/18/21) and by
- * server `close()` to release per-worker MCP connections that were attached
- * to the discarded `SmartAgentHandle`s.
- *
- * IMPORTANT — in-flight caveat: this aborts any request that is mid-call on
- * a worker's MCP client. That is acceptable for an admin action (config
- * reload, server shutdown) where the alternative is leaking connections.
- * Server `close()` calls this AFTER `lifecycle.disposeAll()` so per-session
- * graphs that reference worker clients are torn down first.
- *
- * Uses `Promise.allSettled` so one failing close cannot block the others.
- */
-export async function drainWorkerCache(
-  cache: Map<string, WorkerLlmSet>,
-): Promise<void> {
-  const closers: Array<Promise<void>> = [];
-  for (const entry of cache.values()) {
-    if (entry.close) {
-      try {
-        closers.push(entry.close());
-      } catch {
-        // sync throw (defensive — close is async by contract)
-      }
-    }
-  }
-  cache.clear();
-  if (closers.length > 0) {
-    await Promise.allSettled(closers);
-  }
-}
-
-/**
- * Build-once-per-worker resolver. The first time a worker name is seen, it
- * constructs the worker's main/classifier/(optional helper) LLM + embedder and
- * caches the set; every later call (e.g. each per-session worker re-wire)
- * returns the SAME set by reference — never reconstructing LLM clients
- * (locked invariant: LLM/embedder clients are global, built once).
- *
- * Accepts optional `makeToolsRag`/`makeHistoryRag`/`makeMcpClients` factories;
- * when provided, the resolver builds them ONCE on the first miss and caches
- * them on the returned set. Subsequent calls return the cached resources by
- * reference — never re-vectorizing or re-connecting MCP.
- */
-export async function resolveWorkerLlmSet(input: {
-  name: string;
-  cache: Map<string, WorkerLlmSet>;
-  makeMain: () => Promise<ILlm>;
-  makeClassifier: () => Promise<ILlm>;
-  makeHelper?: () => Promise<ILlm>;
-  makeEmbedder?: () => Promise<IEmbedder>;
-  makeToolsRag?: () => Promise<IRag>;
-  makeHistoryRag?: () => Promise<IRag>;
-  makeMcpClients?: () => Promise<IMcpClient[]>;
-}): Promise<WorkerLlmSet> {
-  const hit = input.cache.get(input.name);
-  if (hit) return hit;
-  const mainLlm = await input.makeMain();
-  const classifierLlm = await input.makeClassifier();
-  const helperLlm = input.makeHelper ? await input.makeHelper() : undefined;
-  const embedder = input.makeEmbedder ? await input.makeEmbedder() : undefined;
-  const toolsRag = input.makeToolsRag ? await input.makeToolsRag() : undefined;
-  const historyRag = input.makeHistoryRag
-    ? await input.makeHistoryRag()
-    : undefined;
-  const mcpClients = input.makeMcpClients
-    ? await input.makeMcpClients()
-    : undefined;
-  const set: WorkerLlmSet = {
-    mainLlm,
-    classifierLlm,
-    helperLlm,
-    embedder,
-    toolsRag,
-    historyRag,
-    mcpClients,
-  };
-  input.cache.set(input.name, set);
-  return set;
-}
-
-/**
- * Backfill the per-worker cache entry from the BUILT handle (review HIGH #7).
- *
- * The primary `buildSubAgent` populates `cached.mcpClients`/`toolsRag`/
- * `historyRag` only when the worker config provided DI factories. Workers
- * configured with `subCfg.mcp: ...` (regular config that triggers the
- * builder's own auto-connect) or with `subCfg.rag: ...` whose RAG is owned
- * by the builder leave those slots empty — so per-session re-wires would
- * fall back to the PARENT's MCP/RAG, losing the worker's own connection.
- *
- * After the builder finishes, this helper captures what the handle actually
- * holds and stores it BY REFERENCE on the cache entry. Subsequent per-session
- * re-wires read the same slots and find the worker's own resources.
- *
- * Pure helper, mutates `entry` in place. No-op when the corresponding slot
- * is already populated (DI path wins) or when the handle has no resource for
- * that slot (worker simply didn't declare one).
- */
-export async function backfillWorkerCacheFromHandle(
-  entry: WorkerLlmSet,
-  handle: {
-    mcpClients?: IMcpClient[];
-    ragRegistry: { get(name: string): IRag | undefined };
-    close?: () => Promise<void>;
-  },
-): Promise<void> {
-  if (
-    (!entry.mcpClients || entry.mcpClients.length === 0) &&
-    handle.mcpClients &&
-    handle.mcpClients.length > 0
-  ) {
-    entry.mcpClients = handle.mcpClients;
-  }
-  if (!entry.toolsRag) {
-    const t = handle.ragRegistry.get('tools');
-    if (t) entry.toolsRag = t;
-  }
-  if (!entry.historyRag) {
-    const h = handle.ragRegistry.get('history');
-    if (h) entry.historyRag = h;
-  }
-  // Capture the per-worker shutdown function (Fix #21). If the entry already
-  // had a close from a previous build (e.g. the same worker name was rebuilt
-  // WITHOUT going through `drainWorkerCache` first — defence in depth), await
-  // the prior close before overwriting so its MCP connections do not leak.
-  if (handle.close) {
-    if (entry.close) {
-      try {
-        await entry.close();
-      } catch {
-        // Best-effort; never block the new build on a stale close failure.
-      }
-    }
-    entry.close = handle.close;
-  }
-}
-
-/**
- * Share the parent RAG registry with subagents (per-session worker re-wire).
- * Session/user/global collections written at the top level become visible to
- * workers; the per-call scope filter (`rag-query.ts`) isolates by
- * `ctx.sessionId` / `ctx.options.userId`. A worker's own declared store is
- * registered INTO this same registry under its namespace. When the parent
- * registry is undefined (no top-level registry yet — e.g. unit test seam),
- * return undefined so the builder allocates its own SimpleRagRegistry.
- */
-export function resolveSubAgentRagRegistry(input: {
-  parentRagRegistry: IRagRegistry | undefined;
-}): IRagRegistry | undefined {
-  return input.parentRagRegistry;
-}
-
-/**
- * Options for `buildSessionLifecycle`. Composes the SessionGraphFactory + the
- * SessionRegistry; exposes a thin facade so `_handle` stays unit-testable.
- */
-export interface SessionLifecycleOptions {
-  idleTtlMs: number;
-  maxSessions: number;
-  cookieName: string;
-  mcpClients: IMcpClient[];
-  toolsRag: IRag | undefined;
-  ragRegistry: IRagRegistry;
-  buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
-  /** Optional logger forwarded to SessionGraphFactory for cleanup-failure surfacing. */
-  logger?: ILogger;
-  /**
-   * Optional per-session teardown hook run during `SessionGraph.dispose()`.
-   * The host wires this to invoke the pipeline plugin's
-   * `IPipelineInstance.close()` captured by `buildPipelineInstance`.
-   */
-  onDispose?: (sessionId: string) => Promise<void>;
-}
-
-/**
- * Composes the cookie identity resolver + SessionGraphFactory + SessionRegistry
- * into one lifecycle object the server's `_handle` consumes. The default MCP
- * factory returns the shared GLOBAL clients by reference (one upstream
- * connection); a creds-aware build swaps it out (out of scope here).
- */
-export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
-  resolve: (
-    cookieHeader: string | undefined,
-    isHttps: boolean,
-  ) => ReturnType<typeof resolveSessionIdentity>;
-  acquire: (
-    sessionId: string,
-  ) => Promise<
-    ReturnType<SessionRegistry['acquire']> extends Promise<infer G> ? G : never
-  >;
-  release: (sessionId: string, graph?: SessionGraph) => void;
-  evictIdle: () => Promise<void>;
-  disposeAll: () => Promise<void>;
-  invalidateAll: () => Promise<void>;
-  registry: SessionRegistry;
-} {
-  const factory = new SessionGraphFactory({
-    mcpClientFactory: (_identity) => opts.mcpClients,
-    toolsRag: opts.toolsRag,
-    ragRegistry: opts.ragRegistry,
-    buildAgent: opts.buildAgent,
-    logger: opts.logger,
-    onDispose: opts.onDispose,
-  });
-  const registry = new SessionRegistry({
-    idleTtlMs: opts.idleTtlMs,
-    maxSessions: opts.maxSessions,
-    factory,
-  });
-  return {
-    resolve: (cookieHeader, isHttps) =>
-      resolveSessionIdentity({
-        cookieHeader,
-        cookieName: opts.cookieName,
-        maxAgeSeconds: Math.max(1, Math.floor(opts.idleTtlMs / 1000)),
-        isHttps,
-      }),
-    acquire: (sessionId) => registry.acquire(sessionId),
-    release: (sessionId, graph) => registry.release(sessionId, graph),
-    evictIdle: () => registry.evictIdle(),
-    disposeAll: () => registry.disposeAll(),
-    invalidateAll: () => registry.invalidateAll(),
-    registry,
-  };
-}
-
-export type SessionLifecycle = ReturnType<typeof buildSessionLifecycle>;
+import {
+  backfillWorkerCacheFromHandle,
+  type IWorkerRegistry,
+  resolveWorkerLlmSet,
+  WorkerRegistry,
+} from './workers/worker-registry.js';
 
 // ---------------------------------------------------------------------------
-// /v1/sessions extracted handlers (testable without a live HTTP server)
+// Session-lifecycle helpers — relocated to session-lifecycle/ (R3)
+// Internal callers (SmartServer methods) import the value symbols they call;
+// re-export the full public surface for the package barrel.
 // ---------------------------------------------------------------------------
 
-/** Response shape for GET /v1/sessions */
-export interface SessionListBody {
-  sessions: SessionMetaRow[];
-}
+import {
+  buildSessionLifecycle,
+  handleDeleteSession,
+  handleListSessions,
+  handleResumeSession,
+  recordSessionEnd,
+  recordSessionStart,
+  resolveSubAgentRagRegistry,
+  type SessionLifecycle,
+  seedSessionKnowledge,
+} from './session-lifecycle/index.js';
 
-/** Response shape for POST /v1/sessions/:id/resume */
-export interface SessionResumeBody {
-  ok: boolean;
-  session?: SessionMetaRow;
-  error?: string;
-}
-
-/**
- * Seed session-scope guidance entries into a BRAND-NEW session's knowledge-RAG
- * (deployment-supplied tool-usage guidance the planner/executor read in "Known
- * facts"). Idempotent: rehydrates via init() and writes ONLY when the session is
- * empty (`fingerprint() === 'n=0'`), so resumes never duplicate. Entries are
- * config DATA — the runtime stays MCP-agnostic (no tool knowledge in agent code).
- */
-export async function seedSessionKnowledge(
-  kr: IKnowledgeRagHandle & {
-    init?(): Promise<void>;
-    fingerprint?(): string;
-  },
-  seeds: ReadonlyArray<{ content: string; artifactType: string }>,
-  nowIso: string,
-): Promise<void> {
-  if (seeds.length === 0) return;
-  await kr.init?.();
-  if (kr.fingerprint?.() !== 'n=0') return; // not a brand-new session → skip
-  for (const s of seeds) {
-    await kr.write({
-      content: s.content,
-      metadata: {
-        traceId: 'seed',
-        turnId: 'seed',
-        stepperId: 'seed',
-        task: 'session-seed',
-        artifactType: s.artifactType,
-        createdAt: nowIso,
-      },
-    });
-  }
-}
-
-/**
- * Record that a request for `sessionId` STARTED — create the meta row on first
- * sight, else touch it and mark in-progress. Called from the live request path
- * (`_withSession`) so GET /v1/sessions, resume and delete actually see sessions
- * produced by normal chat/stream traffic (review Finding 3). `userIdentity` is
- * the sessionId itself in the default no-auth build — matching how the
- * /v1/sessions endpoints resolve identity (`resolved.identity.sessionId`).
- */
-export async function recordSessionStart(
-  store: ISessionMetaStore,
-  sessionId: string,
-  nowIso: string,
-): Promise<void> {
-  const existing = await store.get(sessionId);
-  if (!existing) {
-    await store.create({
-      sessionId,
-      userIdentity: sessionId,
-      createdAt: nowIso,
-      lastUsedAt: nowIso,
-      status: 'in-progress',
-    });
-    return;
-  }
-  await store.touch(sessionId, nowIso);
-  await store.setStatus(sessionId, 'in-progress');
-}
-
-/**
- * Record that a request for `sessionId` FINISHED — touch + mark idle (so it can
- * be resumed). No-op if the row was deleted mid-flight.
- */
-export async function recordSessionEnd(
-  store: ISessionMetaStore,
-  sessionId: string,
-  nowIso: string,
-): Promise<void> {
-  const existing = await store.get(sessionId);
-  if (!existing) return;
-  await store.touch(sessionId, nowIso);
-  await store.setStatus(sessionId, 'idle');
-}
-
-/**
- * List all sessions for a given user identity.
- * Extracted for unit-testability (mirrors the /v1/usage handler pattern).
- */
-export async function handleListSessions(
-  store: ISessionMetaStore,
-  identity: string,
-): Promise<SessionListBody> {
-  const sessions = await store.listForUser(identity);
-  return { sessions };
-}
-
-/**
- * Resume (claim) a session by ID for a user identity.
- * Sets the session status to 'idle' so it can be re-entered.
- */
-export async function handleResumeSession(
-  store: ISessionMetaStore,
-  identity: string,
-  id: string,
-): Promise<SessionResumeBody> {
-  const row = await store.get(id);
-  if (!row || row.userIdentity !== identity) {
-    return { ok: false, error: 'session not found' };
-  }
-  await store.setStatus(id, 'idle');
-  const updated = await store.get(id);
-  return { ok: true, session: updated };
-}
-
-/**
- * Delete a session by ID for a user identity, and evict its RAG state.
- */
-export async function handleDeleteSession(
-  store: ISessionMetaStore,
-  identity: string,
-  id: string,
-  evictFn: (sessionId: string) => Promise<void>,
-): Promise<{ ok: boolean; error?: string }> {
-  const row = await store.get(id);
-  if (!row || row.userIdentity !== identity) {
-    return { ok: false, error: 'session not found' };
-  }
-  await store.delete(id);
-  await evictFn(id);
-  return { ok: true };
-}
+export {
+  buildSessionLifecycle,
+  handleDeleteSession,
+  handleListSessions,
+  handleResumeSession,
+  recordSessionEnd,
+  recordSessionStart,
+  resolveSubAgentRagRegistry,
+  type SessionLifecycle,
+  type SessionLifecycleOptions,
+  type SessionListBody,
+  type SessionResumeBody,
+  seedSessionKnowledge,
+} from './session-lifecycle/index.js';
 
 // ---------------------------------------------------------------------------
 // MCP bridge for the Stepper path (B-1)
@@ -976,36 +585,21 @@ export function buildMcpBridge(
   };
 }
 
-/**
- * Pre-dispatch readiness gate response: HTTP 503 with an OpenAI-shaped error,
- * written BEFORE any pipeline run or SSE stream is opened. Used when the server is
- * NOT_READY (MCP unavailable) so a request fails loud instead of being served
- * tool-blind / returning a silent "(no response)".
- */
-export function writeNotReady(res: {
-  writeHead(code: number, headers?: Record<string, string>): unknown;
-  end(body?: string): unknown;
-}): void {
-  res.writeHead(503, { 'Content-Type': 'application/json' });
-  res.end(
-    JSON.stringify({
-      error: {
-        type: 'service_unavailable',
-        message: 'MCP unavailable — server not ready',
-      },
-    }),
-  );
-}
-
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
   /**
-   * GLOBAL per-worker LLM/embedder cache. Populated lazily by `buildSubAgent`
+   * GLOBAL per-worker LLM/embedder cache registry. Populated lazily by `buildSubAgent`
    * the first time each worker name is seen; subsequent per-session re-wires
-   * pull from this cache by reference (never reconstructing LLM clients).
+   * pull from the cache by reference (never reconstructing LLM clients).
+   * Constructed in `_buildInfra` after embedder factories are resolved.
    */
-  private readonly _workerLlmCache = new Map<string, WorkerLlmSet>();
+  private _workers!: IWorkerRegistry;
+  /**
+   * Declarative HTTP route table built once; `_handle` delegates to its
+   * `dispatch`. Replaces the former ~300-line if/else route chain.
+   */
+  private readonly _routeTable = this._buildRouteTable();
   /** Lifecycle handle wired in `start()`; consumed by `_handle`. */
   private _lifecycle?: SessionLifecycle;
   /** Hoisted globals used by `buildSessionAgent` to re-wire fresh per-session workers. */
@@ -1040,6 +634,7 @@ export class SmartServer {
   private _llmMap?: NormalizedLlmMap;
   private _pipelineFallback?: SmartServerLlmConfig;
   private _mainTemp?: number;
+  private _roleLlm?: IRoleLlmResolver;
   private _requestLogger?: IRequestLogger;
   /** ToolsRag handle built by `buildSharedPipelineInfra`; handed to every
    *  pipeline's context (factory defaults to EMPTY_TOOLS_RAG if unset). */
@@ -1235,6 +830,14 @@ export class SmartServer {
     this._llmMap = llmMap;
     this._pipelineFallback = pipelineFallback;
     this._mainTemp = mainTemp;
+    this._roleLlm = new RoleLlmResolver({
+      getMain: () => this._mainLlm,
+      getHelper: () => this._helperLlm,
+      getClassifier: () => this._classifierLlm,
+      getLlmMap: () => this._llmMap,
+      getPipelineFallback: () => this._pipelineFallback,
+      makeLlm: (lc) => this._deps.makeLlm(lc),
+    });
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
@@ -1323,6 +926,24 @@ export class SmartServer {
       ...this.cfg.embedderFactories, // config takes precedence over plugins
     };
     this._mergedEmbedderFactories = mergedEmbedderFactories;
+
+    // Construct the WorkerRegistry (owns the per-worker LLM cache + build loop).
+    // Both _fileLogger (set at the top of _buildInfra) and _mergedEmbedderFactories
+    // (set above) are captured lazily via the accessor callbacks, so construction
+    // here precedes the first use of this._workers.
+    this._workers = new WorkerRegistry({
+      subAgentConfigs: this.cfg.subAgentConfigs,
+      getFileLogger: () => this._fileLogger,
+      getEmbedderFactories: () => this._mergedEmbedderFactories ?? {},
+      buildSubAgent: (name, subCfg, parentLogger, factories, injected) =>
+        this.buildSubAgent(
+          name,
+          subCfg as Omit<SmartServerConfig, 'log'>,
+          parentLogger,
+          factories,
+          injected,
+        ),
+    });
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
@@ -1666,7 +1287,7 @@ export class SmartServer {
       // worker-owned MCP clients themselves disconnect. Ordering matters —
       // closing MCP clients while a session graph is mid-use would cut its
       // request short.
-      await drainWorkerCache(this._workerLlmCache);
+      await this._workers.drain();
     });
 
     const startTime = Date.now();
@@ -1683,110 +1304,41 @@ export class SmartServer {
 
     // ---- Config hot-reload (optional) ------------------------------------
     if (this.cfg.configFile) {
-      const watcher = new ConfigWatcher(this.cfg.configFile);
-      watcher.on('reload', (update: HotReloadableConfig) => {
-        log({ event: 'config_reload', update });
-        // Apply agent config updates
-        const agentUpdate: Record<string, unknown> = {};
-        if (update.maxIterations !== undefined)
-          agentUpdate.maxIterations = update.maxIterations;
-        if (update.maxToolCalls !== undefined)
-          agentUpdate.maxToolCalls = update.maxToolCalls;
-        if (update.ragQueryK !== undefined)
-          agentUpdate.ragQueryK = update.ragQueryK;
-        if (update.toolUnavailableTtlMs !== undefined)
-          agentUpdate.toolUnavailableTtlMs = update.toolUnavailableTtlMs;
-        if (update.showReasoning !== undefined)
-          agentUpdate.showReasoning = update.showReasoning;
-        if (update.historyAutoSummarizeLimit !== undefined)
-          agentUpdate.historyAutoSummarizeLimit =
-            update.historyAutoSummarizeLimit;
-        if (update.prompts?.ragTranslate !== undefined)
-          agentUpdate.ragTranslatePrompt = update.prompts.ragTranslate;
-        if (update.prompts?.historySummary !== undefined)
-          agentUpdate.historySummaryPrompt = update.prompts.historySummary;
-        if (update.classificationEnabled !== undefined)
-          agentUpdate.classificationEnabled = update.classificationEnabled;
-        if (Object.keys(agentUpdate).length > 0) {
-          smartAgent.applyConfigUpdate(agentUpdate);
-          // Mirror onto `this.cfg.agent` so freshly-built session graphs
-          // (which read `this.cfg.agent` in `buildSessionAgent`) observe the
-          // update. Deep-merge to preserve untouched startup fields.
-          // Note: `agentUpdate` includes flat fields ONLY whitelisted by
-          // `AGENT_CONFIG_FIELDS` plus the two prompt fields, which we route
-          // into `this.cfg.prompts` separately below.
-          const agentPatch: Record<string, unknown> = {};
-          for (const k of Object.keys(agentUpdate)) {
-            if (k !== 'ragTranslatePrompt' && k !== 'historySummaryPrompt') {
-              agentPatch[k] = agentUpdate[k];
-            }
-          }
+      const reloadWatcher = new ConfigReloadWatcher({
+        configFile: this.cfg.configFile,
+        log,
+        applyAgentUpdate: (u) => smartAgent.applyConfigUpdate(u),
+        mirrorCfg: (agentPatch, prompts) => {
           if (Object.keys(agentPatch).length > 0) {
-            const mergedAgent: Record<string, unknown> = {
+            (this.cfg as { agent?: Record<string, unknown> }).agent = {
               ...((this.cfg as { agent?: Record<string, unknown> }).agent ??
                 {}),
               ...agentPatch,
             };
-            (this.cfg as { agent?: Record<string, unknown> }).agent =
-              mergedAgent;
           }
           if (
-            update.prompts?.ragTranslate !== undefined ||
-            update.prompts?.historySummary !== undefined
+            prompts.ragTranslate !== undefined ||
+            prompts.historySummary !== undefined
           ) {
-            const mergedPrompts: Record<string, unknown> = {
+            const merged: Record<string, unknown> = {
               ...((this.cfg as { prompts?: Record<string, unknown> }).prompts ??
                 {}),
             };
-            if (update.prompts?.ragTranslate !== undefined) {
-              mergedPrompts.ragTranslate = update.prompts.ragTranslate;
-            }
-            if (update.prompts?.historySummary !== undefined) {
-              mergedPrompts.historySummary = update.prompts.historySummary;
-            }
+            if (prompts.ragTranslate !== undefined)
+              merged.ragTranslate = prompts.ragTranslate;
+            if (prompts.historySummary !== undefined)
+              merged.historySummary = prompts.historySummary;
             (this.cfg as { prompts?: Record<string, unknown> }).prompts =
-              mergedPrompts;
+              merged;
           }
-        }
-        // Per-session graphs (built by SessionGraphFactory) captured the OLD
-        // config and the OLD cached worker LLM set. Without invalidation,
-        // existing sessions keep the stale SmartAgent and a fresh acquire on a
-        // cookie-known sessionId still returns it. Clear the worker cache so
-        // the next build reads from the just-applied config, then drop every
-        // session graph. Failures are non-fatal — log and continue.
-        // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing
-        // the cache. Hot-reload runs from a synchronous emitter callback, so
-        // fire-and-forget here — same async-tolerance as the invalidateAll
-        // call below.
-        drainWorkerCache(this._workerLlmCache).catch((err: unknown) => {
-          log({ event: 'config_reload_drain_error', error: String(err) });
-        });
-        this._lifecycle?.invalidateAll().catch((err: unknown) => {
-          log({ event: 'config_reload_invalidate_error', error: String(err) });
-        });
-        // Apply RAG weight updates
-        if (
-          update.vectorWeight !== undefined ||
-          update.keywordWeight !== undefined
-        ) {
-          for (const store of Object.values(ragStores)) {
-            if (
-              store &&
-              typeof (store as VectorRag).updateWeights === 'function'
-            ) {
-              (store as VectorRag).updateWeights({
-                vectorWeight: update.vectorWeight,
-                keywordWeight: update.keywordWeight,
-              });
-            }
-          }
-        }
+        },
+        drainWorkers: () => this._workers.drain(),
+        invalidateSessions: () =>
+          this._lifecycle?.invalidateAll() ?? Promise.resolve(),
+        ragStores,
       });
-      watcher.on('error', (err: unknown) => {
-        log({ event: 'config_reload_error', error: String(err) });
-      });
-      watcher.start();
-      closeFns.push(() => watcher.stop());
+      reloadWatcher.start();
+      closeFns.push(() => reloadWatcher.stop());
     }
 
     const { requestLogger } = agentHandle;
@@ -2022,7 +1574,7 @@ export class SmartServer {
     const classifierTemp = Number(subFlatLlm?.classifierTemperature ?? 0.1);
     const cached = await resolveWorkerLlmSet({
       name,
-      cache: this._workerLlmCache,
+      cache: this._workers.cache,
       // Preserve the existing makeLlm derivation exactly.
       makeMain: () =>
         makeLlm(
@@ -2157,7 +1709,7 @@ export class SmartServer {
     // re-wires never overwrite the cache. See backfillWorkerCacheFromHandle's
     // doc-comment for the rationale.
     if (!injected) {
-      const entry = this._workerLlmCache.get(name);
+      const entry = this._workers.cache.get(name);
       if (entry) await backfillWorkerCacheFromHandle(entry, handle);
     }
     return handle.agent;
@@ -2175,31 +1727,19 @@ export class SmartServer {
 
   /** The real `makeLlm`-backed construction (the seam's default). */
   private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
-    return makeLlm(
-      {
-        provider: lc.provider ?? 'deepseek',
-        apiKey: lc.apiKey,
-        baseURL: lc.url,
-        model: lc.model,
-      },
-      Number(lc.temperature ?? this._mainTemp ?? 0.7),
-    );
+    return makeDefaultRoleLlm(lc, this._mainTemp);
   }
 
   /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.
    *  'main' returns the captured mainLlm; 'helper'/'classifier' return the
    *  prebuilt instances when present; otherwise the map/fallback config is built. */
   private async resolveRoleLlm(role: string): Promise<ILlm> {
-    if (role === 'main' && this._mainLlm) return this._mainLlm;
-    if ((role === 'helper' || role === 'planner') && this._helperLlm) {
-      return this._helperLlm;
+    if (!this._roleLlm) {
+      throw new Error(
+        'resolveRoleLlm invoked before _buildInfra built the resolver',
+      );
     }
-    if (role === 'classifier' && this._classifierLlm)
-      return this._classifierLlm;
-    const cfg = resolveLlmConfig(this._llmMap, role, this._pipelineFallback);
-    if (cfg) return this._makeLlm(cfg);
-    if (this._mainLlm) return this._mainLlm;
-    throw new Error(`cannot resolve LLM for role '${role}': no config`);
+    return this._roleLlm.resolve(role);
   }
 
   /**
@@ -2297,19 +1837,10 @@ export class SmartServer {
    */
   private buildKnowledgeBackend(): void {
     if (this._stepperKnowledgeBackend) return;
-    const logDir = this.cfg.logDir;
-    // Attach an embedder-backed semantic index whenever an embedder is resolved —
-    // for ANY pipeline. Do NOT throw here: buildKnowledgeBackend runs
-    // unconditionally at startup and a flat/stepper deployment without an embedder
-    // is valid; only the CONTROLLER mandates embedding recall, enforced at the
-    // ControllerFactory boundary, not globally. With an index, the controller's
-    // results-RAG recall ranks by meaning instead of recency.
-    const semantic = this._resolvedEmbedder
-      ? makeKnowledgeSemanticIndex(this._resolvedEmbedder)
-      : undefined;
-    this._stepperKnowledgeBackend = logDir
-      ? new JsonlKnowledgeBackend(logDir, semantic)
-      : new InMemoryKnowledgeBackend(semantic);
+    this._stepperKnowledgeBackend = makeKnowledgeBackend({
+      logDir: this.cfg.logDir,
+      embedder: this._resolvedEmbedder,
+    });
   }
 
   /**
@@ -2425,84 +1956,15 @@ export class SmartServer {
   /**
    * Build the FRESH per-session worker (sub-agent) registry from the SAME
    * `subagents:` configs the primary build() used, injecting globals + this
-   * session's logger + the CACHED per-worker LLM/embedder (this._workerLlmCache).
+   * session's logger + the CACHED per-worker LLM/embedder (this._workers.cache).
    * NEVER reconstructs LLM clients; NEVER reuses the global registry.
    *
-   * Extracted from buildSessionAgent so both the legacy session re-wire and the
-   * pipeline-plugin context (`buildServerCtx` / `partsToBaseInput`) feed a real
-   * per-session worker map to `buildBaseBuilder` instead of an empty `new Map()`.
+   * Delegates to `this._workers.build(parts)` (WorkerRegistry).
    */
   private async buildWorkerRegistry(
     parts: SessionAgentParts,
   ): Promise<SubAgentRegistry> {
-    const registry: SubAgentRegistry = new Map();
-    if (!this.cfg.subAgentConfigs || this.cfg.subAgentConfigs.length === 0) {
-      return registry;
-    }
-    if (!this._fileLogger) {
-      throw new Error(
-        'buildWorkerRegistry invoked before primary build() captured globals',
-      );
-    }
-    for (const sub of this.cfg.subAgentConfigs) {
-      // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
-      // clears `_workerLlmCache`, the next session build used to throw
-      // "worker LLM set not cached" because the cache was assumed
-      // pre-populated by the primary build(). buildSubAgent itself routes
-      // through `resolveWorkerLlmSet` which is build-on-miss, so calling
-      // it without an `injected` arg rebuilds the cache entry. We then
-      // re-read the entry to honour the per-worker slot priority below.
-      if (!this._workerLlmCache.has(sub.name)) {
-        await this.buildSubAgent(
-          sub.name,
-          sub.config,
-          this._fileLogger,
-          this._mergedEmbedderFactories ?? {},
-          // No `injected` → primary path: resolveWorkerLlmSet populates
-          // `_workerLlmCache` and backfillWorkerCacheFromHandle fills the
-          // mcpClients/toolsRag slots from the built handle.
-        );
-      }
-      const cached = this._workerLlmCache.get(sub.name);
-      if (!cached) {
-        // Defence in depth — should be impossible after the lazy build
-        // above unless buildSubAgent's contract changes.
-        throw new Error(`worker LLM set not cached for '${sub.name}'`);
-      }
-      // Per-worker injected slot priority (review HIGH #7):
-      //   worker-cached (from the primary build, includes backfilled
-      //   subCfg.mcp / subCfg.rag results) → parent's session-scoped
-      //   fallback. Encoded HERE so buildSubAgent does not need to know
-      //   the difference; it just consumes injected.mcpClients/toolsRag.
-      const injectedMcpClients =
-        cached.mcpClients && cached.mcpClients.length > 0
-          ? cached.mcpClients
-          : parts.mcpClients;
-      const injectedToolsRag = cached.toolsRag ?? parts.toolsRag;
-      const subAgent = await this.buildSubAgent(
-        sub.name,
-        sub.config,
-        this._fileLogger,
-        this._mergedEmbedderFactories ?? {},
-        {
-          ragRegistry: parts.ragRegistry,
-          toolsRag: injectedToolsRag,
-          mcpClients: injectedMcpClients,
-          requestLogger: parts.logger,
-          mainLlm: cached.mainLlm,
-          classifierLlm: cached.classifierLlm,
-          helperLlm: cached.helperLlm,
-          embedder: cached.embedder,
-        },
-      );
-      registry.set(
-        sub.name,
-        new SmartAgentSubAgent(sub.name, subAgent, {
-          description: sub.description,
-        }),
-      );
-    }
-    return registry;
+    return this._workers.build(parts);
   }
 
   /**
@@ -2799,7 +2261,7 @@ export class SmartServer {
    * session-scoped pipeline context (`buildServerCtx`) supplies the FRESH
    * per-session worker registry + session logger + the global
    * ragRegistry/toolsRag/mcpClients + the CACHED per-worker LLM/embedder
-   * (this._workerLlmCache) via `createAgentBuilder`. It NEVER reuses the primary
+   * (this._workers.cache) via `createAgentBuilder`. It NEVER reuses the primary
    * build()'s global registry/coordinator and NEVER constructs new LLM clients.
    *
    * The pipeline returns `{ agent, close }`; we register `close` under the
@@ -2926,162 +2388,222 @@ export class SmartServer {
       url: rawUrl,
       normalizedPath: urlPath,
     });
+    // Server readiness: derived from the agent's MCP connection strategy (it
+    // implements IReadinessReporter). No strategy / non-reporting ⇒ ready
+    // (readiness unknown). Computed ONCE here and reused by /health and the
+    // pre-dispatch request gate (messages/chat) via `rc.ready`.
+    const ready = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
+    const rc: RouteContext = {
+      req,
+      res,
+      rawUrl,
+      urlPath,
+      method: req.method ?? 'GET',
+      ready,
+      server: this,
+      requestLogger,
+      smartAgent,
+      chat,
+      streamChat,
+      log,
+      healthChecker,
+      modelProvider,
+      adapterMap,
+    };
+    await this._routeTable.dispatch(rc);
+  }
 
-    if (
-      req.method === 'GET' &&
-      (urlPath === '/v1/models' || urlPath === '/models')
-    ) {
-      const queryString = rawUrl.includes('?') ? rawUrl.split('?')[1] : '';
-      const queryParams = new URLSearchParams(queryString);
-      const excludeEmbedding = queryParams.get('exclude_embedding') === 'true';
-      let data: Array<Record<string, unknown>> = [
-        { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
-      ];
-      if (modelProvider) {
-        const result = await modelProvider.getModels({ excludeEmbedding });
-        if (result.ok) {
-          data = result.value.map((m) => ({
-            id: m.id,
-            object: 'model',
-            owned_by: m.owned_by ?? 'unknown',
-            ...(m.displayName ? { display_name: m.displayName } : {}),
-            ...(m.provider ? { provider: m.provider } : {}),
-            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-            ...(m.contextLength ? { context_length: m.contextLength } : {}),
-            ...(m.streamingSupported !== undefined
-              ? { streaming_supported: m.streamingSupported }
-              : {}),
-            ...(m.deprecated !== undefined ? { deprecated: m.deprecated } : {}),
-          }));
+  /**
+   * Declarative route table replacing `_handle`'s if/else chain. Routes are
+   * registered in the EXACT order the original chain checked them (first
+   * method+path match wins), so dispatch is behaviour-identical. Each handler
+   * body is the corresponding original branch moved verbatim, with `this`
+   * accessed through `rc.server` and the request locals read from `rc`.
+   */
+  private _buildRouteTable(): HttpRouteTable {
+    const table = new HttpRouteTable();
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/models' || p === '/models',
+      handle: async (rc) => {
+        const queryString = rc.rawUrl.includes('?')
+          ? rc.rawUrl.split('?')[1]
+          : '';
+        const queryParams = new URLSearchParams(queryString);
+        const excludeEmbedding =
+          queryParams.get('exclude_embedding') === 'true';
+        let data: Array<Record<string, unknown>> = [
+          { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
+        ];
+        if (rc.modelProvider) {
+          const result = await rc.modelProvider.getModels({ excludeEmbedding });
+          if (result.ok) {
+            data = result.value.map((m) => ({
+              id: m.id,
+              object: 'model',
+              owned_by: m.owned_by ?? 'unknown',
+              ...(m.displayName ? { display_name: m.displayName } : {}),
+              ...(m.provider ? { provider: m.provider } : {}),
+              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+              ...(m.contextLength ? { context_length: m.contextLength } : {}),
+              ...(m.streamingSupported !== undefined
+                ? { streaming_supported: m.streamingSupported }
+                : {}),
+              ...(m.deprecated !== undefined
+                ? { deprecated: m.deprecated }
+                : {}),
+            }));
+          }
         }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ object: 'list', data }));
-      return;
-    }
-    if (
-      req.method === 'GET' &&
-      (urlPath === '/v1/embedding-models' || urlPath === '/embedding-models')
-    ) {
-      let data: Array<Record<string, unknown>> = [];
-      if (modelProvider?.getEmbeddingModels) {
-        const result = await modelProvider.getEmbeddingModels();
-        if (result.ok) {
-          data = result.value.map((m) => ({
-            id: m.id,
-            object: 'model',
-            owned_by: m.owned_by ?? 'unknown',
-            ...(m.displayName ? { display_name: m.displayName } : {}),
-            ...(m.provider ? { provider: m.provider } : {}),
-            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-            ...(m.contextLength ? { context_length: m.contextLength } : {}),
-            ...(m.streamingSupported !== undefined
-              ? { streaming_supported: m.streamingSupported }
-              : {}),
-            ...(m.deprecated !== undefined ? { deprecated: m.deprecated } : {}),
-          }));
+        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify({ object: 'list', data }));
+      },
+    });
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/embedding-models' || p === '/embedding-models',
+      handle: async (rc) => {
+        let data: Array<Record<string, unknown>> = [];
+        if (rc.modelProvider?.getEmbeddingModels) {
+          const result = await rc.modelProvider.getEmbeddingModels();
+          if (result.ok) {
+            data = result.value.map((m) => ({
+              id: m.id,
+              object: 'model',
+              owned_by: m.owned_by ?? 'unknown',
+              ...(m.displayName ? { display_name: m.displayName } : {}),
+              ...(m.provider ? { provider: m.provider } : {}),
+              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+              ...(m.contextLength ? { context_length: m.contextLength } : {}),
+              ...(m.streamingSupported !== undefined
+                ? { streaming_supported: m.streamingSupported }
+                : {}),
+              ...(m.deprecated !== undefined
+                ? { deprecated: m.deprecated }
+                : {}),
+            }));
+          }
         }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ object: 'list', data }));
-      return;
-    }
-    if (req.method === 'GET' && urlPath === '/v1/usage') {
-      const lifecycle = this._lifecycle;
-      if (!lifecycle) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
-        return;
-      }
-      const isHttps =
-        (req.socket as { encrypted?: boolean }).encrypted === true ||
-        req.headers['x-forwarded-proto'] === 'https';
-      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
-      if (resolved.minted && resolved.setCookie) {
-        res.setHeader('Set-Cookie', resolved.setCookie);
-      }
-      const sessionId = resolved.identity.sessionId;
-      const graph = await lifecycle.acquire(sessionId);
-      try {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(graph.logger.getSummary()));
-      } finally {
-        lifecycle.release(sessionId, graph);
-      }
-      return;
-    }
-    // GET /v1/sessions — list sessions for the current identity
-    if (req.method === 'GET' && urlPath === '/v1/sessions') {
-      const lifecycle = this._lifecycle;
-      if (!lifecycle) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
-        return;
-      }
-      const isHttps =
-        (req.socket as { encrypted?: boolean }).encrypted === true ||
-        req.headers['x-forwarded-proto'] === 'https';
-      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
-      if (resolved.minted && resolved.setCookie) {
-        res.setHeader('Set-Cookie', resolved.setCookie);
-      }
-      const identity = resolved.identity.sessionId;
-      const body = await handleListSessions(this._sessionMetaStore, identity);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(body));
-      return;
-    }
-    // POST /v1/sessions/:id/resume — resume a session
-    {
-      const resumeMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)\/resume$/);
-      if (req.method === 'POST' && resumeMatch) {
-        const sessionId = resumeMatch[1];
-        const lifecycle = this._lifecycle;
+        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify({ object: 'list', data }));
+      },
+    });
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/usage',
+      handle: async (rc) => {
+        const lifecycle = rc.server._lifecycle;
         if (!lifecycle) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
             jsonError('Session lifecycle not initialized', 'server_error'),
           );
           return;
         }
         const isHttps =
-          (req.socket as { encrypted?: boolean }).encrypted === true ||
-          req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
         if (resolved.minted && resolved.setCookie) {
-          res.setHeader('Set-Cookie', resolved.setCookie);
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const sessionId = resolved.identity.sessionId;
+        const graph = await lifecycle.acquire(sessionId);
+        try {
+          rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+          rc.res.end(JSON.stringify(graph.logger.getSummary()));
+        } finally {
+          lifecycle.release(sessionId, graph);
+        }
+      },
+    });
+    // GET /v1/sessions — list sessions for the current identity
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/sessions',
+      handle: async (rc) => {
+        const lifecycle = rc.server._lifecycle;
+        if (!lifecycle) {
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const identity = resolved.identity.sessionId;
+        const body = await handleListSessions(
+          rc.server._sessionMetaStore,
+          identity,
+        );
+        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify(body));
+      },
+    });
+    // POST /v1/sessions/:id/resume — resume a session
+    table.add({
+      method: 'POST',
+      match: (p) => p.match(/^\/v1\/sessions\/([^/]+)\/resume$/) ?? false,
+      handle: async (rc) => {
+        const resumeMatch = rc.urlPath.match(
+          /^\/v1\/sessions\/([^/]+)\/resume$/,
+        );
+        if (!resumeMatch) return;
+        const sessionId = resumeMatch[1];
+        const lifecycle = rc.server._lifecycle;
+        if (!lifecycle) {
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
         }
         const identity = resolved.identity.sessionId;
         const body = await handleResumeSession(
-          this._sessionMetaStore,
+          rc.server._sessionMetaStore,
           identity,
           sessionId,
         );
         const status = body.ok ? 200 : 404;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
-        return;
-      }
-    }
+        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify(body));
+      },
+    });
     // DELETE /v1/sessions/:id — delete a session
-    {
-      const deleteMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
-      if (req.method === 'DELETE' && deleteMatch) {
+    table.add({
+      method: 'DELETE',
+      match: (p) => p.match(/^\/v1\/sessions\/([^/]+)$/) ?? false,
+      handle: async (rc) => {
+        const deleteMatch = rc.urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
+        if (!deleteMatch) return;
         const sessionId = deleteMatch[1];
-        const lifecycle = this._lifecycle;
+        const lifecycle = rc.server._lifecycle;
         if (!lifecycle) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
             jsonError('Session lifecycle not initialized', 'server_error'),
           );
           return;
         }
         const isHttps =
-          (req.socket as { encrypted?: boolean }).encrypted === true ||
-          req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
         if (resolved.minted && resolved.setCookie) {
-          res.setHeader('Set-Cookie', resolved.setCookie);
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
         }
         const identity = resolved.identity.sessionId;
         const evictFn = async (sid: string) => {
@@ -3092,116 +2614,121 @@ export class SmartServer {
           // (JsonlKnowledgeBackend.deleteSession), so a same-id re-entry never
           // rehydrates stale entries — matching the README "evicts its
           // knowledge-RAG entries" contract.
-          await this._stepperKnowledgeBackend?.deleteSession(sid);
+          await rc.server._stepperKnowledgeBackend?.deleteSession(sid);
         };
         const body = await handleDeleteSession(
-          this._sessionMetaStore,
+          rc.server._sessionMetaStore,
           identity,
           sessionId,
           evictFn,
         );
         const status = body.ok ? 200 : 404;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
-        return;
-      }
-    }
-    // /v1/config or /config
-    if (urlPath === '/v1/config' || urlPath === '/config') {
-      if (req.method === 'GET') {
-        const models = smartAgent.getActiveConfig();
-        const agent = smartAgent.getAgentConfig();
-        const body = { models, agent };
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
-        return;
-      }
-      if (req.method === 'PUT') {
-        await this._handleConfigUpdate(req, res, smartAgent);
-        return;
-      }
-      // 405 for other methods
-      res.setHeader('Allow', 'GET, PUT, OPTIONS');
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(
-        jsonError(
-          `Method ${req.method} not allowed on ${urlPath}`,
-          'invalid_request_error',
-        ),
-      );
-      return;
-    }
-    // Server readiness: derived from the agent's MCP connection strategy (it
-    // implements IReadinessReporter). No strategy / non-reporting ⇒ ready
-    // (readiness unknown). Consumed by /health and the pre-dispatch request gate.
-    const ready = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
-    if (
-      req.method === 'GET' &&
-      (urlPath === '/health' || urlPath === '/v1/health')
-    ) {
-      const status = await healthChecker.check();
-      // MCP-down ⇒ NOT_READY ⇒ 503 too (not just LLM-unhealthy), so a load
-      // balancer stops routing while MCP is unreachable.
-      const httpCode = status.status === 'unhealthy' || !ready ? 503 : 200;
-      res.writeHead(httpCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ...status, ready }));
-      return;
-    }
+        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify(body));
+      },
+    });
+    // /v1/config or /config — any method (dispatches GET/PUT/405 internally)
+    table.add({
+      method: '*',
+      match: (p) => p === '/v1/config' || p === '/config',
+      handle: async (rc) => {
+        if (rc.method === 'GET') {
+          const models = rc.smartAgent.getActiveConfig();
+          const agent = rc.smartAgent.getAgentConfig();
+          const body = { models, agent };
+          rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+          rc.res.end(JSON.stringify(body));
+          return;
+        }
+        if (rc.method === 'PUT') {
+          await rc.server._handleConfigUpdate(rc.req, rc.res, rc.smartAgent);
+          return;
+        }
+        // 405 for other methods
+        rc.res.setHeader('Allow', 'GET, PUT, OPTIONS');
+        rc.res.writeHead(405, { 'Content-Type': 'application/json' });
+        rc.res.end(
+          jsonError(
+            `Method ${rc.req.method} not allowed on ${rc.urlPath}`,
+            'invalid_request_error',
+          ),
+        );
+      },
+    });
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/health' || p === '/v1/health',
+      handle: async (rc) => {
+        const status = await rc.healthChecker.check();
+        // MCP-down ⇒ NOT_READY ⇒ 503 too (not just LLM-unhealthy), so a load
+        // balancer stops routing while MCP is unreachable.
+        const httpCode = status.status === 'unhealthy' || !rc.ready ? 503 : 200;
+        rc.res.writeHead(httpCode, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify({ ...status, ready: rc.ready }));
+      },
+    });
     // POST /v1/messages or /messages → Anthropic adapter
-    if (
-      req.method === 'POST' &&
-      (urlPath === '/v1/messages' || urlPath === '/messages')
-    ) {
-      // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any stream.
-      if (!ready) {
-        writeNotReady(res);
-        return;
-      }
-      const anthropicAdapter = adapterMap?.get('anthropic');
-      if (!anthropicAdapter) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(jsonError('Anthropic adapter not registered', 'not_found'));
-        return;
-      }
-      await this._withSession(req, res, async (graph, sessionId, traceId) => {
-        await this._handleAdapterRequest(
-          req,
-          res,
-          graph.agent ?? smartAgent,
-          anthropicAdapter,
-          { sessionId, traceId, graph },
+    table.add({
+      method: 'POST',
+      match: (p) => p === '/v1/messages' || p === '/messages',
+      handle: async (rc) => {
+        // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any stream.
+        if (!rc.ready) {
+          writeNotReady(rc.res);
+          return;
+        }
+        const anthropicAdapter = rc.adapterMap?.get('anthropic');
+        if (!anthropicAdapter) {
+          rc.res.writeHead(404, { 'Content-Type': 'application/json' });
+          rc.res.end(
+            jsonError('Anthropic adapter not registered', 'not_found'),
+          );
+          return;
+        }
+        await rc.server._withSession(
+          rc.req,
+          rc.res,
+          async (graph, sessionId, traceId) => {
+            await rc.server._handleAdapterRequest(
+              rc.req,
+              rc.res,
+              graph.agent ?? rc.smartAgent,
+              anthropicAdapter,
+              { sessionId, traceId, graph },
+            );
+          },
         );
-      });
-      return;
-    }
-    if (
-      req.method === 'POST' &&
-      (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')
-    ) {
-      // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any SSE stream.
-      if (!ready) {
-        writeNotReady(res);
-        return;
-      }
-      await this._withSession(req, res, async (graph, sessionId, traceId) => {
-        await this._handleChat(
-          req,
-          res,
-          requestLogger,
-          graph.agent ?? smartAgent,
-          chat,
-          streamChat,
-          log,
-          modelProvider,
-          { sessionId, traceId, graph },
+      },
+    });
+    table.add({
+      method: 'POST',
+      match: (p) => p === '/v1/chat/completions' || p === '/chat/completions',
+      handle: async (rc) => {
+        // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any SSE stream.
+        if (!rc.ready) {
+          writeNotReady(rc.res);
+          return;
+        }
+        await rc.server._withSession(
+          rc.req,
+          rc.res,
+          async (graph, sessionId, traceId) => {
+            await rc.server._handleChat(
+              rc.req,
+              rc.res,
+              rc.requestLogger,
+              graph.agent ?? rc.smartAgent,
+              rc.chat,
+              rc.streamChat,
+              rc.log,
+              rc.modelProvider,
+              { sessionId, traceId, graph },
+            );
+          },
         );
-      });
-      return;
-    }
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(
-      jsonError(`Cannot ${req.method} ${urlPath}`, 'invalid_request_error'),
-    );
+      },
+    });
+    return table;
   }
 
   private async _handleAdapterRequest(
@@ -3897,13 +3424,13 @@ export class SmartServer {
     if (resolvedModels || body.agent) {
       // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing the
       // cache so MCP clients owned by the discarded handles disconnect.
-      await drainWorkerCache(this._workerLlmCache);
+      await this._workers.drain();
       try {
         await this._lifecycle?.invalidateAll();
       } catch {
         // Swallow: cleanup errors must not turn a successful config update
         // into a 500. The next request will still get a fresh build because
-        // `_workerLlmCache` is already cleared and dispose is idempotent.
+        // `_workers.cache` is already cleared and dispose is idempotent.
       }
     }
     // --- Return updated config ---
