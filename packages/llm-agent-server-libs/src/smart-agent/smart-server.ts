@@ -40,7 +40,6 @@ import type {
 import {
   AdapterValidationError,
   buildExternalResults,
-  type ExternalToolValidationCode,
   type IRag,
   isMcpUnavailable,
   isReadinessReporter,
@@ -91,11 +90,22 @@ import {
 } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import {
+  CORS_HEADERS,
+  jsonError,
+  jsonValidationError,
+  mapStopReason,
+  readBody,
+  writeNotReady,
+} from './http/response-helpers.js';
+import { HttpRouteTable, type RouteContext } from './http/route-table.js';
+import {
   type IRoleLlmResolver,
   makeDefaultRoleLlm,
   RoleLlmResolver,
 } from './llm/role-llm-resolver.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
+
+export { writeNotReady } from './http/response-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -357,42 +367,6 @@ export interface SmartServerHandle {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
-  if (r === 'stop') return 'stop';
-  if (r === 'tool_calls') return 'tool_calls';
-  return 'length';
-}
-
-function jsonError(message: string, type: string, code?: string): string {
-  return JSON.stringify({
-    error: { message, type, ...(code ? { code } : {}) },
-  });
-}
-
-function jsonValidationError(
-  message: string,
-  code: ExternalToolValidationCode,
-  param: string,
-): string {
-  return JSON.stringify({
-    error: {
-      message,
-      type: 'invalid_request_error',
-      code,
-      param,
-    },
-  });
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}
-
 function resolveSkillManager(
   cfg?: SmartServerSkillsConfig,
 ): ISkillManager | undefined {
@@ -410,12 +384,6 @@ function resolveSkillManager(
       return undefined;
   }
 }
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
 
 // ---------------------------------------------------------------------------
 // SmartServer
@@ -616,27 +584,6 @@ export function buildMcpBridge(
   };
 }
 
-/**
- * Pre-dispatch readiness gate response: HTTP 503 with an OpenAI-shaped error,
- * written BEFORE any pipeline run or SSE stream is opened. Used when the server is
- * NOT_READY (MCP unavailable) so a request fails loud instead of being served
- * tool-blind / returning a silent "(no response)".
- */
-export function writeNotReady(res: {
-  writeHead(code: number, headers?: Record<string, string>): unknown;
-  end(body?: string): unknown;
-}): void {
-  res.writeHead(503, { 'Content-Type': 'application/json' });
-  res.end(
-    JSON.stringify({
-      error: {
-        type: 'service_unavailable',
-        message: 'MCP unavailable — server not ready',
-      },
-    }),
-  );
-}
-
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
@@ -647,6 +594,11 @@ export class SmartServer {
    * Constructed in `_buildInfra` after embedder factories are resolved.
    */
   private _workers!: WorkerRegistry;
+  /**
+   * Declarative HTTP route table built once; `_handle` delegates to its
+   * `dispatch`. Replaces the former ~300-line if/else route chain.
+   */
+  private readonly _routeTable = this._buildRouteTable();
   /** Lifecycle handle wired in `start()`; consumed by `_handle`. */
   private _lifecycle?: SessionLifecycle;
   /** Hoisted globals used by `buildSessionAgent` to re-wire fresh per-session workers. */
@@ -2504,162 +2456,222 @@ export class SmartServer {
       url: rawUrl,
       normalizedPath: urlPath,
     });
+    // Server readiness: derived from the agent's MCP connection strategy (it
+    // implements IReadinessReporter). No strategy / non-reporting ⇒ ready
+    // (readiness unknown). Computed ONCE here and reused by /health and the
+    // pre-dispatch request gate (messages/chat) via `rc.ready`.
+    const ready = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
+    const rc: RouteContext = {
+      req,
+      res,
+      rawUrl,
+      urlPath,
+      method: req.method ?? 'GET',
+      ready,
+      server: this,
+      requestLogger,
+      smartAgent,
+      chat,
+      streamChat,
+      log,
+      healthChecker,
+      modelProvider,
+      adapterMap,
+    };
+    await this._routeTable.dispatch(rc);
+  }
 
-    if (
-      req.method === 'GET' &&
-      (urlPath === '/v1/models' || urlPath === '/models')
-    ) {
-      const queryString = rawUrl.includes('?') ? rawUrl.split('?')[1] : '';
-      const queryParams = new URLSearchParams(queryString);
-      const excludeEmbedding = queryParams.get('exclude_embedding') === 'true';
-      let data: Array<Record<string, unknown>> = [
-        { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
-      ];
-      if (modelProvider) {
-        const result = await modelProvider.getModels({ excludeEmbedding });
-        if (result.ok) {
-          data = result.value.map((m) => ({
-            id: m.id,
-            object: 'model',
-            owned_by: m.owned_by ?? 'unknown',
-            ...(m.displayName ? { display_name: m.displayName } : {}),
-            ...(m.provider ? { provider: m.provider } : {}),
-            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-            ...(m.contextLength ? { context_length: m.contextLength } : {}),
-            ...(m.streamingSupported !== undefined
-              ? { streaming_supported: m.streamingSupported }
-              : {}),
-            ...(m.deprecated !== undefined ? { deprecated: m.deprecated } : {}),
-          }));
+  /**
+   * Declarative route table replacing `_handle`'s if/else chain. Routes are
+   * registered in the EXACT order the original chain checked them (first
+   * method+path match wins), so dispatch is behaviour-identical. Each handler
+   * body is the corresponding original branch moved verbatim, with `this`
+   * accessed through `rc.server` and the request locals read from `rc`.
+   */
+  private _buildRouteTable(): HttpRouteTable {
+    const table = new HttpRouteTable();
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/models' || p === '/models',
+      handle: async (rc) => {
+        const queryString = rc.rawUrl.includes('?')
+          ? rc.rawUrl.split('?')[1]
+          : '';
+        const queryParams = new URLSearchParams(queryString);
+        const excludeEmbedding =
+          queryParams.get('exclude_embedding') === 'true';
+        let data: Array<Record<string, unknown>> = [
+          { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
+        ];
+        if (rc.modelProvider) {
+          const result = await rc.modelProvider.getModels({ excludeEmbedding });
+          if (result.ok) {
+            data = result.value.map((m) => ({
+              id: m.id,
+              object: 'model',
+              owned_by: m.owned_by ?? 'unknown',
+              ...(m.displayName ? { display_name: m.displayName } : {}),
+              ...(m.provider ? { provider: m.provider } : {}),
+              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+              ...(m.contextLength ? { context_length: m.contextLength } : {}),
+              ...(m.streamingSupported !== undefined
+                ? { streaming_supported: m.streamingSupported }
+                : {}),
+              ...(m.deprecated !== undefined
+                ? { deprecated: m.deprecated }
+                : {}),
+            }));
+          }
         }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ object: 'list', data }));
-      return;
-    }
-    if (
-      req.method === 'GET' &&
-      (urlPath === '/v1/embedding-models' || urlPath === '/embedding-models')
-    ) {
-      let data: Array<Record<string, unknown>> = [];
-      if (modelProvider?.getEmbeddingModels) {
-        const result = await modelProvider.getEmbeddingModels();
-        if (result.ok) {
-          data = result.value.map((m) => ({
-            id: m.id,
-            object: 'model',
-            owned_by: m.owned_by ?? 'unknown',
-            ...(m.displayName ? { display_name: m.displayName } : {}),
-            ...(m.provider ? { provider: m.provider } : {}),
-            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-            ...(m.contextLength ? { context_length: m.contextLength } : {}),
-            ...(m.streamingSupported !== undefined
-              ? { streaming_supported: m.streamingSupported }
-              : {}),
-            ...(m.deprecated !== undefined ? { deprecated: m.deprecated } : {}),
-          }));
+        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify({ object: 'list', data }));
+      },
+    });
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/embedding-models' || p === '/embedding-models',
+      handle: async (rc) => {
+        let data: Array<Record<string, unknown>> = [];
+        if (rc.modelProvider?.getEmbeddingModels) {
+          const result = await rc.modelProvider.getEmbeddingModels();
+          if (result.ok) {
+            data = result.value.map((m) => ({
+              id: m.id,
+              object: 'model',
+              owned_by: m.owned_by ?? 'unknown',
+              ...(m.displayName ? { display_name: m.displayName } : {}),
+              ...(m.provider ? { provider: m.provider } : {}),
+              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+              ...(m.contextLength ? { context_length: m.contextLength } : {}),
+              ...(m.streamingSupported !== undefined
+                ? { streaming_supported: m.streamingSupported }
+                : {}),
+              ...(m.deprecated !== undefined
+                ? { deprecated: m.deprecated }
+                : {}),
+            }));
+          }
         }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ object: 'list', data }));
-      return;
-    }
-    if (req.method === 'GET' && urlPath === '/v1/usage') {
-      const lifecycle = this._lifecycle;
-      if (!lifecycle) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
-        return;
-      }
-      const isHttps =
-        (req.socket as { encrypted?: boolean }).encrypted === true ||
-        req.headers['x-forwarded-proto'] === 'https';
-      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
-      if (resolved.minted && resolved.setCookie) {
-        res.setHeader('Set-Cookie', resolved.setCookie);
-      }
-      const sessionId = resolved.identity.sessionId;
-      const graph = await lifecycle.acquire(sessionId);
-      try {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(graph.logger.getSummary()));
-      } finally {
-        lifecycle.release(sessionId, graph);
-      }
-      return;
-    }
-    // GET /v1/sessions — list sessions for the current identity
-    if (req.method === 'GET' && urlPath === '/v1/sessions') {
-      const lifecycle = this._lifecycle;
-      if (!lifecycle) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
-        return;
-      }
-      const isHttps =
-        (req.socket as { encrypted?: boolean }).encrypted === true ||
-        req.headers['x-forwarded-proto'] === 'https';
-      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
-      if (resolved.minted && resolved.setCookie) {
-        res.setHeader('Set-Cookie', resolved.setCookie);
-      }
-      const identity = resolved.identity.sessionId;
-      const body = await handleListSessions(this._sessionMetaStore, identity);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(body));
-      return;
-    }
-    // POST /v1/sessions/:id/resume — resume a session
-    {
-      const resumeMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)\/resume$/);
-      if (req.method === 'POST' && resumeMatch) {
-        const sessionId = resumeMatch[1];
-        const lifecycle = this._lifecycle;
+        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify({ object: 'list', data }));
+      },
+    });
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/usage',
+      handle: async (rc) => {
+        const lifecycle = rc.server._lifecycle;
         if (!lifecycle) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
             jsonError('Session lifecycle not initialized', 'server_error'),
           );
           return;
         }
         const isHttps =
-          (req.socket as { encrypted?: boolean }).encrypted === true ||
-          req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
         if (resolved.minted && resolved.setCookie) {
-          res.setHeader('Set-Cookie', resolved.setCookie);
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const sessionId = resolved.identity.sessionId;
+        const graph = await lifecycle.acquire(sessionId);
+        try {
+          rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+          rc.res.end(JSON.stringify(graph.logger.getSummary()));
+        } finally {
+          lifecycle.release(sessionId, graph);
+        }
+      },
+    });
+    // GET /v1/sessions — list sessions for the current identity
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/v1/sessions',
+      handle: async (rc) => {
+        const lifecycle = rc.server._lifecycle;
+        if (!lifecycle) {
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const identity = resolved.identity.sessionId;
+        const body = await handleListSessions(
+          rc.server._sessionMetaStore,
+          identity,
+        );
+        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify(body));
+      },
+    });
+    // POST /v1/sessions/:id/resume — resume a session
+    table.add({
+      method: 'POST',
+      match: (p) => p.match(/^\/v1\/sessions\/([^/]+)\/resume$/) ?? false,
+      handle: async (rc) => {
+        const resumeMatch = rc.urlPath.match(
+          /^\/v1\/sessions\/([^/]+)\/resume$/,
+        );
+        if (!resumeMatch) return;
+        const sessionId = resumeMatch[1];
+        const lifecycle = rc.server._lifecycle;
+        if (!lifecycle) {
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
         }
         const identity = resolved.identity.sessionId;
         const body = await handleResumeSession(
-          this._sessionMetaStore,
+          rc.server._sessionMetaStore,
           identity,
           sessionId,
         );
         const status = body.ok ? 200 : 404;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
-        return;
-      }
-    }
+        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify(body));
+      },
+    });
     // DELETE /v1/sessions/:id — delete a session
-    {
-      const deleteMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
-      if (req.method === 'DELETE' && deleteMatch) {
+    table.add({
+      method: 'DELETE',
+      match: (p) => p.match(/^\/v1\/sessions\/([^/]+)$/) ?? false,
+      handle: async (rc) => {
+        const deleteMatch = rc.urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
+        if (!deleteMatch) return;
         const sessionId = deleteMatch[1];
-        const lifecycle = this._lifecycle;
+        const lifecycle = rc.server._lifecycle;
         if (!lifecycle) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(
+          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
+          rc.res.end(
             jsonError('Session lifecycle not initialized', 'server_error'),
           );
           return;
         }
         const isHttps =
-          (req.socket as { encrypted?: boolean }).encrypted === true ||
-          req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
+          rc.req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
         if (resolved.minted && resolved.setCookie) {
-          res.setHeader('Set-Cookie', resolved.setCookie);
+          rc.res.setHeader('Set-Cookie', resolved.setCookie);
         }
         const identity = resolved.identity.sessionId;
         const evictFn = async (sid: string) => {
@@ -2670,116 +2682,121 @@ export class SmartServer {
           // (JsonlKnowledgeBackend.deleteSession), so a same-id re-entry never
           // rehydrates stale entries — matching the README "evicts its
           // knowledge-RAG entries" contract.
-          await this._stepperKnowledgeBackend?.deleteSession(sid);
+          await rc.server._stepperKnowledgeBackend?.deleteSession(sid);
         };
         const body = await handleDeleteSession(
-          this._sessionMetaStore,
+          rc.server._sessionMetaStore,
           identity,
           sessionId,
           evictFn,
         );
         const status = body.ok ? 200 : 404;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
-        return;
-      }
-    }
-    // /v1/config or /config
-    if (urlPath === '/v1/config' || urlPath === '/config') {
-      if (req.method === 'GET') {
-        const models = smartAgent.getActiveConfig();
-        const agent = smartAgent.getAgentConfig();
-        const body = { models, agent };
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
-        return;
-      }
-      if (req.method === 'PUT') {
-        await this._handleConfigUpdate(req, res, smartAgent);
-        return;
-      }
-      // 405 for other methods
-      res.setHeader('Allow', 'GET, PUT, OPTIONS');
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(
-        jsonError(
-          `Method ${req.method} not allowed on ${urlPath}`,
-          'invalid_request_error',
-        ),
-      );
-      return;
-    }
-    // Server readiness: derived from the agent's MCP connection strategy (it
-    // implements IReadinessReporter). No strategy / non-reporting ⇒ ready
-    // (readiness unknown). Consumed by /health and the pre-dispatch request gate.
-    const ready = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
-    if (
-      req.method === 'GET' &&
-      (urlPath === '/health' || urlPath === '/v1/health')
-    ) {
-      const status = await healthChecker.check();
-      // MCP-down ⇒ NOT_READY ⇒ 503 too (not just LLM-unhealthy), so a load
-      // balancer stops routing while MCP is unreachable.
-      const httpCode = status.status === 'unhealthy' || !ready ? 503 : 200;
-      res.writeHead(httpCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ...status, ready }));
-      return;
-    }
+        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify(body));
+      },
+    });
+    // /v1/config or /config — any method (dispatches GET/PUT/405 internally)
+    table.add({
+      method: '*',
+      match: (p) => p === '/v1/config' || p === '/config',
+      handle: async (rc) => {
+        if (rc.method === 'GET') {
+          const models = rc.smartAgent.getActiveConfig();
+          const agent = rc.smartAgent.getAgentConfig();
+          const body = { models, agent };
+          rc.res.writeHead(200, { 'Content-Type': 'application/json' });
+          rc.res.end(JSON.stringify(body));
+          return;
+        }
+        if (rc.method === 'PUT') {
+          await rc.server._handleConfigUpdate(rc.req, rc.res, rc.smartAgent);
+          return;
+        }
+        // 405 for other methods
+        rc.res.setHeader('Allow', 'GET, PUT, OPTIONS');
+        rc.res.writeHead(405, { 'Content-Type': 'application/json' });
+        rc.res.end(
+          jsonError(
+            `Method ${rc.req.method} not allowed on ${rc.urlPath}`,
+            'invalid_request_error',
+          ),
+        );
+      },
+    });
+    table.add({
+      method: 'GET',
+      match: (p) => p === '/health' || p === '/v1/health',
+      handle: async (rc) => {
+        const status = await rc.healthChecker.check();
+        // MCP-down ⇒ NOT_READY ⇒ 503 too (not just LLM-unhealthy), so a load
+        // balancer stops routing while MCP is unreachable.
+        const httpCode = status.status === 'unhealthy' || !rc.ready ? 503 : 200;
+        rc.res.writeHead(httpCode, { 'Content-Type': 'application/json' });
+        rc.res.end(JSON.stringify({ ...status, ready: rc.ready }));
+      },
+    });
     // POST /v1/messages or /messages → Anthropic adapter
-    if (
-      req.method === 'POST' &&
-      (urlPath === '/v1/messages' || urlPath === '/messages')
-    ) {
-      // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any stream.
-      if (!ready) {
-        writeNotReady(res);
-        return;
-      }
-      const anthropicAdapter = adapterMap?.get('anthropic');
-      if (!anthropicAdapter) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(jsonError('Anthropic adapter not registered', 'not_found'));
-        return;
-      }
-      await this._withSession(req, res, async (graph, sessionId, traceId) => {
-        await this._handleAdapterRequest(
-          req,
-          res,
-          graph.agent ?? smartAgent,
-          anthropicAdapter,
-          { sessionId, traceId, graph },
+    table.add({
+      method: 'POST',
+      match: (p) => p === '/v1/messages' || p === '/messages',
+      handle: async (rc) => {
+        // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any stream.
+        if (!rc.ready) {
+          writeNotReady(rc.res);
+          return;
+        }
+        const anthropicAdapter = rc.adapterMap?.get('anthropic');
+        if (!anthropicAdapter) {
+          rc.res.writeHead(404, { 'Content-Type': 'application/json' });
+          rc.res.end(
+            jsonError('Anthropic adapter not registered', 'not_found'),
+          );
+          return;
+        }
+        await rc.server._withSession(
+          rc.req,
+          rc.res,
+          async (graph, sessionId, traceId) => {
+            await rc.server._handleAdapterRequest(
+              rc.req,
+              rc.res,
+              graph.agent ?? rc.smartAgent,
+              anthropicAdapter,
+              { sessionId, traceId, graph },
+            );
+          },
         );
-      });
-      return;
-    }
-    if (
-      req.method === 'POST' &&
-      (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')
-    ) {
-      // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any SSE stream.
-      if (!ready) {
-        writeNotReady(res);
-        return;
-      }
-      await this._withSession(req, res, async (graph, sessionId, traceId) => {
-        await this._handleChat(
-          req,
-          res,
-          requestLogger,
-          graph.agent ?? smartAgent,
-          chat,
-          streamChat,
-          log,
-          modelProvider,
-          { sessionId, traceId, graph },
+      },
+    });
+    table.add({
+      method: 'POST',
+      match: (p) => p === '/v1/chat/completions' || p === '/chat/completions',
+      handle: async (rc) => {
+        // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any SSE stream.
+        if (!rc.ready) {
+          writeNotReady(rc.res);
+          return;
+        }
+        await rc.server._withSession(
+          rc.req,
+          rc.res,
+          async (graph, sessionId, traceId) => {
+            await rc.server._handleChat(
+              rc.req,
+              rc.res,
+              rc.requestLogger,
+              graph.agent ?? rc.smartAgent,
+              rc.chat,
+              rc.streamChat,
+              rc.log,
+              rc.modelProvider,
+              { sessionId, traceId, graph },
+            );
+          },
         );
-      });
-      return;
-    }
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(
-      jsonError(`Cannot ${req.method} ${urlPath}`, 'invalid_request_error'),
-    );
+      },
+    });
+    return table;
   }
 
   private async _handleAdapterRequest(
