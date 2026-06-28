@@ -60,7 +60,6 @@ import {
   SessionRequestLogger,
   SmartAgentBuilder,
   type SmartAgentHandle,
-  type SmartAgentReconfigureOptions,
   SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -81,9 +80,12 @@ import { ConfigReloadWatcher } from './config-reload-watcher.js';
 import { handleAdapterRequest } from './http/adapter-route-handler.js';
 import { handleChat } from './http/chat-route-handler.js';
 import {
+  handleConfigUpdate,
+  type IConfigUpdateTarget,
+} from './http/config-route-handler.js';
+import {
   CORS_HEADERS,
   jsonError,
-  readBody,
   writeNotReady,
 } from './http/response-helpers.js';
 import { HttpRouteTable, type RouteContext } from './http/route-table.js';
@@ -2632,7 +2634,12 @@ export class SmartServer {
           return;
         }
         if (rc.method === 'PUT') {
-          await rc.server._handleConfigUpdate(rc.req, rc.res, rc.smartAgent);
+          await handleConfigUpdate(
+            rc.req,
+            rc.res,
+            rc.smartAgent,
+            this._configUpdateTarget(),
+          );
           return;
         }
         // 405 for other methods
@@ -2723,193 +2730,36 @@ export class SmartServer {
     return table;
   }
 
-  /** Whitelisted agent config fields allowed via PUT /v1/config. */
-  private static readonly AGENT_CONFIG_FIELDS = new Set([
-    'maxIterations',
-    'maxToolCalls',
-    'ragQueryK',
-    'toolUnavailableTtlMs',
-    'showReasoning',
-    'historyAutoSummarizeLimit',
-    'classificationEnabled',
-  ]);
-
-  private async _handleConfigUpdate(
-    req: IncomingMessage,
-    res: ServerResponse,
-    smartAgent: SmartAgent,
-  ): Promise<void> {
-    const raw = await readBody(req);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(jsonError('Invalid JSON body', 'invalid_request_error'));
-      return;
-    }
-
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(
-        jsonError(
-          'Request body must be a JSON object',
-          'invalid_request_error',
-        ),
-      );
-      return;
-    }
-
-    const body = parsed as Record<string, unknown>;
-
-    // --- Validate agent fields against whitelist ---
-    if (body.agent !== undefined) {
-      if (
-        typeof body.agent !== 'object' ||
-        body.agent === null ||
-        Array.isArray(body.agent)
-      ) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError('"agent" must be a JSON object', 'invalid_request_error'),
-        );
-        return;
-      }
-      const agentFields = body.agent as Record<string, unknown>;
-      const unsupported = Object.keys(agentFields).filter(
-        (k) => !SmartServer.AGENT_CONFIG_FIELDS.has(k),
-      );
-      if (unsupported.length > 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError(
-            `Unsupported agent config fields: ${unsupported.join(', ')}`,
-            'invalid_request_error',
-          ),
-        );
-        return;
-      }
-    }
-
-    // --- Validate and resolve models (atomic: resolve ALL before mutating) ---
-    let resolvedModels: SmartAgentReconfigureOptions | undefined;
-    if (body.models !== undefined) {
-      if (
-        typeof body.models !== 'object' ||
-        body.models === null ||
-        Array.isArray(body.models)
-      ) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError('"models" must be a JSON object', 'invalid_request_error'),
-        );
-        return;
-      }
-      if (!this.cfg.modelResolver) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError('model resolver not configured', 'invalid_request_error'),
-        );
-        return;
-      }
-      const modelFields = body.models as Record<string, unknown>;
-      const validKeys = new Set([
-        'mainModel',
-        'classifierModel',
-        'helperModel',
-      ]);
-      const unknownKeys = Object.keys(modelFields).filter(
-        (k) => !validKeys.has(k),
-      );
-      if (unknownKeys.length > 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError(
-            `Unknown model fields: ${unknownKeys.join(', ')}`,
-            'invalid_request_error',
-          ),
-        );
-        return;
-      }
-      try {
-        const resolver = this.cfg.modelResolver;
-        const [mainLlm, classifierLlm, helperLlm] = await Promise.all([
-          modelFields.mainModel
-            ? resolver.resolve(String(modelFields.mainModel), 'main')
-            : undefined,
-          modelFields.classifierModel
-            ? resolver.resolve(
-                String(modelFields.classifierModel),
-                'classifier',
-              )
-            : undefined,
-          modelFields.helperModel
-            ? resolver.resolve(String(modelFields.helperModel), 'helper')
-            : undefined,
-        ]);
-        resolvedModels = {};
-        if (mainLlm) resolvedModels.mainLlm = mainLlm;
-        if (classifierLlm) resolvedModels.classifierLlm = classifierLlm;
-        if (helperLlm) resolvedModels.helperLlm = helperLlm;
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(jsonError(String(err), 'server_error'));
-        return;
-      }
-    }
-
-    // --- All validation passed — apply mutations ---
-    if (resolvedModels) {
-      smartAgent.reconfigure(resolvedModels);
-      // Mirror onto the hoisted globals consumed by `buildSessionAgent` so
-      // freshly-built session graphs pick up the new LLMs by reference
-      // (otherwise `this._mainLlm` etc. would keep pointing at the originals
-      // captured during `start()`).
-      if (resolvedModels.mainLlm) this._mainLlm = resolvedModels.mainLlm;
-      if (resolvedModels.classifierLlm)
-        this._classifierLlm = resolvedModels.classifierLlm;
-      if (resolvedModels.helperLlm) this._helperLlm = resolvedModels.helperLlm;
-    }
-    if (body.agent) {
-      const patch = body.agent as Record<string, unknown>;
-      smartAgent.applyConfigUpdate(patch);
-      // Mirror onto `this.cfg.agent` so freshly-built session graphs (which
-      // read `this.cfg.agent` in `buildSessionAgent`) observe the update.
-      // Deep-merge to preserve untouched startup fields; replacing the whole
-      // `agent` block would drop YAML defaults the validator already applied.
-      const merged: Record<string, unknown> = {
-        ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
-        ...patch,
-      };
-      (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
-    }
-    // Invalidate per-session SmartAgents + the worker-LLM cache so the next
-    // request mints a session graph that observes the just-applied config.
-    // Without this, chat routes dispatch to `graph.agent` (the per-session
-    // SmartAgent) which was built with the OLD config, and the PUT is a
-    // no-op from the consumer's perspective. Failures are non-fatal so the
-    // 200 response isn't blocked by a dispose hiccup.
-    if (resolvedModels || body.agent) {
-      // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing the
-      // cache so MCP clients owned by the discarded handles disconnect.
-      await this._workers.drain();
-      try {
-        await this._lifecycle?.invalidateAll();
-      } catch {
-        // Swallow: cleanup errors must not turn a successful config update
-        // into a 500. The next request will still get a fresh build because
-        // `_workers.cache` is already cleared and dispose is idempotent.
-      }
-    }
-    // --- Return updated config ---
-    const models = smartAgent.getActiveConfig();
-    const agent = smartAgent.getAgentConfig();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ models, agent }));
+  /**
+   * Build the PUT /v1/config hot-swap seam over this server's private state.
+   * The setters write the SAME `_mainLlm`/`_classifierLlm`/`_helperLlm` fields
+   * RoleLlmResolver's live accessors read, so the hot-swap stays observable.
+   * A private object literal — NOT `implements` — so the public class shape is
+   * unchanged (byte-stable public API).
+   */
+  private _configUpdateTarget(): IConfigUpdateTarget {
+    return {
+      modelResolver: this.cfg.modelResolver,
+      setMainLlm: (llm) => {
+        this._mainLlm = llm;
+      },
+      setClassifierLlm: (llm) => {
+        this._classifierLlm = llm;
+      },
+      setHelperLlm: (llm) => {
+        this._helperLlm = llm;
+      },
+      mirrorAgentCfg: (patch) => {
+        const merged: Record<string, unknown> = {
+          ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
+          ...patch,
+        };
+        (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
+      },
+      drainWorkers: () => this._workers.drain(),
+      invalidateSessions: () =>
+        this._lifecycle?.invalidateAll() ?? Promise.resolve(),
+    };
   }
 }
 
