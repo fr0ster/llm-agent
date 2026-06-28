@@ -480,181 +480,21 @@ export {
 } from './skill-plugins-host-factory.js';
 
 // ---------------------------------------------------------------------------
-// Worker-LLM cache + RAG-registry sharing (Task A7)
+// Worker-LLM cache + RAG-registry sharing (Task A7) — relocated to workers/
 // ---------------------------------------------------------------------------
 
-/**
- * GLOBAL per-worker heavy clients — built once, injected by reference per
- * session. In addition to LLM/embedder clients, the worker's OWN declared
- * `toolsRag`/`historyRag`/`mcpClients` (if any) are cached here too — the
- * per-session re-wire MUST prefer the worker's own resources over the
- * parent's injected ones, so we build them once and reuse by reference.
- */
-export interface WorkerLlmSet {
-  mainLlm: ILlm;
-  classifierLlm: ILlm;
-  helperLlm?: ILlm;
-  embedder?: IEmbedder;
-  /** Worker's OWN tools RAG, built from `subCfg.rag` if declared. */
-  toolsRag?: IRag;
-  /** Worker's OWN history RAG (mirrors flat-rag block, separate instance). */
-  historyRag?: IRag;
-  /**
-   * Worker's OWN MCP clients (from `subCfg.mcpClients` DI or built once from
-   * `subCfg.mcp`). Undefined means the worker did not declare any — caller
-   * may fall back to the parent's injected clients.
-   */
-  mcpClients?: IMcpClient[];
-  /**
-   * Shutdown function returned by the builder's `SmartAgentHandle.close()`
-   * for this worker (Fix #21). Disconnects MCP clients (and any other
-   * builder-owned resources) registered to this worker. Captured by
-   * `backfillWorkerCacheFromHandle` so `_drainWorkerCache()` can call it on
-   * config-reload (PUT /v1/config + hot-reload) and on server shutdown —
-   * without this, the per-worker handle is discarded by `buildSubAgent` and
-   * lazy rebuilds (Fix #18) accumulate MCP connections with no close path.
-   */
-  close?: () => Promise<void>;
-}
+export {
+  backfillWorkerCacheFromHandle,
+  drainWorkerCache,
+  resolveWorkerLlmSet,
+  type WorkerLlmSet,
+} from './workers/worker-registry.js';
 
-/**
- * Drain every cached worker's `close` (if any), then clear the cache map.
- * Used by config-reload (PUT /v1/config + hot-reload — Fix #14/18/21) and by
- * server `close()` to release per-worker MCP connections that were attached
- * to the discarded `SmartAgentHandle`s.
- *
- * IMPORTANT — in-flight caveat: this aborts any request that is mid-call on
- * a worker's MCP client. That is acceptable for an admin action (config
- * reload, server shutdown) where the alternative is leaking connections.
- * Server `close()` calls this AFTER `lifecycle.disposeAll()` so per-session
- * graphs that reference worker clients are torn down first.
- *
- * Uses `Promise.allSettled` so one failing close cannot block the others.
- */
-export async function drainWorkerCache(
-  cache: Map<string, WorkerLlmSet>,
-): Promise<void> {
-  const closers: Array<Promise<void>> = [];
-  for (const entry of cache.values()) {
-    if (entry.close) {
-      try {
-        closers.push(entry.close());
-      } catch {
-        // sync throw (defensive — close is async by contract)
-      }
-    }
-  }
-  cache.clear();
-  if (closers.length > 0) {
-    await Promise.allSettled(closers);
-  }
-}
-
-/**
- * Build-once-per-worker resolver. The first time a worker name is seen, it
- * constructs the worker's main/classifier/(optional helper) LLM + embedder and
- * caches the set; every later call (e.g. each per-session worker re-wire)
- * returns the SAME set by reference — never reconstructing LLM clients
- * (locked invariant: LLM/embedder clients are global, built once).
- *
- * Accepts optional `makeToolsRag`/`makeHistoryRag`/`makeMcpClients` factories;
- * when provided, the resolver builds them ONCE on the first miss and caches
- * them on the returned set. Subsequent calls return the cached resources by
- * reference — never re-vectorizing or re-connecting MCP.
- */
-export async function resolveWorkerLlmSet(input: {
-  name: string;
-  cache: Map<string, WorkerLlmSet>;
-  makeMain: () => Promise<ILlm>;
-  makeClassifier: () => Promise<ILlm>;
-  makeHelper?: () => Promise<ILlm>;
-  makeEmbedder?: () => Promise<IEmbedder>;
-  makeToolsRag?: () => Promise<IRag>;
-  makeHistoryRag?: () => Promise<IRag>;
-  makeMcpClients?: () => Promise<IMcpClient[]>;
-}): Promise<WorkerLlmSet> {
-  const hit = input.cache.get(input.name);
-  if (hit) return hit;
-  const mainLlm = await input.makeMain();
-  const classifierLlm = await input.makeClassifier();
-  const helperLlm = input.makeHelper ? await input.makeHelper() : undefined;
-  const embedder = input.makeEmbedder ? await input.makeEmbedder() : undefined;
-  const toolsRag = input.makeToolsRag ? await input.makeToolsRag() : undefined;
-  const historyRag = input.makeHistoryRag
-    ? await input.makeHistoryRag()
-    : undefined;
-  const mcpClients = input.makeMcpClients
-    ? await input.makeMcpClients()
-    : undefined;
-  const set: WorkerLlmSet = {
-    mainLlm,
-    classifierLlm,
-    helperLlm,
-    embedder,
-    toolsRag,
-    historyRag,
-    mcpClients,
-  };
-  input.cache.set(input.name, set);
-  return set;
-}
-
-/**
- * Backfill the per-worker cache entry from the BUILT handle (review HIGH #7).
- *
- * The primary `buildSubAgent` populates `cached.mcpClients`/`toolsRag`/
- * `historyRag` only when the worker config provided DI factories. Workers
- * configured with `subCfg.mcp: ...` (regular config that triggers the
- * builder's own auto-connect) or with `subCfg.rag: ...` whose RAG is owned
- * by the builder leave those slots empty — so per-session re-wires would
- * fall back to the PARENT's MCP/RAG, losing the worker's own connection.
- *
- * After the builder finishes, this helper captures what the handle actually
- * holds and stores it BY REFERENCE on the cache entry. Subsequent per-session
- * re-wires read the same slots and find the worker's own resources.
- *
- * Pure helper, mutates `entry` in place. No-op when the corresponding slot
- * is already populated (DI path wins) or when the handle has no resource for
- * that slot (worker simply didn't declare one).
- */
-export async function backfillWorkerCacheFromHandle(
-  entry: WorkerLlmSet,
-  handle: {
-    mcpClients?: IMcpClient[];
-    ragRegistry: { get(name: string): IRag | undefined };
-    close?: () => Promise<void>;
-  },
-): Promise<void> {
-  if (
-    (!entry.mcpClients || entry.mcpClients.length === 0) &&
-    handle.mcpClients &&
-    handle.mcpClients.length > 0
-  ) {
-    entry.mcpClients = handle.mcpClients;
-  }
-  if (!entry.toolsRag) {
-    const t = handle.ragRegistry.get('tools');
-    if (t) entry.toolsRag = t;
-  }
-  if (!entry.historyRag) {
-    const h = handle.ragRegistry.get('history');
-    if (h) entry.historyRag = h;
-  }
-  // Capture the per-worker shutdown function (Fix #21). If the entry already
-  // had a close from a previous build (e.g. the same worker name was rebuilt
-  // WITHOUT going through `drainWorkerCache` first — defence in depth), await
-  // the prior close before overwriting so its MCP connections do not leak.
-  if (handle.close) {
-    if (entry.close) {
-      try {
-        await entry.close();
-      } catch {
-        // Best-effort; never block the new build on a stale close failure.
-      }
-    }
-    entry.close = handle.close;
-  }
-}
+import {
+  backfillWorkerCacheFromHandle,
+  resolveWorkerLlmSet,
+  WorkerRegistry,
+} from './workers/worker-registry.js';
 
 // ---------------------------------------------------------------------------
 // Session-lifecycle helpers — relocated to session-lifecycle/ (R3)
@@ -670,8 +510,8 @@ import {
   recordSessionEnd,
   recordSessionStart,
   resolveSubAgentRagRegistry,
-  seedSessionKnowledge,
   type SessionLifecycle,
+  seedSessionKnowledge,
 } from './session-lifecycle/index.js';
 
 export {
@@ -682,11 +522,11 @@ export {
   recordSessionEnd,
   recordSessionStart,
   resolveSubAgentRagRegistry,
-  seedSessionKnowledge,
   type SessionLifecycle,
   type SessionLifecycleOptions,
   type SessionListBody,
   type SessionResumeBody,
+  seedSessionKnowledge,
 } from './session-lifecycle/index.js';
 
 // ---------------------------------------------------------------------------
@@ -801,11 +641,12 @@ export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
   /**
-   * GLOBAL per-worker LLM/embedder cache. Populated lazily by `buildSubAgent`
+   * GLOBAL per-worker LLM/embedder cache registry. Populated lazily by `buildSubAgent`
    * the first time each worker name is seen; subsequent per-session re-wires
-   * pull from this cache by reference (never reconstructing LLM clients).
+   * pull from the cache by reference (never reconstructing LLM clients).
+   * Constructed in `_buildInfra` after embedder factories are resolved.
    */
-  private readonly _workerLlmCache = new Map<string, WorkerLlmSet>();
+  private _workers!: WorkerRegistry;
   /** Lifecycle handle wired in `start()`; consumed by `_handle`. */
   private _lifecycle?: SessionLifecycle;
   /** Hoisted globals used by `buildSessionAgent` to re-wire fresh per-session workers. */
@@ -1132,6 +973,24 @@ export class SmartServer {
       ...this.cfg.embedderFactories, // config takes precedence over plugins
     };
     this._mergedEmbedderFactories = mergedEmbedderFactories;
+
+    // Construct the WorkerRegistry (owns the per-worker LLM cache + build loop).
+    // Both _fileLogger (set at the top of _buildInfra) and _mergedEmbedderFactories
+    // (set above) are captured lazily via the accessor callbacks, so construction
+    // here precedes the first use of this._workers.
+    this._workers = new WorkerRegistry({
+      subAgentConfigs: this.cfg.subAgentConfigs,
+      getFileLogger: () => this._fileLogger,
+      getEmbedderFactories: () => this._mergedEmbedderFactories ?? {},
+      buildSubAgent: (name, subCfg, parentLogger, factories, injected) =>
+        this.buildSubAgent(
+          name,
+          subCfg as Omit<SmartServerConfig, 'log'>,
+          parentLogger,
+          factories,
+          injected,
+        ),
+    });
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
@@ -1475,7 +1334,7 @@ export class SmartServer {
       // worker-owned MCP clients themselves disconnect. Ordering matters —
       // closing MCP clients while a session graph is mid-use would cut its
       // request short.
-      await drainWorkerCache(this._workerLlmCache);
+      await this._workers.drain();
     });
 
     const startTime = Date.now();
@@ -1567,7 +1426,7 @@ export class SmartServer {
         // the cache. Hot-reload runs from a synchronous emitter callback, so
         // fire-and-forget here — same async-tolerance as the invalidateAll
         // call below.
-        drainWorkerCache(this._workerLlmCache).catch((err: unknown) => {
+        this._workers.drain().catch((err: unknown) => {
           log({ event: 'config_reload_drain_error', error: String(err) });
         });
         this._lifecycle?.invalidateAll().catch((err: unknown) => {
@@ -1831,7 +1690,7 @@ export class SmartServer {
     const classifierTemp = Number(subFlatLlm?.classifierTemperature ?? 0.1);
     const cached = await resolveWorkerLlmSet({
       name,
-      cache: this._workerLlmCache,
+      cache: this._workers.cache,
       // Preserve the existing makeLlm derivation exactly.
       makeMain: () =>
         makeLlm(
@@ -1966,7 +1825,7 @@ export class SmartServer {
     // re-wires never overwrite the cache. See backfillWorkerCacheFromHandle's
     // doc-comment for the rationale.
     if (!injected) {
-      const entry = this._workerLlmCache.get(name);
+      const entry = this._workers.cache.get(name);
       if (entry) await backfillWorkerCacheFromHandle(entry, handle);
     }
     return handle.agent;
@@ -1992,7 +1851,9 @@ export class SmartServer {
    *  prebuilt instances when present; otherwise the map/fallback config is built. */
   private async resolveRoleLlm(role: string): Promise<ILlm> {
     if (!this._roleLlm) {
-      throw new Error('resolveRoleLlm invoked before _buildInfra built the resolver');
+      throw new Error(
+        'resolveRoleLlm invoked before _buildInfra built the resolver',
+      );
     }
     return this._roleLlm.resolve(role);
   }
@@ -2211,84 +2072,15 @@ export class SmartServer {
   /**
    * Build the FRESH per-session worker (sub-agent) registry from the SAME
    * `subagents:` configs the primary build() used, injecting globals + this
-   * session's logger + the CACHED per-worker LLM/embedder (this._workerLlmCache).
+   * session's logger + the CACHED per-worker LLM/embedder (this._workers.cache).
    * NEVER reconstructs LLM clients; NEVER reuses the global registry.
    *
-   * Extracted from buildSessionAgent so both the legacy session re-wire and the
-   * pipeline-plugin context (`buildServerCtx` / `partsToBaseInput`) feed a real
-   * per-session worker map to `buildBaseBuilder` instead of an empty `new Map()`.
+   * Delegates to `this._workers.build(parts)` (WorkerRegistry).
    */
   private async buildWorkerRegistry(
     parts: SessionAgentParts,
   ): Promise<SubAgentRegistry> {
-    const registry: SubAgentRegistry = new Map();
-    if (!this.cfg.subAgentConfigs || this.cfg.subAgentConfigs.length === 0) {
-      return registry;
-    }
-    if (!this._fileLogger) {
-      throw new Error(
-        'buildWorkerRegistry invoked before primary build() captured globals',
-      );
-    }
-    for (const sub of this.cfg.subAgentConfigs) {
-      // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
-      // clears `_workerLlmCache`, the next session build used to throw
-      // "worker LLM set not cached" because the cache was assumed
-      // pre-populated by the primary build(). buildSubAgent itself routes
-      // through `resolveWorkerLlmSet` which is build-on-miss, so calling
-      // it without an `injected` arg rebuilds the cache entry. We then
-      // re-read the entry to honour the per-worker slot priority below.
-      if (!this._workerLlmCache.has(sub.name)) {
-        await this.buildSubAgent(
-          sub.name,
-          sub.config,
-          this._fileLogger,
-          this._mergedEmbedderFactories ?? {},
-          // No `injected` → primary path: resolveWorkerLlmSet populates
-          // `_workerLlmCache` and backfillWorkerCacheFromHandle fills the
-          // mcpClients/toolsRag slots from the built handle.
-        );
-      }
-      const cached = this._workerLlmCache.get(sub.name);
-      if (!cached) {
-        // Defence in depth — should be impossible after the lazy build
-        // above unless buildSubAgent's contract changes.
-        throw new Error(`worker LLM set not cached for '${sub.name}'`);
-      }
-      // Per-worker injected slot priority (review HIGH #7):
-      //   worker-cached (from the primary build, includes backfilled
-      //   subCfg.mcp / subCfg.rag results) → parent's session-scoped
-      //   fallback. Encoded HERE so buildSubAgent does not need to know
-      //   the difference; it just consumes injected.mcpClients/toolsRag.
-      const injectedMcpClients =
-        cached.mcpClients && cached.mcpClients.length > 0
-          ? cached.mcpClients
-          : parts.mcpClients;
-      const injectedToolsRag = cached.toolsRag ?? parts.toolsRag;
-      const subAgent = await this.buildSubAgent(
-        sub.name,
-        sub.config,
-        this._fileLogger,
-        this._mergedEmbedderFactories ?? {},
-        {
-          ragRegistry: parts.ragRegistry,
-          toolsRag: injectedToolsRag,
-          mcpClients: injectedMcpClients,
-          requestLogger: parts.logger,
-          mainLlm: cached.mainLlm,
-          classifierLlm: cached.classifierLlm,
-          helperLlm: cached.helperLlm,
-          embedder: cached.embedder,
-        },
-      );
-      registry.set(
-        sub.name,
-        new SmartAgentSubAgent(sub.name, subAgent, {
-          description: sub.description,
-        }),
-      );
-    }
-    return registry;
+    return this._workers.build(parts);
   }
 
   /**
@@ -2585,7 +2377,7 @@ export class SmartServer {
    * session-scoped pipeline context (`buildServerCtx`) supplies the FRESH
    * per-session worker registry + session logger + the global
    * ragRegistry/toolsRag/mcpClients + the CACHED per-worker LLM/embedder
-   * (this._workerLlmCache) via `createAgentBuilder`. It NEVER reuses the primary
+   * (this._workers.cache) via `createAgentBuilder`. It NEVER reuses the primary
    * build()'s global registry/coordinator and NEVER constructs new LLM clients.
    *
    * The pipeline returns `{ agent, close }`; we register `close` under the
@@ -3683,13 +3475,13 @@ export class SmartServer {
     if (resolvedModels || body.agent) {
       // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing the
       // cache so MCP clients owned by the discarded handles disconnect.
-      await drainWorkerCache(this._workerLlmCache);
+      await this._workers.drain();
       try {
         await this._lifecycle?.invalidateAll();
       } catch {
         // Swallow: cleanup errors must not turn a successful config update
         // into a 500. The next request will still get a fresh build because
-        // `_workerLlmCache` is already cleared and dispose is idempotent.
+        // `_workers.cache` is already cleared and dispose is idempotent.
       }
     }
     // --- Return updated config ---

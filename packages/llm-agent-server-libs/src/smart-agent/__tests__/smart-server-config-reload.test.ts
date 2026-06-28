@@ -8,7 +8,7 @@
  * pointing at the stale instances.
  *
  * We exercise the public PUT /v1/config endpoint (real HTTP), then poke
- * the private `_workerLlmCache` and `_lifecycle.registry` via a typed
+ * the private `_workers.cache` and `_lifecycle.registry` via a typed
  * cast to confirm the invalidation actually fired.
  */
 
@@ -20,7 +20,7 @@ import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
 
 interface ServerInternals {
-  _workerLlmCache: Map<string, unknown>;
+  _workers: { cache: Map<string, unknown>; drain(): Promise<void> };
   _lifecycle?: { registry: { size: number } };
   _mainLlm?: ILlm;
   cfg: {
@@ -77,7 +77,7 @@ function httpRequest(
 }
 
 describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)', () => {
-  it('clears _workerLlmCache and disposes session graphs after agent update', async () => {
+  it('clears _workers.cache and disposes session graphs after agent update', async () => {
     const server = new SmartServer({
       port: 0,
       llm: { apiKey: 'test', model: 'test-model' },
@@ -92,9 +92,9 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
       // session built first; checking cache.size === 0 after the PUT is
       // enough on its own. We seed it manually to make the regression
       // bite if the clear line is removed.)
-      internals._workerLlmCache.set('seed', {});
+      internals._workers.cache.set('seed', {});
       assert.equal(
-        internals._workerLlmCache.size,
+        internals._workers.cache.size,
         1,
         'precondition: cache seeded',
       );
@@ -115,11 +115,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
       assert.equal(res.status, 200);
 
       // Post-condition: worker cache cleared AND session graphs gone.
-      assert.equal(
-        internals._workerLlmCache.size,
-        0,
-        '_workerLlmCache cleared',
-      );
+      assert.equal(internals._workers.cache.size, 0, '_workers.cache cleared');
       assert.equal(
         internals._lifecycle?.registry.size,
         0,
@@ -150,7 +146,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
       const originalMain = internals._mainLlm;
       assert.ok(originalMain, 'precondition: _mainLlm captured at start');
 
-      internals._workerLlmCache.set('seed', {});
+      internals._workers.cache.set('seed', {});
       // Build a session so we can verify invalidation.
       await httpRequest(handle.port, 'GET', '/v1/usage');
       assert.ok((internals._lifecycle?.registry.size ?? 0) >= 1);
@@ -161,7 +157,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
       assert.equal(res.status, 200);
 
       assert.equal(internals._mainLlm, newMain, '_mainLlm swapped');
-      assert.equal(internals._workerLlmCache.size, 0, 'worker cache cleared');
+      assert.equal(internals._workers.cache.size, 0, 'worker cache cleared');
       assert.equal(
         internals._lifecycle?.registry.size,
         0,
@@ -172,7 +168,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     }
   });
 
-  it('Fix #18: with subAgentConfigs, PUT /v1/config (which clears _workerLlmCache) does NOT make next buildSessionAgent throw', async () => {
+  it('Fix #18: with subAgentConfigs, PUT /v1/config (which clears _workers.cache) does NOT make next buildSessionAgent throw', async () => {
     // Before the fix, buildSessionAgent threw "worker LLM set not cached for
     // '<name>'" on the next session build after PUT cleared the cache.
     // The fix routes through `resolveWorkerLlmSet` (build-on-miss) so the
@@ -199,7 +195,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     try {
       // Precondition: primary build() populated the cache for 'worker1'.
       assert.ok(
-        internals._workerLlmCache.has('worker1'),
+        internals._workers.cache.has('worker1'),
         'precondition: worker1 cached after primary build',
       );
 
@@ -209,7 +205,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
       });
       assert.equal(res.status, 200);
       assert.equal(
-        internals._workerLlmCache.size,
+        internals._workers.cache.size,
         0,
         'precondition: cache cleared by PUT',
       );
@@ -230,7 +226,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
       };
       await internals.buildSessionAgent(parts);
       assert.ok(
-        internals._workerLlmCache.has('worker1'),
+        internals._workers.cache.has('worker1'),
         'cache repopulated lazily by buildSessionAgent',
       );
     } finally {
