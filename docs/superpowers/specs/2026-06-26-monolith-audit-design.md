@@ -98,8 +98,12 @@ contains:
    reusable)". State which, and why, for each responsibility.
 4. **Behavior-preservation strategy** — how the refactor stays behavior-identical
    (characterization tests to lean on / add; public API kept stable).
-5. **Suggested PR slices** — an ordered list of small, independently-reviewable PRs
+5. **Suggested slices** — an ordered list of small, independently-reviewable steps
    (one extraction / one reimplementation each), with a rough size and risk per slice.
+   **Delivery: one PR per monolith** — the slices are ordered, behavior-preserving
+   *commits* inside that single PR (commit = review unit, PR = delivery unit); a monolith
+   is never split across two PRs (a half-decomposed file risks an inconsistent state and a
+   dropped slice/seam).
 6. **Per-blueprint principle self-check** — the 7 principles, checked against the
    proposed decomposition.
 

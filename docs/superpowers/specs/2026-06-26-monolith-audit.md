@@ -210,7 +210,7 @@ R2 watcher), `smart-server-api-adapters.test.ts` (R1 adapters), `readiness-gate.
    returns the cached instance and falls back to `_mainLlm`/`_makeLlm(cfg)` exactly as
    `resolveRoleLlm` `2192`–`2213` does today. Pin BEFORE R5.
 
-### 5. Suggested PR slices (ordered; first = lowest-risk / highest-value)
+### 5. Suggested slices — ordered commits within the monolith's single PR (first = lowest-risk / highest-value)
 
 | # | Slice | Touches | Rough Δ | Risk | Why here |
 |---|---|---|---|---|---|
@@ -401,7 +401,7 @@ re-export in `agent.ts` to preserve import paths (Principle 7).
    translate-then-embed + two-phase RAG path in isolation. Pin BEFORE extracting
    `RagOrchestrator` (Slice 5).
 
-### 5. Suggested PR slices (ordered; first = lowest-risk / highest-value)
+### 5. Suggested slices — ordered commits within the monolith's single PR (first = lowest-risk / highest-value)
 
 | # | Slice | Touches | Rough Δ | Risk | Why here |
 |---|---|---|---|---|---|
@@ -590,7 +590,7 @@ next major version, so every importer (production AND test) keeps its import pat
    `reconstructBoard`+`renderBoard` and returns `''` on absent `runId`. Pin BEFORE moving
    to `board.ts` (Slice 2). `board.test.ts` covers the components but not the glue entry.
 
-### 5. Suggested PR slices (ordered; first = lowest-risk / highest-value)
+### 5. Suggested slices — ordered commits within the monolith's single PR (first = lowest-risk / highest-value)
 
 | # | Slice | Touches | Rough Δ | Risk | Why here |
 |---|---|---|---|---|---|
@@ -777,7 +777,7 @@ production non-test files):
    at multiple depths. Pin BEFORE extracting R1 (`yaml-loader.ts`), though the function is
    already partially tested via `config-validation.test.ts`.
 
-### 5. Suggested PR slices (ordered; first = lowest-risk / highest-value)
+### 5. Suggested slices — ordered commits within the monolith's single PR (first = lowest-risk / highest-value)
 
 | # | Slice | Touches | Rough Δ | Risk | Why here |
 |---|---|---|---|---|---|
@@ -938,7 +938,7 @@ the gate before and after `vectorize-mcp-tools.ts` extraction.
 2. **`vectorizeSkills` unit test** — pin the skills loop (mock `ISkillManager.listSkills`) including
    the `!result.ok` warning branch. Add alongside #1.
 
-### 5. Suggested PR slices (ordered; lowest-risk first)
+### 5. Suggested slices — ordered commits within the monolith's single PR (lowest-risk first)
 
 | # | Slice | Touches | Rough Δ | Risk | Why here |
 |---|---|---|---|---|---|
@@ -971,6 +971,17 @@ rationale). Files ranked 1–5 have full component-first decomposition blueprint
 and are ready to feed per-monolith refactor plans immediately. Files ranked 6–13 are triaged and
 annotated; per the one-monolith-per-plan constraint, their blueprints are deferred until the
 higher-priority refactors are underway or complete.
+
+### Delivery model — one PR per monolith
+
+Each monolith is refactored as **exactly one pull request**. The five blueprints above yield
+**five PRs**, NOT one-per-slice (27 micro-PRs is unmanageable). Within a PR the §5 slices are
+**ordered, behavior-preserving commits** — tests green at every commit — so the *commit* is the
+review granularity and the *PR* is the delivery granularity (review per commit, deliver per
+monolith). A monolith is **never split across two PRs**: a half-decomposed file is easy to leave
+in an inconsistent state, and a cross-PR split risks dropping a slice or a shared seam unnoticed.
+The refactor of a given monolith therefore lands whole or not at all. Lower-priority files
+(ranks 6–13) each become their own single PR once blueprinted.
 
 | Rank | File | Blueprint status | Recommended next action |
 |---|---|---|---|
