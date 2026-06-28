@@ -435,8 +435,7 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
-import { makeKnowledgeSemanticIndex } from './embedder-knowledge-index.js';
-import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
+import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type {
   ISessionMetaStore,
@@ -2297,19 +2296,10 @@ export class SmartServer {
    */
   private buildKnowledgeBackend(): void {
     if (this._stepperKnowledgeBackend) return;
-    const logDir = this.cfg.logDir;
-    // Attach an embedder-backed semantic index whenever an embedder is resolved —
-    // for ANY pipeline. Do NOT throw here: buildKnowledgeBackend runs
-    // unconditionally at startup and a flat/stepper deployment without an embedder
-    // is valid; only the CONTROLLER mandates embedding recall, enforced at the
-    // ControllerFactory boundary, not globally. With an index, the controller's
-    // results-RAG recall ranks by meaning instead of recency.
-    const semantic = this._resolvedEmbedder
-      ? makeKnowledgeSemanticIndex(this._resolvedEmbedder)
-      : undefined;
-    this._stepperKnowledgeBackend = logDir
-      ? new JsonlKnowledgeBackend(logDir, semantic)
-      : new InMemoryKnowledgeBackend(semantic);
+    this._stepperKnowledgeBackend = makeKnowledgeBackend({
+      logDir: this.cfg.logDir,
+      embedder: this._resolvedEmbedder,
+    });
   }
 
   /**
