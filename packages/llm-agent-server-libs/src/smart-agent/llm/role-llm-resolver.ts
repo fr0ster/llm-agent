@@ -1,9 +1,6 @@
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
-import {
-  type NormalizedLlmMap,
-  resolveLlmConfig,
-} from '../config.js';
+import { type NormalizedLlmMap, resolveLlmConfig } from '../config.js';
 import type { SmartServerLlmConfig } from '../smart-server.js';
 
 /** The real `makeLlm`-backed construction (the SmartServer seam's default). */

@@ -66,5 +66,8 @@ test('no main and no config throws', async () => {
     getPipelineFallback: () => undefined,
     makeLlm: async () => stub('built'),
   });
-  await assert.rejects(() => r.resolve('main'), /cannot resolve LLM for role 'main'/);
+  await assert.rejects(
+    () => r.resolve('main'),
+    /cannot resolve LLM for role 'main'/,
+  );
 });
