@@ -14,7 +14,7 @@
 - **Public API byte-stable.** These three handlers are PRIVATE (not exported, not on the barrel). Extracting them changes NO public surface. Do NOT add `handleAdapterRequest`/`handleChat`/`handleConfigUpdate` or `IConfigUpdateTarget` to any package barrel (`index.ts`). Verified: `_handleChat`/`_handleAdapterRequest`/`_handleConfigUpdate` are referenced outside `smart-server.ts` only in comments and the stale compiled `dist/*.d.ts` — no real importer.
 - **R4 / MCP untouched.** Do not touch MCP connection, readiness, or reconnect code.
 - **ONE PR, 3 commits = 3 tasks**, lowest-coupling first: Task 1 = adapter (pure), Task 2 = chat (cfg param), Task 3 = config (`IConfigUpdateTarget`). Each task ends with exactly one `refactor:` commit.
-- **Lint gate per task (PR-1 lesson — `format` alone misses import-sort):** before committing run `npm run format`, then `npx @biomejs/biome check --write <changed files>`, then confirm `npm run lint:check 2>&1 | grep -i "found .* error"` shows `0 errors` (i.e. `Found 0 errors.`).
+- **Lint gate per task (PR-1 lesson — `format` alone misses import-sort):** before committing run `npm run format`, then `npx @biomejs/biome check --write <changed files>`, then run `npm run lint:check` and require **exit code 0** (Biome exits non-zero only on errors; warnings/infos are fine). Do NOT grep for `"Found 0 errors."` — Biome prints no such line when clean, so a grep gate is a false red.
 - **TDD:** baseline the pinning test(s) GREEN before extraction, GREEN after. Add a new characterization test ONLY where a handler has no existing body-level coverage (chat — see Task 2).
 - **ESM only:** `.js` extensions on all relative imports; 2-space indent, single quotes, always semicolons (Biome).
 
@@ -238,9 +238,9 @@ Expected: PASS — identical to Step 1 baseline.
 ```bash
 npm run format
 npx @biomejs/biome check --write packages/llm-agent-server-libs/src/smart-agent/http/adapter-route-handler.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts
-npm run lint:check 2>&1 | grep -i "found .* error"
+npm run lint:check
 ```
-Expected last line: `Found 0 errors.`
+Expected: **exit code 0**. Biome's `check` exits non-zero ONLY when there are errors; warnings/infos are fine and do NOT fail the gate. (Do NOT grep for `"Found 0 errors."` — Biome prints no such line when clean, so a grep gate is a false red.)
 
 - [ ] **Step 9: Commit**
 
@@ -511,9 +511,9 @@ Expected: both PASS (chat body unchanged; 503 pre-dispatch gate unchanged).
 ```bash
 npm run format
 npx @biomejs/biome check --write packages/llm-agent-server-libs/src/smart-agent/http/chat-route-handler.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/chat-endpoint.test.ts
-npm run lint:check 2>&1 | grep -i "found .* error"
+npm run lint:check
 ```
-Expected last line: `Found 0 errors.`
+Expected: **exit code 0**. Biome's `check` exits non-zero ONLY when there are errors; warnings/infos are fine and do NOT fail the gate. (Do NOT grep for `"Found 0 errors."` — Biome prints no such line when clean, so a grep gate is a false red.)
 
 - [ ] **Step 10: Commit**
 
@@ -583,7 +583,7 @@ import type {
   SmartAgent,
   SmartAgentReconfigureOptions,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { jsonError } from './response-helpers.js';
+import { jsonError, readBody } from './response-helpers.js';
 
 /** Exactly the SmartServer state PUT /v1/config touches — the hot-swap seam. */
 export interface IConfigUpdateTarget {
@@ -752,9 +752,9 @@ Expected: full suite GREEN (no route/SSE/JSON regressions across adapter, chat, 
 ```bash
 npm run format
 npx @biomejs/biome check --write packages/llm-agent-server-libs/src/smart-agent/http/config-route-handler.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts
-npm run lint:check 2>&1 | grep -i "found .* error"
+npm run lint:check
 ```
-Expected last line: `Found 0 errors.`
+Expected: **exit code 0**. Biome's `check` exits non-zero ONLY when there are errors; warnings/infos are fine and do NOT fail the gate. (Do NOT grep for `"Found 0 errors."` — Biome prints no such line when clean, so a grep gate is a false red.)
 
 - [ ] **Step 10: Confirm public API unchanged + file shrank**
 
