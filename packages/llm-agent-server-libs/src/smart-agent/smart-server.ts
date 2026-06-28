@@ -92,6 +92,11 @@ import {
   resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
+import {
+  type IRoleLlmResolver,
+  makeDefaultRoleLlm,
+  RoleLlmResolver,
+} from './llm/role-llm-resolver.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 import { resolveSessionIdentity } from './session-identity-resolver.js';
 
@@ -1039,6 +1044,7 @@ export class SmartServer {
   private _llmMap?: NormalizedLlmMap;
   private _pipelineFallback?: SmartServerLlmConfig;
   private _mainTemp?: number;
+  private _roleLlm?: IRoleLlmResolver;
   private _requestLogger?: IRequestLogger;
   /** ToolsRag handle built by `buildSharedPipelineInfra`; handed to every
    *  pipeline's context (factory defaults to EMPTY_TOOLS_RAG if unset). */
@@ -1234,6 +1240,14 @@ export class SmartServer {
     this._llmMap = llmMap;
     this._pipelineFallback = pipelineFallback;
     this._mainTemp = mainTemp;
+    this._roleLlm = new RoleLlmResolver({
+      getMain: () => this._mainLlm,
+      getHelper: () => this._helperLlm,
+      getClassifier: () => this._classifierLlm,
+      getLlmMap: () => this._llmMap,
+      getPipelineFallback: () => this._pipelineFallback,
+      makeLlm: (lc) => this._deps.makeLlm(lc),
+    });
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
@@ -2174,31 +2188,17 @@ export class SmartServer {
 
   /** The real `makeLlm`-backed construction (the seam's default). */
   private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
-    return makeLlm(
-      {
-        provider: lc.provider ?? 'deepseek',
-        apiKey: lc.apiKey,
-        baseURL: lc.url,
-        model: lc.model,
-      },
-      Number(lc.temperature ?? this._mainTemp ?? 0.7),
-    );
+    return makeDefaultRoleLlm(lc, this._mainTemp);
   }
 
   /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.
    *  'main' returns the captured mainLlm; 'helper'/'classifier' return the
    *  prebuilt instances when present; otherwise the map/fallback config is built. */
   private async resolveRoleLlm(role: string): Promise<ILlm> {
-    if (role === 'main' && this._mainLlm) return this._mainLlm;
-    if ((role === 'helper' || role === 'planner') && this._helperLlm) {
-      return this._helperLlm;
+    if (!this._roleLlm) {
+      throw new Error('resolveRoleLlm invoked before _buildInfra built the resolver');
     }
-    if (role === 'classifier' && this._classifierLlm)
-      return this._classifierLlm;
-    const cfg = resolveLlmConfig(this._llmMap, role, this._pipelineFallback);
-    if (cfg) return this._makeLlm(cfg);
-    if (this._mainLlm) return this._mainLlm;
-    throw new Error(`cannot resolve LLM for role '${role}': no config`);
+    return this._roleLlm.resolve(role);
   }
 
   /**
