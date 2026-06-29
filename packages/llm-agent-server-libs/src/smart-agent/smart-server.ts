@@ -83,6 +83,11 @@ import {
   handleConfigUpdate,
   type IConfigUpdateTarget,
 } from './http/config-route-handler.js';
+import { handleHealthRoute } from './http/health-route-handler.js';
+import {
+  handleEmbeddingModelsList,
+  handleModelsList,
+} from './http/models-route-handler.js';
 import {
   CORS_HEADERS,
   jsonError,
@@ -94,6 +99,7 @@ import {
   handleSessionResume,
   handleSessionsList,
 } from './http/sessions-route-handler.js';
+import { handleUsageRoute } from './http/usage-route-handler.js';
 import {
   type IRoleLlmResolver,
   makeDefaultRoleLlm,
@@ -2420,97 +2426,17 @@ export class SmartServer {
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/models' || p === '/models',
-      handle: async (rc) => {
-        const queryString = rc.rawUrl.includes('?')
-          ? rc.rawUrl.split('?')[1]
-          : '';
-        const queryParams = new URLSearchParams(queryString);
-        const excludeEmbedding =
-          queryParams.get('exclude_embedding') === 'true';
-        let data: Array<Record<string, unknown>> = [
-          { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
-        ];
-        if (rc.modelProvider) {
-          const result = await rc.modelProvider.getModels({ excludeEmbedding });
-          if (result.ok) {
-            data = result.value.map((m) => ({
-              id: m.id,
-              object: 'model',
-              owned_by: m.owned_by ?? 'unknown',
-              ...(m.displayName ? { display_name: m.displayName } : {}),
-              ...(m.provider ? { provider: m.provider } : {}),
-              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-              ...(m.contextLength ? { context_length: m.contextLength } : {}),
-              ...(m.streamingSupported !== undefined
-                ? { streaming_supported: m.streamingSupported }
-                : {}),
-              ...(m.deprecated !== undefined
-                ? { deprecated: m.deprecated }
-                : {}),
-            }));
-          }
-        }
-        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify({ object: 'list', data }));
-      },
+      handle: (rc) => handleModelsList(rc),
     });
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/embedding-models' || p === '/embedding-models',
-      handle: async (rc) => {
-        let data: Array<Record<string, unknown>> = [];
-        if (rc.modelProvider?.getEmbeddingModels) {
-          const result = await rc.modelProvider.getEmbeddingModels();
-          if (result.ok) {
-            data = result.value.map((m) => ({
-              id: m.id,
-              object: 'model',
-              owned_by: m.owned_by ?? 'unknown',
-              ...(m.displayName ? { display_name: m.displayName } : {}),
-              ...(m.provider ? { provider: m.provider } : {}),
-              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-              ...(m.contextLength ? { context_length: m.contextLength } : {}),
-              ...(m.streamingSupported !== undefined
-                ? { streaming_supported: m.streamingSupported }
-                : {}),
-              ...(m.deprecated !== undefined
-                ? { deprecated: m.deprecated }
-                : {}),
-            }));
-          }
-        }
-        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify({ object: 'list', data }));
-      },
+      handle: (rc) => handleEmbeddingModelsList(rc),
     });
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/usage',
-      handle: async (rc) => {
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const sessionId = resolved.identity.sessionId;
-        const graph = await lifecycle.acquire(sessionId);
-        try {
-          rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-          rc.res.end(JSON.stringify(graph.logger.getSummary()));
-        } finally {
-          lifecycle.release(sessionId, graph);
-        }
-      },
+      handle: (rc) => handleUsageRoute(rc, rc.server._lifecycle),
     });
     // GET /v1/sessions — list sessions for the current identity
     table.add({
@@ -2582,14 +2508,7 @@ export class SmartServer {
     table.add({
       method: 'GET',
       match: (p) => p === '/health' || p === '/v1/health',
-      handle: async (rc) => {
-        const status = await rc.healthChecker.check();
-        // MCP-down ⇒ NOT_READY ⇒ 503 too (not just LLM-unhealthy), so a load
-        // balancer stops routing while MCP is unreachable.
-        const httpCode = status.status === 'unhealthy' || !rc.ready ? 503 : 200;
-        rc.res.writeHead(httpCode, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify({ ...status, ready: rc.ready }));
-      },
+      handle: (rc) => handleHealthRoute(rc),
     });
     // POST /v1/messages or /messages → Anthropic adapter
     table.add({
