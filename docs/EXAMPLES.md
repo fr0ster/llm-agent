@@ -375,8 +375,9 @@ skillPlugins:
   sources:
     - id: my-skills
       records:
-        - { group: abap, name: read-include, content: "To read an include, first read the main program, then fetch each include by name." }
-        - { group: abap, name: where-used, content: "Resolve where-used via the cross-reference tool, not by scanning sources." }
+        # `id` is required (per-record stable id); `group` is required; `name` is optional (defaults to `id`).
+        - { group: abap, id: read-include, content: "To read an include, first read the main program, then fetch each include by name." }
+        - { group: abap, id: where-used, content: "Resolve where-used via the cross-reference tool, not by scanning sources." }
 ```
 
 **Durable — Qdrant vectors + Postgres catalog + a real embedder:**
