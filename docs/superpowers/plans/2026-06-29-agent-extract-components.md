@@ -275,15 +275,19 @@ export interface ToolRegistryResult {
 }
 export interface IMcpToolRegistry {
   resolve(opts?: CallOptions): Promise<ToolRegistryResult>;
+  resolveActiveClients(opts?: CallOptions): Promise<void>;
+  getActiveClients(): IMcpClient[];
 }
 ```
-`McpToolRegistry implements IMcpToolRegistry` additionally exposes
-`resolveActiveClients(opts?)` (the standalone connection resolve, used by
-`streamProcess` line 841 before reading the client count) and
-`getActiveClients(): IMcpClient[]` (for `hasMcpClients` and `healthCheck`).
-`SmartAgent` holds the field typed as the concrete `McpToolRegistry` (so
-`getActiveClients`/`resolveActiveClients` are reachable; `IMcpToolRegistry`
-stays minimal per ISP).
+The interface exposes the FULL seam — all three methods are the agent's one
+cohesive MCP-tool surface (ISP is about not bolting *unrelated* methods onto an
+interface, not about minimizing to one). `McpToolRegistry implements
+IMcpToolRegistry`. Both `SmartAgent` (its `mcpToolRegistry` field) AND
+`RagOrchestratorDeps.mcpToolRegistry` (Task 5) are typed as the **interface**
+`IMcpToolRegistry`, NOT the concrete class — so consumers depend on the interface
+(Principle 3) and Task 5's gap test can pass a structural fake (the concrete class
+has a `private activeClients` field, which would make a structural fake
+non-assignable to the class type).
 
 Steps:
 - [ ] Confirm baseline GREEN.
@@ -362,9 +366,10 @@ Steps:
   NOTE: `resolve()` calls `resolveActiveClients()` internally — preserving the
   existing double-resolve at `streamProcess` (line 841 then line 938 via
   `_listAllTools`). This is byte-equivalent to today; do not "optimize" it away.
-- [ ] In `agent.ts`: add `import { McpToolRegistry } from './mcp/tool-registry.js';`.
+- [ ] In `agent.ts`: add `import { McpToolRegistry, type IMcpToolRegistry } from './mcp/tool-registry.js';`.
 - [ ] Remove the `private _activeClients: IMcpClient[];` field decl (244). Add
-  `private readonly mcpToolRegistry: McpToolRegistry;`.
+  `private readonly mcpToolRegistry: IMcpToolRegistry;` (typed as the interface —
+  Principle 3; constructed as `new McpToolRegistry(...)`).
 - [ ] In the constructor, replace `this._activeClients = [...deps.mcpClients];`
   (271) with:
   ```ts
@@ -647,8 +652,10 @@ Steps:
   };
   ```
   (Copy the MCP per-client body verbatim from the source 537-569.)
-- [ ] In `agent.ts`, add
-  `import { buildAgentHealthSnapshot, type AgentHealthSnapshot } from './health/agent-health.js';`.
+- [ ] In `agent.ts`, add `import { buildAgentHealthSnapshot } from './health/agent-health.js';`
+  (do NOT import `type AgentHealthSnapshot` — the wrapper keeps the inline literal return type
+  and `snapshot`'s type is inferred from the function; an unused type import would fail
+  `noUnusedLocals`).
 - [ ] Rewrite `healthCheck` to the thin wrapper, KEEPING its public return type
   byte-identical (the inline `{ llm: boolean; rag: boolean; mcp: {...}[] }`
   literal — `AgentHealthSnapshot` is structurally identical, so either spelling
@@ -665,14 +672,17 @@ Steps:
       createTimeoutSignal(HEALTH_TIMEOUT_MS);
     const merged = mergeSignals(timeoutSignal, options?.signal);
     const healthOptions: CallOptions = { ...options, signal: merged.signal, maxTokens: 1 };
-    const snapshot = await buildAgentHealthSnapshot(
-      this._mainLlm,
-      this.deps.ragStores,
-      this.mcpToolRegistry.getActiveClients(),
-      healthOptions,
-    );
-    clearTimeout_();
-    return { ok: true, value: snapshot };
+    try {
+      const snapshot = await buildAgentHealthSnapshot(
+        this._mainLlm,
+        this.deps.ragStores,
+        this.mcpToolRegistry.getActiveClients(),
+        healthOptions,
+      );
+      return { ok: true, value: snapshot };
+    } finally {
+      clearTimeout_();
+    }
   }
   ```
   (`AgentHealthSnapshot` assigns to the literal return type — structural match.)
@@ -727,7 +737,7 @@ export interface RagOrchestratorDeps {
   queryExpander: IQueryExpander;
   sessionManager: ISessionManager;
   toolAvailabilityRegistry: ToolAvailabilityRegistry;
-  mcpToolRegistry: McpToolRegistry;    // from ../mcp/tool-registry.js (Task 2)
+  mcpToolRegistry: IMcpToolRegistry;   // the INTERFACE from ../mcp/tool-registry.js (Task 2) — so the gap test can pass a fake
   requestLogger: IRequestLogger;
   ragStores: Record<string, IRag>;
   embedder: IEmbedder | undefined;
@@ -796,7 +806,7 @@ Steps:
   import type { IReranker } from '../reranker/types.js';
   import type { ISessionManager } from '../session/types.js';
   import type { ISpan, ITracer } from '../tracer/types.js';
-  import type { McpToolRegistry } from '../mcp/tool-registry.js';
+  import type { IMcpToolRegistry } from '../mcp/tool-registry.js';
   import type { SmartAgentConfig } from '../agent.js';
   ```
 - [ ] Add the two module-scope helper functions (moved byte-for-byte from
@@ -889,7 +899,10 @@ Steps:
     yield orchResult;
     return;
   }
-  const { retrieved, finalTools, skillContent: _skill, assembledMessages, mainAction, toolClientMap } = orchResult.value;
+  const { retrieved, finalTools, assembledMessages, mainAction, toolClientMap } = orchResult.value;
+  // (skillContent is NOT destructured — the caller doesn't use it; it is already
+  //  baked into assembledMessages inside orchestrate(). Destructuring it unused
+  //  would trip noUnusedLocals.)
   const stream = this._runStreamingToolLoop(
     mainAction, retrieved, assembledMessages, toolClientMap, opts, rootSpan,
     sessionId, externalTools, finalTools, detectedAdapter,
@@ -928,6 +941,12 @@ Steps:
   `__tests__/rag-orchestrator.test.ts`.
 - [ ] Build + pins (`smart-agent-custom-rag`, `tool-reselection`,
   `builder-tool-selection`) + the new gap test + full suite GREEN.
+- [ ] **Post-check sizes:** `wc -l packages/llm-agent-libs/src/agent.ts` (expect ~1400,
+  well below 2160) and `wc -l` the 5 new modules. **`agent/rag-orchestrator.ts` MUST stay
+  under ~500 lines** — the extracted region is ~335 lines + the 2 helpers (~60), so ~400–450 is
+  expected. If it lands at 500+ (e.g. it absorbed more than the named region), STOP and report
+  DONE_WITH_CONCERNS — a 700-line orchestrator is itself a monolith and needs its own split-plan,
+  NOT a silent oversized new file.
 - [ ] Commit: `refactor(agent): extract RagOrchestrator + characterization test (PR-2a slice 5)`.
 
 ---
