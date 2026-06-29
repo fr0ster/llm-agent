@@ -30,28 +30,20 @@ import type {
   IToolsRagHandle,
   LlmTool,
   LoadedPlugins,
-  Message,
-  NormalizedRequest,
   PluginExports,
-  StreamToolCall,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  AdapterValidationError,
-  buildExternalResults,
   type IRag,
   isMcpUnavailable,
   isReadinessReporter,
-  normalizeAndValidateExternalTools,
   QueryEmbedding,
-  toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
   SessionAgentParts,
   SessionGraph,
   SmartAgent,
-  StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   ClaudeSkillManager,
@@ -65,11 +57,9 @@ import {
   KnowledgeRag,
   makeLlm,
   mergePluginExports,
-  SessionLogger,
   SessionRequestLogger,
   SmartAgentBuilder,
   type SmartAgentHandle,
-  type SmartAgentReconfigureOptions,
   SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -87,12 +77,15 @@ import {
 } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { ConfigReloadWatcher } from './config-reload-watcher.js';
+import { handleAdapterRequest } from './http/adapter-route-handler.js';
+import { handleChat } from './http/chat-route-handler.js';
+import {
+  handleConfigUpdate,
+  type IConfigUpdateTarget,
+} from './http/config-route-handler.js';
 import {
   CORS_HEADERS,
   jsonError,
-  jsonValidationError,
-  mapStopReason,
-  readBody,
   writeNotReady,
 } from './http/response-helpers.js';
 import { HttpRouteTable, type RouteContext } from './http/route-table.js';
@@ -2641,7 +2634,12 @@ export class SmartServer {
           return;
         }
         if (rc.method === 'PUT') {
-          await rc.server._handleConfigUpdate(rc.req, rc.res, rc.smartAgent);
+          await handleConfigUpdate(
+            rc.req,
+            rc.res,
+            rc.smartAgent,
+            this._configUpdateTarget(),
+          );
           return;
         }
         // 405 for other methods
@@ -2689,7 +2687,7 @@ export class SmartServer {
           rc.req,
           rc.res,
           async (graph, sessionId, traceId) => {
-            await rc.server._handleAdapterRequest(
+            await handleAdapterRequest(
               rc.req,
               rc.res,
               graph.agent ?? rc.smartAgent,
@@ -2713,7 +2711,7 @@ export class SmartServer {
           rc.req,
           rc.res,
           async (graph, sessionId, traceId) => {
-            await rc.server._handleChat(
+            await handleChat(
               rc.req,
               rc.res,
               rc.requestLogger,
@@ -2723,6 +2721,7 @@ export class SmartServer {
               rc.log,
               rc.modelProvider,
               { sessionId, traceId, graph },
+              this.cfg,
             );
           },
         );
@@ -2731,713 +2730,36 @@ export class SmartServer {
     return table;
   }
 
-  private async _handleAdapterRequest(
-    req: IncomingMessage,
-    res: ServerResponse,
-    agent: SmartAgent,
-    adapter: ILlmApiAdapter,
-    session?: { sessionId: string; traceId: string; graph: SessionGraph },
-  ): Promise<void> {
-    const raw = await readBody(req);
-    let body: unknown;
-    try {
-      body = JSON.parse(raw);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(jsonError('Invalid JSON', 'invalid_request_error'));
-      return;
-    }
-
-    let normalized: NormalizedRequest;
-    try {
-      normalized = adapter.normalizeRequest(body);
-    } catch (err) {
-      if (err instanceof AdapterValidationError) {
-        res.writeHead(err.statusCode, { 'Content-Type': 'application/json' });
-        res.end(jsonError(err.message, 'invalid_request_error'));
-        return;
-      }
-      throw err;
-    }
-
-    // #171 (review#8): the adapter has already normalized Anthropic
-    // tool_use/tool_result blocks into the OpenAI-shaped Message[]
-    // (assistant.tool_calls + role:'tool' with tool_call_id). Run the same
-    // external-results extraction the OpenAI path uses so Anthropic clients get
-    // identical stateless-resume behaviour: consumed external turns are stripped
-    // and their results threaded to the agent keyed by deterministic `ext:` id.
-    const { results: externalResults, sanitizedMessages } =
-      buildExternalResults(normalized.messages);
-
-    const augmentedOptions = session
-      ? {
-          ...normalized.options,
-          sessionId: session.sessionId,
-          trace: { traceId: session.traceId },
-          toolAvailability: session.graph.toolAvailability,
-          pendingToolResults: session.graph.pendingToolResults,
-          externalResults,
-        }
-      : { ...normalized.options, externalResults };
-
-    if (normalized.stream) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      });
-
-      for await (const event of adapter.transformStream(
-        agent.streamProcess(sanitizedMessages, augmentedOptions),
-        normalized.context,
-      )) {
-        const eventLine = event.event ? `event: ${event.event}\n` : '';
-        res.write(`${eventLine}data: ${event.data}\n\n`);
-      }
-      res.end();
-      return;
-    }
-
-    // Non-streaming
-    const result = await agent.process(sanitizedMessages, augmentedOptions);
-    res.setHeader('Content-Type', 'application/json');
-    if (!result.ok) {
-      res.writeHead(500);
-      res.end(
-        JSON.stringify(
-          adapter.formatError?.(result.error, normalized.context) ?? {
-            error: {
-              message: result.error.message,
-              type: result.error.code,
-            },
-          },
-        ),
-      );
-      return;
-    }
-    res.writeHead(200);
-    res.end(
-      JSON.stringify(adapter.formatResult(result.value, normalized.context)),
-    );
-  }
-
-  private async _handleChat(
-    req: IncomingMessage,
-    res: ServerResponse,
-    _requestLogger: IRequestLogger,
-    smartAgent: SmartAgent,
-    _chat: SmartAgentHandle['chat'],
-    _streamChat: SmartAgentHandle['streamChat'],
-    log: (e: Record<string, unknown>) => void,
-    modelProvider?: IModelProvider,
-    session?: { sessionId: string; traceId: string; graph: SessionGraph },
-  ): Promise<void> {
-    const rawBody = await readBody(req);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawBody);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(jsonError('Invalid JSON body', 'invalid_request_error'));
-      return;
-    }
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      !Array.isArray((parsed as Record<string, unknown>).messages)
-    ) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(
-        jsonError(
-          'messages must be a non-empty array',
-          'invalid_request_error',
-        ),
-      );
-      return;
-    }
-
-    const body = parsed as {
-      messages: Array<{
-        role: string;
-        content: unknown;
-        tool_call_id?: unknown;
-        tool_calls?: unknown;
-      }>;
-      model?: string;
-      temperature?: number;
-      max_tokens?: number;
-      top_p?: number;
-      stop?: string | string[];
-      tools?: unknown[];
-      stream?: boolean;
-      stream_options?: { include_usage?: boolean };
-    };
-
-    const extractText = (c: unknown): string => {
-      if (c === null || c === undefined) return '';
-      if (typeof c === 'string') return c;
-      if (!Array.isArray(c)) return '';
-      return c
-        .filter(
-          (b): b is { type: 'text'; text: string } =>
-            typeof b === 'object' &&
-            b !== null &&
-            (b as { type?: unknown }).type === 'text' &&
-            typeof (b as { text?: unknown }).text === 'string',
-        )
-        .map((b) => b.text)
-        .join('\n');
-    };
-
-    const userMessages = body.messages.filter((m) => m.role === 'user');
-    if (userMessages.length === 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(
-        jsonError(
-          'at least one message with role "user" is required',
-          'invalid_request_error',
-        ),
-      );
-      return;
-    }
-
-    // Prefer the session injected by `_withSession` (cookie identity); fall
-    // back to the legacy x-session-id header / 'default' bucket only when no
-    // session was wired (defensive — production routes always inject one).
-    const traceId = session?.traceId ?? randomUUID();
-    const sessionId =
-      session?.sessionId ??
-      (req.headers['x-session-id'] as string) ??
-      'default';
-    const sessionLogger = new SessionLogger(
-      this.cfg.logDir || null,
-      sessionId,
-      traceId,
-    );
-    const toolsValidationMode =
-      this.cfg.agent?.externalToolsValidationMode ?? 'permissive';
-    const externalToolsValidation = normalizeAndValidateExternalTools(
-      body.tools,
-    );
-    const externalTools = externalToolsValidation.tools;
-    if (externalToolsValidation.errors.length > 0) {
-      log({
-        event: 'invalid_external_tools_detected',
-        traceId,
-        sessionId,
-        mode: toolsValidationMode,
-        count: externalToolsValidation.errors.length,
-        errors: externalToolsValidation.errors,
-      });
-      sessionLogger.logStep('invalid_external_tools_detected', {
-        mode: toolsValidationMode,
-        count: externalToolsValidation.errors.length,
-        errors: externalToolsValidation.errors,
-      });
-      if (toolsValidationMode === 'strict') {
-        const firstError = externalToolsValidation.errors[0];
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonValidationError(
-            firstError.message,
-            firstError.code,
-            firstError.param,
-          ),
-        );
-        return;
-      }
-    }
-
-    const t0 = Date.now();
-    log({ event: 'request_start', stream: body.stream ?? false, traceId });
-
-    const opts = {
-      stream: body.stream,
-      externalTools,
-      sessionId,
-      trace: { traceId },
-      sessionLogger,
-      model: body.model,
-      ...(session
-        ? {
-            toolAvailability: session.graph.toolAvailability,
-            pendingToolResults: session.graph.pendingToolResults,
-          }
-        : {}),
-      ...(body.temperature !== undefined
-        ? { temperature: body.temperature }
-        : {}),
-      ...(body.max_tokens !== undefined ? { maxTokens: body.max_tokens } : {}),
-      ...(body.top_p !== undefined ? { topP: body.top_p } : {}),
-      ...(body.stop !== undefined
-        ? { stop: Array.isArray(body.stop) ? body.stop : [body.stop] }
-        : {}),
-    };
-
-    const responseModel =
-      body.model ?? modelProvider?.getModel() ?? 'smart-agent';
-
-    const normalizedMessages = body.messages
-      .map((m) => {
-        const role = m.role as Message['role'];
-        const normalizedMessage: Message = {
-          role,
-          content: extractText(m.content),
+  /**
+   * Build the PUT /v1/config hot-swap seam over this server's private state.
+   * The setters write the SAME `_mainLlm`/`_classifierLlm`/`_helperLlm` fields
+   * RoleLlmResolver's live accessors read, so the hot-swap stays observable.
+   * A private object literal — NOT `implements` — so the public class shape is
+   * unchanged (byte-stable public API).
+   */
+  private _configUpdateTarget(): IConfigUpdateTarget {
+    return {
+      modelResolver: this.cfg.modelResolver,
+      setMainLlm: (llm) => {
+        this._mainLlm = llm;
+      },
+      setClassifierLlm: (llm) => {
+        this._classifierLlm = llm;
+      },
+      setHelperLlm: (llm) => {
+        this._helperLlm = llm;
+      },
+      mirrorAgentCfg: (patch) => {
+        const merged: Record<string, unknown> = {
+          ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
+          ...patch,
         };
-
-        if (role === 'tool') {
-          if (typeof m.tool_call_id === 'string' && m.tool_call_id.trim()) {
-            normalizedMessage.tool_call_id = m.tool_call_id;
-          } else {
-            sessionLogger.logStep('drop_orphan_tool_message', {
-              reason: 'missing_tool_call_id',
-            });
-            return null;
-          }
-        }
-
-        if (role === 'assistant' && Array.isArray(m.tool_calls)) {
-          const toolCalls = m.tool_calls
-            .filter(
-              (
-                tc,
-              ): tc is {
-                id: string;
-                type: 'function';
-                function: { name: string; arguments: string };
-              } =>
-                typeof tc === 'object' &&
-                tc !== null &&
-                typeof (tc as { id?: unknown }).id === 'string' &&
-                (tc as { type?: unknown }).type === 'function' &&
-                typeof (tc as { function?: { name?: unknown } }).function
-                  ?.name === 'string' &&
-                typeof (tc as { function?: { arguments?: unknown } }).function
-                  ?.arguments === 'string',
-            )
-            .map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              },
-            }));
-
-          if (toolCalls.length > 0) {
-            normalizedMessage.tool_calls = toolCalls;
-            if (!normalizedMessage.content) normalizedMessage.content = null;
-          }
-        }
-
-        return normalizedMessage;
-      })
-      .filter((m): m is Message => m !== null);
-
-    // #171 (review#11): consume external (client-executed) tool result turns
-    // from the incoming history into a validated `extId → result` map and strip
-    // those raw turns from the messages forwarded to the agent (so no internal
-    // LLM call ever sees an unmatched assistant tool_calls). On a normal request
-    // with no external history this returns the messages unchanged + an empty
-    // map — a safe no-op. The map is threaded via options.externalResults.
-    const { results: externalResults, sanitizedMessages } =
-      buildExternalResults(normalizedMessages);
-
-    const invalidToolsHeader =
-      externalToolsValidation.errors.length > 0
-        ? {
-            'x-smartagent-invalid-tools': String(
-              externalToolsValidation.errors.length,
-            ),
-          }
-        : {};
-
-    if (body.stream) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-        ...invalidToolsHeader,
-      });
-      const id = `chatcmpl-${randomUUID()}`;
-      const created = Math.floor(Date.now() / 1000);
-
-      const stream = smartAgent.streamProcess(sanitizedMessages, {
-        ...opts,
-        externalResults,
-      });
-      let firstChunk = true;
-      let finishReasonSent = false;
-      let lastUsage: {
-        prompt_tokens: number;
-        completion_tokens: number;
-        total_tokens: number;
-      } | null = null;
-
-      for await (const chunk of stream) {
-        if (!chunk.ok) {
-          const errorChunk = {
-            id,
-            object: 'chat.completion.chunk',
-            created,
-            model: responseModel,
-            choices: [
-              {
-                index: 0,
-                delta: { content: `[Error] ${chunk.error.message}` },
-                finish_reason: 'stop',
-              },
-            ],
-          };
-          res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
-          finishReasonSent = true;
-          break;
-        }
-        // SSE heartbeat comment — keeps connection alive, ignored by clients
-        if (chunk.value.heartbeat) {
-          const hb = chunk.value.heartbeat;
-          res.write(`: heartbeat tool=${hb.tool} elapsed=${hb.elapsed}ms\n\n`);
-          continue;
-        }
-        // SSE timing breakdown comment — sent with the final chunk
-        if (chunk.value.timing) {
-          const parts = chunk.value.timing.map(
-            (t: { phase: string; duration: number }) =>
-              `${t.phase}=${t.duration}ms`,
-          );
-          res.write(`: timing ${parts.join(' ')}\n\n`);
-        }
-        if (chunk.value.usage) {
-          lastUsage = {
-            prompt_tokens: chunk.value.usage.promptTokens,
-            completion_tokens: chunk.value.usage.completionTokens,
-            total_tokens: chunk.value.usage.totalTokens,
-          };
-        }
-        const baseResponse = {
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model: responseModel,
-          usage: null,
-        };
-
-        if (firstChunk) {
-          res.write(
-            `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: { role: 'assistant', content: chunk.value.content || '' }, finish_reason: null }] })}\n\n`,
-          );
-          firstChunk = false;
-          if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
-        }
-
-        if (chunk.value.content || chunk.value.toolCalls) {
-          const delta: Record<string, unknown> = {};
-          if (chunk.value.content) delta.content = chunk.value.content;
-          if (chunk.value.toolCalls) {
-            delta.tool_calls = chunk.value.toolCalls.map(
-              (call: StreamToolCall, index: number) => {
-                const tc = toToolCallDelta(call, index);
-                return {
-                  index: tc.index,
-                  id: tc.id,
-                  type: 'function',
-                  function: {
-                    name: tc.name,
-                    arguments: tc.arguments || '',
-                  },
-                };
-              },
-            );
-          }
-          res.write(
-            `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
-          );
-        }
-
-        if (chunk.value.finishReason) {
-          res.write(
-            `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: mapStopReason(chunk.value.finishReason as StopReason) }] })}\n\n`,
-          );
-          finishReasonSent = true;
-        }
-      }
-
-      if (!finishReasonSent) {
-        const baseResponse = {
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model: responseModel,
-          usage: null,
-        };
-        res.write(
-          `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
-        );
-      }
-
-      if (
-        (this.cfg.reportUsage !== false ||
-          body.stream_options?.include_usage) &&
-        lastUsage
-      ) {
-        res.write(
-          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
-        );
-      }
-      res.write('data: [DONE]\n\n');
-      res.end();
-      log({
-        event: 'request_done',
-        ok: true,
-        stream: true,
-        finishReason: finishReasonSent ? 'sent' : 'fallback_stop',
-        durationMs: Date.now() - t0,
-      });
-      return;
-    }
-
-    const result = await smartAgent.process(sanitizedMessages, {
-      ...opts,
-      externalResults,
-    });
-    log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
-    const finalContent = result.ok
-      ? result.value.content ||
-        (result.value.toolCalls ? null : '(no response)')
-      : `Error: ${result.error.message}`;
-    const finalFinishReason = result.ok
-      ? mapStopReason(result.value.stopReason)
-      : 'stop';
-    let finalUsage = null;
-    if (result.ok && result.value.usage) {
-      finalUsage = {
-        prompt_tokens: result.value.usage.promptTokens,
-        completion_tokens: result.value.usage.completionTokens,
-        total_tokens: result.value.usage.totalTokens,
-      };
-    }
-
-    const message: Record<string, unknown> = {
-      role: 'assistant',
-      content: finalContent,
+        (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
+      },
+      drainWorkers: () => this._workers.drain(),
+      invalidateSessions: () =>
+        this._lifecycle?.invalidateAll() ?? Promise.resolve(),
     };
-    if (result.ok && result.value.toolCalls) {
-      message.tool_calls = result.value.toolCalls;
-    }
-
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      ...invalidToolsHeader,
-    });
-    res.end(
-      JSON.stringify({
-        id: `chatcmpl-${randomUUID()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: responseModel,
-        choices: [
-          {
-            index: 0,
-            message,
-            finish_reason: finalFinishReason,
-          },
-        ],
-        usage: finalUsage || {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-        },
-      }),
-    );
-  }
-
-  /** Whitelisted agent config fields allowed via PUT /v1/config. */
-  private static readonly AGENT_CONFIG_FIELDS = new Set([
-    'maxIterations',
-    'maxToolCalls',
-    'ragQueryK',
-    'toolUnavailableTtlMs',
-    'showReasoning',
-    'historyAutoSummarizeLimit',
-    'classificationEnabled',
-  ]);
-
-  private async _handleConfigUpdate(
-    req: IncomingMessage,
-    res: ServerResponse,
-    smartAgent: SmartAgent,
-  ): Promise<void> {
-    const raw = await readBody(req);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(jsonError('Invalid JSON body', 'invalid_request_error'));
-      return;
-    }
-
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(
-        jsonError(
-          'Request body must be a JSON object',
-          'invalid_request_error',
-        ),
-      );
-      return;
-    }
-
-    const body = parsed as Record<string, unknown>;
-
-    // --- Validate agent fields against whitelist ---
-    if (body.agent !== undefined) {
-      if (
-        typeof body.agent !== 'object' ||
-        body.agent === null ||
-        Array.isArray(body.agent)
-      ) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError('"agent" must be a JSON object', 'invalid_request_error'),
-        );
-        return;
-      }
-      const agentFields = body.agent as Record<string, unknown>;
-      const unsupported = Object.keys(agentFields).filter(
-        (k) => !SmartServer.AGENT_CONFIG_FIELDS.has(k),
-      );
-      if (unsupported.length > 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError(
-            `Unsupported agent config fields: ${unsupported.join(', ')}`,
-            'invalid_request_error',
-          ),
-        );
-        return;
-      }
-    }
-
-    // --- Validate and resolve models (atomic: resolve ALL before mutating) ---
-    let resolvedModels: SmartAgentReconfigureOptions | undefined;
-    if (body.models !== undefined) {
-      if (
-        typeof body.models !== 'object' ||
-        body.models === null ||
-        Array.isArray(body.models)
-      ) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError('"models" must be a JSON object', 'invalid_request_error'),
-        );
-        return;
-      }
-      if (!this.cfg.modelResolver) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError('model resolver not configured', 'invalid_request_error'),
-        );
-        return;
-      }
-      const modelFields = body.models as Record<string, unknown>;
-      const validKeys = new Set([
-        'mainModel',
-        'classifierModel',
-        'helperModel',
-      ]);
-      const unknownKeys = Object.keys(modelFields).filter(
-        (k) => !validKeys.has(k),
-      );
-      if (unknownKeys.length > 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError(
-            `Unknown model fields: ${unknownKeys.join(', ')}`,
-            'invalid_request_error',
-          ),
-        );
-        return;
-      }
-      try {
-        const resolver = this.cfg.modelResolver;
-        const [mainLlm, classifierLlm, helperLlm] = await Promise.all([
-          modelFields.mainModel
-            ? resolver.resolve(String(modelFields.mainModel), 'main')
-            : undefined,
-          modelFields.classifierModel
-            ? resolver.resolve(
-                String(modelFields.classifierModel),
-                'classifier',
-              )
-            : undefined,
-          modelFields.helperModel
-            ? resolver.resolve(String(modelFields.helperModel), 'helper')
-            : undefined,
-        ]);
-        resolvedModels = {};
-        if (mainLlm) resolvedModels.mainLlm = mainLlm;
-        if (classifierLlm) resolvedModels.classifierLlm = classifierLlm;
-        if (helperLlm) resolvedModels.helperLlm = helperLlm;
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(jsonError(String(err), 'server_error'));
-        return;
-      }
-    }
-
-    // --- All validation passed — apply mutations ---
-    if (resolvedModels) {
-      smartAgent.reconfigure(resolvedModels);
-      // Mirror onto the hoisted globals consumed by `buildSessionAgent` so
-      // freshly-built session graphs pick up the new LLMs by reference
-      // (otherwise `this._mainLlm` etc. would keep pointing at the originals
-      // captured during `start()`).
-      if (resolvedModels.mainLlm) this._mainLlm = resolvedModels.mainLlm;
-      if (resolvedModels.classifierLlm)
-        this._classifierLlm = resolvedModels.classifierLlm;
-      if (resolvedModels.helperLlm) this._helperLlm = resolvedModels.helperLlm;
-    }
-    if (body.agent) {
-      const patch = body.agent as Record<string, unknown>;
-      smartAgent.applyConfigUpdate(patch);
-      // Mirror onto `this.cfg.agent` so freshly-built session graphs (which
-      // read `this.cfg.agent` in `buildSessionAgent`) observe the update.
-      // Deep-merge to preserve untouched startup fields; replacing the whole
-      // `agent` block would drop YAML defaults the validator already applied.
-      const merged: Record<string, unknown> = {
-        ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
-        ...patch,
-      };
-      (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
-    }
-    // Invalidate per-session SmartAgents + the worker-LLM cache so the next
-    // request mints a session graph that observes the just-applied config.
-    // Without this, chat routes dispatch to `graph.agent` (the per-session
-    // SmartAgent) which was built with the OLD config, and the PUT is a
-    // no-op from the consumer's perspective. Failures are non-fatal so the
-    // 200 response isn't blocked by a dispose hiccup.
-    if (resolvedModels || body.agent) {
-      // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing the
-      // cache so MCP clients owned by the discarded handles disconnect.
-      await this._workers.drain();
-      try {
-        await this._lifecycle?.invalidateAll();
-      } catch {
-        // Swallow: cleanup errors must not turn a successful config update
-        // into a 500. The next request will still get a fresh build because
-        // `_workers.cache` is already cleared and dispose is idempotent.
-      }
-    }
-    // --- Return updated config ---
-    const models = smartAgent.getActiveConfig();
-    const agent = smartAgent.getAgentConfig();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ models, agent }));
   }
 }
 
