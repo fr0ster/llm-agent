@@ -90,6 +90,11 @@ import {
 } from './http/response-helpers.js';
 import { HttpRouteTable, type RouteContext } from './http/route-table.js';
 import {
+  handleSessionDelete,
+  handleSessionResume,
+  handleSessionsList,
+} from './http/sessions-route-handler.js';
+import {
   type IRoleLlmResolver,
   makeDefaultRoleLlm,
   RoleLlmResolver,
@@ -466,9 +471,6 @@ import {
 
 import {
   buildSessionLifecycle,
-  handleDeleteSession,
-  handleListSessions,
-  handleResumeSession,
   recordSessionEnd,
   recordSessionStart,
   resolveSubAgentRagRegistry,
@@ -2514,111 +2516,35 @@ export class SmartServer {
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/sessions',
-      handle: async (rc) => {
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const identity = resolved.identity.sessionId;
-        const body = await handleListSessions(
+      handle: (rc) =>
+        handleSessionsList(
+          rc,
+          rc.server._lifecycle,
           rc.server._sessionMetaStore,
-          identity,
-        );
-        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify(body));
-      },
+        ),
     });
     // POST /v1/sessions/:id/resume — resume a session
     table.add({
       method: 'POST',
       match: (p) => p.match(/^\/v1\/sessions\/([^/]+)\/resume$/) ?? false,
-      handle: async (rc) => {
-        const resumeMatch = rc.urlPath.match(
-          /^\/v1\/sessions\/([^/]+)\/resume$/,
-        );
-        if (!resumeMatch) return;
-        const sessionId = resumeMatch[1];
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const identity = resolved.identity.sessionId;
-        const body = await handleResumeSession(
+      handle: (rc) =>
+        handleSessionResume(
+          rc,
+          rc.server._lifecycle,
           rc.server._sessionMetaStore,
-          identity,
-          sessionId,
-        );
-        const status = body.ok ? 200 : 404;
-        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify(body));
-      },
+        ),
     });
     // DELETE /v1/sessions/:id — delete a session
     table.add({
       method: 'DELETE',
       match: (p) => p.match(/^\/v1\/sessions\/([^/]+)$/) ?? false,
-      handle: async (rc) => {
-        const deleteMatch = rc.urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
-        if (!deleteMatch) return;
-        const sessionId = deleteMatch[1];
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const identity = resolved.identity.sessionId;
-        const evictFn = async (sid: string) => {
-          // (a) Evict/dispose this session's graph from the registry.
-          await lifecycle.registry.evictOne(sid);
-          // (b) Evict the session's knowledge from the shared backend. This
-          // clears the long-lived in-memory backend AND removes the JSONL files
-          // (JsonlKnowledgeBackend.deleteSession), so a same-id re-entry never
-          // rehydrates stale entries — matching the README "evicts its
-          // knowledge-RAG entries" contract.
-          await rc.server._stepperKnowledgeBackend?.deleteSession(sid);
-        };
-        const body = await handleDeleteSession(
+      handle: (rc) =>
+        handleSessionDelete(
+          rc,
+          rc.server._lifecycle,
           rc.server._sessionMetaStore,
-          identity,
-          sessionId,
-          evictFn,
-        );
-        const status = body.ok ? 200 : 404;
-        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify(body));
-      },
+          rc.server._stepperKnowledgeBackend,
+        ),
     });
     // /v1/config or /config — any method (dispatches GET/PUT/405 internally)
     table.add({
