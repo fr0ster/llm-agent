@@ -65,6 +65,7 @@ import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
+import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
@@ -692,86 +693,20 @@ export class SmartAgent {
 
     try {
       if (mode === 'pass') {
-        const messages: Message[] =
+        const passMessages: Message[] =
           typeof textOrMessages === 'string'
             ? [{ role: 'user' as const, content: textOrMessages }]
             : textOrMessages;
         opts?.sessionLogger?.logStep('client_request', { textOrMessages });
-        const passStart = Date.now();
-        const traceId2 = opts?.trace?.traceId;
-        const stream = this._mainLlm.streamChat(messages, externalTools, opts);
-        let passContent = '';
-        const passToolCalls: unknown[] = [];
-        let accPrompt = 0;
-        let accCompletion = 0;
-        let accTotal = 0;
-        let hasUsage = false;
-        const logPassUsage = (): void => {
-          // Log only if a usage chunk was actually seen (mirrors
-          // LoggingLlm.streamChat) — avoids creating a zero tool-loop bucket.
-          if (!hasUsage) return;
-          this.requestLogger.logLlmCall({
-            component: 'tool-loop',
-            model: this._mainLlm.model ?? 'unknown',
-            promptTokens: accPrompt,
-            completionTokens: accCompletion,
-            totalTokens: accTotal,
-            durationMs: Date.now() - passStart,
-            requestId: traceId2,
-          });
-        };
-        for await (const chunk of stream) {
-          if (!chunk.ok) {
-            // process() returns on the first error chunk → post-loop code never
-            // runs. Log accumulated (partial) spend BEFORE yielding the error.
-            logPassUsage();
-            yield chunk;
-            rootSpan.setStatus('ok');
-            rootSpan.end();
-            return;
-          }
-          if (chunk.value.reset) {
-            passContent = '';
-            passToolCalls.length = 0;
-            continue;
-          }
-          if (chunk.value.content) passContent += chunk.value.content;
-          if (chunk.value.toolCalls)
-            passToolCalls.push(...chunk.value.toolCalls);
-          if (chunk.value.usage) {
-            accPrompt += chunk.value.usage.promptTokens;
-            accCompletion += chunk.value.usage.completionTokens;
-            accTotal += chunk.value.usage.totalTokens;
-            hasUsage = true;
-          }
-          // Strip usage from the forwarded chunk: the single usage-bearing chunk
-          // is the terminal getSummary chunk below (one usage chunk per request).
-          const { usage: _omitUsage, ...rest } = chunk.value;
-          yield { ok: true, value: rest };
+        for await (const chunk of runPassThrough(
+          this._mainLlm,
+          this.requestLogger,
+          passMessages,
+          externalTools,
+          opts,
+        )) {
+          yield chunk;
         }
-        opts?.sessionLogger?.logStep('llm_response_pass', {
-          content: passContent,
-          toolCalls: passToolCalls.length > 0 ? passToolCalls : undefined,
-        });
-        logPassUsage();
-        const passSummary = traceId2
-          ? this.requestLogger.getSummary(traceId2)
-          : undefined;
-        yield {
-          ok: true,
-          value: {
-            content: '',
-            finishReason: 'stop',
-            ...(passSummary
-              ? {
-                  usage: {
-                    ...summaryToUsage(passSummary),
-                    models: passSummary.byModel,
-                  },
-                }
-              : {}),
-          },
-        };
         rootSpan.setStatus('ok');
         rootSpan.end();
         return;
