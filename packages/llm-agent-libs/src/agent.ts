@@ -48,6 +48,7 @@ import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
+import { buildAgentHealthSnapshot } from './health/agent-health.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 
 export {
@@ -479,80 +480,17 @@ export class SmartAgent {
       maxTokens: 1,
     };
 
-    const results = {
-      llm: false,
-      rag: false,
-      mcp: [] as { name: string; ok: boolean; error?: string }[],
-    };
     try {
-      if (this._mainLlm.healthCheck) {
-        const hc = await this._mainLlm.healthCheck(healthOptions);
-        results.llm = hc.ok && hc.value;
-      } else {
-        // Fallback for ILlm implementations without healthCheck
-        const llmRes = await this._mainLlm.chat(
-          [{ role: 'user' as const, content: 'ping' }],
-          [],
-          healthOptions,
-        );
-        results.llm = llmRes.ok;
-      }
-    } catch {
-      results.llm = false;
-    }
-    try {
-      const firstStore = Object.values(this.deps.ragStores)[0];
-      const ragRes = firstStore
-        ? await firstStore.healthCheck(healthOptions)
-        : { ok: true as const, value: undefined };
-      results.rag = ragRes.ok;
-    } catch {
-      results.rag = false;
-    }
-    try {
-      const mcpChecks = await Promise.all(
-        this.mcpToolRegistry.getActiveClients().map(async (client) => {
-          try {
-            if (client.healthCheck) {
-              const hc = await client.healthCheck(healthOptions);
-              return {
-                name: 'mcp-client',
-                ok: hc.ok,
-                error:
-                  hc.ok || !hc.error
-                    ? undefined
-                    : hc.error instanceof Error
-                      ? hc.error.message
-                      : String(hc.error),
-              };
-            }
-            // Fallback for IMcpClient implementations without healthCheck
-            const tools = await client.listTools(healthOptions);
-            return {
-              name: 'mcp-client',
-              ok: tools.ok,
-              error:
-                tools.ok || !tools.error
-                  ? undefined
-                  : tools.error instanceof Error
-                    ? tools.error.message
-                    : String(tools.error),
-            };
-          } catch (err) {
-            return {
-              name: 'mcp-client',
-              ok: false,
-              error: err instanceof Error ? err.message : String(err),
-            };
-          }
-        }),
+      const snapshot = await buildAgentHealthSnapshot(
+        this._mainLlm,
+        this.deps.ragStores,
+        this.mcpToolRegistry.getActiveClients(),
+        healthOptions,
       );
-      results.mcp = mcpChecks;
-    } catch {
-      // AbortSignal timeout — leave mcp as empty
+      return { ok: true, value: snapshot };
+    } finally {
+      clearTimeout_();
     }
-    clearTimeout_();
-    return { ok: true, value: results };
   }
 
   async process(
