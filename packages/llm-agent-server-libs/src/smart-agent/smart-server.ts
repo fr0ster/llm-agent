@@ -9,7 +9,6 @@ import { createRequire } from 'node:module';
 import { resolve as pathResolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
-  CallOptions,
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
@@ -28,7 +27,6 @@ import type {
   ISkillPluginHost,
   ISmartAgent,
   IToolsRagHandle,
-  LlmTool,
   LoadedPlugins,
   PluginExports,
   SubAgentRegistry,
@@ -37,7 +35,6 @@ import {
   type IRag,
   isMcpUnavailable,
   isReadinessReporter,
-  QueryEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
@@ -106,6 +103,7 @@ import {
   RoleLlmResolver,
 } from './llm/role-llm-resolver.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
+import { makeToolsRagHandle } from './tools-rag-handle.js';
 
 export { writeNotReady } from './http/response-helpers.js';
 
@@ -1859,71 +1857,12 @@ export class SmartServer {
     resolvedEmbedder: IEmbedder | undefined;
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder } = input;
-
-    // Tools RAG handle over the tools store + MCP catalog.
-    const stepperMcpClients = this._sharedMcpClients ?? [];
-    let catalogCache: Map<string, LlmTool> | undefined;
-    const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
-      if (catalogCache) return catalogCache;
-      const catalog = new Map<string, LlmTool>();
-      await Promise.allSettled(
-        stepperMcpClients.map(async (client) => {
-          const result = await client.listTools();
-          if (result.ok) {
-            for (const t of result.value) {
-              if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
-            }
-          }
-        }),
-      );
-      catalogCache = catalog;
-      return catalog;
-    };
-    this._toolsRagHandle = {
-      async query(text: string, k?: number, options?: CallOptions) {
-        const limit = k ?? 20;
-        const catalog = await ensureCatalog();
-        if (toolsRag && resolvedEmbedder) {
-          // Pass options (requestLogger + trace) so the wrapped embedder logs
-          // this query-embedding against the request.
-          const embedding = new QueryEmbedding(text, resolvedEmbedder, options);
-          const ragResult = await toolsRag.query(embedding, limit);
-          if (ragResult.ok) {
-            const hits: LlmTool[] = [];
-            for (const r of ragResult.value) {
-              const id = r.metadata.id as string | undefined;
-              if (id?.startsWith('tool:')) {
-                const name = id.slice(5).replace(/:.*$/, '');
-                const tool = catalog.get(name);
-                if (tool) hits.push(tool);
-              }
-            }
-            if (hits.length > 0) return hits;
-          }
-        }
-        return [...catalog.values()].slice(0, limit);
-      },
-      lookup(name: string) {
-        return catalogCache?.get(name);
-      },
-    };
-
-    // F2: eagerly populate the MCP tool catalog at startup (MCP is connected
-    // above), so the SYNC `lookup(name)` contract (IToolsRagHandle.lookup) returns
-    // a tool schema BEFORE any `query()` runs. `ensureCatalog` is idempotent —
-    // later `query()` calls reuse the cached map. Guard against a catalog-load
-    // failure so startup never crashes: on failure `catalogCache` stays unset and
-    // `lookup` returns undefined (today's worst case), while the happy path works.
-    try {
-      await ensureCatalog();
-    } catch (err) {
-      this.cfg.log?.({
-        event: 'tools_catalog_eager_load_failed',
-        message:
-          'tools catalog eager-load failed; lookup() returns undefined until first query()',
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    this._toolsRagHandle = await makeToolsRagHandle(
+      this._sharedMcpClients ?? [],
+      toolsRag,
+      resolvedEmbedder,
+      this.cfg.log,
+    );
   }
 
   /**
