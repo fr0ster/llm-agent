@@ -9,7 +9,6 @@ import { createRequire } from 'node:module';
 import { resolve as pathResolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
-  CallOptions,
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
@@ -28,7 +27,6 @@ import type {
   ISkillPluginHost,
   ISmartAgent,
   IToolsRagHandle,
-  LlmTool,
   LoadedPlugins,
   PluginExports,
   SubAgentRegistry,
@@ -37,7 +35,6 @@ import {
   type IRag,
   isMcpUnavailable,
   isReadinessReporter,
-  QueryEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
@@ -83,6 +80,11 @@ import {
   handleConfigUpdate,
   type IConfigUpdateTarget,
 } from './http/config-route-handler.js';
+import { handleHealthRoute } from './http/health-route-handler.js';
+import {
+  handleEmbeddingModelsList,
+  handleModelsList,
+} from './http/models-route-handler.js';
 import {
   CORS_HEADERS,
   jsonError,
@@ -90,11 +92,18 @@ import {
 } from './http/response-helpers.js';
 import { HttpRouteTable, type RouteContext } from './http/route-table.js';
 import {
+  handleSessionDelete,
+  handleSessionResume,
+  handleSessionsList,
+} from './http/sessions-route-handler.js';
+import { handleUsageRoute } from './http/usage-route-handler.js';
+import {
   type IRoleLlmResolver,
   makeDefaultRoleLlm,
   RoleLlmResolver,
 } from './llm/role-llm-resolver.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
+import { makeToolsRagHandle } from './tools-rag-handle.js';
 
 export { writeNotReady } from './http/response-helpers.js';
 
@@ -466,9 +475,6 @@ import {
 
 import {
   buildSessionLifecycle,
-  handleDeleteSession,
-  handleListSessions,
-  handleResumeSession,
   recordSessionEnd,
   recordSessionStart,
   resolveSubAgentRagRegistry,
@@ -1851,71 +1857,12 @@ export class SmartServer {
     resolvedEmbedder: IEmbedder | undefined;
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder } = input;
-
-    // Tools RAG handle over the tools store + MCP catalog.
-    const stepperMcpClients = this._sharedMcpClients ?? [];
-    let catalogCache: Map<string, LlmTool> | undefined;
-    const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
-      if (catalogCache) return catalogCache;
-      const catalog = new Map<string, LlmTool>();
-      await Promise.allSettled(
-        stepperMcpClients.map(async (client) => {
-          const result = await client.listTools();
-          if (result.ok) {
-            for (const t of result.value) {
-              if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
-            }
-          }
-        }),
-      );
-      catalogCache = catalog;
-      return catalog;
-    };
-    this._toolsRagHandle = {
-      async query(text: string, k?: number, options?: CallOptions) {
-        const limit = k ?? 20;
-        const catalog = await ensureCatalog();
-        if (toolsRag && resolvedEmbedder) {
-          // Pass options (requestLogger + trace) so the wrapped embedder logs
-          // this query-embedding against the request.
-          const embedding = new QueryEmbedding(text, resolvedEmbedder, options);
-          const ragResult = await toolsRag.query(embedding, limit);
-          if (ragResult.ok) {
-            const hits: LlmTool[] = [];
-            for (const r of ragResult.value) {
-              const id = r.metadata.id as string | undefined;
-              if (id?.startsWith('tool:')) {
-                const name = id.slice(5).replace(/:.*$/, '');
-                const tool = catalog.get(name);
-                if (tool) hits.push(tool);
-              }
-            }
-            if (hits.length > 0) return hits;
-          }
-        }
-        return [...catalog.values()].slice(0, limit);
-      },
-      lookup(name: string) {
-        return catalogCache?.get(name);
-      },
-    };
-
-    // F2: eagerly populate the MCP tool catalog at startup (MCP is connected
-    // above), so the SYNC `lookup(name)` contract (IToolsRagHandle.lookup) returns
-    // a tool schema BEFORE any `query()` runs. `ensureCatalog` is idempotent —
-    // later `query()` calls reuse the cached map. Guard against a catalog-load
-    // failure so startup never crashes: on failure `catalogCache` stays unset and
-    // `lookup` returns undefined (today's worst case), while the happy path works.
-    try {
-      await ensureCatalog();
-    } catch (err) {
-      this.cfg.log?.({
-        event: 'tools_catalog_eager_load_failed',
-        message:
-          'tools catalog eager-load failed; lookup() returns undefined until first query()',
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    this._toolsRagHandle = await makeToolsRagHandle(
+      this._sharedMcpClients ?? [],
+      toolsRag,
+      resolvedEmbedder,
+      this.cfg.log,
+    );
   }
 
   /**
@@ -2418,207 +2365,51 @@ export class SmartServer {
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/models' || p === '/models',
-      handle: async (rc) => {
-        const queryString = rc.rawUrl.includes('?')
-          ? rc.rawUrl.split('?')[1]
-          : '';
-        const queryParams = new URLSearchParams(queryString);
-        const excludeEmbedding =
-          queryParams.get('exclude_embedding') === 'true';
-        let data: Array<Record<string, unknown>> = [
-          { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
-        ];
-        if (rc.modelProvider) {
-          const result = await rc.modelProvider.getModels({ excludeEmbedding });
-          if (result.ok) {
-            data = result.value.map((m) => ({
-              id: m.id,
-              object: 'model',
-              owned_by: m.owned_by ?? 'unknown',
-              ...(m.displayName ? { display_name: m.displayName } : {}),
-              ...(m.provider ? { provider: m.provider } : {}),
-              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-              ...(m.contextLength ? { context_length: m.contextLength } : {}),
-              ...(m.streamingSupported !== undefined
-                ? { streaming_supported: m.streamingSupported }
-                : {}),
-              ...(m.deprecated !== undefined
-                ? { deprecated: m.deprecated }
-                : {}),
-            }));
-          }
-        }
-        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify({ object: 'list', data }));
-      },
+      handle: (rc) => handleModelsList(rc),
     });
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/embedding-models' || p === '/embedding-models',
-      handle: async (rc) => {
-        let data: Array<Record<string, unknown>> = [];
-        if (rc.modelProvider?.getEmbeddingModels) {
-          const result = await rc.modelProvider.getEmbeddingModels();
-          if (result.ok) {
-            data = result.value.map((m) => ({
-              id: m.id,
-              object: 'model',
-              owned_by: m.owned_by ?? 'unknown',
-              ...(m.displayName ? { display_name: m.displayName } : {}),
-              ...(m.provider ? { provider: m.provider } : {}),
-              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-              ...(m.contextLength ? { context_length: m.contextLength } : {}),
-              ...(m.streamingSupported !== undefined
-                ? { streaming_supported: m.streamingSupported }
-                : {}),
-              ...(m.deprecated !== undefined
-                ? { deprecated: m.deprecated }
-                : {}),
-            }));
-          }
-        }
-        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify({ object: 'list', data }));
-      },
+      handle: (rc) => handleEmbeddingModelsList(rc),
     });
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/usage',
-      handle: async (rc) => {
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const sessionId = resolved.identity.sessionId;
-        const graph = await lifecycle.acquire(sessionId);
-        try {
-          rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-          rc.res.end(JSON.stringify(graph.logger.getSummary()));
-        } finally {
-          lifecycle.release(sessionId, graph);
-        }
-      },
+      handle: (rc) => handleUsageRoute(rc, rc.server._lifecycle),
     });
     // GET /v1/sessions — list sessions for the current identity
     table.add({
       method: 'GET',
       match: (p) => p === '/v1/sessions',
-      handle: async (rc) => {
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const identity = resolved.identity.sessionId;
-        const body = await handleListSessions(
+      handle: (rc) =>
+        handleSessionsList(
+          rc,
+          rc.server._lifecycle,
           rc.server._sessionMetaStore,
-          identity,
-        );
-        rc.res.writeHead(200, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify(body));
-      },
+        ),
     });
     // POST /v1/sessions/:id/resume — resume a session
     table.add({
       method: 'POST',
       match: (p) => p.match(/^\/v1\/sessions\/([^/]+)\/resume$/) ?? false,
-      handle: async (rc) => {
-        const resumeMatch = rc.urlPath.match(
-          /^\/v1\/sessions\/([^/]+)\/resume$/,
-        );
-        if (!resumeMatch) return;
-        const sessionId = resumeMatch[1];
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const identity = resolved.identity.sessionId;
-        const body = await handleResumeSession(
+      handle: (rc) =>
+        handleSessionResume(
+          rc,
+          rc.server._lifecycle,
           rc.server._sessionMetaStore,
-          identity,
-          sessionId,
-        );
-        const status = body.ok ? 200 : 404;
-        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify(body));
-      },
+        ),
     });
     // DELETE /v1/sessions/:id — delete a session
     table.add({
       method: 'DELETE',
       match: (p) => p.match(/^\/v1\/sessions\/([^/]+)$/) ?? false,
-      handle: async (rc) => {
-        const deleteMatch = rc.urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
-        if (!deleteMatch) return;
-        const sessionId = deleteMatch[1];
-        const lifecycle = rc.server._lifecycle;
-        if (!lifecycle) {
-          rc.res.writeHead(500, { 'Content-Type': 'application/json' });
-          rc.res.end(
-            jsonError('Session lifecycle not initialized', 'server_error'),
-          );
-          return;
-        }
-        const isHttps =
-          (rc.req.socket as { encrypted?: boolean }).encrypted === true ||
-          rc.req.headers['x-forwarded-proto'] === 'https';
-        const resolved = lifecycle.resolve(rc.req.headers['cookie'], isHttps);
-        if (resolved.minted && resolved.setCookie) {
-          rc.res.setHeader('Set-Cookie', resolved.setCookie);
-        }
-        const identity = resolved.identity.sessionId;
-        const evictFn = async (sid: string) => {
-          // (a) Evict/dispose this session's graph from the registry.
-          await lifecycle.registry.evictOne(sid);
-          // (b) Evict the session's knowledge from the shared backend. This
-          // clears the long-lived in-memory backend AND removes the JSONL files
-          // (JsonlKnowledgeBackend.deleteSession), so a same-id re-entry never
-          // rehydrates stale entries — matching the README "evicts its
-          // knowledge-RAG entries" contract.
-          await rc.server._stepperKnowledgeBackend?.deleteSession(sid);
-        };
-        const body = await handleDeleteSession(
+      handle: (rc) =>
+        handleSessionDelete(
+          rc,
+          rc.server._lifecycle,
           rc.server._sessionMetaStore,
-          identity,
-          sessionId,
-          evictFn,
-        );
-        const status = body.ok ? 200 : 404;
-        rc.res.writeHead(status, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify(body));
-      },
+          rc.server._stepperKnowledgeBackend,
+        ),
     });
     // /v1/config or /config — any method (dispatches GET/PUT/405 internally)
     table.add({
@@ -2656,14 +2447,7 @@ export class SmartServer {
     table.add({
       method: 'GET',
       match: (p) => p === '/health' || p === '/v1/health',
-      handle: async (rc) => {
-        const status = await rc.healthChecker.check();
-        // MCP-down ⇒ NOT_READY ⇒ 503 too (not just LLM-unhealthy), so a load
-        // balancer stops routing while MCP is unreachable.
-        const httpCode = status.status === 'unhealthy' || !rc.ready ? 503 : 200;
-        rc.res.writeHead(httpCode, { 'Content-Type': 'application/json' });
-        rc.res.end(JSON.stringify({ ...status, ready: rc.ready }));
-      },
+      handle: (rc) => handleHealthRoute(rc),
     });
     // POST /v1/messages or /messages → Anthropic adapter
     table.add({
