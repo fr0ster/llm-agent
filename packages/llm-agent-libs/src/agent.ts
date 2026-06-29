@@ -64,6 +64,7 @@ import { summaryToUsage } from './logger/session-request-logger.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
+import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
 import {
@@ -802,12 +803,11 @@ export class SmartAgent {
 
       // Pipeline path (when configured via Builder)
       if (this.deps.pipeline) {
-        const stream = this._runStructuredPipeline(
+        const stream = pipelineToStream(
+          this.deps.pipeline,
           textOrMessages,
           externalTools,
           opts,
-          rootSpan,
-          sessionId,
         );
         for await (const chunk of stream) yield chunk;
         rootSpan.setStatus('ok');
@@ -2094,67 +2094,5 @@ export class SmartAgent {
         ...rec,
       ],
     };
-  }
-
-  private async *_runStructuredPipeline(
-    textOrMessages: string | Message[],
-    externalTools: LlmTool[],
-    opts: CallOptions | undefined,
-    _parentSpan: ISpan,
-    _sessionId: string,
-  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
-    if (!this.deps.pipeline) return;
-
-    const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
-
-    const chunkQueue: Result<LlmStreamChunk, OrchestratorError>[] = [];
-    let resolveWait: (() => void) | null = null;
-    let done = false;
-
-    const executorPromise = this.deps.pipeline
-      .execute(
-        textOrMessages,
-        history,
-        opts,
-        (chunk) => {
-          chunkQueue.push(chunk);
-          if (resolveWait) {
-            resolveWait();
-            resolveWait = null;
-          }
-        },
-        externalTools,
-      )
-      .then(() => {
-        done = true;
-        if (resolveWait) {
-          resolveWait();
-          resolveWait = null;
-        }
-      })
-      .catch((err) => {
-        chunkQueue.push({
-          ok: false,
-          error: new OrchestratorError(String(err), 'PIPELINE_ERROR'),
-        });
-        done = true;
-        if (resolveWait) {
-          resolveWait();
-          resolveWait = null;
-        }
-      });
-
-    while (!done || chunkQueue.length > 0) {
-      if (chunkQueue.length > 0) {
-        const chunk = chunkQueue.shift();
-        if (chunk !== undefined) yield chunk;
-      } else if (!done) {
-        await new Promise<void>((r) => {
-          resolveWait = r;
-        });
-      }
-    }
-
-    await executorPromise;
   }
 }
