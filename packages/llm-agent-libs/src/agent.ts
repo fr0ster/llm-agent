@@ -61,6 +61,7 @@ import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { summaryToUsage } from './logger/session-request-logger.js';
+import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
@@ -242,7 +243,7 @@ export class SmartAgent {
   private readonly pendingToolResults: PendingToolResultsRegistry;
   private readonly requestLogger: IRequestLogger;
   private readonly defaultLlmCallStrategy: ILlmCallStrategy;
-  private _activeClients: IMcpClient[];
+  private readonly mcpToolRegistry: IMcpToolRegistry;
   private _mainLlm: ILlm;
   private _classifierLlm: ILlm | undefined;
   private _helperLlm: ILlm | undefined;
@@ -269,7 +270,11 @@ export class SmartAgent {
     if (deps.embedder) deps.embedder = wrapEmbedder(deps.embedder);
     this.defaultLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
-    this._activeClients = [...deps.mcpClients];
+    this.mcpToolRegistry = new McpToolRegistry(
+      deps.mcpClients,
+      deps.connectionStrategy,
+      deps.ragStores,
+    );
     this._mainLlm = deps.mainLlm;
     this._helperLlm = deps.helperLlm;
     this._classifier = deps.classifier;
@@ -279,35 +284,6 @@ export class SmartAgent {
   /** Current main LLM instance. Use this for direct LLM calls that should respect hot-swap. */
   get currentMainLlm(): ILlm {
     return this._mainLlm;
-  }
-
-  private async _resolveActiveClients(opts?: CallOptions): Promise<void> {
-    if (!this.deps.connectionStrategy) return;
-    const result = await this.deps.connectionStrategy.resolve(
-      this._activeClients,
-      opts,
-    );
-    this._activeClients = result.clients;
-    if (result.toolsChanged) {
-      await this._revectorizeTools(result.clients, opts);
-    }
-  }
-
-  private async _revectorizeTools(
-    clients: IMcpClient[],
-    opts?: CallOptions,
-  ): Promise<void> {
-    const toolsRag =
-      this.deps.ragStores.tools ?? Object.values(this.deps.ragStores)[0];
-    if (!toolsRag) return;
-    for (const client of clients) {
-      const result = await client.listTools(opts);
-      if (!result.ok) continue;
-      for (const tool of result.value) {
-        const text = `Tool: ${tool.name} — ${tool.description}`;
-        await toolsRag.writer?.()?.upsertRaw(`tool:${tool.name}`, text, {});
-      }
-    }
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -534,7 +510,7 @@ export class SmartAgent {
     }
     try {
       const mcpChecks = await Promise.all(
-        this._activeClients.map(async (client) => {
+        this.mcpToolRegistry.getActiveClients().map(async (client) => {
           try {
             if (client.healthCheck) {
               const hc = await client.healthCheck(healthOptions);
@@ -838,10 +814,10 @@ export class SmartAgent {
       }
 
       // 2. Decide context and tools for the WHOLE request
-      await this._resolveActiveClients(opts);
+      await this.mcpToolRegistry.resolveActiveClients(opts);
       const actions = subprompts.filter((sp) => sp.type === 'action');
       const hasActions = actions.length > 0;
-      const hasMcpClients = this._activeClients.length > 0;
+      const hasMcpClients = this.mcpToolRegistry.getActiveClients().length > 0;
       const hasRagStores = Object.keys(this.deps.ragStores).length > 0;
       const shouldRetrieve =
         mode === 'hard' || (hasActions && (hasMcpClients || hasRagStores));
@@ -935,7 +911,7 @@ export class SmartAgent {
           rerankedMap[name] = results;
         }
 
-        const { tools: mcpTools } = await this._listAllTools(opts);
+        const { tools: mcpTools } = await this.mcpToolRegistry.resolve(opts);
 
         // Collect all RAG results for tool discovery
         const allRagResults = Object.values(rerankedMap).flat();
@@ -1237,7 +1213,7 @@ export class SmartAgent {
     for (const sp of subprompts) {
       this.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
-    const { toolClientMap } = await this._listAllTools(opts);
+    const { toolClientMap } = await this.mcpToolRegistry.resolve(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
   }
 
@@ -1334,7 +1310,7 @@ export class SmartAgent {
           parent: toolLoopSpan,
           attributes: { 'llm.iteration': iteration + 1 },
         });
-        const refreshed = await this._listAllTools(opts);
+        const refreshed = await this.mcpToolRegistry.resolve(opts);
         const prevNames = [...toolClientMap.keys()];
         toolClientMap.clear();
         for (const [name, client] of refreshed.toolClientMap) {
@@ -1443,7 +1419,7 @@ export class SmartAgent {
               );
 
               if (newToolNames.size > 0) {
-                const refreshed = await this._listAllTools(opts);
+                const refreshed = await this.mcpToolRegistry.resolve(opts);
                 const newMcpTools = refreshed.tools.filter((t) =>
                   newToolNames.has(t.name),
                 );
@@ -2003,31 +1979,6 @@ export class SmartAgent {
       }
       messages = [...messages, ...toolMessages];
     }
-  }
-
-  private async _listAllTools(
-    opts: CallOptions | undefined,
-  ): Promise<{ tools: McpTool[]; toolClientMap: Map<string, IMcpClient> }> {
-    await this._resolveActiveClients(opts);
-    const tools: McpTool[] = [];
-    const toolClientMap = new Map<string, IMcpClient>();
-    const settled = await Promise.allSettled(
-      this._activeClients.map(async (client) => ({
-        client,
-        result: await client.listTools(opts),
-      })),
-    );
-    for (const e of settled) {
-      if (e.status === 'fulfilled' && e.value.result.ok) {
-        for (const t of e.value.result.value) {
-          if (!toolClientMap.has(t.name)) {
-            tools.push(t);
-            toolClientMap.set(t.name, e.value.client);
-          }
-        }
-      }
-    }
-    return { tools, toolClientMap };
   }
 
   private async _toEnglishForRag(
