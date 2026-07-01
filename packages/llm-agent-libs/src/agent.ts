@@ -68,6 +68,10 @@ import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
+import {
+  injectPendingResults,
+  injectToolPriority,
+} from './pipeline/handlers/tool-loop-core.js';
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
@@ -760,37 +764,13 @@ export class SmartAgent {
     const loopStart = Date.now();
     let currentTools = activeTools;
 
-    // Inject tool priority instruction when external tools are present
-    if (externalTools.length > 0) {
-      const systemIdx = messages.findIndex((m) => m.role === 'system');
-      if (systemIdx >= 0) {
-        const sys = messages[systemIdx];
-        messages = [...messages];
-        messages[systemIdx] = {
-          ...sys,
-          content: `${sys.content}\n\nIMPORTANT: You have internal tools and client-provided tools (marked [client-provided] in their description). Always prefer internal tools when they can accomplish the task. Use client-provided tools only when no internal tool can do the job.`,
-        };
-      }
-    }
-
-    // Inject pending internal tool results from previous mixed-call request
-    if (this.pendingToolResults.has(sessionId)) {
-      const pending = await this.pendingToolResults.consume(sessionId);
-      if (pending) {
-        messages = [
-          ...messages,
-          pending.assistantMessage,
-          ...pending.results.map((r) => ({
-            role: 'tool' as const,
-            content: r.text,
-            tool_call_id: r.toolCallId,
-          })),
-        ];
-        opts?.sessionLogger?.logStep('pending_tool_results_injected', {
-          toolNames: pending.results.map((r) => r.toolName),
-        });
-      }
-    }
+    messages = injectToolPriority(messages, externalTools);
+    messages = await injectPendingResults(
+      messages,
+      this.pendingToolResults,
+      sessionId,
+      opts,
+    );
 
     for (let iteration = 0; ; iteration++) {
       let iterationBuffer = '';

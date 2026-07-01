@@ -43,6 +43,7 @@ import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { classifyToolResult } from './escalate-if-unavailable.js';
+import { injectPendingResults, injectToolPriority } from './tool-loop-core.js';
 
 function summarizeIterationMessages(
   messages: Message[],
@@ -124,37 +125,13 @@ export class ToolLoopHandler implements IStageHandler {
     const loopStart = Date.now();
     let currentTools: LlmTool[] = ctx.activeTools;
 
-    // Inject tool priority instruction when external tools are present
-    if (externalTools.length > 0) {
-      const systemIdx = messages.findIndex((m) => m.role === 'system');
-      if (systemIdx >= 0) {
-        const sys = messages[systemIdx];
-        messages = [...messages];
-        messages[systemIdx] = {
-          ...sys,
-          content: `${sys.content}\n\nIMPORTANT: You have internal tools and client-provided tools (marked [client-provided] in their description). Always prefer internal tools when they can accomplish the task. Use client-provided tools only when no internal tool can do the job.`,
-        };
-      }
-    }
-
-    // Inject pending internal tool results from previous mixed-call request
-    if (ctx.pendingToolResults.has(ctx.sessionId)) {
-      const pending = await ctx.pendingToolResults.consume(ctx.sessionId);
-      if (pending) {
-        messages = [
-          ...messages,
-          pending.assistantMessage,
-          ...pending.results.map((r) => ({
-            role: 'tool' as const,
-            content: r.text,
-            tool_call_id: r.toolCallId,
-          })),
-        ];
-        ctx.options?.sessionLogger?.logStep('pending_tool_results_injected', {
-          toolNames: pending.results.map((r) => r.toolName),
-        });
-      }
-    }
+    messages = injectToolPriority(messages, externalTools);
+    messages = await injectPendingResults(
+      messages,
+      ctx.pendingToolResults,
+      ctx.sessionId,
+      ctx.options,
+    );
 
     for (let iteration = 0; ; iteration++) {
       if (ctx.options?.signal?.aborted) {
