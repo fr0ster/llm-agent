@@ -66,15 +66,21 @@ import { summaryToUsage } from './logger/session-request-logger.js';
 import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
-import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
+import {
+  buildBlockedToolMessages,
+  buildHallucinatedToolMessages,
+  classifyToolCalls,
+  executeToolBatchWithHeartbeat,
+  filterAvailableTools,
+  injectPendingResults,
+  injectToolPriority,
+  runOutputValidationReprompt,
+} from './pipeline/handlers/tool-loop-core.js';
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
-import {
-  isToolContextUnavailableError,
-  ToolAvailabilityRegistry,
-} from './policy/tool-availability-registry.js';
+import { ToolAvailabilityRegistry } from './policy/tool-availability-registry.js';
 import type {
   IPromptInjectionDetector,
   IToolPolicy,
@@ -760,37 +766,13 @@ export class SmartAgent {
     const loopStart = Date.now();
     let currentTools = activeTools;
 
-    // Inject tool priority instruction when external tools are present
-    if (externalTools.length > 0) {
-      const systemIdx = messages.findIndex((m) => m.role === 'system');
-      if (systemIdx >= 0) {
-        const sys = messages[systemIdx];
-        messages = [...messages];
-        messages[systemIdx] = {
-          ...sys,
-          content: `${sys.content}\n\nIMPORTANT: You have internal tools and client-provided tools (marked [client-provided] in their description). Always prefer internal tools when they can accomplish the task. Use client-provided tools only when no internal tool can do the job.`,
-        };
-      }
-    }
-
-    // Inject pending internal tool results from previous mixed-call request
-    if (this.pendingToolResults.has(sessionId)) {
-      const pending = await this.pendingToolResults.consume(sessionId);
-      if (pending) {
-        messages = [
-          ...messages,
-          pending.assistantMessage,
-          ...pending.results.map((r) => ({
-            role: 'tool' as const,
-            content: r.text,
-            tool_call_id: r.toolCallId,
-          })),
-        ];
-        opts?.sessionLogger?.logStep('pending_tool_results_injected', {
-          toolNames: pending.results.map((r) => r.toolName),
-        });
-      }
-    }
+    messages = injectToolPriority(messages, externalTools);
+    messages = await injectPendingResults(
+      messages,
+      this.pendingToolResults,
+      sessionId,
+      opts,
+    );
 
     for (let iteration = 0; ; iteration++) {
       let iterationBuffer = '';
@@ -965,17 +947,13 @@ export class SmartAgent {
         }
       }
 
-      const filteredForIteration = this.toolAvailabilityRegistry.filterTools(
+      currentTools = filterAvailableTools(
+        this.toolAvailabilityRegistry,
         sessionId,
         currentTools,
+        iteration,
+        opts,
       );
-      currentTools = filteredForIteration.allowed;
-      if (filteredForIteration.blocked.length > 0) {
-        opts?.sessionLogger?.logStep('active_tools_filtered_in_iteration', {
-          iteration: iteration + 1,
-          blocked: filteredForIteration.blocked,
-        });
-      }
       opts?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
         messages,
         tools: currentTools,
@@ -1117,22 +1095,15 @@ export class SmartAgent {
       });
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
         // Output validation
-        const valResult = await this.outputValidator.validate(
+        const val = await runOutputValidationReprompt(
+          this.outputValidator,
           content,
-          { messages, tools: currentTools },
+          messages,
+          currentTools,
           opts,
         );
-        if (valResult.ok && !valResult.value.valid) {
-          const correction =
-            valResult.value.correctedContent ?? valResult.value.reason;
-          messages = [
-            ...messages,
-            { role: 'assistant' as const, content },
-            {
-              role: 'user' as const,
-              content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
-            },
-          ];
+        if (val.reprompt) {
+          messages = val.messages;
           continue;
         }
         opts?.sessionLogger?.logStep('final_response', { content, usage });
@@ -1178,80 +1149,34 @@ export class SmartAgent {
         };
         return;
       }
-      const internalCalls = toolCalls.filter((tc) =>
-        toolClientMap.has(tc.name),
-      );
-      const validExternalCalls = toolCalls.filter((tc) =>
-        externalToolNames.has(tc.name),
-      );
-      const blockedToolNames =
-        this.toolAvailabilityRegistry.getBlockedToolNames(sessionId);
-      const blockedCalls = toolCalls.filter((tc) =>
-        blockedToolNames.has(tc.name),
-      );
-      const hallucinations = toolCalls.filter(
-        (tc) =>
-          !blockedToolNames.has(tc.name) &&
-          !toolClientMap.has(tc.name) &&
-          !externalToolNames.has(tc.name),
+      const {
+        internalCalls,
+        validExternalCalls,
+        blockedCalls,
+        hallucinations,
+      } = classifyToolCalls(
+        toolCalls,
+        toolClientMap,
+        externalToolNames,
+        this.toolAvailabilityRegistry,
+        sessionId,
       );
       if (blockedCalls.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: blockedCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const blocked of blockedCalls) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
-              tool_call_id: blocked.id,
-            },
-          ];
-        }
-        opts?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
-          toolNames: blockedCalls.map((tc) => tc.name),
-        });
+        messages = buildBlockedToolMessages(
+          messages,
+          content,
+          blockedCalls,
+          opts,
+        );
         continue;
       }
       if (hallucinations.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: toolCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const h of hallucinations) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${h.name}" not found.`,
-              tool_call_id: h.id,
-            },
-          ];
-        }
+        messages = buildHallucinatedToolMessages(
+          messages,
+          content,
+          toolCalls,
+          hallucinations,
+        );
         continue;
       }
       if (validExternalCalls.length > 0) {
@@ -1351,150 +1276,27 @@ export class SmartAgent {
         };
       }
 
-      // Execute all tool calls concurrently with heartbeat
-      type ToolExecResult = {
-        tc: { id: string; name: string; arguments: Record<string, unknown> };
-        text: string;
-        res: Result<
-          { content: string | Record<string, unknown>; isError?: boolean },
-          { message: string }
-        > | null;
-        duration: number;
-      };
-
-      const toolExecPromises = batch.map(
-        async (tc): Promise<ToolExecResult> => {
-          const toolStart = Date.now();
-          opts?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
-            arguments: tc.arguments,
-          });
-          const client = toolClientMap.get(tc.name);
-          if (!client) return { tc, text: '', res: null, duration: 0 };
-          const toolSpan = this.tracer.startSpan('smart_agent.tool_call', {
-            parent: toolLoopSpan,
-            attributes: { 'tool.name': tc.name },
-          });
-          const cached = this.toolCache.get(tc.name, tc.arguments);
-          const res = cached
-            ? (() => {
-                this.metrics.toolCacheHitCount.add();
-                toolSpan.setAttribute('cache', 'hit');
-                return { ok: true as const, value: cached };
-              })()
-            : await (async () => {
-                const r = await client.callTool(tc.name, tc.arguments, opts);
-                if (r.ok) this.toolCache.set(tc.name, tc.arguments, r.value);
-                return r;
-              })();
-          const text = !res.ok
-            ? res.error.message
-            : typeof res.value.content === 'string'
-              ? res.value.content
-              : JSON.stringify(res.value.content);
-          toolSpan.setStatus(
-            res.ok ? 'ok' : 'error',
-            res.ok ? undefined : text,
-          );
-          toolSpan.end();
-          return { tc, text, res, duration: Date.now() - toolStart };
-        },
-      );
-
-      // Race: tool execution vs periodic heartbeat
-      const allDone = Promise.all(toolExecPromises);
-      const pendingTools = new Set(batch.map((tc) => tc.name));
-      const toolStartTime = Date.now();
-      let results: ToolExecResult[] = [];
-      let settled = false;
-
-      // Mark individual tools as done when they resolve
-      for (const [i, p] of toolExecPromises.entries()) {
-        p.then(() => pendingTools.delete(batch[i].name));
-      }
-
-      while (!settled) {
-        const winner = await Promise.race([
-          allDone.then((r) => ({ tag: 'done' as const, results: r })),
-          new Promise<{ tag: 'tick' }>((resolve) =>
-            setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
-          ),
-        ]);
-        if (winner.tag === 'done') {
-          results = winner.results;
-          settled = true;
-        } else {
-          // Yield heartbeat for each still-pending tool
-          for (const tool of pendingTools) {
-            yield {
-              ok: true,
-              value: {
-                content: '',
-                heartbeat: {
-                  tool,
-                  elapsed: Date.now() - toolStartTime,
-                },
-              },
-            };
-          }
-        }
-      }
-
-      // Collect per-tool timing into the shared timing log
-      for (const r of results) {
-        timingLog.push({
-          phase: `tool_${r.tc.name}`,
-          duration: r.duration,
-        });
-      }
-
-      // Process results: update availability, metrics, messages
-      const toolMessages: Message[] = [];
-      for (const { tc, text, res } of results) {
-        if (!res) continue;
-        // FAIL LOUD on an MCP availability failure (transport down / 403 / timeout
-        // after reconnect) — do NOT feed "MCP error" back to the LLM as tool text.
-        // Yield an error chunk (not throw) so process() returns ok:false (a real
-        // error to the consumer) instead of a silent "(no response)" or an uncaught
-        // exception escaping the generator. classifyToolResult is the shared decision.
-        const decision = classifyToolResult(res);
-        if (decision.escalate) {
-          yield {
-            ok: false,
-            error: new OrchestratorError(
-              decision.escalate.message,
-              'MCP_UNAVAILABLE',
-            ),
-          };
-          return;
-        }
-        if (
-          !res.ok &&
-          isToolContextUnavailableError(text) &&
-          !externalToolNames.has(tc.name)
-        ) {
-          const entry = this.toolAvailabilityRegistry.block(
-            sessionId,
-            tc.name,
-            text,
-          );
-          currentTools = currentTools.filter((t) => t.name !== tc.name);
-          opts?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
-            reason: text,
-            blockedUntil: entry.blockedUntil,
-          });
-        }
-        opts?.sessionLogger?.logStep(`mcp_result_${tc.name}`, {
-          result: text,
-        });
-        toolCallCount++;
-        this.metrics.toolCallCount.add();
-        toolMessages.push({
-          role: 'tool' as const,
-          content: text,
-          tool_call_id: tc.id,
-        });
-      }
-      messages = [...messages, ...toolMessages];
+      // Execute all tool calls concurrently with heartbeat (shared core).
+      const outcome = yield* executeToolBatchWithHeartbeat({
+        batch,
+        toolClientMap,
+        toolCache: this.toolCache,
+        tracer: this.tracer,
+        metrics: this.metrics,
+        parentSpan: toolLoopSpan,
+        toolAvailabilityRegistry: this.toolAvailabilityRegistry,
+        sessionId,
+        externalToolNames,
+        currentTools,
+        toolCallCount,
+        timingLog,
+        heartbeatMs,
+        options: opts,
+      });
+      if (outcome.escalated) return;
+      currentTools = outcome.currentTools;
+      toolCallCount = outcome.toolCallCount;
+      messages = [...messages, ...outcome.toolMessages];
     }
   }
 }

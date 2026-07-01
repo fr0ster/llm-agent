@@ -28,7 +28,6 @@ import type {
   LlmFinishReason,
   LlmTool,
   Message,
-  Result,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -38,11 +37,19 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
-import { isToolContextUnavailableError } from '../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
-import { classifyToolResult } from './escalate-if-unavailable.js';
+import {
+  buildBlockedToolMessages,
+  buildHallucinatedToolMessages,
+  classifyToolCalls,
+  executeToolBatchWithHeartbeat,
+  filterAvailableTools,
+  injectPendingResults,
+  injectToolPriority,
+  runOutputValidationReprompt,
+} from './tool-loop-core.js';
 
 function summarizeIterationMessages(
   messages: Message[],
@@ -124,37 +131,13 @@ export class ToolLoopHandler implements IStageHandler {
     const loopStart = Date.now();
     let currentTools: LlmTool[] = ctx.activeTools;
 
-    // Inject tool priority instruction when external tools are present
-    if (externalTools.length > 0) {
-      const systemIdx = messages.findIndex((m) => m.role === 'system');
-      if (systemIdx >= 0) {
-        const sys = messages[systemIdx];
-        messages = [...messages];
-        messages[systemIdx] = {
-          ...sys,
-          content: `${sys.content}\n\nIMPORTANT: You have internal tools and client-provided tools (marked [client-provided] in their description). Always prefer internal tools when they can accomplish the task. Use client-provided tools only when no internal tool can do the job.`,
-        };
-      }
-    }
-
-    // Inject pending internal tool results from previous mixed-call request
-    if (ctx.pendingToolResults.has(ctx.sessionId)) {
-      const pending = await ctx.pendingToolResults.consume(ctx.sessionId);
-      if (pending) {
-        messages = [
-          ...messages,
-          pending.assistantMessage,
-          ...pending.results.map((r) => ({
-            role: 'tool' as const,
-            content: r.text,
-            tool_call_id: r.toolCallId,
-          })),
-        ];
-        ctx.options?.sessionLogger?.logStep('pending_tool_results_injected', {
-          toolNames: pending.results.map((r) => r.toolName),
-        });
-      }
-    }
+    messages = injectToolPriority(messages, externalTools);
+    messages = await injectPendingResults(
+      messages,
+      ctx.pendingToolResults,
+      ctx.sessionId,
+      ctx.options,
+    );
 
     for (let iteration = 0; ; iteration++) {
       if (ctx.options?.signal?.aborted) {
@@ -345,17 +328,13 @@ export class ToolLoopHandler implements IStageHandler {
       }
 
       // Filter tools per iteration
-      const filteredForIteration = ctx.toolAvailabilityRegistry.filterTools(
+      currentTools = filterAvailableTools(
+        ctx.toolAvailabilityRegistry,
         ctx.sessionId,
         currentTools,
+        iteration,
+        ctx.options,
       );
-      currentTools = filteredForIteration.allowed;
-      if (filteredForIteration.blocked.length > 0) {
-        ctx.options?.sessionLogger?.logStep(
-          'active_tools_filtered_in_iteration',
-          { iteration: iteration + 1, blocked: filteredForIteration.blocked },
-        );
-      }
 
       let iterPromptTokens = 0;
       let iterCompletionTokens = 0;
@@ -543,22 +522,15 @@ export class ToolLoopHandler implements IStageHandler {
 
       // -- No tool calls: validate and finish --------------------------------
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
-        const valResult = await ctx.outputValidator.validate(
+        const val = await runOutputValidationReprompt(
+          ctx.outputValidator,
           content,
-          { messages, tools: currentTools },
+          messages,
+          currentTools,
           ctx.options,
         );
-        if (valResult.ok && !valResult.value.valid) {
-          const correction =
-            valResult.value.correctedContent ?? valResult.value.reason;
-          messages = [
-            ...messages,
-            { role: 'assistant' as const, content },
-            {
-              role: 'user' as const,
-              content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
-            },
-          ];
+        if (val.reprompt) {
+          messages = val.messages;
           continue;
         }
         const summary = ctx.requestLogger.getSummary();
@@ -590,85 +562,38 @@ export class ToolLoopHandler implements IStageHandler {
       }
 
       // -- Classify tool calls -----------------------------------------------
-      const internalCalls = toolCalls.filter((tc) =>
-        ctx.toolClientMap.has(tc.name),
-      );
-      const validExternalCalls = toolCalls.filter((tc) =>
-        externalToolNames.has(tc.name),
-      );
-      const blockedToolNames = ctx.toolAvailabilityRegistry.getBlockedToolNames(
+      const {
+        internalCalls,
+        validExternalCalls,
+        blockedCalls,
+        hallucinations,
+      } = classifyToolCalls(
+        toolCalls,
+        ctx.toolClientMap,
+        externalToolNames,
+        ctx.toolAvailabilityRegistry,
         ctx.sessionId,
-      );
-      const blockedCalls = toolCalls.filter((tc) =>
-        blockedToolNames.has(tc.name),
-      );
-      const hallucinations = toolCalls.filter(
-        (tc) =>
-          !blockedToolNames.has(tc.name) &&
-          !ctx.toolClientMap.has(tc.name) &&
-          !externalToolNames.has(tc.name),
       );
 
       // -- Handle blocked tools ----------------------------------------------
       if (blockedCalls.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: blockedCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const blocked of blockedCalls) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
-              tool_call_id: blocked.id,
-            },
-          ];
-        }
-        ctx.options?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
-          toolNames: blockedCalls.map((tc) => tc.name),
-        });
+        messages = buildBlockedToolMessages(
+          messages,
+          content,
+          blockedCalls,
+          ctx.options,
+        );
         continue;
       }
 
       // -- Handle hallucinated tools -----------------------------------------
       if (hallucinations.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: toolCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const h of hallucinations) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${h.name}" not found.`,
-              tool_call_id: h.id,
-            },
-          ];
-        }
+        messages = buildHallucinatedToolMessages(
+          messages,
+          content,
+          toolCalls,
+          hallucinations,
+        );
         continue;
       }
 
@@ -841,164 +766,45 @@ export class ToolLoopHandler implements IStageHandler {
         });
       }
 
-      // Execute tool calls concurrently with heartbeat
-      type ToolExecResult = {
-        tc: { id: string; name: string; arguments: Record<string, unknown> };
-        text: string;
-        res: Result<
-          { content: string | Record<string, unknown>; isError?: boolean },
-          { message: string }
-        > | null;
-        duration: number;
-        cached: boolean;
-      };
-
-      const toolExecPromises = batch.map(
-        async (tc): Promise<ToolExecResult> => {
-          const toolStart = Date.now();
-          ctx.options?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
-            arguments: tc.arguments,
-          });
-          const client = ctx.toolClientMap.get(tc.name);
-          if (!client)
-            return { tc, text: '', res: null, duration: 0, cached: false };
-          const toolSpan = ctx.tracer.startSpan('smart_agent.tool_call', {
-            parent: parentSpan,
-            attributes: { 'tool.name': tc.name },
-          });
-          const cachedValue = ctx.toolCache.get(tc.name, tc.arguments);
-          const wasCached = !!cachedValue;
-          const res = cachedValue
-            ? (() => {
-                ctx.metrics.toolCacheHitCount.add();
-                toolSpan.setAttribute('cache', 'hit');
-                return { ok: true as const, value: cachedValue };
-              })()
-            : await (async () => {
-                const r = await client.callTool(
-                  tc.name,
-                  tc.arguments,
-                  ctx.options,
-                );
-                if (r.ok) ctx.toolCache.set(tc.name, tc.arguments, r.value);
-                return r;
-              })();
-          const text = !res.ok
-            ? res.error.message
-            : typeof res.value.content === 'string'
-              ? res.value.content
-              : JSON.stringify(res.value.content);
-          toolSpan.setStatus(
-            res.ok ? 'ok' : 'error',
-            res.ok ? undefined : text,
-          );
-          toolSpan.end();
-          return {
-            tc,
-            text,
-            res,
-            duration: Date.now() - toolStart,
-            cached: wasCached,
-          };
-        },
-      );
-
-      // Race: tool execution vs periodic heartbeat
-      const allDone = Promise.all(toolExecPromises);
-      const pendingTools = new Set(batch.map((tc) => tc.name));
-      const toolStartTime = Date.now();
-      let results: ToolExecResult[] = [];
-      let settled = false;
-
-      for (const [i, p] of toolExecPromises.entries()) {
-        p.then(() => pendingTools.delete(batch[i].name));
+      // Execute tool calls concurrently with heartbeat (shared core).
+      const batchGen = executeToolBatchWithHeartbeat({
+        batch,
+        toolClientMap: ctx.toolClientMap,
+        toolCache: ctx.toolCache,
+        tracer: ctx.tracer,
+        metrics: ctx.metrics,
+        parentSpan,
+        toolAvailabilityRegistry: ctx.toolAvailabilityRegistry,
+        sessionId: ctx.sessionId,
+        externalToolNames,
+        currentTools,
+        toolCallCount,
+        timingLog,
+        heartbeatMs,
+        options: ctx.options,
+        onToolExecuted: (r) =>
+          ctx.requestLogger.logToolCall({
+            // Stamp requestId so tool executions land in the per-traceId delta
+            // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
+            // when the request actually ran tools (only the session-cumulative
+            // counter would tick).
+            requestId: ctx.options?.trace?.traceId,
+            toolName: r.tc.name,
+            success: !!r.res?.ok,
+            durationMs: r.duration,
+            cached: r.cached,
+          }),
+      });
+      let step = await batchGen.next();
+      while (!step.done) {
+        ctx.yield(step.value);
+        step = await batchGen.next();
       }
-
-      while (!settled) {
-        const winner = await Promise.race([
-          allDone.then((r) => ({ tag: 'done' as const, results: r })),
-          new Promise<{ tag: 'tick' }>((resolve) =>
-            setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
-          ),
-        ]);
-        if (winner.tag === 'done') {
-          results = winner.results;
-          settled = true;
-        } else {
-          for (const tool of pendingTools) {
-            ctx.yield({
-              ok: true,
-              value: {
-                content: '',
-                heartbeat: { tool, elapsed: Date.now() - toolStartTime },
-              },
-            });
-          }
-        }
-      }
-
-      // Collect timing
-      for (const r of results) {
-        timingLog.push({ phase: `tool_${r.tc.name}`, duration: r.duration });
-      }
-
-      // Process results
-      const toolMessages: Message[] = [];
-      for (const r of results) {
-        const { tc, text, res } = r;
-        if (!res) continue;
-        // FAIL LOUD on an MCP availability failure — yield an error (→ pipeline
-        // fails with ok:false) instead of feeding "MCP error" to the LLM as text.
-        const decision = classifyToolResult(res);
-        if (decision.escalate) {
-          ctx.yield({
-            ok: false,
-            error: new OrchestratorError(
-              decision.escalate.message,
-              'MCP_UNAVAILABLE',
-            ),
-          });
-          return false;
-        }
-        if (
-          !res.ok &&
-          isToolContextUnavailableError(text) &&
-          !externalToolNames.has(tc.name)
-        ) {
-          const entry = ctx.toolAvailabilityRegistry.block(
-            ctx.sessionId,
-            tc.name,
-            text,
-          );
-          currentTools = currentTools.filter((t) => t.name !== tc.name);
-          ctx.options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
-            reason: text,
-            blockedUntil: entry.blockedUntil,
-          });
-        }
-        ctx.options?.sessionLogger?.logStep(`mcp_result_${tc.name}`, {
-          result: text,
-        });
-        toolCallCount++;
-        ctx.metrics.toolCallCount.add();
-        toolMessages.push({
-          role: 'tool' as const,
-          content: text,
-          tool_call_id: tc.id,
-        });
-        ctx.requestLogger.logToolCall({
-          // Stamp requestId so tool executions land in the per-traceId delta
-          // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
-          // when the request actually ran tools (only the session-cumulative
-          // counter would tick).
-          requestId: ctx.options?.trace?.traceId,
-          toolName: tc.name,
-          success: !!res?.ok,
-          durationMs: r.duration,
-          cached: r.cached,
-        });
-      }
-      messages = [...messages, ...toolMessages];
+      const outcome = step.value;
+      if (outcome.escalated) return false;
+      currentTools = outcome.currentTools;
+      toolCallCount = outcome.toolCallCount;
+      messages = [...messages, ...outcome.toolMessages];
     }
   }
 }
