@@ -60,9 +60,9 @@ Import paths **from** `pipeline/handlers/tool-loop-core.ts`:
 
 ### Task 0 — Characterization guards FIRST (`test:`)
 
-Pin the two UNTESTED behaviors adjacent to the cut zone BEFORE any extraction, so later refactors cannot silently regress them:
-- **#2** — Loop A's dedicated `smart_agent.tool_loop` span that parents all sub-spans and is ended on exit.
-- **#4** — the reselect READ-ONLY branch, where A keeps the full refreshed tool set + logs `tools_reselect_skipped`, while B restores `prevSelectedTools` (no skip log).
+Localize/strengthen coverage of two behaviors adjacent to the cut zone BEFORE any extraction, so later refactors cannot silently regress them:
+- **#2** — Loop A's dedicated `smart_agent.tool_loop` span that parents all sub-spans and is ended on exit. (NOTE: this is already covered generally by `src/tracer/__tests__/tracer.test.ts` — which asserts `smart_agent.tool_loop` parents `llm_call`/`tool_call`. This new test STRENGTHENS/LOCALIZES that guard right next to the refactor, driven end-to-end through `SmartAgent.process`; it is not filling a gap in missing coverage.)
+- **#4** — the reselect READ-ONLY branch: this IS genuinely under-guarded — `tool-reselection.test.ts` exercises reselect but does not distinguish A's "keep full refreshed set + log `tools_reselect_skipped`" from B's "restore `prevSelectedTools`, no skip log". This is the guard that actually matters.
 
 **Files:**
 - `packages/llm-agent-libs/src/__tests__/tool-loop-characterization.test.ts` (NEW)
@@ -240,14 +240,16 @@ describe('Loop A characterization — reselect read-only keeps full set + skip l
 });
 ```
 
-- [ ] Create `src/pipeline/handlers/__tests__/tool-loop-reselect-readonly.test.ts`. Reuse the `makeCtx` shape from `tool-loop-external.test.ts` (copy its `NoopLogger`, `makeSpan`, ctx literal), but wire: `refreshToolsPerIteration: true`, `toolReselectPerIteration: true`, `ragStores.tools` returning a DIFFERENT tool, `mcpClients` whose `listTools` returns the read-only tool, `activeTools = [SearchClass]`, `toolClientMap` seeded with `SearchClass`, and an `llmCallStrategy` that captures per-call tools and returns: call 1 → read-only tool call `SearchClass`; call 2 → stop. Assert B narrows back to `prevSelectedTools` (the single-tool set) on iteration 2 AND emits NO `tools_reselect_skipped`:
+- [ ] Create `src/pipeline/handlers/__tests__/tool-loop-reselect-readonly.test.ts`. Reuse the `makeCtx` shape from `tool-loop-external.test.ts` (copy its `NoopLogger`, `makeSpan`, ctx literal), but wire: `refreshToolsPerIteration: true`, `toolReselectPerIteration: true`, `mcpClients` whose `listTools` returns **BOTH `SearchClass` AND `UpdateClass`** (the per-iteration REFRESH set — deliberately STRICTLY LARGER than the seed), `activeTools = [SearchClass]` and `toolClientMap` seeded with only `SearchClass` (so `prevSelectedTools`, snapshotted before the refresh, is the single-tool set), and an `llmCallStrategy` that captures per-call tools and returns: call 1 → read-only tool call `SearchClass`; call 2 → stop. **This size gap is what makes the test discriminate:** on a read-only retry B restores `currentTools = prevSelectedTools` (`tool-loop.ts:262`) → iteration 2 must offer EXACTLY `[SearchClass]`; if that restore line were deleted, `currentTools` would remain the refreshed `[SearchClass, UpdateClass]` and the assertion would fail. (If the refresh set were also just `[SearchClass]`, the test would pass with or without the restore — a non-guarding guard.) Assert B narrows back to the single-tool set on iteration 2 AND emits NO `tools_reselect_skipped`:
 
 ```ts
 // capture tools per call via llmCallStrategy (see tool-loop-external.test.ts makeCtx)
 const captured: LlmTool[][] = [];
 const logSteps: string[] = [];
 // ... build ctx with sessionLogger.logStep(step) => logSteps.push(step)
-// activeTools/currentTools seed = [searchTool]; ragStores.tools returns tool:UpdateClass
+// activeTools/currentTools seed = [searchTool] (=> prevSelectedTools = [SearchClass]);
+// mcpClients.listTools returns [SearchClass, UpdateClass] (refresh set STRICTLY larger),
+// so the read-only restore is observable: iter2 must be exactly [SearchClass].
 const ok = await new ToolLoopHandler().execute(ctx, {}, makeSpan());
 assert.equal(ok, true);
 assert.ok(!logSteps.includes('tools_reselect_skipped'), 'B does NOT log skip');
