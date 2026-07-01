@@ -69,6 +69,8 @@ import type { IMetrics } from './metrics/types.js';
 import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
+  buildBlockedToolMessages,
+  buildHallucinatedToolMessages,
   classifyToolCalls,
   filterAvailableTools,
   injectPendingResults,
@@ -1169,62 +1171,21 @@ export class SmartAgent {
         sessionId,
       );
       if (blockedCalls.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: blockedCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const blocked of blockedCalls) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
-              tool_call_id: blocked.id,
-            },
-          ];
-        }
-        opts?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
-          toolNames: blockedCalls.map((tc) => tc.name),
-        });
+        messages = buildBlockedToolMessages(
+          messages,
+          content,
+          blockedCalls,
+          opts,
+        );
         continue;
       }
       if (hallucinations.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: toolCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const h of hallucinations) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${h.name}" not found.`,
-              tool_call_id: h.id,
-            },
-          ];
-        }
+        messages = buildHallucinatedToolMessages(
+          messages,
+          content,
+          toolCalls,
+          hallucinations,
+        );
         continue;
       }
       if (validExternalCalls.length > 0) {

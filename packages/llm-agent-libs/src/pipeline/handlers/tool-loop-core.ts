@@ -118,3 +118,72 @@ export async function injectPendingResults(
   }
   return messages;
 }
+
+/** Append an assistant(tool_calls=blocked) + per-blocked tool-error messages;
+ *  log the interception. Returns the extended messages. */
+export function buildBlockedToolMessages(
+  messages: Message[],
+  content: string,
+  blockedCalls: ParsedToolCall[],
+  options: CallOptions | undefined,
+): Message[] {
+  let next: Message[] = [
+    ...messages,
+    {
+      role: 'assistant' as const,
+      content: content || null,
+      tool_calls: blockedCalls.map((tc) => ({
+        id: tc.id,
+        type: 'function' as const,
+        function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+      })),
+    },
+  ];
+  for (const blocked of blockedCalls) {
+    next = [
+      ...next,
+      {
+        role: 'tool' as const,
+        content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
+        tool_call_id: blocked.id,
+      },
+    ];
+  }
+  options?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
+    toolNames: blockedCalls.map((tc) => tc.name),
+  });
+  return next;
+}
+
+/** Append an assistant(tool_calls=ALL calls) + per-hallucination "not found"
+ *  tool messages. Returns the extended messages. */
+export function buildHallucinatedToolMessages(
+  messages: Message[],
+  content: string,
+  toolCalls: ParsedToolCall[],
+  hallucinations: ParsedToolCall[],
+): Message[] {
+  let next: Message[] = [
+    ...messages,
+    {
+      role: 'assistant' as const,
+      content: content || null,
+      tool_calls: toolCalls.map((tc) => ({
+        id: tc.id,
+        type: 'function' as const,
+        function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+      })),
+    },
+  ];
+  for (const h of hallucinations) {
+    next = [
+      ...next,
+      {
+        role: 'tool' as const,
+        content: `Error: Tool "${h.name}" not found.`,
+        tool_call_id: h.id,
+      },
+    ];
+  }
+  return next;
+}

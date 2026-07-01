@@ -44,6 +44,8 @@ import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { classifyToolResult } from './escalate-if-unavailable.js';
 import {
+  buildBlockedToolMessages,
+  buildHallucinatedToolMessages,
   classifyToolCalls,
   filterAvailableTools,
   injectPendingResults,
@@ -583,64 +585,23 @@ export class ToolLoopHandler implements IStageHandler {
 
       // -- Handle blocked tools ----------------------------------------------
       if (blockedCalls.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: blockedCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const blocked of blockedCalls) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
-              tool_call_id: blocked.id,
-            },
-          ];
-        }
-        ctx.options?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
-          toolNames: blockedCalls.map((tc) => tc.name),
-        });
+        messages = buildBlockedToolMessages(
+          messages,
+          content,
+          blockedCalls,
+          ctx.options,
+        );
         continue;
       }
 
       // -- Handle hallucinated tools -----------------------------------------
       if (hallucinations.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: toolCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-        ];
-        for (const h of hallucinations) {
-          messages = [
-            ...messages,
-            {
-              role: 'tool' as const,
-              content: `Error: Tool "${h.name}" not found.`,
-              tool_call_id: h.id,
-            },
-          ];
-        }
+        messages = buildHallucinatedToolMessages(
+          messages,
+          content,
+          toolCalls,
+          hallucinations,
+        );
         continue;
       }
 
