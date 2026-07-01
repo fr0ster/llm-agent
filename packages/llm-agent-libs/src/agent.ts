@@ -69,6 +69,7 @@ import type { IMetrics } from './metrics/types.js';
 import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
+  filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
 } from './pipeline/handlers/tool-loop-core.js';
@@ -945,17 +946,13 @@ export class SmartAgent {
         }
       }
 
-      const filteredForIteration = this.toolAvailabilityRegistry.filterTools(
+      currentTools = filterAvailableTools(
+        this.toolAvailabilityRegistry,
         sessionId,
         currentTools,
+        iteration,
+        opts,
       );
-      currentTools = filteredForIteration.allowed;
-      if (filteredForIteration.blocked.length > 0) {
-        opts?.sessionLogger?.logStep('active_tools_filtered_in_iteration', {
-          iteration: iteration + 1,
-          blocked: filteredForIteration.blocked,
-        });
-      }
       opts?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
         messages,
         tools: currentTools,

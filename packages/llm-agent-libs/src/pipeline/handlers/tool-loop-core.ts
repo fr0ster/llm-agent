@@ -7,6 +7,7 @@
  */
 import type { CallOptions, LlmTool, Message } from '@mcp-abap-adt/llm-agent';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
+import type { ToolAvailabilityRegistry } from '../../policy/tool-availability-registry.js';
 
 /** Append the client-tool priority instruction to the system message when
  *  external tools are present. Returns messages unchanged otherwise. */
@@ -27,6 +28,25 @@ export function injectToolPriority(
     }
   }
   return messages;
+}
+
+/** Filter out session-blocked tools; log the blocked set when non-empty.
+ *  Returns the allowed subset. */
+export function filterAvailableTools(
+  registry: ToolAvailabilityRegistry,
+  sessionId: string,
+  currentTools: LlmTool[],
+  iteration: number,
+  options: CallOptions | undefined,
+): LlmTool[] {
+  const filtered = registry.filterTools(sessionId, currentTools);
+  if (filtered.blocked.length > 0) {
+    options?.sessionLogger?.logStep('active_tools_filtered_in_iteration', {
+      iteration: iteration + 1,
+      blocked: filtered.blocked,
+    });
+  }
+  return filtered.allowed;
 }
 
 /** Inject pending internal tool results from a prior mixed-call request. */

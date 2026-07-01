@@ -43,7 +43,11 @@ import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { classifyToolResult } from './escalate-if-unavailable.js';
-import { injectPendingResults, injectToolPriority } from './tool-loop-core.js';
+import {
+  filterAvailableTools,
+  injectPendingResults,
+  injectToolPriority,
+} from './tool-loop-core.js';
 
 function summarizeIterationMessages(
   messages: Message[],
@@ -322,17 +326,13 @@ export class ToolLoopHandler implements IStageHandler {
       }
 
       // Filter tools per iteration
-      const filteredForIteration = ctx.toolAvailabilityRegistry.filterTools(
+      currentTools = filterAvailableTools(
+        ctx.toolAvailabilityRegistry,
         ctx.sessionId,
         currentTools,
+        iteration,
+        ctx.options,
       );
-      currentTools = filteredForIteration.allowed;
-      if (filteredForIteration.blocked.length > 0) {
-        ctx.options?.sessionLogger?.logStep(
-          'active_tools_filtered_in_iteration',
-          { iteration: iteration + 1, blocked: filteredForIteration.blocked },
-        );
-      }
 
       let iterPromptTokens = 0;
       let iterCompletionTokens = 0;
