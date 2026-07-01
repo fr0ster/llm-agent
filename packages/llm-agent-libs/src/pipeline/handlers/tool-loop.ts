@@ -44,6 +44,7 @@ import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { classifyToolResult } from './escalate-if-unavailable.js';
 import {
+  classifyToolCalls,
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
@@ -567,23 +568,17 @@ export class ToolLoopHandler implements IStageHandler {
       }
 
       // -- Classify tool calls -----------------------------------------------
-      const internalCalls = toolCalls.filter((tc) =>
-        ctx.toolClientMap.has(tc.name),
-      );
-      const validExternalCalls = toolCalls.filter((tc) =>
-        externalToolNames.has(tc.name),
-      );
-      const blockedToolNames = ctx.toolAvailabilityRegistry.getBlockedToolNames(
+      const {
+        internalCalls,
+        validExternalCalls,
+        blockedCalls,
+        hallucinations,
+      } = classifyToolCalls(
+        toolCalls,
+        ctx.toolClientMap,
+        externalToolNames,
+        ctx.toolAvailabilityRegistry,
         ctx.sessionId,
-      );
-      const blockedCalls = toolCalls.filter((tc) =>
-        blockedToolNames.has(tc.name),
-      );
-      const hallucinations = toolCalls.filter(
-        (tc) =>
-          !blockedToolNames.has(tc.name) &&
-          !ctx.toolClientMap.has(tc.name) &&
-          !externalToolNames.has(tc.name),
       );
 
       // -- Handle blocked tools ----------------------------------------------

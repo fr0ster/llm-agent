@@ -5,9 +5,51 @@
  * These helpers are INTERNAL to llm-agent-libs and are NOT exported from
  * the package barrel (src/index.ts).
  */
-import type { CallOptions, LlmTool, Message } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  IMcpClient,
+  LlmTool,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../../policy/tool-availability-registry.js';
+
+export type ParsedToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+export interface IClassifiedToolCalls {
+  internalCalls: ParsedToolCall[];
+  validExternalCalls: ParsedToolCall[];
+  blockedCalls: ParsedToolCall[];
+  hallucinations: ParsedToolCall[];
+}
+
+/** Partition tool calls into internal / valid-external / blocked / hallucinated. */
+export function classifyToolCalls(
+  toolCalls: ParsedToolCall[],
+  toolClientMap: Map<string, IMcpClient>,
+  externalToolNames: Set<string>,
+  toolAvailabilityRegistry: ToolAvailabilityRegistry,
+  sessionId: string,
+): IClassifiedToolCalls {
+  const internalCalls = toolCalls.filter((tc) => toolClientMap.has(tc.name));
+  const validExternalCalls = toolCalls.filter((tc) =>
+    externalToolNames.has(tc.name),
+  );
+  const blockedToolNames =
+    toolAvailabilityRegistry.getBlockedToolNames(sessionId);
+  const blockedCalls = toolCalls.filter((tc) => blockedToolNames.has(tc.name));
+  const hallucinations = toolCalls.filter(
+    (tc) =>
+      !blockedToolNames.has(tc.name) &&
+      !toolClientMap.has(tc.name) &&
+      !externalToolNames.has(tc.name),
+  );
+  return { internalCalls, validExternalCalls, blockedCalls, hallucinations };
+}
 
 /** Append the client-tool priority instruction to the system message when
  *  external tools are present. Returns messages unchanged otherwise. */

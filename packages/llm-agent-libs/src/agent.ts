@@ -69,6 +69,7 @@ import type { IMetrics } from './metrics/types.js';
 import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
+  classifyToolCalls,
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
@@ -1155,22 +1156,17 @@ export class SmartAgent {
         };
         return;
       }
-      const internalCalls = toolCalls.filter((tc) =>
-        toolClientMap.has(tc.name),
-      );
-      const validExternalCalls = toolCalls.filter((tc) =>
-        externalToolNames.has(tc.name),
-      );
-      const blockedToolNames =
-        this.toolAvailabilityRegistry.getBlockedToolNames(sessionId);
-      const blockedCalls = toolCalls.filter((tc) =>
-        blockedToolNames.has(tc.name),
-      );
-      const hallucinations = toolCalls.filter(
-        (tc) =>
-          !blockedToolNames.has(tc.name) &&
-          !toolClientMap.has(tc.name) &&
-          !externalToolNames.has(tc.name),
+      const {
+        internalCalls,
+        validExternalCalls,
+        blockedCalls,
+        hallucinations,
+      } = classifyToolCalls(
+        toolCalls,
+        toolClientMap,
+        externalToolNames,
+        this.toolAvailabilityRegistry,
+        sessionId,
       );
       if (blockedCalls.length > 0) {
         messages = [
