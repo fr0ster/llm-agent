@@ -75,6 +75,7 @@ import {
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
+  runOutputValidationReprompt,
 } from './pipeline/handlers/tool-loop-core.js';
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
@@ -1094,22 +1095,15 @@ export class SmartAgent {
       });
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
         // Output validation
-        const valResult = await this.outputValidator.validate(
+        const val = await runOutputValidationReprompt(
+          this.outputValidator,
           content,
-          { messages, tools: currentTools },
+          messages,
+          currentTools,
           opts,
         );
-        if (valResult.ok && !valResult.value.valid) {
-          const correction =
-            valResult.value.correctedContent ?? valResult.value.reason;
-          messages = [
-            ...messages,
-            { role: 'assistant' as const, content },
-            {
-              role: 'user' as const,
-              content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
-            },
-          ];
+        if (val.reprompt) {
+          messages = val.messages;
           continue;
         }
         opts?.sessionLogger?.logStep('final_response', { content, usage });

@@ -23,6 +23,7 @@ import {
   type ToolAvailabilityRegistry,
 } from '../../policy/tool-availability-registry.js';
 import type { ISpan, ITracer } from '../../tracer/types.js';
+import type { IOutputValidator } from '../../validator/types.js';
 import { classifyToolResult } from './escalate-if-unavailable.js';
 
 export type ParsedToolCall = {
@@ -379,4 +380,41 @@ export async function* executeToolBatchWithHeartbeat(
     onToolExecuted?.(r);
   }
   return { escalated: false, currentTools, toolCallCount, toolMessages };
+}
+
+export interface IReprompt {
+  reprompt: boolean;
+  messages: Message[];
+}
+
+/** Validate the no-tool-call output; on invalid, append the assistant reply +
+ *  a correction user message and signal a reprompt. Otherwise pass through. */
+export async function runOutputValidationReprompt(
+  outputValidator: IOutputValidator,
+  content: string,
+  messages: Message[],
+  currentTools: LlmTool[],
+  options: CallOptions | undefined,
+): Promise<IReprompt> {
+  const valResult = await outputValidator.validate(
+    content,
+    { messages, tools: currentTools },
+    options,
+  );
+  if (valResult.ok && !valResult.value.valid) {
+    const correction =
+      valResult.value.correctedContent ?? valResult.value.reason;
+    return {
+      reprompt: true,
+      messages: [
+        ...messages,
+        { role: 'assistant' as const, content },
+        {
+          role: 'user' as const,
+          content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
+        },
+      ],
+    };
+  }
+  return { reprompt: false, messages };
 }

@@ -48,6 +48,7 @@ import {
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
+  runOutputValidationReprompt,
 } from './tool-loop-core.js';
 
 function summarizeIterationMessages(
@@ -521,22 +522,15 @@ export class ToolLoopHandler implements IStageHandler {
 
       // -- No tool calls: validate and finish --------------------------------
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
-        const valResult = await ctx.outputValidator.validate(
+        const val = await runOutputValidationReprompt(
+          ctx.outputValidator,
           content,
-          { messages, tools: currentTools },
+          messages,
+          currentTools,
           ctx.options,
         );
-        if (valResult.ok && !valResult.value.valid) {
-          const correction =
-            valResult.value.correctedContent ?? valResult.value.reason;
-          messages = [
-            ...messages,
-            { role: 'assistant' as const, content },
-            {
-              role: 'user' as const,
-              content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
-            },
-          ];
+        if (val.reprompt) {
+          messages = val.messages;
           continue;
         }
         const summary = ctx.requestLogger.getSummary();
