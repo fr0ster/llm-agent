@@ -8,11 +8,22 @@
 import type {
   CallOptions,
   IMcpClient,
+  IToolCache,
+  LlmStreamChunk,
   LlmTool,
   Message,
+  Result,
+  TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import type { IMetrics } from '../../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
-import type { ToolAvailabilityRegistry } from '../../policy/tool-availability-registry.js';
+import {
+  isToolContextUnavailableError,
+  type ToolAvailabilityRegistry,
+} from '../../policy/tool-availability-registry.js';
+import type { ISpan, ITracer } from '../../tracer/types.js';
+import { classifyToolResult } from './escalate-if-unavailable.js';
 
 export type ParsedToolCall = {
   id: string;
@@ -186,4 +197,186 @@ export function buildHallucinatedToolMessages(
     ];
   }
   return next;
+}
+
+export type ToolExecResult = {
+  tc: ParsedToolCall;
+  text: string;
+  res: Result<
+    { content: string | Record<string, unknown>; isError?: boolean },
+    { message: string }
+  > | null;
+  duration: number;
+  cached: boolean;
+};
+
+export type BatchOutcome =
+  | { escalated: true }
+  | {
+      escalated: false;
+      currentTools: LlmTool[];
+      toolCallCount: number;
+      toolMessages: Message[];
+    };
+
+export interface IExecuteToolBatchArgs {
+  batch: ParsedToolCall[];
+  toolClientMap: Map<string, IMcpClient>;
+  toolCache: IToolCache;
+  tracer: ITracer;
+  metrics: IMetrics;
+  parentSpan: ISpan; // toolLoopSpan (A) / parentSpan (B)
+  toolAvailabilityRegistry: ToolAvailabilityRegistry;
+  sessionId: string;
+  externalToolNames: Set<string>;
+  currentTools: LlmTool[];
+  toolCallCount: number;
+  timingLog: TimingEntry[]; // pushed into (per-tool timing)
+  heartbeatMs: number;
+  options: CallOptions | undefined;
+  onToolExecuted?: (r: ToolExecResult) => void; // B: logToolCall; A: omitted
+}
+
+/** Execute a batch of internal tool calls concurrently, yielding heartbeat
+ *  chunks while they run; on an MCP-availability escalation yield an error
+ *  chunk and return `{ escalated: true }`; otherwise return the updated
+ *  currentTools / toolCallCount / tool messages. */
+export async function* executeToolBatchWithHeartbeat(
+  args: IExecuteToolBatchArgs,
+): AsyncGenerator<Result<LlmStreamChunk, OrchestratorError>, BatchOutcome> {
+  const {
+    batch,
+    toolClientMap,
+    toolCache,
+    tracer,
+    metrics,
+    parentSpan,
+    toolAvailabilityRegistry,
+    sessionId,
+    externalToolNames,
+    timingLog,
+    heartbeatMs,
+    options,
+    onToolExecuted,
+  } = args;
+  let currentTools = args.currentTools;
+  let toolCallCount = args.toolCallCount;
+
+  const toolExecPromises = batch.map(async (tc): Promise<ToolExecResult> => {
+    const toolStart = Date.now();
+    options?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
+      arguments: tc.arguments,
+    });
+    const client = toolClientMap.get(tc.name);
+    if (!client) return { tc, text: '', res: null, duration: 0, cached: false };
+    const toolSpan = tracer.startSpan('smart_agent.tool_call', {
+      parent: parentSpan,
+      attributes: { 'tool.name': tc.name },
+    });
+    const cachedValue = toolCache.get(tc.name, tc.arguments);
+    const wasCached = !!cachedValue;
+    const res = cachedValue
+      ? (() => {
+          metrics.toolCacheHitCount.add();
+          toolSpan.setAttribute('cache', 'hit');
+          return { ok: true as const, value: cachedValue };
+        })()
+      : await (async () => {
+          const r = await client.callTool(tc.name, tc.arguments, options);
+          if (r.ok) toolCache.set(tc.name, tc.arguments, r.value);
+          return r;
+        })();
+    const text = !res.ok
+      ? res.error.message
+      : typeof res.value.content === 'string'
+        ? res.value.content
+        : JSON.stringify(res.value.content);
+    toolSpan.setStatus(res.ok ? 'ok' : 'error', res.ok ? undefined : text);
+    toolSpan.end();
+    return {
+      tc,
+      text,
+      res,
+      duration: Date.now() - toolStart,
+      cached: wasCached,
+    };
+  });
+
+  const allDone = Promise.all(toolExecPromises);
+  const pendingTools = new Set(batch.map((tc) => tc.name));
+  const toolStartTime = Date.now();
+  let results: ToolExecResult[] = [];
+  let settled = false;
+
+  for (const [i, p] of toolExecPromises.entries()) {
+    p.then(() => pendingTools.delete(batch[i].name));
+  }
+
+  while (!settled) {
+    const winner = await Promise.race([
+      allDone.then((r) => ({ tag: 'done' as const, results: r })),
+      new Promise<{ tag: 'tick' }>((resolve) =>
+        setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
+      ),
+    ]);
+    if (winner.tag === 'done') {
+      results = winner.results;
+      settled = true;
+    } else {
+      for (const tool of pendingTools) {
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            heartbeat: { tool, elapsed: Date.now() - toolStartTime },
+          },
+        };
+      }
+    }
+  }
+
+  for (const r of results) {
+    timingLog.push({ phase: `tool_${r.tc.name}`, duration: r.duration });
+  }
+
+  const toolMessages: Message[] = [];
+  for (const r of results) {
+    const { tc, text, res } = r;
+    if (!res) continue;
+    // FAIL LOUD on an MCP availability failure — yield an error chunk (→ the
+    // caller returns ok:false) instead of feeding "MCP error" to the LLM.
+    const decision = classifyToolResult(res);
+    if (decision.escalate) {
+      yield {
+        ok: false,
+        error: new OrchestratorError(
+          decision.escalate.message,
+          'MCP_UNAVAILABLE',
+        ),
+      };
+      return { escalated: true };
+    }
+    if (
+      !res.ok &&
+      isToolContextUnavailableError(text) &&
+      !externalToolNames.has(tc.name)
+    ) {
+      const entry = toolAvailabilityRegistry.block(sessionId, tc.name, text);
+      currentTools = currentTools.filter((t) => t.name !== tc.name);
+      options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
+        reason: text,
+        blockedUntil: entry.blockedUntil,
+      });
+    }
+    options?.sessionLogger?.logStep(`mcp_result_${tc.name}`, { result: text });
+    toolCallCount++;
+    metrics.toolCallCount.add();
+    toolMessages.push({
+      role: 'tool' as const,
+      content: text,
+      tool_call_id: tc.id,
+    });
+    onToolExecuted?.(r);
+  }
+  return { escalated: false, currentTools, toolCallCount, toolMessages };
 }

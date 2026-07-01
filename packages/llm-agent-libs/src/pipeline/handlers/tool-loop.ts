@@ -28,7 +28,6 @@ import type {
   LlmFinishReason,
   LlmTool,
   Message,
-  Result,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -38,15 +37,14 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
-import { isToolContextUnavailableError } from '../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
-import { classifyToolResult } from './escalate-if-unavailable.js';
 import {
   buildBlockedToolMessages,
   buildHallucinatedToolMessages,
   classifyToolCalls,
+  executeToolBatchWithHeartbeat,
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
@@ -774,164 +772,45 @@ export class ToolLoopHandler implements IStageHandler {
         });
       }
 
-      // Execute tool calls concurrently with heartbeat
-      type ToolExecResult = {
-        tc: { id: string; name: string; arguments: Record<string, unknown> };
-        text: string;
-        res: Result<
-          { content: string | Record<string, unknown>; isError?: boolean },
-          { message: string }
-        > | null;
-        duration: number;
-        cached: boolean;
-      };
-
-      const toolExecPromises = batch.map(
-        async (tc): Promise<ToolExecResult> => {
-          const toolStart = Date.now();
-          ctx.options?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
-            arguments: tc.arguments,
-          });
-          const client = ctx.toolClientMap.get(tc.name);
-          if (!client)
-            return { tc, text: '', res: null, duration: 0, cached: false };
-          const toolSpan = ctx.tracer.startSpan('smart_agent.tool_call', {
-            parent: parentSpan,
-            attributes: { 'tool.name': tc.name },
-          });
-          const cachedValue = ctx.toolCache.get(tc.name, tc.arguments);
-          const wasCached = !!cachedValue;
-          const res = cachedValue
-            ? (() => {
-                ctx.metrics.toolCacheHitCount.add();
-                toolSpan.setAttribute('cache', 'hit');
-                return { ok: true as const, value: cachedValue };
-              })()
-            : await (async () => {
-                const r = await client.callTool(
-                  tc.name,
-                  tc.arguments,
-                  ctx.options,
-                );
-                if (r.ok) ctx.toolCache.set(tc.name, tc.arguments, r.value);
-                return r;
-              })();
-          const text = !res.ok
-            ? res.error.message
-            : typeof res.value.content === 'string'
-              ? res.value.content
-              : JSON.stringify(res.value.content);
-          toolSpan.setStatus(
-            res.ok ? 'ok' : 'error',
-            res.ok ? undefined : text,
-          );
-          toolSpan.end();
-          return {
-            tc,
-            text,
-            res,
-            duration: Date.now() - toolStart,
-            cached: wasCached,
-          };
-        },
-      );
-
-      // Race: tool execution vs periodic heartbeat
-      const allDone = Promise.all(toolExecPromises);
-      const pendingTools = new Set(batch.map((tc) => tc.name));
-      const toolStartTime = Date.now();
-      let results: ToolExecResult[] = [];
-      let settled = false;
-
-      for (const [i, p] of toolExecPromises.entries()) {
-        p.then(() => pendingTools.delete(batch[i].name));
+      // Execute tool calls concurrently with heartbeat (shared core).
+      const batchGen = executeToolBatchWithHeartbeat({
+        batch,
+        toolClientMap: ctx.toolClientMap,
+        toolCache: ctx.toolCache,
+        tracer: ctx.tracer,
+        metrics: ctx.metrics,
+        parentSpan,
+        toolAvailabilityRegistry: ctx.toolAvailabilityRegistry,
+        sessionId: ctx.sessionId,
+        externalToolNames,
+        currentTools,
+        toolCallCount,
+        timingLog,
+        heartbeatMs,
+        options: ctx.options,
+        onToolExecuted: (r) =>
+          ctx.requestLogger.logToolCall({
+            // Stamp requestId so tool executions land in the per-traceId delta
+            // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
+            // when the request actually ran tools (only the session-cumulative
+            // counter would tick).
+            requestId: ctx.options?.trace?.traceId,
+            toolName: r.tc.name,
+            success: !!r.res?.ok,
+            durationMs: r.duration,
+            cached: r.cached,
+          }),
+      });
+      let step = await batchGen.next();
+      while (!step.done) {
+        ctx.yield(step.value);
+        step = await batchGen.next();
       }
-
-      while (!settled) {
-        const winner = await Promise.race([
-          allDone.then((r) => ({ tag: 'done' as const, results: r })),
-          new Promise<{ tag: 'tick' }>((resolve) =>
-            setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
-          ),
-        ]);
-        if (winner.tag === 'done') {
-          results = winner.results;
-          settled = true;
-        } else {
-          for (const tool of pendingTools) {
-            ctx.yield({
-              ok: true,
-              value: {
-                content: '',
-                heartbeat: { tool, elapsed: Date.now() - toolStartTime },
-              },
-            });
-          }
-        }
-      }
-
-      // Collect timing
-      for (const r of results) {
-        timingLog.push({ phase: `tool_${r.tc.name}`, duration: r.duration });
-      }
-
-      // Process results
-      const toolMessages: Message[] = [];
-      for (const r of results) {
-        const { tc, text, res } = r;
-        if (!res) continue;
-        // FAIL LOUD on an MCP availability failure — yield an error (→ pipeline
-        // fails with ok:false) instead of feeding "MCP error" to the LLM as text.
-        const decision = classifyToolResult(res);
-        if (decision.escalate) {
-          ctx.yield({
-            ok: false,
-            error: new OrchestratorError(
-              decision.escalate.message,
-              'MCP_UNAVAILABLE',
-            ),
-          });
-          return false;
-        }
-        if (
-          !res.ok &&
-          isToolContextUnavailableError(text) &&
-          !externalToolNames.has(tc.name)
-        ) {
-          const entry = ctx.toolAvailabilityRegistry.block(
-            ctx.sessionId,
-            tc.name,
-            text,
-          );
-          currentTools = currentTools.filter((t) => t.name !== tc.name);
-          ctx.options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
-            reason: text,
-            blockedUntil: entry.blockedUntil,
-          });
-        }
-        ctx.options?.sessionLogger?.logStep(`mcp_result_${tc.name}`, {
-          result: text,
-        });
-        toolCallCount++;
-        ctx.metrics.toolCallCount.add();
-        toolMessages.push({
-          role: 'tool' as const,
-          content: text,
-          tool_call_id: tc.id,
-        });
-        ctx.requestLogger.logToolCall({
-          // Stamp requestId so tool executions land in the per-traceId delta
-          // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
-          // when the request actually ran tools (only the session-cumulative
-          // counter would tick).
-          requestId: ctx.options?.trace?.traceId,
-          toolName: tc.name,
-          success: !!res?.ok,
-          durationMs: r.duration,
-          cached: r.cached,
-        });
-      }
-      messages = [...messages, ...toolMessages];
+      const outcome = step.value;
+      if (outcome.escalated) return false;
+      currentTools = outcome.currentTools;
+      toolCallCount = outcome.toolCallCount;
+      messages = [...messages, ...outcome.toolMessages];
     }
   }
 }
