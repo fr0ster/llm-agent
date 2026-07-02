@@ -9,7 +9,7 @@ import {
   resolveCoordinatorDispatch,
   resolveCoordinatorDispatchKind,
   resolveCoordinatorPlanning,
-} from '../smart-agent/config.js';
+} from './coordinator-resolvers.js';
 import type { IServerPipelineContext } from './server-context.js';
 
 export async function parseLinearConfig(
