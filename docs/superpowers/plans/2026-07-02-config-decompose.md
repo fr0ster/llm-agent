@@ -123,8 +123,9 @@ DRY-purer but adds a file and import wiring disproportionate to a 5-line helper.
   files>` → `npm run lint:check` **exit code 0** (warnings/infos fine). Do NOT grep for
   "Found 0 errors."
 - Each task ends in exactly one commit. TDD: existing char tests pin each slice (GREEN
-  before AND after). Tasks 2 and 5 ADD a gap test as their FIRST step (GREEN against current
-  code before extracting).
+  before AND after). Tasks 2 and 5 ADD a focused test as their FIRST step (GREEN against
+  current code before extracting): Task 2 fills a real gap (`resolveEnvVars` deep-nesting);
+  Task 5 localizes existing `buildFinalizer` coverage + adds only the no-LLM error branch.
 - All commands use absolute paths or run from the repo root
   `/home/okyslytsia/prj/llm-agent`.
 
@@ -592,10 +593,11 @@ Steps:
 
 - **6 tasks cover R1–R6:** Task 1=R6, Task 2=R1, Task 3=R2, Task 4=R4, Task 5=R3,
   Task 6=residual R5 cleanup. ✅
-- **2 gap tests folded:** §4 #2 (`resolveEnvVars` deep-nesting/fallback/array-of-objects)
-  into Task 2 as its first step; §4 #1 (`buildFinalizer` passthrough/template/llm + no-LLM
-  error) into Task 5 as its first step. Both written GREEN against current code before
-  extracting. ✅
+- **2 focused tests folded:** §4 #2 (`resolveEnvVars` deep-nesting/fallback/array-of-objects
+  — a real coverage gap) into Task 2 as its first step; a `buildFinalizer` test into Task 5
+  (NOT a coverage gap — `llm-map-normalize.test.ts:134` already covers passthrough/template/llm;
+  this localizes it + adds only the no-LLM error branch). Both GREEN against current code
+  before extracting. ✅
 - **Barrel re-export list covers EVERY currently-exported symbol** — including
   `ConfigValidationError` and `assertNoLegacyPipelineConfig` (Task 4, MANDATORY per the
   `export *` correction). Cross-checked against the Architecture "currently-exported symbols"
