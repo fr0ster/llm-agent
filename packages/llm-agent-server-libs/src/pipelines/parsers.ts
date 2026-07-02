@@ -1,6 +1,6 @@
-// Facade: re-exports the pure stepper parser from stepper-config.ts and the
-// coordinator resolvers from coordinator-resolvers.ts. parseLinearConfig
-// (below) is the only logic that lives here.
+// Facade: re-exports the pure stepper parser from stepper-config.ts, and uses
+// the coordinator resolvers from coordinator-resolvers.ts internally.
+// parseLinearConfig (below) is the only logic that lives here.
 export {
   parseStepperCoordinatorConfig,
   type StepperCoordinatorConfig,
