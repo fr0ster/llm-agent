@@ -3,6 +3,10 @@
  */
 
 import path from 'node:path';
+import {
+  assertNoLegacyPipelineConfig,
+  validateResolvedConfig,
+} from './config-validator.js';
 import { parseSkillPluginsConfig } from './skill-plugins-config.js';
 import type {
   SmartServerConfig,
@@ -25,6 +29,10 @@ export {
   resolveCoordinatorPlanning,
   resolveToolSelectionStrategy,
 } from '../pipelines/coordinator-resolvers.js';
+export {
+  assertNoLegacyPipelineConfig,
+  ConfigValidationError,
+} from './config-validator.js';
 export type { LlmConfigMap, NormalizedLlmMap } from './llm-config-map.js';
 export {
   normalizeLlmConfig,
@@ -32,16 +40,6 @@ export {
   resolveLlmConfigStrict,
   resolveReviewerLlmName,
 } from './llm-config-map.js';
-
-import {
-  assertNoLegacyPipelineConfig,
-  validateResolvedConfig,
-} from './config-validator.js';
-
-export {
-  assertNoLegacyPipelineConfig,
-  ConfigValidationError,
-} from './config-validator.js';
 
 export type { YamlConfig } from './yaml-loader.js';
 export {

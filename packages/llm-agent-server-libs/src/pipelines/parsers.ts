@@ -1,4 +1,6 @@
-// PERMANENT facade: re-exports the pure parsers from stepper-config.ts.
+// Facade: re-exports the pure stepper parser from stepper-config.ts and the
+// coordinator resolvers from coordinator-resolvers.ts. parseLinearConfig
+// (below) is the only logic that lives here.
 export {
   parseStepperCoordinatorConfig,
   type StepperCoordinatorConfig,

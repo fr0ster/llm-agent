@@ -100,9 +100,9 @@ const STUB_LLM_CFG: SmartServerLlmConfig = {
   model: 'stub',
 } as never;
 
-// StepperCompositionSpec + CompositionNode are defined in config.ts (so the
-// yaml parser can produce them without a circular import) and re-exported here
-// as the build-time public surface.
+// StepperCompositionSpec + CompositionNode are defined in stepper-config.ts (so
+// the yaml parser can produce them without a circular import) and re-exported
+// here as the build-time public surface.
 export type {
   CompositionNode,
   StepperCompositionSpec,
