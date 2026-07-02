@@ -1,9 +1,8 @@
-// PERMANENT facade: re-exports the pure parsers from config.ts (they STAY there;
-// build-stepper-root.ts and others import them from config.ts). Nothing is moved.
+// PERMANENT facade: re-exports the pure parsers from stepper-config.ts.
 export {
   parseStepperCoordinatorConfig,
   type StepperCoordinatorConfig,
-} from '../smart-agent/config.js';
+} from '../smart-agent/stepper-config.js';
 
 import type { CoordinatorHandlerDeps } from '@mcp-abap-adt/llm-agent-libs';
 import {
