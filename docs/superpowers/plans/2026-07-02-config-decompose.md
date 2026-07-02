@@ -287,8 +287,12 @@ Steps:
   `loadYamlConfig` — now imported from yaml-loader — so `fs`/`parseYaml` are no longer used
   directly in `config.ts`; `path` is still used by `parseSubAgents` — keep it):
   ```ts
-  import { loadYamlConfig, resolveEnvVars } from './yaml-loader.js';
+  // LOCAL imports — ONLY the symbols config.ts itself still references after R1 moves:
+  import { loadYamlConfig } from './yaml-loader.js';
+  import type { YamlConfig } from './yaml-loader.js';
   // …
+  // PUBLIC re-exports (independent of the local imports — keep every moved symbol public
+  // because index.ts does `export *`):
   export {
     generateConfigTemplate,
     loadYamlConfig,
@@ -297,10 +301,14 @@ Steps:
   } from './yaml-loader.js';
   export type { YamlConfig } from './yaml-loader.js';
   ```
-  Note: `config.ts` (`parseSubAgents`) calls `loadYamlConfig`, so it needs a real local
-  import binding in addition to the re-export. `YamlConfig` is used as a type across R4/R5
-  — import it as a type where needed; the `export type { YamlConfig }` re-export keeps the
-  public path.
+  **Do NOT add `resolveEnvVars` to the LOCAL import** — after R1 moves, `config.ts`'s only
+  callers of `resolveEnvVars` (lines 439/444/455) left with it; the residual uses only
+  `loadYamlConfig` (in `parseSubAgents`, ~824). Importing `resolveEnvVars` locally would be an
+  unused local → `noUnusedLocals: true` build failure. It stays PUBLIC via the `export … from`
+  re-export only. Likewise `YamlConfig` is still used LOCALLY as a type (`parseSubAgents` ~786,
+  `resolveSmartServerConfig` ~885, and R4 validators until Task 4) → keep the local
+  `import type { YamlConfig }` AND the `export type` re-export (a re-export does not satisfy a
+  local type reference).
 - [ ] `wc -l` yaml-loader.ts (~145, < 500).
 - [ ] Lint gate on the changed files (`yaml-loader.ts`, `config.ts`, `resolve-env-vars.test.ts`).
 - [ ] `npm run build` succeeds.
@@ -426,7 +434,11 @@ Steps:
 
 ### Task 5 — Extract `pipelines/coordinator-resolvers.ts` (R3)
 
-FIRST fold the §4 #1 gap test (`buildFinalizer`) against CURRENT code (GREEN), then extract.
+FIRST add a focused `buildFinalizer` test against CURRENT code (GREEN), then extract. NOTE:
+this is NOT filling missing coverage — `llm-map-normalize.test.ts:134` already covers the
+`passthrough`/`template`/`llm` branches (one of the pinning suites). This new file LOCALIZES
+that coverage next to the extraction AND adds the one branch the existing test omits: the
+**no-LLM-config error case**. Keep it focused; don't duplicate what's already pinned.
 
 **Files:** create `smart-agent/__tests__/build-finalizer.test.ts`,
 `pipelines/coordinator-resolvers.ts`; edit `smart-agent/config.ts`, `pipelines/parsers.ts`.
