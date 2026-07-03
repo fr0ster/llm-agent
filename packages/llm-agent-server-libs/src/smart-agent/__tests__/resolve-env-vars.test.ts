@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: intentional env-var placeholder syntax under test
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { resolveEnvVars } from '../config.js';
