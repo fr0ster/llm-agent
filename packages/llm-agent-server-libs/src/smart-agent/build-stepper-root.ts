@@ -23,14 +23,13 @@ import {
   Stepper,
   StepperInterpreter,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { type NormalizedLlmMap, resolveLlmConfig } from './config.js';
+import type { SmartServerLlmConfig } from './smart-server.js';
 import {
-  type NormalizedLlmMap,
   parseStepperCoordinatorConfig,
-  resolveLlmConfig,
   type StepperCompositionSpec,
   type StepperCoordinatorConfig,
-} from './config.js';
-import type { SmartServerLlmConfig } from './smart-server.js';
+} from './stepper-config.js';
 
 export interface BuildStepperRootInput {
   /** Raw coordinator config object (e.g. the `coordinator:` YAML block). */
@@ -101,10 +100,13 @@ const STUB_LLM_CFG: SmartServerLlmConfig = {
   model: 'stub',
 } as never;
 
-// StepperCompositionSpec + CompositionNode are defined in config.ts (so the
-// yaml parser can produce them without a circular import) and re-exported here
-// as the build-time public surface.
-export type { CompositionNode, StepperCompositionSpec } from './config.js';
+// StepperCompositionSpec + CompositionNode are defined in stepper-config.ts (so
+// the yaml parser can produce them without a circular import) and re-exported
+// here as the build-time public surface.
+export type {
+  CompositionNode,
+  StepperCompositionSpec,
+} from './stepper-config.js';
 
 /** Build-time dependencies (everything not part of the composition itself). */
 export interface BuildFromCompositionDeps {

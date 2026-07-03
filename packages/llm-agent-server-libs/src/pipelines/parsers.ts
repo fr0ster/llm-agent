@@ -1,16 +1,17 @@
-// PERMANENT facade: re-exports the pure parsers from config.ts (they STAY there;
-// build-stepper-root.ts and others import them from config.ts). Nothing is moved.
+// Facade: re-exports the pure stepper parser from stepper-config.ts, and uses
+// the coordinator resolvers from coordinator-resolvers.ts internally.
+// parseLinearConfig (below) is the only logic that lives here.
 export {
   parseStepperCoordinatorConfig,
   type StepperCoordinatorConfig,
-} from '../smart-agent/config.js';
+} from '../smart-agent/stepper-config.js';
 
 import type { CoordinatorHandlerDeps } from '@mcp-abap-adt/llm-agent-libs';
 import {
   resolveCoordinatorDispatch,
   resolveCoordinatorDispatchKind,
   resolveCoordinatorPlanning,
-} from '../smart-agent/config.js';
+} from './coordinator-resolvers.js';
 import type { IServerPipelineContext } from './server-context.js';
 
 export async function parseLinearConfig(
