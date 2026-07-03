@@ -46,7 +46,7 @@ Responsibility → destination (blueprint §3):
 
 - Package: `@mcp-abap-adt/llm-agent-server-libs` (ESM only, `.js` import extensions, TS strict,
   `noUnusedLocals: true`).
-- Lint/format: Biome (`npm run format`, `npx @biomejs/biome check --write <files>`, `npm run lint:check`).
+- Lint/format: Biome — SCOPED per task (`npx @biomejs/biome check --write <changed files>` then `npm run lint:check` exit 0; NOT the global `npm run format`).
 - Test runner (from `packages/llm-agent-server-libs/package.json`):
   `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`.
   **Single-file invocation** (run from `packages/llm-agent-server-libs/`):
@@ -69,9 +69,15 @@ Responsibility → destination (blueprint §3):
   the handler**. Remember: `export { x } from './m.js'` does NOT create a local binding, so a symbol
   still CALLED inside the handler must ALSO be locally `import { x }`ed from its new module (needs
   BOTH statements); a symbol only re-exported needs ONLY the `export { … } from` line.
-- **Lint gate per task:** `npm run format` → `npx @biomejs/biome check --write <changed files>` →
-  `npm run lint:check` requiring **exit code 0** (warnings/infos are fine). Do NOT grep for
-  "Found 0 errors" — trust the exit code.
+- **Lint gate per task (SCOPED — do NOT run the global `npm run format`):** run
+  `npx @biomejs/biome check --write <the changed files for THIS task>` (this both formats and
+  import-sorts, scoped to the task's files) → then `npm run lint:check` (read-only, requiring
+  **exit code 0**; warnings/infos are fine). Do NOT grep for "Found 0 errors" — trust the exit code.
+  The global `npm run format` formats every package and can sweep unrelated pre-existing churn into
+  the commit — never use it here.
+- **Commit ONLY this task's files.** Before committing, run `git status --short` and `git add` the
+  task's specific paths explicitly (NOT `git add -A`/`git add .`). If any file OUTSIDE this task's
+  blast-radius shows as modified, STOP and report it — do not sweep it into the task commit.
 - **Build gate per task:** `npm run build` (root or the package) must succeed — tsc `noUnusedLocals`
   is the authoritative dead-import check.
 - Each task ends in **exactly one commit**. TDD: existing characterization tests pin each slice
@@ -170,7 +176,7 @@ add re-export), `planner.ts` (repoint), `reviewer.ts` (repoint),
   `validateRequires` are still used elsewhere in the handler; if either is now unused there, prune it
   from the handler's `./types.js` import — grep first: both are used broadly in the class, so expect
   to keep them).
-- [ ] Lint gate: `npm run format` → `npx @biomejs/biome check --write` on the 5 changed files →
+- [ ] Lint gate (SCOPED): `npx @biomejs/biome check --write` on the 5 changed files →
   `npm run lint:check` (exit 0).
 - [ ] Test gate: run `controller-coordinator-handler.test.ts`, `planner.test.ts`,
   `planner.skills.test.ts`, `reviewer.test.ts` single-file → all GREEN. `wc -l parser.ts` (< 500).
@@ -233,11 +239,13 @@ value-readers, or `SessionBundle`.
   export { renderLiveBoard } from './board.js';
   ```
   (The gap test imports `renderLiveBoard` from the handler, so this re-export IS required.)
-- [ ] `npm run build` — confirm the handler no longer references `readPlanDecisions`/`readClaims`/
-  `reconstructBoard`/`renderBoard` ONLY via `renderLiveBoard`. **Verify they are still used elsewhere
-  in the handler before pruning:** grep the handler — `reconstructBoard`/`renderBoard`/`readClaims`/
-  `readPlanDecisions` may have other call sites (e.g. the `BoardOverBudgetError` branch ~706–715).
-  Prune from the handler's `./board.js`/`./artifacts.js` imports ONLY the members tsc reports unused.
+- [ ] `npm run build` — `renderLiveBoard` was the handler's ONLY caller of `readPlanDecisions`,
+  `readClaims`, `reconstructBoard`, and `renderBoard`, so after the move tsc flags all four as unused
+  in the handler. **Prune those four** from the handler's `./board.js` / `./artifacts.js` imports.
+  `BoardOverBudgetError` STAYS — it is still thrown/caught in the handler's board-budget branch
+  (~706–715), independent of `renderLiveBoard`. Let tsc's `noUnusedLocals` be authoritative: prune
+  exactly the members it reports unused (grep-confirm each has no other handler call site before
+  removing) and keep every member still referenced.
 - [ ] Lint gate + test gate: run `board.test.ts`, `controller-coordinator-handler.test.ts`,
   `round-trip.test.ts` → GREEN. `wc -l board.ts` (< 500).
 - [ ] **Commit:** `refactor(controller): move renderLiveBoard into board.ts (R2)`
@@ -460,8 +468,8 @@ ZERO external importers, called at EXACTLY one site inside `runStep` — line `1
   in the shrunken handler (e.g. the "Episodic recall tuning" / "Pure helpers" banners that lost their
   content). No logic change.
 - [ ] `wc -l controller-coordinator-handler.ts` — expect ~1350; `wc -l` all new modules (each < 500).
-- [ ] `npm run build` (green) + lint gate (`npm run format` → biome check → `npm run lint:check`
-  exit 0).
+- [ ] `npm run build` (green) + lint gate (SCOPED `npx @biomejs/biome check --write <changed files>`
+  → `npm run lint:check` exit 0).
 - [ ] Full controller test sweep single-file over: `controller-coordinator-handler.test.ts`,
   `round-trip.test.ts`, `run-scoped-recall.test.ts`, `board.test.ts`, `usage-logging.test.ts`,
   `planner.test.ts`, `planner.skills.test.ts`, `reviewer.test.ts`, `usage-e2e.test.ts`,
