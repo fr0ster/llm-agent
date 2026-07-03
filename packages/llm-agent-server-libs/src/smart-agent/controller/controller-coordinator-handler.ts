@@ -21,16 +21,11 @@ import {
   summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { cosine } from '../embedder-knowledge-index.js';
-import {
-  readClaims,
-  readPlanDecisions,
-  writePlanDecision,
-} from './artifacts.js';
+import { writePlanDecision } from './artifacts.js';
 import {
   type BoardBudget,
   BoardOverBudgetError,
-  reconstructBoard,
-  renderBoard,
+  renderLiveBoard,
 } from './board.js';
 import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
@@ -185,6 +180,8 @@ export interface ControllerHandlerDeps {
   controllerPlanner?: IControllerPlanner;
 }
 
+// Re-exported for import-path stability (moved to ./board.ts).
+export { renderLiveBoard } from './board.js';
 // Re-exported for import-path stability (moved to ./parser.ts).
 export { extractJsonObject, parseNextStep } from './parser.js';
 
@@ -1708,30 +1705,6 @@ function toLlmToolCall(c: StreamToolCall): LlmToolCall {
     name: ('name' in c && c.name) || '',
     arguments: args,
   };
-}
-
-/** Reconstruct and render the live step-state board from artifacts.
- *  Returns '' when there is no runId (the board has nothing to show yet). */
-async function renderLiveBoard(
-  rag: IKnowledgeRagHandle,
-  bundle: SessionBundle,
-  budget: BoardBudget,
-): Promise<string> {
-  const runId = bundle.runId;
-  if (!runId) return '';
-  const [structure, claims] = await Promise.all([
-    readPlanDecisions(rag, runId),
-    readClaims(rag, runId),
-  ]);
-  const stepResults = await rag.list({ runId, artifactType: 'step-result' });
-  const board = reconstructBoard({
-    structure,
-    stepResults,
-    claims,
-    inFlight: bundle.inFlightStep,
-    pending: bundle.pending,
-  });
-  return renderBoard(board, budget);
 }
 
 /** Synthesize the strict KnowledgeEntryMetadata for controller artifacts. */

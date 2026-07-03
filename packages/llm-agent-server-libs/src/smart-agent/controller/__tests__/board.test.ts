@@ -9,6 +9,7 @@ import {
   renderBoard,
   validateBoardBudget,
 } from '../board.js';
+import { renderLiveBoard } from '../controller-coordinator-handler.js';
 import type { InFlightStep, PendingMarker } from '../types.js';
 
 const meta = (m: Record<string, unknown>) => ({
@@ -701,4 +702,136 @@ test('reconstructBoard: empty replan drops unexecuted tail; executed anchor stay
     !b.has('s2'),
     's2 is unexecuted + dropped by empty replan — must not appear',
   );
+});
+
+// ─── renderLiveBoard characterization (gap test — R2) ────────────────────────
+
+const GAP_BUDGET: BoardBudget = {
+  maxDigestChars: 80,
+  maxIntentChars: 40,
+  maxActiveSteps: 8,
+  maxBoardChars: 4000,
+  keepRecentDigests: 3,
+};
+
+test('renderLiveBoard: absent runId returns empty string', async () => {
+  const bundle = {
+    goal: '',
+    plannerPrivate: '',
+    budgets: { stepsUsed: 0, rewindsUsed: 0 },
+    // runId intentionally absent
+  };
+  const fakeRag = {
+    list: async () => [],
+    search: async () => [],
+    put: async () => undefined,
+    embed: async () => [],
+  };
+  const result = await renderLiveBoard(
+    fakeRag as any,
+    bundle as any,
+    GAP_BUDGET,
+  );
+  assert.equal(result, '');
+});
+
+test('renderLiveBoard: delegates to reconstructBoard + renderBoard', async () => {
+  const runId = 'run1';
+  const planDecisionEntry = {
+    content: JSON.stringify({
+      steps: [{ stepId: 's1', name: 'Do it', instructions: 'do the thing' }],
+    }),
+    metadata: {
+      traceId: 't',
+      turnId: 't',
+      stepperId: 'controller',
+      task: 'controller',
+      artifactType: 'plan-decision',
+      runId,
+      kind: 'create',
+      writeOrdinal: 1,
+      createdAt: 'now',
+    },
+  };
+  const stepResultEntry = meta({
+    artifactType: 'step-result',
+    runId,
+    stepId: 's1',
+    seq: 0,
+    attempt: 0,
+    status: 'ok',
+    digest: 'done well',
+    writeOrdinal: 2,
+  });
+  const claimEntry = {
+    content: '',
+    metadata: {
+      traceId: 't',
+      turnId: 't',
+      stepperId: 'controller',
+      task: 'controller',
+      artifactType: 'step-start',
+      runId,
+      slotId: 'slot1',
+      stepId: 's1',
+      seq: 0,
+      attempt: 0,
+      decisionId: 'dec1',
+      writeOrdinal: 1,
+      createdAt: 'now',
+    },
+  };
+  const fakeRag = {
+    list: async (filter: { runId?: string; artifactType?: string }) => {
+      if (filter.artifactType === 'plan-decision') return [planDecisionEntry];
+      if (filter.artifactType === 'step-start') return [claimEntry];
+      if (filter.artifactType === 'step-result') return [stepResultEntry];
+      return [];
+    },
+    search: async () => [],
+    put: async () => undefined,
+    embed: async () => [],
+  };
+  const bundle = {
+    goal: '',
+    plannerPrivate: '',
+    budgets: { stepsUsed: 0, rewindsUsed: 0 },
+    runId,
+  };
+  const result = await renderLiveBoard(
+    fakeRag as any,
+    bundle as any,
+    GAP_BUDGET,
+  );
+  // The structure readPlanDecisions produces:
+  const structure = [
+    {
+      runId,
+      kind: 'create' as const,
+      steps: [{ stepId: 's1', name: 'Do it', instructions: 'do the thing' }],
+      writeOrdinal: 1,
+    },
+  ];
+  const claims = [
+    {
+      runId,
+      slotId: 'slot1',
+      stepId: 's1',
+      seq: 0,
+      attempt: 0,
+      decisionId: 'dec1',
+      writeOrdinal: 1,
+    },
+  ];
+  const stepResults = [stepResultEntry];
+  const expected = renderBoard(
+    reconstructBoard({
+      structure,
+      stepResults,
+      claims,
+      inFlight: undefined,
+    } as BoardInputs),
+    GAP_BUDGET,
+  );
+  assert.equal(result, expected);
 });
