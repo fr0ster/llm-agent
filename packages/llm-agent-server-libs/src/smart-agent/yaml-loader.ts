@@ -122,6 +122,14 @@ log: smart-server.log                 # path to log file; omit for stdout
 # own those concerns; pipeline behavior moves under 'pipeline.config'.
 `;
 
+export const get = (obj: unknown, ...keys: string[]): unknown =>
+  keys.reduce<unknown>((o, k) => {
+    if (o !== null && typeof o === 'object' && k in o) {
+      return (o as Record<string, unknown>)[k];
+    }
+    return undefined;
+  }, obj);
+
 export function resolveEnvVars(
   value: unknown,
   env: NodeJS.ProcessEnv = process.env,

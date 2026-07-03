@@ -1,5 +1,6 @@
 import type { SmartServerConfig } from './smart-server.js';
 import type { YamlConfig } from './yaml-loader.js';
+import { get } from './yaml-loader.js';
 
 const VALID_PROVIDERS = [
   'openai',
@@ -26,14 +27,6 @@ export class ConfigValidationError extends Error {
     this.name = 'ConfigValidationError';
   }
 }
-
-const get = (obj: unknown, ...keys: string[]): unknown =>
-  keys.reduce<unknown>((o, k) => {
-    if (o !== null && typeof o === 'object' && k in o) {
-      return (o as Record<string, unknown>)[k];
-    }
-    return undefined;
-  }, obj);
 
 function checkLlmRole(
   label: string,
