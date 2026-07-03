@@ -17,8 +17,11 @@ not be a provider for its own siblings.
 
 Net result: 3 new sibling modules (`parser.ts`, `usage-logging.ts`, `recall.ts`) + `renderLiveBoard`
 relocated into existing `board.ts` + one inline (`toLlmToolCall`); the handler drops to ~1350 lines
-(pure execution loop). No public API change; no logic change; every moved symbol re-exported from the
-handler so all TEST import paths stay identical; the ONLY production import-path change is
+(pure execution loop). No public API change; no logic change; every TEST-FACING moved symbol (one a
+test imports directly) is re-exported from the handler so all TEST import paths stay identical —
+internal-only moved symbols (e.g. `collectApproved`, `buildRecallBlock`, the recall constants) are
+NOT re-exported (no test imports them; re-exporting would needlessly widen the surface); the ONLY
+production import-path change is
 `planner.ts` + `reviewer.ts` → `./parser.js`.
 
 ## Architecture
@@ -57,9 +60,14 @@ Responsibility → destination (blueprint §3):
 - **Behavior-preserving:** move function bodies **BYTE-FOR-BYTE**. The only edits allowed are
   import-path adjustments, barrel re-exports in the handler, the `planner.ts`/`reviewer.ts` repoint,
   and the `toLlmToolCall` inline expansion. No logic change. No public API change.
-- **Public API byte-stable via handler barrel re-exports.** Every moved symbol is re-exported from
-  `controller-coordinator-handler.ts` so all TEST import paths (`../controller-coordinator-handler.js`)
-  stay identical. The ONLY production import-path change is `planner.ts` + `reviewer.ts` →
+- **Public API byte-stable via handler barrel re-exports.** Every TEST-FACING moved symbol (one that
+  a test file imports from the handler) is re-exported from `controller-coordinator-handler.ts` so all
+  TEST import paths (`../controller-coordinator-handler.js`) stay identical. The re-export set is
+  therefore exactly: `parseNextStep`+`extractJsonObject` (Task 1), `renderLiveBoard` (Task 2),
+  `makeLogUsage` (Task 3), `runScopedRecall`+`relevantExtract` (Task 4). Internal-only moved symbols
+  (`collectApproved`, `buildRecallBlock`, `rankStatus`, `isBetterStep`, `isBetterMcp`, the recall
+  constants) are NOT re-exported — no test imports them, and re-exporting would needlessly widen the
+  surface. The ONLY production import-path change is `planner.ts` + `reviewer.ts` →
   `./parser.js` for `extractJsonObject` (required — a sibling re-exporting FROM the handler, which
   then imports FROM the sibling, would be circular). `ControllerCoordinatorHandler`,
   `ControllerHandlerDeps`, `TerminalUsage`, and the `execute()` signature stay in the handler
