@@ -4,7 +4,7 @@ import {
   mintReplanStepIds,
   type PlanDecision,
 } from './artifacts.js';
-import { extractJsonObject } from './controller-coordinator-handler.js';
+import { extractJsonObject } from './parser.js';
 import { appendHint } from './prompts.js';
 import type { ISubagentClient } from './subagent-client.js';
 import {
