@@ -55,13 +55,11 @@ import type {
 } from './types.js';
 import { makeLogUsage } from './usage-logging.js';
 
-// Re-exported for import-path stability (moved to ./recall.ts).
-export { relevantExtract, runScopedRecall } from './recall.js';
-
 // ---------------------------------------------------------------------------
 // Debug logging — gated behind DEBUG_CONTROLLER (e.g. DEBUG_CONTROLLER=1).
 // Surfaces the steps the planner delegates and per-role/total token usage to
 // stderr, for tuning step granularity and watching token spend. Off by default.
+// (Also in usage-logging.ts — intentional small duplication; no 3rd copy exists.)
 // ---------------------------------------------------------------------------
 
 function dlog(msg: string): void {
@@ -72,9 +70,6 @@ function dlog(msg: string): void {
 export type TerminalUsage = LlmUsage & {
   models?: Record<string, ModelUsageEntry>;
 };
-
-// Re-exported for import-path stability (moved to ./usage-logging.ts).
-export { makeLogUsage } from './usage-logging.js';
 
 // ---------------------------------------------------------------------------
 // Dep-injection surface
@@ -151,10 +146,13 @@ export interface ControllerHandlerDeps {
   controllerPlanner?: IControllerPlanner;
 }
 
-// Re-exported for import-path stability (moved to ./board.ts).
+// ---------------------------------------------------------------------------
+// Re-exported for import-path stability (helpers moved to sibling modules).
+// ---------------------------------------------------------------------------
 export { renderLiveBoard } from './board.js';
-// Re-exported for import-path stability (moved to ./parser.ts).
 export { extractJsonObject, parseNextStep } from './parser.js';
+export { relevantExtract, runScopedRecall } from './recall.js';
+export { makeLogUsage } from './usage-logging.js';
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -1572,7 +1570,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 }
 
 // ---------------------------------------------------------------------------
-// Episodic recall tuning
+// Goal-clarification helpers
 // ---------------------------------------------------------------------------
 
 /** Bare confirmations that, on a goal clarify, commit the evaluator's proposed
@@ -1606,7 +1604,6 @@ function isAffirmation(answer: string): boolean {
   return AFFIRMATIONS.has(t);
 }
 
-/** Top-K tools surfaced from toolsRag per planner/step query. */
 /** Agnostic executor system prompt. Domain specifics (e.g. SAP/ABAP fact kinds)
  *  are layered on via `subagents.executor.hint` (see {@link appendHint}). */
 const EXECUTOR_SYSTEM =
@@ -1621,6 +1618,7 @@ const EXECUTOR_SYSTEM =
   'fetch the full details of every listed item unless the step explicitly asks ' +
   'for per-item details.';
 
+/** Top-K tools surfaced from toolsRag per planner/step query. */
 const TOOL_SELECT_K = 20;
 
 // ---------------------------------------------------------------------------

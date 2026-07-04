@@ -1,6 +1,5 @@
 import { type NextStep, validateRequires } from './types.js';
 
-/** Parse a planner content string into a NextStep, defensively. */
 /** Parse the planner's reply into a NextStep, tolerating ```json fences and
  *  surrounding prose. Returns null when no valid decision can be extracted — the
  *  caller treats that as a FORMAT error (re-ask the planner), NOT a rewind, so a
