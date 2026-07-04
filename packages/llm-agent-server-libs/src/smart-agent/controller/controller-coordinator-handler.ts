@@ -150,7 +150,7 @@ export interface ControllerHandlerDeps {
 // Re-exported for import-path stability (helpers moved to sibling modules).
 // ---------------------------------------------------------------------------
 export { renderLiveBoard } from './board.js';
-export { extractJsonObject, parseNextStep } from './parser.js';
+export { parseNextStep } from './parser.js';
 export { relevantExtract, runScopedRecall } from './recall.js';
 export { makeLogUsage } from './usage-logging.js';
 
