@@ -48,7 +48,6 @@ import {
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
-  isBatchEmbedder,
   QueryEmbedding,
   type RagCollectionMeta,
   type RagCollectionScope,
@@ -86,6 +85,10 @@ import type {
 } from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
+import {
+  vectorizeMcpTools,
+  vectorizeSkills,
+} from './mcp/vectorize-mcp-tools.js';
 import type { IMetrics } from './metrics/types.js';
 import { DefaultPipeline } from './pipeline/default-pipeline.js';
 import type { DagCoordinatorHandlerDeps } from './pipeline/handlers/dag-coordinator.js';
@@ -906,174 +909,7 @@ export class SmartAgentBuilder {
         ? await connectionStrategy.resolve([])
         : { clients: [] as IMcpClient[], toolsChanged: false };
       mcpClients = resolved.clients;
-
-      // Vectorize each connected client's tools into the tools RAG store.
-      for (const adapter of mcpClients) {
-        try {
-          // Vectorize tools into the tools RAG store
-          if (toolsRag) {
-            const toolsResult = await adapter.listTools();
-            if (toolsResult.ok) {
-              const tools = toolsResult.value;
-              // Try to access the embedder from the store for batch embedding.
-              // VectorRag and QdrantRag store their embedder as a private field.
-              // biome-ignore lint/suspicious/noExplicitAny: accessing private embedder for batch optimization
-              const storeEmbedder = (toolsRag as any).embedder as
-                | IEmbedder
-                | undefined;
-
-              if (
-                storeEmbedder &&
-                isBatchEmbedder(storeEmbedder) &&
-                toolsRag.writer?.()?.upsertPrecomputedRaw !== undefined
-              ) {
-                // Batch path: single HTTP call for all tools
-                const texts = tools.map(
-                  (t) => `Tool: ${t.name} — ${t.description}`,
-                );
-                const batchStart = Date.now();
-                try {
-                  const embedResults = await storeEmbedder.embedBatch(texts);
-                  const batchDuration = Date.now() - batchStart;
-                  for (let i = 0; i < tools.length; i++) {
-                    const toolWriter = toolsRag.writer?.();
-                    const result = toolWriter?.upsertPrecomputedRaw
-                      ? await toolWriter.upsertPrecomputedRaw(
-                          `tool:${tools[i].name}`,
-                          texts[i],
-                          embedResults[i].vector,
-                          {},
-                        )
-                      : toolWriter
-                        ? await toolWriter.upsertRaw(
-                            `tool:${tools[i].name}`,
-                            texts[i],
-                            {},
-                          )
-                        : ({ ok: true, value: undefined } as const);
-                    if (!result.ok) {
-                      log?.log({
-                        type: 'warning',
-                        traceId: 'builder',
-                        message: `Tool vectorization failed for "${tools[i].name}": ${result.error.message}`,
-                      });
-                    }
-                  }
-                  const realUsage = embedResults.reduce<{
-                    promptTokens: number;
-                    totalTokens: number;
-                  } | null>((acc, r) => {
-                    if (!r.usage) return acc;
-                    return {
-                      promptTokens:
-                        (acc?.promptTokens ?? 0) + r.usage.promptTokens,
-                      totalTokens:
-                        (acc?.totalTokens ?? 0) + r.usage.totalTokens,
-                    };
-                  }, null);
-                  const totalEstTokens = texts.reduce(
-                    (sum, t) => sum + Math.ceil(t.length / 4),
-                    0,
-                  );
-                  requestLogger.logLlmCall({
-                    component: 'embedding',
-                    model: 'embedder',
-                    promptTokens: realUsage?.promptTokens ?? totalEstTokens,
-                    completionTokens: 0,
-                    totalTokens: realUsage?.totalTokens ?? totalEstTokens,
-                    durationMs: batchDuration,
-                    estimated: realUsage === null,
-                    scope: 'initialization',
-                    detail: 'tools',
-                  });
-                } catch (err) {
-                  log?.log({
-                    type: 'warning',
-                    traceId: 'builder',
-                    message: `Batch embedding failed, falling back to sequential: ${String(err)}`,
-                  });
-                  // Fallback to sequential
-                  const batchSize = 5;
-                  const batchDelayMs = 500;
-                  for (let i = 0; i < tools.length; i++) {
-                    const t = tools[i];
-                    const text = `Tool: ${t.name} — ${t.description}`;
-                    const embedStart = Date.now();
-                    const result = await toolsRag
-                      .writer?.()
-                      ?.upsertRaw(`tool:${t.name}`, text, {});
-                    if (result && !result.ok) {
-                      log?.log({
-                        type: 'warning',
-                        traceId: 'builder',
-                        message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
-                      });
-                    } else {
-                      requestLogger.logLlmCall({
-                        component: 'embedding',
-                        model: 'embedder',
-                        promptTokens: Math.ceil(text.length / 4),
-                        completionTokens: 0,
-                        totalTokens: Math.ceil(text.length / 4),
-                        durationMs: Date.now() - embedStart,
-                        estimated: true,
-                        scope: 'initialization',
-                        detail: 'tools',
-                      });
-                    }
-                    if ((i + 1) % batchSize === 0 && i < tools.length - 1) {
-                      await new Promise((r) => setTimeout(r, batchDelayMs));
-                    }
-                  }
-                }
-              } else {
-                // Sequential path (no batch support)
-                const batchSize = 5;
-                const batchDelayMs = 500;
-                for (let i = 0; i < tools.length; i++) {
-                  const t = tools[i];
-                  const text = `Tool: ${t.name} — ${t.description}`;
-                  const embedStart = Date.now();
-                  const result = await toolsRag
-                    .writer?.()
-                    ?.upsertRaw(`tool:${t.name}`, text, {});
-                  if (result && !result.ok) {
-                    log?.log({
-                      type: 'warning',
-                      traceId: 'builder',
-                      message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
-                    });
-                  } else {
-                    requestLogger.logLlmCall({
-                      component: 'embedding',
-                      model: 'embedder',
-                      promptTokens: Math.ceil(text.length / 4),
-                      completionTokens: 0,
-                      totalTokens: Math.ceil(text.length / 4),
-                      durationMs: Date.now() - embedStart,
-                      estimated: true,
-                      scope: 'initialization',
-                      detail: 'tools',
-                    });
-                  }
-                  if ((i + 1) % batchSize === 0 && i < tools.length - 1) {
-                    await new Promise((r) => setTimeout(r, batchDelayMs));
-                  }
-                }
-              }
-            }
-          }
-        } catch (err) {
-          // Tool vectorization failed for this client — skip it; the agent
-          // continues. (Connection failures are handled inside the strategy,
-          // which skips a down target and reconnects it later.)
-          log?.log({
-            type: 'warning',
-            traceId: 'builder',
-            message: `Tool vectorization failed: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        }
-      }
+      await vectorizeMcpTools(mcpClients, toolsRag, requestLogger, log);
     }
 
     // ---- SmartAgent Config ------------------------------------------------
@@ -1181,35 +1017,7 @@ export class SmartAgentBuilder {
 
     // ---- Skill vectorization (optional) ------------------------------------
     if (this._skillManager && toolsRag) {
-      const skillsResult = await this._skillManager.listSkills();
-      if (skillsResult.ok) {
-        for (const s of skillsResult.value) {
-          const text = `Skill: ${s.name}\n${s.description}`;
-          const embedStart = Date.now();
-          const result = await toolsRag
-            .writer?.()
-            ?.upsertRaw(`skill:${s.name}`, text, {});
-          if (result && !result.ok) {
-            log?.log({
-              type: 'warning',
-              traceId: 'builder',
-              message: `Skill vectorization failed for "${s.name}": ${result.error.message}`,
-            });
-          } else {
-            requestLogger.logLlmCall({
-              component: 'embedding',
-              model: 'embedder',
-              promptTokens: Math.ceil(text.length / 4),
-              completionTokens: 0,
-              totalTokens: Math.ceil(text.length / 4),
-              durationMs: Date.now() - embedStart,
-              estimated: true,
-              scope: 'initialization',
-              detail: 'skills',
-            });
-          }
-        }
-      }
+      await vectorizeSkills(this._skillManager, toolsRag, requestLogger, log);
     }
 
     // ---- Pipeline initialization -------------------------------------------
