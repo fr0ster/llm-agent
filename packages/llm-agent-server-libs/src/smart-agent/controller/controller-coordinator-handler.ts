@@ -10,7 +10,6 @@ import {
   type LlmUsage,
   type Message,
   type ModelUsageEntry,
-  type StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type KnowledgeBackend,
@@ -1174,7 +1173,33 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
         return settle('failed');
       }
-      const call = toLlmToolCall(firstCall);
+      // Normalize the StreamToolCall (full or delta) into an LlmToolCall inline.
+      const call: LlmToolCall =
+        'arguments' in firstCall &&
+        typeof firstCall.arguments === 'object' &&
+        firstCall.arguments !== null
+          ? {
+              id: ('id' in firstCall && firstCall.id) || 'call',
+              name: ('name' in firstCall && firstCall.name) || '',
+              arguments: firstCall.arguments as Record<string, unknown>,
+            }
+          : (() => {
+              let iArgs: Record<string, unknown> = {};
+              const raw =
+                'arguments' in firstCall ? firstCall.arguments : undefined;
+              if (typeof raw === 'string' && raw.length > 0) {
+                try {
+                  iArgs = JSON.parse(raw) as Record<string, unknown>;
+                } catch {
+                  iArgs = {};
+                }
+              }
+              return {
+                id: ('id' in firstCall && firstCall.id) || 'call',
+                name: ('name' in firstCall && firstCall.name) || '',
+                arguments: iArgs,
+              };
+            })();
       const name = call.name;
       const args = call.arguments;
 
@@ -1610,37 +1635,6 @@ function extractPrompt(textOrMessages: string | Message[]): string {
       return textOrMessages[i].content ?? '';
   }
   return '';
-}
-
-/** Normalize a StreamToolCall (full or delta) into an LlmToolCall. */
-function toLlmToolCall(c: StreamToolCall): LlmToolCall {
-  if (
-    'arguments' in c &&
-    typeof c.arguments === 'object' &&
-    c.arguments !== null
-  ) {
-    // Full LlmToolCall: arguments is already a parsed object.
-    return {
-      id: ('id' in c && c.id) || 'call',
-      name: ('name' in c && c.name) || '',
-      arguments: c.arguments as Record<string, unknown>,
-    };
-  }
-  // Delta: arguments is a (possibly partial) JSON string.
-  let args: Record<string, unknown> = {};
-  const raw = 'arguments' in c ? c.arguments : undefined;
-  if (typeof raw === 'string' && raw.length > 0) {
-    try {
-      args = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      args = {};
-    }
-  }
-  return {
-    id: ('id' in c && c.id) || 'call',
-    name: ('name' in c && c.name) || '',
-    arguments: args,
-  };
 }
 
 /** Synthesize the strict KnowledgeEntryMetadata for controller artifacts. */
