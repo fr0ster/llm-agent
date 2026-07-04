@@ -1,8 +1,21 @@
-import type { KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
-import type { PlanDecisionRecord, StepStartClaim } from './artifacts.js';
+import type {
+  IKnowledgeRagHandle,
+  KnowledgeEntry,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  type PlanDecisionRecord,
+  readClaims,
+  readPlanDecisions,
+  type StepStartClaim,
+} from './artifacts.js';
 import type { Outcome } from './outcome.js';
 import { projectStepState, resolveByPrecedence } from './outcome.js';
-import type { InFlightStep, PendingMarker, Step } from './types.js';
+import type {
+  InFlightStep,
+  PendingMarker,
+  SessionBundle,
+  Step,
+} from './types.js';
 
 export type StepState =
   | 'planned'
@@ -323,4 +336,28 @@ export function renderBoard(
     throw new BoardOverBudgetError(text.length, budget.maxBoardChars);
   }
   return text;
+}
+
+/** Reconstruct and render the live step-state board from artifacts.
+ *  Returns '' when there is no runId (the board has nothing to show yet). */
+export async function renderLiveBoard(
+  rag: IKnowledgeRagHandle,
+  bundle: SessionBundle,
+  budget: BoardBudget,
+): Promise<string> {
+  const runId = bundle.runId;
+  if (!runId) return '';
+  const [structure, claims] = await Promise.all([
+    readPlanDecisions(rag, runId),
+    readClaims(rag, runId),
+  ]);
+  const stepResults = await rag.list({ runId, artifactType: 'step-result' });
+  const board = reconstructBoard({
+    structure,
+    stepResults,
+    claims,
+    inFlight: bundle.inFlightStep,
+    pending: bundle.pending,
+  });
+  return renderBoard(board, budget);
 }

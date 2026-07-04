@@ -2280,6 +2280,41 @@ describe('Phase 2 — Live Digest Board integration', () => {
   });
 });
 
+describe('parseNextStep shape matrix', () => {
+  it('valid done → { kind: "done", result }', () => {
+    assert.deepEqual(parseNextStep('{"kind":"done","result":"R"}'), {
+      kind: 'done',
+      result: 'R',
+    });
+  });
+  it('valid next → { kind: "next", step }', () => {
+    assert.deepEqual(
+      parseNextStep('{"kind":"next","step":{"name":"n","instructions":"i"}}'),
+      { kind: 'next', step: { name: 'n', instructions: 'i' } },
+    );
+  });
+  it('valid rewind → { kind: "rewind", reason }', () => {
+    assert.deepEqual(parseNextStep('{"kind":"rewind","reason":"why"}'), {
+      kind: 'rewind',
+      reason: 'why',
+    });
+  });
+  it('JSON-fenced input parses to the next shape', () => {
+    const fenced =
+      'Some prose\n```json\n{"kind":"next","step":{"name":"n","instructions":"i"}}\n```\nmore prose';
+    assert.deepEqual(parseNextStep(fenced), {
+      kind: 'next',
+      step: { name: 'n', instructions: 'i' },
+    });
+  });
+  it('invalid input → null', () => {
+    assert.equal(parseNextStep('not json at all'), null);
+  });
+  it('partial/malformed JSON → null', () => {
+    assert.equal(parseNextStep('{"kind":"next","step":{"name":"n"}'), null);
+  });
+});
+
 describe('parseNextStep requires validation', () => {
   it('rejects a malformed requires (non-string / oversized) → null (parse-retry)', () => {
     assert.equal(

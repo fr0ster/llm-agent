@@ -1,6 +1,6 @@
 import type { LlmUsage } from '@mcp-abap-adt/llm-agent';
-import { extractJsonObject } from './controller-coordinator-handler.js';
 import type { ReviewOutcome } from './outcome.js';
+import { extractJsonObject } from './parser.js';
 import { appendHint } from './prompts.js';
 import type { ISubagentClient } from './subagent-client.js';
 import type { Step } from './types.js';

@@ -3,34 +3,24 @@ import {
   externalToolCallId,
   type IEmbedder,
   type IKnowledgeRagHandle,
-  type IRequestLogger,
   type IStageHandler,
-  type KnowledgeEntry,
   type KnowledgeEntryMetadata,
-  type LlmComponent,
   type LlmTool,
   type LlmToolCall,
   type LlmUsage,
   type Message,
   type ModelUsageEntry,
-  type StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type KnowledgeBackend,
   type PipelineContext,
   summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { cosine } from '../embedder-knowledge-index.js';
-import {
-  readClaims,
-  readPlanDecisions,
-  writePlanDecision,
-} from './artifacts.js';
+import { writePlanDecision } from './artifacts.js';
 import {
   type BoardBudget,
   BoardOverBudgetError,
-  reconstructBoard,
-  renderBoard,
+  renderLiveBoard,
 } from './board.js';
 import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
@@ -38,26 +28,38 @@ import type { Outcome } from './outcome.js';
 import { resolveByPrecedence } from './outcome.js';
 import { makeControllerPlanner } from './planner.js';
 import { appendHint } from './prompts.js';
+import {
+  buildRecallBlock,
+  collectApproved,
+  RECALL_ARTIFACT_TYPES,
+  RECALL_EVIDENCE_CHARS,
+  RECALL_K_MCP,
+  RECALL_K_STEP,
+  RECALL_MAX_CHARS_MCP,
+  RECALL_MAX_CHARS_STEP,
+  relevantExtract,
+  runScopedRecall,
+} from './recall.js';
 import type { Evidence, IReviewer, ReviewResult } from './reviewer.js';
 import type { RunIdMinter } from './run-scope.js';
 import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';
 import { hydrateBundle, persistBundle, resetRun } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
-import {
-  type ControllerConfig,
-  type IControllerPlanner,
-  type NextStep,
-  type PlannerKind,
-  type SessionBundle,
-  type Step,
-  validateRequires,
+import type {
+  ControllerConfig,
+  IControllerPlanner,
+  PlannerKind,
+  SessionBundle,
+  Step,
 } from './types.js';
+import { makeLogUsage } from './usage-logging.js';
 
 // ---------------------------------------------------------------------------
 // Debug logging — gated behind DEBUG_CONTROLLER (e.g. DEBUG_CONTROLLER=1).
 // Surfaces the steps the planner delegates and per-role/total token usage to
 // stderr, for tuning step granularity and watching token spend. Off by default.
+// (Also in usage-logging.ts — intentional small duplication; no 3rd copy exists.)
 // ---------------------------------------------------------------------------
 
 function dlog(msg: string): void {
@@ -68,49 +70,6 @@ function dlog(msg: string): void {
 export type TerminalUsage = LlmUsage & {
   models?: Record<string, ModelUsageEntry>;
 };
-
-/**
- * Build a request-time `logUsage(role, usage)` that writes each subagent call
- * into the per-request `IRequestLogger` (the single aggregator), attributing the
- * role's configured model. The role is explicit at the call site, so the shared
- * planner/finalizer client is attributed correctly. `durationMs: 0` — the seam
- * carries no timing (matches the rag-query precedent).
- */
-export function makeLogUsage(
-  requestLogger: IRequestLogger,
-  requestId: string | undefined,
-  models: {
-    evaluator: string;
-    planner: string;
-    executor: string;
-    reviewer?: string;
-    finalizer?: string;
-  },
-): (role: string, u?: LlmUsage) => void {
-  return (role, u) => {
-    if (!u) return;
-    const model =
-      role === 'finalizer'
-        ? (models.finalizer ?? models.planner)
-        : role === 'reviewer'
-          ? (models.reviewer ?? models.planner)
-          : role === 'embedding'
-            ? 'embedder'
-            : ((models as Record<string, string>)[role] ?? 'unknown');
-    requestLogger.logLlmCall({
-      component: role as LlmComponent,
-      model,
-      promptTokens: u.promptTokens ?? 0,
-      completionTokens: u.completionTokens ?? 0,
-      totalTokens: u.totalTokens ?? 0,
-      durationMs: 0,
-      requestId,
-    });
-    dlog(
-      `tokens ${role}: prompt=${u.promptTokens} completion=${u.completionTokens} total=${u.totalTokens}`,
-    );
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Dep-injection surface
@@ -186,6 +145,14 @@ export interface ControllerHandlerDeps {
    *  that emits behaviours the default smart/weak planners do not (e.g. rewind). */
   controllerPlanner?: IControllerPlanner;
 }
+
+// ---------------------------------------------------------------------------
+// Re-exported for import-path stability (helpers moved to sibling modules).
+// ---------------------------------------------------------------------------
+export { renderLiveBoard } from './board.js';
+export { parseNextStep } from './parser.js';
+export { relevantExtract, runScopedRecall } from './recall.js';
+export { makeLogUsage } from './usage-logging.js';
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -1204,7 +1171,33 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
         return settle('failed');
       }
-      const call = toLlmToolCall(firstCall);
+      // Normalize the StreamToolCall (full or delta) into an LlmToolCall inline.
+      const call: LlmToolCall =
+        'arguments' in firstCall &&
+        typeof firstCall.arguments === 'object' &&
+        firstCall.arguments !== null
+          ? {
+              id: ('id' in firstCall && firstCall.id) || 'call',
+              name: ('name' in firstCall && firstCall.name) || '',
+              arguments: firstCall.arguments as Record<string, unknown>,
+            }
+          : (() => {
+              let iArgs: Record<string, unknown> = {};
+              const raw =
+                'arguments' in firstCall ? firstCall.arguments : undefined;
+              if (typeof raw === 'string' && raw.length > 0) {
+                try {
+                  iArgs = JSON.parse(raw) as Record<string, unknown>;
+                } catch {
+                  iArgs = {};
+                }
+              }
+              return {
+                id: ('id' in firstCall && firstCall.id) || 'call',
+                name: ('name' in firstCall && firstCall.name) || '',
+                arguments: iArgs,
+              };
+            })();
       const name = call.name;
       const args = call.arguments;
 
@@ -1577,7 +1570,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 }
 
 // ---------------------------------------------------------------------------
-// Episodic recall tuning
+// Goal-clarification helpers
 // ---------------------------------------------------------------------------
 
 /** Bare confirmations that, on a goal clarify, commit the evaluator's proposed
@@ -1611,7 +1604,6 @@ function isAffirmation(answer: string): boolean {
   return AFFIRMATIONS.has(t);
 }
 
-/** Top-K tools surfaced from toolsRag per planner/step query. */
 /** Agnostic executor system prompt. Domain specifics (e.g. SAP/ABAP fact kinds)
  *  are layered on via `subagents.executor.hint` (see {@link appendHint}). */
 const EXECUTOR_SYSTEM =
@@ -1626,47 +1618,12 @@ const EXECUTOR_SYSTEM =
   'fetch the full details of every listed item unless the step explicitly asks ' +
   'for per-item details.';
 
+/** Top-K tools surfaced from toolsRag per planner/step query. */
 const TOOL_SELECT_K = 20;
-
-/** Top-k recalled artifacts injected into the executor context per step. */
-/** Artifact types eligible for recall (excludes the 'controller-bundle' record
- *  that shares the same backend). */
-const RECALL_ARTIFACT_TYPES = ['step-result', 'mcp-result'] as const;
-/** Per-kind recall counts (distinct artifacts kept after dedup + cap). */
-const RECALL_K_STEP = 4;
-const RECALL_K_MCP = 4;
-/** SEPARATE char budgets per kind, so a huge step-result cannot starve MCP context. */
-const RECALL_MAX_CHARS_STEP = 2000;
-const RECALL_MAX_CHARS_MCP = 2000;
-/** Char budget for a single per-`requires` evidence extract handed to the reviewer. */
-const RECALL_EVIDENCE_CHARS = 800;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-/** Build a bounded "Relevant prior context" block from recalled artifacts under
- *  the given char budget, or undefined when there is nothing to inject. */
-function buildRecallBlock(
-  hits: readonly { content: string }[],
-  maxChars: number,
-): string | undefined {
-  if (hits.length === 0) return undefined;
-  const parts: string[] = [];
-  let used = 0;
-  for (const h of hits) {
-    const c = h.content ?? '';
-    if (c.length === 0) continue;
-    if (used + c.length > maxChars) {
-      parts.push(c.slice(0, maxChars - used));
-      break;
-    }
-    parts.push(c);
-    used += c.length;
-  }
-  if (parts.length === 0) return undefined;
-  return `Relevant prior context:\n${parts.join('\n')}`;
-}
 
 /** Extract the user prompt from the request's textOrMessages. */
 function extractPrompt(textOrMessages: string | Message[]): string {
@@ -1676,133 +1633,6 @@ function extractPrompt(textOrMessages: string | Message[]): string {
       return textOrMessages[i].content ?? '';
   }
   return '';
-}
-
-/** Parse a planner content string into a NextStep, defensively. */
-/** Parse the planner's reply into a NextStep, tolerating ```json fences and
- *  surrounding prose. Returns null when no valid decision can be extracted — the
- *  caller treats that as a FORMAT error (re-ask the planner), NOT a rewind, so a
- *  badly-formatted reply never silently burns the rewind budget. */
-export function parseNextStep(content: string): NextStep | null {
-  const json = extractJsonObject(content);
-  if (json === null) return null;
-  try {
-    const obj = JSON.parse(json) as Partial<NextStep>;
-    if (obj.kind === 'done' && typeof obj.result === 'string')
-      return { kind: 'done', result: obj.result };
-    if (obj.kind === 'rewind' && typeof obj.reason === 'string')
-      return { kind: 'rewind', reason: obj.reason };
-    if (
-      obj.kind === 'next' &&
-      obj.step &&
-      typeof obj.step.name === 'string' &&
-      typeof obj.step.instructions === 'string'
-    ) {
-      // Validate requires[] so a non-string / empty / oversized reference never
-      // reaches the semantic query / embedder; a malformed value is a parse
-      // failure that drives the existing parse-retry.
-      const req = validateRequires(
-        (obj.step as { requires?: unknown }).requires,
-      );
-      if (req === false) return null;
-      return {
-        kind: 'next',
-        step: {
-          name: obj.step.name,
-          instructions: obj.step.instructions,
-          ...(obj.step.type ? { type: obj.step.type } : {}),
-          ...(req ? { requires: req } : {}),
-        },
-      };
-    }
-  } catch {
-    // fall through
-  }
-  return null;
-}
-
-/** Extract the first balanced JSON object from a planner reply, ignoring ```json
- *  fences and prose around it. String-aware (braces inside strings don't count).
- *  Returns null if no balanced object is present. */
-export function extractJsonObject(raw: string): string | null {
-  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const body = fence ? fence[1] : raw;
-  const start = body.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = start; i < body.length; i++) {
-    const ch = body[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === '\\') esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return body.slice(start, i + 1);
-    }
-  }
-  return null;
-}
-
-/** Normalize a StreamToolCall (full or delta) into an LlmToolCall. */
-function toLlmToolCall(c: StreamToolCall): LlmToolCall {
-  if (
-    'arguments' in c &&
-    typeof c.arguments === 'object' &&
-    c.arguments !== null
-  ) {
-    // Full LlmToolCall: arguments is already a parsed object.
-    return {
-      id: ('id' in c && c.id) || 'call',
-      name: ('name' in c && c.name) || '',
-      arguments: c.arguments as Record<string, unknown>,
-    };
-  }
-  // Delta: arguments is a (possibly partial) JSON string.
-  let args: Record<string, unknown> = {};
-  const raw = 'arguments' in c ? c.arguments : undefined;
-  if (typeof raw === 'string' && raw.length > 0) {
-    try {
-      args = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      args = {};
-    }
-  }
-  return {
-    id: ('id' in c && c.id) || 'call',
-    name: ('name' in c && c.name) || '',
-    arguments: args,
-  };
-}
-
-/** Reconstruct and render the live step-state board from artifacts.
- *  Returns '' when there is no runId (the board has nothing to show yet). */
-async function renderLiveBoard(
-  rag: IKnowledgeRagHandle,
-  bundle: SessionBundle,
-  budget: BoardBudget,
-): Promise<string> {
-  const runId = bundle.runId;
-  if (!runId) return '';
-  const [structure, claims] = await Promise.all([
-    readPlanDecisions(rag, runId),
-    readClaims(rag, runId),
-  ]);
-  const stepResults = await rag.list({ runId, artifactType: 'step-result' });
-  const board = reconstructBoard({
-    structure,
-    stepResults,
-    claims,
-    inFlight: bundle.inFlightStep,
-    pending: bundle.pending,
-  });
-  return renderBoard(board, budget);
 }
 
 /** Synthesize the strict KnowledgeEntryMetadata for controller artifacts. */
@@ -1849,178 +1679,4 @@ function recordStepControl(
     `\n[seq ${rec.seq} ${rec.name} ${rec.status}]` +
     (rec.note ? ` ${rec.note}` : '') +
     (rec.remainder ? ` remainder: ${rec.remainder}` : '');
-}
-
-/** Gather the run's approved results, one per seq, resolved by outcome precedence
- *  (ok/exists > partial > failed), ordered by seq. Reconstructs the complete
- *  Outcome from artifact metadata (status/note/remainder) + content. */
-async function collectApproved(
-  rag: IKnowledgeRagHandle,
-  runId: string,
-): Promise<{ seq: number; content: string }[]> {
-  const all = await rag.list({ runId, artifactType: 'step-result' });
-  const bySeq = new Map<number, Outcome[]>();
-  for (const e of all) {
-    const seq = e.metadata.seq ?? 0;
-    const o: Outcome = {
-      status: (e.metadata.status ?? 'failed') as Outcome['status'],
-      approved: e.content,
-      remainder: e.metadata.remainder ?? '',
-      note: e.metadata.note ?? '',
-    };
-    const arr = bySeq.get(seq);
-    if (arr) arr.push(o);
-    else bySeq.set(seq, [o]);
-  }
-  const out: { seq: number; content: string }[] = [];
-  for (const [seq, outcomes] of [...bySeq.entries()].sort(
-    (a, b) => a[0] - b[0],
-  )) {
-    const resolved = resolveByPrecedence(outcomes);
-    if (resolved && resolved.status !== 'failed')
-      out.push({ seq, content: resolved.approved });
-  }
-  return out;
-}
-
-/** The ONE run-scoped results-RAG recall primitive — used by BOTH the whole-step
- *  recall AND the per-`requires` evidence. EMBEDDING-based similarity via the
- *  backend's semantic query (NO homemade lexical scoring): the backend embeds the
- *  query + ranks by vector similarity, with the `runId` filter applied PRE-cap.
- *  Over-fetch `kPrime` (caller-supplied so the duplication bound is justified PER
- *  KIND), then dedup and cap to `k`. Dedup: step-results (have `seq`) →
- *  precedence-winner per seq; mcp-results → by `identityKey`. Embedding rank order
- *  is preserved through the dedup.
- *  `options` is forwarded into the embedder so recall-time embeds are metered. */
-export async function runScopedRecall(
-  rag: IKnowledgeRagHandle,
-  text: string,
-  k: number,
-  runId: string | undefined,
-  kPrime: number,
-  artifactType: readonly string[],
-  options?: CallOptions,
-): Promise<readonly KnowledgeEntry[]> {
-  const hits = await rag.query(text, {
-    k: kPrime,
-    filter: { runId, artifactType },
-    options,
-  });
-  const bestStep = new Map<number, KnowledgeEntry>();
-  const bestMcp = new Map<string, KnowledgeEntry>();
-  for (const e of hits) {
-    if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
-      const prev = bestStep.get(e.metadata.seq);
-      if (!prev || isBetterStep(e, prev)) bestStep.set(e.metadata.seq, e);
-    } else if (e.metadata.identityKey) {
-      const prev = bestMcp.get(e.metadata.identityKey);
-      if (!prev || isBetterMcp(e, prev)) bestMcp.set(e.metadata.identityKey, e);
-    }
-  }
-  // Walk hits in embedding-rank order; emit each (runId,seq) / identityKey once.
-  const out: KnowledgeEntry[] = [];
-  const seenSeq = new Set<number>();
-  const seenMcp = new Set<string>();
-  for (const e of hits) {
-    if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
-      if (seenSeq.has(e.metadata.seq)) continue;
-      seenSeq.add(e.metadata.seq);
-      // biome-ignore lint/style/noNonNullAssertion: bestStep has this seq (set above).
-      out.push(bestStep.get(e.metadata.seq)!);
-    } else if (e.metadata.identityKey) {
-      if (seenMcp.has(e.metadata.identityKey)) continue;
-      seenMcp.add(e.metadata.identityKey);
-      // biome-ignore lint/style/noNonNullAssertion: bestMcp has this key (set above).
-      out.push(bestMcp.get(e.metadata.identityKey)!);
-    } else {
-      out.push(e);
-    }
-    if (out.length >= k) break;
-  }
-  return out.slice(0, k);
-}
-
-/** Outcome-precedence rank for step-result dedup (ok/exists > partial > failed). */
-function rankStatus(s?: string): number {
-  return s === 'ok' || s === 'exists'
-    ? 3
-    : s === 'partial'
-      ? 2
-      : s === 'failed'
-        ? 1
-        : 0;
-}
-
-/** True when candidate `a` is a better winner than current `b` for step-result
- *  dedup. Latest-wins by EXECUTION IDENTITY, not by semantic-rank position:
- *  1. Higher status rank wins; on tie →
- *  2. Higher attempt wins; on further tie →
- *  3. Higher writeOrdinal wins (tie-breaks same-timestamp artifacts from one run); on tie →
- *  4. Later createdAt wins (missing = older: compare with '' as sentinel). */
-function isBetterStep(a: KnowledgeEntry, b: KnowledgeEntry): boolean {
-  const ra = rankStatus(a.metadata.status);
-  const rb = rankStatus(b.metadata.status);
-  if (ra !== rb) return ra > rb;
-  const aa = a.metadata.attempt ?? 0;
-  const ba = b.metadata.attempt ?? 0;
-  if (aa !== ba) return aa > ba;
-  const ao = a.metadata.writeOrdinal ?? -1;
-  const bo = b.metadata.writeOrdinal ?? -1;
-  if (ao !== bo) return ao > bo;
-  return (a.metadata.createdAt ?? '') > (b.metadata.createdAt ?? '');
-}
-
-/** True when candidate `a` is a better winner than current `b` for mcp-result
- *  dedup. Latest-fetch wins by writeOrdinal first (handles same-timestamp), then
- *  falls back to createdAt (missing = older). */
-function isBetterMcp(a: KnowledgeEntry, b: KnowledgeEntry): boolean {
-  const ao = a.metadata.writeOrdinal ?? -1;
-  const bo = b.metadata.writeOrdinal ?? -1;
-  if (ao !== bo) return ao > bo;
-  return (a.metadata.createdAt ?? '') > (b.metadata.createdAt ?? '');
-}
-
-const MAX_EXTRACT_WINDOWS = 64;
-/** Return the ≤`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
- *  (NOT ASCII lexical overlap). DIRECT single-pass ranking: every candidate is
- *  scored on its own. The SCORED window IS the RETURNED body: candidates are
- *  `body = maxChars - 2` chars (head+tail '…' reserved up front), so the
- *  highest-scoring fragment is never truncated by the markers. Stride is 50%
- *  overlap, widened to span the whole content within MAX_EXTRACT_WINDOWS windows
- *  (point coverage for content ≤ MAX_EXTRACT_WINDOWS×maxChars; larger thins to
- *  non-overlapping, best-effort). Embeds are SEQUENTIAL and BOUNDED to ≤
- *  MAX_EXTRACT_WINDOWS + 1 — touches NO public embedder API (batch is a deferred
- *  optimization). Result STRICTLY ≤ maxChars; tiny maxChars (< 3) → bare slice.
- *  The `requires` ref is English (planner invariant) → a normal embedder suffices. */
-export async function relevantExtract(
-  content: string,
-  ref: string,
-  maxChars: number,
-  embedder: IEmbedder,
-  options?: CallOptions,
-): Promise<string> {
-  if (content.length <= maxChars) return content;
-  if (maxChars < 3) return content.slice(0, Math.max(0, maxChars));
-  const body = maxChars - 2;
-  const stride = Math.max(
-    Math.floor(body / 2),
-    Math.ceil(content.length / MAX_EXTRACT_WINDOWS),
-  );
-  const { vector: q } = await embedder.embed(ref, options);
-  let bestStart = 0;
-  let bestScore = Number.NEGATIVE_INFINITY;
-  for (let s = 0; s < content.length; s += stride) {
-    const { vector } = await embedder.embed(
-      content.slice(s, s + body),
-      options,
-    );
-    const score = cosine(q, vector);
-    if (score > bestScore) {
-      bestScore = score;
-      bestStart = s;
-    }
-  }
-  const head = bestStart > 0 ? '…' : '';
-  const tail = bestStart + body < content.length ? '…' : '';
-  return head + content.slice(bestStart, bestStart + body) + tail;
 }
