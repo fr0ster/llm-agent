@@ -58,9 +58,17 @@ by R4 coordinator dispatch wiring at ~1291).
   requiring **exit code 0** (warnings/infos fine). Do NOT grep for "Found 0 errors."
 - **Commit ONLY this task's files:** `git status --short`, then `git add` explicit paths (NEVER
   `git add -A` / `.`). If a file outside the task's blast-radius shows modified, STOP and report it.
-- Each task ends in **exactly one commit**. TDD: existing char tests pin each slice (GREEN before AND
-  after); Task 2 ADDs the 2 gap tests as its FIRST step (GREEN against current behavior before
-  extracting).
+- Each task ends in **exactly one commit**. TDD: the EXISTING characterization tests pin each slice —
+  they stay GREEN **before AND after** every task (they are the behavior-preservation proof, together
+  with the byte-for-byte move). Task 2 ALSO adds 2 NEW gap tests as its first step, but these follow a
+  **RED-first** pattern, NOT green-against-current: because `vectorizeMcpTools`/`vectorizeSkills` do not
+  exist until step 2b, the gap tests import the new module path and are expected to FAIL on the missing
+  module first (RED), then pass once 2b creates the module (GREEN). A unit test of a not-yet-extracted
+  function cannot be green beforehand — do NOT try to make the gap tests pass before the extraction, and
+  do NOT build a temporary seam/wrapper to force that; the existing pinning tests (`builder-tool-selection`,
+  `builder-mcp-failure-logging`, `mcp-yaml-vectorization`) are what carry the "current behavior GREEN
+  before" guarantee. (This supersedes any "GREEN against current behavior" phrasing for the Task 2 gap
+  tests — Task 2a's RED-first steps govern.)
 
 ### Resolved design decisions (grep-verified against the real 1437-line file)
 
@@ -234,9 +242,10 @@ Pinning tests to keep GREEN (paths grep-verified):
 
 ## Task 2 — `mcp/vectorize-mcp-tools.ts`: extract R3 (PRIME EXTRACT)
 
-**Goal:** FIRST add the two §4 gap tests (GREEN against current behavior), THEN move the two inline
-vectorization blocks BYTE-FOR-BYTE into a new module and call them from `build()`. Closes the
-ARCHITECTURE.md tech-debt item.
+**Goal:** FIRST author the two §4 gap tests against the NEW module path (RED — they fail on the
+missing module until 2b), THEN move the two inline vectorization blocks BYTE-FOR-BYTE into that module
+and call them from `build()` (turning the gap tests GREEN). The EXISTING pinning tests stay GREEN
+before AND after and are the behavior-preservation guarantee. Closes the ARCHITECTURE.md tech-debt item.
 
 ### Files
 
@@ -268,7 +277,7 @@ INSIDE `vectorizeMcpTools` from `(toolsRag as any).embedder` — no embedder par
 
 ### Steps
 
-#### 2a — Gap tests FIRST (GREEN against current inline behavior)
+#### 2a — Gap tests FIRST (RED-first: fail on missing module, GREEN after 2b)
 
 Because the functions do not exist yet, the gap tests are authored to import from the target module
 path `../mcp/vectorize-mcp-tools.js`; they will FAIL to import until step 2b creates the module. To
