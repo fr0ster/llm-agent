@@ -1,5 +1,40 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## 20.1.0
+
+### Added
+
+- **MCP readiness & fail-loud** (#201–#205): a first-class readiness surface for
+  MCP-backed servers. `/health` now returns **503** while MCP is not ready; a
+  pre-dispatch request gate rejects work that needs an unavailable MCP; and every
+  execution surface **fails loud** instead of returning a silent `(no response)`.
+  Built ON the MCP connection strategies (+ a small `IReadinessReporter`), with
+  error classification and session-preserving reconnect; the builder now defaults
+  MCP to a connection strategy with agent readiness.
+
+### Changed
+
+- **Behavior:** requests and health checks now surface MCP-unavailability errors
+  loudly (503 / typed error) where prior versions could return an empty/degraded
+  response. No published config key or API was removed — a config that loaded
+  before still loads and runs; only genuine MCP-down conditions now error clearly.
+- **Internal decomposition (monolith audit, #206; PRs #208–#218) — public API
+  byte-stable, behavior-preserving.** The largest runtime files were decomposed
+  into focused, individually-testable modules (all moves byte-for-byte, verified
+  against characterization tests + whole-branch review):
+  - `smart-server.ts` 3926 → 2559 (7 components + full HTTP handler extraction +
+    `makeToolsRagHandle` factory).
+  - `agent.ts` 2160 → 1302 and the shared tool-execution core deduped into
+    `pipeline/handlers/tool-loop-core.ts`.
+  - `config.ts` 1648 → 269 (5 modules + a thin `resolveSmartServerConfig`
+    delegating per-section builders).
+  - `controller-coordinator-handler.ts` 2026 → 1682 (parser/recall/usage-logging
+    siblings) and an inverted dependency fixed (`planner`/`reviewer` no longer
+    import from the handler).
+  - `builder.ts` 1437 → 1182, extracting MCP **tool vectorization** into
+    `mcp/vectorize-mcp-tools.ts` — closing the `docs/ARCHITECTURE.md` tech-debt.
+  These changes are internal only; every public export path is unchanged.
+
 ## 20.0.0
 
 ### Added
