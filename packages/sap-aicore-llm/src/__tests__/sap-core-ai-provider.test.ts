@@ -177,6 +177,74 @@ describe('SapCoreAIProvider — streamChat requestConfig', () => {
 });
 
 // ---------------------------------------------------------------------------
+// chat — requestConfig (concurrency hardening, issue #213)
+// ---------------------------------------------------------------------------
+
+describe('SapCoreAIProvider — chat requestConfig', () => {
+  const fakeResponse = () => ({
+    getToolCalls: () => undefined,
+    getContent: () => 'ok',
+    getFinishReason: () => 'stop',
+    getTokenUsage: () => undefined,
+  });
+
+  it('passes a per-call httpsAgent with keepAlive:false to client.chatCompletion()', async () => {
+    const p = new SapCoreAIProvider({ model: 'test-model' });
+    let chatArgs: unknown[] = [];
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    (p as any).createClient = () => ({
+      chatCompletion: (...args: unknown[]) => {
+        chatArgs = args;
+        return Promise.resolve(fakeResponse());
+      },
+    });
+
+    await p.chat([{ role: 'user', content: 'ping' }]);
+
+    const requestConfig = chatArgs[1] as
+      | { httpsAgent?: { keepAlive?: boolean } }
+      | undefined;
+    assert.ok(
+      requestConfig?.httpsAgent,
+      'httpsAgent should be passed to chatCompletion()',
+    );
+    // The fix: chat() must NOT reuse a shared keepAlive agent — a shared
+    // keepAlive connection lets SAP AI Core route a response to the wrong
+    // in-flight request when concurrent requests share the same XSUAA user.
+    assert.equal(
+      requestConfig.httpsAgent.keepAlive,
+      false,
+      'chat() must use a non-keepAlive agent (mirrors streamChat)',
+    );
+  });
+
+  it('uses a fresh agent instance per call (no shared agent across calls)', async () => {
+    const p = new SapCoreAIProvider({ model: 'test-model' });
+    const agents: unknown[] = [];
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    (p as any).createClient = () => ({
+      chatCompletion: (...args: unknown[]) => {
+        agents.push(
+          (args[1] as { httpsAgent?: unknown } | undefined)?.httpsAgent,
+        );
+        return Promise.resolve(fakeResponse());
+      },
+    });
+
+    await p.chat([{ role: 'user', content: 'a' }]);
+    await p.chat([{ role: 'user', content: 'b' }]);
+
+    assert.equal(agents.length, 2);
+    assert.ok(agents[0] && agents[1], 'both calls should pass an agent');
+    assert.notEqual(
+      agents[0],
+      agents[1],
+      'each chat() call must get its own agent instance (not a shared one)',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // createClient (private — tested via casting to any)
 // ---------------------------------------------------------------------------
 
