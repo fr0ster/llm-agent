@@ -1131,7 +1131,10 @@ See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
   **reimplementing on existing components** (e.g. MCP lifecycle/health via
   `IMcpConnectionStrategy` + `IReadinessReporter`, not bespoke server modules) — NOT by
   carving it into ad-hoc fragments.
-- **`builder.ts` (~1.5k) and `agent.ts` (~2.1k) are large too.** Follow-up extraction
-  targets: the builder's MCP block (connect + **tool vectorization** — pull the
-  vectorization into its own small module consumed by the builder) and the agent's
-  tool-loop. Keep the extraction component-shaped (Principle 1/6), not ad-hoc.
+- **`builder.ts` (now ~1.2k) and `agent.ts` (now ~1.3k) — the cleanly-separable blocks
+  are extracted.** DONE: the builder's **tool vectorization** now lives in
+  `mcp/vectorize-mcp-tools.ts` (the connect logic stays in the builder); the agent's
+  **tool-loop** shared core is in `pipeline/handlers/tool-loop-core.ts`. Both files remain
+  large by design — the residuals are the fluent-builder setters + `build()` composition
+  root, and the streaming tool-loop, respectively. Any further extraction must stay
+  component-shaped (Principle 1/6), not ad-hoc.
