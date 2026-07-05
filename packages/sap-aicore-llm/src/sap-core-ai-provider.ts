@@ -68,7 +68,6 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];
   private readonly destination?: Record<string, unknown>;
-  private readonly httpsAgent: https.Agent;
   private modelsCache: IModelInfo[] | null = null;
   private modelsCacheExpiry = 0;
   private static readonly MODELS_CACHE_TTL_MS = 300_000; // 5 min
@@ -161,11 +160,6 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     this.resourceGroup = config.resourceGroup;
     this.log = config.log;
 
-    this.httpsAgent = new https.Agent({
-      keepAlive: true,
-      timeout: 60_000,
-    });
-
     if (config.credentials) {
       this.destination = {
         url: config.credentials.servicUrl,
@@ -189,8 +183,13 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       const formatted = this.formatMessages(messages);
       const client = this.createClient(formatted, tools);
+      // Each non-streaming call gets its own agent to prevent connection
+      // multiplexing. A shared keepAlive agent can cause SAP AI Core to route a
+      // response to the wrong in-flight request when concurrent requests share
+      // the same XSUAA user (mirrors streamChat's per-stream agent below).
+      const callAgent = new https.Agent({ keepAlive: false, timeout: 60_000 });
       const response = await client.chatCompletion(undefined, {
-        httpsAgent: this.httpsAgent,
+        httpsAgent: callAgent,
       });
 
       const toolCalls = response.getToolCalls();
