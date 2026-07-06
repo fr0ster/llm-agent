@@ -12,6 +12,7 @@
 
 - **Confirmed root cause (live-verified):** `LlmAdapter.healthCheck` (`packages/llm-agent-libs/src/adapters/llm-adapter.ts:449-477`) calls `provider.getModels()` then returns `{ ok: true, value: found }` where `found` = the configured model literally appears in the `/models` list. Deepseek: `getModels()` succeeds → `["deepseek-v4-flash","deepseek-v4-pro"]`; configured model `"deepseek-chat"` is a valid working alias **not** in that list → `found=false` → `value:false` → `agent-health` `llm = hc.ok && hc.value = false` → `health-checker.ts:56` `!llmOk → 'unhealthy'` → `health-route-handler.ts:14` `status==='unhealthy' || !ready → 503`.
 - **Behavior-preserving where it matters:** the `/health` JSON shape (`{status, uptime, version, timestamp, components:{llm,rag,mcp}, ready, ...}`) is UNCHANGED. The **MCP-not-ready ⇒ 503** behavior (readiness gate) is UNCHANGED. Only the LLM-soft-health → `unhealthy`/`503` path is fixed.
+- **CRITICAL — `rc.ready` is the readiness gate, independent of `components.mcp`.** `rc.ready` is set at `smart-server.ts:2335` as `isReadinessReporter(smartAgent) ? smartAgent.isReady() : true` — the MCP-connection readiness reporter from feature #205 (NOT the `components.mcp` health-snapshot probe). It gates BOTH `/health` (route handler) AND the **chat/messages pre-dispatch request gate** (`smart-server.ts` ~2458 and ~2490: `if (!rc.ready) { … 503 … }`). Because after this plan the ONLY 503 trigger is `!rc.ready`, and MCP-not-connected ⇒ `isReady()===false` ⇒ `rc.ready===false`, the fail-loud "MCP down ⇒ 503" behavior is preserved on BOTH surfaces. **This plan must NOT touch the pre-dispatch gates in `smart-server.ts`** (they already 503 on `!rc.ready`); Task 5 guards this explicitly. Do NOT conflate `components.mcp[].ok` (a soft body signal) with `rc.ready` (the hard serve-gate).
 - ESM `.js` imports, TS strict, Biome. `noUnusedLocals: true`.
 - **Lint gate per task (SCOPED — NOT global `npm run format`):** `npx @biomejs/biome check --write <changed files for THIS task>` → `npm run lint:check` requiring **exit code 0**. Do NOT grep for "Found 0 errors".
 - **Commit ONLY this task's files:** `git status --short`, `git add` explicit paths (NOT `-A`/`.`).
@@ -81,7 +82,24 @@ THE main fix. A reachable provider (its `getModels()` resolves without throwing)
 
 **Steps:**
 
-- [ ] **Failing test first.** In `health-checker.test.ts`, add cases (the test constructs a `HealthChecker` with a fake `agent.healthCheck()` returning a chosen snapshot — mirror the existing harness):
+- [ ] **Failing test first.** In `health-checker.test.ts`, add cases. NOTE: the existing tests build a **real** `new SmartAgent(deps, DEFAULT_CONFIG)` (heavier; its snapshot is driven by real deps). To assert the status-mapping branch in isolation, construct the `HealthChecker` with a **minimal fake agent cast to SmartAgent** whose `healthCheck()` returns the chosen snapshot — do NOT try to steer a real SmartAgent's snapshot:
+
+  ```ts
+  const fakeAgent = {
+    healthCheck: async () => ({
+      ok: true as const,
+      value: { llm: false, rag: true, mcp: [] as { name: string; ok: boolean }[] },
+    }),
+  } as unknown as import('../../agent.js').SmartAgent;
+  const checker = new HealthChecker({
+    agent: fakeAgent,
+    startTime: Date.now(),
+    version: 'test',
+  });
+  const s = await checker.check();
+  assert.equal(s.status, 'degraded');
+  ```
+  Cover with this fake-cast approach:
   - `llm:false, rag:true, mcp:[]` → `status === 'degraded'` (was `'unhealthy'`).
   - `llm:true, rag:false, mcp:[]` → `status === 'degraded'` (unchanged).
   - `llm:true, rag:true, mcp:[{ok:true}]` → `status === 'healthy'` (unchanged).
@@ -175,6 +193,25 @@ THE main fix. A reachable provider (its `getModels()` resolves without throwing)
   ```
   Apply the same pattern to the RAG `catch` (step name `'health_rag_probe_error'`) — keep it minimal; the MCP block already captures per-client `error`, leave it. Verify the `Result` shape field names (`error?.message`) against `LlmError`/`RagError` before finalizing.
 - [ ] Run tests → GREEN. `npm run build`. SCOPED lint gate. Commit: `fix(health): log the LLM/RAG probe failure cause instead of swallowing it`.
+
+---
+
+### Task 5 — Readiness regression guard (prove MCP-not-ready ⇒ 503 is preserved)
+
+The whole risk of Tasks 2–3 is accidentally weakening the fail-loud readiness gate. This task proves it is intact. No product code changes here.
+
+**Files:** none modified (guard only) — optionally extend `http/__tests__/health-route-handler.test.ts`.
+
+**Steps:**
+
+- [ ] **Confirm the pre-dispatch gates are UNTOUCHED.** `git diff main...HEAD -- packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` must be EMPTY (this plan does not touch `smart-server.ts`). Grep the two chat/messages pre-dispatch gates still read `if (!rc.ready)` → 503 (`smart-server.ts` ~2458 and ~2490). If `smart-server.ts` shows in the diff, STOP and report.
+- [ ] **Route test already covers `/health` 503 on `!ready`** (Task 3's `ready:false → 503` case). Confirm it is present and green.
+- [ ] **Live readiness verification** (the fail-loud end-to-end). Start the built server pointed at an UNREACHABLE MCP so the readiness reporter reports not-ready, then assert BOTH surfaces 503:
+  - config: a minimal controller/flat YAML with `mcp: { type: http, url: http://127.0.0.1:1/mcp/stream/http }` (unreachable), on a spare port, `--env-path .env`.
+  - After startup (do NOT wait for ready — it never becomes ready): `GET /health` → **503** with body `ready:false`; `POST /v1/chat/completions` (any prompt) → **503** (pre-dispatch gate), NOT a 200 with `(no response)`.
+  - Stop the server. Record the two status codes in the task report.
+  - (If the reporter defaults ready:true when no MCP strategy is present, use a config that DOES attach an MCP connection strategy so `isReady()` can be false — mirror the repro used in issue #213 validation but with an unreachable MCP url.)
+- [ ] No commit needed if nothing changed; if the route test was extended, commit: `test(http/health): guard MCP-not-ready ⇒ /health + pre-dispatch 503`.
 
 ---
 
