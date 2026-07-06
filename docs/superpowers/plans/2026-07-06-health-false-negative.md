@@ -191,7 +191,7 @@ THE main fix. A reachable provider (its `getModels()` resolves without throwing)
       });
     }
   ```
-  Apply the same pattern to the RAG `catch` (step name `'health_rag_probe_error'`) — keep it minimal; the MCP block already captures per-client `error`, leave it. Verify the `Result` shape field names (`error?.message`) against `LlmError`/`RagError` before finalizing.
+  **Scope: LLM probe only.** Do NOT change the RAG or MCP `catch` blocks in this task — the reported bug is the LLM probe, and RAG logging would be an untested change (YAGNI). Leave the RAG `catch {}` and the MCP per-client capture exactly as-is. (RAG/MCP probe logging can be a separate follow-up with its own tests.) Verify the `Result` shape field name (`hc.error?.message` on `LlmError`) against the real type before finalizing.
 - [ ] Run tests → GREEN. `npm run build`. SCOPED lint gate. Commit: `fix(health): log the LLM/RAG probe failure cause instead of swallowing it`.
 
 ---
@@ -200,18 +200,16 @@ THE main fix. A reachable provider (its `getModels()` resolves without throwing)
 
 The whole risk of Tasks 2–3 is accidentally weakening the fail-loud readiness gate. This task proves it is intact. No product code changes here.
 
-**Files:** none modified (guard only) — optionally extend `http/__tests__/health-route-handler.test.ts`.
+**Files:** none modified (guard only). The primary gate is the EXISTING automated test — no real LLM needed.
 
 **Steps:**
 
-- [ ] **Confirm the pre-dispatch gates are UNTOUCHED.** `git diff main...HEAD -- packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` must be EMPTY (this plan does not touch `smart-server.ts`). Grep the two chat/messages pre-dispatch gates still read `if (!rc.ready)` → 503 (`smart-server.ts` ~2458 and ~2490). If `smart-server.ts` shows in the diff, STOP and report.
-- [ ] **Route test already covers `/health` 503 on `!ready`** (Task 3's `ready:false → 503` case). Confirm it is present and green.
-- [ ] **Live readiness verification** (the fail-loud end-to-end). Start the built server pointed at an UNREACHABLE MCP so the readiness reporter reports not-ready, then assert BOTH surfaces 503:
-  - config: a minimal controller/flat YAML with `mcp: { type: http, url: http://127.0.0.1:1/mcp/stream/http }` (unreachable), on a spare port, `--env-path .env`.
-  - After startup (do NOT wait for ready — it never becomes ready): `GET /health` → **503** with body `ready:false`; `POST /v1/chat/completions` (any prompt) → **503** (pre-dispatch gate), NOT a 200 with `(no response)`.
-  - Stop the server. Record the two status codes in the task report.
-  - (If the reporter defaults ready:true when no MCP strategy is present, use a config that DOES attach an MCP connection strategy so `isReady()` can be false — mirror the repro used in issue #213 validation but with an unreachable MCP url.)
-- [ ] No commit needed if nothing changed; if the route test was extended, commit: `test(http/health): guard MCP-not-ready ⇒ /health + pre-dispatch 503`.
+- [ ] **Primary gate — the existing readiness integration test must stay GREEN.** `packages/llm-agent-server-libs/src/smart-agent/__tests__/readiness-gate.test.ts` (the `describe('readiness gate — MCP unreachable ⇒ NOT_READY')` at ~54-79) already proves, with an UNREACHABLE MCP and NO real LLM: `GET /health → 503, ready:false` AND `POST /v1/chat/completions → 503 (pre-dispatch, service_unavailable)`. Run it AFTER Tasks 1–4:
+  `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/__tests__/readiness-gate.test.ts` → GREEN. If it goes red, a change weakened the readiness gate — STOP and fix.
+- [ ] **Confirm the pre-dispatch gates are UNTOUCHED.** `git diff main...HEAD -- packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` must be EMPTY (this plan does not touch `smart-server.ts`). If it shows in the diff, STOP and report.
+- [ ] **New-behavior case is covered by Task 3's unit test** (`degraded, ready:true → 200`). Confirm present + green. (No need to add an integration case for degraded+ready — the route unit test isolates it; the readiness-gate integration test isolates the !ready path.)
+- [ ] (Optional, manual note only — NOT the gate) A live end-to-end run (server pointed at an unreachable MCP url, `--env-path .env`) can additionally confirm 503 on both surfaces, but it depends on local secrets/model and is NOT the acceptance gate; `readiness-gate.test.ts` is.
+- [ ] No commit needed (guard only, no product change). If you extended `readiness-gate.test.ts` with an extra assertion, commit: `test(readiness): assert degraded-but-ready ⇒ 200 alongside not-ready ⇒ 503`.
 
 ---
 
