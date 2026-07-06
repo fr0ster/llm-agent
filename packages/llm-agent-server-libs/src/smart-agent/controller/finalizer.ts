@@ -12,6 +12,11 @@ export interface FinalizeOpts {
   logUsage?: (role: string, u?: LlmUsage) => void;
   /** Narrator for reduction events (spec: "log every reduction"). */
   log?: (msg: string) => void;
+  /**
+   * Bounded skills recall block; the finalizer honors any output/delivery
+   * directives it states. Agnostic — content is consumer-supplied.
+   */
+  skillsBlock?: string;
 }
 
 export interface FinalizerPolicy {
@@ -38,6 +43,11 @@ const FINALIZE_SYSTEM =
   "beyond the provided results. Answer in the LANGUAGE of the user's request " +
   '(the internal step instructions may be in English for tool selection; the ' +
   "user-facing answer must match the user's language).";
+
+const FINALIZE_SKILLS_CLAUSE =
+  'A skills block is provided below. Honor any output, delivery, or formatting ' +
+  'directives it states exactly; the skills govern delivery only — still do not ' +
+  'invent facts beyond the provided results.';
 
 const TRUNC_MARKER = '…[truncated]';
 
@@ -177,12 +187,16 @@ export class LlmFinalizer implements IFinalizer {
       this.policy.budget,
       opts.log,
     );
+    const skills = opts.skillsBlock?.trim();
+    const system = skills
+      ? `${appendHint(FINALIZE_SYSTEM, opts.hint)} ${FINALIZE_SKILLS_CLAUSE}`
+      : appendHint(FINALIZE_SYSTEM, opts.hint);
+    const userContent = skills
+      ? `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}\n\nSkills (delivery directives):\n${skills}`
+      : `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}`;
     const res = await this.client.send([
-      { role: 'system', content: appendHint(FINALIZE_SYSTEM, opts.hint) },
-      {
-        role: 'user',
-        content: `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}`,
-      },
+      { role: 'system', content: system },
+      { role: 'user', content: userContent },
     ]);
     opts.logUsage?.('finalizer', res.usage);
     if (res.kind !== 'content') {

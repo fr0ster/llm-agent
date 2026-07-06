@@ -104,3 +104,96 @@ describe('LlmFinalizer', () => {
     );
   });
 });
+
+describe('LlmFinalizer — skillsBlock directive', () => {
+  it('skillsBlock present: user message contains skills block under Skills header; system message contains honor-clause', async () => {
+    let capturedMessages: Array<{ role: string; content: string }> = [];
+    const client: ISubagentClient = {
+      async send(messages) {
+        capturedMessages = messages as Array<{ role: string; content: string }>;
+        return { kind: 'content', content: 'ok' };
+      },
+    };
+    const f = new LlmFinalizer(client, { budget: 1000, perResultCap: 100 });
+    await f.finalize('g', 'r', [], {
+      skillsBlock: 'Relevant skills:\n- always end with LINE-X',
+    });
+    const systemMsg = capturedMessages.find((m) => m.role === 'system');
+    const userMsg = capturedMessages.find((m) => m.role === 'user');
+    assert.ok(systemMsg, 'system message present');
+    assert.ok(userMsg, 'user message present');
+    assert.ok(
+      systemMsg.content.toLowerCase().includes('honor') &&
+        systemMsg.content.includes('directives'),
+      `system message must contain honor-clause; got: ${systemMsg.content}`,
+    );
+    assert.ok(
+      userMsg.content.includes('Skills (delivery directives):'),
+      `user message must contain Skills header; got: ${userMsg.content}`,
+    );
+    assert.ok(
+      userMsg.content.includes('always end with LINE-X'),
+      `user message must contain skills block text; got: ${userMsg.content}`,
+    );
+  });
+
+  it('skillsBlock absent: user message byte-equal to Goal/Request/Results format; system message has no honor-clause', async () => {
+    let capturedMessages: Array<{ role: string; content: string }> = [];
+    const client: ISubagentClient = {
+      async send(messages) {
+        capturedMessages = messages as Array<{ role: string; content: string }>;
+        return { kind: 'content', content: 'ok' };
+      },
+    };
+    const f = new LlmFinalizer(client, { budget: 1000, perResultCap: 100 });
+    await f.finalize('g', 'r', [], {});
+    const systemMsg = capturedMessages.find((m) => m.role === 'system');
+    const userMsg = capturedMessages.find((m) => m.role === 'user');
+    assert.ok(systemMsg, 'system message present');
+    assert.ok(userMsg, 'user message present');
+    assert.ok(
+      !systemMsg.content.toLowerCase().includes('honor') ||
+        !systemMsg.content.includes('directives'),
+      `system message must NOT contain honor-clause when no skills; got: ${systemMsg.content}`,
+    );
+    assert.ok(
+      !userMsg.content.includes('Skills'),
+      `user message must NOT contain Skills section when no skills; got: ${userMsg.content}`,
+    );
+    assert.equal(
+      userMsg.content,
+      'Goal: g\nRequest: r\nResults:\n',
+      "user message must be byte-equal to today's format",
+    );
+  });
+
+  it('empty skillsBlock (whitespace only): treated as absent — no skills section, no honor-clause', async () => {
+    let capturedMessages: Array<{ role: string; content: string }> = [];
+    const client: ISubagentClient = {
+      async send(messages) {
+        capturedMessages = messages as Array<{ role: string; content: string }>;
+        return { kind: 'content', content: 'ok' };
+      },
+    };
+    const f = new LlmFinalizer(client, { budget: 1000, perResultCap: 100 });
+    await f.finalize('g', 'r', [], { skillsBlock: '   ' });
+    const systemMsg = capturedMessages.find((m) => m.role === 'system');
+    const userMsg = capturedMessages.find((m) => m.role === 'user');
+    assert.ok(systemMsg, 'system message present');
+    assert.ok(userMsg, 'user message present');
+    assert.ok(
+      !systemMsg.content.toLowerCase().includes('honor') ||
+        !systemMsg.content.includes('directives'),
+      `system message must NOT contain honor-clause for blank skillsBlock; got: ${systemMsg.content}`,
+    );
+    assert.ok(
+      !userMsg.content.includes('Skills'),
+      `user message must NOT contain Skills section for blank skillsBlock; got: ${userMsg.content}`,
+    );
+    assert.equal(
+      userMsg.content,
+      'Goal: g\nRequest: r\nResults:\n',
+      "user message must be byte-equal to today's format for blank skillsBlock",
+    );
+  });
+});
