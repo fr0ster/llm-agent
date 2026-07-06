@@ -4,7 +4,7 @@
 
 **Goal:** Let a recalled `controllerSkillGroup` skill influence the controller finalizer's DELIVERED text (so an output/delivery directive in a skill — e.g. a required footer line — is honored in the final answer), while keeping the engine AGNOSTIC.
 
-**Architecture:** The recall seam already exists — `deps.skillsRecall(goal, options)` produces a bounded skills block that today only reaches the planner. Thread that SAME block into the finalizer via a NEW focused `FinalizeOpts.skillsBlock` field (ISP — not the static config `hint`), put the block in the finalizer's USER message, and add ONE generic honor-clause to `FINALIZE_SYSTEM`. The clause is agnostic — it tells the finalizer to honor whatever output/delivery directives the skills block states; the CONSUMER's skill decides the content. No parsing of "which part is a directive" (the LLM finalizer applies it under the generic instruction).
+**Architecture:** The recall seam already exists — `deps.skillsRecall(goal, options)` produces a bounded skills block that today only reaches the planner. Thread that SAME block into the finalizer via a NEW focused `FinalizeOpts.skillsBlock` field (ISP — not the static config `hint`), put the block in the finalizer's USER message, and append ONE generic honor-clause (a SEPARATE constant, `FINALIZE_SKILLS_CLAUSE`) to the system message ONLY when a non-empty skills block is present — so the prompt is byte-unchanged when no skill is configured. The clause is agnostic — it tells the finalizer to honor whatever output/delivery directives the skills block states; the CONSUMER's skill decides the content. No parsing of "which part is a directive" (the LLM finalizer applies it under the generic instruction).
 
 **Tech Stack:** TypeScript (ESM `.js` imports), `node:test` + `tsx`, Biome. Package `@mcp-abap-adt/llm-agent-server-libs` (controller + docs).
 
@@ -23,7 +23,7 @@
 
 ## File Structure
 
-- `packages/llm-agent-server-libs/src/smart-agent/controller/finalizer.ts` — **(Task 1)** add `FinalizeOpts.skillsBlock?: string`; `LlmFinalizer.finalize` includes the block in the USER message + a generic honor-clause in `FINALIZE_SYSTEM`.
+- `packages/llm-agent-server-libs/src/smart-agent/controller/finalizer.ts` — **(Task 1)** add `FinalizeOpts.skillsBlock?: string`; `LlmFinalizer.finalize` includes the block in the USER message + a conditional generic honor-clause (a separate `FINALIZE_SKILLS_CLAUSE` constant, appended to the system message only when a skills block is present — `FINALIZE_SYSTEM` itself is NOT modified).
 - `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` — **(Task 2)** `finalize()` calls `deps.skillsRecall(bundle.goal, …)` and passes the result as `opts.skillsBlock`.
 - `docs/EXAMPLES.md` (+ any `skillPlugins:` reference in `docs/`) — **(Task 3)** document that controller skills can now shape the delivered answer (agnostic wording).
 - Tests: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/finalizer.test.ts` (Task 1); an existing controller test for the handler wiring (Task 2) or a focused stub; **Task 4** is a live acceptance repro (the reporter's exact case).
