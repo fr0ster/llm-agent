@@ -53,9 +53,10 @@ export class HealthChecker {
     );
 
     let status: 'healthy' | 'degraded' | 'unhealthy';
-    if (!llmOk) {
-      status = 'unhealthy';
-    } else if (!ragOk || !mcpAllOk || anyCircuitOpen) {
+    if (!llmOk || !ragOk || !mcpAllOk || anyCircuitOpen) {
+      // A soft component signal (LLM/RAG/MCP/circuit) ⇒ degraded, not
+      // unhealthy. Inability to SERVE is expressed via readiness (ready:false
+      // ⇒ 503), handled by the route; /health status stays a body signal.
       status = 'degraded';
     } else {
       status = 'healthy';

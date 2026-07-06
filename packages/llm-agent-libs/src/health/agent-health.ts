@@ -29,6 +29,11 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
     if (mainLlm.healthCheck) {
       const hc = await mainLlm.healthCheck(options);
       results.llm = hc.ok && hc.value;
+      if (!results.llm) {
+        options?.sessionLogger?.logStep('health_llm_probe_error', {
+          reason: hc.ok ? 'unhealthy' : String(hc.error?.message ?? hc.error),
+        });
+      }
     } else {
       // Fallback for ILlm implementations without healthCheck
       const llmRes = await mainLlm.chat(
@@ -37,9 +42,17 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
         options,
       );
       results.llm = llmRes.ok;
+      if (!llmRes.ok) {
+        options?.sessionLogger?.logStep('health_llm_probe_error', {
+          reason: String(llmRes.error?.message ?? llmRes.error),
+        });
+      }
     }
-  } catch {
+  } catch (err) {
     results.llm = false;
+    options?.sessionLogger?.logStep('health_llm_probe_error', {
+      reason: err instanceof Error ? err.message : String(err),
+    });
   }
   try {
     const firstStore = Object.values(ragStores)[0];

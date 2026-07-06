@@ -50,7 +50,7 @@ describe('HealthChecker', () => {
     assert.equal(status.status, 'degraded');
   });
 
-  it('returns unhealthy when LLM is down', async () => {
+  it('returns degraded when LLM is down (real agent)', async () => {
     const { deps } = makeDefaultDeps({
       llmResponses: [new Error('LLM unreachable')],
     });
@@ -62,7 +62,87 @@ describe('HealthChecker', () => {
     });
 
     const status = await checker.check();
-    assert.equal(status.status, 'unhealthy');
+    assert.equal(status.status, 'degraded');
+  });
+
+  it('fake-agent: llm:false → degraded (not unhealthy)', async () => {
+    const fakeAgent = {
+      healthCheck: async () => ({
+        ok: true as const,
+        value: {
+          llm: false,
+          rag: true,
+          mcp: [] as { name: string; ok: boolean }[],
+        },
+      }),
+    } as unknown as SmartAgent;
+    const checker = new HealthChecker({
+      agent: fakeAgent,
+      startTime: Date.now(),
+      version: 'test',
+    });
+    const s = await checker.check();
+    assert.equal(s.status, 'degraded');
+  });
+
+  it('fake-agent: rag:false → degraded', async () => {
+    const fakeAgent = {
+      healthCheck: async () => ({
+        ok: true as const,
+        value: {
+          llm: true,
+          rag: false,
+          mcp: [] as { name: string; ok: boolean }[],
+        },
+      }),
+    } as unknown as SmartAgent;
+    const checker = new HealthChecker({
+      agent: fakeAgent,
+      startTime: Date.now(),
+      version: 'test',
+    });
+    const s = await checker.check();
+    assert.equal(s.status, 'degraded');
+  });
+
+  it('fake-agent: all-ok → healthy', async () => {
+    const fakeAgent = {
+      healthCheck: async () => ({
+        ok: true as const,
+        value: {
+          llm: true,
+          rag: true,
+          mcp: [{ name: 'mcp1', ok: true }] as { name: string; ok: boolean }[],
+        },
+      }),
+    } as unknown as SmartAgent;
+    const checker = new HealthChecker({
+      agent: fakeAgent,
+      startTime: Date.now(),
+      version: 'test',
+    });
+    const s = await checker.check();
+    assert.equal(s.status, 'healthy');
+  });
+
+  it('fake-agent: llm:false && rag:false → degraded', async () => {
+    const fakeAgent = {
+      healthCheck: async () => ({
+        ok: true as const,
+        value: {
+          llm: false,
+          rag: false,
+          mcp: [] as { name: string; ok: boolean }[],
+        },
+      }),
+    } as unknown as SmartAgent;
+    const checker = new HealthChecker({
+      agent: fakeAgent,
+      startTime: Date.now(),
+      version: 'test',
+    });
+    const s = await checker.check();
+    assert.equal(s.status, 'degraded');
   });
 
   it('returns degraded when a circuit breaker is open', async () => {

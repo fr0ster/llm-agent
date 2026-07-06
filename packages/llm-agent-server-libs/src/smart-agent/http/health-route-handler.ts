@@ -11,7 +11,10 @@ import type { RouteContext } from './route-table.js';
  */
 export async function handleHealthRoute(rc: RouteContext): Promise<void> {
   const status = await rc.healthChecker.check();
-  const httpCode = status.status === 'unhealthy' || !rc.ready ? 503 : 200;
+  // 503 == NOT READY (can't serve, e.g. MCP down). LLM/RAG/circuit soft
+  // signals surface in the body (status: degraded) but do NOT 503 a service
+  // that can still serve — a load balancer must not drop a working pod.
+  const httpCode = rc.ready ? 200 : 503;
   rc.res.writeHead(httpCode, { 'Content-Type': 'application/json' });
   rc.res.end(JSON.stringify({ ...status, ready: rc.ready }));
 }
