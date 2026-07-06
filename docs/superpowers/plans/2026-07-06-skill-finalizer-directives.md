@@ -40,20 +40,23 @@
 
 - [ ] **Failing test first** in `finalizer.test.ts`. Construct `new LlmFinalizer(client, policy)` with a STUB client that captures the `messages` passed to `client.send(...)` and returns `{ kind: 'content', content: 'ok' }`. (Read the current file to match `LlmFinalizer`'s constructor + the `client.send` contract + `ApprovedResult` shape.) Cases:
   - **skillsBlock present:** call `finalize('g', 'r', [], { skillsBlock: 'Relevant skills:\n- always end with LINE-X' })` → the captured USER message CONTAINS the skills block text under a `Skills` header, AND the SYSTEM message contains the generic honor-clause (assert a stable substring of the new clause, e.g. `honor` + `directives`).
-  - **skillsBlock absent:** call `finalize('g', 'r', [], {})` → the USER message contains NO `Skills` section (byte-equal to today's `Goal/Request/Results` format), and the SYSTEM message is `appendHint(FINALIZE_SYSTEM, undefined)` (the honor-clause is a static part of FINALIZE_SYSTEM, so it's always present in the constant — assert the user message has no skills section; that is the behavior-preservation check).
-  - **empty skillsBlock:** `{ skillsBlock: '   ' }` → treated as absent (no skills section).
+  - **skillsBlock absent:** call `finalize('g', 'r', [], {})` → the USER message contains NO `Skills` section (byte-equal to today's `Goal/Request/Results` format) AND the SYSTEM message does NOT contain the honor-clause (assert the clause substring is absent) — the prompt is unchanged. This is the behavior-preservation guard.
+  - **empty skillsBlock:** `{ skillsBlock: '   ' }` → treated as absent (no skills section, no honor-clause).
 - [ ] Run → FAILS (no `skillsBlock` handling yet).
-- [ ] **Implement** in `finalizer.ts`:
+- [ ] **Implement** in `finalizer.ts` — the honor-clause is CONDITIONAL (added ONLY when a non-empty skills block is present), so the prompt is byte-unchanged when no skill is configured:
   - Add `skillsBlock?: string;` to `FinalizeOpts` (with a short doc comment: "Bounded skills recall block; the finalizer honors any output/delivery directives it states. Agnostic — content is consumer-supplied.").
-  - Add a generic clause to `FINALIZE_SYSTEM` (append to the existing constant): ` 'If a skills block is provided below, honor any output, delivery, or formatting directives it states exactly; the skills govern delivery only — still do not invent facts beyond the provided results.'` (No domain content, no examples.)
-  - In `LlmFinalizer.finalize`, build the user content with an optional skills section:
+  - Add a SEPARATE generic clause CONSTANT (do NOT modify `FINALIZE_SYSTEM`): `const FINALIZE_SKILLS_CLAUSE = 'A skills block is provided below. Honor any output, delivery, or formatting directives it states exactly; the skills govern delivery only — still do not invent facts beyond the provided results.';` (No domain content, no examples.)
+  - In `LlmFinalizer.finalize`, gate BOTH the system clause and the user section on a non-empty block:
     ```ts
     const skills = opts.skillsBlock?.trim();
-    const userContent =
-      `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}` +
-      (skills ? `\n\nSkills (delivery directives):\n${skills}` : '');
+    const system = skills
+      ? `${appendHint(FINALIZE_SYSTEM, opts.hint)} ${FINALIZE_SKILLS_CLAUSE}`
+      : appendHint(FINALIZE_SYSTEM, opts.hint);
+    const userContent = skills
+      ? `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}\n\nSkills (delivery directives):\n${skills}`
+      : `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}`;
     ```
-    and pass `userContent` as the user message. Leave the system line as `appendHint(FINALIZE_SYSTEM, opts.hint)` (FINALIZE_SYSTEM now carries the honor-clause).
+    then send `{ role: 'system', content: system }` + `{ role: 'user', content: userContent }`. When `skills` is falsy/blank, BOTH `system` and `userContent` are byte-identical to today — the prompt is genuinely unchanged.
 - [ ] Run tests → GREEN. `npm run build`. SCOPED lint gate. Commit: `feat(controller): finalizer honors delivery directives from a recalled skills block (#212)`.
 
 ---
@@ -66,16 +69,15 @@
 
 **Steps:**
 
-- [ ] **Read** the `finalize()` region (~1450-1466) to confirm the exact call + whether a `CallOptions`/`options` is in scope there. `deps.skillsRecall`'s `options` param is OPTIONAL, so if no `options` is in scope at the finalize call, call `deps.skillsRecall(bundle.goal)`.
-- [ ] **Implement:** just before the `deps.finalizer.finalize(...)` call, compute the block once and pass it:
+- [ ] **Wiring test FIRST (mandatory — the seam already exists).** In `controller/__tests__/controller-coordinator-handler.test.ts`, the `it('done → finalizer composes from approved results …')` test (~1778) already drives a full run to `finalize()` via the `harness({...})` helper and lets you substitute `deps`. Add a sibling test (mirror that harness): set `h.deps.skillsRecall = async (goal) => 'Relevant skills:\n- footer LINE-X'` and replace `h.deps.finalizer` with a fake `{ finalize: async (_g, _r, _a, opts) => { captured = opts; return 'answer'; } }`; run to `done`; assert `captured.skillsBlock === 'Relevant skills:\n- footer LINE-X'`. Add a second case with NO `skillsRecall` → `captured.skillsBlock === undefined`. Run → the first assertion FAILS on current code (skillsBlock never passed).
+- [ ] **Implement** in `finalize()` (`controller-coordinator-handler.ts`, which has `ctx: PipelineContext` in scope — `ctx.options: CallOptions | undefined`, context.ts:76). Just before the `deps.finalizer.finalize(...)` call, compute the block once and pass it, using `ctx.options` for symmetry with the planner path (`planner.ts:373` calls `skillsRecall(bundle.goal, options)`):
   ```ts
   const skillsBlock = deps.skillsRecall
-    ? await deps.skillsRecall(bundle.goal /*, options if in scope */)
+    ? await deps.skillsRecall(bundle.goal, ctx.options)
     : undefined;
   ```
-  then add `skillsBlock,` to the opts object passed to `deps.finalizer.finalize(bundle.goal, request, approved, { hint: …, logUsage, log, skillsBlock })`. (The recall query uses `bundle.goal` — the SAME key the planner recalls with, so the same skills surface.)
-- [ ] **Test/verify the wiring:** if `controller-coordinator-handler.test.ts` (or a controller test) can drive `finalize()` with a fake `deps.finalizer` capturing `opts` and a fake `deps.skillsRecall` returning a known block, add a focused case asserting `opts.skillsBlock === '<known block>'` when `deps.skillsRecall` is set, and `undefined` when it is not. If reaching `finalize()` requires a full run that no existing test harness supports, note that here and rely on `npm run build` (type-check) + the Task 4 live acceptance as the wiring proof — do NOT build a heavyweight bespoke harness.
-- [ ] `npm run build` (green — the wiring type-checks). Run the existing controller tests → still green. SCOPED lint gate. Commit: `feat(controller): pass the recalled skills block to the finalizer (#212)`.
+  then add `skillsBlock,` to the opts object passed to `deps.finalizer.finalize(bundle.goal, request, approved, { hint: …, logUsage, log, skillsBlock })`. (Recall uses `bundle.goal` — the SAME key the planner recalls with — and `ctx.options` — the SAME options — so the finalizer path is symmetric to the planner path: same skills, same abort/session/logging.)
+- [ ] Run the wiring tests → GREEN. `npm run build`. Run the existing controller tests → still green. SCOPED lint gate. Commit: `feat(controller): pass the recalled skills block to the finalizer (#212)`.
 
 ---
 
