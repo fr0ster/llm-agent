@@ -149,9 +149,9 @@ THE main fix. A reachable provider (its `getModels()` resolves without throwing)
 
 ---
 
-### Task 4 — (D) `agent-health`: log the probe cause instead of swallowing it
+### Task 4 — (D) `agent-health`: log the LLM probe cause instead of swallowing it
 
-**Files:** modify `packages/llm-agent-libs/src/health/agent-health.ts` (the `catch {}` blocks + the llm value path); test `packages/llm-agent-libs/src/health/__tests__/agent-health.test.ts` (create if absent, else extend).
+**Files:** modify `packages/llm-agent-libs/src/health/agent-health.ts` (the LLM `catch {}` block + the LLM not-ok value path — ONLY); test `packages/llm-agent-libs/src/health/__tests__/agent-health.test.ts` (create if absent, else extend).
 
 **Steps:**
 
@@ -192,7 +192,7 @@ THE main fix. A reachable provider (its `getModels()` resolves without throwing)
     }
   ```
   **Scope: LLM probe only.** Do NOT change the RAG or MCP `catch` blocks in this task — the reported bug is the LLM probe, and RAG logging would be an untested change (YAGNI). Leave the RAG `catch {}` and the MCP per-client capture exactly as-is. (RAG/MCP probe logging can be a separate follow-up with its own tests.) Verify the `Result` shape field name (`hc.error?.message` on `LlmError`) against the real type before finalizing.
-- [ ] Run tests → GREEN. `npm run build`. SCOPED lint gate. Commit: `fix(health): log the LLM/RAG probe failure cause instead of swallowing it`.
+- [ ] Run tests → GREEN. `npm run build`. SCOPED lint gate. Commit: `fix(health): log the LLM probe failure cause instead of swallowing it`.
 
 ---
 
