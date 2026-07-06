@@ -459,14 +459,25 @@ export class LlmAdapter implements ILlm, IModelProvider {
             () => new LlmError('Aborted', 'ABORTED'),
           )
         : await modelsPromise;
+      // A reachable provider is healthy. The configured model may be a valid
+      // alias or deployment name that the /models listing does not enumerate
+      // (e.g. deepseek "deepseek-chat" vs listed "deepseek-v4-*"), so do NOT
+      // gate health on the model literally appearing in the list — that
+      // false-negatives a working LLM. Whether the model is listed is kept only
+      // as a debug signal.
       const model = this.provider.model;
-      const found = models.some((m) => {
-        if (typeof m === 'string') {
-          return m === model || m.includes(model);
-        }
-        return m.id === model || m.id.includes(model);
-      });
-      return { ok: true, value: found };
+      const listed = models.some((m) =>
+        typeof m === 'string'
+          ? m === model || m.includes(model)
+          : m.id === model || m.id.includes(model),
+      );
+      if (!listed) {
+        options?.sessionLogger?.logStep('llm_health_model_not_listed', {
+          model,
+          listedCount: models.length,
+        });
+      }
+      return { ok: true, value: true };
     } catch (err) {
       if (err instanceof LlmError) return { ok: false, error: err };
       return {

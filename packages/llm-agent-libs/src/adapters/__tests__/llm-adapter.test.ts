@@ -242,3 +242,50 @@ describe('LlmAdapter — AbortSignal', () => {
     assert.equal(r.error.code, 'ABORTED');
   });
 });
+
+describe('LlmAdapter — healthCheck', () => {
+  it('reachable + model NOT in list → healthy (the key alias case)', async () => {
+    const provider = {
+      model: 'deepseek-chat',
+      getModels: async () => [
+        { id: 'deepseek-v4-flash' },
+        { id: 'deepseek-v4-pro' },
+      ],
+    };
+    const adapter = new LlmAdapter(new StubBridge({ content: '' }), provider);
+    const r = await adapter.healthCheck();
+    assert.ok(r.ok);
+    assert.equal(r.value, true);
+  });
+
+  it('reachable + model IN list → healthy', async () => {
+    const provider = {
+      model: 'deepseek-chat',
+      getModels: async () => [{ id: 'deepseek-chat' }],
+    };
+    const adapter = new LlmAdapter(new StubBridge({ content: '' }), provider);
+    const r = await adapter.healthCheck();
+    assert.ok(r.ok);
+    assert.equal(r.value, true);
+  });
+
+  it('no getModels → healthy', async () => {
+    const provider = { model: 'some-model' };
+    const adapter = new LlmAdapter(new StubBridge({ content: '' }), provider);
+    const r = await adapter.healthCheck();
+    assert.ok(r.ok);
+    assert.equal(r.value, true);
+  });
+
+  it('getModels throws → unhealthy with error', async () => {
+    const provider = {
+      model: 'bad-model',
+      getModels: async () => {
+        throw new Error('boom');
+      },
+    };
+    const adapter = new LlmAdapter(new StubBridge({ content: '' }), provider);
+    const r = await adapter.healthCheck();
+    assert.ok(!r.ok);
+  });
+});
