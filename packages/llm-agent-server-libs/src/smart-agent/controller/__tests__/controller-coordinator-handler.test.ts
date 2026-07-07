@@ -1844,6 +1844,120 @@ describe('ControllerCoordinatorHandler', () => {
     assert.equal(term?.kind, 'success');
   });
 
+  it('skillsRecall result is threaded into finalizer opts.skillsBlock', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+        { kind: 'content', content: 'IGNORED' },
+      ],
+      executor: [{ kind: 'content', content: 'STEP RESULT' }],
+    });
+    const written: KnowledgeEntry[] = [];
+    const listRag: IKnowledgeRagHandle & { written: KnowledgeEntry[] } = {
+      written,
+      query: async () => [],
+      async list(filter) {
+        return written.filter(
+          (e) =>
+            (filter.runId === undefined || e.metadata.runId === filter.runId) &&
+            (filter.artifactType === undefined ||
+              e.metadata.artifactType === filter.artifactType),
+        );
+      },
+      async write(e) {
+        written.push(e);
+      },
+      fingerprint() {
+        return 'stub';
+      },
+    };
+    h.deps.knowledgeRagFor = () => listRag;
+    // Inject skillsRecall — returns a known block.
+    h.deps.skillsRecall = async (_goal) => 'Relevant skills:\n- footer LINE-X';
+    // Replace finalizer with a capturing fake.
+    let capturedOpts: Record<string, unknown> | undefined;
+    h.deps.finalizer = {
+      async finalize(_g, _r, _a, opts) {
+        capturedOpts = opts as Record<string, unknown>;
+        return 'answer';
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find((c) => c.ok && c.value.finishReason === 'stop'),
+      'run reached done',
+    );
+    assert.equal(
+      capturedOpts?.skillsBlock,
+      'Relevant skills:\n- footer LINE-X',
+      'skillsBlock from skillsRecall is passed to the finalizer',
+    );
+  });
+
+  it('when skillsRecall is absent, finalizer opts.skillsBlock is undefined', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+        { kind: 'content', content: 'IGNORED' },
+      ],
+      executor: [{ kind: 'content', content: 'STEP RESULT' }],
+    });
+    const written: KnowledgeEntry[] = [];
+    const listRag: IKnowledgeRagHandle & { written: KnowledgeEntry[] } = {
+      written,
+      query: async () => [],
+      async list(filter) {
+        return written.filter(
+          (e) =>
+            (filter.runId === undefined || e.metadata.runId === filter.runId) &&
+            (filter.artifactType === undefined ||
+              e.metadata.artifactType === filter.artifactType),
+        );
+      },
+      async write(e) {
+        written.push(e);
+      },
+      fingerprint() {
+        return 'stub';
+      },
+    };
+    h.deps.knowledgeRagFor = () => listRag;
+    // No skillsRecall set — h.deps.skillsRecall remains undefined.
+    let capturedOpts: Record<string, unknown> | undefined;
+    h.deps.finalizer = {
+      async finalize(_g, _r, _a, opts) {
+        capturedOpts = opts as Record<string, unknown>;
+        return 'answer';
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find((c) => c.ok && c.value.finishReason === 'stop'),
+      'run reached done',
+    );
+    assert.equal(
+      capturedOpts?.skillsBlock,
+      undefined,
+      'skillsBlock is undefined when no skillsRecall',
+    );
+  });
+
   it('finalizer provider failure exhausts maxFinalizeRetries → onFinalizeExhausted:error → terminal error', async () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],

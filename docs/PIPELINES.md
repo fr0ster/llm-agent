@@ -104,7 +104,8 @@ when composing in code — `ControllerFactory` is the public controller export).
   server config) — a domain-agnostic host that materializes consumer-supplied
   skills into a grouped, durable skills-RAG. Assembler pipelines (`flat`,
   `linear`, `dag`) recall it implicitly under a "Relevant Skills" block; the
-  `controller` planner recalls the configured `controllerSkillGroup`. This keeps
+  `controller` planner recalls the configured `controllerSkillGroup`, and the finalizer
+  honors any output/delivery/formatting directives the skills specify. This keeps
   the engine free of bundled domain knowledge while gnosticizing any model at
   runtime. Config + examples: [EXAMPLES.md](EXAMPLES.md#skill-plugin-host-skillplugins--runtime-gnostification).
 - Internal (MCP) tools are surfaced to the executor by **semantic top-K** from
