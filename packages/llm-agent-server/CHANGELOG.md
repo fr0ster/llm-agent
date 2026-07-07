@@ -1,5 +1,21 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 20.2.0
+
+### Features
+
+- **Controller: recalled skills now shape the finalizer's delivered answer (#212).** A `controllerSkillGroup` skill's output/delivery/formatting directives are honored in the delivered text, not just the plan. The engine stays agnostic — a generic honor-clause; the consumer's skill supplies the directive. With no skill configured the finalizer prompt is byte-unchanged; the "do not invent facts" guard is retained (skills govern delivery only).
+
+### Fixes
+
+- **`/health` no longer returns 503 for a working LLM (#220).** `LlmAdapter.healthCheck` reported a reachable LLM unhealthy when the configured model name was a valid alias absent from the provider's `/models` list (e.g. deepseek `deepseek-chat`). Now a reachable provider is healthy; LLM/RAG/MCP soft failures map to `degraded` (not `unhealthy`); `/health` returns 503 only when NOT ready (MCP-readiness gate unchanged, still fails loud); the LLM probe logs its failure cause instead of swallowing it. The `/health` JSON shape is unchanged.
+- **SAP AI Core concurrency hardening (#213/#219).** `chat()` now uses a per-call non-keepAlive HTTPS agent (mirroring `streamChat`), avoiding a shared keepAlive connection that could let SAP AI Core route a response to the wrong in-flight request when concurrent requests share one XSUAA user.
+
+### Docs
+
+- **`skillPlugins` inline-record example uses the required `id` (not `name`) (#211).** The documented example crashed the server at startup (`id` is required; `name` is optional and defaults to `id`); corrected in `docs/EXAMPLES.md`.
+- Documented that controller skills shape BOTH the planner and the finalizer (`EXAMPLES.md`, `ARCHITECTURE.md`, `PIPELINES.md`).
+
 ## 20.1.0
 
 ### Added
