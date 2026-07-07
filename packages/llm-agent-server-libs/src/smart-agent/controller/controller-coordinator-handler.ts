@@ -1449,11 +1449,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     let answer: string | undefined;
     if (deps.finalizer && bundle.runId) {
+      // Recall the skills block ONCE (not per finalize retry — re-embedding on
+      // every attempt is wasteful; the recall is invariant across retries).
+      const skillsBlock = deps.skillsRecall
+        ? await deps.skillsRecall(bundle.goal, ctx.options)
+        : undefined;
       while (answer === undefined) {
         try {
-          const skillsBlock = deps.skillsRecall
-            ? await deps.skillsRecall(bundle.goal, ctx.options)
-            : undefined;
           const composed = await deps.finalizer.finalize(
             bundle.goal,
             request,
