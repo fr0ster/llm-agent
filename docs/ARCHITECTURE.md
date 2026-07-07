@@ -510,10 +510,11 @@ gnosticized at runtime.
   serving. The activation ingest waits for point visibility (`wait=true`) before
   the catalog is published, so recall never sees a half-built active generation.
 - **Consumption.** Implicit for the assembler pipelines (`flat`/default,
-  `linear`, `dag`) via an `IRag` source rendered under a "Relevant Skills" block, plus a
-  dedicated `controller`-planner recall hook (the configured
-  `controllerSkillGroup`). Wired from the `skillPlugins:` server config (see
-  EXAMPLES.md). `mode: explicit` and stepper implicit wiring are follow-on.
+  `linear`, `dag`) via an `IRag` source rendered under a "Relevant Skills" block. For the
+  `controller` pipeline, the planner recalls the configured `controllerSkillGroup` and the
+  finalizer honors any output/delivery/formatting directives the skills specify. Wired from
+  the `skillPlugins:` server config (see EXAMPLES.md). `mode: explicit` and stepper
+  implicit wiring are follow-on.
 
 ## Internal Interfaces and Default Implementations
 

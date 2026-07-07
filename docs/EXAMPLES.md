@@ -364,8 +364,11 @@ SKILL.md skill-manager (file-system discovery, vectorized into the tools RAG).
 **consumer-supplied** skills into a grouped, durable **skills-RAG** and lets
 pipelines recall them at runtime — so the engine ships **no** bundled domain
 knowledge, yet any model is gnosticized as it works. Recall is implicit for the
-assembler pipelines (`flat`/default, `linear`, `dag`) under a "Relevant Skills" block,
-and the `controller` planner recalls a configured group.
+assembler pipelines (`flat`/default, `linear`, `dag`) under a "Relevant Skills" block;
+for the `controller` pipeline, the planner recalls a configured group and the finalizer
+honors any output/delivery/formatting directives the skills specify.
+
+The `controller` planner recalls a configured group; the finalizer honors any output/delivery/formatting directives the skills specify in the delivered answer.
 
 **Quick start — in-memory, inline record sources** (ephemeral; no DB):
 
