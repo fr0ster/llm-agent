@@ -1451,6 +1451,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     if (deps.finalizer && bundle.runId) {
       while (answer === undefined) {
         try {
+          const skillsBlock = deps.skillsRecall
+            ? await deps.skillsRecall(bundle.goal, ctx.options)
+            : undefined;
           const composed = await deps.finalizer.finalize(
             bundle.goal,
             request,
@@ -1459,6 +1462,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               hint: deps.config.subagents.finalizer?.hint,
               logUsage,
               log: (m) => dlog(m),
+              skillsBlock,
             },
           );
           // Empty-but-ok finalizer output is a JUDGE failure (spec), not a valid
