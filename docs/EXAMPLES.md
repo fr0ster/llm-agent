@@ -93,6 +93,10 @@ OpenAI-compatible endpoint: `http://localhost:4004/v1/chat/completions`
 
 The pipeline is selected by name (`pipeline: { name, config }`); omit it for the default `flat` flow. See [PIPELINES.md](PIPELINES.md).
 
+### MCP Configuration — Timeouts and Request Headers
+
+The SmartAgent runtime imposes no client-side timeout on MCP tool calls — the MCP server governs its own. The deprecated `MCPClientConfig.timeout` field has no effect (retained for backward compatibility). To convey a "willing to wait longer" hint to the server, add custom headers under the existing `mcp.headers` block in YAML (e.g., a timeout hint your server recognizes). Programmatic users can supply a custom `IMcpRequestHeadersStrategy` via `builder.withMcpRequestHeadersStrategy(...)` to inject runtime headers into MCP requests.
+
 ## Programmatic Examples
 
 ### Dynamic RAG stores
