@@ -115,10 +115,31 @@ export interface MCPClientConfig {
    */
   headers?: Record<string, string>;
 
-  /**
-   * Timeout in milliseconds (default: 30000)
-   */
+  /** @deprecated No longer used. MCP self-governs its request timeouts; this field is retained only for backward compatibility and has no effect. */
   timeout?: number;
+}
+
+/**
+ * Build StreamableHTTPClientTransport options from an already-resolved sessionId.
+ * The caller MUST resolve the session id (via `_sessionForConnect()`) before calling
+ * this helper — the helper intentionally does NOT read `config.sessionId` so that live
+ * server-assigned ids always survive reconnect.
+ *
+ * No `signal` is set: MCP self-governs its request timeouts via the SDK's own mechanism.
+ */
+export function buildHttpTransportOptions(opts: {
+  headers?: Record<string, string>;
+  sessionId?: string;
+}): { sessionId?: string; requestInit: { headers: Record<string, string> } } {
+  return {
+    ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
+    requestInit: {
+      headers: {
+        Accept: 'application/json, text/event-stream',
+        ...opts.headers,
+      },
+    },
+  };
 }
 
 export class MCPClientWrapper {
@@ -259,16 +280,10 @@ export class MCPClientWrapper {
       // The SDK handles the protocol differences internally
       const httpTransport = new StreamableHTTPClientTransport(
         new URL(this.config.url),
-        {
+        buildHttpTransportOptions({
+          headers: this.config.headers,
           sessionId: this._sessionForConnect(),
-          requestInit: {
-            headers: {
-              Accept: 'application/json, text/event-stream',
-              ...this.config.headers,
-            },
-            signal: AbortSignal.timeout(this.config.timeout || 30000),
-          },
-        },
+        }),
       );
 
       this.client = new Client(
