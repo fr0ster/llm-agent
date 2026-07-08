@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Timeout ownership (the binding principle):** the agent times out ONLY what it owns (LLM / our operations). It MUST NOT impose its own *request* timeout on an MCP tool call. Checking a request timeout at BOTH the MCP-call level AND the agent level is the forbidden stack. Default behaviour: **MCP self-governs** — we impose no client-side request cutoff on the tool call. (A short CONNECT-establish bound is a different thing and may remain — see the `timeout` semantics below.)
+- **Timeout ownership (the binding principle):** the agent times out ONLY what it owns (LLM / our operations). It MUST NOT impose its own timeout on an MCP tool call OR on connect. Checking a timeout at BOTH the MCP level AND the agent level is the forbidden stack. Default behaviour: **MCP self-governs** — we impose no client-side request cutoff on the tool call and no connect-bound (connection availability is governed by the connection-strategy layer, #201-205). The public `MCPClientConfig.timeout` is DEPRECATED (kept for backward-compat, no longer wired).
 - **"Effective unbounded", stated honestly.** The MCP SDK's `callTool` requires a numeric per-request `timeout` and defaults it to ~60s; there is no documented "disable". So "no client-imposed timeout" is implemented as an **effectively-unbounded** value (24h) plus `resetTimeoutOnProgress`. Task 1 MUST first check whether the installed SDK (`^1.28.0`) supports a true disable (`0`, `undefined`, `Infinity`, or `maxTotalTimeout` semantics); if it does, use that and reword; otherwise use the large value and label it "effectively unbounded (SDK requires a number)".
 - **Keep the agent's cancellation.** The existing `withAbort(options.signal)` in `McpClientAdapter.callTool` is cancellation propagation (abort the tool call when the whole request is aborted) — NOT a timeout we invented. Leave it untouched.
 - **Influence is opt-in.** For the YAML/server path, a wait hint is a STATIC entry in the existing `mcp.headers` (already flows to the wrapper) — no new code needed there. A programmatic/dynamic wait hint uses the new swappable `IMcpRequestHeadersStrategy` (ISP — a new focused interface; default no-op → contributes nothing). The strategy is threaded through `McpConnectionConfig.requestHeadersStrategy` (code-only; never parsed from YAML), which the builder factory path (`createDefaultMcpClient`) copies into the wrapper. **The direct server/YAML path (`connectMcpClientsFromConfig`, `SmartServerMcpConfig`) is NOT extended** — its config is YAML-parsed and cannot carry a code strategy; YAML users convey wait hints via static `mcp.headers`. (Extending the server config types for a code strategy is deliberately out of scope; see Notes.)
@@ -70,7 +70,7 @@ The primary fix. `MCPClientWrapper.callTool` calls the SDK `client.callTool({nam
 
 ---
 
-### Task 2 — remove the transport per-request cutoff; repurpose `timeout` as connect-only
+### Task 2 — remove the transport per-request cutoff + connect-bound; deprecate `timeout`
 
 `client.ts` ~263 sets `signal: AbortSignal.timeout(this.config.timeout || 30000)` on the transport `requestInit` — a one-shot wall-clock abort created at connect that can cut off a long tool call (a second stacked timeout). Remove it. Do NOT add a replacement connect-bound: a `Promise.race`-style guard would leave the underlying `connect()` running after the caller got a rejection (leaked transport/socket, later state mutation), and the SDK connect has no clean abort seam here. Connection availability is already governed by the connection-strategy layer (Periodic/Lazy reconnect + readiness, #201-205). The now-unused public `MCPClientConfig.timeout` is DEPRECATED (kept for backward-compat, no longer wired).
 
@@ -78,20 +78,22 @@ The primary fix. `MCPClientWrapper.callTool` calls the SDK `client.callTool({nam
 
 **Steps:**
 
-- [ ] **Failing test (pure helper — the only source of transport options).** Factor a pure exported helper `buildHttpTransportOptions(config: Pick<MCPClientConfig,'headers'|'sessionId'>): { sessionId?: string; requestInit: { headers: Record<string,string> } }` that returns the object passed to `new StreamableHTTPClientTransport(url, ...)`. It sets `requestInit.headers` (`Accept` + `...config.headers`) and NO `signal`. Test:
+- [ ] **Failing test (pure helper — the only source of transport options).** Factor a pure exported helper that takes an ALREADY-RESOLVED session id (do NOT read `config.sessionId` inside — the caller resolves it via `_sessionForConnect()` so live server-assigned ids survive reconnect): `buildHttpTransportOptions(opts: { headers?: Record<string,string>; sessionId?: string }): { sessionId?: string; requestInit: { headers: Record<string,string> } }`. It sets `requestInit.headers` (`Accept` + `...opts.headers`), NO `signal`, and passes `sessionId` straight through. Test:
   - `buildHttpTransportOptions({ headers: { A: '1' } }).requestInit.signal === undefined`;
-  - `.requestInit.headers.Accept === 'application/json, text/event-stream'` and `.requestInit.headers.A === '1'`.
-  Because the transport construction will call THIS helper as its ONLY way to build the options, there is no inline `requestInit` left to forget — a unit test on the helper is sufficient to pin "no per-request signal". (Task 3 extends this helper to also merge the strategy headers.)
+  - `.requestInit.headers.Accept === 'application/json, text/event-stream'` and `.requestInit.headers.A === '1'`;
+  - `buildHttpTransportOptions({ sessionId: 'live-123' }).sessionId === 'live-123'` (passed through verbatim).
+  Because the transport construction calls THIS helper as its ONLY way to build the options, there is no inline `requestInit` left to forget. (Task 3 extends the opts with `requestHeadersStrategy` for the header merge.)
+- [ ] **Failing test (session-resume — regression guard).** Prove the LIVE server-assigned session id is used on reconnect, not the initial `config.sessionId`. Construct the wrapper with `config.sessionId = 'init'`, set `wrapper['sessionId'] = 'live-999'` (simulating a server-assigned id captured on a prior connect at client.ts:281-282), then assert `wrapper['_sessionForConnect']() === 'live-999'` AND that the value the wrapper feeds into `buildHttpTransportOptions` at connect is `'live-999'`. (Assert via the transport-options the wrapper builds: extract a tiny `wrapper['_httpTransportOptions']()` or inline-verify the connect passes `_sessionForConnect()` — read the connect region to pick the cleanest seam; the point is a test that FAILS if the helper is fed `config.sessionId` instead of `_sessionForConnect()`.)
 - [ ] Run → FAILS (helper doesn't exist; today the inline `requestInit` sets a `signal`).
 - [ ] **Implement.**
-  - Add `buildHttpTransportOptions(...)` and construct the transport with it: `new StreamableHTTPClientTransport(new URL(this.config.url), buildHttpTransportOptions(this.config))`. Remove the inline `requestInit` object entirely (no `signal`).
+  - Add `buildHttpTransportOptions(...)` and construct the transport with it, passing the RESOLVED session id: `new StreamableHTTPClientTransport(new URL(this.config.url), buildHttpTransportOptions({ headers: this.config.headers, sessionId: this._sessionForConnect() }))`. Remove the inline `requestInit` object entirely (no `signal`). Do NOT change `_sessionForConnect()` or the `this.sessionId` capture at ~281-282.
   - **Remove the connect-bound** — call `await this.client.connect(httpTransport)` directly (no `withConnectTimeout`, no `AbortSignal.timeout` around it). Do NOT re-introduce a per-connect race guard.
   - Change the `MCPClientConfig.timeout` doc comment (~115) to: `/** @deprecated No longer used. MCP self-governs its request timeouts; this field is retained only for backward compatibility and has no effect. */`
-- [ ] Run tests → GREEN. `npm run build`. Existing suites green. SCOPED lint gate. Commit: `fix(mcp): drop the transport per-request signal + connect-bound; deprecate timeout (MCP governs its own timeouts)`.
+- [ ] Run tests → GREEN. `npm run build`. Existing suites green (esp. any session-resume test). SCOPED lint gate. Commit: `fix(mcp): drop the transport per-request signal + connect-bound; deprecate timeout (MCP governs its own timeouts)`.
 
 ---
 
-### Task 3 — `IMcpRequestHeadersStrategy` (no-op default) threaded through both construction paths
+### Task 3 — `IMcpRequestHeadersStrategy` (no-op default) threaded through the factory path
 
 **Files:** create `packages/llm-agent/src/interfaces/mcp-request-headers-strategy.ts` + barrel export; modify `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` (add field); create `packages/llm-agent-mcp/src/no-op-request-headers-strategy.ts`; modify `packages/llm-agent-mcp/src/client.ts` (config field + merge via `buildHttpTransportOptions`) and `packages/llm-agent-mcp/src/factory.ts`; test `packages/llm-agent-mcp/src/__tests__/mcp-request-headers-strategy.test.ts`. (Do NOT modify `smart-server.ts` — the server/YAML path is out of scope per Global Constraints.)
 
@@ -122,7 +124,7 @@ And add to `McpConnectionConfig` (mcp-connection-strategy.ts): `requestHeadersSt
     }
   }
   ```
-- [ ] **Failing test (header merge).** Extend the Task 2 helper to accept the strategy: `buildHttpTransportOptions(config: Pick<MCPClientConfig,'headers'|'sessionId'|'requestHeadersStrategy'>)`. Test: `buildHttpTransportOptions({ headers: { A: '1' }, requestHeadersStrategy: { headers: () => ({ 'X-Wait': '600' }) } }).requestInit.headers` includes `Accept`, `A: '1'`, AND `X-Wait: '600'`; with no strategy the headers are `{ Accept, A: '1' }` (unchanged); `.requestInit.signal === undefined` still holds.
+- [ ] **Failing test (header merge).** Extend the Task 2 helper opts to accept the strategy: `buildHttpTransportOptions(opts: { headers?: Record<string,string>; sessionId?: string; requestHeadersStrategy?: IMcpRequestHeadersStrategy })`. Test: `buildHttpTransportOptions({ headers: { A: '1' }, requestHeadersStrategy: { headers: () => ({ 'X-Wait': '600' }) } }).requestInit.headers` includes `Accept`, `A: '1'`, AND `X-Wait: '600'`; with no strategy the headers are `{ Accept, A: '1' }` (unchanged); `.requestInit.signal === undefined` still holds. At the call site, pass `requestHeadersStrategy: this.config.requestHeadersStrategy` alongside `headers`/`sessionId`.
 - [ ] **Failing test (propagation via a PURE mapping helper — no module mock, no ctor spy).** Add a pure exported helper in `factory.ts`: `toMcpClientWrapperConfig(config: McpConnectionConfig): ConstructorParameters<typeof MCPClientWrapper>[0]` that maps `McpConnectionConfig` → the wrapper options object (transport/url/command/args/headers AND `requestHeadersStrategy`). Test it directly (no network): `toMcpClientWrapperConfig({ type: 'http', url: 'u', requestHeadersStrategy: s }).requestHeadersStrategy === s`, and for `type: 'stdio'` it carries no url. Then `createDefaultMcpClient` MUST build the wrapper via `new MCPClientWrapper(toMcpClientWrapperConfig(config))` — so testing the pure helper pins the propagation without spying the ctor or hitting `wrapper.connect()`.
 - [ ] Run → FAILS (helper doesn't exist / merge not implemented).
 - [ ] **Implement.**
@@ -159,8 +161,8 @@ And add to `McpConnectionConfig` (mcp-connection-strategy.ts): `requestHeadersSt
 
 **Steps:**
 
-- [ ] Grep for the current MCP timeout/headers wording (`rg -n "timeout|headers|mcp:" docs/EXAMPLES.md packages/llm-agent-mcp/README.md`). Add a short accurate note: the engine imposes NO client-side request timeout on MCP tool calls — the MCP server governs its own; `MCPClientConfig.timeout` is a connect-establish bound only. To convey a "willing to wait" hint: YAML/server users add a header under the existing `mcp.headers`; programmatic users can supply a custom `IMcpRequestHeadersStrategy` (default no-op) via `withMcpRequestHeadersStrategy`. State the capability; invent no new YAML keys. NOTE the exact file is `packages/llm-agent-mcp/README.md` (NOT `src/README.md`).
-- [ ] `npm run lint:check` exit 0. Commit: `docs(mcp): MCP self-governs request timeouts; timeout is connect-only; wait hints via headers/strategy`.
+- [ ] Grep for the current MCP timeout/headers wording (`rg -n "timeout|headers|mcp:" docs/EXAMPLES.md packages/llm-agent-mcp/README.md`). Add a short accurate note: the engine imposes NO client-side request timeout on MCP tool calls — the MCP server governs its own; `MCPClientConfig.timeout` is DEPRECATED (no effect; retained for backward-compat). To convey a "willing to wait" hint: YAML/server users add a header under the existing `mcp.headers`; programmatic users can supply a custom `IMcpRequestHeadersStrategy` (default no-op) via `withMcpRequestHeadersStrategy`. State the capability; invent no new YAML keys. NOTE the exact file is `packages/llm-agent-mcp/README.md` (NOT `src/README.md`).
+- [ ] `npm run lint:check` exit 0. Commit: `docs(mcp): MCP self-governs request timeouts; timeout deprecated; wait hints via headers/strategy`.
 
 ---
 
