@@ -25,6 +25,7 @@ import type {
   ILlmRateLimiter,
   ILogger,
   IMcpClient,
+  IMcpRequestHeadersStrategy,
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
@@ -33,6 +34,7 @@ import type {
   ISubpromptClassifier,
   IToolCache,
   IToolSelectionStrategy,
+  McpConnectionConfig,
   SmartAgentRagStores,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -58,6 +60,7 @@ import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
 import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import type {
+  BuilderMcpConfig,
   SmartAgentBuilderConfig,
   SmartAgentHandle,
 } from './builder-types.js';
@@ -79,10 +82,7 @@ import {
 } from './coordinator/index.js';
 import { HistoryMemory } from './history/history-memory.js';
 import { HistorySummarizer } from './history/history-summarizer.js';
-import type {
-  IMcpConnectionStrategy,
-  McpConnectionConfig,
-} from './interfaces/mcp-connection-strategy.js';
+import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import {
@@ -115,6 +115,28 @@ export type {
   SmartAgentBuilderConfig,
   SmartAgentHandle,
 } from './builder-types.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Assemble the {@link McpConnectionConfig} array from the builder's `mcp`
+ * config and attach an optional {@link IMcpRequestHeadersStrategy} to each
+ * entry. Exported for unit-testing; not part of the public package barrel.
+ */
+export function prepareMcpConfigs(
+  mcp: BuilderMcpConfig | BuilderMcpConfig[] | undefined,
+  requestHeadersStrategy?: IMcpRequestHeadersStrategy,
+): McpConnectionConfig[] {
+  const configs = (
+    mcp ? (Array.isArray(mcp) ? mcp : [mcp]) : []
+  ) as McpConnectionConfig[];
+  if (requestHeadersStrategy === undefined) {
+    return configs;
+  }
+  return configs.map((c) => ({ ...c, requestHeadersStrategy }));
+}
 
 // ---------------------------------------------------------------------------
 // SmartAgentBuilder
@@ -155,6 +177,7 @@ export class SmartAgentBuilder {
   private _embedder?: IEmbedder;
   private _toolSelectionStrategy?: IToolSelectionStrategy;
   private _connectionStrategy?: IMcpConnectionStrategy;
+  private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
   private _dagCoordinator?: DagCoordinatorHandlerDeps;
@@ -420,6 +443,15 @@ export class SmartAgentBuilder {
   /** Set an MCP connection strategy for dynamic client management. */
   withMcpConnectionStrategy(strategy: IMcpConnectionStrategy): this {
     this._connectionStrategy = strategy;
+    return this;
+  }
+
+  /** Attach a consumer-owned headers strategy to every MCP connection the
+   *  builder assembles from the `mcp:` config. The strategy is propagated to
+   *  each {@link McpConnectionConfig} entry so the MCP transport can merge the
+   *  returned headers into its request init. Default = no-op (nothing attached). */
+  withMcpRequestHeadersStrategy(strategy: IMcpRequestHeadersStrategy): this {
+    this._mcpRequestHeadersStrategy = strategy;
     return this;
   }
 
@@ -892,13 +924,10 @@ export class SmartAgentBuilder {
       // `resolve([])` connects the targets and the agent resolves through it each
       // iteration; disposal is `connectionStrategy.dispose()` (no per-client
       // closeFns). `BuilderMcpConfig` is structurally `McpConnectionConfig`.
-      const mcpConfigs = (
-        this.cfg.mcp
-          ? Array.isArray(this.cfg.mcp)
-            ? this.cfg.mcp
-            : [this.cfg.mcp]
-          : []
-      ) as McpConnectionConfig[];
+      const mcpConfigs = prepareMcpConfigs(
+        this.cfg.mcp,
+        this._mcpRequestHeadersStrategy,
+      );
       if (mcpConfigs.length > 0 && !connectionStrategy) {
         connectionStrategy = makeConnectionStrategy(
           mcpConfigs,
