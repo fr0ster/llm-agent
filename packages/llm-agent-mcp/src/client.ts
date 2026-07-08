@@ -10,6 +10,12 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { toMcpError } from './error-mapping.js';
 
+/** MCP self-governs its own request timeout. The SDK forces a numeric
+ *  per-request timeout (~60s default) with no documented disable, so we pass
+ *  an effectively-unbounded value (24h) + resetTimeoutOnProgress. Cancellation
+ *  still comes from the agent's AbortSignal via McpClientAdapter.callTool. */
+const MCP_NO_CLIENT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
 type McpToolDef = {
   name: string;
   description?: string;
@@ -403,10 +409,11 @@ export class MCPClientWrapper {
       if (!this.client) {
         await this.connect();
       }
-      const response = await this.client?.callTool({
-        name: toolCall.name,
-        arguments: toolCall.arguments,
-      });
+      const response = await this.client?.callTool(
+        { name: toolCall.name, arguments: toolCall.arguments },
+        undefined,
+        { timeout: MCP_NO_CLIENT_TIMEOUT_MS, resetTimeoutOnProgress: true },
+      );
       if (!response) {
         throw new Error('MCP callTool returned no response');
       }
