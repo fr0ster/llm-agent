@@ -4,7 +4,7 @@
 
 **Goal:** Stop the agent from imposing its own timeout on MCP tool calls — MCP self-governs its timeouts by default; the only (opt-in) influence is request headers, conveyed either by the existing static `mcp.headers` pass-through or by a consumer-owned strategy.
 
-**Architecture:** Timeouts are an ownership boundary. The agent already cancels an MCP call via the request's `AbortSignal` at the adapter level (`McpClientAdapter.callTool` wraps the call in `withAbort(options.signal)`). On top of that, the MCP SDK applies its OWN built-in ~60s per-request timeout (because `MCPClientWrapper.callTool` passes no `RequestOptions`), AND the HTTP transport sets a second `AbortSignal.timeout(...)` on `requestInit`. Those two are the redundant "stack" that cut off a slow-but-working MCP call (`-32001` → silent `(no response)` on heavy reviews). This plan removes BOTH imposed cutoffs so the MCP server governs its own timeout, repurposes the now-unused `timeout` config as a connect-only bound, and adds a focused, swappable `IMcpRequestHeadersStrategy` (default no-op) threaded through the ONE config both construction paths share, so a programmatic consumer can convey a "willing to wait" header — the sanctioned cross-isolation influence.
+**Architecture:** Timeouts are an ownership boundary. The agent already cancels an MCP call via the request's `AbortSignal` at the adapter level (`McpClientAdapter.callTool` wraps the call in `withAbort(options.signal)`). On top of that, the MCP SDK applies its OWN built-in ~60s per-request timeout (because `MCPClientWrapper.callTool` passes no `RequestOptions`), AND the HTTP transport sets a second `AbortSignal.timeout(...)` on `requestInit`. Those two are the redundant "stack" that cut off a slow-but-working MCP call (`-32001` → silent `(no response)` on heavy reviews). This plan removes BOTH imposed cutoffs so the MCP server governs its own timeout, deprecates the now-unused `timeout` config (no longer wired; kept for backward-compat), and adds a focused, swappable `IMcpRequestHeadersStrategy` (default no-op) threaded through the builder→factory path (`McpConnectionConfig` → `createDefaultMcpClient`), so a programmatic consumer can convey a "willing to wait" header — the sanctioned cross-isolation influence. The direct server/YAML path is not extended (YAML can't carry a code strategy); its wait hints use static `mcp.headers`, and it inherits the universal timeout fix because that lives in `MCPClientWrapper`.
 
 **Tech Stack:** TypeScript (ESM `.js` imports), `node:test` + `tsx`, Biome. Packages: `@mcp-abap-adt/llm-agent` (the new `I*` interface + the `McpConnectionConfig` field), `@mcp-abap-adt/llm-agent-mcp` (`MCPClientWrapper`, factory, no-op strategy), `@mcp-abap-adt/llm-agent-libs` (builder DI seam). The direct server/YAML MCP path (`llm-agent-server-libs`) is NOT modified (out of scope — YAML can't carry a code strategy). SDK: `@modelcontextprotocol/sdk ^1.28.0`.
 
@@ -72,36 +72,22 @@ The primary fix. `MCPClientWrapper.callTool` calls the SDK `client.callTool({nam
 
 ### Task 2 — remove the transport per-request cutoff; repurpose `timeout` as connect-only
 
-`client.ts` ~263 sets `signal: AbortSignal.timeout(this.config.timeout || 30000)` on the transport `requestInit` — a one-shot wall-clock abort created at connect that can cut off a long tool call (a second stacked timeout). Remove it from per-request use; if a connect bound is wanted, apply `timeout` ONLY to `connect()`. Redefine the public `MCPClientConfig.timeout` accordingly so it does not become dead.
+`client.ts` ~263 sets `signal: AbortSignal.timeout(this.config.timeout || 30000)` on the transport `requestInit` — a one-shot wall-clock abort created at connect that can cut off a long tool call (a second stacked timeout). Remove it. Do NOT add a replacement connect-bound: a `Promise.race`-style guard would leave the underlying `connect()` running after the caller got a rejection (leaked transport/socket, later state mutation), and the SDK connect has no clean abort seam here. Connection availability is already governed by the connection-strategy layer (Periodic/Lazy reconnect + readiness, #201-205). The now-unused public `MCPClientConfig.timeout` is DEPRECATED (kept for backward-compat, no longer wired).
 
 **Files:** modify `packages/llm-agent-mcp/src/client.ts` (~115 doc + ~254-278 connect); extend `mcp-client-request-timeout.test.ts`.
 
 **Steps:**
 
-- [ ] **Failing test A (helper).** Factor a small pure exported helper `buildHttpRequestInit(config: Pick<MCPClientConfig,'headers'|'requestHeadersStrategy'>): RequestInit` returning the `{ headers }` object for the transport (NO per-request `signal`). Test: `buildHttpRequestInit({ headers: { A: '1' } }).signal === undefined` AND its `headers` include `Accept` + `A`. (Reused by Task 3 for the strategy merge.)
-- [ ] **Failing test B (transport actually gets no signal — pins the real wiring, not just the helper).** Prove the connect path passes a `requestInit` WITHOUT a per-request `signal` to `StreamableHTTPClientTransport`. Since the transport class is imported at module top, inject a spy via a seam: add an optional protected/`_`-prefixed factory the wrapper uses to build the transport (e.g. `protected makeHttpTransport(url, opts) { return new StreamableHTTPClientTransport(url, opts); }`), override it in the test to capture `opts.requestInit`, run `connect()` (stub `this.client.connect` to a resolved no-op so no real network), and assert `captured.requestInit.signal === undefined` AND `captured.requestInit.headers.Accept` is set. (If a simpler existing seam exists, use it; the point is a test that FAILS if someone extracts the helper but forgets to replace the inline transport `requestInit`.)
-- [ ] Run → FAILS (today the transport `requestInit` has `signal: AbortSignal.timeout(...)`).
+- [ ] **Failing test (pure helper — the only source of transport options).** Factor a pure exported helper `buildHttpTransportOptions(config: Pick<MCPClientConfig,'headers'|'sessionId'>): { sessionId?: string; requestInit: { headers: Record<string,string> } }` that returns the object passed to `new StreamableHTTPClientTransport(url, ...)`. It sets `requestInit.headers` (`Accept` + `...config.headers`) and NO `signal`. Test:
+  - `buildHttpTransportOptions({ headers: { A: '1' } }).requestInit.signal === undefined`;
+  - `.requestInit.headers.Accept === 'application/json, text/event-stream'` and `.requestInit.headers.A === '1'`.
+  Because the transport construction will call THIS helper as its ONLY way to build the options, there is no inline `requestInit` left to forget — a unit test on the helper is sufficient to pin "no per-request signal". (Task 3 extends this helper to also merge the strategy headers.)
+- [ ] Run → FAILS (helper doesn't exist; today the inline `requestInit` sets a `signal`).
 - [ ] **Implement.**
-  - Extract `buildHttpRequestInit(...)` and use it at the transport construction (replace the inline `requestInit` object). It sets `headers` only — NO `signal`.
-  - Add the `makeHttpTransport` seam (or equivalent) so test B can spy, and call `buildHttpRequestInit` from it.
-  - **Keep a connect-establish bound WITHOUT importing the module-private `withAbort`** (it lives in `adapter.ts` and is not exported). Add a tiny LOCAL helper in `client.ts`:
-    ```ts
-    /** Local connect-only timeout (do NOT import adapter's private withAbort). */
-    async function withConnectTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const guard = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('MCP connect timed out')), ms);
-      });
-      try {
-        return await Promise.race([p, guard]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    }
-    ```
-    and wrap ONLY connect: `await withConnectTimeout(this.client.connect(httpTransport), this.config.timeout ?? 30000);`
-  - Update the `MCPClientConfig.timeout` doc comment (~115) to: `/** Connect-establish timeout in ms (default 30000). NOT a per-request timeout — MCP self-governs request timeouts. */`
-- [ ] Run tests (A + B) → GREEN. `npm run build`. Existing suites green. SCOPED lint gate. Commit: `fix(mcp): drop the transport per-request signal; timeout is connect-only (MCP governs requests)`.
+  - Add `buildHttpTransportOptions(...)` and construct the transport with it: `new StreamableHTTPClientTransport(new URL(this.config.url), buildHttpTransportOptions(this.config))`. Remove the inline `requestInit` object entirely (no `signal`).
+  - **Remove the connect-bound** — call `await this.client.connect(httpTransport)` directly (no `withConnectTimeout`, no `AbortSignal.timeout` around it). Do NOT re-introduce a per-connect race guard.
+  - Change the `MCPClientConfig.timeout` doc comment (~115) to: `/** @deprecated No longer used. MCP self-governs its request timeouts; this field is retained only for backward compatibility and has no effect. */`
+- [ ] Run tests → GREEN. `npm run build`. Existing suites green. SCOPED lint gate. Commit: `fix(mcp): drop the transport per-request signal + connect-bound; deprecate timeout (MCP governs its own timeouts)`.
 
 ---
 
@@ -136,13 +122,12 @@ And add to `McpConnectionConfig` (mcp-connection-strategy.ts): `requestHeadersSt
     }
   }
   ```
-- [ ] **Failing test** (merge) in the same test: call `buildHttpRequestInit({ headers: { A: '1' }, requestHeadersStrategy: { headers: () => ({ 'X-Wait': '600' }) } })` and assert the returned `headers` include `Accept`, `A: '1'`, AND `X-Wait: '600'`; and with no strategy the headers are `{ Accept, A: '1' }` (unchanged).
-- [ ] Run → FAILS.
+- [ ] **Failing test (header merge).** Extend the Task 2 helper to accept the strategy: `buildHttpTransportOptions(config: Pick<MCPClientConfig,'headers'|'sessionId'|'requestHeadersStrategy'>)`. Test: `buildHttpTransportOptions({ headers: { A: '1' }, requestHeadersStrategy: { headers: () => ({ 'X-Wait': '600' }) } }).requestInit.headers` includes `Accept`, `A: '1'`, AND `X-Wait: '600'`; with no strategy the headers are `{ Accept, A: '1' }` (unchanged); `.requestInit.signal === undefined` still holds.
+- [ ] **Failing test (propagation via a PURE mapping helper — no module mock, no ctor spy).** Add a pure exported helper in `factory.ts`: `toMcpClientWrapperConfig(config: McpConnectionConfig): ConstructorParameters<typeof MCPClientWrapper>[0]` that maps `McpConnectionConfig` → the wrapper options object (transport/url/command/args/headers AND `requestHeadersStrategy`). Test it directly (no network): `toMcpClientWrapperConfig({ type: 'http', url: 'u', requestHeadersStrategy: s }).requestHeadersStrategy === s`, and for `type: 'stdio'` it carries no url. Then `createDefaultMcpClient` MUST build the wrapper via `new MCPClientWrapper(toMcpClientWrapperConfig(config))` — so testing the pure helper pins the propagation without spying the ctor or hitting `wrapper.connect()`.
+- [ ] Run → FAILS (helper doesn't exist / merge not implemented).
 - [ ] **Implement.**
-  - `client.ts`: add `requestHeadersStrategy?: IMcpRequestHeadersStrategy;` to `MCPClientConfig` (doc comment). In `buildHttpRequestInit`, merge `...(config.requestHeadersStrategy?.headers() ?? {})` LAST into the headers (after `...config.headers`). Default the field to `new NoopMcpRequestHeadersStrategy()` in the constructor OR rely on the `?.` (choose one; if defaulting in ctor, the merge uses it — keep it simple, `?.` at merge is enough).
-  - `factory.ts` `createDefaultMcpClient` (http branch): add `...(config.requestHeadersStrategy ? { requestHeadersStrategy: config.requestHeadersStrategy } : {})` to the `new MCPClientWrapper({...})` options.
-- [ ] **Failing test (propagation — the load-bearing wiring).** In `mcp-request-headers-strategy.test.ts`, prove the strategy actually reaches the wrapper's request headers THROUGH `createDefaultMcpClient` (not just as a field). Call `createDefaultMcpClient({ type: 'http', url: 'http://127.0.0.1:1/mcp', requestHeadersStrategy: { headers: () => ({ 'X-Wait': '600' }) } })` with the wrapper's transport-construction spied (reuse the Task 2 `makeHttpTransport` seam — you can subclass or stub, OR assert via `buildHttpRequestInit` given the wrapper's resolved config). Since `createDefaultMcpClient` calls `wrapper.connect()` (real network), guard the assertion at the requestInit-build layer: either (a) spy the transport ctor to capture `requestInit.headers` and expect it to include `X-Wait: 600`, or (b) assert `createDefaultMcpClient` passes `requestHeadersStrategy` into the `MCPClientWrapper` options (capture via a spy on the wrapper ctor). Also assert the no-strategy case does NOT set `X-Wait`. This test FAILS if factory drops the field.
-- [ ] Run → FAILS.
+  - `client.ts`: add `requestHeadersStrategy?: IMcpRequestHeadersStrategy;` to `MCPClientConfig` (doc comment). In `buildHttpTransportOptions`, merge `...(config.requestHeadersStrategy?.headers() ?? {})` LAST into `requestInit.headers` (after `...config.headers`). Rely on `?.` (no ctor default needed).
+  - `factory.ts`: add the pure `toMcpClientWrapperConfig(config)` helper (carrying `requestHeadersStrategy` for the http branch) and make `createDefaultMcpClient` construct the wrapper via it: `const wrapper = new MCPClientWrapper(toMcpClientWrapperConfig(config));`.
 - [ ] Run tests → GREEN. `npm run build` (all packages, cross-package types). SCOPED lint gate. Commit: `feat(mcp): IMcpRequestHeadersStrategy (no-op default) threaded through the factory path`.
 
 ---
