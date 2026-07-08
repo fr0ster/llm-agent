@@ -4,7 +4,11 @@
  * Wraps the MCP SDK client to provide a simpler interface for the agent
  */
 
-import type { ToolCall, ToolResult } from '@mcp-abap-adt/llm-agent';
+import type {
+  IMcpRequestHeadersStrategy,
+  ToolCall,
+  ToolResult,
+} from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -115,6 +119,11 @@ export interface MCPClientConfig {
    */
   headers?: Record<string, string>;
 
+  /** Consumer-owned strategy contributing additional HTTP headers to MCP requests.
+   *  The engine imposes NO MCP request timeout; a consumer may use this to convey a
+   *  "willing to wait longer" hint or other per-request metadata. Default = no-op. */
+  requestHeadersStrategy?: IMcpRequestHeadersStrategy;
+
   /** @deprecated No longer used. MCP self-governs its request timeouts; this field is retained only for backward compatibility and has no effect. */
   timeout?: number;
 }
@@ -130,6 +139,7 @@ export interface MCPClientConfig {
 export function buildHttpTransportOptions(opts: {
   headers?: Record<string, string>;
   sessionId?: string;
+  requestHeadersStrategy?: IMcpRequestHeadersStrategy;
 }): { sessionId?: string; requestInit: { headers: Record<string, string> } } {
   return {
     ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
@@ -137,6 +147,7 @@ export function buildHttpTransportOptions(opts: {
       headers: {
         Accept: 'application/json, text/event-stream',
         ...opts.headers,
+        ...(opts.requestHeadersStrategy?.headers() ?? {}),
       },
     },
   };
@@ -283,6 +294,7 @@ export class MCPClientWrapper {
         buildHttpTransportOptions({
           headers: this.config.headers,
           sessionId: this._sessionForConnect(),
+          requestHeadersStrategy: this.config.requestHeadersStrategy,
         }),
       );
 
