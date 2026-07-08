@@ -24,7 +24,7 @@
 
 ## File Structure
 
-- `packages/llm-agent-mcp/src/client.ts` — **(Task 1, 2, 3)** `MCPClientWrapper`: (1) pass `RequestOptions` to the SDK `callTool` so the SDK's ~60s does NOT fire; (2) remove the transport `requestInit.signal` per-request cutoff and repurpose `MCPClientConfig.timeout` as a connect-only bound; (3) read `requestHeadersStrategy` and merge its headers at connect.
+- `packages/llm-agent-mcp/src/client.ts` — **(Task 1, 2, 3)** `MCPClientWrapper`: (1) pass `RequestOptions` to the SDK `callTool` so the SDK's ~60s does NOT fire; (2) remove the transport `requestInit.signal` per-request cutoff + the connect-bound, and DEPRECATE `MCPClientConfig.timeout` (kept, unwired); (3) merge `requestHeadersStrategy` headers via the `buildHttpTransportOptions` helper.
 - `packages/llm-agent/src/interfaces/mcp-request-headers-strategy.ts` — **(Task 3, create)** `IMcpRequestHeadersStrategy` (+ barrel export).
 - `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` — **(Task 3, modify)** add `requestHeadersStrategy?: IMcpRequestHeadersStrategy` to `McpConnectionConfig` (code-only field).
 - `packages/llm-agent-mcp/src/no-op-request-headers-strategy.ts` — **(Task 3, create)** `NoopMcpRequestHeadersStrategy`.
@@ -93,7 +93,7 @@ The primary fix. `MCPClientWrapper.callTool` calls the SDK `client.callTool({nam
 
 ### Task 3 — `IMcpRequestHeadersStrategy` (no-op default) threaded through both construction paths
 
-**Files:** create `packages/llm-agent/src/interfaces/mcp-request-headers-strategy.ts` + barrel export; modify `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` (add field); create `packages/llm-agent-mcp/src/no-op-request-headers-strategy.ts`; modify `packages/llm-agent-mcp/src/client.ts` (config field + merge via `buildHttpRequestInit`) and `packages/llm-agent-mcp/src/factory.ts`; test `packages/llm-agent-mcp/src/__tests__/mcp-request-headers-strategy.test.ts`. (Do NOT modify `smart-server.ts` — the server/YAML path is out of scope per Global Constraints.)
+**Files:** create `packages/llm-agent/src/interfaces/mcp-request-headers-strategy.ts` + barrel export; modify `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` (add field); create `packages/llm-agent-mcp/src/no-op-request-headers-strategy.ts`; modify `packages/llm-agent-mcp/src/client.ts` (config field + merge via `buildHttpTransportOptions`) and `packages/llm-agent-mcp/src/factory.ts`; test `packages/llm-agent-mcp/src/__tests__/mcp-request-headers-strategy.test.ts`. (Do NOT modify `smart-server.ts` — the server/YAML path is out of scope per Global Constraints.)
 
 **Interfaces (Produces):**
 ```ts
