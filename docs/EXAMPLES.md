@@ -95,7 +95,24 @@ The pipeline is selected by name (`pipeline: { name, config }`); omit it for the
 
 ### MCP Configuration — Timeouts and Request Headers
 
-The SmartAgent runtime imposes no client-side timeout on MCP tool calls — the MCP server governs its own. The deprecated `MCPClientConfig.timeout` field has no effect (retained for backward compatibility). To convey a "willing to wait longer" hint to the server, add custom headers under the existing `mcp.headers` block in YAML (e.g., a timeout hint your server recognizes). Programmatic users can supply a custom `IMcpRequestHeadersStrategy` via `builder.withMcpRequestHeadersStrategy(...)` to inject runtime headers into MCP requests.
+The SmartAgent runtime applies a generous default per-call MCP request timeout of **120000 ms (2 minutes)** as a safety net against stuck or hung tool calls. Configure it in YAML:
+
+```yaml
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+  timeout: 120000            # default per-call MCP request timeout (ms)
+  toolTimeouts:              # per-tool overrides (ms)
+    GetWhereUsed: 600000
+    GetPackageContents: 900000
+  resetTimeoutOnProgress: true   # extend timeout while tool reports progress
+```
+
+- `timeout` — default per-call timeout for this MCP (default: 120000 ms).
+- `toolTimeouts` — per-tool overrides. Some tools legitimately take 5–15 minutes; resolution is per-tool override → `mcp.timeout` → 120000 ms default.
+- `resetTimeoutOnProgress` — resets the deadline while a tool actively reports progress, preventing timeout during long-running operations.
+
+You can also convey server-side intent (e.g., "willing to wait longer") by passing a custom `IMcpRequestHeadersStrategy` programmatically via `builder.withMcpRequestHeadersStrategy(...)`.
 
 ## Programmatic Examples
 

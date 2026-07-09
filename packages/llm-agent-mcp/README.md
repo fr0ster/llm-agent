@@ -28,7 +28,13 @@ const adapter = new McpClientAdapter(client);
 
 ## Request Timeouts
 
-The SmartAgent runtime imposes no client-side timeout on MCP tool calls — the MCP server governs its own. The `MCPClientConfig.timeout` field is deprecated and has no effect (retained for backward compatibility). To convey a "willing to wait" hint, pass a custom `IMcpRequestHeadersStrategy` to `MCPClientWrapper` to inject headers the server recognizes.
+The SmartAgent runtime applies a generous default per-call MCP request timeout of **120000 ms (2 minutes)** as a safety net against stuck or hung tool calls. This is configurable:
+
+- `MCPClientConfig.timeout` (default: 120000 ms) — default per-call timeout for this MCP client.
+- `MCPClientConfig.toolTimeouts` — per-tool timeout overrides (ms). Some tools legitimately take 5–15 minutes (e.g., `{ GetWhereUsed: 600000, GetPackageContents: 900000 }`); resolution is per-tool override → client default → 120000 ms.
+- `resetTimeoutOnProgress: true` — resets the deadline while a tool actively reports progress, preventing timeout during long-running operations.
+
+To convey server-side intent (e.g., "willing to wait longer"), pass a custom `IMcpRequestHeadersStrategy` to `MCPClientWrapper` to inject headers the server recognizes.
 
 ## Dependencies
 
