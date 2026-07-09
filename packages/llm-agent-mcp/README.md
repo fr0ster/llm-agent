@@ -32,7 +32,7 @@ The SmartAgent runtime applies a generous default per-call MCP request timeout o
 
 - `MCPClientConfig.timeout` (default: 120000 ms) — default per-call timeout for this MCP client.
 - `MCPClientConfig.toolTimeouts` — per-tool timeout overrides (ms). Some tools legitimately take 5–15 minutes (e.g., `{ GetWhereUsed: 600000, GetPackageContents: 900000 }`); resolution is per-tool override → client default → 120000 ms.
-- `resetTimeoutOnProgress: true` — resets the deadline while a tool actively reports progress, preventing timeout during long-running operations.
+The client always sets `resetTimeoutOnProgress` on MCP requests (not a config field): the deadline resets while a tool actively reports progress, so a genuinely-working long-running tool is not cut off.
 
 To convey server-side intent (e.g., "willing to wait longer"), pass a custom `IMcpRequestHeadersStrategy` to `MCPClientWrapper` to inject headers the server recognizes.
 

@@ -105,12 +105,11 @@ mcp:
   toolTimeouts:              # per-tool overrides (ms)
     GetWhereUsed: 600000
     GetPackageContents: 900000
-  resetTimeoutOnProgress: true   # extend timeout while tool reports progress
 ```
 
 - `timeout` — default per-call timeout for this MCP (default: 120000 ms).
 - `toolTimeouts` — per-tool overrides. Some tools legitimately take 5–15 minutes; resolution is per-tool override → `mcp.timeout` → 120000 ms default.
-- `resetTimeoutOnProgress` — resets the deadline while a tool actively reports progress, preventing timeout during long-running operations.
+- The client always sets `resetTimeoutOnProgress` on MCP requests (not a config key): the deadline resets while a tool actively reports progress, so a genuinely-working long-running tool is not cut off.
 
 You can also convey server-side intent (e.g., "willing to wait longer") by passing a custom `IMcpRequestHeadersStrategy` programmatically via `builder.withMcpRequestHeadersStrategy(...)`.
 
