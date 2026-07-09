@@ -140,8 +140,9 @@ export interface MCPClientConfig {
   headers?: Record<string, string>;
 
   /** Consumer-owned strategy contributing additional HTTP headers to MCP requests.
-   *  The engine imposes NO MCP request timeout; a consumer may use this to convey a
-   *  "willing to wait longer" hint or other per-request metadata. Default = no-op. */
+   *  Independent of the client-side request timeout (see `timeout`/`toolTimeouts`):
+   *  a consumer may use this to convey a "willing to wait longer" hint to the server
+   *  or other per-request metadata. Default = no-op. */
   requestHeadersStrategy?: IMcpRequestHeadersStrategy;
 
   /** Default per-call MCP request timeout in ms (default 120000 = 2 min). Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
