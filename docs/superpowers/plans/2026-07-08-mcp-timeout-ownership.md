@@ -4,6 +4,8 @@
 
 **Goal:** Stop the agent from imposing its own timeout on MCP tool calls — MCP self-governs its timeouts by default; the only (opt-in) influence is request headers, conveyed either by the existing static `mcp.headers` pass-through or by a consumer-owned strategy.
 
+> **⚠️ GOVERNING MODEL — read `## Amendment A` (end of file) FIRST.** Live acceptance (Task 6) found that a 24h "effective unbounded" timeout hangs the server on a stuck MCP call. **Amendment A (Tasks 7-10) SUPERSEDES the timeout decisions of Tasks 1-2**: we KEEP a client-side MCP request timeout, but GENEROUS (default 120000 ms = 2 min) + consumer-configurable + PER-TOOL overrides (`toolTimeouts`), threaded through builder AND YAML/server paths. `MCPClientConfig.timeout` is NOT deprecated — it is the knob. Tasks 1-2 are committed (the SDK-RequestOptions plumbing + transport-signal/connect-bound removal stand); only their 24h value and the `timeout` deprecation are reversed by Task 7. Tasks 3-4 (header strategy, no-op default) are KEPT unchanged.
+
 **Architecture:** Timeouts are an ownership boundary. The agent already cancels an MCP call via the request's `AbortSignal` at the adapter level (`McpClientAdapter.callTool` wraps the call in `withAbort(options.signal)`). On top of that, the MCP SDK applies its OWN built-in ~60s per-request timeout (because `MCPClientWrapper.callTool` passes no `RequestOptions`), AND the HTTP transport sets a second `AbortSignal.timeout(...)` on `requestInit`. Those two are the redundant "stack" that cut off a slow-but-working MCP call (`-32001` → silent `(no response)` on heavy reviews). This plan removes BOTH imposed cutoffs so the MCP server governs its own timeout, deprecates the now-unused `timeout` config (no longer wired; kept for backward-compat), and adds a focused, swappable `IMcpRequestHeadersStrategy` (default no-op) threaded through the builder→factory path (`McpConnectionConfig` → `createDefaultMcpClient`), so a programmatic consumer can convey a "willing to wait" header — the sanctioned cross-isolation influence. The direct server/YAML path is not extended (YAML can't carry a code strategy); its wait hints use static `mcp.headers`, and it inherits the universal timeout fix because that lives in `MCPClientWrapper`.
 
 **Tech Stack:** TypeScript (ESM `.js` imports), `node:test` + `tsx`, Biome. Packages: `@mcp-abap-adt/llm-agent` (the new `I*` interface + the `McpConnectionConfig` field), `@mcp-abap-adt/llm-agent-mcp` (`MCPClientWrapper`, factory, no-op strategy), `@mcp-abap-adt/llm-agent-libs` (builder DI seam). The direct server/YAML MCP path (`llm-agent-server-libs`) is NOT modified (out of scope — YAML can't carry a code strategy). SDK: `@modelcontextprotocol/sdk ^1.28.0`.
@@ -185,3 +187,46 @@ No code change — the end-to-end proof.
 - **Fail-loud gap (deferred, tracked):** once the request timeout is not imposed, the heavy-review `(no response)` disappears because the run completes. A GENUINE server-side timeout should still surface loud (an explicit error, not `(no response)`), per the #201-205 fail-loud lineage — a SEPARATE concern, not in this plan. If Task 6 still shows a silent `(no response)` on a real timeout, open a follow-up.
 - **Scope of the strategy:** the strategy is threaded ONLY through the builder→factory path (`McpConnectionConfig.requestHeadersStrategy` → `createDefaultMcpClient` → wrapper). The direct-server/YAML path (`connectMcpClientsFromConfig` / `SmartServerMcpConfig`) is deliberately NOT extended — YAML cannot express a code strategy, and those users convey wait hints via static `mcp.headers` (which already reaches the wrapper). A server-composition seam for a code strategy can be a follow-up if a consumer needs it. NOTE: the primary fix (Tasks 1-2, removing the imposed timeout) IS universal — it lives in `MCPClientWrapper`, so it benefits the server/YAML path too (this is what fixes the live `(no response)`).
 - No agent-level LLM timeouts change. The agent's `withAbort(options.signal)` cancellation stays.
+
+---
+
+## Amendment A — per-tool CONFIGURABLE timeout (SUPERSEDES the 24h "effective unbounded" of Tasks 1-2)
+
+**Why (live-verified):** Task 6 showed the 24h effective-unbounded timeout turns a stuck/orphaned MCP call (a `fetch failed` → reconnect that leaves the pending call unsettled) into an INDEFINITE server hang (process holds the port but stops accepting). The ~60s SDK default was a safety net masking that. **Decision (user):** keep a client-side MCP request timeout as the safety net, but GENEROUS and consumer-configurable, with PER-TOOL overrides (some MCP tools legitimately take 5–15 min). Default **120000 ms (2 min)**. `resetTimeoutOnProgress: true` stays (progress-reporting tools extend). This keeps ONE timeout (the callTool `RequestOptions.timeout`) — the transport-signal + connect-bound removal (Tasks 2) stays, so there is no stack.
+
+Config is PLAIN DATA (numbers/map) → it flows through BOTH the builder path AND the YAML/server path (unlike the code-only header strategy). Header strategy (Tasks 3-4) is KEPT as-is (orthogonal opt-in, no-op default).
+
+### Task 7 — resolve a per-tool timeout in `callTool` (amends Tasks 1-2 code)
+
+**Files:** `packages/llm-agent-mcp/src/client.ts`; test `packages/llm-agent-mcp/src/__tests__/mcp-client-request-timeout.test.ts`.
+
+**Steps:**
+- [ ] **Failing tests first** (extend the timeout test): assert `resolveToolTimeout('T', {})` === `120000`; `resolveToolTimeout('T', { timeout: 300000 })` === `300000`; `resolveToolTimeout('SlowTool', { timeout: 120000, toolTimeouts: { SlowTool: 900000 } })` === `900000` (per-tool wins); and the callTool spy passes `options.timeout === resolveToolTimeout(name, config)` + `resetTimeoutOnProgress === true`.
+- [ ] **Implement** in `client.ts`:
+  - Replace `const MCP_NO_CLIENT_TIMEOUT_MS = 24*60*60*1000;` with `export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000;`
+  - Add `toolTimeouts?: Record<string, number>;` to `MCPClientConfig` (doc: per-tool MCP request-timeout overrides in ms, keyed by tool name).
+  - UN-deprecate `timeout` — doc comment: `/** Default per-call MCP request timeout in ms (default 120000 = 2 min). Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */`
+  - Add an exported pure helper: `export function resolveToolTimeout(name: string, config: Pick<MCPClientConfig, 'timeout' | 'toolTimeouts'>): number { return config.toolTimeouts?.[name] ?? config.timeout ?? DEFAULT_MCP_REQUEST_TIMEOUT_MS; }`
+  - In `callTool` `performCall`, pass `{ timeout: resolveToolTimeout(toolCall.name, this.config), resetTimeoutOnProgress: true }` as the SDK RequestOptions (replacing the 24h const).
+- [ ] Run tests → GREEN. Existing mcp suites green. `npm run build` → SCOPED lint → commit: `fix(mcp): per-tool configurable MCP request timeout (default 120s), not effectively-unbounded`.
+
+### Task 8 — thread `timeout` + `toolTimeouts` through ALL construction paths (builder + YAML/server)
+
+**Files:** `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` (add fields to `McpConnectionConfig`); `packages/llm-agent-mcp/src/factory.ts` (`toMcpClientWrapperConfig` carry them); `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (add fields to `SmartServerMcpConfig` ~160; `connectMcpClientsFromConfig` ~543 pass them into the wrapper); the YAML MCP parse in `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts` (carry `timeout`/`toolTimeouts` from raw YAML into the parsed MCP config); builder path already flows `McpConnectionConfig` (no builder change needed beyond the field existing). Tests where each path resolves.
+
+**Steps:**
+- [ ] Add `timeout?: number;` + `toolTimeouts?: Record<string, number>;` to `McpConnectionConfig` and `SmartServerMcpConfig`.
+- [ ] `factory.ts` `toMcpClientWrapperConfig`: on the http branch add `...(config.timeout !== undefined ? { timeout: config.timeout } : {})` and `...(config.toolTimeouts ? { toolTimeouts: config.toolTimeouts } : {})`.
+- [ ] `smart-server.ts` `connectMcpClientsFromConfig` (~543, http branch): add `timeout: cfg.timeout` and `toolTimeouts: cfg.toolTimeouts` to the `new MCPClientWrapper({...})` options.
+- [ ] YAML parse (`resolve-config-sections.ts`): READ how it maps raw `mcp:` YAML → the MCP config objects; carry `timeout` and `toolTimeouts` through (they are plain data). If a config-validator enumerates allowed mcp keys, add `timeout`/`toolTimeouts` there too (grep `config-validator.ts` for the mcp key allow-list).
+- [ ] **Failing tests:** (a) `toMcpClientWrapperConfig({ type:'http', url:'u', timeout: 300000, toolTimeouts: { X: 900000 } })` carries both; (b) a YAML-parse test: an `mcp:` block with `timeout`/`toolTimeouts` resolves to a `SmartServerMcpConfig` carrying them (mirror an existing resolve-config-sections MCP test). Then implement.
+- [ ] Run tests → GREEN. `npm run build` (all packages) → SCOPED lint → commit: `feat(mcp): thread timeout + toolTimeouts through builder + YAML/server construction paths`.
+
+### Task 9 — docs (amends Task 5)
+
+**Files:** `docs/EXAMPLES.md` + `packages/llm-agent-mcp/README.md`.
+- [ ] Update the MCP-timeout note: the engine applies a GENEROUS default per-call MCP request timeout (**120000 ms**) as a safety net against a stuck/hung tool call; it is consumer-configurable via `mcp.timeout` (default for that MCP) and per-tool overrides via `mcp.toolTimeouts: { <toolName>: ms }` (some tools legitimately take 5–15 min); `resetTimeoutOnProgress` extends it while a tool reports progress. Show the YAML shape (the `mcp:` block with `timeout` + `toolTimeouts`). Remove the "deprecated/no effect" wording for `timeout`. Keep the header-strategy note (server-side wait hint). Commit: `docs(mcp): per-tool configurable MCP request timeout (default 120s)`.
+
+### Task 10 — live acceptance (re-run; supersedes Task 6)
+
+- [ ] Build. Start `.run/skills-review-github.yaml` (optionally add `toolTimeouts` for slow ABAP tools, e.g. source/where-used fetchers, at 600000–900000). Send the `ZDAZ_R_DELAYED_UPDATE` controller review (object that EXISTS on :3001). Assert: a REAL non-empty review (NOT `(no response)`); the run completes; the server stays RESPONSIVE afterward (`/health` 200 — no hang); no indefinite stall. If a genuine tool timeout fires, it should surface as an error the run handles, not a silent `(no response)` (note if the fail-loud gap still shows — that's the separate deferred follow-up). Record. No commit.
