@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildHttpTransportOptions, MCPClientWrapper } from '../client.js';
+import {
+  buildHttpTransportOptions,
+  DEFAULT_MCP_REQUEST_TIMEOUT_MS,
+  MCPClientWrapper,
+  resolveToolTimeout,
+} from '../client.js';
 
 // ── Task 2 tests ────────────────────────────────────────────────────────────
 
@@ -65,12 +70,50 @@ test('session-resume: live server-assigned sessionId takes priority over config.
   );
 });
 
-// ── Task 1 tests (pre-existing) ──────────────────────────────────────────────
+// ── Task 7 tests — resolveToolTimeout ────────────────────────────────────────
 
-test('callTool passes effectively-unbounded timeout and resetTimeoutOnProgress to SDK', async () => {
+test('resolveToolTimeout: returns DEFAULT_MCP_REQUEST_TIMEOUT_MS (120000) when no config', () => {
+  assert.strictEqual(
+    resolveToolTimeout('T', {}),
+    120_000,
+    'must return 120000 when no timeout/toolTimeouts configured',
+  );
+  assert.strictEqual(
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS,
+    120_000,
+    'DEFAULT_MCP_REQUEST_TIMEOUT_MS must be 120000',
+  );
+});
+
+test('resolveToolTimeout: returns config.timeout when no per-tool override', () => {
+  assert.strictEqual(
+    resolveToolTimeout('T', { timeout: 300_000 }),
+    300_000,
+    'must return config.timeout when no toolTimeouts entry for this tool',
+  );
+});
+
+test('resolveToolTimeout: per-tool toolTimeouts wins over config.timeout', () => {
+  assert.strictEqual(
+    resolveToolTimeout('SlowTool', {
+      timeout: 120_000,
+      toolTimeouts: { SlowTool: 900_000 },
+    }),
+    900_000,
+    'per-tool toolTimeouts entry must override config.timeout',
+  );
+});
+
+// ── Task 1 tests (amended by Task 7) ─────────────────────────────────────────
+
+test('callTool passes resolveToolTimeout result and resetTimeoutOnProgress to SDK', async () => {
+  const configuredTimeout = 300_000;
+  const toolTimeouts = { SlowTool: 900_000 };
   const wrapper = new MCPClientWrapper({
     transport: 'stream-http',
     url: 'http://localhost:9/mcp',
+    timeout: configuredTimeout,
+    toolTimeouts,
   });
 
   let captured: { params: unknown; schema: unknown; options: unknown } | null =
@@ -91,7 +134,8 @@ test('callTool passes effectively-unbounded timeout and resetTimeoutOnProgress t
   (wrapper as unknown as { detectedTransport: string }).detectedTransport =
     'stream-http';
 
-  await wrapper.callTool({ id: '1', name: 't', arguments: {} });
+  // Call with a regular tool — should use config.timeout (300000).
+  await wrapper.callTool({ id: '1', name: 'RegularTool', arguments: {} });
 
   assert.ok(captured !== null, 'callTool spy was not invoked');
   const opts = (captured as { options: unknown }).options as Record<
@@ -102,14 +146,40 @@ test('callTool passes effectively-unbounded timeout and resetTimeoutOnProgress t
     opts !== undefined && opts !== null,
     'RequestOptions (3rd arg) must be passed to SDK callTool',
   );
-  const timeout = opts.timeout as number;
-  assert.ok(
-    typeof timeout === 'number' && timeout >= 86_400_000,
-    `timeout must be >= 86_400_000 (24h), got ${timeout}`,
+  assert.strictEqual(
+    opts.timeout,
+    resolveToolTimeout('RegularTool', {
+      timeout: configuredTimeout,
+      toolTimeouts,
+    }),
+    'timeout must equal resolveToolTimeout(name, config) — config.timeout for a regular tool',
   );
   assert.strictEqual(
     opts.resetTimeoutOnProgress,
     true,
     'resetTimeoutOnProgress must be true',
+  );
+
+  // Call with SlowTool — per-tool override should win (900000).
+  captured = null;
+  await wrapper.callTool({ id: '2', name: 'SlowTool', arguments: {} });
+
+  assert.ok(captured !== null, 'callTool spy was not invoked for SlowTool');
+  const slowOpts = (captured as { options: unknown }).options as Record<
+    string,
+    unknown
+  >;
+  assert.strictEqual(
+    slowOpts.timeout,
+    resolveToolTimeout('SlowTool', {
+      timeout: configuredTimeout,
+      toolTimeouts,
+    }),
+    'timeout must equal resolveToolTimeout(name, config) — toolTimeouts override for SlowTool',
+  );
+  assert.strictEqual(
+    slowOpts.resetTimeoutOnProgress,
+    true,
+    'resetTimeoutOnProgress must be true for SlowTool',
   );
 });

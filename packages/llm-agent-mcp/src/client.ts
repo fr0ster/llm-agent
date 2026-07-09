@@ -14,11 +14,31 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { toMcpError } from './error-mapping.js';
 
-/** MCP self-governs its own request timeout. The SDK forces a numeric
- *  per-request timeout (~60s default) with no documented disable, so we pass
- *  an effectively-unbounded value (24h) + resetTimeoutOnProgress. Cancellation
- *  still comes from the agent's AbortSignal via McpClientAdapter.callTool. */
-const MCP_NO_CLIENT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+/** Default per-call MCP request timeout in ms (2 minutes).
+ *  Consumer can override globally via MCPClientConfig.timeout or per-tool via MCPClientConfig.toolTimeouts. */
+export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Resolve the MCP request timeout for a specific tool call.
+ *
+ * Resolution order (first defined wins):
+ *   1. config.toolTimeouts[name]  — per-tool override
+ *   2. config.timeout             — global per-call default
+ *   3. DEFAULT_MCP_REQUEST_TIMEOUT_MS (120 000 ms = 2 min)
+ *
+ * resetTimeoutOnProgress is always set to true by callTool so a slow but
+ * actively-reporting tool never hits the ceiling.
+ */
+export function resolveToolTimeout(
+  name: string,
+  config: Pick<MCPClientConfig, 'timeout' | 'toolTimeouts'>,
+): number {
+  return (
+    config.toolTimeouts?.[name] ??
+    config.timeout ??
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS
+  );
+}
 
 type McpToolDef = {
   name: string;
@@ -124,8 +144,15 @@ export interface MCPClientConfig {
    *  "willing to wait longer" hint or other per-request metadata. Default = no-op. */
   requestHeadersStrategy?: IMcpRequestHeadersStrategy;
 
-  /** @deprecated No longer used. MCP self-governs its request timeouts; this field is retained only for backward compatibility and has no effect. */
+  /** Default per-call MCP request timeout in ms (default 120000 = 2 min). Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
   timeout?: number;
+
+  /**
+   * Per-tool MCP request-timeout overrides in ms, keyed by tool name.
+   * Takes precedence over `timeout`. Useful for known slow tools (e.g. long-running ABAP reports).
+   * Example: `{ SlowReport: 900_000 }` — allow 15 min for SlowReport while keeping the 2 min default for everything else.
+   */
+  toolTimeouts?: Record<string, number>;
 }
 
 /**
@@ -439,7 +466,10 @@ export class MCPClientWrapper {
       const response = await this.client?.callTool(
         { name: toolCall.name, arguments: toolCall.arguments },
         undefined,
-        { timeout: MCP_NO_CLIENT_TIMEOUT_MS, resetTimeoutOnProgress: true },
+        {
+          timeout: resolveToolTimeout(toolCall.name, this.config),
+          resetTimeoutOnProgress: true,
+        },
       );
       if (!response) {
         throw new Error('MCP callTool returned no response');
