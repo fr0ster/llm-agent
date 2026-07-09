@@ -230,3 +230,27 @@ Config is PLAIN DATA (numbers/map) → it flows through BOTH the builder path AN
 ### Task 10 — live acceptance (re-run; supersedes Task 6)
 
 - [ ] Build. Start `.run/skills-review-github.yaml` (optionally add `toolTimeouts` for slow ABAP tools, e.g. source/where-used fetchers, at 600000–900000). Send the `ZDAZ_R_DELAYED_UPDATE` controller review (object that EXISTS on :3001). Assert: a REAL non-empty review (NOT `(no response)`); the run completes; the server stays RESPONSIVE afterward (`/health` 200 — no hang); no indefinite stall. If a genuine tool timeout fires, it should surface as an error the run handles, not a silent `(no response)` (note if the fail-loud gap still shows — that's the separate deferred follow-up). Record. No commit.
+
+---
+
+## Amendment B — per-call MCP tool-call duration logging (observability)
+
+**Why:** we could not answer "which MCP tool exceeded the timeout" because tool-call durations are not logged. This makes `toolTimeouts` tuning guesswork. Add lightweight per-call duration logging so a slow tool is identifiable and a timeout is diagnosable (duration vs the resolved limit).
+
+### Task 11 — log MCP tool-call duration + resolved timeout
+
+**Files:** `packages/llm-agent-mcp/src/client.ts` (the `callTool` method around `performCall` ~406 and the failure `console.warn` ~493); test `packages/llm-agent-mcp/src/__tests__/mcp-client-tool-timing.test.ts` (create).
+
+**Design (match the file's existing `console.warn` style — no new logger dependency):**
+- Capture `const startedAt = Date.now();` immediately before `performCall()` and `const durationMs = Date.now() - startedAt;` after it settles (success AND failure).
+- Resolve the limit once for the log: `const limitMs = resolveToolTimeout(toolCall.name, this.config);`
+- **On failure (the existing `catch` that does `console.warn('MCP call failed, attempting reconnect: ...')`):** augment the message to include `tool=<name> durationMs=<ms> limitMs=<limitMs>` so a timeout is diagnosable (a `-32001`/"Request timed out" whose `durationMs ≈ limitMs` clearly points at the tool + the limit to raise via `toolTimeouts`).
+- **On success — OPT-IN per-call timing (default OFF, no noise):** if `process.env.DEBUG_MCP_TOOL_TIMING === 'true'`, `console.warn('[mcp] tool ' + toolCall.name + ' ok ' + durationMs + 'ms (limit ' + limitMs + 'ms)')`. (Reuse the existing `console.warn` channel; gate so normal runs are quiet.)
+- Do NOT change timeout behaviour, `resolveToolTimeout`, the header strategy, or re-add any signal/connect-bound. Timing is purely additive around the existing call.
+
+**Steps:**
+- [ ] **Failing tests first** in `mcp-client-tool-timing.test.ts` (spy `console.warn`; drive the non-embedded `callTool` path with a stub `this.client.callTool` like the existing timeout tests):
+  - **failure includes tool+duration+limit:** stub `this.client.callTool` to reject; call `wrapper.callTool({ id:'1', name:'SlowTool', arguments:{} })` (expect it to throw/reconnect); assert a `console.warn` call whose message contains `SlowTool`, `durationMs`, and `limitMs` (and the resolved limit value for that tool).
+  - **success timing opt-in:** with `process.env.DEBUG_MCP_TOOL_TIMING = 'true'` (set + restore in the test), stub `callTool` to resolve `{ content: [] }`; assert a `console.warn` containing `[mcp] tool <name> ok` + `ms`. With the env UNSET, assert NO such `[mcp] tool ... ok` line is logged (default quiet).
+- [ ] Run → FAIL. **Implement** per the design. Run → GREEN. Run existing mcp suites → still green. `npm run build` → SCOPED lint gate → commit: `feat(mcp): log MCP tool-call duration + resolved timeout (diagnose slow tools / tune toolTimeouts)`.
+- [ ] (Doc, same commit or Task 9 follow-up if trivial) mention `DEBUG_MCP_TOOL_TIMING=true` in `packages/llm-agent-mcp/README.md` timeout section as the opt-in per-call timing switch.
