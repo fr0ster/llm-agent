@@ -27,6 +27,12 @@ export interface McpConnectionConfig {
    *  Default = no-op (contributes nothing). A consumer may use this to convey a
    *  "willing to wait longer" hint or other per-request metadata. */
   requestHeadersStrategy?: IMcpRequestHeadersStrategy;
+  /** Default per-call MCP request timeout in ms (default 120000 = 2 min).
+   *  Per-tool overrides via toolTimeouts. */
+  timeout?: number;
+  /** Per-tool MCP request-timeout overrides in ms, keyed by tool name.
+   *  Takes precedence over timeout. */
+  toolTimeouts?: Record<string, number>;
 }
 
 export interface McpClientFactoryResult {

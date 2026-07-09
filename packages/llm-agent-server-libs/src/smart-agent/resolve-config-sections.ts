@@ -105,6 +105,17 @@ export function resolveMcpSection(
           headers:
             (get(yaml, 'mcp', 'headers') as Record<string, string>) ||
             undefined,
+          ...(get(yaml, 'mcp', 'timeout') !== undefined
+            ? { timeout: Number(get(yaml, 'mcp', 'timeout')) }
+            : {}),
+          ...(get(yaml, 'mcp', 'toolTimeouts') !== undefined
+            ? {
+                toolTimeouts: get(yaml, 'mcp', 'toolTimeouts') as Record<
+                  string,
+                  number
+                >,
+              }
+            : {}),
         }
       : undefined;
 }

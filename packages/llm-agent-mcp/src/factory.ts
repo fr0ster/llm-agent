@@ -25,6 +25,8 @@ export function toMcpClientWrapperConfig(
     ...(config.requestHeadersStrategy
       ? { requestHeadersStrategy: config.requestHeadersStrategy }
       : {}),
+    ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+    ...(config.toolTimeouts ? { toolTimeouts: config.toolTimeouts } : {}),
   };
 }
 
