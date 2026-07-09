@@ -233,24 +233,22 @@ Config is PLAIN DATA (numbers/map) → it flows through BOTH the builder path AN
 
 ---
 
-## Amendment B — per-call MCP tool-call duration logging (observability)
+## Amendment B — MCP tool-call duration via the STRUCTURED logger (observability, level by run mode)
 
-**Why:** we could not answer "which MCP tool exceeded the timeout" because tool-call durations are not logged. This makes `toolTimeouts` tuning guesswork. Add lightweight per-call duration logging so a slow tool is identifiable and a timeout is diagnosable (duration vs the resolved limit).
+**Why:** we could not answer "which MCP tool exceeded the timeout" because tool-call durations are not logged. Fix it through the app's EXISTING structured logging so verbosity follows the run mode (a debug-level concern of the logger, not an ad-hoc `console.warn` + env flag). The `ILogger`/`LogEvent` union already DEFINES `{ type: 'tool_call'; traceId; toolName; isError; durationMs }` but nothing emits it; the per-session debug channel `options.sessionLogger?.logStep(name, data)` already carries `coordinator_step_*` etc. Use these — the logger implementation / run mode decides how loud a `tool_call` / debug step is surfaced.
 
-### Task 11 — log MCP tool-call duration + resolved timeout
+### Task 11 — emit MCP tool-call timing through the existing structured logger
 
-**Files:** `packages/llm-agent-mcp/src/client.ts` (the `callTool` method around `performCall` ~406 and the failure `console.warn` ~493); test `packages/llm-agent-mcp/src/__tests__/mcp-client-tool-timing.test.ts` (create).
+**Files:** the tool-execution site(s) in `packages/llm-agent-libs/src` where a tool is actually invoked AND a structured `ILogger` (`deps.logger`, the thing that emits `llm_call`/`pipeline_done`) and/or `ctx.options.sessionLogger` + `traceId` are in scope — i.e. the flat/linear/dag tool loop (`packages/llm-agent-libs/src/pipeline/handlers/tool-loop-core.ts` and its caller that holds the logger) and the controller execution (`packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`). Test(s) alongside.
 
-**Design (match the file's existing `console.warn` style — no new logger dependency):**
-- Capture `const startedAt = Date.now();` immediately before `performCall()` and `const durationMs = Date.now() - startedAt;` after it settles (success AND failure).
-- Resolve the limit once for the log: `const limitMs = resolveToolTimeout(toolCall.name, this.config);`
-- **On failure (the existing `catch` that does `console.warn('MCP call failed, attempting reconnect: ...')`):** augment the message to include `tool=<name> durationMs=<ms> limitMs=<limitMs>` so a timeout is diagnosable (a `-32001`/"Request timed out" whose `durationMs ≈ limitMs` clearly points at the tool + the limit to raise via `toolTimeouts`).
-- **On success — OPT-IN per-call timing (default OFF, no noise):** if `process.env.DEBUG_MCP_TOOL_TIMING === 'true'`, `console.warn('[mcp] tool ' + toolCall.name + ' ok ' + durationMs + 'ms (limit ' + limitMs + 'ms)')`. (Reuse the existing `console.warn` channel; gate so normal runs are quiet.)
-- Do NOT change timeout behaviour, `resolveToolTimeout`, the header strategy, or re-add any signal/connect-bound. Timing is purely additive around the existing call.
+**Design (NO ad-hoc console.warn, NO new env flag — reuse the structured channels):**
+- **READ first** where an existing `LogEvent` is emitted (grep `packages/llm-agent-libs/src` for the site that logs `type: 'llm_call'` / `type: 'pipeline_done'` — that call site holds the `ILogger` and the `traceId`). MCP tool calls run through `client.callTool(name, args, options)` in the tool loop; measure `Date.now()` around THAT call.
+- **Emit the already-defined structured event** at that site on each tool call: `logger.log({ type: 'tool_call', traceId, toolName: name, isError: <result was an error>, durationMs })`. This is THE event designed for this; the server logger writes it, and run-mode verbosity is the logger's concern (satisfies "different informativeness by run mode").
+- **Also emit a per-session debug step** where `ctx.options?.sessionLogger` is in scope (the debug channel, like `coordinator_step_*`): `ctx.options.sessionLogger?.logStep('mcp_tool_call', { toolName: name, durationMs, isError, timeoutMs: <resolved limit if available> })`. This is the "debug log" the user asked for — it lands in the per-session artifacts, verbose by run mode. Include the resolved timeout limit when reachable so a `durationMs ≈ timeoutMs` clearly identifies which tool to bump via `toolTimeouts`.
+- If only ONE of the two channels is cleanly in scope at a given site, emit that one; do NOT invent a new logger or thread one where none exists (avoid a large plumbing change — prefer the site that ALREADY has the logger). Do NOT change timeout behaviour, `resolveToolTimeout`, the header strategy, or re-add any signal/connect-bound.
 
 **Steps:**
-- [ ] **Failing tests first** in `mcp-client-tool-timing.test.ts` (spy `console.warn`; drive the non-embedded `callTool` path with a stub `this.client.callTool` like the existing timeout tests):
-  - **failure includes tool+duration+limit:** stub `this.client.callTool` to reject; call `wrapper.callTool({ id:'1', name:'SlowTool', arguments:{} })` (expect it to throw/reconnect); assert a `console.warn` call whose message contains `SlowTool`, `durationMs`, and `limitMs` (and the resolved limit value for that tool).
-  - **success timing opt-in:** with `process.env.DEBUG_MCP_TOOL_TIMING = 'true'` (set + restore in the test), stub `callTool` to resolve `{ content: [] }`; assert a `console.warn` containing `[mcp] tool <name> ok` + `ms`. With the env UNSET, assert NO such `[mcp] tool ... ok` line is logged (default quiet).
-- [ ] Run → FAIL. **Implement** per the design. Run → GREEN. Run existing mcp suites → still green. `npm run build` → SCOPED lint gate → commit: `feat(mcp): log MCP tool-call duration + resolved timeout (diagnose slow tools / tune toolTimeouts)`.
-- [ ] (Doc, same commit or Task 9 follow-up if trivial) mention `DEBUG_MCP_TOOL_TIMING=true` in `packages/llm-agent-mcp/README.md` timeout section as the opt-in per-call timing switch.
+- [ ] **Locate the emission site** (where `llm_call`/`pipeline_done` are logged, and/or where `sessionLogger` + the `client.callTool` are both in scope). Confirm the `traceId` source there.
+- [ ] **Failing test first:** with a fake `ILogger` (captures `log()` calls) and/or a fake `sessionLogger` (captures `logStep`), drive one tool call through the tool loop and assert a `tool_call` event (`toolName`, `durationMs` a number ≥ 0, `isError` correct) and/or an `mcp_tool_call` debug step is emitted. Assert `isError: true` when the tool call fails. Mirror an existing tool-loop test's harness.
+- [ ] Run → FAIL. **Implement** the emission at the located site(s). Run → GREEN. Existing pipeline/controller tests still green. `npm run build` → SCOPED lint gate → commit: `feat(obs): emit MCP tool-call timing (tool_call event + mcp_tool_call debug step) — diagnose slow tools / tune toolTimeouts`.
+- [ ] **Doc:** in `packages/llm-agent-mcp/README.md` (or EXAMPLES.md) note that MCP tool-call durations are logged as `tool_call` structured events + `mcp_tool_call` session-debug steps (visible at debug/verbose run levels), and that a `durationMs` near a tool's resolved timeout indicates it should be raised via `toolTimeouts`.
