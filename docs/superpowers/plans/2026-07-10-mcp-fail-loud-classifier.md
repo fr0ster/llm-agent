@@ -53,7 +53,7 @@ Extend the existing component (additively) so a transport-level HTTP failure is 
 
 ---
 
-### Task 2 — `IMcpFailureClassifier` interface + default (health-aware) implementation
+### Task 2 — `IMcpFailureClassifier` interface + error-based default (health-probe seam)
 
 **Files:** create `packages/llm-agent/src/interfaces/mcp-failure-classifier.ts` + barrel export; create `packages/llm-agent-mcp/src/default-mcp-failure-classifier.ts` + barrel export; test `packages/llm-agent-mcp/src/__tests__/default-mcp-failure-classifier.test.ts`.
 
