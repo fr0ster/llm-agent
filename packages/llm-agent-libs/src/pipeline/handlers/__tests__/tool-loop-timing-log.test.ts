@@ -304,3 +304,70 @@ test('tool-loop emits mcp_tool_call session step with isError:true on failure', 
   const data = step.data as { isError: boolean };
   assert.equal(data.isError, true);
 });
+
+test('tool-loop emits tool_call timing event before escalating on MCP unavailability', async () => {
+  // An MCP_TIMEOUT (or any MCP_UNAVAILABLE_CODES member) causes classifyToolResult
+  // to escalate → executeToolBatchWithHeartbeat returns { escalated: true } early.
+  // onToolExecuted must still fire exactly once with isError:true BEFORE the
+  // escalation return so that timed-out tool calls appear in the timing log.
+  const spy = new SpyLogger();
+  const session = new SpySessionLogger();
+  const ctx = makeCtx(
+    {
+      async callTool() {
+        return {
+          ok: false as const,
+          error: new McpError('request timed out', 'MCP_TIMEOUT'),
+        };
+      },
+    },
+    spy,
+    session,
+  );
+
+  // ToolLoopHandler.execute will resolve with an error (escalated), but we only
+  // care that the timing events were emitted before the escalation.
+  await new ToolLoopHandler().execute(ctx, {}, makeSpan()).catch(() => {
+    // escalation may surface as a thrown error from the generator consumer — ignore
+  });
+
+  const evt = spy.events.find((e) => e.type === 'tool_call');
+  assert.ok(
+    evt,
+    'a tool_call timing event must be emitted even when the call escalates',
+  );
+  assert.equal(evt.toolName, 'GetTable');
+  assert.equal(
+    evt.isError,
+    true,
+    'isError must be true for an escalated/timed-out call',
+  );
+  assert.ok(evt.durationMs >= 0, 'durationMs must be non-negative');
+
+  const step = session.steps.find((s) => s.name === 'mcp_tool_call');
+  assert.ok(
+    step,
+    'an mcp_tool_call session step must be emitted even on escalation',
+  );
+  const data = step.data as {
+    toolName: string;
+    durationMs: number;
+    isError: boolean;
+  };
+  assert.equal(data.toolName, 'GetTable');
+  assert.equal(data.isError, true, 'isError must be true for escalated call');
+
+  // Guard against double-emit: exactly one tool_call event and one mcp_tool_call step
+  const toolCallEvents = spy.events.filter((e) => e.type === 'tool_call');
+  assert.equal(
+    toolCallEvents.length,
+    1,
+    'onToolExecuted must fire exactly once',
+  );
+  const mcpSteps = session.steps.filter((s) => s.name === 'mcp_tool_call');
+  assert.equal(
+    mcpSteps.length,
+    1,
+    'mcp_tool_call step must be emitted exactly once',
+  );
+});

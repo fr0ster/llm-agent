@@ -20,7 +20,7 @@ describe('toMcpClientWrapperConfig — timeout + toolTimeouts propagation', () =
     assert.equal(cfg.toolTimeouts, undefined);
   });
 
-  it('does not carry timeout/toolTimeouts for stdio type', () => {
+  it('carries timeout/toolTimeouts for stdio type', () => {
     const cfg = toMcpClientWrapperConfig({
       type: 'stdio',
       command: 'npx',
@@ -28,8 +28,9 @@ describe('toMcpClientWrapperConfig — timeout + toolTimeouts propagation', () =
       timeout: 60000,
       toolTimeouts: { slow: 180000 },
     });
-    // stdio branch does not carry timeout/toolTimeouts
-    assert.equal(cfg.timeout, undefined);
-    assert.equal(cfg.toolTimeouts, undefined);
+    // stdio branch must propagate timeout/toolTimeouts — callTool uses them for
+    // every transport, so stdio users must be able to tune slow tools too.
+    assert.equal(cfg.timeout, 60000);
+    assert.deepEqual(cfg.toolTimeouts, { slow: 180000 });
   });
 });

@@ -544,6 +544,8 @@ export async function connectMcpClientsFromConfig(
         transport: 'stdio',
         command: cfg.command,
         args: cfg.args ?? [],
+        ...(cfg.timeout !== undefined ? { timeout: cfg.timeout } : {}),
+        ...(cfg.toolTimeouts ? { toolTimeouts: cfg.toolTimeouts } : {}),
       });
     } else {
       wrapper = new MCPClientWrapper({

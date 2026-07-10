@@ -16,6 +16,8 @@ export function toMcpClientWrapperConfig(
       transport: 'stdio',
       command: config.command,
       args: config.args ?? [],
+      ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+      ...(config.toolTimeouts ? { toolTimeouts: config.toolTimeouts } : {}),
     };
   }
   return {

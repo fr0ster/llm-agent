@@ -348,6 +348,10 @@ export async function* executeToolBatchWithHeartbeat(
     // caller returns ok:false) instead of feeding "MCP error" to the LLM.
     const decision = classifyToolResult(res);
     if (decision.escalate) {
+      // Emit timing BEFORE escalating so the timed-out/unavailable tool call
+      // appears in the timing log. onToolExecuted fires exactly once here;
+      // the end-of-loop call is skipped because we return early.
+      onToolExecuted?.(r);
       yield {
         ok: false,
         error: new OrchestratorError(
