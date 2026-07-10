@@ -1292,6 +1292,22 @@ export class SmartAgent {
         timingLog,
         heartbeatMs,
         options: opts,
+        onToolExecuted: (r) => {
+          const traceId = opts?.trace?.traceId ?? 'agent-tool-loop';
+          const isError = !r.res?.ok || (r.res.ok && !!r.res.value.isError);
+          this.deps.logger?.log({
+            type: 'tool_call',
+            traceId,
+            toolName: r.tc.name,
+            isError,
+            durationMs: r.duration,
+          });
+          opts?.sessionLogger?.logStep('mcp_tool_call', {
+            toolName: r.tc.name,
+            durationMs: r.duration,
+            isError,
+          });
+        },
       });
       if (outcome.escalated) return;
       currentTools = outcome.currentTools;

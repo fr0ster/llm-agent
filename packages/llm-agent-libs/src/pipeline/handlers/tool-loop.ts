@@ -782,18 +782,39 @@ export class ToolLoopHandler implements IStageHandler {
         timingLog,
         heartbeatMs,
         options: ctx.options,
-        onToolExecuted: (r) =>
+        onToolExecuted: (r) => {
+          // Stamp requestId so tool executions land in the per-traceId delta
+          // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
+          // when the request actually ran tools (only the session-cumulative
+          // counter would tick).
+          const traceId = ctx.options?.trace?.traceId ?? 'tool-loop';
+          const isError = !r.res?.ok || (r.res.ok && !!r.res.value.isError);
           ctx.requestLogger.logToolCall({
-            // Stamp requestId so tool executions land in the per-traceId delta
-            // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
-            // when the request actually ran tools (only the session-cumulative
-            // counter would tick).
-            requestId: ctx.options?.trace?.traceId,
+            requestId: traceId,
             toolName: r.tc.name,
             success: !!r.res?.ok,
             durationMs: r.duration,
             cached: r.cached,
-          }),
+          });
+          // Structured timing event — consumed by server logger; verbosity
+          // is the logger implementation's concern (satisfies run-mode gate).
+          ctx.logger?.log({
+            type: 'tool_call',
+            traceId,
+            toolName: r.tc.name,
+            isError,
+            durationMs: r.duration,
+          });
+          // Per-session debug channel — lands in session artifacts alongside
+          // coordinator_step_* entries. Include resolved timeout when available
+          // so a durationMs ≈ timeoutMs clearly flags which tool to bump via
+          // toolTimeouts config.
+          ctx.options?.sessionLogger?.logStep('mcp_tool_call', {
+            toolName: r.tc.name,
+            durationMs: r.duration,
+            isError,
+          });
+        },
       });
       let step = await batchGen.next();
       while (!step.done) {

@@ -4,11 +4,41 @@
  * Wraps the MCP SDK client to provide a simpler interface for the agent
  */
 
-import type { ToolCall, ToolResult } from '@mcp-abap-adt/llm-agent';
+import type {
+  IMcpRequestHeadersStrategy,
+  ToolCall,
+  ToolResult,
+} from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { toMcpError } from './error-mapping.js';
+
+/** Default per-call MCP request timeout in ms (2 minutes).
+ *  Consumer can override globally via MCPClientConfig.timeout or per-tool via MCPClientConfig.toolTimeouts. */
+export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Resolve the MCP request timeout for a specific tool call.
+ *
+ * Resolution order (first defined wins):
+ *   1. config.toolTimeouts[name]  — per-tool override
+ *   2. config.timeout             — global per-call default
+ *   3. DEFAULT_MCP_REQUEST_TIMEOUT_MS (120 000 ms = 2 min)
+ *
+ * resetTimeoutOnProgress is always set to true by callTool so a slow but
+ * actively-reporting tool never hits the ceiling.
+ */
+export function resolveToolTimeout(
+  name: string,
+  config: Pick<MCPClientConfig, 'timeout' | 'toolTimeouts'>,
+): number {
+  return (
+    config.toolTimeouts?.[name] ??
+    config.timeout ??
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS
+  );
+}
 
 type McpToolDef = {
   name: string;
@@ -109,10 +139,46 @@ export interface MCPClientConfig {
    */
   headers?: Record<string, string>;
 
-  /**
-   * Timeout in milliseconds (default: 30000)
-   */
+  /** Consumer-owned strategy contributing additional HTTP headers to MCP requests.
+   *  Independent of the client-side request timeout (see `timeout`/`toolTimeouts`):
+   *  a consumer may use this to convey a "willing to wait longer" hint to the server
+   *  or other per-request metadata. Default = no-op. */
+  requestHeadersStrategy?: IMcpRequestHeadersStrategy;
+
+  /** Default per-call MCP request timeout in ms (default 120000 = 2 min). Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
   timeout?: number;
+
+  /**
+   * Per-tool MCP request-timeout overrides in ms, keyed by tool name.
+   * Takes precedence over `timeout`. Useful for known slow tools (e.g. long-running ABAP reports).
+   * Example: `{ SlowReport: 900_000 }` — allow 15 min for SlowReport while keeping the 2 min default for everything else.
+   */
+  toolTimeouts?: Record<string, number>;
+}
+
+/**
+ * Build StreamableHTTPClientTransport options from an already-resolved sessionId.
+ * The caller MUST resolve the session id (via `_sessionForConnect()`) before calling
+ * this helper — the helper intentionally does NOT read `config.sessionId` so that live
+ * server-assigned ids always survive reconnect.
+ *
+ * No `signal` is set: MCP self-governs its request timeouts via the SDK's own mechanism.
+ */
+export function buildHttpTransportOptions(opts: {
+  headers?: Record<string, string>;
+  sessionId?: string;
+  requestHeadersStrategy?: IMcpRequestHeadersStrategy;
+}): { sessionId?: string; requestInit: { headers: Record<string, string> } } {
+  return {
+    ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
+    requestInit: {
+      headers: {
+        Accept: 'application/json, text/event-stream',
+        ...opts.headers,
+        ...(opts.requestHeadersStrategy?.headers() ?? {}),
+      },
+    },
+  };
 }
 
 export class MCPClientWrapper {
@@ -253,16 +319,11 @@ export class MCPClientWrapper {
       // The SDK handles the protocol differences internally
       const httpTransport = new StreamableHTTPClientTransport(
         new URL(this.config.url),
-        {
+        buildHttpTransportOptions({
+          headers: this.config.headers,
           sessionId: this._sessionForConnect(),
-          requestInit: {
-            headers: {
-              Accept: 'application/json, text/event-stream',
-              ...this.config.headers,
-            },
-            signal: AbortSignal.timeout(this.config.timeout || 30000),
-          },
-        },
+          requestHeadersStrategy: this.config.requestHeadersStrategy,
+        }),
       );
 
       this.client = new Client(
@@ -403,10 +464,14 @@ export class MCPClientWrapper {
       if (!this.client) {
         await this.connect();
       }
-      const response = await this.client?.callTool({
-        name: toolCall.name,
-        arguments: toolCall.arguments,
-      });
+      const response = await this.client?.callTool(
+        { name: toolCall.name, arguments: toolCall.arguments },
+        undefined,
+        {
+          timeout: resolveToolTimeout(toolCall.name, this.config),
+          resetTimeoutOnProgress: true,
+        },
+      );
       if (!response) {
         throw new Error('MCP callTool returned no response');
       }

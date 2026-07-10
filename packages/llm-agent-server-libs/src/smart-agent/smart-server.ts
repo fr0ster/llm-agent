@@ -163,6 +163,12 @@ export interface SmartServerMcpConfig {
   command?: string;
   args?: string[];
   headers?: Record<string, string>;
+  /** Default per-call MCP request timeout in ms (default 120000 = 2 min).
+   *  Per-tool overrides via toolTimeouts. */
+  timeout?: number;
+  /** Per-tool MCP request-timeout overrides in ms, keyed by tool name.
+   *  Takes precedence over timeout. */
+  toolTimeouts?: Record<string, number>;
 }
 
 export interface SmartServerAgentConfig {
@@ -538,12 +544,16 @@ export async function connectMcpClientsFromConfig(
         transport: 'stdio',
         command: cfg.command,
         args: cfg.args ?? [],
+        ...(cfg.timeout !== undefined ? { timeout: cfg.timeout } : {}),
+        ...(cfg.toolTimeouts ? { toolTimeouts: cfg.toolTimeouts } : {}),
       });
     } else {
       wrapper = new MCPClientWrapper({
         transport: 'auto',
         url: cfg.url,
         headers: cfg.headers,
+        ...(cfg.timeout !== undefined ? { timeout: cfg.timeout } : {}),
+        ...(cfg.toolTimeouts ? { toolTimeouts: cfg.toolTimeouts } : {}),
       });
     }
     await wrapper.connect();
