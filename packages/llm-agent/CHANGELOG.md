@@ -1,5 +1,22 @@
 # @mcp-abap-adt/llm-agent
 
+## 20.3.0
+
+### Fixes
+
+- **MCP tool calls no longer hit the SDK's implicit ~60s timeout (or hang) on heavy runs (#222).** `MCPClientWrapper.callTool` now passes an explicit, consumer-owned request timeout to the MCP SDK instead of falling through to its built-in ~60s `DEFAULT_REQUEST_TIMEOUT_MSEC` (which produced `-32001: Request timed out` → a silent `(no response)` on long multi-tool controller reviews). The timeout is a **generous per-call safety net**: `resolveToolTimeout(name) = toolTimeouts[name] ?? timeout ?? 120000` (2 min default), with `resetTimeoutOnProgress` so a tool that reports progress is not cut off. A stuck/orphaned call now dies at the resolved limit — no indefinite server hang.
+- Removed the redundant MCP "timeout stack": the transport `requestInit` per-request `AbortSignal.timeout` cutoff and the connect-bound are gone — there is exactly one MCP timeout (the `callTool` one). Connection availability stays governed by the connection-strategy layer; the adapter's `withAbort(signal)` cancellation is unchanged. HTTP session-resume is preserved (the live server-assigned session id survives reconnect).
+
+### Features
+
+- **Configurable MCP request timeouts, per client and per tool (#222).** New `mcp.timeout` (default 120000 ms) sets the per-call default; `mcp.toolTimeouts: { <toolName>: <ms> }` sets per-tool overrides (some tools legitimately take 5–15 min). Settable in YAML and programmatically; threaded through both the builder→factory and the YAML/server construction paths, for HTTP and stdio transports.
+- **`IMcpRequestHeadersStrategy` (#222)** — an optional, consumer-owned strategy (default `NoopMcpRequestHeadersStrategy`, contributes nothing) to inject MCP request headers (e.g. a server-side "willing to wait longer" hint), wired via `builder.withMcpRequestHeadersStrategy(...)`. YAML users use the existing static `mcp.headers`.
+- **MCP tool-call timing observability (#222).** Each MCP tool call emits a `tool_call` structured `LogEvent` (`toolName`, `isError`, `durationMs`) plus an `mcp_tool_call` session-debug step — through the existing structured logging (verbosity follows the run mode), including on timeout/unavailable failures. A `durationMs` near a tool's resolved timeout tells you which tool to raise via `toolTimeouts`.
+
+### Notes
+
+- This release also folds in the previously-tagged-but-unpublished 20.1.0 and 20.2.0 work (see their CHANGELOG sections): controller recalled-skill → finalizer delivery directives (#212), `/health` model-alias false-negative (#220), SAP AI Core concurrency hardening (#213/#219), `skillPlugins` docs (#211), and the monolith-decomposition campaign (#206–#218).
+
 ## 20.2.0
 
 ### Features
