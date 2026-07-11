@@ -4,10 +4,12 @@ import {
   type IEmbedder,
   type IKnowledgeRagHandle,
   type IStageHandler,
+  isMcpUnavailable,
   type KnowledgeEntryMetadata,
   type LlmTool,
   type LlmToolCall,
   type LlmUsage,
+  McpError,
   type Message,
   type ModelUsageEntry,
 } from '@mcp-abap-adt/llm-agent';
@@ -1283,7 +1285,30 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
 
       // Execute locally, memorize, re-send to the executor.
-      const result = await deps.callMcp(name, args);
+      // FAIL LOUD: if the MCP server is unavailable, surface the error as a
+      // terminal abort (not a silent empty response).  A tool-level throw
+      // (non-unavailable McpError or any other error) is re-thrown so the
+      // existing outer error handler can deal with it.
+      let result: string;
+      try {
+        result = await deps.callMcp(name, args);
+      } catch (mcpErr) {
+        if (mcpErr instanceof McpError && isMcpUnavailable(mcpErr)) {
+          const now = deps.now ?? (() => new Date().toISOString());
+          const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
+          await this.abortTerminal(
+            ctx,
+            sessionId,
+            bundle,
+            `MCP server unavailable: ${mcpErr.message}`,
+            now,
+            terminalTtlMs,
+            usageNow?.(),
+          );
+          return 'aborted';
+        }
+        throw mcpErr;
+      }
       bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
       await writeArtifact(
         rag,

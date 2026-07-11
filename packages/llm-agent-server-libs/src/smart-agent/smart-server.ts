@@ -32,8 +32,8 @@ import type {
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  type IMcpFailureClassifier,
   type IRag,
-  isMcpUnavailable,
   isReadinessReporter,
 } from '@mcp-abap-adt/llm-agent';
 import type {
@@ -60,6 +60,7 @@ import {
   SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  DefaultMcpFailureClassifier,
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
@@ -564,6 +565,7 @@ export async function connectMcpClientsFromConfig(
 
 export function buildMcpBridge(
   clients: IMcpClient[],
+  classifier: IMcpFailureClassifier = new DefaultMcpFailureClassifier(),
 ): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
   return async (name: string, args: unknown, _signal?: AbortSignal) => {
     const safeArgs =
@@ -576,7 +578,8 @@ export function buildMcpBridge(
         // FAIL LOUD on an availability failure: a transient listTools() outage must
         // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
         // benign error (this client genuinely can't list) falls through to the next.
-        if (isMcpUnavailable(listed.error)) throw listed.error;
+        if ((await classifier.classify(listed.error)) === 'unavailable')
+          throw listed.error;
         continue;
       }
       const owns = listed.value.some((t) => t.name === name);
@@ -584,7 +587,8 @@ export function buildMcpBridge(
       const result = await client.callTool(name, safeArgs);
       if (!result.ok) {
         // Availability failure → fail loud; a tool-level error → LLM feedback text.
-        if (isMcpUnavailable(result.error)) throw result.error;
+        if ((await classifier.classify(result.error)) === 'unavailable')
+          throw result.error;
         return result.error.message;
       }
       const { content } = result.value;
