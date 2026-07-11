@@ -33,6 +33,12 @@ const UNAVAILABLE_CASES: Array<[string, unknown]> = [
     'no response after reconnect',
     new Error('boom (no response after reconnect)'),
   ],
+  [
+    'Streamable HTTP error: 404 route-gone',
+    new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: 404 Not Found: Requested route /mcp does not exist.',
+    ),
+  ],
 ];
 
 for (const [label, err] of UNAVAILABLE_CASES) {
