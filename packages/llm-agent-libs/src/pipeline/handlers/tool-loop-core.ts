@@ -346,7 +346,7 @@ export async function* executeToolBatchWithHeartbeat(
     if (!res) continue;
     // FAIL LOUD on an MCP availability failure — yield an error chunk (→ the
     // caller returns ok:false) instead of feeding "MCP error" to the LLM.
-    const decision = classifyToolResult(res);
+    const decision = await classifyToolResult(res);
     if (decision.escalate) {
       // Emit timing BEFORE escalating so the timed-out/unavailable tool call
       // appears in the timing log. onToolExecuted fires exactly once here;
