@@ -128,3 +128,65 @@ test('bridge uses CUSTOM classifier — tool-error with default classifier stays
   const bridge = buildMcpBridge([client]);
   assert.equal(await bridge('GetTable', {}), 'benign tool error');
 });
+
+// ---------------------------------------------------------------------------
+// Probe-wiring tests (Part B) — probe must reach the classifier
+// ---------------------------------------------------------------------------
+
+test('bridge passes per-client probe to classifier — DOWN: throws when server is unreachable', async () => {
+  // Custom classifier: 'unavailable' only when probeHealth is defined AND returns false.
+  const probeClassifier: IMcpFailureClassifier = {
+    classify: async (_err, probeHealth) => {
+      if (probeHealth !== undefined && (await probeHealth()) === false) {
+        return 'unavailable';
+      }
+      return 'tool-error';
+    },
+  };
+  const client = {
+    async listTools() {
+      return {
+        ok: true as const,
+        value: [{ name: 't', description: '', inputSchema: {} }],
+      };
+    },
+    async callTool() {
+      return { ok: false as const, error: new McpError('boom', 'MCP_ERROR') };
+    },
+    // healthCheck resolves with value:false → server is DOWN
+    async healthCheck() {
+      return { ok: true as const, value: false };
+    },
+  } as unknown as IMcpClient;
+  const bridge = buildMcpBridge([client], probeClassifier);
+  await assert.rejects(() => bridge('t', {}), /boom/);
+});
+
+test('bridge passes per-client probe to classifier — UP: returns tool-error text when server is reachable', async () => {
+  // Same custom probe classifier as above.
+  const probeClassifier: IMcpFailureClassifier = {
+    classify: async (_err, probeHealth) => {
+      if (probeHealth !== undefined && (await probeHealth()) === false) {
+        return 'unavailable';
+      }
+      return 'tool-error';
+    },
+  };
+  const client = {
+    async listTools() {
+      return {
+        ok: true as const,
+        value: [{ name: 't', description: '', inputSchema: {} }],
+      };
+    },
+    async callTool() {
+      return { ok: false as const, error: new McpError('boom', 'MCP_ERROR') };
+    },
+    // healthCheck resolves with value:true → server is UP
+    async healthCheck() {
+      return { ok: true as const, value: true };
+    },
+  } as unknown as IMcpClient;
+  const bridge = buildMcpBridge([client], probeClassifier);
+  assert.equal(await bridge('t', {}), 'boom');
+});

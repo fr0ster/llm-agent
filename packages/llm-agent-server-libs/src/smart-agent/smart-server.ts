@@ -573,12 +573,15 @@ export function buildMcpBridge(
         ? (args as Record<string, unknown>)
         : {};
     for (const client of clients) {
+      const probe = client.healthCheck
+        ? () => client.healthCheck?.().then((r) => (r.ok ? r.value : false))
+        : undefined;
       const listed = await client.listTools();
       if (!listed.ok) {
         // FAIL LOUD on an availability failure: a transient listTools() outage must
         // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
         // benign error (this client genuinely can't list) falls through to the next.
-        if ((await classifier.classify(listed.error)) === 'unavailable')
+        if ((await classifier.classify(listed.error, probe)) === 'unavailable')
           throw listed.error;
         continue;
       }
@@ -587,7 +590,7 @@ export function buildMcpBridge(
       const result = await client.callTool(name, safeArgs);
       if (!result.ok) {
         // Availability failure → fail loud; a tool-level error → LLM feedback text.
-        if ((await classifier.classify(result.error)) === 'unavailable')
+        if ((await classifier.classify(result.error, probe)) === 'unavailable')
           throw result.error;
         return result.error.message;
       }
