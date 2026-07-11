@@ -78,6 +78,10 @@ export type {
   McpConnectionConfig,
   McpConnectionResult,
 } from './mcp-connection-strategy.js';
+export type {
+  IMcpFailureClassifier,
+  McpFailureKind,
+} from './mcp-failure-classifier.js';
 export type { IMcpRequestHeadersStrategy } from './mcp-request-headers-strategy.js';
 export type {
   CounterSnapshot,

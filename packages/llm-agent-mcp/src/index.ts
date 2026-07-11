@@ -4,6 +4,7 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './client.js';
+export { DefaultMcpFailureClassifier } from './default-mcp-failure-classifier.js';
 export { createDefaultMcpClient } from './factory.js';
 export { NoopMcpRequestHeadersStrategy } from './no-op-request-headers-strategy.js';
 export {
