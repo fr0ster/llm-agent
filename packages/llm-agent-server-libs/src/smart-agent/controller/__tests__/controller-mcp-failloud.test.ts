@@ -243,4 +243,71 @@ describe('controller MCP fail-loud (Task 3)', () => {
       `Expected final "final answer" chunk but got: ${JSON.stringify(captured)}`,
     );
   });
+
+  it('Case C: bridge throws a non-default-unavailable McpError (custom classifier verdict) → still loud, not swallowed', async () => {
+    // The bridge (buildMcpBridge) throws an McpError IFF the injected classifier
+    // returned 'unavailable'; a tool-level error is returned as TEXT, never thrown.
+    // So ANY McpError reaching the handler's catch is already a classifier-
+    // unavailable verdict — even one whose CODE the default isMcpUnavailable does
+    // not recognise (here MCP_ERROR, as a custom classifier would map it). The
+    // handler must trust that throw-contract and surface it loud, not re-check the
+    // code and re-throw (which the outer catch would swallow → (no response)).
+    const backend = new InMemoryKnowledgeBackend();
+    const rag = stubRag();
+
+    // MCP_ERROR is NOT in MCP_UNAVAILABLE_CODES — isMcpUnavailable(this) === false.
+    const customVerdictError = new McpError('policy: server down', 'MCP_ERROR');
+
+    const deps: ControllerHandlerDeps = {
+      evaluator: scriptedClient([
+        { kind: 'content', content: 'Goal: do the thing' },
+      ]),
+      planner: scriptedClient([
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'fetch data' }],
+          }),
+        },
+        { kind: 'content', content: 'done' },
+      ]),
+      executor: scriptedClient([
+        toolCall('GetTable', { table: 'T' }),
+        { kind: 'content', content: 'result' },
+      ]),
+      backend,
+      knowledgeRagFor: () => rag,
+      embedder: stubEmbedder,
+      callMcp: async () => Promise.reject(customVerdictError),
+      selectTools: async (): Promise<LlmTool[]> => [
+        { name: 'GetTable', description: '', inputSchema: {} },
+      ],
+      isExternalTool: () => false,
+      config: baseConfig(),
+      models: { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' },
+    };
+
+    const handler = new ControllerCoordinatorHandler(deps);
+    const { ctx, captured } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(
+      ret,
+      true,
+      'execute() must return true (handled, not unhandled throw)',
+    );
+
+    const errorChunk = captured.find(
+      (c) =>
+        c.ok &&
+        typeof c.value.content === 'string' &&
+        c.value.content.includes('MCP server unavailable') &&
+        c.value.finishReason === 'stop',
+    );
+    assert.ok(
+      errorChunk,
+      `Expected a loud "MCP server unavailable" stop chunk (bridge already classified this McpError as unavailable) but got: ${JSON.stringify(captured)}`,
+    );
+  });
 });

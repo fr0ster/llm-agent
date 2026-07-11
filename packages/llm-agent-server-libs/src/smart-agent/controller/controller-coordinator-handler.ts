@@ -4,7 +4,6 @@ import {
   type IEmbedder,
   type IKnowledgeRagHandle,
   type IStageHandler,
-  isMcpUnavailable,
   type KnowledgeEntryMetadata,
   type LlmTool,
   type LlmToolCall,
@@ -1285,15 +1284,19 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
 
       // Execute locally, memorize, re-send to the executor.
-      // FAIL LOUD: if the MCP server is unavailable, surface the error as a
-      // terminal abort (not a silent empty response).  A tool-level throw
-      // (non-unavailable McpError or any other error) is re-thrown so the
-      // existing outer error handler can deal with it.
+      // FAIL LOUD: surface an MCP-unavailable failure as a terminal abort (not a
+      // silent empty response). The bridge (buildMcpBridge) throws an McpError
+      // IFF the injected classifier deemed it 'unavailable'; a tool-level error
+      // is returned as TEXT, never thrown. So ANY McpError reaching this catch is
+      // already a classifier-unavailable verdict — trust that throw-contract
+      // rather than re-checking the code (which would drop a CUSTOM classifier's
+      // decision → rethrow → outer catch swallow → (no response)). A non-McpError
+      // is a genuine unexpected error and is re-thrown for the outer handler.
       let result: string;
       try {
         result = await deps.callMcp(name, args);
       } catch (mcpErr) {
-        if (mcpErr instanceof McpError && isMcpUnavailable(mcpErr)) {
+        if (mcpErr instanceof McpError) {
           const now = deps.now ?? (() => new Date().toISOString());
           const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
           await this.abortTerminal(
