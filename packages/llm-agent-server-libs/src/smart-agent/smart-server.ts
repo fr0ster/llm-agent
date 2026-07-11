@@ -574,7 +574,7 @@ export function buildMcpBridge(
         : {};
     for (const client of clients) {
       const probe = client.healthCheck
-        ? () => client.healthCheck?.().then((r) => (r.ok ? r.value : false))
+        ? () => client.healthCheck!().then((r) => (r.ok ? r.value : false))
         : undefined;
       const listed = await client.listTools();
       if (!listed.ok) {

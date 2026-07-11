@@ -134,13 +134,13 @@ test('bridge uses CUSTOM classifier — tool-error with default classifier stays
 // ---------------------------------------------------------------------------
 
 test('bridge passes per-client probe to classifier — DOWN: throws when server is unreachable', async () => {
-  // Custom classifier: 'unavailable' only when probeHealth is defined AND returns false.
-  const probeClassifier: IMcpFailureClassifier = {
+  // assumeToolErrorWhenNoProbe: if no probe is wired (old code path), falls back to
+  // 'tool-error' → no throw → assert.rejects FAILS (discriminating on old code).
+  // With probe wired (new code): probe()===false → 'unavailable' → throws ✓.
+  const assumeToolErrorWhenNoProbe: IMcpFailureClassifier = {
     classify: async (_err, probeHealth) => {
-      if (probeHealth !== undefined && (await probeHealth()) === false) {
-        return 'unavailable';
-      }
-      return 'tool-error';
+      if (probeHealth === undefined) return 'tool-error';
+      return (await probeHealth()) === false ? 'unavailable' : 'tool-error';
     },
   };
   const client = {
@@ -158,18 +158,18 @@ test('bridge passes per-client probe to classifier — DOWN: throws when server 
       return { ok: true as const, value: false };
     },
   } as unknown as IMcpClient;
-  const bridge = buildMcpBridge([client], probeClassifier);
+  const bridge = buildMcpBridge([client], assumeToolErrorWhenNoProbe);
   await assert.rejects(() => bridge('t', {}), /boom/);
 });
 
 test('bridge passes per-client probe to classifier — UP: returns tool-error text when server is reachable', async () => {
-  // Same custom probe classifier as above.
-  const probeClassifier: IMcpFailureClassifier = {
+  // assumeUnavailableWhenNoProbe: if no probe is wired (old code path), falls back to
+  // 'unavailable' → throws → assert.equal fails (discriminating on old code).
+  // With probe wired (new code): probe()===true → 'tool-error' → returns 'boom' ✓.
+  const assumeUnavailableWhenNoProbe: IMcpFailureClassifier = {
     classify: async (_err, probeHealth) => {
-      if (probeHealth !== undefined && (await probeHealth()) === false) {
-        return 'unavailable';
-      }
-      return 'tool-error';
+      if (probeHealth === undefined) return 'unavailable';
+      return (await probeHealth()) === false ? 'unavailable' : 'tool-error';
     },
   };
   const client = {
@@ -187,6 +187,6 @@ test('bridge passes per-client probe to classifier — UP: returns tool-error te
       return { ok: true as const, value: true };
     },
   } as unknown as IMcpClient;
-  const bridge = buildMcpBridge([client], probeClassifier);
+  const bridge = buildMcpBridge([client], assumeUnavailableWhenNoProbe);
   assert.equal(await bridge('t', {}), 'boom');
 });
