@@ -9,6 +9,7 @@ import type { ISmartAgent } from './builder.js';
 import type { IKnowledgeRagHandle, IToolsRagHandle } from './knowledge-rag.js';
 import type { ILlm } from './llm.js';
 import type { IMcpClient } from './mcp-client.js';
+import type { IMcpFailureClassifier } from './mcp-failure-classifier.js';
 import type { IRagRegistry } from './rag.js';
 import type { LlmCallEntry } from './request-logger.js';
 
@@ -50,6 +51,7 @@ export interface IPipelineContext {
   mintTurnId(): string;
   logger?: ILogger;
   logLlmCall?(entry: LlmCallEntry): void;
+  mcpFailureClassifier?: IMcpFailureClassifier;
 }
 
 /** A pipeline plugin = the implementation of an agent variant. It names itself,

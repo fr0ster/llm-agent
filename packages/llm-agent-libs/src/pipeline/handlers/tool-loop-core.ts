@@ -8,6 +8,7 @@
 import type {
   CallOptions,
   IMcpClient,
+  IMcpFailureClassifier,
   IToolCache,
   LlmStreamChunk,
   LlmTool,
@@ -236,6 +237,7 @@ export interface IExecuteToolBatchArgs {
   heartbeatMs: number;
   options: CallOptions | undefined;
   onToolExecuted?: (r: ToolExecResult) => void; // B: logToolCall; A: omitted
+  mcpFailureClassifier?: IMcpFailureClassifier;
 }
 
 /** Execute a batch of internal tool calls concurrently, yielding heartbeat
@@ -346,7 +348,15 @@ export async function* executeToolBatchWithHeartbeat(
     if (!res) continue;
     // FAIL LOUD on an MCP availability failure — yield an error chunk (→ the
     // caller returns ok:false) instead of feeding "MCP error" to the LLM.
-    const decision = await classifyToolResult(res);
+    const tcClient = toolClientMap.get(tc.name);
+    const probe = tcClient?.healthCheck
+      ? () => tcClient.healthCheck!().then((hr) => (hr.ok ? hr.value : false))
+      : undefined;
+    const decision = await classifyToolResult(
+      res,
+      args.mcpFailureClassifier,
+      probe,
+    );
     if (decision.escalate) {
       // Emit timing BEFORE escalating so the timed-out/unavailable tool call
       // appears in the timing log. onToolExecuted fires exactly once here;
