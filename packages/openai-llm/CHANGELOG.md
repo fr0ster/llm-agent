@@ -1,5 +1,22 @@
 # @mcp-abap-adt/openai-llm
 
+## 20.4.0
+
+### Fixes
+
+- **The controller pipeline no longer returns a silent `(no response)` when the MCP *server* is unavailable (transport drop / `fetch failed` / 404 / 502) mid-run (#223).** An unrecoverable MCP availability error during the executor's tool step is now escalated and surfaced as a LOUD error instead of degrading to empty content. This closes the residual gap in the #201–205 fail-loud lineage — both on the shared tool-loop core (`ok:false` `OrchestratorError('MCP_UNAVAILABLE')`) and on the controller bridge (a loud `abortTerminal` "MCP server unavailable: …" chunk).
+- **`toMcpError` now classifies streamable-HTTP transport errors — including a 404 route-gone (`MCP_HTTP_404`) — as MCP-unavailable (#223).** A genuine tool-level "not found" still maps to `MCP_ERROR`: the 404/"not found" match is gated inside the streamable-HTTP wrapper signature, preserving the anti-false-positive guard.
+- **The controller trusts the bridge throw-contract (#223).** `buildMcpBridge` throws only when the classifier deems a failure `'unavailable'` (tool-level errors are returned as text, never thrown), so the controller catch now surfaces any thrown `McpError` loudly instead of re-checking the code with a hardcoded `isMcpUnavailable` — which previously dropped a *custom* classifier's verdict for otherwise-tool-level codes. The `pipeline: controller` path forwards `ctx.mcpFailureClassifier` into its bridge.
+
+### Features
+
+- **`IMcpFailureClassifier` — a consumer-swappable strategy that decides `'unavailable'` (fail loud) vs `'tool-error'` (feed back to the LLM) for a failed MCP tool call (#223).** Wired via dependency injection at both MCP-failure decision points (`buildMcpBridge` and the shared `classifyToolResult`), threaded to both tool-loop callers (the direct `SmartAgent` and the pipeline `ToolLoopHandler`), the controller bridge, and a builder seam — `builder.withMcpFailureClassifier(...)` / `BuildAgentDeps.mcpFailureClassifier`. The default `DefaultMcpFailureClassifier` (in `@mcp-abap-adt/llm-agent-mcp`) is error-based (built on the existing `isMcpUnavailable`) and adds **no** per-call round-trip. An optional `probeHealth` seam (MCP `ping` via `IMcpClient.healthCheck`) lets a consumer implement a health-confirming classifier; the default never probes. **DI/programmatic only — no YAML / `SmartServerConfig` change.**
+
+### Notes
+
+- With no classifier injected, runtime behavior is byte-identical to before this release (the default classifier is `isMcpUnavailable`-based and ignores the probe). New public surface: `IMcpFailureClassifier` / `McpFailureKind` (`@mcp-abap-adt/llm-agent`), `DefaultMcpFailureClassifier` (`@mcp-abap-adt/llm-agent-mcp`), `MCP_HTTP_404` in `MCP_UNAVAILABLE_CODES`, `builder.withMcpFailureClassifier(...)`, and the optional `mcpFailureClassifier` field on `IPipelineContext` / `IExecuteToolBatchArgs` / `SmartAgentDeps` / `PipelineDeps` / `BuildAgentDeps`.
+- Does **not** touch the #222 request-timeout work (folded in via 20.3.0). This release supersedes the tagged-but-unpublished 20.3.0 (and the earlier held 20.1.0 / 20.2.0) — see their CHANGELOG sections.
+
 ## 20.3.0
 
 ### Fixes
