@@ -782,6 +782,7 @@ export class ToolLoopHandler implements IStageHandler {
         timingLog,
         heartbeatMs,
         options: ctx.options,
+        mcpFailureClassifier: ctx.mcpFailureClassifier,
         onToolExecuted: (r) => {
           // Stamp requestId so tool executions land in the per-traceId delta
           // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even

@@ -25,6 +25,7 @@ import type {
   ILlmRateLimiter,
   ILogger,
   IMcpClient,
+  IMcpFailureClassifier,
   IMcpRequestHeadersStrategy,
   IModelProvider,
   IQueryExpander,
@@ -178,6 +179,7 @@ export class SmartAgentBuilder {
   private _toolSelectionStrategy?: IToolSelectionStrategy;
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
+  private _mcpFailureClassifier?: IMcpFailureClassifier;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
   private _dagCoordinator?: DagCoordinatorHandlerDeps;
@@ -452,6 +454,14 @@ export class SmartAgentBuilder {
    *  returned headers into its request init. Default = no-op (nothing attached). */
   withMcpRequestHeadersStrategy(strategy: IMcpRequestHeadersStrategy): this {
     this._mcpRequestHeadersStrategy = strategy;
+    return this;
+  }
+
+  /** Inject a custom MCP failure classifier. The classifier decides whether a
+   *  failed tool-call result is an availability escalation (fail loud) or a
+   *  tool-level error (LLM feedback). Default: DefaultMcpFailureClassifier. */
+  withMcpFailureClassifier(classifier: IMcpFailureClassifier): this {
+    this._mcpFailureClassifier = classifier;
     return this;
   }
 
@@ -1116,6 +1126,9 @@ export class SmartAgentBuilder {
       historySummarizer,
       llmCallStrategy: this._llmCallStrategy,
       agentConfig: agentCfg,
+      ...(this._mcpFailureClassifier
+        ? { mcpFailureClassifier: this._mcpFailureClassifier }
+        : {}),
     });
 
     const agent = new SmartAgent(
@@ -1159,6 +1172,9 @@ export class SmartAgentBuilder {
           ? { llmCallStrategy: this._llmCallStrategy }
           : {}),
         ...(translateQueryStores.size > 0 ? { translateQueryStores } : {}),
+        ...(this._mcpFailureClassifier
+          ? { mcpFailureClassifier: this._mcpFailureClassifier }
+          : {}),
         requestLogger,
       },
       agentCfg,

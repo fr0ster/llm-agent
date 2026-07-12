@@ -20,6 +20,7 @@ import type {
   ILlmCallStrategy,
   ILogger,
   IMcpClient,
+  IMcpFailureClassifier,
   IQueryExpander,
   IRag,
   IRagProviderRegistry,
@@ -110,6 +111,8 @@ export interface PipelineDeps {
   ragRegistry?: IRagRegistry;
   /** Registry of RAG providers for dynamic collection creation (v9.1+). */
   ragProviderRegistry?: IRagProviderRegistry;
+  /** Custom MCP failure classifier. When absent the shared core uses DefaultMcpFailureClassifier. */
+  mcpFailureClassifier?: IMcpFailureClassifier;
 }
 
 // ---------------------------------------------------------------------------

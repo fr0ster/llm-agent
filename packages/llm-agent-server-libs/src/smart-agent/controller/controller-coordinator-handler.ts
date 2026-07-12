@@ -8,6 +8,7 @@ import {
   type LlmTool,
   type LlmToolCall,
   type LlmUsage,
+  McpError,
   type Message,
   type ModelUsageEntry,
 } from '@mcp-abap-adt/llm-agent';
@@ -1283,7 +1284,34 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
 
       // Execute locally, memorize, re-send to the executor.
-      const result = await deps.callMcp(name, args);
+      // FAIL LOUD: surface an MCP-unavailable failure as a terminal abort (not a
+      // silent empty response). The bridge (buildMcpBridge) throws an McpError
+      // IFF the injected classifier deemed it 'unavailable'; a tool-level error
+      // is returned as TEXT, never thrown. So ANY McpError reaching this catch is
+      // already a classifier-unavailable verdict — trust that throw-contract
+      // rather than re-checking the code (which would drop a CUSTOM classifier's
+      // decision → rethrow → outer catch swallow → (no response)). A non-McpError
+      // is a genuine unexpected error and is re-thrown for the outer handler.
+      let result: string;
+      try {
+        result = await deps.callMcp(name, args);
+      } catch (mcpErr) {
+        if (mcpErr instanceof McpError) {
+          const now = deps.now ?? (() => new Date().toISOString());
+          const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
+          await this.abortTerminal(
+            ctx,
+            sessionId,
+            bundle,
+            `MCP server unavailable: ${mcpErr.message}`,
+            now,
+            terminalTtlMs,
+            usageNow?.(),
+          );
+          return 'aborted';
+        }
+        throw mcpErr;
+      }
       bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
       await writeArtifact(
         rag,

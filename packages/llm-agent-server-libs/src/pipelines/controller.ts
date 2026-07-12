@@ -114,7 +114,11 @@ export class ControllerPipelinePlugin
     ctx: IControllerServerPipelineContext,
   ): Promise<IPipelineInstance> {
     const mcpClients = ctx.mcpClients ?? [];
-    const mcpBridge = buildMcpBridge(mcpClients);
+    // Honor the consumer-injected MCP failure classifier on the `pipeline: controller`
+    // path (ctx carries it from SmartServer/builder DI). Without this the bridge would
+    // silently fall back to DefaultMcpFailureClassifier and a custom policy (e.g. mapping
+    // an otherwise-tool-level code to 'unavailable') would be lost for the controller.
+    const mcpBridge = buildMcpBridge(mcpClients, ctx.mcpFailureClassifier);
 
     // INTERNAL tools reach the executor/planner via SEMANTIC selection over the
     // vectorized MCP catalog (toolsRag) — relevant top-K per query, not a full

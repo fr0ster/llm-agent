@@ -26,6 +26,7 @@ import type {
   ILlmCallStrategy,
   ILogger,
   IMcpClient,
+  IMcpFailureClassifier,
   IQueryEmbedding,
   IQueryExpander,
   IRagProviderRegistry,
@@ -109,6 +110,8 @@ export interface PipelineContext {
   readonly historyMemory: IHistoryMemory | undefined;
   readonly historySummarizer: IHistorySummarizer | undefined;
   readonly llmCallStrategy: ILlmCallStrategy;
+  /** Custom MCP failure classifier injected via DI. When absent the shared core uses DefaultMcpFailureClassifier. */
+  readonly mcpFailureClassifier?: IMcpFailureClassifier;
 
   // -- Mutable state (populated by stages) ----------------------------------
 

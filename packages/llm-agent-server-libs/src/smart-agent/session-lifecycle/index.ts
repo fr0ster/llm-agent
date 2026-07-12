@@ -16,7 +16,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   type SessionAgentParts,
-  SessionGraph,
+  type SessionGraph,
   SessionGraphFactory,
   SessionRegistry,
   type SmartAgent,

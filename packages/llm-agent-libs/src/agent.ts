@@ -9,6 +9,7 @@ import type {
   ILlm,
   ILlmCallStrategy,
   IMcpClient,
+  IMcpFailureClassifier,
   IRag,
   IRagProviderRegistry,
   IRagRegistry,
@@ -135,6 +136,8 @@ export interface SmartAgentDeps {
   ragRegistry?: IRagRegistry;
   /** Registry of RAG providers for dynamic collection creation (v9.1+). */
   ragProviderRegistry?: IRagProviderRegistry;
+  /** Custom MCP failure classifier. When absent the shared core uses DefaultMcpFailureClassifier. */
+  mcpFailureClassifier?: IMcpFailureClassifier;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -1292,6 +1295,7 @@ export class SmartAgent {
         timingLog,
         heartbeatMs,
         options: opts,
+        mcpFailureClassifier: this.deps.mcpFailureClassifier,
         onToolExecuted: (r) => {
           const traceId = opts?.trace?.traceId ?? 'agent-tool-loop';
           const isError = !r.res?.ok || (r.res.ok && !!r.res.value.isError);

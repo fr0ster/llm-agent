@@ -55,7 +55,18 @@ export function toMcpError(err: unknown): McpError {
     code = 'MCP_NO_RESPONSE';
   else if (m.includes('http 403') || m.includes('forbidden'))
     code = 'MCP_HTTP_403';
-  else if (m.includes('http 502') || m.includes('bad gateway'))
+  else if (
+    m.includes('error posting to endpoint') ||
+    m.includes('streamable http error')
+  ) {
+    // Streamable HTTP transport-error wrapper; detect specific status codes.
+    if (m.includes('404') || m.includes('not found')) code = 'MCP_HTTP_404';
+    else if (m.includes('502') || m.includes('bad gateway'))
+      code = 'MCP_HTTP_502';
+    else if (m.includes('503') || m.includes('service unavailable'))
+      code = 'MCP_HTTP_503';
+    else code = 'MCP_TRANSPORT'; // Generic HTTP transport error
+  } else if (m.includes('http 502') || m.includes('bad gateway'))
     code = 'MCP_HTTP_502';
   else if (m.includes('http 503') || m.includes('service unavailable'))
     code = 'MCP_HTTP_503';

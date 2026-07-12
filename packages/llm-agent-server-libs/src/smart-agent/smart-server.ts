@@ -32,8 +32,8 @@ import type {
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  type IMcpFailureClassifier,
   type IRag,
-  isMcpUnavailable,
   isReadinessReporter,
 } from '@mcp-abap-adt/llm-agent';
 import type {
@@ -60,6 +60,7 @@ import {
   SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  DefaultMcpFailureClassifier,
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
@@ -344,6 +345,10 @@ export interface BuildAgentDeps {
   /** Injected embedder — short-circuits BOTH resolveAgentEmbedder (diEmbedder) AND
    *  the skill-host embedder resolution + prefetch. */
   embedder?: IEmbedder;
+  /** Custom MCP failure classifier (DI/programmatic only — not in YAML).
+   *  Decides whether a failed tool-call is an availability escalation or a
+   *  tool-level error. Default: DefaultMcpFailureClassifier. */
+  mcpFailureClassifier?: IMcpFailureClassifier;
 }
 
 /**
@@ -564,6 +569,7 @@ export async function connectMcpClientsFromConfig(
 
 export function buildMcpBridge(
   clients: IMcpClient[],
+  classifier: IMcpFailureClassifier = new DefaultMcpFailureClassifier(),
 ): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
   return async (name: string, args: unknown, _signal?: AbortSignal) => {
     const safeArgs =
@@ -571,12 +577,16 @@ export function buildMcpBridge(
         ? (args as Record<string, unknown>)
         : {};
     for (const client of clients) {
+      const probe = client.healthCheck
+        ? () => client.healthCheck!().then((r) => (r.ok ? r.value : false))
+        : undefined;
       const listed = await client.listTools();
       if (!listed.ok) {
         // FAIL LOUD on an availability failure: a transient listTools() outage must
         // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
         // benign error (this client genuinely can't list) falls through to the next.
-        if (isMcpUnavailable(listed.error)) throw listed.error;
+        if ((await classifier.classify(listed.error, probe)) === 'unavailable')
+          throw listed.error;
         continue;
       }
       const owns = listed.value.some((t) => t.name === name);
@@ -584,7 +594,8 @@ export function buildMcpBridge(
       const result = await client.callTool(name, safeArgs);
       if (!result.ok) {
         // Availability failure → fail loud; a tool-level error → LLM feedback text.
-        if (isMcpUnavailable(result.error)) throw result.error;
+        if ((await classifier.classify(result.error, probe)) === 'unavailable')
+          throw result.error;
         return result.error.message;
       }
       const { content } = result.value;
@@ -710,6 +721,12 @@ export class SmartServer {
    * handles owned by the plugin) are freed on eviction / shutdown / reconfigure.
    */
   private readonly _sessionCloseFns = new Map<string, () => Promise<void>>();
+  /**
+   * Instance-level MCP failure classifier (DI/programmatic only — not from YAML).
+   * Populated from BuildAgentDeps in the constructor; defaults to DefaultMcpFailureClassifier.
+   * Passed to buildMcpBridge (Route B) and threaded into every pipeline ctx (Route A).
+   */
+  private readonly _mcpFailureClassifier: IMcpFailureClassifier;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -732,6 +749,8 @@ export class SmartServer {
     this.cfg = config;
     this._mcpSeamInjected =
       deps.mcpClients !== undefined || deps.connectMcp !== undefined;
+    this._mcpFailureClassifier =
+      deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -1787,7 +1806,10 @@ export class SmartServer {
     args: unknown,
     signal?: AbortSignal,
   ): Promise<string> {
-    return buildMcpBridge(this._sharedMcpClients ?? [])(name, args, signal);
+    return buildMcpBridge(
+      this._sharedMcpClients ?? [],
+      this._mcpFailureClassifier,
+    )(name, args, signal);
   }
 
   private _mintStepperId(): string {
@@ -2032,6 +2054,7 @@ export class SmartServer {
       ragRegistry: scope.parts.ragRegistry,
       callMcp: (n, a, s) => this.callMcp(n, a, s),
       mcpClients: scope.parts.mcpClients,
+      mcpFailureClassifier: this._mcpFailureClassifier,
       subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
         name: s.name,
         description: s.description,
@@ -2201,6 +2224,9 @@ export class SmartServer {
     if (parts.workerRegistry.size > 0) {
       builder = builder.withSubAgents(parts.workerRegistry);
     }
+
+    // Thread the instance-level MCP failure classifier (DI/programmatic only).
+    builder = builder.withMcpFailureClassifier(this._mcpFailureClassifier);
 
     return builder;
   }
