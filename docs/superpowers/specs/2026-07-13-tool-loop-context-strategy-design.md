@@ -26,18 +26,20 @@ Packages touched: `@mcp-abap-adt/llm-agent` (interface), `@mcp-abap-adt/llm-agen
 
 - **We never decide the consumer's implementation.** Everything is interface + DI +
   strategy. RAG-less context management is *allowed* (the consumer may assemble any
-  pipeline); our example compositions (SmartServer / controller / default pipeline)
-  inject the **RAG-managed** strategy — the app IS the example. See
+  pipeline). Our example compositions inject a **bounded** strategy — the **controller**
+  injects the RAG-managed `RagRecallContextStrategy` (it has a run-scoped per-round results
+  RAG), and the **default pipeline / direct SmartAgent** inject the RAG-less
+  `WindowContextStrategy` (no per-round results RAG there yet — see "Default pipeline / core").
+  A RAG-managed default pipeline is a documented follow-up. See
   `feedback_consumer_chooses_seams_rag_examples`.
-- **Library default = backward-compat.** When no strategy is injected, behavior is
+- **Library default = backward-compat.** When no strategy factory is injected, behavior is
   **byte-identical to today** (the `LegacyAccumulateContextStrategy`). We do NOT
   frame a behavior change (windowing) as the default.
 - **Build ON components.** Reuse `recall.ts` (`runScopedRecall` / `buildRecallBlock` /
   `relevantExtract`), the existing `writeArtifact`, `IContextAssembler`, and
   `historyMemory`. Do not reimplement recall/ranking. The `RagRecallContextStrategy`
   is *generic* — parameterized by injected `recall` + `record` functions — so the
-  controller wires its run-scoped recall and the default pipeline wires its history
-  RAG, without moving `recall.ts` across packages.
+  controller wires its run-scoped recall without moving `recall.ts` across packages.
 - **ISP.** ADD a new focused interface (`IToolLoopContextStrategy`); do NOT grow an
   existing one.
 - **Don't break the 20.4.0 fail-loud work.** `classifyToolResult` / escalate on an
@@ -260,28 +262,37 @@ The executor therefore never loses prior-step context: it lives in the prefix on
   are bounded and persisted; the strategy owns rounds, the handler owns the short control tail.
 - Net effect: `controller-coordinator-handler.ts` shrinks (raw-round transcript management leaves it).
 
-### Shared `tool-loop-core` / `tool-loop.ts`
+### Shared core — applies to BOTH `ToolLoopHandler.execute` (`tool-loop.ts`) AND the direct `SmartAgent._runStreamingToolLoop` (`agent.ts`)
+Both loops have the SAME raw-accumulation paths and BOTH adopt the strategy identically (the direct
+path is not a vague afterthought — it is a first-class consumer of the same `ToolRound` rule).
 - Create the per-loop strategy from the factory before the loop; `reset()`-equivalent is a fresh instance.
 - **Uniform rule — every assistant-`tool_calls` + tool-result GROUP is a `ToolRound`.** ALL the
-  paths that today do `messages = <build...>(messages, …); continue` (growing the raw tail) are
-  routed through `record` + `form` instead of a direct append. Concretely:
-  - internal MCP batch (~829 `messages = [...messages, ...outcome.toolMessages]`) → `ToolRound`;
-  - **blocked tools** (`tool-loop.ts:578`, `buildBlockedToolMessages`) → the assistant call +
-    synthetic block response is a `ToolRound` (recorded/formed like any other);
-  - **hallucinated tools** (`tool-loop.ts:590`, `buildHallucinatedToolMessages`) → same;
-  - **external HIT** (`tool-loop.ts:622`, matched `assistant(tool_calls=[extId])`→`tool(extId)` pair)
-    → a `ToolRound` (a real external result the model must keep/recall).
-  This makes the invariant "the loop NEVER accumulates raw results itself" literally true — there
-  is exactly ONE growth site (the strategy's recorded list), which each strategy bounds.
+  paths that today do `messages = <build...>(messages, …); continue` (or `messages.push(...)`) —
+  growing the raw tail — are routed through `record` + `form` instead of a direct append. Concretely,
+  in EACH loop:
+  - **internal MCP batch** — `tool-loop.ts` ~829 (`messages = [...messages, ...outcome.toolMessages]`)
+    and the direct path `agent.ts:1226`/`1319` → `ToolRound`;
+  - **blocked tools** — `tool-loop.ts:578` (`buildBlockedToolMessages`) and `agent.ts:1167` → `ToolRound`;
+  - **hallucinated tools** — `tool-loop.ts:590` (`buildHallucinatedToolMessages`) and `agent.ts:1176`
+    → `ToolRound`;
+  - **external HIT** — `tool-loop.ts:622` matched `assistant(tool_calls=[extId])`→`tool(extId)` pair
+    → `ToolRound` (a real external result the model must keep/recall);
+  - **pending mixed-call results injected at loop start** — `tool-loop.ts:135` and `agent.ts:773`
+    (`injectPendingResults`: an `assistant`/`tool` group for already-resolved internal calls) →
+    `ToolRound`, recorded BEFORE the first `form()` so it survives subsequent rounds (else it would
+    be present only for the first LLM call and vanish after the next `form()`).
+  This makes the invariant "the loop NEVER accumulates raw results itself" literally true in BOTH
+  loops — exactly ONE growth site (the strategy's recorded list), which each strategy bounds.
   (external MISS still surfaces + ends the turn — no injection, no round.)
 - `tool-loop-core.ts` `executeToolBatchWithHeartbeat` returns the batch `assistant`+`results`
   GROUPED so the caller can build a `ToolRound` without re-deriving the assistant tool_calls; the
-  helpers `buildBlockedToolMessages`/`buildHallucinatedToolMessages` are refactored to RETURN their
-  `{assistant, results}` group (the caller records it) rather than mutate `messages` in place.
-- The `assemble` handler still runs once to build `staticPrefix` for the first round; subsequent
-  rounds are formed by the injected strategy. OUR default-pipeline / direct-SmartAgent composition
-  injects the `WindowContextStrategy` (see "Default pipeline / core"); the library default (nothing
-  injected) stays `LegacyAccumulateContextStrategy` (byte-identical).
+  helpers `buildBlockedToolMessages`/`buildHallucinatedToolMessages` (shared by both loops) are
+  refactored to RETURN their `{assistant, results}` group (the caller records it) rather than mutate
+  `messages` in place.
+- The `assemble` handler / the direct path's initial context build runs once for `staticPrefix` on
+  the first round; subsequent rounds are formed by the injected strategy. OUR default-pipeline /
+  direct-SmartAgent composition injects the `WindowContextStrategy` (see "Default pipeline / core");
+  the library default (nothing injected) stays `LegacyAccumulateContextStrategy` (byte-identical).
 
 ### DI threading (mirror `IMcpFailureClassifier`, but as a FACTORY)
 The strategy is STATEFUL and per-loop, so the seam is a **factory**, not a shared instance —
@@ -290,10 +301,12 @@ this eliminates cross-request state leakage. Add optional
 `IPipelineContext` (pipeline-plugin.ts), `SmartAgentDeps`, `PipelineDeps`, `BuildAgentDeps`,
 `ControllerHandlerDeps`. Add `builder.withToolLoopContextStrategyFactory(f): this`. Populate
 `ctx.toolLoopContextStrategyFactory` in `_buildContext` / `buildServerCtx`. Default resolves to
-`() => new LegacyAccumulateContextStrategy()` at the point of use. Our compositions inject a
-factory that builds `RagRecallContextStrategy` bound to the run's RAG (controller via `recall.ts`;
-default pipeline via history RAG). Add a durable field `contextStrategyState?: unknown` to the
-controller's `inFlightStep` so `snapshot()`/`restore()` survive suspend/resume. **No YAML.**
+`() => new LegacyAccumulateContextStrategy()` at the point of use. Our compositions inject:
+the **controller** → a factory building `RagRecallContextStrategy` bound to the run's RAG (via
+`recall.ts`); the **default pipeline / direct SmartAgent** → a factory building
+`WindowContextStrategy` (RAG-less bounded). Add durable fields
+`contextStrategyState?: SerializableStrategyState` + `controlTail?: Message[]` to the controller's
+`inFlightStep` so `snapshot()`/`restore()` + the control tail survive suspend/resume. **No YAML.**
 
 ---
 
@@ -334,13 +347,15 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   round, and pruned once the next successful round is recorded. Persisting it (not the whole
   transcript) closes the post-resume hole: after the first post-resume `form()`, the tail is still
   present because it is re-appended each round from durable state, not carried inside `form()`.
-- **Resume mechanism.** No raw transcript is persisted. On resume the handler reconstructs
-  `messages = staticPrefix` (rebuilt deterministically) `++ strategy.form({queryText})` (after
-  `strategy.restore(inFlightStep.contextStrategyState)`) `++ inFlightStep.controlTail`. Because
-  `form()` always re-derives rounds (RAG re-recall or restored buffer) and `controlTail` is
-  re-appended from durable state every round, the ordering `prefix → rounds → controlTail` is
-  invariant across suspend/resume and across every subsequent `record`/`form` — no message vanishes,
-  no interleaving drift.
+- **Resume mechanism.** No raw transcript is persisted. `staticPrefix` is rebuilt deterministically,
+  then — after `strategy.restore(inFlightStep.contextStrategyState)` — the SINGLE rule (same as every
+  round, incl. resume) is:
+  `messages = await strategy.form({ prefix: staticPrefix, queryText }) ++ inFlightStep.controlTail`.
+  (`form()` itself emits `prefix` first — the handler never prepends `prefix` separately, so it is
+  neither omitted nor duplicated.) Because `form()` always re-derives rounds (RAG re-recall or
+  restored buffer) and `controlTail` is re-appended from durable state every round, the ordering
+  `prefix → rounds → controlTail` is invariant across suspend/resume and every subsequent
+  `record`/`form` — no message vanishes, no interleaving drift.
 - **Durable fields on `inFlightStep`:** `contextStrategyState?: SerializableStrategyState` (strategy
   `snapshot()`, JSON-serializable/versioned) and `controlTail?: Message[]` (bounded). The old raw
   `transcript` accumulation is REMOVED (replaced by these two bounded fields). Everything else reuses
@@ -408,10 +423,12 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
 - **MODIFY** `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` (per-loop factory instance;
   ~829 accumulation → record/form), `tool-loop-core.ts` (return the batch `assistant`+`results`
   grouped so the caller can build a `ToolRound`), `packages/llm-agent-libs/src/agent.ts`
-  (`SmartAgentDeps.toolLoopContextStrategyFactory` + direct-loop wiring), `builder.ts`
-  (`withToolLoopContextStrategyFactory`), `pipeline/default-pipeline.ts` + `interfaces/pipeline.ts`
-  (`PipelineDeps`) + default-pipeline `RagRecallContextStrategy` wiring,
-  `interfaces/pipeline-plugin.ts` (`IPipelineContext.toolLoopContextStrategyFactory?`).
+  (`SmartAgentDeps.toolLoopContextStrategyFactory` + direct `_runStreamingToolLoop` wiring — the
+  same uniform ToolRound rule; agent.ts:1167/1176/1226/1319 accumulation paths + the pending-results
+  injection at agent.ts:773), `builder.ts` (`withToolLoopContextStrategyFactory`),
+  `pipeline/default-pipeline.ts` + `interfaces/pipeline.ts` (`PipelineDeps`) + default-pipeline
+  `WindowContextStrategy` factory wiring, `interfaces/pipeline-plugin.ts`
+  (`IPipelineContext.toolLoopContextStrategyFactory?`).
 - **MODIFY** `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
   (replace raw push with strategy record/form; per-loop instance via factory; external pair → round;
   `inFlightStep.contextStrategyState?` + `controlTail?`, remove raw `transcript`; shrink),
