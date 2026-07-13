@@ -24,17 +24,21 @@ Packages touched: `@mcp-abap-adt/llm-agent` (interface), `@mcp-abap-adt/llm-agen
 
 ## Global Constraints
 
-- **We never decide the consumer's implementation.** Everything is interface + DI +
-  strategy. RAG-less context management is *allowed* (the consumer may assemble any
-  pipeline). Our example compositions inject a **bounded** strategy — the **controller**
-  injects the RAG-managed `RagRecallContextStrategy` (it has a run-scoped per-round results
-  RAG), and the **default pipeline / direct SmartAgent** inject the RAG-less
-  `WindowContextStrategy` (no per-round results RAG there yet — see "Default pipeline / core").
-  A RAG-managed default pipeline is a documented follow-up. See
+- **We never decide the consumer's implementation.** Everything is interface + DI + strategy.
+  RAG-less context management is *allowed* (the consumer may assemble any pipeline). **The
+  injection lives in the app/server COMPOSITION, not in the library classes:** our SmartServer
+  composition injects a bounded factory — for the **controller** the RAG-managed
+  `RagRecallContextStrategy` (it has a run-scoped per-round results RAG), and for the **default
+  pipeline / direct SmartAgent path** the RAG-less `WindowContextStrategy` (no per-round results
+  RAG there yet — see "Default pipeline / core"). `DefaultPipeline` / `SmartAgent` themselves do
+  NOT auto-inject anything. A RAG-managed default pipeline is a documented follow-up. See
   `feedback_consumer_chooses_seams_rag_examples`.
-- **Library default = backward-compat.** When no strategy factory is injected, behavior is
-  **byte-identical to today** (the `LegacyAccumulateContextStrategy`). We do NOT
-  frame a behavior change (windowing) as the default.
+- **Library default = backward-compat.** When **no factory is injected** (a consumer using
+  `DefaultPipeline` / `SmartAgent` directly, outside our SmartServer composition), the resolved
+  default is `LegacyAccumulateContextStrategy` → behavior **byte-identical to today**. The Window
+  bounding is a property of OUR SmartServer composition's explicit injection, NOT of the library
+  classes — so no embedding consumer sees a silent behavior change. We do NOT frame windowing as
+  the library default.
 - **Build ON components.** Reuse `recall.ts` (`runScopedRecall` / `buildRecallBlock` /
   `relevantExtract`), the existing `writeArtifact`, `IContextAssembler`, and
   `historyMemory`. Do not reimplement recall/ranking. The `RagRecallContextStrategy`
@@ -81,6 +85,12 @@ export interface ToolRound {
   }>;
   /** Round ordinal within the current loop/step (0-based). */
   ordinal?: number;
+  /** Durable, stable round id. A RAG-backed strategy REQUIRES one to exclude the
+   *  most-recent (raw-tail) round from its recall block; if absent on record() the
+   *  strategy assigns a deterministic one (e.g. `${runId}:${ordinal}`) and uses it as
+   *  the RAG record key. Guarantees the last round appears EITHER raw OR in recall,
+   *  never both. */
+  roundId?: string;
 }
 
 /** The static context the strategy prepends when forming a round. */
@@ -171,7 +181,9 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
   raw and the list preserves insertion order, the most-recent round is naturally the tail.
   Reproduces today's growing transcript **byte-identically** (same messages, same order,
   current batch present exactly once — no duplication, since `form` never appends).
-- `snapshot()` → the recorded list; `restore(state)` → replaces the list.
+- `snapshot()` → `{ version: 1, rounds: ToolRound[] }` (plain JSON; `ToolRound` messages are
+  already plain objects). `restore({version, rounds})` → replaces the list; unknown `version`
+  → clean empty list (no throw).
 - Purpose: when nobody injects a strategy, nothing changes. Existing tool-loop /
   controller tests remain green unmodified.
 
@@ -183,29 +195,34 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
   older rounds (all but the last `keepLastRounds`) + the last `keepLastRounds` rounds RAW
   (assistant + results, in order). The most-recent round is always within the window → raw
   at the tail. `keepLastRounds ≥ 1` is enforced so the protocol tail is guaranteed.
-- `snapshot()`/`restore()` → the internal list (RAG-less → the buffer IS the durable state).
+- `snapshot()` → `{ version: 1, rounds: ToolRound[] }` (RAG-less → the buffer IS the durable state,
+  serialized as plain JSON). `restore({version, rounds})` → replaces the list; unknown `version` → clean.
 - Purpose: graceful-degrade for a consumer who wants bounding without a results-RAG.
 
 ### 3. `RagRecallContextStrategy` (generic, RAG-managed — what our examples inject)
 - Constructed with injected functions so it stays package-agnostic:
   ```ts
   interface RagRecallDeps {
-    /** Persist a completed round's results to the consumer's RAG (durable). */
+    /** Persist a completed round's results to the consumer's RAG (durable), keyed by
+     *  `round.roundId`. */
     record(round: ToolRound, options?: CallOptions): Promise<void>;
-    /** Return a bounded, ranked recall block (string) for the query text —
-     *  over the ROUNDS recorded THIS run, EXCLUDING the most-recent round (that
-     *  one is emitted raw). Deterministic given the same RAG contents + query. */
-    recall(queryText: string, excludeIdentityKeys: string[], options?: CallOptions): Promise<string>;
+    /** Return a bounded, ranked recall block (string) for the query text — over the
+     *  ROUNDS recorded THIS run, EXCLUDING `excludeRoundIds` (the most-recent round,
+     *  which is emitted raw). Deterministic given the same RAG contents + query. */
+    recall(queryText: string, excludeRoundIds: string[], options?: CallOptions): Promise<string>;
   }
   ```
+- On `record`, if `round.roundId` is unset the strategy assigns a deterministic id
+  (`${runId}:${ordinal}`) BEFORE persisting, and uses it as the RAG record key.
 - Holds only the MOST-RECENT recorded round in memory (for the raw tail); all rounds' results
   are durable in RAG via `deps.record`.
-- `record(round)` → `await deps.record(round, options)`; keep `round` as `last`.
-- `form(base)` → `base.prefix` + (one `{role:'user', content: await deps.recall(...)}`
+- `record(round)` → assign `roundId`; `await deps.record(round, options)`; keep `round` as `last`.
+- `form(base)` → `base.prefix` + (one `{role:'user', content: await deps.recall(base.queryText, [last.roundId])}`
   bounded recall message over prior rounds, when non-empty) + the `last` round RAW
-  (assistant + results) at the tail.
-- `snapshot()` → `{ last }` (a minimal marker; the bulk lives in RAG). `restore({last})` →
-  re-establishes the raw tail; prior rounds are re-recalled from RAG (deterministic).
+  (assistant + results) at the tail. Excluding `last.roundId` guarantees no double-appearance.
+- `snapshot()` → `{ version: 1, last: ToolRound | null }` (minimal; bulk lives in RAG).
+  `restore({version, last})` → re-establishes the raw tail; prior rounds re-recalled from RAG
+  (deterministic); unknown `version` → `last: null`.
 - Purpose: the RAG way. The **controller** wires `deps.record` = `writeArtifact(mcp-result)`
   and `deps.recall` = `runScopedRecall(['mcp-result'], runId, …)` + `buildRecallBlock` — it
   already has a run-scoped, per-round results RAG. **The controller is our RAG-managed example.**
@@ -214,9 +231,11 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
 The default pipeline does NOT today have a per-round tool-RESULT RAG: `history-upsert`
 (`history-upsert.ts:48`) writes ONE post-turn SUMMARY keyed `turn:${sessionId}:${turnIndex}` with
 generic metadata, and history retrieval runs ONCE before the tool-loop (`default-pipeline.ts:328`)
-— neither is per-round tool-result storage. So OUR default-pipeline / direct-SmartAgent composition
-injects the **`WindowContextStrategy`** (RAG-less bounded) — it still eliminates the O(N²) growth
-without overclaiming a RAG we don't have. A genuine RAG-managed default pipeline (a new per-round
+— neither is per-round tool-result storage. So OUR **SmartServer composition** injects the
+**`WindowContextStrategy`** factory (RAG-less bounded) into the default-pipeline / direct-SmartAgent
+path — it still eliminates the O(N²) growth without overclaiming a RAG we don't have.
+(`DefaultPipeline`/`SmartAgent` do not self-inject; used bare they fall back to Legacy — see
+"Library default".) A genuine RAG-managed default pipeline (a new per-round
 tool-loop-round store + schema/metadata + query/exclude rules, distinct from the turn-summary
 history store) is a **deferred follow-up**, not this spec. A consumer who wants it wires a
 `RagRecallContextStrategy` factory over their own results store.
@@ -335,7 +354,7 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
     `snapshot()` persists only the `last` round (the raw tail). On resume, `restore({last})`
     re-establishes the tail and prior rounds are **re-recalled** from RAG. Recall is
     **deterministic** given the same RAG contents + the same query params (`queryText` from
-    `step.instructions`, `runId`, K, `['mcp-result']`, `excludeIdentityKeys`).
+    `step.instructions`, `runId`, K, `['mcp-result']`, `excludeRoundIds=[last.roundId]`).
   - RAG-less (`Window`/`Legacy`): the buffer/list IS the durable state → `snapshot()` returns it,
     persisted in `inFlightStep.contextStrategyState`, `restore()` on resume.
 - **External-tool pair = a round.** The pending external-tool assistant/tool pair
@@ -357,9 +376,18 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   `prefix → rounds → controlTail` is invariant across suspend/resume and every subsequent
   `record`/`form` — no message vanishes, no interleaving drift.
 - **Durable fields on `inFlightStep`:** `contextStrategyState?: SerializableStrategyState` (strategy
-  `snapshot()`, JSON-serializable/versioned) and `controlTail?: Message[]` (bounded). The old raw
-  `transcript` accumulation is REMOVED (replaced by these two bounded fields). Everything else reuses
-  existing `bundle`/`inFlightStep` persistence.
+  `snapshot()`, JSON-serializable/versioned) and `controlTail?: Message[]` (bounded). The raw
+  `transcript` field is RETAINED for one release as a read-only **migration** fallback (below), then
+  removed in a follow-up. Everything else reuses existing `bundle`/`inFlightStep` persistence.
+- **Migration (bundles suspended before this release).** A pre-existing in-flight step has
+  `transcript` but NO `contextStrategyState`/`controlTail`. On resume the handler detects this
+  (`contextStrategyState === undefined && transcript?.length`) and **seeds** the strategy from the old
+  transcript: it splits `transcript` into its `ToolRound` groups (assistant-`tool_calls` + following
+  `tool` messages) and any trailing non-round control messages → `strategy.restore({version:1, rounds})`
+  + `controlTail = <the control messages>`. Groups that cannot be cleanly parsed fall back to the
+  `LegacyAccumulateContextStrategy` seeded with the whole `transcript` verbatim for that step (guarantees
+  no context loss, no crash), and the run continues under the injected strategy for NEW rounds. This
+  one-release read path is documented for removal in the follow-up. No data loss, no fail-loud on resume.
 
 ---
 
@@ -387,7 +415,9 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   present in round-2+ context.
 - **Resume equivalence.** Suspend mid-loop after several rounds + a pending unavailable-tool retry
   (`controlTail`) AND, separately, a pending external-tool pair; resume: assert the reconstructed
-  `messages` = `prefix ++ form() ++ controlTail`, that `strategy.restore` re-derives prior rounds
+  `messages` = `(await strategy.form({ prefix: staticPrefix, queryText })) ++ controlTail` — prefix is
+  emitted BY `form()`, never prepended separately (assert NO duplicated prefix) — that `strategy.restore`
+  re-derives prior rounds
   (RAG re-recall / restored buffer), that the external pair was recorded as a round, and that BOTH
   the retry feedback and the external result survive a FURTHER `record`/`form` (the post-resume hole).
   Assert `inFlightStep` durable size is bounded (`contextStrategyState` + `controlTail` do NOT grow
@@ -395,6 +425,13 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
 - **Snapshot is JSON-safe.** `snapshot()` of each provided strategy round-trips through
   `JSON.parse(JSON.stringify(...))` unchanged and carries a `version`; `restore()` of an unknown
   `version` falls back to clean state without throwing.
+- **Resume migration.** An in-flight step with a legacy `transcript` and NO `contextStrategyState`:
+  resume seeds the strategy from `transcript` (parsed into rounds + control tail), continues to
+  completion, loses no context; an unparseable `transcript` falls back to Legacy-seeded verbatim
+  (no crash).
+- **RagRecall no double-appearance.** With a stubbed `recall`, assert the most-recent round's
+  `roundId` is passed in `excludeRoundIds` and the round appears ONLY as the raw tail (never also
+  in the recall block); a round recorded without a `roundId` gets a deterministic `${runId}:${ordinal}`.
 - **Per-loop isolation (no leakage).** The factory yields a FRESH instance per step/loop; two
   sequential loops sharing the injected factory do NOT see each other's rounds. A strategy instance
   is never shared across concurrent requests.
@@ -431,13 +468,15 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   (`IPipelineContext.toolLoopContextStrategyFactory?`).
 - **MODIFY** `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
   (replace raw push with strategy record/form; per-loop instance via factory; external pair → round;
-  `inFlightStep.contextStrategyState?` + `controlTail?`, remove raw `transcript`; shrink),
+  `inFlightStep.contextStrategyState?` + `controlTail?`, stop WRITING raw `transcript` (keep it
+  read-only one release for resume migration); shrink),
   `smart-server.ts` (`BuildAgentDeps` + `buildServerCtx` populate) and the controller composition
   (`pipelines/controller.ts`) to wire the `RagRecallContextStrategy` factory from `recall.ts`
   (`runScopedRecall(['mcp-result'])` + `buildRecallBlock`) + `writeArtifact`.
 - **MODIFY** `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts` — on the in-flight
   step type: add `contextStrategyState?: SerializableStrategyState` and `controlTail?: Message[]`;
-  REMOVE the raw `transcript` accumulation field (replaced by these two bounded fields).
+  the raw `transcript` field is no longer WRITTEN (bounded fields replace it) but is RETAINED
+  read-only for one release as the resume-migration fallback, then removed in a follow-up.
 
 ---
 
