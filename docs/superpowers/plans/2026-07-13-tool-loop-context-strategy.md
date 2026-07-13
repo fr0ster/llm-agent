@@ -690,7 +690,7 @@ Thread `this._toolLoopContextStrategyFactory` into the `SmartAgentDeps` and the 
 ### Task 7: `tool-loop-core.ts` — return batch grouped + helper refactor
 
 **Files:**
-- Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop-core.ts` (`executeToolBatchWithHeartbeat` returns `{assistant, results}` alongside its existing outcome)
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop-core.ts` (`executeToolBatchWithHeartbeat` ADDS `resultMeta` to its outcome — it does NOT synthesize an assistant; the caller owns the assistant)
 - Modify: the shared helpers `buildBlockedToolMessages` (`tool-loop-core.ts:137`) / `buildHallucinatedToolMessages` (`tool-loop-core.ts:173`) — same file — to RETURN `{ assistant: Message; results: Message[] }` instead of mutating `messages`.
 - Test: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-core-group.test.ts`
 
@@ -815,13 +815,17 @@ test('buildBlockedToolMessages returns an {assistant, results} group', () => {
 - Consumes: `deps.toolLoopContextStrategyFactory` (Task 6 threaded via `ControllerHandlerDeps`), the strategies, `runScopedRecall`/`buildRecallBlock` (recall.ts).
 - Produces: per-round `messages = await strategy.form({ prefix: staticPrefix, queryText: step.instructions }) ++ inFlightStep.controlTail`; `strategy.record(round)` for internal + external-HIT + tool-error rounds; `controlTail` holds the three retry `{role:'user'}` messages; step-result recall stays in `staticPrefix`.
 
-- [ ] **Step 1: Failing (flatness + protocol) test** — a controller `runStep` driven (via the existing `controller-mcp-failloud.test.ts` harness) with a scripted executor that makes K tool calls then content, a `WindowContextStrategy` factory in deps, a fake `callMcp` returning results; assert (a) the per-round executor `messages` length stays bounded as K grows; (b) the tail is always the most-recent assistant+tool pair; (c) a tool-level error round is recorded (present in the next form()).
+- [ ] **Step 1: Failing (flatness + protocol + controlTail) test** — a controller `runStep` driven (via the existing `controller-mcp-failloud.test.ts` harness) with a scripted executor, a `WindowContextStrategy` factory in deps, a fake `callMcp` returning results; assert:
+  - (a) with K tool calls then content — the per-round executor `messages` length stays bounded as K grows;
+  - (b) the tail is always the most-recent assistant+tool pair;
+  - (c) a tool-level error round is recorded (present in the next `form()`);
+  - (d) **controlTail** — a scripted executor turn that triggers a retry `{role:'user'}` (e.g. an unavailable/hallucinated tool, or `res.kind==='error'`): assert the retry message (1) is written into `inFlightStep.controlTail`, (2) is present in the NEXT executor `messages` (after `form()`), (3) is persisted on the bundle, and (4) is pruned (removed from `controlTail`) once the next successful round is recorded.
 
 - [ ] **Step 2: Run → FAIL** (current loop pushes raw + resends all).
 
 - [ ] **Step 3: Implement:**
   - Add `toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory` to `ControllerHandlerDeps`.
-  - At step start (after building `staticPrefix` = system + step user msg + **step-result recall** via `runScopedRecall(['step-result'])` + `buildRecallBlock`): `const makeStrategy = () => (deps.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy()))({ run: { rag, runId: bundle.runId, meta, stepName: step.name } });`. **This task uses the FRESH path only: `const strategy = makeStrategy();`** (resume/migration selection is Task 12 — do NOT reference it here; Task 11 tests drive fresh runs only). `const controlTail = inFlightStep.controlTail ?? [];`.
+  - At step start (after building `staticPrefix` = system + step user msg + **step-result recall** via `runScopedRecall(['step-result'])` + `buildRecallBlock`): `const makeStrategy = () => (deps.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy()))({ run: { rag, runId: bundle.runId, meta, stepName: step.name } });`. **This task uses the FRESH path only: `const strategy = makeStrategy();`** (resume/migration selection is Task 12 — do NOT reference it here; Task 11 tests drive fresh runs only). Initialize the durable tail IN PLACE so append/prune write to the persisted field: `inFlightStep.controlTail = inFlightStep.controlTail ?? []; const controlTail = inFlightStep.controlTail;` (both alias the SAME array — `controlTail.push(...)`/`controlTail.length = 0` mutate the durable field, which is then persisted with the bundle).
   - Replace the raw pushes: on a successful/tool-error internal result (~1315-1352) — build `ToolRound{assistant, results, meta:[{identityKey, isError}]}`, `await strategy.record(round, ctx.options)`; the `writeArtifact(mcp-result)` moves INTO the injected `RagRecall` `record` (Task 13) so here it is the strategy's job. For an escalate (MCP-unavailable) keep the abort BEFORE record (unchanged).
   - External-tool HIT/resume (~1225-1242): build a `ToolRound` from the injected assistant/tool pair and `record` it (not a control message).
   - The three retry `{role:'user'}` messages (~1140, ~1156, ~1252): append to `inFlightStep.controlTail` (bounded ≤ maxRetries), prune on the next recorded round.
