@@ -230,8 +230,9 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
   are durable in RAG via `deps.record`.
 - `record(round)` → assign `roundId`; `await deps.record(round, options)`; keep `round` as `last`.
 - `form(base)` → **if `last == null`** (first round, or after an unknown-version restore) return
-  `base.prefix` and do NOT call `recall`. Otherwise `base.prefix` + (one
-  `{role:'user', content: await deps.recall(base.queryText, [last.roundId])}` bounded recall message
+  `base.prefix` and do NOT call `recall`. Otherwise normalize `const queryText = base.queryText ?? ''`
+  (`ToolLoopContextBase.queryText` is optional; `recall` takes `string`) and return `base.prefix` +
+  (one `{role:'user', content: await deps.recall(queryText, [last.roundId])}` bounded recall message
   over prior rounds, when non-empty) + the `last` round RAW (assistant + results) at the tail.
   Excluding `last.roundId` guarantees no double-appearance.
 - `snapshot()` → `{ version: 1, last: ToolRound | null, counter: number }` (minimal; bulk lives in
@@ -239,6 +240,9 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
   `roundId`s stay monotonic and exclusion stable after resume); prior rounds re-recalled from RAG
   (deterministic); unknown `version` → `{ last: null, counter: 0 }`. (`runId` is re-bound by the
   factory on resume, not part of the snapshot.)
+- Purpose: the RAG way. The **controller** wires `deps.record` = `writeArtifact(mcp-result)` and
+  `deps.recall` = `runScopedRecall(['mcp-result'], runId, …)` + `buildRecallBlock` — it already has a
+  run-scoped, per-round results RAG. **The controller is our RAG-managed example.**
 
 ### 4. `LegacyTranscriptContextStrategy` (MIGRATION-ONLY — raw messages)
 - Purpose: represent a pre-release in-flight step's raw `transcript` (arbitrary `Message[]` — user
@@ -250,9 +254,6 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
   The raw tail is whatever ended the migrated transcript, or the last new round — protocol-preserved.
 - `snapshot()` → `{ version: 1, rawMessages: Message[], newRounds: ToolRound[] }`; `restore(...)`
   reads that shape. (This is why Legacy's `ToolRound[]`-only state is NOT reused for migration.)
-- Purpose: the RAG way. The **controller** wires `deps.record` = `writeArtifact(mcp-result)`
-  and `deps.recall` = `runScopedRecall(['mcp-result'], runId, …)` + `buildRecallBlock` — it
-  already has a run-scoped, per-round results RAG. **The controller is our RAG-managed example.**
 
 ### Default pipeline / core = `WindowContextStrategy` (honest scope) — P2 fix
 The default pipeline does NOT today have a per-round tool-RESULT RAG: `history-upsert`
