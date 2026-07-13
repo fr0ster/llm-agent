@@ -11,9 +11,10 @@ collections**, behind a consumer-owned, swappable strategy.
 
 **Architecture (one sentence):** the context for each LLM call in a tool-calling
 loop is **formed fresh** — never grown — via a new focused
-`IToolLoopContextStrategy` (record + form) that the pipeline injects; our example
-compositions inject a RAG-recall implementation, but the consumer may inject a
-RAG-less window, a legacy accumulator, or their own.
+`IToolLoopContextStrategy` (record + form) that the pipeline injects; our **controller**
+composition injects a RAG-recall implementation while other example compositions
+(default pipeline / direct SmartAgent) inject a bounded RAG-less window, and the
+consumer may inject a window, a legacy accumulator, or their own.
 
 **Tech Stack:** TypeScript (ESM `.js` imports), `node:test` + `tsx`, Biome, Node ≥22.
 Packages touched: `@mcp-abap-adt/llm-agent` (interface), `@mcp-abap-adt/llm-agent-libs`
