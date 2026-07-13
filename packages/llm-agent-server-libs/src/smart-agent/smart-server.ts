@@ -35,6 +35,7 @@ import {
   type IMcpFailureClassifier,
   type IRag,
   isReadinessReporter,
+  type ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
@@ -349,6 +350,9 @@ export interface BuildAgentDeps {
    *  Decides whether a failed tool-call is an availability escalation or a
    *  tool-level error. Default: DefaultMcpFailureClassifier. */
   mcpFailureClassifier?: IMcpFailureClassifier;
+  /** Factory for per-loop tool-loop context strategy (DI/programmatic only — not in YAML).
+   *  When absent, resolved to Legacy at point-of-use. */
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 
 /**
@@ -727,6 +731,7 @@ export class SmartServer {
    * Passed to buildMcpBridge (Route B) and threaded into every pipeline ctx (Route A).
    */
   private readonly _mcpFailureClassifier: IMcpFailureClassifier;
+  private readonly _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -751,6 +756,7 @@ export class SmartServer {
       deps.mcpClients !== undefined || deps.connectMcp !== undefined;
     this._mcpFailureClassifier =
       deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
+    this._toolLoopContextStrategyFactory = deps.toolLoopContextStrategyFactory;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -2055,6 +2061,12 @@ export class SmartServer {
       callMcp: (n, a, s) => this.callMcp(n, a, s),
       mcpClients: scope.parts.mcpClients,
       mcpFailureClassifier: this._mcpFailureClassifier,
+      ...(this._toolLoopContextStrategyFactory
+        ? {
+            toolLoopContextStrategyFactory:
+              this._toolLoopContextStrategyFactory,
+          }
+        : {}),
       subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
         name: s.name,
         description: s.description,
@@ -2227,6 +2239,13 @@ export class SmartServer {
 
     // Thread the instance-level MCP failure classifier (DI/programmatic only).
     builder = builder.withMcpFailureClassifier(this._mcpFailureClassifier);
+
+    // Thread the instance-level tool-loop context strategy factory (DI/programmatic only).
+    if (this._toolLoopContextStrategyFactory) {
+      builder = builder.withToolLoopContextStrategyFactory(
+        this._toolLoopContextStrategyFactory,
+      );
+    }
 
     return builder;
   }

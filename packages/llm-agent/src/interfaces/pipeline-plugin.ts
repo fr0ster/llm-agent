@@ -12,6 +12,7 @@ import type { IMcpClient } from './mcp-client.js';
 import type { IMcpFailureClassifier } from './mcp-failure-classifier.js';
 import type { IRagRegistry } from './rag.js';
 import type { LlmCallEntry } from './request-logger.js';
+import type { ToolLoopContextStrategyFactory } from './tool-loop-context-strategy.js';
 
 /** A value that may already be resolved or arrive as a promise. */
 export type MaybePromise<T> = T | Promise<T>;
@@ -52,6 +53,7 @@ export interface IPipelineContext {
   logger?: ILogger;
   logLlmCall?(entry: LlmCallEntry): void;
   mcpFailureClassifier?: IMcpFailureClassifier;
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 
 /** A pipeline plugin = the implementation of an agent variant. It names itself,

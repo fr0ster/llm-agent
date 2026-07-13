@@ -494,6 +494,7 @@ export class DefaultPipeline implements IPipeline {
       historySummarizer: this.deps.historySummarizer,
       llmCallStrategy: this.resolvedLlmCallStrategy,
       mcpFailureClassifier: this.deps.mcpFailureClassifier,
+      toolLoopContextStrategyFactory: this.deps.toolLoopContextStrategyFactory,
 
       // Mutable state
       inputText: text,
