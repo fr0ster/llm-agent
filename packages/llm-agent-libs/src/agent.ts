@@ -1168,21 +1168,17 @@ export class SmartAgent {
         sessionId,
       );
       if (blockedCalls.length > 0) {
-        messages = buildBlockedToolMessages(
-          messages,
-          content,
-          blockedCalls,
-          opts,
-        );
+        const group = buildBlockedToolMessages(content, blockedCalls, opts);
+        messages = [...messages, group.assistant, ...group.results];
         continue;
       }
       if (hallucinations.length > 0) {
-        messages = buildHallucinatedToolMessages(
-          messages,
+        const group = buildHallucinatedToolMessages(
           content,
           toolCalls,
           hallucinations,
         );
+        messages = [...messages, group.assistant, ...group.results];
         continue;
       }
       if (validExternalCalls.length > 0) {

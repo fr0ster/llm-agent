@@ -577,23 +577,23 @@ export class ToolLoopHandler implements IStageHandler {
 
       // -- Handle blocked tools ----------------------------------------------
       if (blockedCalls.length > 0) {
-        messages = buildBlockedToolMessages(
-          messages,
+        const group = buildBlockedToolMessages(
           content,
           blockedCalls,
           ctx.options,
         );
+        messages = [...messages, group.assistant, ...group.results];
         continue;
       }
 
       // -- Handle hallucinated tools -----------------------------------------
       if (hallucinations.length > 0) {
-        messages = buildHallucinatedToolMessages(
-          messages,
+        const group = buildHallucinatedToolMessages(
           content,
           toolCalls,
           hallucinations,
         );
+        messages = [...messages, group.assistant, ...group.results];
         continue;
       }
 
