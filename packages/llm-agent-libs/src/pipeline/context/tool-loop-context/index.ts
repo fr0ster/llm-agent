@@ -1,4 +1,5 @@
 export { LegacyAccumulateContextStrategy } from './legacy-accumulate-context-strategy.js';
+export { LegacyTranscriptContextStrategy } from './legacy-transcript-context-strategy.js';
 export type {
   RagRecallDeps,
   RagRecallStrategyRunDeps,
