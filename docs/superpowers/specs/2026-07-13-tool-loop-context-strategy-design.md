@@ -86,10 +86,11 @@ export interface ToolRound {
   /** Round ordinal within the current loop/step (0-based). */
   ordinal?: number;
   /** Durable, stable round id. A RAG-backed strategy REQUIRES one to exclude the
-   *  most-recent (raw-tail) round from its recall block; if absent on record() the
-   *  strategy assigns a deterministic one (e.g. `${runId}:${ordinal}`) and uses it as
-   *  the RAG record key. Guarantees the last round appears EITHER raw OR in recall,
-   *  never both. */
+   *  most-recent (raw-tail) round from its recall block. If absent on record(), the
+   *  strategy assigns it — see `RagRecallContextStrategy` (it binds `runId` at
+   *  construction and keeps a monotonic counter in its serialized state:
+   *  `roundId = ${runId}:${counter}`), NOT relying on the optional `ordinal` or the
+   *  opaque deps. Guarantees the last round appears EITHER raw OR in recall, never both. */
   roundId?: string;
 }
 
@@ -212,17 +213,22 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
     recall(queryText: string, excludeRoundIds: string[], options?: CallOptions): Promise<string>;
   }
   ```
-- On `record`, if `round.roundId` is unset the strategy assigns a deterministic id
-  (`${runId}:${ordinal}`) BEFORE persisting, and uses it as the RAG record key.
+- Binds `runId` (read once from the typed `ToolLoopContextStrategyDeps.run` its factory receives —
+  for the controller, `{ rag, runId }`) and keeps a monotonic `counter` in its serialized state.
+- On `record`, if `round.roundId` is unset it assigns `roundId = ${runId}:${counter++}` BEFORE
+  persisting, and uses it as the RAG record key — deterministic, independent of the optional
+  `ordinal`, stable across resume (the counter is in `snapshot()`).
 - Holds only the MOST-RECENT recorded round in memory (for the raw tail); all rounds' results
   are durable in RAG via `deps.record`.
 - `record(round)` → assign `roundId`; `await deps.record(round, options)`; keep `round` as `last`.
 - `form(base)` → `base.prefix` + (one `{role:'user', content: await deps.recall(base.queryText, [last.roundId])}`
   bounded recall message over prior rounds, when non-empty) + the `last` round RAW
   (assistant + results) at the tail. Excluding `last.roundId` guarantees no double-appearance.
-- `snapshot()` → `{ version: 1, last: ToolRound | null }` (minimal; bulk lives in RAG).
-  `restore({version, last})` → re-establishes the raw tail; prior rounds re-recalled from RAG
-  (deterministic); unknown `version` → `last: null`.
+- `snapshot()` → `{ version: 1, last: ToolRound | null, counter: number }` (minimal; bulk lives in
+  RAG). `restore({version, last, counter})` → re-establishes the raw tail + the counter (so new
+  `roundId`s stay monotonic and exclusion stable after resume); prior rounds re-recalled from RAG
+  (deterministic); unknown `version` → `{ last: null, counter: 0 }`. (`runId` is re-bound by the
+  factory on resume, not part of the snapshot.)
 - Purpose: the RAG way. The **controller** wires `deps.record` = `writeArtifact(mcp-result)`
   and `deps.recall` = `runScopedRecall(['mcp-result'], runId, …)` + `buildRecallBlock` — it
   already has a run-scoped, per-round results RAG. **The controller is our RAG-managed example.**
@@ -271,12 +277,15 @@ The executor therefore never loses prior-step context: it lives in the prefix on
   (`bundle.pending.kind==='external-tool'`, ~1225-1242) the injected `assistant(tool_call)`→`tool(result)`
   pair is `record`ed as a round — so it enters the strategy and is bounded/recalled like any result,
   NOT special-cased.
-- **The only NON-round control message is the unavailable-tool retry feedback** ("Tool X is not
-  available", ~1252) — a `{role:'user'}` message with no recorded round. It lives in a bounded
+- **The NON-round control messages are ALL the `retries++; messages.push({role:'user',…}); continue`
+  paths** — a bad model turn that produced no recorded round: (a) executor **error** retry
+  ("The previous attempt failed: …", ~1140), (b) **empty tool-call** retry ("…produced an empty tool
+  call…", ~1156), and (c) **unavailable-tool** retry ("Tool X is not available", ~1252). Each is a
+  `{role:'user'}` message with no preceding recorded round. They ALL live in a bounded
   **`controlTail: Message[]`** owned by the handler: appended AFTER `form()`'s output on EVERY round
-  (so it does not vanish on the next `form()` — closes the post-resume hole), and PRUNED once the
-  model's next successful round is recorded (it has served its purpose). `controlTail` is persisted
-  in `inFlightStep` and is O(bounded) (at most `maxRetries` entries).
+  (so none vanishes on the next `form()` — closes the post-resume hole), and PRUNED once the model's
+  next successful round is recorded (they have served their purpose). `controlTail` is persisted in
+  `inFlightStep` and is O(bounded) (at most `maxRetries` entries).
 - Each round's sent `messages = await strategy.form({prefix, queryText}) ++ controlTail`. Both parts
   are bounded and persisted; the strategy owns rounds, the handler owns the short control tail.
 - Net effect: `controller-coordinator-handler.ts` shrinks (raw-round transcript management leaves it).
@@ -360,10 +369,10 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
 - **External-tool pair = a round.** The pending external-tool assistant/tool pair
   (`bundle.pending.kind==='external-tool'`, ~1225-1242) is `record`ed as a `ToolRound` on resume →
   it enters the strategy (bounded/recalled), so it is NOT a separate durable concern.
-- **The bounded `controlTail`.** The only non-round control message is the unavailable-tool retry
-  feedback ("Tool X is not available", ~1252) — a `{role:'user'}` message. It is held in a bounded
-  `inFlightStep.controlTail: Message[]` (≤ `maxRetries` entries), appended AFTER `form()` on EVERY
-  round, and pruned once the next successful round is recorded. Persisting it (not the whole
+- **The bounded `controlTail`.** The non-round control messages are ALL the retry `{role:'user'}`
+  feedbacks (executor-error ~1140, empty-tool-call ~1156, unavailable-tool ~1252). They are held in a
+  bounded `inFlightStep.controlTail: Message[]` (≤ `maxRetries` entries), appended AFTER `form()` on
+  EVERY round, and pruned once the next successful round is recorded. Persisting it (not the whole
   transcript) closes the post-resume hole: after the first post-resume `form()`, the tail is still
   present because it is re-appended each round from durable state, not carried inside `form()`.
 - **Resume mechanism.** No raw transcript is persisted. `staticPrefix` is rebuilt deterministically,
@@ -379,15 +388,16 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   `snapshot()`, JSON-serializable/versioned) and `controlTail?: Message[]` (bounded). The raw
   `transcript` field is RETAINED for one release as a read-only **migration** fallback (below), then
   removed in a follow-up. Everything else reuses existing `bundle`/`inFlightStep` persistence.
-- **Migration (bundles suspended before this release).** A pre-existing in-flight step has
-  `transcript` but NO `contextStrategyState`/`controlTail`. On resume the handler detects this
-  (`contextStrategyState === undefined && transcript?.length`) and **seeds** the strategy from the old
-  transcript: it splits `transcript` into its `ToolRound` groups (assistant-`tool_calls` + following
-  `tool` messages) and any trailing non-round control messages → `strategy.restore({version:1, rounds})`
-  + `controlTail = <the control messages>`. Groups that cannot be cleanly parsed fall back to the
-  `LegacyAccumulateContextStrategy` seeded with the whole `transcript` verbatim for that step (guarantees
-  no context loss, no crash), and the run continues under the injected strategy for NEW rounds. This
-  one-release read path is documented for removal in the follow-up. No data loss, no fail-loud on resume.
+- **Migration (bundles suspended before this release) — strategy-agnostic, verbatim.** A pre-existing
+  in-flight step has `transcript` but NO `contextStrategyState`/`controlTail`. On resume the handler
+  detects this (`contextStrategyState === undefined && transcript?.length`) and completes THAT step
+  under a `LegacyAccumulateContextStrategy` seeded with the whole `transcript` **verbatim** —
+  REGARDLESS of the injected factory. This avoids any strategy-specific shape mismatch (e.g. RagRecall's
+  `{last}` state expects results already in RAG, which a pre-release transcript's rounds are NOT) and any
+  context loss: the step finishes exactly as it would have pre-release. Only steps that START after the
+  deploy (fresh `runStep` → fresh factory instance) use the injected strategy. We do NOT try to parse the
+  transcript into rounds or back-fill RAG. This one-release read path is documented for removal in the
+  follow-up. No data loss, no fail-loud on resume.
 
 ---
 
@@ -426,12 +436,14 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   `JSON.parse(JSON.stringify(...))` unchanged and carries a `version`; `restore()` of an unknown
   `version` falls back to clean state without throwing.
 - **Resume migration.** An in-flight step with a legacy `transcript` and NO `contextStrategyState`:
-  resume seeds the strategy from `transcript` (parsed into rounds + control tail), continues to
-  completion, loses no context; an unparseable `transcript` falls back to Legacy-seeded verbatim
-  (no crash).
-- **RagRecall no double-appearance.** With a stubbed `recall`, assert the most-recent round's
-  `roundId` is passed in `excludeRoundIds` and the round appears ONLY as the raw tail (never also
-  in the recall block); a round recorded without a `roundId` gets a deterministic `${runId}:${ordinal}`.
+  resume completes that step under `LegacyAccumulateContextStrategy` seeded with the `transcript`
+  VERBATIM (even when the injected factory is RagRecall/Window), loses no context, does not crash;
+  a step that STARTS post-deploy uses the injected strategy.
+- **RagRecall no double-appearance + stable id across resume.** With a stubbed `recall`, assert the
+  most-recent round's `roundId` is passed in `excludeRoundIds` and the round appears ONLY as the raw
+  tail (never also in the recall block); assert `roundId` = `${boundRunId}:${counter}` is monotonic and
+  survives `snapshot()`→`restore()` (the counter is in the serialized state), so exclusion stays stable
+  after resume.
 - **Per-loop isolation (no leakage).** The factory yields a FRESH instance per step/loop; two
   sequential loops sharing the injected factory do NOT see each other's rounds. A strategy instance
   is never shared across concurrent requests.
