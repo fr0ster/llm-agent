@@ -695,11 +695,16 @@ Thread `this._toolLoopContextStrategyFactory` into the `SmartAgentDeps` and the 
 - Test: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-core-group.test.ts`
 
 **Interfaces:**
-- Produces: `executeToolBatchWithHeartbeat` outcome gains `toolMessages` grouped as `{ assistant, results }` (keep the flat `toolMessages` for backward-compat, ADD a `group?: { assistant: Message; results: Message[] }`); `buildBlockedToolMessages(content, blockedCalls)` → `{ assistant, results }`; `buildHallucinatedToolMessages(content, toolCalls, hallucinations)` → `{ assistant, results }`.
+- Produces:
+  - `buildBlockedToolMessages(content, blockedCalls)` → `{ assistant: Message; results: Message[] }` (a SYNTHETIC group — these helpers already own both the assistant and the tool responses).
+  - `buildHallucinatedToolMessages(content, toolCalls, hallucinations)` → `{ assistant: Message; results: Message[] }`.
+  - `executeToolBatchWithHeartbeat` outcome ADDS per-result exec metadata aligned to `toolMessages`: `resultMeta: Array<{ identityKey?: string; isError: boolean }>` (isError = `!r.res?.ok || (r.res.ok && !!r.res.value.isError)`). It does **NOT** build an assistant message — the CALLER owns the assistant (`content || null` + the LLM's `tool_calls`, as at tool-loop.ts:714-719), so the assistant's real `content` is preserved.
 
-> This task is additive: it exposes the grouped shape without yet changing loop behavior (Tasks 8-9 consume it). Keep existing call sites compiling by having the loops still build `messages` from the returned group in the SAME way until Tasks 8-9 replace them.
+> Rationale (P1): the core has no `content` (that is the LLM's, held by the caller); the internal-batch assistant is built by the caller. So core returns only `results` + `resultMeta`, and the caller assembles the `ToolRound` = `{ assistant: <caller's assistant>, results: toolMessages, meta: resultMeta }`. The synthetic blocked/hallucinated helpers DO own their assistant, so they return full `{assistant, results}` groups.
 
-- [ ] **Step 1: Failing test** — assert the helpers return a group:
+> Additive: this task exposes the grouped/synthetic shapes and `resultMeta` without yet changing loop behavior (Tasks 8-9 consume them). Keep existing call sites compiling by appending `group.assistant, ...group.results` (blocked/hallucinated) exactly as before.
+
+- [ ] **Step 1: Failing test:**
 
 ```ts
 import assert from 'node:assert/strict';
@@ -716,13 +721,13 @@ test('buildBlockedToolMessages returns an {assistant, results} group', () => {
 
 - [ ] **Step 2: Run → FAIL** (helper returns `Message[]`/mutates, not a group).
 
-- [ ] **Step 3: Refactor the helpers** to build and RETURN `{ assistant, results }` (move the message-construction out of the in-place `messages = [...]` mutation). Update their current callers in `tool-loop.ts` and `agent.ts` to append `group.assistant, ...group.results` to `messages` (unchanged behavior for now).
+- [ ] **Step 3: Refactor the two synthetic helpers** to build and RETURN `{ assistant, results }` (move construction out of the in-place `messages = [...]` mutation). Update callers in `tool-loop.ts`/`agent.ts` to append `group.assistant, ...group.results` (unchanged behavior for now).
 
-- [ ] **Step 4: `executeToolBatchWithHeartbeat`** — expose the batch's `{ assistant, results }` group (derive `assistant` from the batch's tool_calls, `results` from `toolMessages`) on the returned outcome as `group`. Keep `toolMessages` too.
+- [ ] **Step 4: `executeToolBatchWithHeartbeat`** — add `resultMeta` (aligned to `toolMessages`) to the returned outcome. Do NOT synthesize an assistant. Keep `toolMessages`.
 
 - [ ] **Step 5: Build + test → PASS. Existing tool-loop tests still green.**
 
-- [ ] **Step 6: Commit** — `refactor(libs): tool-loop-core exposes {assistant,results} groups (helpers return groups)`.
+- [ ] **Step 6: Commit** — `refactor(libs): tool-loop-core exposes synthetic groups + resultMeta (caller owns internal assistant)`.
 
 ---
 
@@ -733,22 +738,26 @@ test('buildBlockedToolMessages returns an {assistant, results} group', () => {
 - Test: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-strategy.test.ts`
 
 **Interfaces:**
-- Consumes: `ctx.toolLoopContextStrategyFactory` (Task 6), the grouped outcome + helpers (Task 7), the strategies.
-- Produces: the loop calls `strategy.record(round)` for EVERY group path and `messages = await strategy.form({ prefix, queryText }) ++ controlTail` each iteration; no `messages = [...messages, ...]` accumulation remains.
+- Consumes: `ctx.toolLoopContextStrategyFactory` (Task 6), the synthetic groups + `resultMeta` (Task 7), the strategies.
+- Produces: the loop calls `strategy.record(round)` for EVERY assistant-`tool_calls`+result group and `messages = (await strategy.form({ prefix: staticPrefix, queryText })).concat(controlTail)` each iteration; no `messages = [...messages, ...]` accumulation remains.
 
-- [ ] **Step 1: Failing (flatness) test** — build a `ToolLoopHandler` run with a scripted LLM that emits K tool calls then content, a `WindowContextStrategy` factory on `ctx`, and assert the per-round context stays bounded (capture the `messages` passed to the LLM each round; assert length does not grow with K). Model the harness on the existing `tool-loop-timing-log.test.ts`.
+- [ ] **Step 1: Failing (flatness) test** — build a `ToolLoopHandler` run with a scripted LLM that emits K tool calls then content, a `WindowContextStrategy` factory on `ctx`, and assert the per-round context stays bounded (capture the `messages` passed to the LLM each round; assert length does not grow with K). Model the harness on the existing `tool-loop-timing-log.test.ts`. Add a SECOND case: a scripted LLM that triggers `runOutputValidationReprompt` once — assert the reprompt correction is still present in the round AFTER the next `form()` (i.e. it did not vanish).
 
-- [ ] **Step 2: Run → FAIL** (current loop accumulates → length grows with K).
+- [ ] **Step 2: Run → FAIL** (current loop accumulates → length grows with K; the reprompt vanishes after a form()).
 
 - [ ] **Step 3: Implement:**
-  - At loop start: `const strategy = (ctx.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy()))({ run: undefined });` (default pipeline injects Window via composition; bare = Legacy).
-  - Compute `staticPrefix` once (the assembled messages before the loop).
-  - Replace EACH `messages = <build>(messages, …); continue` and the `messages = [...messages, ...outcome.toolMessages]` (@829) with: build the `ToolRound` from the group (`{assistant, results, meta:[{isError}]}`), `await strategy.record(round)`, then `messages = await strategy.form({ prefix: staticPrefix, queryText })` (queryText = the request/step text). For blocked/hallucinated/external-HIT/injectPendingResults groups: same — record as a `ToolRound`.
-  - There is no `controlTail` in this loop (its retries are hallucinated/blocked → rounds); if any pure `{role:'user'}` control message exists, append it after `form()` and persist n/a (stateless pipeline).
+  - Build `staticPrefix` = the assembled messages **after** `injectToolPriority(messages, externalTools)` (tool-loop.ts:134) — so the external-tool priority system hint is inside the prefix and re-emitted every round.
+  - `const strategy = (ctx.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy()))({ run: undefined });` (SmartServer composition injects Window; bare = Legacy).
+  - `const controlTail: Message[] = [];` (local — the pipeline loop is stateless, no durable persistence).
+  - **`injectPendingResults` (tool-loop.ts:135):** convert its injected assistant/tool group into a `ToolRound` and `await strategy.record(round)` BEFORE the first `form()` (so pending mixed-call results survive subsequent rounds).
+  - Replace `messages = [...messages, ...outcome.toolMessages]` (@829): build `ToolRound = { assistant: <the caller-built assistant, content||null + tool_calls>, results: outcome.toolMessages, meta: outcome.resultMeta }`, `await strategy.record(round)`.
+  - Replace blocked (:578) / hallucinated (:590) / external-HIT (:622) `messages = <build>(...)`/`[...]`: build a `ToolRound` from the group and `await strategy.record(round)`.
+  - **`runOutputValidationReprompt` (:525):** its assistant(content)+user(correction) is NOT a tool round → push both messages into `controlTail` (a bounded local tail, cap at the loop's max reprompts). Prune `controlTail` after the next recorded round.
+  - Each iteration (and after every record/reprompt): `messages = (await strategy.form({ prefix: staticPrefix, queryText })).concat(controlTail)` (queryText = the request text).
 
-- [ ] **Step 4: Run flatness test → PASS. Existing tool-loop tests green** (with no factory, Legacy → byte-identical).
+- [ ] **Step 4: Run both tests → PASS. Existing tool-loop tests green** (no factory → Legacy → byte-identical; reprompt preserved).
 
-- [ ] **Step 5: Commit** — `feat(libs): ToolLoopHandler forms per-round context via IToolLoopContextStrategy`.
+- [ ] **Step 5: Commit** — `feat(libs): ToolLoopHandler forms per-round context via strategy (+ controlTail for validation reprompt)`.
 
 ---
 
@@ -762,13 +771,20 @@ test('buildBlockedToolMessages returns an {assistant, results} group', () => {
 - Consumes: `this.deps.toolLoopContextStrategyFactory` (Task 6), grouped helpers (Task 7).
 - Produces: the direct loop applies the SAME `ToolRound` record/form rule as Task 8.
 
-- [ ] **Step 1: Failing (flatness) test** — a `SmartAgent` built with a `WindowContextStrategy` factory in deps + a tool that returns results across K rounds; assert the per-round context stays bounded. Model on `streaming.test.ts` harness.
+- [ ] **Step 1: Failing (flatness) test** — a `SmartAgent` built with a `WindowContextStrategy` factory in deps + a tool that returns results across K rounds; assert the per-round context stays bounded. Model on `streaming.test.ts` harness. Add a reprompt case as in Task 8.
 
-- [ ] **Step 2: Run → FAIL** (agent.ts:1319 accumulates).
+- [ ] **Step 2: Run → FAIL** (agent.ts:1319 accumulates; reprompt vanishes).
 
-- [ ] **Step 3: Implement** — mirror Task 8 in `_runStreamingToolLoop`: create the per-loop strategy from `this.deps.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy())`, convert the blocked (1167)/hallucinated (1176)/internal (1226/1319)/injectPendingResults (773) group appends to `record` + `form({prefix: staticPrefix, queryText})`.
+- [ ] **Step 3: Implement** — mirror Task 8 in `_runStreamingToolLoop`:
+  - `staticPrefix` = messages **after** `injectToolPriority(messages, externalTools)` (agent.ts:772).
+  - `const strategy = (this.deps.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy()))({ run: undefined });` + `const controlTail: Message[] = [];`.
+  - `injectPendingResults` (agent.ts:773) → record as a `ToolRound` BEFORE the first `form()`.
+  - internal batch (1226/1319) → `ToolRound{ assistant: <caller assistant, content||null + tool_calls>, results: outcome.toolMessages, meta: outcome.resultMeta }` → `record`.
+  - blocked (1167) / hallucinated (1176) → `ToolRound` from the group → `record`.
+  - `runOutputValidationReprompt` (agent.ts:1101) → push assistant(content)+user(correction) into `controlTail`; prune after next round.
+  - each iteration: `messages = (await strategy.form({ prefix: staticPrefix, queryText })).concat(controlTail)`.
 
-- [ ] **Step 4: Run flatness test → PASS. Existing agent tests green.**
+- [ ] **Step 4: Run both tests → PASS. Existing agent tests green.**
 
 - [ ] **Step 5: Commit** — `feat(libs): direct SmartAgent tool loop forms per-round context via strategy`.
 
@@ -805,7 +821,7 @@ test('buildBlockedToolMessages returns an {assistant, results} group', () => {
 
 - [ ] **Step 3: Implement:**
   - Add `toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory` to `ControllerHandlerDeps`.
-  - At step start (after building `staticPrefix` = system + step user msg + **step-result recall** via `runScopedRecall(['step-result'])` + `buildRecallBlock`): `const makeStrategy = () => (deps.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy()))({ run: { rag, runId: bundle.runId, meta, stepName: step.name } });` then apply the resume/migration selection from Task 12 (fresh vs `restore` vs `LegacyTranscript`).
+  - At step start (after building `staticPrefix` = system + step user msg + **step-result recall** via `runScopedRecall(['step-result'])` + `buildRecallBlock`): `const makeStrategy = () => (deps.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy()))({ run: { rag, runId: bundle.runId, meta, stepName: step.name } });`. **This task uses the FRESH path only: `const strategy = makeStrategy();`** (resume/migration selection is Task 12 — do NOT reference it here; Task 11 tests drive fresh runs only). `const controlTail = inFlightStep.controlTail ?? [];`.
   - Replace the raw pushes: on a successful/tool-error internal result (~1315-1352) — build `ToolRound{assistant, results, meta:[{identityKey, isError}]}`, `await strategy.record(round, ctx.options)`; the `writeArtifact(mcp-result)` moves INTO the injected `RagRecall` `record` (Task 13) so here it is the strategy's job. For an escalate (MCP-unavailable) keep the abort BEFORE record (unchanged).
   - External-tool HIT/resume (~1225-1242): build a `ToolRound` from the injected assistant/tool pair and `record` it (not a control message).
   - The three retry `{role:'user'}` messages (~1140, ~1156, ~1252): append to `inFlightStep.controlTail` (bounded ≤ maxRetries), prune on the next recorded round.
@@ -832,7 +848,7 @@ test('buildBlockedToolMessages returns an {assistant, results} group', () => {
 
 - [ ] **Step 2: Run → FAIL.**
 
-- [ ] **Step 3: Implement** — at step entry:
+- [ ] **Step 3: Implement** — REPLACE Task 11's fresh `const strategy = makeStrategy();` at step entry with the resume/migration selection:
 
 ```ts
 let strategy: IToolLoopContextStrategy;
@@ -882,7 +898,9 @@ where `makeStrategy = () => (deps.toolLoopContextStrategyFactory ?? (() => new L
       };
       return new RagRecallContextStrategy(
         {
-          // Mirror the existing mcp-result write (was controller-coordinator-handler.ts:1316):
+          // Mirror the existing mcp-result write (was controller-coordinator-handler.ts:1316).
+          // Write roundId as its OWN metadata field so recall can exclude the raw-tail
+          // round by roundId — identityKey stays tool+args for dedup and is a DIFFERENT key.
           record: (round, options) =>
             writeArtifact(
               rag,
@@ -892,13 +910,17 @@ where `makeStrategy = () => (deps.toolLoopContextStrategyFactory ?? (() => new L
                 task: stepName,
                 runId,
                 identityKey: round.meta?.[0]?.identityKey ?? round.roundId,
+                roundId: round.roundId,
                 content: round.results.map((r) => String(r.content ?? '')).join('\n'),
               },
               options,
             ),
-          recall: async (queryText, exclude, options) => {
+          recall: async (queryText, excludeRoundIds, options) => {
             const rows = await runScopedRecall(rag, queryText, RECALL_K_MCP, runId, mcpBound, ['mcp-result'], options);
-            return buildRecallBlock(rows.filter((r) => !exclude.includes(String(r.metadata?.identityKey))), RECALL_MAX_CHARS_MCP);
+            return buildRecallBlock(
+              rows.filter((r) => !excludeRoundIds.includes(String(r.metadata?.roundId))),
+              RECALL_MAX_CHARS_MCP,
+            );
           },
         },
         { runId },
