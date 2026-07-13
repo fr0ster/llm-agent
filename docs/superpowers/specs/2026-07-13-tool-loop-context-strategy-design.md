@@ -212,23 +212,44 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
      *  which is emitted raw). Deterministic given the same RAG contents + query. */
     recall(queryText: string, excludeRoundIds: string[], options?: CallOptions): Promise<string>;
   }
+  /** The concrete shape this strategy's factory expects as `ToolLoopContextStrategyDeps.run`
+   *  (the generic seam keeps `run: unknown`; this is RagRecall's local typed contract). */
+  interface RagRecallStrategyRunDeps {
+    /** Stable run id used to build `roundId`. VALIDATED fail-loud at construction —
+     *  the factory throws a clear error if it is missing/empty. */
+    runId: string;
+  }
   ```
-- Binds `runId` (read once from the typed `ToolLoopContextStrategyDeps.run` its factory receives —
-  for the controller, `{ rag, runId }`) and keeps a monotonic `counter` in its serialized state.
+- Its factory closes over `RagRecallStrategyRunDeps` (from `deps.run`) and **validates `runId`
+  fail-loud** (throws if absent/empty — never silently produces unstable ids); keeps a monotonic
+  `counter` in its serialized state.
 - On `record`, if `round.roundId` is unset it assigns `roundId = ${runId}:${counter++}` BEFORE
   persisting, and uses it as the RAG record key — deterministic, independent of the optional
   `ordinal`, stable across resume (the counter is in `snapshot()`).
 - Holds only the MOST-RECENT recorded round in memory (for the raw tail); all rounds' results
   are durable in RAG via `deps.record`.
 - `record(round)` → assign `roundId`; `await deps.record(round, options)`; keep `round` as `last`.
-- `form(base)` → `base.prefix` + (one `{role:'user', content: await deps.recall(base.queryText, [last.roundId])}`
-  bounded recall message over prior rounds, when non-empty) + the `last` round RAW
-  (assistant + results) at the tail. Excluding `last.roundId` guarantees no double-appearance.
+- `form(base)` → **if `last == null`** (first round, or after an unknown-version restore) return
+  `base.prefix` and do NOT call `recall`. Otherwise `base.prefix` + (one
+  `{role:'user', content: await deps.recall(base.queryText, [last.roundId])}` bounded recall message
+  over prior rounds, when non-empty) + the `last` round RAW (assistant + results) at the tail.
+  Excluding `last.roundId` guarantees no double-appearance.
 - `snapshot()` → `{ version: 1, last: ToolRound | null, counter: number }` (minimal; bulk lives in
   RAG). `restore({version, last, counter})` → re-establishes the raw tail + the counter (so new
   `roundId`s stay monotonic and exclusion stable after resume); prior rounds re-recalled from RAG
   (deterministic); unknown `version` → `{ last: null, counter: 0 }`. (`runId` is re-bound by the
   factory on resume, not part of the snapshot.)
+
+### 4. `LegacyTranscriptContextStrategy` (MIGRATION-ONLY — raw messages)
+- Purpose: represent a pre-release in-flight step's raw `transcript` (arbitrary `Message[]` — user
+  retry messages, external injected pairs, mixed dynamic turns) that CANNOT be expressed as
+  `ToolRound[]` without parsing. Used ONLY by the resume-migration path; never injected as a factory.
+- Constructed with `{ rawMessages: Message[] }` (the legacy `transcript`, verbatim).
+- `record(round)` — appends the NEW post-resume round to an internal `newRounds: ToolRound[]` list.
+- `form(base)` — `base.prefix` + `rawMessages` (verbatim) + each `newRounds` round expanded raw.
+  The raw tail is whatever ended the migrated transcript, or the last new round — protocol-preserved.
+- `snapshot()` → `{ version: 1, rawMessages: Message[], newRounds: ToolRound[] }`; `restore(...)`
+  reads that shape. (This is why Legacy's `ToolRound[]`-only state is NOT reused for migration.)
 - Purpose: the RAG way. The **controller** wires `deps.record` = `writeArtifact(mcp-result)`
   and `deps.recall` = `runScopedRecall(['mcp-result'], runId, …)` + `buildRecallBlock` — it
   already has a run-scoped, per-round results RAG. **The controller is our RAG-managed example.**
@@ -391,13 +412,16 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
 - **Migration (bundles suspended before this release) — strategy-agnostic, verbatim.** A pre-existing
   in-flight step has `transcript` but NO `contextStrategyState`/`controlTail`. On resume the handler
   detects this (`contextStrategyState === undefined && transcript?.length`) and completes THAT step
-  under a `LegacyAccumulateContextStrategy` seeded with the whole `transcript` **verbatim** —
-  REGARDLESS of the injected factory. This avoids any strategy-specific shape mismatch (e.g. RagRecall's
-  `{last}` state expects results already in RAG, which a pre-release transcript's rounds are NOT) and any
-  context loss: the step finishes exactly as it would have pre-release. Only steps that START after the
-  deploy (fresh `runStep` → fresh factory instance) use the injected strategy. We do NOT try to parse the
-  transcript into rounds or back-fill RAG. This one-release read path is documented for removal in the
-  follow-up. No data loss, no fail-loud on resume.
+  under a `LegacyTranscriptContextStrategy({ rawMessages: transcript })` — REGARDLESS of the injected
+  factory. That migration-only strategy holds the raw `Message[]` verbatim (a legacy transcript
+  contains user retry messages / external pairs / mixed turns that are NOT expressible as
+  `ToolRound[]`, so `LegacyAccumulateContextStrategy`'s round-only state cannot represent it). This
+  avoids any strategy-specific shape mismatch (e.g. RagRecall's `{last}` expects results already in
+  RAG, which a pre-release transcript's rounds are NOT) and any context loss: the step finishes
+  exactly as it would have pre-release. Only steps that START after the deploy (fresh `runStep` →
+  fresh factory instance) use the injected strategy. We do NOT parse the transcript into rounds or
+  back-fill RAG. This one-release read path is documented for removal in the follow-up. No data loss,
+  no fail-loud on resume.
 
 ---
 
@@ -436,9 +460,9 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   `JSON.parse(JSON.stringify(...))` unchanged and carries a `version`; `restore()` of an unknown
   `version` falls back to clean state without throwing.
 - **Resume migration.** An in-flight step with a legacy `transcript` and NO `contextStrategyState`:
-  resume completes that step under `LegacyAccumulateContextStrategy` seeded with the `transcript`
-  VERBATIM (even when the injected factory is RagRecall/Window), loses no context, does not crash;
-  a step that STARTS post-deploy uses the injected strategy.
+  resume completes that step under `LegacyTranscriptContextStrategy({rawMessages: transcript})` (even
+  when the injected factory is RagRecall/Window) — `form()` = prefix + rawMessages + any new rounds;
+  loses no context, does not crash; a step that STARTS post-deploy uses the injected strategy.
 - **RagRecall no double-appearance + stable id across resume.** With a stubbed `recall`, assert the
   most-recent round's `roundId` is passed in `excludeRoundIds` and the round appears ONLY as the raw
   tail (never also in the recall block); assert `roundId` = `${boundRunId}:${counter}` is monotonic and
@@ -467,7 +491,8 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
 - **NEW** `packages/llm-agent-libs/src/pipeline/context/tool-loop-context/`:
   - `legacy-accumulate-context-strategy.ts`
   - `window-context-strategy.ts`
-  - `rag-recall-context-strategy.ts` (+ `RagRecallDeps`)
+  - `rag-recall-context-strategy.ts` (+ `RagRecallDeps`, `RagRecallStrategyRunDeps`)
+  - `legacy-transcript-context-strategy.ts` (migration-only; raw `Message[]` state)
   - `index.ts` barrel.
 - **MODIFY** `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` (per-loop factory instance;
   ~829 accumulation → record/form), `tool-loop-core.ts` (return the batch `assistant`+`results`
