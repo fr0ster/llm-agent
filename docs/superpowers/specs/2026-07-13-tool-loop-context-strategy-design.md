@@ -117,13 +117,26 @@ export interface IToolLoopContextStrategy {
    *  for window, recall for RAG). Emits exactly `base.prefix` when nothing recorded. */
   form(base: ToolLoopContextBase, options?: CallOptions): Promise<Message[]>;
 
-  /** Serialize the impl's durable state (running list / window buffer / recall
-   *  params) so an in-flight loop survives suspend/resume. RAG-backed impls may
-   *  return a minimal marker (results live in RAG). See "Durable state & resume". */
-  snapshot(): unknown;
-  /** Restore from a prior snapshot() on resume (instead of reset()). */
-  restore(state: unknown): void;
+  /** Serialize the impl's durable state so an in-flight loop survives suspend/resume.
+   *  MUST return a **plain JSON-serializable** value (no Map/Set/class/function/cyclic
+   *  refs) — it is persisted into the backend `bundle` and JSON round-tripped. MUST
+   *  carry a `version` for forward-compat. RAG-backed impls may return a minimal marker
+   *  (results live in RAG). See "Durable state & resume". */
+  snapshot(): SerializableStrategyState;
+  /** Restore from a prior snapshot() on resume (instead of reset()). MUST tolerate a
+   *  `version` it does not recognize by falling back to a clean state (never throw). */
+  restore(state: SerializableStrategyState): void;
 }
+
+/** Plain JSON-serializable strategy state. `version` is mandatory; the rest is the
+ *  impl's own shape. Persisted in the durable bundle → NO Map/Set/class/function/cyclic. */
+export interface SerializableStrategyState {
+  readonly version: number;
+  readonly [k: string]: JsonValue;
+}
+export type JsonValue =
+  | null | boolean | number | string
+  | JsonValue[] | { [k: string]: JsonValue };
 
 /** Per-loop factory — the DI seam. The pipeline calls it ONCE per step/loop to
  *  get a fresh instance (no shared mutable state across requests). `deps` carries
@@ -192,9 +205,19 @@ Each impl is created per-loop by a factory (below). `record()` is the sole mutat
 - `snapshot()` → `{ last }` (a minimal marker; the bulk lives in RAG). `restore({last})` →
   re-establishes the raw tail; prior rounds are re-recalled from RAG (deterministic).
 - Purpose: the RAG way. The **controller** wires `deps.record` = `writeArtifact(mcp-result)`
-  and `deps.recall` = `runScopedRecall(['mcp-result'], runId, …)` + `buildRecallBlock`. The
-  **default pipeline** wires `deps.record` = history-RAG upsert and `deps.recall` = its
-  RAG-query + `IContextAssembler`-style bounded block.
+  and `deps.recall` = `runScopedRecall(['mcp-result'], runId, …)` + `buildRecallBlock` — it
+  already has a run-scoped, per-round results RAG. **The controller is our RAG-managed example.**
+
+### Default pipeline / core = `WindowContextStrategy` (honest scope) — P2 fix
+The default pipeline does NOT today have a per-round tool-RESULT RAG: `history-upsert`
+(`history-upsert.ts:48`) writes ONE post-turn SUMMARY keyed `turn:${sessionId}:${turnIndex}` with
+generic metadata, and history retrieval runs ONCE before the tool-loop (`default-pipeline.ts:328`)
+— neither is per-round tool-result storage. So OUR default-pipeline / direct-SmartAgent composition
+injects the **`WindowContextStrategy`** (RAG-less bounded) — it still eliminates the O(N²) growth
+without overclaiming a RAG we don't have. A genuine RAG-managed default pipeline (a new per-round
+tool-loop-round store + schema/metadata + query/exclude rules, distinct from the turn-summary
+history store) is a **deferred follow-up**, not this spec. A consumer who wants it wires a
+`RagRecallContextStrategy` factory over their own results store.
 
 ### Recall split (controller) — P1 fix
 The controller today recalls BOTH **step-result** and **mcp-result** at step start. Under this
@@ -223,27 +246,42 @@ The executor therefore never loses prior-step context: it lives in the prefix on
   `RagRecallContextStrategy.record` wiring (the pipeline owns "where results go").
 - **Step-result recall stays in `staticPrefix`** (built once at step start via `runScopedRecall(['step-result'])`
   + `buildRecallBlock`); **mcp-result recall is the strategy's** `form()` (round-scoped). See "Recall split".
-- **Control messages that are NOT tool rounds stay in the handler's durable state** and are
-  re-applied on resume (they are NOT delegated to the strategy): the retry feedback
-  ("Tool X is not available", ~1252) and the pending EXTERNAL-tool assistant/tool pair used by
-  suspend/resume (~1225-1242, `bundle.pending.kind==='external-tool'`). These continue to be
-  injected into `messages` after `form()` in their existing positions, so external-tool
-  round-trips and unavailable-tool retries behave exactly as today.
+- **The external-tool pair is a `ToolRound`.** On resume of a pending external-tool call
+  (`bundle.pending.kind==='external-tool'`, ~1225-1242) the injected `assistant(tool_call)`→`tool(result)`
+  pair is `record`ed as a round — so it enters the strategy and is bounded/recalled like any result,
+  NOT special-cased.
+- **The only NON-round control message is the unavailable-tool retry feedback** ("Tool X is not
+  available", ~1252) — a `{role:'user'}` message with no recorded round. It lives in a bounded
+  **`controlTail: Message[]`** owned by the handler: appended AFTER `form()`'s output on EVERY round
+  (so it does not vanish on the next `form()` — closes the post-resume hole), and PRUNED once the
+  model's next successful round is recorded (it has served its purpose). `controlTail` is persisted
+  in `inFlightStep` and is O(bounded) (at most `maxRetries` entries).
+- Each round's sent `messages = await strategy.form({prefix, queryText}) ++ controlTail`. Both parts
+  are bounded and persisted; the strategy owns rounds, the handler owns the short control tail.
 - Net effect: `controller-coordinator-handler.ts` shrinks (raw-round transcript management leaves it).
 
 ### Shared `tool-loop-core` / `tool-loop.ts`
 - Create the per-loop strategy from the factory before the loop; `reset()`-equivalent is a fresh instance.
-- `tool-loop.ts` ~829 `messages = [...messages, ...outcome.toolMessages]` (accumulation) is
-  REPLACED by: build the batch `ToolRound` from the batch's `assistant` message + its `toolMessages`;
-  `await strategy.record(round)`; then `messages = await strategy.form({prefix, queryText})` for
-  the next iteration.
-- `tool-loop-core.ts` `executeToolBatchWithHeartbeat` continues to PRODUCE the per-batch
-  tool messages; the CALLER (the loop in `tool-loop.ts` / `agent.ts`) assembles the `ToolRound`
-  and applies the strategy. `IExecuteToolBatchArgs` is unchanged unless the batch function must
-  emit the grouped `assistant`+`results` shape — in that case it returns them grouped so the
-  caller can form a `ToolRound` without re-deriving the assistant tool_calls.
-- The default-pipeline `assemble` handler still runs once to build `staticPrefix` for the first
-  round; subsequent rounds are formed by the injected strategy, keeping the per-round model.
+- **Uniform rule — every assistant-`tool_calls` + tool-result GROUP is a `ToolRound`.** ALL the
+  paths that today do `messages = <build...>(messages, …); continue` (growing the raw tail) are
+  routed through `record` + `form` instead of a direct append. Concretely:
+  - internal MCP batch (~829 `messages = [...messages, ...outcome.toolMessages]`) → `ToolRound`;
+  - **blocked tools** (`tool-loop.ts:578`, `buildBlockedToolMessages`) → the assistant call +
+    synthetic block response is a `ToolRound` (recorded/formed like any other);
+  - **hallucinated tools** (`tool-loop.ts:590`, `buildHallucinatedToolMessages`) → same;
+  - **external HIT** (`tool-loop.ts:622`, matched `assistant(tool_calls=[extId])`→`tool(extId)` pair)
+    → a `ToolRound` (a real external result the model must keep/recall).
+  This makes the invariant "the loop NEVER accumulates raw results itself" literally true — there
+  is exactly ONE growth site (the strategy's recorded list), which each strategy bounds.
+  (external MISS still surfaces + ends the turn — no injection, no round.)
+- `tool-loop-core.ts` `executeToolBatchWithHeartbeat` returns the batch `assistant`+`results`
+  GROUPED so the caller can build a `ToolRound` without re-deriving the assistant tool_calls; the
+  helpers `buildBlockedToolMessages`/`buildHallucinatedToolMessages` are refactored to RETURN their
+  `{assistant, results}` group (the caller records it) rather than mutate `messages` in place.
+- The `assemble` handler still runs once to build `staticPrefix` for the first round; subsequent
+  rounds are formed by the injected strategy. OUR default-pipeline / direct-SmartAgent composition
+  injects the `WindowContextStrategy` (see "Default pipeline / core"); the library default (nothing
+  injected) stays `LegacyAccumulateContextStrategy` (byte-identical).
 
 ### DI threading (mirror `IMcpFailureClassifier`, but as a FACTORY)
 The strategy is STATEFUL and per-loop, so the seam is a **factory**, not a shared instance —
@@ -287,23 +325,26 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
     `step.instructions`, `runId`, K, `['mcp-result']`, `excludeIdentityKeys`).
   - RAG-less (`Window`/`Legacy`): the buffer/list IS the durable state → `snapshot()` returns it,
     persisted in `inFlightStep.contextStrategyState`, `restore()` on resume.
-- **Non-round control messages** — the unavailable-tool **retry feedback** ("Tool X is not
-  available", ~1252) and the pending **external-tool** assistant/tool pair
-  (`bundle.pending.kind==='external-tool'`, ~1225-1242). These are interleaved with rounds in
-  the live sequence, so splitting-then-re-interleaving is error-prone.
-- **Resume mechanism (verbatim restore).** To keep resume simple AND protocol-safe, the handler
-  persists the EXACT bounded `messages` sequence it last sent to `executor.send` — the output of
-  `form()` plus any control messages, in the order they were appended — into `inFlightStep.transcript`
-  (this field is REPURPOSED: it now holds the bounded last-sent sequence, no longer a raw
-  O(N) accumulation, so it stays small). On resume the handler restores `messages` from
-  `inFlightStep.transcript` **verbatim** (it is already a valid, previously-sent context — no
-  re-interleaving) and calls `strategy.restore(inFlightStep.contextStrategyState)`. Going forward,
-  each new round is `record`ed and the NEXT context is re-derived by `form()` (+ any new control
-  message appended in place). Thus the persisted state is O(bounded), resume is byte-exact for what
-  the executor already saw, and interleaving order is preserved by construction.
-- Two new/changed durable fields on `inFlightStep`: `contextStrategyState?: unknown` (strategy
-  `snapshot()`), and `transcript` semantics change from raw-accumulation to bounded-last-sent.
-  Everything else reuses existing `bundle`/`inFlightStep` persistence.
+- **External-tool pair = a round.** The pending external-tool assistant/tool pair
+  (`bundle.pending.kind==='external-tool'`, ~1225-1242) is `record`ed as a `ToolRound` on resume →
+  it enters the strategy (bounded/recalled), so it is NOT a separate durable concern.
+- **The bounded `controlTail`.** The only non-round control message is the unavailable-tool retry
+  feedback ("Tool X is not available", ~1252) — a `{role:'user'}` message. It is held in a bounded
+  `inFlightStep.controlTail: Message[]` (≤ `maxRetries` entries), appended AFTER `form()` on EVERY
+  round, and pruned once the next successful round is recorded. Persisting it (not the whole
+  transcript) closes the post-resume hole: after the first post-resume `form()`, the tail is still
+  present because it is re-appended each round from durable state, not carried inside `form()`.
+- **Resume mechanism.** No raw transcript is persisted. On resume the handler reconstructs
+  `messages = staticPrefix` (rebuilt deterministically) `++ strategy.form({queryText})` (after
+  `strategy.restore(inFlightStep.contextStrategyState)`) `++ inFlightStep.controlTail`. Because
+  `form()` always re-derives rounds (RAG re-recall or restored buffer) and `controlTail` is
+  re-appended from durable state every round, the ordering `prefix → rounds → controlTail` is
+  invariant across suspend/resume and across every subsequent `record`/`form` — no message vanishes,
+  no interleaving drift.
+- **Durable fields on `inFlightStep`:** `contextStrategyState?: SerializableStrategyState` (strategy
+  `snapshot()`, JSON-serializable/versioned) and `controlTail?: Message[]` (bounded). The old raw
+  `transcript` accumulation is REMOVED (replaced by these two bounded fields). Everything else reuses
+  existing `bundle`/`inFlightStep` persistence.
 
 ---
 
@@ -329,11 +370,16 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
 - **Recall split.** With the controller wiring: step-result recall appears in `base.prefix` on
   EVERY round (not lost when the strategy forms mcp-result recall); assert a prior-step result is
   present in round-2+ context.
-- **Resume equivalence.** Suspend mid-loop after a round + a control message (an unavailable-tool
-  retry AND, separately, a pending external-tool pair); resume: assert `messages` is restored
-  **verbatim** from `inFlightStep.transcript` (bounded, not raw-O(N)), `strategy.restore` re-applied,
-  interleaving order preserved, and the run continues to completion. Assert the persisted
-  `transcript` length is bounded (does not grow with prior round count).
+- **Resume equivalence.** Suspend mid-loop after several rounds + a pending unavailable-tool retry
+  (`controlTail`) AND, separately, a pending external-tool pair; resume: assert the reconstructed
+  `messages` = `prefix ++ form() ++ controlTail`, that `strategy.restore` re-derives prior rounds
+  (RAG re-recall / restored buffer), that the external pair was recorded as a round, and that BOTH
+  the retry feedback and the external result survive a FURTHER `record`/`form` (the post-resume hole).
+  Assert `inFlightStep` durable size is bounded (`contextStrategyState` + `controlTail` do NOT grow
+  with prior round count; no raw `transcript`).
+- **Snapshot is JSON-safe.** `snapshot()` of each provided strategy round-trips through
+  `JSON.parse(JSON.stringify(...))` unchanged and carries a `version`; `restore()` of an unknown
+  `version` falls back to clean state without throwing.
 - **Per-loop isolation (no leakage).** The factory yields a FRESH instance per step/loop; two
   sequential loops sharing the injected factory do NOT see each other's rounds. A strategy instance
   is never shared across concurrent requests.
@@ -367,13 +413,14 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
   (`PipelineDeps`) + default-pipeline `RagRecallContextStrategy` wiring,
   `interfaces/pipeline-plugin.ts` (`IPipelineContext.toolLoopContextStrategyFactory?`).
 - **MODIFY** `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
-  (replace raw push with strategy record/form; per-loop instance via factory;
-  `inFlightStep.contextStrategyState?` + `transcript` bounded-last-sent semantics; shrink),
+  (replace raw push with strategy record/form; per-loop instance via factory; external pair → round;
+  `inFlightStep.contextStrategyState?` + `controlTail?`, remove raw `transcript`; shrink),
   `smart-server.ts` (`BuildAgentDeps` + `buildServerCtx` populate) and the controller composition
   (`pipelines/controller.ts`) to wire the `RagRecallContextStrategy` factory from `recall.ts`
   (`runScopedRecall(['mcp-result'])` + `buildRecallBlock`) + `writeArtifact`.
-- **MODIFY** `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts` — add
-  `contextStrategyState?: unknown` to the in-flight step type; `transcript` doc note (bounded-last-sent).
+- **MODIFY** `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts` — on the in-flight
+  step type: add `contextStrategyState?: SerializableStrategyState` and `controlTail?: Message[]`;
+  REMOVE the raw `transcript` accumulation field (replaced by these two bounded fields).
 
 ---
 
@@ -381,8 +428,10 @@ each so a suspend/resume reconstructs an **equivalent** protocol-valid context:
 
 1. **Build ON components** — reuses `recall.ts`, `writeArtifact`, `IContextAssembler`,
    `historyMemory`; the strategy is generic and parameterized, not a reimplementation.
-2. **The app IS the example** — SmartServer/controller/default pipeline inject the
-   RAG-recall strategy, demonstrating the RAG-managed way.
+2. **The app IS the example** — the SmartServer **controller** injects the `RagRecallContextStrategy`
+   (run-scoped per-round results RAG) — our RAG-managed example; the default pipeline / direct
+   SmartAgent inject the bounded `WindowContextStrategy` (honest: no per-round results RAG there yet).
+   A RAG-managed default pipeline is a documented follow-up.
 3. **Around interfaces** — consumers depend on `IToolLoopContextStrategy`.
 4. **ISP** — a NEW focused interface (record + form), not a method grown onto an existing one.
 5. **Consumer variation → strategy + DI** — fully swappable; RAG-less/legacy/own all allowed.
