@@ -17,6 +17,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  IToolLoopContextStrategy,
   LlmFinishReason,
   LlmStreamChunk,
   LlmTool,
@@ -29,6 +30,7 @@ import type {
   Subprompt,
   TimingEntry,
   ToolLoopContextStrategyFactory,
+  ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type AgentCallOptions,
@@ -68,6 +70,7 @@ import { summaryToUsage } from './logger/session-request-logger.js';
 import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
+import { LegacyAccumulateContextStrategy } from './pipeline/context/tool-loop-context/index.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
   buildBlockedToolMessages,
@@ -773,12 +776,34 @@ export class SmartAgent {
     let currentTools = activeTools;
 
     messages = injectToolPriority(messages, externalTools);
-    messages = await injectPendingResults(
+    // staticPrefix is immutable across all iterations — re-emitted every round.
+    const staticPrefix = messages;
+    const strategy: IToolLoopContextStrategy = (
+      this.deps.toolLoopContextStrategyFactory ??
+      (() => new LegacyAccumulateContextStrategy())
+    )({ run: undefined });
+    // controlTail carries validation-reprompt pairs (assistant+user) that are
+    // NOT tool rounds. It is pruned after the next recorded tool round.
+    const controlTail: Message[] = [];
+
+    const withPending = await injectPendingResults(
       messages,
       this.pendingToolResults,
       sessionId,
       opts,
     );
+    if (withPending.length > staticPrefix.length) {
+      // Injected pending results form an assistant+tool group → record as round.
+      const injected = withPending.slice(staticPrefix.length);
+      const pendingRound: ToolRound = {
+        assistant: injected[0],
+        results: injected.slice(1),
+      };
+      await strategy.record(pendingRound);
+    }
+    messages = (
+      await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+    ).concat(controlTail);
 
     for (let iteration = 0; ; iteration++) {
       let iterationBuffer = '';
@@ -1109,7 +1134,17 @@ export class SmartAgent {
           opts,
         );
         if (val.reprompt) {
-          messages = val.messages;
+          // Reprompt pairs (assistant+user correction) go into controlTail, NOT
+          // into the strategy — they are ephemeral and survive only until the
+          // next recorded tool round, at which point controlTail is pruned.
+          const appended = val.messages.slice(messages.length);
+          controlTail.push(...appended);
+          messages = (
+            await strategy.form({
+              prefix: staticPrefix,
+              queryText: _action.text,
+            })
+          ).concat(controlTail);
           continue;
         }
         opts?.sessionLogger?.logStep('final_response', { content, usage });
@@ -1169,7 +1204,14 @@ export class SmartAgent {
       );
       if (blockedCalls.length > 0) {
         const group = buildBlockedToolMessages(content, blockedCalls, opts);
-        messages = [...messages, group.assistant, ...group.results];
+        await strategy.record({
+          assistant: group.assistant,
+          results: group.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+        ).concat(controlTail);
         continue;
       }
       if (hallucinations.length > 0) {
@@ -1178,7 +1220,14 @@ export class SmartAgent {
           toolCalls,
           hallucinations,
         );
-        messages = [...messages, group.assistant, ...group.results];
+        await strategy.record({
+          assistant: group.assistant,
+          results: group.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+        ).concat(controlTail);
         continue;
       }
       if (validExternalCalls.length > 0) {
@@ -1222,22 +1271,21 @@ export class SmartAgent {
         }
         return;
       }
-      if (content || internalCalls.length > 0)
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: internalCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
+      // Capture the assistant message now; record the full round (assistant +
+      // tool results) atomically after the batch completes so the strategy
+      // always sees a complete ToolRound.
+      const batchAssistantMsg: Message = {
+        role: 'assistant' as const,
+        content: content || null,
+        tool_calls: internalCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
           },
-        ];
+        })),
+      };
       // Truncate batch to remaining budget
       const remaining =
         this.config.maxToolCalls !== undefined
@@ -1315,7 +1363,16 @@ export class SmartAgent {
       if (outcome.escalated) return;
       currentTools = outcome.currentTools;
       toolCallCount = outcome.toolCallCount;
-      messages = [...messages, ...outcome.toolMessages];
+      const batchRound: ToolRound = {
+        assistant: batchAssistantMsg,
+        results: outcome.toolMessages,
+        meta: outcome.resultMeta,
+      };
+      await strategy.record(batchRound);
+      controlTail.length = 0;
+      messages = (
+        await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+      ).concat(controlTail);
     }
   }
 }
