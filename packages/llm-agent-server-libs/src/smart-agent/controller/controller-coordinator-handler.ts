@@ -4,6 +4,7 @@ import {
   type IEmbedder,
   type IKnowledgeRagHandle,
   type IStageHandler,
+  type IToolLoopContextStrategy,
   type KnowledgeEntryMetadata,
   type LlmTool,
   type LlmToolCall,
@@ -17,6 +18,7 @@ import {
 import {
   type KnowledgeBackend,
   LegacyAccumulateContextStrategy,
+  LegacyTranscriptContextStrategy,
   type PipelineContext,
   summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -937,8 +939,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       staticPrefix.push({ role: 'user', content: stepBlock });
     }
 
-    // Per-step tool-loop context strategy (record/form). FRESH path only (Task 11):
-    // resume/migration selection is a later concern. Absent factory →
+    // Per-step tool-loop context strategy (record/form). Absent factory →
     // LegacyAccumulateContextStrategy (byte-identical to the historical growing
     // transcript).
     const makeStrategy = () =>
@@ -948,7 +949,30 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       )({
         run: { rag, runId: bundle.runId, meta, stepName: step.name },
       });
-    const strategy = makeStrategy();
+
+    // Resume / migration selection (Task 12). A step that suspended under the new
+    // design carries a serialized `contextStrategyState` → RESTORE it so the
+    // pre-suspend rounds (including any INTERNAL tool rounds before an external
+    // suspend) come back exactly as the executor last saw them. A PRE-RELEASE
+    // in-flight step carries only a raw `transcript` (no snapshot) → migrate it
+    // verbatim via the migration-only LegacyTranscriptContextStrategy (one release).
+    // Otherwise a fresh step.
+    let strategy: IToolLoopContextStrategy;
+    if (inFlight?.contextStrategyState !== undefined) {
+      strategy = makeStrategy();
+      strategy.restore(inFlight.contextStrategyState);
+    } else if (inFlight?.transcript?.length) {
+      strategy = new LegacyTranscriptContextStrategy({
+        rawMessages: inFlight.transcript,
+      });
+      // Adopted verbatim (rawMessages is copied) → clear the durable transcript so
+      // it only ever carries UN-recorded external-continuation pairs from here on.
+      // The next suspend snapshots this strategy → subsequent resumes take the
+      // restore branch above, so the raw history is never re-injected (no double).
+      inFlight.transcript.length = 0;
+    } else {
+      strategy = makeStrategy(); // fresh step
+    }
 
     // Durable, bounded control-message tail (retries only). Aliased IN PLACE so
     // push/prune mutate the persisted field; a legacy call with no inFlightStep gets
@@ -961,10 +985,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       controlTail = [];
     }
 
-    // External CONTINUATION bridge: the resume preamble injected the external
-    // assistant/tool pair(s) into inFlight.transcript. Record them as rounds so the
-    // fresh strategy surfaces them to the executor via form(). (Task 12 generalizes
-    // this via snapshot restore + LegacyTranscript migration.)
+    // External CONTINUATION bridge: the resume preamble APPENDS the freshly
+    // resolved external assistant/tool pair(s) to inFlight.transcript. Record them
+    // as rounds ON TOP of the restored strategy so the executor continues from its
+    // own tool call, then CLEAR the transcript — they now live in the strategy, so
+    // leaving them would double-record on the next external round-trip. (The
+    // LegacyTranscript migration above already adopted AND cleared its transcript,
+    // so here the transcript holds ONLY the just-injected external pair — never the
+    // migrated raw history; the two never double-inject the same rounds.)
     if (inFlight && inFlight.transcript.length > 0) {
       const t = inFlight.transcript;
       let i = 0;
@@ -979,6 +1007,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         if (assistant)
           await strategy.record({ assistant, results }, ctx.options);
       }
+      inFlight.transcript.length = 0;
     }
 
     // Snapshot the strategy state + persist the bundle after every executor/tool
