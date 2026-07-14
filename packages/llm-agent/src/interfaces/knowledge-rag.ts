@@ -46,6 +46,11 @@ export interface KnowledgeEntryMetadata {
   /** The reviewer's planning-relevant digest, persisted on `step-result` so the
    *  board's per-step digest is reconstructible from artifacts (§A/§F). */
   digest?: string;
+  /** Per-round tool-loop identity, persisted on `mcp-result` entries by the
+   *  RagRecall context strategy. DISTINCT from `identityKey` (tool+args, used for
+   *  fetch dedup): `roundId` labels ONE record()d round so recall can exclude the
+   *  raw-tail round (already injected verbatim) by roundId. */
+  roundId?: string;
 }
 
 export interface KnowledgeEntry {

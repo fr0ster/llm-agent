@@ -6,6 +6,7 @@ import type {
   IPipelineFactory,
   LlmTool,
   PipelineFactoryDepsBase,
+  ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import { validateBoardBudget } from '../smart-agent/controller/board.js';
@@ -52,6 +53,15 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
    * to the agnostic path (the measurement toggle).
    */
   skillsRecall?: (goal: string, options?: CallOptions) => Promise<string>;
+  /**
+   * Per-step tool-loop context strategy factory (record/form). Called ONCE per
+   * step by the handler with the per-step run context (`{ rag, runId, meta,
+   * stepName }`). The controller pipeline injects a `RagRecall` factory here (its
+   * `record` persists an `mcp-result`, its `recall` runs `runScopedRecall`).
+   * Absent → the handler falls back to `LegacyAccumulateContextStrategy`
+   * (byte-identical to the historical growing transcript).
+   */
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 
 /**
@@ -145,6 +155,11 @@ export class ControllerFactory
       selectTools: deps.selectTools,
       ...(deps.isExternalTool ? { isExternalTool: deps.isExternalTool } : {}),
       ...(deps.skillsRecall ? { skillsRecall: deps.skillsRecall } : {}),
+      ...(deps.toolLoopContextStrategyFactory
+        ? {
+            toolLoopContextStrategyFactory: deps.toolLoopContextStrategyFactory,
+          }
+        : {}),
       reviewer: new LlmReviewer(makeSubagentClient(reviewerLlm)),
       finalizer: new LlmFinalizer(makeSubagentClient(finalizerLlm), {
         budget: 12000,

@@ -59,6 +59,7 @@ import {
   SmartAgentBuilder,
   type SmartAgentHandle,
   SmartAgentSubAgent,
+  WindowContextStrategy,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   DefaultMcpFailureClassifier,
@@ -756,7 +757,16 @@ export class SmartServer {
       deps.mcpClients !== undefined || deps.connectMcp !== undefined;
     this._mcpFailureClassifier =
       deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
-    this._toolLoopContextStrategyFactory = deps.toolLoopContextStrategyFactory;
+    // Default the tool-loop context strategy to a bounded RAG-less Window for the
+    // server's default pipeline / direct SmartAgent path (a strict improvement over
+    // Legacy's unbounded growing transcript). Defaulted HERE in the SmartServer
+    // composition ONLY — a bare library consumer of DefaultPipeline/SmartAgent still
+    // falls back to Legacy at point-of-use. The controller pipeline overrides this
+    // with its own RagRecall factory (built in ControllerPipelinePlugin.build), so
+    // this default never reaches the controller coordinator's per-step strategy.
+    this._toolLoopContextStrategyFactory =
+      deps.toolLoopContextStrategyFactory ??
+      (() => new WindowContextStrategy());
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
