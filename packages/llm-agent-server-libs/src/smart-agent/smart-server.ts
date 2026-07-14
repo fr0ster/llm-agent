@@ -757,16 +757,15 @@ export class SmartServer {
       deps.mcpClients !== undefined || deps.connectMcp !== undefined;
     this._mcpFailureClassifier =
       deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
-    // Default the tool-loop context strategy to a bounded RAG-less Window for the
-    // server's default pipeline / direct SmartAgent path (a strict improvement over
-    // Legacy's unbounded growing transcript). Defaulted HERE in the SmartServer
-    // composition ONLY — a bare library consumer of DefaultPipeline/SmartAgent still
-    // falls back to Legacy at point-of-use. The controller pipeline overrides this
-    // with its own RagRecall factory (built in ControllerPipelinePlugin.build), so
-    // this default never reaches the controller coordinator's per-step strategy.
-    this._toolLoopContextStrategyFactory =
-      deps.toolLoopContextStrategyFactory ??
-      (() => new WindowContextStrategy());
+    // The DI seam carries the CONSUMER-injected factory ONLY (undefined when not
+    // injected). It is threaded verbatim onto the pipeline ctx so a consumer
+    // override wins on EVERY pipeline — including the controller, which resolves
+    // `ctx.toolLoopContextStrategyFactory ?? <its own RagRecall>`. The server's
+    // Window default for the NON-controller pipelines is applied ONLY on the
+    // builder channel (buildBaseBuilder), so it never leaks into the controller's
+    // ctx read. A bare library consumer of DefaultPipeline/SmartAgent (no
+    // SmartServer) still falls back to Legacy at point-of-use.
+    this._toolLoopContextStrategyFactory = deps.toolLoopContextStrategyFactory;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -2250,12 +2249,16 @@ export class SmartServer {
     // Thread the instance-level MCP failure classifier (DI/programmatic only).
     builder = builder.withMcpFailureClassifier(this._mcpFailureClassifier);
 
-    // Thread the instance-level tool-loop context strategy factory (DI/programmatic only).
-    if (this._toolLoopContextStrategyFactory) {
-      builder = builder.withToolLoopContextStrategyFactory(
-        this._toolLoopContextStrategyFactory,
-      );
-    }
+    // Tool-loop context strategy for the NON-controller pipelines (default / flat /
+    // linear / dag / direct SmartAgent). Honor a consumer-injected factory; else
+    // default to a bounded RAG-less Window (a strict improvement over Legacy's
+    // unbounded growing transcript). This Window default is applied ONLY on this
+    // builder channel — NOT on the ctx seam — so it never reaches the controller's
+    // own `ctx.toolLoopContextStrategyFactory ?? RagRecall` resolution.
+    builder = builder.withToolLoopContextStrategyFactory(
+      this._toolLoopContextStrategyFactory ??
+        (() => new WindowContextStrategy()),
+    );
 
     return builder;
   }

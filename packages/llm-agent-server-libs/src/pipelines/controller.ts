@@ -208,9 +208,7 @@ export class ControllerPipelinePlugin
     const b = cfg.budgets;
     const mcpBound =
       (b.maxSteps ?? 20) * ((b.maxRetries ?? 3) + 1) * (b.maxToolCalls ?? 10);
-    const toolLoopContextStrategyFactory: ToolLoopContextStrategyFactory = ({
-      run,
-    }) => {
+    const ragRecallFactory: ToolLoopContextStrategyFactory = ({ run }) => {
       const { rag, runId, meta, stepName } = run as {
         rag: IKnowledgeRagHandle;
         runId: string;
@@ -261,6 +259,15 @@ export class ControllerPipelinePlugin
         { runId },
       );
     };
+
+    // Honor a CONSUMER-injected tool-loop context strategy on the controller
+    // path: `new SmartServer(cfg, { toolLoopContextStrategyFactory })` threads
+    // it onto `ctx.toolLoopContextStrategyFactory` (undefined when not injected).
+    // When the consumer supplied one it OVERRIDES the controller's RagRecall
+    // example default; otherwise RagRecall stands. We never silently drop an
+    // injected DI dependency.
+    const toolLoopContextStrategyFactory =
+      ctx.toolLoopContextStrategyFactory ?? ragRecallFactory;
 
     // The factory resolves the three role LLMs via makeRoleLlm, wraps them as
     // subagent clients, validates the embedder requirement, and builds the

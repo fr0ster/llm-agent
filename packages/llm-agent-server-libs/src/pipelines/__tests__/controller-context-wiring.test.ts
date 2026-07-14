@@ -16,7 +16,11 @@ import { fakeControllerServerCtx } from './fixtures.js';
 // handed to the ControllerFactory (→ handler) as `deps.toolLoopContextStrategyFactory`.
 // Spy on ControllerFactory.prototype.build to capture it (the shared ESM class ref
 // is the same instance the plugin news up).
-async function buildAndCaptureFactory(): Promise<ToolLoopContextStrategyFactory> {
+async function buildAndCaptureFactory(
+  ctxOverride?: Partial<
+    import('../server-context.js').IControllerServerPipelineContext
+  >,
+): Promise<ToolLoopContextStrategyFactory> {
   const orig = ControllerFactory.prototype.build;
   let captured: ToolLoopContextStrategyFactory | undefined;
   ControllerFactory.prototype.build = async function (cfg, deps, kind) {
@@ -36,7 +40,10 @@ async function buildAndCaptureFactory(): Promise<ToolLoopContextStrategyFactory>
         executor: { provider: 'openai' },
       },
     });
-    const inst = await plugin.build(cfg, fakeControllerServerCtx());
+    const inst = await plugin.build(cfg, {
+      ...fakeControllerServerCtx(),
+      ...ctxOverride,
+    });
     await inst.close();
   } finally {
     ControllerFactory.prototype.build = orig;
@@ -168,5 +175,59 @@ describe('controller context wiring — RagRecall factory', () => {
     assert.doesNotMatch(block, /EXCLUDED/);
     // the raw tail (last round) is still injected verbatim
     assert.match(block, /TAIL-BODY/);
+  });
+});
+
+describe('controller context wiring — consumer override (DI seam)', () => {
+  it('with NO ctx.toolLoopContextStrategyFactory the controller uses its RagRecall default', async () => {
+    const factory = await buildAndCaptureFactory();
+    const spyRag = {
+      write: async () => {},
+      query: async () => [] as KnowledgeEntry[],
+    } as unknown as IKnowledgeRagHandle;
+    const strategy = factory({
+      run: { rag: spyRag, runId: 'r', meta: META, stepName: 's' },
+    });
+    assert.ok(
+      strategy instanceof RagRecallContextStrategy,
+      'default controller strategy must be RagRecall',
+    );
+  });
+
+  it('honors a consumer-injected ctx.toolLoopContextStrategyFactory (overrides RagRecall)', async () => {
+    // Sentinel strategy produced by the consumer's factory. It is NOT a
+    // RagRecallContextStrategy, so if the controller wins with its own default
+    // the identity assertion below fails.
+    const sentinel = { form: async () => [], record: async () => {} };
+    let injectedCalled = false;
+    const consumerFactory: ToolLoopContextStrategyFactory = () => {
+      injectedCalled = true;
+      return sentinel as never;
+    };
+
+    const factory = await buildAndCaptureFactory({
+      toolLoopContextStrategyFactory: consumerFactory,
+    });
+
+    // The factory the controller handed to ControllerFactory must be the
+    // consumer's, verbatim — not the controller's RagRecall factory.
+    assert.strictEqual(
+      factory,
+      consumerFactory,
+      'controller must thread the consumer-injected factory, not its own RagRecall',
+    );
+    const spyRag = {
+      write: async () => {},
+      query: async () => [] as KnowledgeEntry[],
+    } as unknown as IKnowledgeRagHandle;
+    const strategy = factory({
+      run: { rag: spyRag, runId: 'r', meta: META, stepName: 's' },
+    });
+    assert.equal(injectedCalled, true, 'consumer factory must be invoked');
+    assert.strictEqual(strategy, sentinel);
+    assert.ok(
+      !(strategy instanceof RagRecallContextStrategy),
+      'consumer strategy must NOT be RagRecall',
+    );
   });
 });
