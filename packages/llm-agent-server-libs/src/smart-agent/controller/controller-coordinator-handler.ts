@@ -959,8 +959,16 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // Otherwise a fresh step.
     let strategy: IToolLoopContextStrategy;
     if (inFlight?.contextStrategyState !== undefined) {
-      strategy = makeStrategy();
-      strategy.restore(inFlight.contextStrategyState);
+      const state = inFlight.contextStrategyState;
+      // A migrated step persisted a LegacyTranscript snapshot ({rawMessages,
+      // newRounds}). Restore it through the SAME strategy type so its raw history
+      // + post-migration rounds survive a SECOND resume; a normal snapshot
+      // restores via the injected/default strategy. Discriminate on shape.
+      strategy =
+        (state as { rawMessages?: unknown }).rawMessages !== undefined
+          ? new LegacyTranscriptContextStrategy({ rawMessages: [] })
+          : makeStrategy();
+      strategy.restore(state);
     } else if (inFlight?.transcript?.length) {
       strategy = new LegacyTranscriptContextStrategy({
         rawMessages: inFlight.transcript,

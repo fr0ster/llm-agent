@@ -432,4 +432,144 @@ describe('controller resume + migration (Task 12)', () => {
       '(c) external result also present',
     );
   });
+
+  it('(d) SECOND resume of a migrated step keeps migrated rawMessages + post-migration rounds', async () => {
+    // A pre-release step (transcript only) migrates on the FIRST resume →
+    // LegacyTranscriptContextStrategy, whose snapshot() is {rawMessages,newRounds}
+    // (NO `rounds`). When that step suspends on an external tool, the SECOND resume
+    // takes the RESTORE branch. If the restore uses the injected/default
+    // LegacyAccumulateContextStrategy (reads ONLY `state.rounds`), BOTH the migrated
+    // raw history AND any post-migration recorded round are silently dropped. The
+    // fix discriminates on snapshot shape and restores a LegacyTranscript snapshot
+    // through the SAME strategy type. This asserts the "no lost rounds" guarantee
+    // across a second resume.
+    const backend = new InMemoryKnowledgeBackend();
+    const rag = stubRag();
+    const extId = externalToolCallId('ExtTool', { q: 'z' });
+
+    // --- FIRST resume: pre-release in-flight step, transcript ONLY, no snapshot.
+    await persistBundle(backend, 'sess-d', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R4',
+      runState: 'active',
+      runPhase: 'executing',
+      originalRequest: 'do the thing',
+      nextSeq: 0,
+      plan: [{ name: 's1', instructions: 'i' }],
+      planCursor: 0,
+      inFlightStep: {
+        seq: 0,
+        step: { name: 's1', instructions: 'i' },
+        attempt: 0,
+        resumeCount: 0,
+        phase: 'executing',
+        toolCallCount: 0,
+        transcript: [
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'legacy-d',
+                type: 'function',
+                function: { name: 'GetOld', arguments: '{}' },
+              },
+            ],
+          },
+          {
+            role: 'tool',
+            tool_call_id: 'legacy-d',
+            content: 'LEGACY TRANSCRIPT DATA',
+          },
+        ],
+      },
+    } as never);
+
+    // First resume executor: one INTERNAL round (records POST-MIGRATION ROUND into
+    // the migrated strategy), then an EXTERNAL call → suspend (snapshots the
+    // LegacyTranscript state: rawMessages + the post-migration round).
+    const exec1 = recordingExecutor([
+      toolCall('GetMore', {}),
+      toolCall('ExtTool', { q: 'z' }),
+    ]);
+    const deps1: ControllerHandlerDeps = {
+      evaluator: scriptedClient([]),
+      planner: scriptedClient([{ kind: 'content', content: 'FINAL-D' }]),
+      executor: exec1.client,
+      backend,
+      knowledgeRagFor: () => rag,
+      embedder: stubEmbedder,
+      callMcp: async () => 'POST-MIGRATION ROUND',
+      selectTools: async (): Promise<LlmTool[]> => [
+        { name: 'GetMore', description: '', inputSchema: {} },
+      ],
+      isExternalTool: (n) => n === 'ExtTool',
+      config: baseConfig(),
+      models: { evaluator: 'm', planner: 'm', executor: 'm' },
+    };
+    const { ctx: ctx1 } = fakeCtx({ sessionId: 'sess-d' });
+    const ret1 = await new ControllerCoordinatorHandler(deps1).execute(
+      ctx1,
+      {},
+      undefined,
+    );
+    assert.equal(ret1, true, '(d) first resume suspends on external tool');
+
+    // The suspended bundle now carries a LegacyTranscript-shaped snapshot.
+    const suspended = await hydrateBundle(backend, 'sess-d');
+    assert.equal(suspended.runState, 'suspended', '(d) first resume suspended');
+    assert.ok(
+      (
+        suspended.inFlightStep?.contextStrategyState as {
+          rawMessages?: unknown;
+        }
+      )?.rawMessages !== undefined,
+      '(d) persisted snapshot is LegacyTranscript-shaped (has rawMessages)',
+    );
+
+    // --- SECOND resume: restore the migrated step + resolve the external tool.
+    const exec2 = recordingExecutor([{ kind: 'content', content: 'done-d' }]);
+    const deps2: ControllerHandlerDeps = {
+      evaluator: scriptedClient([]),
+      planner: scriptedClient([{ kind: 'content', content: 'FINAL-D' }]),
+      executor: exec2.client,
+      backend,
+      knowledgeRagFor: () => rag,
+      embedder: stubEmbedder,
+      callMcp: async () => 'unused',
+      selectTools: async (): Promise<LlmTool[]> => [],
+      isExternalTool: (n) => n === 'ExtTool',
+      config: baseConfig(),
+      models: { evaluator: 'm', planner: 'm', executor: 'm' },
+    };
+    const { ctx: ctx2 } = fakeCtx({
+      sessionId: 'sess-d',
+      externalResults: new Map([[extId, 'EXT RESULT D']]),
+    });
+    const ret2 = await new ControllerCoordinatorHandler(deps2).execute(
+      ctx2,
+      {},
+      undefined,
+    );
+    assert.equal(ret2, true, '(d) second resume completes');
+
+    // The migrated raw history AND the post-migration round survive the SECOND
+    // resume (dropped by the buggy LegacyAccumulate restore of a LegacyTranscript
+    // snapshot; preserved by shape-discriminated restore).
+    const s2 = exec2.rounds[0] ?? [];
+    assert.ok(
+      s2.some((m) => m.content === 'LEGACY TRANSCRIPT DATA'),
+      '(d) migrated rawMessages survive the second resume',
+    );
+    assert.ok(
+      s2.some((m) => m.content === 'POST-MIGRATION ROUND'),
+      '(d) post-migration recorded round survives the second resume',
+    );
+    assert.ok(
+      s2.some((m) => m.content === 'EXT RESULT D'),
+      '(d) external result also present after second resume',
+    );
+  });
 });
