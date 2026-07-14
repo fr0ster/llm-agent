@@ -69,16 +69,20 @@ export interface IStepBudget {
    *  (executor LLM + callMcp) so whatever consumed the time is cancelled. A
    *  never-firing signal (default, no time budget) is valid. */
   readonly signal: AbortSignal;
-  /** Budget gate consulted (a) before each executor round AND (b) PROSPECTIVELY
-   *  before executing/surfacing a tool call. false → cut. The count check is
-   *  prospective (`toolCallCount + 1 > maxToolCalls`) so a tool cannot exceed the cap. */
-  shouldContinue(state: StepRoundState): StepControlDecision;
+  /** Consulted BEFORE each executor round. TIME/abort gate ONLY — must NOT apply a
+   *  prospective tool-count check: at exactly maxToolCalls the executor still needs
+   *  its last tool result and may legally finish with content. false → cut. */
+  shouldContinueRound(state: StepRoundState): StepControlDecision;
+  /** Consulted PROSPECTIVELY before executing/surfacing a tool call. Count + time:
+   *  the default cuts when `toolCallCount + 1 > maxToolCalls` (a tool cannot exceed
+   *  the cap) or the time budget is exhausted. false → cut. */
+  canExecuteTool(state: StepRoundState): StepControlDecision;
   /** Release timers/resources when the step ends (settled or cut). */
   dispose(): void;
 }
 export interface StepRoundState {
   readonly round: number;        // executor rounds so far this step
-  readonly toolCallCount: number;
+  readonly toolCallCount: number; // tool calls already executed this step
   readonly elapsedMs: number;    // since beginStep()
 }
 export type StepControlDecision = { continue: true } | { continue: false; reason: string };
@@ -100,7 +104,8 @@ export interface RunState { readonly stepsUsed: number; readonly elapsedMs: numb
 
 - `DefaultStepExecutionControl` — `beginStep(ctx)` returns a budget where:
   - `signal` = `AbortSignal.timeout(perStepTimeoutMs)` when `ctx.budgets.perStepTimeoutMs` is set, else a **never-firing** signal (`new AbortController().signal`, never aborted) — so with no time budget the default never cuts on time (backward-compat).
-  - `shouldContinue(state)` = `{ continue:false, reason:'tool-call budget exhausted (maxToolCalls)' }` when `toolCallCount > maxToolCalls` (this ABSORBS the current handler `maxToolCalls` gate); else `{ continue:false, reason:'step-timeout' }` when `elapsedMs >= perStepTimeoutMs` (belt-and-suspenders with the signal); else `{ continue:true }`.
+  - `shouldContinueRound(state)` (before a round — TIME only, NO count) = `{ continue:false, reason:'step-timeout' }` when `perStepTimeoutMs` set and `elapsedMs >= perStepTimeoutMs`; else `{ continue:true }`.
+  - `canExecuteTool(state)` (before a tool — PROSPECTIVE count + time) = `{ continue:false, reason:'maxToolCalls' }` when `maxToolCalls != null && toolCallCount + 1 > maxToolCalls` (ABSORBS the current handler gate, matching today's `+1` semantics); else `{ continue:false, reason:'step-timeout' }` when `perStepTimeoutMs` set and `elapsedMs >= perStepTimeoutMs`; else `{ continue:true }`.
   - `dispose()` clears any timer.
 - `NoopRunExecutionControl` — `beginRun` returns a budget with a never-firing signal and `shouldContinue → { continue:true }`. The default; the full run-budget impl is a follow-up.
 
@@ -111,7 +116,10 @@ Add optional `stepExecutionControl?: IStepExecutionControl` and `runExecutionCon
 
 ## Section 4 — Interaction with existing budgets, replan, resume, fail-loud
 
-- **`maxToolCalls` moves into `DefaultStepExecutionControl.shouldContinue` — but the gate stays PROSPECTIVE.** The handler's inline count checks are replaced by `budget.shouldContinue(state)`, consulted at the SAME points the current budget checks fire: (a) at the top of each executor round, AND (b) **prospectively before executing/surfacing a tool call** — today the external-tool cap is `inFlight.toolCallCount + 1 > maxToolCalls` BEFORE surfacing (controller-coordinator-handler.ts:1279); the internal cap is post-execute. To preserve the "external tool cannot exceed the cap" invariant, `StepRoundState` carries the count and `DefaultStepExecutionControl.shouldContinue` cuts when `toolCallCount + 1 > maxToolCalls` (prospective, matching today) — NOT `toolCallCount > maxToolCalls` (which would allow one extra surfaced call). The handler consults the gate before each tool execution/surface (internal AND external), replacing both inline checks. A `{continue:false, reason}` triggers the SAME `writeControlFailure(reason)` + `settle('failed')` + `phase='awaiting-replan'` path as today. Other count budgets (`maxStepAttempts`, `maxEvalResumes`, `maxReviewRetries`) and REACTIVE failures (executor error, reviewer-unverifiable, unavailable-tool) stay handler-side — they depend on subagent results, not the budget.
+- **`maxToolCalls` moves into the budget — via TWO gate modes (top-of-round vs before-tool).** The handler consults the budget at the SAME points its inline checks fire today, but with the correct mode each place:
+  - **`budget.shouldContinueRound(state)` — before each executor round** — TIME/abort only. It must NOT apply the prospective `+1` count check: at exactly `maxToolCalls` the executor still needs its last tool result and may legally finish with `content`; cutting at `count == max` here would REGRESS today's behavior.
+  - **`budget.canExecuteTool(state)` — prospectively before executing/surfacing a tool call** — count + time. The default cuts when `toolCallCount + 1 > maxToolCalls` (matching today's external-tool cap at controller-coordinator-handler.ts:1279 AND the internal cap), so a tool cannot exceed the cap. This replaces BOTH inline checks (internal post-execute + external before-surface) with one prospective gate consulted before each tool call (internal AND external).
+  A `{continue:false, reason}` from either gate triggers the SAME `writeControlFailure(reason)` + `settle('failed')` + `phase='awaiting-replan'` path as today. Other count budgets (`maxStepAttempts`, `maxEvalResumes`, `maxReviewRetries`) and REACTIVE failures (executor error, reviewer-unverifiable, unavailable-tool) stay handler-side — they depend on subagent results, not the budget.
 - **Cancelled executor LLM must be detected explicitly (NOT the retry path).** `makeSubagentClient` converts an aborted `llm.chat` into `SubagentResult { kind:'error', error:'…' }` (subagent-client.ts) — and the handler currently treats `res.kind==='error'` as an executor-error RETRY (control-coordinator-handler.ts:1212), which is WRONG for a budget cut. After `deps.executor.send`, the handler MUST check the step budget's abort FIRST: if `budget.signal.aborted` (the step's own timeout fired), map to `control-failure(reason:'step-timeout') → replan`, BEFORE the `res.kind==='error'` retry branch. (Optionally `makeSubagentClient` surfaces an abort marker, but the authoritative signal is `budget.signal.aborted` — a genuine provider error with the signal NOT aborted stays the retry path.)
 - **Cut → replan.** A budget cut (gate `false` OR the signal aborting an inner call) becomes a `control-failure → replan` with a clear reason (`step-timeout` / `maxToolCalls`). The planner revises and continues — never a silent fail. `maxSteps` / `maxRewinds` remain the terminal backstop.
 - **`perStepTimeoutMs` config (additive, optional).** Add `perStepTimeoutMs?: number` to `ControllerConfig.budgets` (default UNSET = never cut on time = backward-compat). When set, `DefaultStepExecutionControl` uses it. This is the ONE additive config field (the strategy itself is code/DI). Our eval config sets a sane value (e.g. 120000 ms) to prove convergence.
@@ -125,7 +133,7 @@ Add optional `stepExecutionControl?: IStepExecutionControl` and `runExecutionCon
 - **Livelock repro → cut→replan (the core fix).** A controller `runStep` (harness from `controller-mcp-failloud.test.ts`) with a scripted executor that never emits `content` (keeps issuing tool_calls) + `perStepTimeoutMs` small + a `DefaultStepExecutionControl`: assert the step is CUT with reason `step-timeout` (or `maxToolCalls`) and a `control-failure → awaiting-replan` is recorded — the run does NOT loop unboundedly. Discriminating: on the old handler (no step control) the loop runs to the harness's own limit; with the control it cuts.
 - **Signal cancels the inner LLM call.** A scripted executor whose `send` hangs (never resolves until aborted) + a short `perStepTimeoutMs`: assert `send` receives the step `signal`, the budget fires it, the call rejects (aborted), and the handler maps it to `control-failure(step-timeout) → replan`.
 - **Signal cancels the inner MCP call.** `callMcp` hangs until aborted; assert it receives the signal and the budget aborts it → `control-failure → replan` (NOT an MCP-unavailable terminal abort).
-- **Count gate.** `shouldContinue` returns `{continue:false, reason:'…maxToolCalls'}` at `toolCallCount > maxToolCalls`; the handler control-fails identically to today.
+- **Count gate (prospective, two modes).** `canExecuteTool` returns `{continue:false, reason:'maxToolCalls'}` at `toolCallCount + 1 > maxToolCalls` (prospective — a tool cannot exceed the cap); the handler control-fails identically to today. And `shouldContinueRound` does NOT cut at `toolCallCount == maxToolCalls` (regression guard: a step at exactly the cap may still finish with `content` on the next round) — assert a step that reaches `maxToolCalls` and then returns `content` SETTLES, not cut.
 - **Consumer override.** `builder.withStepExecutionControl(custom)` → the controller uses `custom`, not `DefaultStepExecutionControl`; `withRunExecutionControl(custom)` similarly. No injection → defaults.
 - **Run-control no-op.** `NoopRunExecutionControl` never fires / always `continue:true` → no behavior change from it.
 - **Resume gets a fresh budget.** A step that suspends (external tool) and resumes: `beginStep` is called again, the new budget's timer starts fresh (a resumed step is not instantly cut by a stale deadline).
