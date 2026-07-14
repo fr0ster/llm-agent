@@ -235,13 +235,11 @@ describe('ControllerCoordinatorHandler', () => {
           c.value.content === 'final-out',
       ),
     );
-    assert.ok(
-      h.rag.written.find(
-        (e) =>
-          e.metadata.artifactType === 'mcp-result' &&
-          e.metadata.toolName === 'GetX',
-      ),
-    );
+    // NOTE (Task 11): the handler no longer writes the mcp-result artifact itself —
+    // recording the tool round is the injected context strategy's job. The default
+    // (LegacyAccumulate) strategy keeps rounds in-memory and writes nothing; the
+    // production controller wires RagRecall (Task 13) which persists the mcp-result.
+    // So under the default strategy no mcp-result artifact is expected here.
   });
 
   it('external tool: surfaces tool_calls chunk + suspends with pending marker', async () => {
@@ -587,17 +585,19 @@ describe('ControllerCoordinatorHandler', () => {
     };
     const ragQuery: IKnowledgeRagHandle['query'] = async (_text, opts) => {
       // Recall must restrict to recall artifact types (excludes 'controller-bundle').
-      // The recall now issues SEPARATE per-kind queries (step-result, mcp-result);
-      // every query's filter must be a subset of the recall artifact types.
+      // The recall issues per-kind queries (step-result for the static prefix, plus
+      // per-`requires` evidence queries); every query's filter must be a subset of
+      // the recall artifact types.
       const types = (opts?.filter?.artifactType ?? []) as string[];
       assert.ok(
         types.length > 0 &&
           types.every((t) => ['step-result', 'mcp-result'].includes(t)),
         'recall restricts to recall artifact types',
       );
-      // Surface the mcp-result artifact on the mcp-result recall (and the combined
-      // evidence query); the step-result query returns nothing here.
-      if (!types.includes('mcp-result')) return [];
+      // NOTE (Task 11): the STEP-RESULT recall stays in the executor's static
+      // prefix; the mcp-result recall moved to the injected context strategy. So the
+      // step-result recall is what gets injected into the executor messages here.
+      if (!types.includes('step-result')) return [];
       return [
         {
           content: 'INCLUDE zinc.',
@@ -606,7 +606,7 @@ describe('ControllerCoordinatorHandler', () => {
             turnId: 't',
             stepperId: 'controller',
             task: 'ZINC',
-            artifactType: 'mcp-result',
+            artifactType: 'step-result',
             createdAt: '2026-06-06T00:00:00.000Z',
           },
         },
@@ -2095,7 +2095,7 @@ describe('ControllerCoordinatorHandler', () => {
     ]);
   });
 
-  it('a giant step-result does NOT starve mcp-result context (separate char budgets)', async () => {
+  it('step-result recall is injected + budget-capped; mcp-result recall is NOT in the static prefix (moved to the context strategy, Task 11)', async () => {
     const seenMessages: Message[][] = [];
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
@@ -2156,15 +2156,19 @@ describe('ControllerCoordinatorHandler', () => {
     const joined = seenMessages[0]
       .map((m) => (typeof m.content === 'string' ? m.content : ''))
       .join('\n');
+    // NOTE (Task 11): the mcp-result recall moved OUT of the executor static prefix
+    // and into the injected context strategy (Window keeps a bounded buffer;
+    // RagRecall recalls). The default (LegacyAccumulate) strategy injects no mcp
+    // recall, so the mcp-result context is NOT in the static prefix here.
     assert.ok(
-      joined.includes('MCP-CONTEXT-XYZ'),
-      'mcp context survived despite a 50k-char step-result (separate char budgets)',
+      !joined.includes('MCP-CONTEXT-XYZ'),
+      'mcp-result recall is no longer part of the static prefix (context strategy owns it)',
     );
-    // And prove the step block was actually budget-capped (RECALL_MAX_CHARS_STEP=2000),
-    // not injected whole — else removing the step budget would go unnoticed.
+    // The step-result recall stays in the static prefix and is budget-capped
+    // (RECALL_MAX_CHARS_STEP=2000), not injected whole.
     assert.ok(
-      !joined.includes('S'.repeat(2001)),
-      'the 50k step-result was truncated to its own char budget',
+      joined.includes('S'.repeat(1)) && !joined.includes('S'.repeat(2001)),
+      'the 50k step-result was injected but truncated to its own char budget',
     );
   });
 });

@@ -112,6 +112,15 @@ export {
   type MetricsSnapshot,
 } from './metrics/in-memory-metrics.js';
 export { NoopMetrics } from './metrics/noop-metrics.js';
+export {
+  LegacyAccumulateContextStrategy,
+  LegacyTranscriptContextStrategy,
+  RagRecallContextStrategy,
+  type RagRecallDeps,
+  type RagRecallStrategyRunDeps,
+  WindowContextStrategy,
+  type WindowContextStrategyOptions,
+} from './pipeline/context/tool-loop-context/index.js';
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------

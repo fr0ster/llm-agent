@@ -11,9 +11,12 @@ import {
   McpError,
   type Message,
   type ModelUsageEntry,
+  type ToolLoopContextStrategyFactory,
+  type ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type KnowledgeBackend,
+  LegacyAccumulateContextStrategy,
   type PipelineContext,
   summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -34,9 +37,7 @@ import {
   collectApproved,
   RECALL_ARTIFACT_TYPES,
   RECALL_EVIDENCE_CHARS,
-  RECALL_K_MCP,
   RECALL_K_STEP,
-  RECALL_MAX_CHARS_MCP,
   RECALL_MAX_CHARS_STEP,
   relevantExtract,
   runScopedRecall,
@@ -145,6 +146,12 @@ export interface ControllerHandlerDeps {
    *  makeControllerPlanner(...). Lets a test/consumer supply an IControllerPlanner
    *  that emits behaviours the default smart/weak planners do not (e.g. rewind). */
   controllerPlanner?: IControllerPlanner;
+  /** Per-step tool-loop context strategy factory (record/form). Called ONCE per
+   *  step with the per-step run context (`{ rag, runId, meta, stepName }`); the
+   *  returned strategy owns the executor messages sent each round so the loop never
+   *  grows a raw transcript. Absent → `LegacyAccumulateContextStrategy` (byte-
+   *  identical to the historical growing-transcript behaviour). */
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 
 // ---------------------------------------------------------------------------
@@ -890,7 +897,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       await persistBundle(deps.backend, sessionId, bundle);
       return outcome;
     };
-    const messages: Message[] = [
+    // The IMMUTABLE per-round prefix: system + step user message + the step-result
+    // recall block. Re-emitted verbatim every round via strategy.form(); the dynamic
+    // tool rounds are owned by the injected context strategy, NOT accumulated here.
+    const staticPrefix: Message[] = [
       {
         role: 'system',
         content: appendHint(
@@ -904,19 +914,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       },
     ];
 
-    // Episodic recall: pull prior artifacts relevant to this step from
-    // session-memory and inject them as context. The session-memory rag shares
-    // the bundle backend, so restrict to artifact types (excludes the
-    // 'controller-bundle' infrastructure record). Bounded by k and length.
+    // Episodic recall: pull prior STEP-RESULT artifacts relevant to this step from
+    // session-memory and inject them as static context. The session-memory rag shares
+    // the bundle backend, so restrict to 'step-result' (excludes the
+    // 'controller-bundle' infrastructure record). Bounded by k and length. The
+    // per-round MCP context is now the context strategy's job (its form() supplies
+    // the mcp-result rounds — the Window keeps its own buffer, RagRecall recalls),
+    // so it is NOT part of the handler-built static prefix.
     const recallText = step.instructions || step.name;
     const maxAttempts = cfg.maxStepAttempts ?? 5;
-    const maxTool = cfg.maxToolCalls ?? 10;
-    // Per-kind run-scoped recall with GUARANTEED over-fetch bounds: step-result
-    // retries are bounded by maxStepAttempts (k×(maxStepAttempts+1)); mcp-results
-    // are NOT deduped on re-fetch here and toolCallCount RESETS per attempt, so one
-    // run can emit up to maxSteps × maxStepAttempts × maxToolCalls of them — over-
-    // fetch that full run bound so every distinct identityKey is seen before the cap.
-    const mcpBound = cfg.maxSteps * maxAttempts * maxTool;
     const recalledSteps = await runScopedRecall(
       rag,
       recallText,
@@ -926,37 +932,60 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       ['step-result'],
       ctx.options,
     );
-    const recalledMcp = await runScopedRecall(
-      rag,
-      recallText,
-      RECALL_K_MCP,
-      bundle.runId,
-      mcpBound,
-      ['mcp-result'],
-      ctx.options,
-    );
-    // SEPARATE character budgets per kind: a single huge step-result cannot consume
-    // the whole budget and starve the MCP context (and vice-versa).
     const stepBlock = buildRecallBlock(recalledSteps, RECALL_MAX_CHARS_STEP);
-    const mcpBlock = buildRecallBlock(recalledMcp, RECALL_MAX_CHARS_MCP);
-    const recallBlock = [stepBlock, mcpBlock].filter(Boolean).join('\n\n');
-    if (recallBlock) {
-      messages.push({ role: 'user', content: recallBlock });
+    if (stepBlock) {
+      staticPrefix.push({ role: 'user', content: stepBlock });
     }
 
-    // Durable transcript = static prefix (system/user/recall) + the dynamic
-    // executor/tool turns. On a resume/continuation the dynamic tail is rebuilt
-    // from inFlightStep.transcript so the executor sees the FULL exchange it had
-    // (prior tool rounds + the injected external result), not just a fragment.
-    const staticLen = messages.length;
-    if (inFlight && inFlight.transcript.length > 0) {
-      messages.push(...inFlight.transcript);
+    // Per-step tool-loop context strategy (record/form). FRESH path only (Task 11):
+    // resume/migration selection is a later concern. Absent factory →
+    // LegacyAccumulateContextStrategy (byte-identical to the historical growing
+    // transcript).
+    const makeStrategy = () =>
+      (
+        deps.toolLoopContextStrategyFactory ??
+        (() => new LegacyAccumulateContextStrategy())
+      )({
+        run: { rag, runId: bundle.runId, meta, stepName: step.name },
+      });
+    const strategy = makeStrategy();
+
+    // Durable, bounded control-message tail (retries only). Aliased IN PLACE so
+    // push/prune mutate the persisted field; a legacy call with no inFlightStep gets
+    // an ephemeral local (no durable tail to persist).
+    let controlTail: Message[];
+    if (inFlight) {
+      inFlight.controlTail = inFlight.controlTail ?? [];
+      controlTail = inFlight.controlTail;
+    } else {
+      controlTail = [];
     }
-    // Persist the dynamic tail after every executor/tool exchange so a suspend or
-    // crash never rebuilds with a shorter conversation than the executor saw.
-    const syncTranscript = async (): Promise<void> => {
+
+    // External CONTINUATION bridge: the resume preamble injected the external
+    // assistant/tool pair(s) into inFlight.transcript. Record them as rounds so the
+    // fresh strategy surfaces them to the executor via form(). (Task 12 generalizes
+    // this via snapshot restore + LegacyTranscript migration.)
+    if (inFlight && inFlight.transcript.length > 0) {
+      const t = inFlight.transcript;
+      let i = 0;
+      while (i < t.length) {
+        const assistant = t[i];
+        i++;
+        const results: Message[] = [];
+        while (i < t.length && t[i]?.role === 'tool') {
+          results.push(t[i]);
+          i++;
+        }
+        if (assistant)
+          await strategy.record({ assistant, results }, ctx.options);
+      }
+    }
+
+    // Snapshot the strategy state + persist the bundle after every executor/tool
+    // exchange so a suspend or crash resumes with the same context the executor saw.
+    const persistExchange = async (): Promise<void> => {
       if (inFlight) {
-        inFlight.transcript = messages.slice(staticLen);
+        inFlight.contextStrategyState = strategy.snapshot();
         await persistBundle(deps.backend, sessionId, bundle);
       }
     };
@@ -1047,6 +1076,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // Inner loop handles tool routing / error retries until the executor
     // produces content for this step (or the step suspends on an external tool).
     while (true) {
+      // Form the per-round executor context: the immutable prefix + the strategy's
+      // rounds, then the bounded control tail (retries). NEVER a growing raw array.
+      const messages = (
+        await strategy.form(
+          { prefix: staticPrefix, queryText: step.instructions },
+          ctx.options,
+        )
+      ).concat(controlTail);
       const res = await deps.executor.send(messages, offeredTools);
       logUsage?.('executor', res.usage);
 
@@ -1138,11 +1175,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if (res.kind === 'error') {
         retries++;
         if (retries <= cfg.maxRetries) {
-          messages.push({
+          controlTail.push({
             role: 'user',
             content: `The previous attempt failed: ${res.error}. Retry the step.`,
           });
-          await syncTranscript();
+          await persistExchange();
           continue;
         }
         // Retries exhausted — feed the error back as the step result so the
@@ -1159,12 +1196,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // Empty tool-call array → treat as an executor error (retry/replan).
         retries++;
         if (retries <= cfg.maxRetries) {
-          messages.push({
+          controlTail.push({
             role: 'user',
             content:
               'The previous attempt produced an empty tool call. Retry the step.',
           });
-          await syncTranscript();
+          await persistExchange();
           continue;
         }
         bundle.budgets.stepsUsed++;
@@ -1219,9 +1256,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           };
           return settle('failed');
         }
-        // Sync the executor turns SO FAR into the durable transcript before we
-        // suspend (the resume injection appends the external assistant/tool pair).
-        await syncTranscript();
+        // Snapshot the strategy state SO FAR before we suspend (the resume injection
+        // appends the external assistant/tool pair, recorded on the next invocation).
+        if (inFlight) inFlight.contextStrategyState = strategy.snapshot();
         const extId = externalToolCallId(name, args);
         if (inFlight) inFlight.toolCallCount += 1;
         // The new marker REPLACES any prior pending (a fresh extId).
@@ -1249,11 +1286,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if (!offeredInternalNames.has(name)) {
         retries++;
         if (retries <= cfg.maxRetries) {
-          messages.push({
+          controlTail.push({
             role: 'user',
             content: `Tool "${name}" is not available for this step. Use only the tools provided to you.`,
           });
-          await syncTranscript();
+          await persistExchange();
           continue;
         }
         bundle.budgets.stepsUsed++;
@@ -1312,46 +1349,41 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
         throw mcpErr;
       }
-      bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
-      await writeArtifact(
-        rag,
-        {
-          ...meta,
-          artifactType: 'mcp-result',
-          toolName: name,
-          task: step.name,
-          runId: bundle.runId,
-          seq: inFlight?.seq,
-          attempt: inFlight?.attempt,
-          // Stable fetch identity (tool+args) for run-scoped recall dedup.
-          identityKey: externalToolCallId(name, args),
-          writeOrdinal: bundle.writeOrdinal,
-          content: result,
+      // Record this exchange as a coherent assistant→tool ROUND (OpenAI protocol)
+      // via the context strategy so the executor LLM continues from its own tool
+      // call. The strategy owns the per-round context (Window keeps a bounded
+      // buffer; RagRecall (Task 13) persists the mcp-result + recalls it) — the
+      // handler no longer writes the mcp-result artifact or grows a raw transcript.
+      const round: ToolRound = {
+        assistant: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: call.id,
+              type: 'function',
+              function: { name, arguments: JSON.stringify(args) },
+            },
+          ],
         },
-        ctx.options,
-      );
-      // Feed the result back as a coherent assistant→tool turn (OpenAI protocol)
-      // so the executor LLM continues from its own tool call rather than seeing a
-      // bare user message. The assistant message carries the tool_call it made;
-      // the tool message carries the result keyed by the same id.
-      messages.push({
-        role: 'assistant',
-        content: null,
-        tool_calls: [
+        results: [
           {
-            id: call.id,
-            type: 'function',
-            function: { name, arguments: JSON.stringify(args) },
+            role: 'tool',
+            tool_call_id: call.id,
+            content: result,
           },
         ],
-      });
-      messages.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: result,
-      });
-      // The executor saw these turns → make them durable before the next round.
-      await syncTranscript();
+        // Stable fetch identity (tool+args) for run-scoped recall dedup. The
+        // controller has no tool-level error classifier here — an unavailable MCP
+        // server aborts BEFORE record; a returned string is a delivered result.
+        meta: [{ identityKey: externalToolCallId(name, args), isError: false }],
+        roundId: undefined,
+      };
+      await strategy.record(round, ctx.options);
+      // A recorded round supersedes any pending control retry → prune the tail.
+      controlTail.length = 0;
+      // The executor saw this round → make the strategy state durable before next.
+      await persistExchange();
     }
   }
 
