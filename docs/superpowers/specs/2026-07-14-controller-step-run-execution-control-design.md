@@ -31,7 +31,8 @@ Today neither inner call accepts a controller-owned signal:
 
 **Changes (additive):**
 - `ISubagentClient.send(messages, tools?, options?: CallOptions)` — add optional `options`. `makeSubagentClient` passes it: `llm.chat(messages, tools, options)`. `CallOptions` carries the signal the LLM adapter honors via `withAbort`.
-- `ControllerHandlerDeps.callMcp(name, args, signal?: AbortSignal)` — add optional `signal`. The controller composition wires `callMcp` to `buildMcpBridge(clients, classifier)(name, args, signal)` (the bridge already accepts a 3rd `signal` arg → `withAbort`).
+- `ControllerHandlerDeps.callMcp(name, args, signal?: AbortSignal)` — add optional `signal`. The controller composition wires `callMcp` to `buildMcpBridge(clients, classifier)(name, args, signal)`.
+- **`buildMcpBridge` MUST actually USE the signal** (`smart-server.ts` — today the `_signal` param is UNUSED and `client.listTools()`/`client.callTool()` are called with no cancellation). Change the bridge to build `const opts = signal ? { signal } : undefined;` and pass it into BOTH `client.listTools(opts)` and `client.callTool(name, safeArgs, opts)` — `IMcpClient.listTools(options?: CallOptions)` / `callTool(name, args, options?)` already accept `CallOptions` whose signal the adapter honors via `withAbort`. Without this the signal never reaches MCP and "signal cancels the inner MCP call" cannot work.
 - In `runStep`, the per-step `IStepBudget.signal` is passed into BOTH: `deps.executor.send(messages, offeredTools, { ...ctx.options, signal })` and `deps.callMcp(name, args, signal)`. So whichever inner op is running when the budget elapses is cancelled.
 - A cancelled LLM/MCP call surfaces as an error/rejection; the handler maps a budget-cut cancellation to a `control-failure(reason='step-timeout') → replan` (Section 4), distinct from an MCP-unavailable escalate.
 
@@ -68,7 +69,9 @@ export interface IStepBudget {
    *  (executor LLM + callMcp) so whatever consumed the time is cancelled. A
    *  never-firing signal (default, no time budget) is valid. */
   readonly signal: AbortSignal;
-  /** Between-round gate consulted BEFORE each executor round. false → cut. */
+  /** Budget gate consulted (a) before each executor round AND (b) PROSPECTIVELY
+   *  before executing/surfacing a tool call. false → cut. The count check is
+   *  prospective (`toolCallCount + 1 > maxToolCalls`) so a tool cannot exceed the cap. */
   shouldContinue(state: StepRoundState): StepControlDecision;
   /** Release timers/resources when the step ends (settled or cut). */
   dispose(): void;
@@ -108,11 +111,12 @@ Add optional `stepExecutionControl?: IStepExecutionControl` and `runExecutionCon
 
 ## Section 4 — Interaction with existing budgets, replan, resume, fail-loud
 
-- **`maxToolCalls` moves into `DefaultStepExecutionControl.shouldContinue`.** The handler's inline `toolCallCount > maxToolCalls` gate (~controller-coordinator-handler.ts:1265-1287) is replaced by consulting `budget.shouldContinue(state)` at the top of each executor round; a `{continue:false, reason}` triggers the SAME `writeControlFailure(reason)` + `settle('failed')` + `phase='awaiting-replan'` path as today. Other count budgets (`maxStepAttempts`, `maxEvalResumes`, `maxReviewRetries`) and REACTIVE failures (executor error, reviewer-unverifiable, unavailable-tool) stay handler-side — they depend on subagent results, not the budget. (The step control owns the *budget/time* gate; reactive outcomes remain the handler's.)
+- **`maxToolCalls` moves into `DefaultStepExecutionControl.shouldContinue` — but the gate stays PROSPECTIVE.** The handler's inline count checks are replaced by `budget.shouldContinue(state)`, consulted at the SAME points the current budget checks fire: (a) at the top of each executor round, AND (b) **prospectively before executing/surfacing a tool call** — today the external-tool cap is `inFlight.toolCallCount + 1 > maxToolCalls` BEFORE surfacing (controller-coordinator-handler.ts:1279); the internal cap is post-execute. To preserve the "external tool cannot exceed the cap" invariant, `StepRoundState` carries the count and `DefaultStepExecutionControl.shouldContinue` cuts when `toolCallCount + 1 > maxToolCalls` (prospective, matching today) — NOT `toolCallCount > maxToolCalls` (which would allow one extra surfaced call). The handler consults the gate before each tool execution/surface (internal AND external), replacing both inline checks. A `{continue:false, reason}` triggers the SAME `writeControlFailure(reason)` + `settle('failed')` + `phase='awaiting-replan'` path as today. Other count budgets (`maxStepAttempts`, `maxEvalResumes`, `maxReviewRetries`) and REACTIVE failures (executor error, reviewer-unverifiable, unavailable-tool) stay handler-side — they depend on subagent results, not the budget.
+- **Cancelled executor LLM must be detected explicitly (NOT the retry path).** `makeSubagentClient` converts an aborted `llm.chat` into `SubagentResult { kind:'error', error:'…' }` (subagent-client.ts) — and the handler currently treats `res.kind==='error'` as an executor-error RETRY (control-coordinator-handler.ts:1212), which is WRONG for a budget cut. After `deps.executor.send`, the handler MUST check the step budget's abort FIRST: if `budget.signal.aborted` (the step's own timeout fired), map to `control-failure(reason:'step-timeout') → replan`, BEFORE the `res.kind==='error'` retry branch. (Optionally `makeSubagentClient` surfaces an abort marker, but the authoritative signal is `budget.signal.aborted` — a genuine provider error with the signal NOT aborted stays the retry path.)
 - **Cut → replan.** A budget cut (gate `false` OR the signal aborting an inner call) becomes a `control-failure → replan` with a clear reason (`step-timeout` / `maxToolCalls`). The planner revises and continues — never a silent fail. `maxSteps` / `maxRewinds` remain the terminal backstop.
 - **`perStepTimeoutMs` config (additive, optional).** Add `perStepTimeoutMs?: number` to `ControllerConfig.budgets` (default UNSET = never cut on time = backward-compat). When set, `DefaultStepExecutionControl` uses it. This is the ONE additive config field (the strategy itself is code/DI). Our eval config sets a sane value (e.g. 120000 ms) to prove convergence.
 - **Resume-safety.** `beginStep` is called at EACH step entry — fresh on a new step, and again on RESUME of an in-flight step. Each entry gets a FRESH budget (fresh timer/signal). This is correct: livelock is a within-one-pass concern; a suspend/resume (external-tool round-trip) is a new pass and legitimately gets its own step budget. Cumulative-across-passes bounding is the RUN control's job (sibling seam). No new durable strategy state is persisted — the budget is transient per pass (resume-safe by construction).
-- **Fail-loud unchanged.** The MCP-unavailable escalate/`abortTerminal` (20.4.0) runs BEFORE any budget mapping in the `callMcp` catch; a budget-cancellation of `callMcp` is distinguished from an MCP-unavailable `McpError` (the abort surfaces as an AbortError/cancellation, not an `McpError` classified unavailable) and maps to `control-failure(step-timeout) → replan`, not a terminal abort.
+- **Fail-loud unchanged.** In the `callMcp` catch, the discriminator is the SAME `budget.signal.aborted` check: if the step's own budget aborted the call → `control-failure(reason:'step-timeout') → replan` (the controller cancelled its own op). Only when the signal did NOT abort is the error handled as before — an MCP-unavailable `McpError` still escalates via `abortTerminal` (20.4.0 fail-loud), a tool-level error still becomes LLM feedback. So a per-step timeout never masquerades as MCP-unavailable and vice-versa.
 
 ---
 
@@ -137,8 +141,10 @@ Add optional `stepExecutionControl?: IStepExecutionControl` and `runExecutionCon
 - **NEW** `packages/llm-agent-server-libs/src/smart-agent/controller/noop-run-execution-control.ts` — `NoopRunExecutionControl`.
 - **MODIFY** `controller/subagent-client.ts` (`send` gains `options?`; `makeSubagentClient` passes to `llm.chat`).
 - **MODIFY** `controller/controller-coordinator-handler.ts` (`ControllerHandlerDeps.callMcp` gains `signal?`; runStep: `beginStep` at entry, thread `signal` into `executor.send` + `callMcp`, consult `shouldContinue` per round replacing the inline maxToolCalls gate, map cut→control-failure, `dispose()` on step end; `ControllerHandlerDeps` gains `stepExecutionControl?`/`runExecutionControl?`).
-- **MODIFY** `controller/types.ts` (`ControllerConfig.budgets.perStepTimeoutMs?`).
-- **MODIFY** `pipelines/controller.ts` (resolve `ctx.stepExecutionControl ?? Default`, `ctx.runExecutionControl ?? Noop`; wire `callMcp` with signal passthrough) + DI seams in `smart-server.ts` / `builder.ts` / `interfaces/pipeline-plugin.ts`.
+- **MODIFY** `controller/types.ts` — add `ControllerConfig.budgets.perStepTimeoutMs?: number` (additive, optional) AND **widen `ControlFailure.reason`** from `'maxToolCalls'` to `'maxToolCalls' | 'step-timeout'` (the durable control-failure type must carry the new cut reason so it persists as a typed value, not a string side-channel; existing `'maxToolCalls'` writers unchanged).
+- **MODIFY** `pipelines/controller.ts` (resolve `ctx.stepExecutionControl ?? Default`, `ctx.runExecutionControl ?? Noop`; wire `callMcp` with signal passthrough).
+- **MODIFY** `smart-agent/smart-server.ts` — `buildMcpBridge` uses the `signal` (pass `{signal}` into `client.listTools`/`callTool`; drop the unused `_signal`); DI seams (`BuildAgentDeps` fields, ctx population).
+- **MODIFY** `builder.ts` (`withStepExecutionControl`/`withRunExecutionControl`), `interfaces/pipeline-plugin.ts` (`IPipelineContext` fields).
 
 ## Architecture Principles Compliance
 
