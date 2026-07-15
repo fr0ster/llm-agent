@@ -17,6 +17,8 @@ import { describe, it } from 'node:test';
 import type {
   CallOptions,
   IKnowledgeRagHandle,
+  IStepBudget,
+  IStepExecutionControl,
   KnowledgeEntry,
   LlmStreamChunk,
   LlmTool,
@@ -425,6 +427,74 @@ describe('controller per-step execution control (Task 7)', () => {
     assert.ok(
       stopChunk(captured, 'settle-done'),
       'the run settled and completed',
+    );
+  });
+
+  it('(e) budget dispose on PRE-LOOP throw: a selectTools reject before the executor loop still disposes the step budget (no leaked timer)', {
+    timeout: 5000,
+  }, async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const rag = stubRag();
+
+    // A budget with a SPY dispose and a never-firing signal (a plain
+    // AbortController that is never aborted). If the pre-loop code throws before
+    // the executor while-loop, dispose() must STILL be called (try opens right
+    // after beginStep) — otherwise the un-unref'd real timer would leak.
+    let disposeCalls = 0;
+    const neverAbort = new AbortController();
+    const stepExecutionControl: IStepExecutionControl = {
+      beginStep(): IStepBudget {
+        return {
+          signal: neverAbort.signal,
+          shouldContinueRound: () => ({ continue: true }),
+          canExecuteTool: () => ({ continue: true }),
+          dispose() {
+            disposeCalls++;
+          },
+        };
+      },
+    };
+
+    const boom = new Error('selectTools-boom');
+    const deps: ControllerHandlerDeps = {
+      evaluator: scriptedClient([{ kind: 'content', content: 'Goal' }]),
+      planner: scriptedClient([
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+      ]),
+      // Never reached — selectTools throws in the budget-dependent PRE-LOOP.
+      executor: scriptedClient([{ kind: 'content', content: 'unreached' }]),
+      backend,
+      knowledgeRagFor: () => rag,
+      embedder: stubEmbedder,
+      callMcp: async () => 'mcp-out',
+      // Pre-loop await that rejects BEFORE the executor while-loop opens.
+      selectTools: async (): Promise<LlmTool[]> => {
+        throw boom;
+      },
+      isExternalTool: () => false,
+      stepExecutionControl,
+      config: baseConfig({ perStepTimeoutMs: 20 }),
+      models: { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' },
+    };
+
+    const handler = new ControllerCoordinatorHandler(deps);
+    const { ctx } = fakeCtx();
+
+    // The throw must STILL propagate (behaviour unchanged) …
+    await assert.rejects(
+      () => handler.execute(ctx, {}, undefined),
+      /selectTools-boom/,
+    );
+    // … AND the budget must have been disposed on the way out (the fix).
+    assert.equal(
+      disposeCalls,
+      1,
+      'budget.dispose() must run even when a PRE-LOOP await throws',
     );
   });
 });

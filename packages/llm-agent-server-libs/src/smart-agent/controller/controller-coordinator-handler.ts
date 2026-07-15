@@ -910,287 +910,299 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       attempt: inFlight?.attempt ?? 0,
       budgets: { maxToolCalls, perStepTimeoutMs: cfg.perStepTimeoutMs },
     });
-    const stepStartedAt = Date.now();
-    // Merge the caller's request/cancel signal with the step budget: an inner call
-    // is cancelled by EITHER. The step-timeout DISCRIMINATOR remains
-    // budget.signal.aborted SPECIFICALLY, so a pure caller-cancel is NOT mis-mapped
-    // to a step-timeout control-failure.
-    const callSignal = ctx.options?.signal
-      ? AbortSignal.any([ctx.options.signal, budget.signal])
-      : budget.signal;
-    // Typed reason code (StepControlDecision.reason) → human note. Preserves
-    // today's exact wording so existing suites stay byte-identical.
-    const noteFor = (r: string): string =>
-      r === 'maxToolCalls'
-        ? 'tool-call budget exhausted (maxToolCalls)'
-        : r === 'step-timeout'
-          ? 'step time budget exhausted (step-timeout)'
-          : r;
-    let roundNo = 0;
-    const state = (): StepRoundState => ({
-      round: roundNo,
-      toolCallCount: inFlight?.toolCallCount ?? 0,
-      elapsedMs: Date.now() - stepStartedAt,
-    });
-    // Persist the step outcome ATOMICALLY: record lastOutcome (durable, so a
-    // resume after a failed step replans instead of repeating it) AND advance the
-    // planner cursor (onCommit) in the SAME persistBundle that records the step
-    // result — never in a separate write, so a crash cannot replay a completed step.
-    const settle = async (
-      outcome: 'advanced' | 'failed' | 'partial',
-    ): Promise<'advanced' | 'failed' | 'partial'> => {
-      bundle.lastOutcome = outcome;
-      onCommit?.(outcome);
-      if (outcome === 'advanced' || outcome === 'partial') {
-        bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
-        bundle.inFlightStep = undefined;
-        bundle.runPhase = 'planning';
-      } else {
-        // 'failed' — keep the same seq, mark awaiting-replan in the SAME persist so
-        // recovery routes by durable phase.
-        if (bundle.inFlightStep) bundle.inFlightStep.phase = 'awaiting-replan';
-        bundle.runPhase = 'executing';
-      }
-      await persistBundle(deps.backend, sessionId, bundle);
-      return outcome;
-    };
-    // The IMMUTABLE per-round prefix: system + step user message + the step-result
-    // recall block. Re-emitted verbatim every round via strategy.form(); the dynamic
-    // tool rounds are owned by the injected context strategy, NOT accumulated here.
-    const staticPrefix: Message[] = [
-      {
-        role: 'system',
-        content: appendHint(
-          EXECUTOR_SYSTEM,
-          deps.config.subagents.executor?.hint,
-        ),
-      },
-      {
-        role: 'user',
-        content: `Goal: ${bundle.goal}\nStep: ${step.name}\nInstructions: ${step.instructions}`,
-      },
-    ];
-
-    // Episodic recall: pull prior STEP-RESULT artifacts relevant to this step from
-    // session-memory and inject them as static context. The session-memory rag shares
-    // the bundle backend, so restrict to 'step-result' (excludes the
-    // 'controller-bundle' infrastructure record). Bounded by k and length. The
-    // per-round MCP context is now the context strategy's job (its form() supplies
-    // the mcp-result rounds — the Window keeps its own buffer, RagRecall recalls),
-    // so it is NOT part of the handler-built static prefix.
-    const recallText = step.instructions || step.name;
-    const maxAttempts = cfg.maxStepAttempts ?? 5;
-    const recalledSteps = await runScopedRecall(
-      rag,
-      recallText,
-      RECALL_K_STEP,
-      bundle.runId,
-      RECALL_K_STEP * (maxAttempts + 1),
-      ['step-result'],
-      ctx.options,
-    );
-    const stepBlock = buildRecallBlock(recalledSteps, RECALL_MAX_CHARS_STEP);
-    if (stepBlock) {
-      staticPrefix.push({ role: 'user', content: stepBlock });
-    }
-
-    // Per-step tool-loop context strategy (record/form). Absent factory →
-    // LegacyAccumulateContextStrategy (byte-identical to the historical growing
-    // transcript).
-    const makeStrategy = () =>
-      (
-        deps.toolLoopContextStrategyFactory ??
-        (() => new LegacyAccumulateContextStrategy())
-      )({
-        run: { rag, runId: bundle.runId, meta, stepName: step.name },
-      });
-
-    // Resume / migration selection (Task 12). A step that suspended under the new
-    // design carries a serialized `contextStrategyState` → RESTORE it so the
-    // pre-suspend rounds (including any INTERNAL tool rounds before an external
-    // suspend) come back exactly as the executor last saw them. A PRE-RELEASE
-    // in-flight step carries only a raw `transcript` (no snapshot) → migrate it
-    // verbatim via the migration-only LegacyTranscriptContextStrategy (one release).
-    // Otherwise a fresh step.
-    let strategy: IToolLoopContextStrategy;
-    if (inFlight?.contextStrategyState !== undefined) {
-      const state = inFlight.contextStrategyState;
-      // A migrated step persisted a LegacyTranscript snapshot ({rawMessages,
-      // newRounds}). Restore it through the SAME strategy type so its raw history
-      // + post-migration rounds survive a SECOND resume; a normal snapshot
-      // restores via the injected/default strategy. Discriminate on shape.
-      strategy =
-        (state as { rawMessages?: unknown }).rawMessages !== undefined
-          ? new LegacyTranscriptContextStrategy({ rawMessages: [] })
-          : makeStrategy();
-      strategy.restore(state);
-    } else if (inFlight?.transcript?.length) {
-      strategy = new LegacyTranscriptContextStrategy({
-        rawMessages: inFlight.transcript,
-      });
-      // Adopted verbatim (rawMessages is copied) → clear the durable transcript so
-      // it only ever carries UN-recorded external-continuation pairs from here on.
-      // The next suspend snapshots this strategy → subsequent resumes take the
-      // restore branch above, so the raw history is never re-injected (no double).
-      inFlight.transcript.length = 0;
-    } else {
-      strategy = makeStrategy(); // fresh step
-    }
-
-    // Durable, bounded control-message tail (retries only). Aliased IN PLACE so
-    // push/prune mutate the persisted field; a legacy call with no inFlightStep gets
-    // an ephemeral local (no durable tail to persist).
-    let controlTail: Message[];
-    if (inFlight) {
-      inFlight.controlTail = inFlight.controlTail ?? [];
-      controlTail = inFlight.controlTail;
-    } else {
-      controlTail = [];
-    }
-
-    // External CONTINUATION bridge: the resume preamble APPENDS the freshly
-    // resolved external assistant/tool pair(s) to inFlight.transcript. Record them
-    // as rounds ON TOP of the restored strategy so the executor continues from its
-    // own tool call, then CLEAR the transcript — they now live in the strategy, so
-    // leaving them would double-record on the next external round-trip. (The
-    // LegacyTranscript migration above already adopted AND cleared its transcript,
-    // so here the transcript holds ONLY the just-injected external pair — never the
-    // migrated raw history; the two never double-inject the same rounds.)
-    if (inFlight && inFlight.transcript.length > 0) {
-      const t = inFlight.transcript;
-      let i = 0;
-      while (i < t.length) {
-        const assistant = t[i];
-        i++;
-        const results: Message[] = [];
-        while (i < t.length && t[i]?.role === 'tool') {
-          results.push(t[i]);
-          i++;
-        }
-        if (assistant)
-          await strategy.record({ assistant, results }, ctx.options);
-      }
-      inFlight.transcript.length = 0;
-    }
-
-    // Snapshot the strategy state + persist the bundle after every executor/tool
-    // exchange so a suspend or crash resumes with the same context the executor saw.
-    const persistExchange = async (): Promise<void> => {
-      if (inFlight) {
-        inFlight.contextStrategyState = strategy.snapshot();
-        await persistBundle(deps.backend, sessionId, bundle);
-      }
-    };
-
-    // Per-reference evidence: one recall per requires[] reference. A non-empty
-    // top-K does NOT prove the dependency is present — semantic recall returns the
-    // NEAREST artifact even at low relevance — so we hand the reviewer the TOP
-    // artifact's relevant fragment (Evidence.topArtifact) and let IT (the judging
-    // role) decide whether the ref is actually satisfied. `hit` is a coarse
-    // any-candidate flag. Gathered SEQUENTIALLY (NOT Promise.all): each
-    // relevantExtract is itself bounded-sequential, so the outer sequential loop
-    // keeps at most ONE embed request in flight at a time (rate-limit-safe).
-    const refs =
-      step.requires && step.requires.length > 0 ? step.requires : [recallText];
-    const evBound =
-      RECALL_K_STEP * (maxAttempts + 1) +
-      cfg.maxSteps * maxAttempts * (cfg.maxToolCalls ?? 10);
-    const evidence: Evidence[] = [];
-    for (const ref of refs) {
-      const hits = await runScopedRecall(
-        rag,
-        ref,
-        1,
-        bundle.runId,
-        evBound,
-        RECALL_ARTIFACT_TYPES,
-        ctx.options,
-      );
-      const topArtifact = hits[0]
-        ? await relevantExtract(
-            hits[0].content,
-            ref,
-            RECALL_EVIDENCE_CHARS,
-            // biome-ignore lint/style/noNonNullAssertion: distance strategies require an embedder; the factory enforces it (Task 17).
-            deps.embedder!,
-            ctx.options,
-          )
-        : undefined;
-      evidence.push({ ref, hit: hits.length > 0, topArtifact });
-    }
-
-    // Tools offered to the executor = the INTERNAL (MCP) tools semantically
-    // relevant to THIS step (top-K from toolsRag) PLUS the per-request external
-    // (consumer-supplied) tools. The executor decides which to call; internal
-    // calls route through `callMcp`, external calls round-trip via `isExternalTool`.
-    const relevant = await deps.selectTools(
-      step.instructions || step.name,
-      TOOL_SELECT_K,
-      ctx.options,
-    );
-    const offeredTools: LlmTool[] = [...relevant, ...(ctx.externalTools ?? [])];
-    // The executor may ONLY call a tool that was offered to it: an internal tool
-    // selected for this step, or a per-request external tool. Any other name
-    // (hallucinated / stale / not in the top-K) is rejected — never executed —
-    // so the semantic exposure boundary actually bounds what runs.
-    const offeredInternalNames = new Set(relevant.map((t) => t.name));
-
-    let retries = 0;
-
-    // (D) Persist a 'failed' step-result artifact for controller-level failures
-    // (reviewer unverifiable, executor error exhausted, maxToolCalls, unavailable
-    // tool) so the board can project the step's terminal state from artifacts alone.
-    const writeControlFailure = async (reason: string): Promise<void> => {
-      const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
-      const attempt = bundle.inFlightStep?.attempt ?? 0;
-      bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
-      await writeArtifact(
-        rag,
-        {
-          ...meta,
-          artifactType: 'step-result',
-          task: step.name,
-          runId: bundle.runId,
-          seq,
-          attempt,
-          status: 'failed',
-          note: reason,
-          remainder: '',
-          stepId: step.stepId,
-          digest: reason.slice(0, cfg.maxDigestChars ?? 500),
-          writeOrdinal: bundle.writeOrdinal,
-          content: '',
-        },
-        ctx.options,
-      );
-    };
-
-    // A controller-level (non-reviewer) cut: persist a 'failed' step-result +
-    // planner note (preserving today's wording via noteFor) + the TYPED durable
-    // ControlFailure, then settle('failed') so the planner replans at this seq.
-    const cutControlFailure = async (
-      reason: string,
-    ): Promise<'advanced' | 'failed' | 'partial'> => {
-      bundle.budgets.stepsUsed++;
-      await writeControlFailure(noteFor(reason));
-      bundle.plannerPrivate += `\n[seq ${
-        inFlight?.seq ?? bundle.nextSeq ?? 0
-      } ${step.name} control-failed] ${noteFor(reason)}`;
-      if (inFlight) {
-        inFlight.phase = 'awaiting-replan';
-        inFlight.controlFailure = {
-          reason: reason as ControlFailure['reason'],
-          seq: inFlight.seq,
-        };
-      }
-      return settle('failed');
-    };
-
-    // Inner loop handles tool routing / error retries until the executor
-    // produces content for this step (or the step suspends on an external tool).
-    // The whole loop is wrapped so the step budget's timer is disposed on EVERY
-    // exit (settle / cut / suspend / abort / throw).
+    // The budget owns a wall-clock timer that is NOT unref'd — it MUST be disposed
+    // on every step exit. Open the try IMMEDIATELY after beginStep so the
+    // budget-dependent pre-loop (recall / evidence embed / selectTools /
+    // strategy.record) is inside the SAME try…finally; a throw from any of those
+    // documented-fallible awaits (e.g. an embedder 429) would otherwise leak the
+    // timer and later fire controller.abort() on an orphaned signal.
     try {
+      const stepStartedAt = Date.now();
+      // Merge the caller's request/cancel signal with the step budget: an inner call
+      // is cancelled by EITHER. The step-timeout DISCRIMINATOR remains
+      // budget.signal.aborted SPECIFICALLY, so a pure caller-cancel is NOT mis-mapped
+      // to a step-timeout control-failure.
+      const callSignal = ctx.options?.signal
+        ? AbortSignal.any([ctx.options.signal, budget.signal])
+        : budget.signal;
+      // Typed reason code (StepControlDecision.reason) → human note. Preserves
+      // today's exact wording so existing suites stay byte-identical.
+      const noteFor = (r: string): string =>
+        r === 'maxToolCalls'
+          ? 'tool-call budget exhausted (maxToolCalls)'
+          : r === 'step-timeout'
+            ? 'step time budget exhausted (step-timeout)'
+            : r;
+      let roundNo = 0;
+      const state = (): StepRoundState => ({
+        round: roundNo,
+        toolCallCount: inFlight?.toolCallCount ?? 0,
+        elapsedMs: Date.now() - stepStartedAt,
+      });
+      // Persist the step outcome ATOMICALLY: record lastOutcome (durable, so a
+      // resume after a failed step replans instead of repeating it) AND advance the
+      // planner cursor (onCommit) in the SAME persistBundle that records the step
+      // result — never in a separate write, so a crash cannot replay a completed step.
+      const settle = async (
+        outcome: 'advanced' | 'failed' | 'partial',
+      ): Promise<'advanced' | 'failed' | 'partial'> => {
+        bundle.lastOutcome = outcome;
+        onCommit?.(outcome);
+        if (outcome === 'advanced' || outcome === 'partial') {
+          bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
+          bundle.inFlightStep = undefined;
+          bundle.runPhase = 'planning';
+        } else {
+          // 'failed' — keep the same seq, mark awaiting-replan in the SAME persist so
+          // recovery routes by durable phase.
+          if (bundle.inFlightStep)
+            bundle.inFlightStep.phase = 'awaiting-replan';
+          bundle.runPhase = 'executing';
+        }
+        await persistBundle(deps.backend, sessionId, bundle);
+        return outcome;
+      };
+      // The IMMUTABLE per-round prefix: system + step user message + the step-result
+      // recall block. Re-emitted verbatim every round via strategy.form(); the dynamic
+      // tool rounds are owned by the injected context strategy, NOT accumulated here.
+      const staticPrefix: Message[] = [
+        {
+          role: 'system',
+          content: appendHint(
+            EXECUTOR_SYSTEM,
+            deps.config.subagents.executor?.hint,
+          ),
+        },
+        {
+          role: 'user',
+          content: `Goal: ${bundle.goal}\nStep: ${step.name}\nInstructions: ${step.instructions}`,
+        },
+      ];
+
+      // Episodic recall: pull prior STEP-RESULT artifacts relevant to this step from
+      // session-memory and inject them as static context. The session-memory rag shares
+      // the bundle backend, so restrict to 'step-result' (excludes the
+      // 'controller-bundle' infrastructure record). Bounded by k and length. The
+      // per-round MCP context is now the context strategy's job (its form() supplies
+      // the mcp-result rounds — the Window keeps its own buffer, RagRecall recalls),
+      // so it is NOT part of the handler-built static prefix.
+      const recallText = step.instructions || step.name;
+      const maxAttempts = cfg.maxStepAttempts ?? 5;
+      const recalledSteps = await runScopedRecall(
+        rag,
+        recallText,
+        RECALL_K_STEP,
+        bundle.runId,
+        RECALL_K_STEP * (maxAttempts + 1),
+        ['step-result'],
+        ctx.options,
+      );
+      const stepBlock = buildRecallBlock(recalledSteps, RECALL_MAX_CHARS_STEP);
+      if (stepBlock) {
+        staticPrefix.push({ role: 'user', content: stepBlock });
+      }
+
+      // Per-step tool-loop context strategy (record/form). Absent factory →
+      // LegacyAccumulateContextStrategy (byte-identical to the historical growing
+      // transcript).
+      const makeStrategy = () =>
+        (
+          deps.toolLoopContextStrategyFactory ??
+          (() => new LegacyAccumulateContextStrategy())
+        )({
+          run: { rag, runId: bundle.runId, meta, stepName: step.name },
+        });
+
+      // Resume / migration selection (Task 12). A step that suspended under the new
+      // design carries a serialized `contextStrategyState` → RESTORE it so the
+      // pre-suspend rounds (including any INTERNAL tool rounds before an external
+      // suspend) come back exactly as the executor last saw them. A PRE-RELEASE
+      // in-flight step carries only a raw `transcript` (no snapshot) → migrate it
+      // verbatim via the migration-only LegacyTranscriptContextStrategy (one release).
+      // Otherwise a fresh step.
+      let strategy: IToolLoopContextStrategy;
+      if (inFlight?.contextStrategyState !== undefined) {
+        const state = inFlight.contextStrategyState;
+        // A migrated step persisted a LegacyTranscript snapshot ({rawMessages,
+        // newRounds}). Restore it through the SAME strategy type so its raw history
+        // + post-migration rounds survive a SECOND resume; a normal snapshot
+        // restores via the injected/default strategy. Discriminate on shape.
+        strategy =
+          (state as { rawMessages?: unknown }).rawMessages !== undefined
+            ? new LegacyTranscriptContextStrategy({ rawMessages: [] })
+            : makeStrategy();
+        strategy.restore(state);
+      } else if (inFlight?.transcript?.length) {
+        strategy = new LegacyTranscriptContextStrategy({
+          rawMessages: inFlight.transcript,
+        });
+        // Adopted verbatim (rawMessages is copied) → clear the durable transcript so
+        // it only ever carries UN-recorded external-continuation pairs from here on.
+        // The next suspend snapshots this strategy → subsequent resumes take the
+        // restore branch above, so the raw history is never re-injected (no double).
+        inFlight.transcript.length = 0;
+      } else {
+        strategy = makeStrategy(); // fresh step
+      }
+
+      // Durable, bounded control-message tail (retries only). Aliased IN PLACE so
+      // push/prune mutate the persisted field; a legacy call with no inFlightStep gets
+      // an ephemeral local (no durable tail to persist).
+      let controlTail: Message[];
+      if (inFlight) {
+        inFlight.controlTail = inFlight.controlTail ?? [];
+        controlTail = inFlight.controlTail;
+      } else {
+        controlTail = [];
+      }
+
+      // External CONTINUATION bridge: the resume preamble APPENDS the freshly
+      // resolved external assistant/tool pair(s) to inFlight.transcript. Record them
+      // as rounds ON TOP of the restored strategy so the executor continues from its
+      // own tool call, then CLEAR the transcript — they now live in the strategy, so
+      // leaving them would double-record on the next external round-trip. (The
+      // LegacyTranscript migration above already adopted AND cleared its transcript,
+      // so here the transcript holds ONLY the just-injected external pair — never the
+      // migrated raw history; the two never double-inject the same rounds.)
+      if (inFlight && inFlight.transcript.length > 0) {
+        const t = inFlight.transcript;
+        let i = 0;
+        while (i < t.length) {
+          const assistant = t[i];
+          i++;
+          const results: Message[] = [];
+          while (i < t.length && t[i]?.role === 'tool') {
+            results.push(t[i]);
+            i++;
+          }
+          if (assistant)
+            await strategy.record({ assistant, results }, ctx.options);
+        }
+        inFlight.transcript.length = 0;
+      }
+
+      // Snapshot the strategy state + persist the bundle after every executor/tool
+      // exchange so a suspend or crash resumes with the same context the executor saw.
+      const persistExchange = async (): Promise<void> => {
+        if (inFlight) {
+          inFlight.contextStrategyState = strategy.snapshot();
+          await persistBundle(deps.backend, sessionId, bundle);
+        }
+      };
+
+      // Per-reference evidence: one recall per requires[] reference. A non-empty
+      // top-K does NOT prove the dependency is present — semantic recall returns the
+      // NEAREST artifact even at low relevance — so we hand the reviewer the TOP
+      // artifact's relevant fragment (Evidence.topArtifact) and let IT (the judging
+      // role) decide whether the ref is actually satisfied. `hit` is a coarse
+      // any-candidate flag. Gathered SEQUENTIALLY (NOT Promise.all): each
+      // relevantExtract is itself bounded-sequential, so the outer sequential loop
+      // keeps at most ONE embed request in flight at a time (rate-limit-safe).
+      const refs =
+        step.requires && step.requires.length > 0
+          ? step.requires
+          : [recallText];
+      const evBound =
+        RECALL_K_STEP * (maxAttempts + 1) +
+        cfg.maxSteps * maxAttempts * (cfg.maxToolCalls ?? 10);
+      const evidence: Evidence[] = [];
+      for (const ref of refs) {
+        const hits = await runScopedRecall(
+          rag,
+          ref,
+          1,
+          bundle.runId,
+          evBound,
+          RECALL_ARTIFACT_TYPES,
+          ctx.options,
+        );
+        const topArtifact = hits[0]
+          ? await relevantExtract(
+              hits[0].content,
+              ref,
+              RECALL_EVIDENCE_CHARS,
+              // biome-ignore lint/style/noNonNullAssertion: distance strategies require an embedder; the factory enforces it (Task 17).
+              deps.embedder!,
+              ctx.options,
+            )
+          : undefined;
+        evidence.push({ ref, hit: hits.length > 0, topArtifact });
+      }
+
+      // Tools offered to the executor = the INTERNAL (MCP) tools semantically
+      // relevant to THIS step (top-K from toolsRag) PLUS the per-request external
+      // (consumer-supplied) tools. The executor decides which to call; internal
+      // calls route through `callMcp`, external calls round-trip via `isExternalTool`.
+      const relevant = await deps.selectTools(
+        step.instructions || step.name,
+        TOOL_SELECT_K,
+        ctx.options,
+      );
+      const offeredTools: LlmTool[] = [
+        ...relevant,
+        ...(ctx.externalTools ?? []),
+      ];
+      // The executor may ONLY call a tool that was offered to it: an internal tool
+      // selected for this step, or a per-request external tool. Any other name
+      // (hallucinated / stale / not in the top-K) is rejected — never executed —
+      // so the semantic exposure boundary actually bounds what runs.
+      const offeredInternalNames = new Set(relevant.map((t) => t.name));
+
+      let retries = 0;
+
+      // (D) Persist a 'failed' step-result artifact for controller-level failures
+      // (reviewer unverifiable, executor error exhausted, maxToolCalls, unavailable
+      // tool) so the board can project the step's terminal state from artifacts alone.
+      const writeControlFailure = async (reason: string): Promise<void> => {
+        const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
+        const attempt = bundle.inFlightStep?.attempt ?? 0;
+        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+        await writeArtifact(
+          rag,
+          {
+            ...meta,
+            artifactType: 'step-result',
+            task: step.name,
+            runId: bundle.runId,
+            seq,
+            attempt,
+            status: 'failed',
+            note: reason,
+            remainder: '',
+            stepId: step.stepId,
+            digest: reason.slice(0, cfg.maxDigestChars ?? 500),
+            writeOrdinal: bundle.writeOrdinal,
+            content: '',
+          },
+          ctx.options,
+        );
+      };
+
+      // A controller-level (non-reviewer) cut: persist a 'failed' step-result +
+      // planner note (preserving today's wording via noteFor) + the TYPED durable
+      // ControlFailure, then settle('failed') so the planner replans at this seq.
+      const cutControlFailure = async (
+        reason: string,
+      ): Promise<'advanced' | 'failed' | 'partial'> => {
+        bundle.budgets.stepsUsed++;
+        await writeControlFailure(noteFor(reason));
+        bundle.plannerPrivate += `\n[seq ${
+          inFlight?.seq ?? bundle.nextSeq ?? 0
+        } ${step.name} control-failed] ${noteFor(reason)}`;
+        if (inFlight) {
+          inFlight.phase = 'awaiting-replan';
+          inFlight.controlFailure = {
+            reason: reason as ControlFailure['reason'],
+            seq: inFlight.seq,
+          };
+        }
+        return settle('failed');
+      };
+
+      // Inner loop handles tool routing / error retries until the executor
+      // produces content for this step (or the step suspends on an external tool).
+      // The whole loop is wrapped so the step budget's timer is disposed on EVERY
+      // exit (settle / cut / suspend / abort / throw).
       while (true) {
         roundNo++;
         // TIME/abort gate BEFORE each executor round (count is gated per tool call).
