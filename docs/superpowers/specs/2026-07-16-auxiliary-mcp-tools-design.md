@@ -81,7 +81,16 @@ The interface lives at the bottom of the dependency order so every layer can dep
   returns the defs; `callTool` routes by name to the matching handler (unknown name → tool-level
   `McpError`, not thrown as unavailable).
 - `makeWaitTool(maxSeconds: number)` — returns the `wait` entry:
-  - `def.name = 'wait'`, `inputSchema = { seconds: number }`.
+  - `def.name = 'wait'`; `def.inputSchema` is a real JSON Schema (`LlmTool.inputSchema` is
+    `Record<string, unknown>` fed verbatim into the tool definition — NOT a TS type):
+    ```json
+    {
+      "type": "object",
+      "properties": { "seconds": { "type": "number", "minimum": 0 } },
+      "required": ["seconds"],
+      "additionalProperties": false
+    }
+    ```
   - `def.description` (English, drives semantic selection AND teaches usage):
     *"Pause for the given number of seconds before continuing. Use after an asynchronous
     create/activate operation, before verifying, to let the system settle. Maximum `<max>`
@@ -206,6 +215,13 @@ unchanged. Zero new cancellation machinery.
 - `composeAuxiliarySelect` unit: the wrapped `selectTools` returns domain results **plus** the
   aux defs (deduped by name); with a domain `selectTools` returning `[]` (MCP-less) the result is
   exactly the aux defs.
+- `assertNoAuxCollision` unit (collision gate): a fake `toolsRag` whose `lookup('wait')` returns a
+  tool → build **throws** the clear config error; a `lookup` returning `undefined` for every aux
+  name → no throw; `ctx.toolsRag` undefined (MCP-less) → no throw.
+- DI-threading unit (mirrors the `stepExecutionControl` DI test): `new SmartServer(cfg,
+  { auxiliaryMcpTools: custom })` → the resolved `IPipelineContext.auxiliaryMcpTools === custom`;
+  and at pipeline build the consumer's `custom` provider **overrides** the default `wait` (the
+  default `makeWaitTool` is NOT used when `ctx.auxiliaryMcpTools` is present).
 - Integration: an MCP-less controller pipeline still selects and calls `wait`; an auxiliary-tool
   error never triggers the fail-loud escalate path.
 
