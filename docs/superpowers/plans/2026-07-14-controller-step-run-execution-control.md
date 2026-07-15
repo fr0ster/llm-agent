@@ -459,7 +459,7 @@ Verified coordinates: `executor.send` @1124; external cap (prospective) @1283; i
 - Modify: `packages/llm-agent/src/interfaces/pipeline-plugin.ts` (`IPipelineContext.stepExecutionControl?`/`runExecutionControl?`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`BuildAgentDeps` fields + `buildServerCtx` population)
 - Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts` (resolve defaults + wire `callMcp` signal passthrough)
-- Modify: `packages/llm-agent-server-libs/src/pipelines/controller-factory.ts` (thread the two controls into the handler deps)
+- Modify: `packages/llm-agent-server-libs/src/factories/controller-factory.ts` (thread the two controls into the handler deps)
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/controller-step-control-wiring.test.ts`
 
 **Interfaces:**
