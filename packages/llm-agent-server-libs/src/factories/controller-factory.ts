@@ -4,8 +4,11 @@ import type {
   IEmbedder,
   IKnowledgeRagHandle,
   IPipelineFactory,
+  IRunExecutionControl,
+  IStepExecutionControl,
   LlmTool,
   PipelineFactoryDepsBase,
+  ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import { validateBoardBudget } from '../smart-agent/controller/board.js';
@@ -52,6 +55,23 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
    * to the agnostic path (the measurement toggle).
    */
   skillsRecall?: (goal: string, options?: CallOptions) => Promise<string>;
+  /**
+   * Per-step tool-loop context strategy factory (record/form). Called ONCE per
+   * step by the handler with the per-step run context (`{ rag, runId, meta,
+   * stepName }`). The controller pipeline injects a `RagRecall` factory here (its
+   * `record` persists an `mcp-result`, its `recall` runs `runScopedRecall`).
+   * Absent → the handler falls back to `LegacyAccumulateContextStrategy`
+   * (byte-identical to the historical growing transcript).
+   */
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  /** Consumer-swappable per-step execution control (timeout / tool-call budget).
+   *  The controller pipeline resolves `ctx.stepExecutionControl ?? new DefaultStepExecutionControl()`.
+   *  Absent → the handler defaults (no timeout armed, never aborts). */
+  stepExecutionControl?: IStepExecutionControl;
+  /** Consumer-swappable per-run execution control (max steps / run timeout).
+   *  The controller pipeline resolves `ctx.runExecutionControl ?? new NoopRunExecutionControl()`.
+   *  Absent → the handler no-ops (never fires). */
+  runExecutionControl?: IRunExecutionControl;
 }
 
 /**
@@ -141,10 +161,21 @@ export class ControllerFactory
       backend: deps.backend,
       knowledgeRagFor: deps.knowledgeRagFor,
       embedder: deps.embedder,
-      callMcp: (name, args) => deps.callMcp(name, args),
+      callMcp: (name, args, signal) => deps.callMcp(name, args, signal),
       selectTools: deps.selectTools,
       ...(deps.isExternalTool ? { isExternalTool: deps.isExternalTool } : {}),
       ...(deps.skillsRecall ? { skillsRecall: deps.skillsRecall } : {}),
+      ...(deps.toolLoopContextStrategyFactory
+        ? {
+            toolLoopContextStrategyFactory: deps.toolLoopContextStrategyFactory,
+          }
+        : {}),
+      ...(deps.stepExecutionControl
+        ? { stepExecutionControl: deps.stepExecutionControl }
+        : {}),
+      ...(deps.runExecutionControl
+        ? { runExecutionControl: deps.runExecutionControl }
+        : {}),
       reviewer: new LlmReviewer(makeSubagentClient(reviewerLlm)),
       finalizer: new LlmFinalizer(makeSubagentClient(finalizerLlm), {
         budget: 12000,

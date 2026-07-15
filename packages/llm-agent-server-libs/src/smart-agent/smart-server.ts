@@ -34,7 +34,10 @@ import type {
 import {
   type IMcpFailureClassifier,
   type IRag,
+  type IRunExecutionControl,
+  type IStepExecutionControl,
   isReadinessReporter,
+  type ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
@@ -58,6 +61,7 @@ import {
   SmartAgentBuilder,
   type SmartAgentHandle,
   SmartAgentSubAgent,
+  WindowContextStrategy,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   DefaultMcpFailureClassifier,
@@ -349,6 +353,17 @@ export interface BuildAgentDeps {
    *  Decides whether a failed tool-call is an availability escalation or a
    *  tool-level error. Default: DefaultMcpFailureClassifier. */
   mcpFailureClassifier?: IMcpFailureClassifier;
+  /** Factory for per-loop tool-loop context strategy (DI/programmatic only — not in YAML).
+   *  When absent, resolved to Legacy at point-of-use. */
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  /** Consumer-swappable per-step execution control (timeout / tool-call budget).
+   *  Threaded onto `IPipelineContext.stepExecutionControl`; the controller pipeline
+   *  falls back to `DefaultStepExecutionControl` when absent. */
+  stepExecutionControl?: IStepExecutionControl;
+  /** Consumer-swappable per-run execution control (max steps / run timeout).
+   *  Threaded onto `IPipelineContext.runExecutionControl`; the controller pipeline
+   *  falls back to `NoopRunExecutionControl` when absent. */
+  runExecutionControl?: IRunExecutionControl;
 }
 
 /**
@@ -571,16 +586,17 @@ export function buildMcpBridge(
   clients: IMcpClient[],
   classifier: IMcpFailureClassifier = new DefaultMcpFailureClassifier(),
 ): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
-  return async (name: string, args: unknown, _signal?: AbortSignal) => {
+  return async (name: string, args: unknown, signal?: AbortSignal) => {
     const safeArgs =
       args != null && typeof args === 'object' && !Array.isArray(args)
         ? (args as Record<string, unknown>)
         : {};
+    const opts = signal ? { signal } : undefined;
     for (const client of clients) {
       const probe = client.healthCheck
-        ? () => client.healthCheck!().then((r) => (r.ok ? r.value : false))
+        ? () => client.healthCheck!(opts).then((r) => (r.ok ? r.value : false))
         : undefined;
-      const listed = await client.listTools();
+      const listed = await client.listTools(opts);
       if (!listed.ok) {
         // FAIL LOUD on an availability failure: a transient listTools() outage must
         // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
@@ -591,7 +607,7 @@ export function buildMcpBridge(
       }
       const owns = listed.value.some((t) => t.name === name);
       if (!owns) continue;
-      const result = await client.callTool(name, safeArgs);
+      const result = await client.callTool(name, safeArgs, opts);
       if (!result.ok) {
         // Availability failure → fail loud; a tool-level error → LLM feedback text.
         if ((await classifier.classify(result.error, probe)) === 'unavailable')
@@ -727,6 +743,9 @@ export class SmartServer {
    * Passed to buildMcpBridge (Route B) and threaded into every pipeline ctx (Route A).
    */
   private readonly _mcpFailureClassifier: IMcpFailureClassifier;
+  private readonly _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  private readonly _stepExecutionControl?: IStepExecutionControl;
+  private readonly _runExecutionControl?: IRunExecutionControl;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -751,6 +770,17 @@ export class SmartServer {
       deps.mcpClients !== undefined || deps.connectMcp !== undefined;
     this._mcpFailureClassifier =
       deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
+    // The DI seam carries the CONSUMER-injected factory ONLY (undefined when not
+    // injected). It is threaded verbatim onto the pipeline ctx so a consumer
+    // override wins on EVERY pipeline — including the controller, which resolves
+    // `ctx.toolLoopContextStrategyFactory ?? <its own RagRecall>`. The server's
+    // Window default for the NON-controller pipelines is applied ONLY on the
+    // builder channel (buildBaseBuilder), so it never leaks into the controller's
+    // ctx read. A bare library consumer of DefaultPipeline/SmartAgent (no
+    // SmartServer) still falls back to Legacy at point-of-use.
+    this._toolLoopContextStrategyFactory = deps.toolLoopContextStrategyFactory;
+    this._stepExecutionControl = deps.stepExecutionControl;
+    this._runExecutionControl = deps.runExecutionControl;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -2055,6 +2085,18 @@ export class SmartServer {
       callMcp: (n, a, s) => this.callMcp(n, a, s),
       mcpClients: scope.parts.mcpClients,
       mcpFailureClassifier: this._mcpFailureClassifier,
+      ...(this._toolLoopContextStrategyFactory
+        ? {
+            toolLoopContextStrategyFactory:
+              this._toolLoopContextStrategyFactory,
+          }
+        : {}),
+      ...(this._stepExecutionControl
+        ? { stepExecutionControl: this._stepExecutionControl }
+        : {}),
+      ...(this._runExecutionControl
+        ? { runExecutionControl: this._runExecutionControl }
+        : {}),
       subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
         name: s.name,
         description: s.description,
@@ -2227,6 +2269,17 @@ export class SmartServer {
 
     // Thread the instance-level MCP failure classifier (DI/programmatic only).
     builder = builder.withMcpFailureClassifier(this._mcpFailureClassifier);
+
+    // Tool-loop context strategy for the NON-controller pipelines (default / flat /
+    // linear / dag / direct SmartAgent). Honor a consumer-injected factory; else
+    // default to a bounded RAG-less Window (a strict improvement over Legacy's
+    // unbounded growing transcript). This Window default is applied ONLY on this
+    // builder channel — NOT on the ctx seam — so it never reaches the controller's
+    // own `ctx.toolLoopContextStrategyFactory ?? RagRecall` resolution.
+    builder = builder.withToolLoopContextStrategyFactory(
+      this._toolLoopContextStrategyFactory ??
+        (() => new WindowContextStrategy()),
+    );
 
     return builder;
   }

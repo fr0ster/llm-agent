@@ -38,6 +38,7 @@ import type {
   McpConnectionConfig,
   SmartAgentRagStores,
   SubAgentRegistry,
+  ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CircuitBreaker,
@@ -180,6 +181,7 @@ export class SmartAgentBuilder {
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
   private _mcpFailureClassifier?: IMcpFailureClassifier;
+  private _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
   private _dagCoordinator?: DagCoordinatorHandlerDeps;
@@ -462,6 +464,15 @@ export class SmartAgentBuilder {
    *  tool-level error (LLM feedback). Default: DefaultMcpFailureClassifier. */
   withMcpFailureClassifier(classifier: IMcpFailureClassifier): this {
     this._mcpFailureClassifier = classifier;
+    return this;
+  }
+
+  /** Inject a per-loop tool-loop context strategy factory. When absent, resolved to
+   *  Legacy (LegacyAccumulateContextStrategy) at point-of-use. */
+  withToolLoopContextStrategyFactory(
+    factory: ToolLoopContextStrategyFactory,
+  ): this {
+    this._toolLoopContextStrategyFactory = factory;
     return this;
   }
 
@@ -1129,6 +1140,12 @@ export class SmartAgentBuilder {
       ...(this._mcpFailureClassifier
         ? { mcpFailureClassifier: this._mcpFailureClassifier }
         : {}),
+      ...(this._toolLoopContextStrategyFactory
+        ? {
+            toolLoopContextStrategyFactory:
+              this._toolLoopContextStrategyFactory,
+          }
+        : {}),
     });
 
     const agent = new SmartAgent(
@@ -1174,6 +1191,12 @@ export class SmartAgentBuilder {
         ...(translateQueryStores.size > 0 ? { translateQueryStores } : {}),
         ...(this._mcpFailureClassifier
           ? { mcpFailureClassifier: this._mcpFailureClassifier }
+          : {}),
+        ...(this._toolLoopContextStrategyFactory
+          ? {
+              toolLoopContextStrategyFactory:
+                this._toolLoopContextStrategyFactory,
+            }
           : {}),
         requestLogger,
       },

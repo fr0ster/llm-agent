@@ -35,6 +35,7 @@ import type {
   Message,
   Result,
   TimingEntry,
+  ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type { OrchestratorError, SmartAgentConfig } from '../agent.js';
 import type { IMetrics } from '../metrics/types.js';
@@ -113,6 +114,8 @@ export interface PipelineDeps {
   ragProviderRegistry?: IRagProviderRegistry;
   /** Custom MCP failure classifier. When absent the shared core uses DefaultMcpFailureClassifier. */
   mcpFailureClassifier?: IMcpFailureClassifier;
+  /** Factory for per-loop tool-loop context strategy. When absent, resolved to Legacy at point-of-use. */
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 
 // ---------------------------------------------------------------------------

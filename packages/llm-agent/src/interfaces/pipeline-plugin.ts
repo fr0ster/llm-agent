@@ -12,6 +12,11 @@ import type { IMcpClient } from './mcp-client.js';
 import type { IMcpFailureClassifier } from './mcp-failure-classifier.js';
 import type { IRagRegistry } from './rag.js';
 import type { LlmCallEntry } from './request-logger.js';
+import type {
+  IRunExecutionControl,
+  IStepExecutionControl,
+} from './step-execution-control.js';
+import type { ToolLoopContextStrategyFactory } from './tool-loop-context-strategy.js';
 
 /** A value that may already be resolved or arrive as a promise. */
 export type MaybePromise<T> = T | Promise<T>;
@@ -52,6 +57,15 @@ export interface IPipelineContext {
   logger?: ILogger;
   logLlmCall?(entry: LlmCallEntry): void;
   mcpFailureClassifier?: IMcpFailureClassifier;
+  toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  /** Consumer-swappable per-step execution control (timeout / tool-call budget).
+   *  Injected via `BuildAgentDeps`; falls back to `DefaultStepExecutionControl` in
+   *  the controller pipeline when absent. No-op semantics when undefined. */
+  stepExecutionControl?: IStepExecutionControl;
+  /** Consumer-swappable per-run execution control (max steps / run timeout).
+   *  Injected via `BuildAgentDeps`; falls back to `NoopRunExecutionControl` in the
+   *  controller pipeline when absent. No-op semantics when undefined. */
+  runExecutionControl?: IRunExecutionControl;
 }
 
 /** A pipeline plugin = the implementation of an agent variant. It names itself,

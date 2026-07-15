@@ -2,6 +2,7 @@ import type {
   CallOptions,
   LlmUsage,
   Message,
+  SerializableStrategyState,
   StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerLlmConfig } from '../smart-server.js';
@@ -82,9 +83,13 @@ export type RunPhase = 'evaluating' | 'planning' | 'executing' | 'finalizing';
 /** Controller-level (non-reviewer) failure that drives a replan with no reviewable
  *  artifact (e.g. the maxToolCalls budget). Persisted atomically with
  *  inFlightStep.phase='awaiting-replan' so a crash before the replan keeps the
- *  reason; fed to the planner, then cleared when the revised step is set. */
+ *  reason; fed to the planner, then cleared when the revised step is set.
+ *
+ *  `'control-failure'` is the generic bucket for a consumer-custom
+ *  `IStepExecutionControl` that returns a non-standard reason string; the raw
+ *  text is preserved in the human note / plannerPrivate feed via `noteFor`. */
 export interface ControlFailure {
-  reason: 'maxToolCalls';
+  reason: 'maxToolCalls' | 'step-timeout' | 'control-failure';
   seq: number;
 }
 
@@ -98,12 +103,18 @@ export interface InFlightStep {
   resumeCount: number;
   phase: 'executing' | 'awaiting-replan';
   /** Durable executor message log for this seq — the suspend/resume + crash-replay
-   *  rebuild source; external tool results are appended here. */
+   *  rebuild source; external tool results are appended here.
+   *  @deprecated No longer written; retained read-only for one release for resume
+   *  migration. Bounded replacements: `contextStrategyState` + `controlTail`. */
   transcript: Message[];
   /** Durable external round-trip count; ++ persisted BEFORE each surfaced call. */
   toolCallCount: number;
   /** Why a controller-level replan (no reviewable artifact) — fed to the planner. */
   controlFailure?: ControlFailure;
+  /** Serialized context-strategy snapshot at last suspend; restored on resume. */
+  contextStrategyState?: SerializableStrategyState;
+  /** Bounded message tail (control messages only) persisted across suspend/resume. */
+  controlTail?: Message[];
 }
 
 export interface SessionBundle {
@@ -183,6 +194,8 @@ export interface ControllerConfig {
     maxRetries: number;
     maxRewinds: number;
     maxToolCalls?: number;
+    /** Per-step wall-clock timeout in ms; exceeded → `ControlFailure.reason = 'step-timeout'`. */
+    perStepTimeoutMs?: number;
     /** Durable fresh-attempt cap per step (bounds the non-advancing replan loop). */
     maxStepAttempts?: number;
     /** Durable crash-replay caps (one per LLM-invoking phase). */

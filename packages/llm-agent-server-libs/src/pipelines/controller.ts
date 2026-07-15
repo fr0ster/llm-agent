@@ -1,12 +1,25 @@
 import type {
   CallOptions,
+  IKnowledgeRagHandle,
   IPipelineInstance,
   IPipelinePlugin,
+  KnowledgeEntryMetadata,
+  ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
+import { RagRecallContextStrategy } from '@mcp-abap-adt/llm-agent-libs';
 import {
   ControllerFactory,
   type ControllerFactoryDeps,
 } from '../factories/controller-factory.js';
+import { DefaultStepExecutionControl } from '../smart-agent/controller/default-step-execution-control.js';
+import { writeArtifact } from '../smart-agent/controller/memorizer.js';
+import { NoopRunExecutionControl } from '../smart-agent/controller/noop-run-execution-control.js';
+import {
+  buildRecallBlock,
+  RECALL_K_MCP,
+  RECALL_MAX_CHARS_MCP,
+  runScopedRecall,
+} from '../smart-agent/controller/recall.js';
 import type {
   ControllerConfig,
   PlannerKind,
@@ -182,6 +195,87 @@ export class ControllerPipelinePlugin
         }
       : undefined;
 
+    // Per-step tool-loop context strategy: RagRecall. The handler calls this
+    // factory ONCE PER STEP, passing the per-step run context
+    // (`{ rag, runId, meta, stepName }`) — meta/stepName are only known inside
+    // runStep. `record` persists the round as an `mcp-result` artifact (the write
+    // the handler used to do inline); `recall` runs the run-scoped MCP recall and
+    // formats a bounded "Relevant prior context" block, excluding the raw-tail
+    // round (which form() re-injects verbatim) by roundId.
+    //
+    // Run-scoped over-fetch bound (kPrime): a generous derivation from the
+    // controller budgets (steps × attempts × tool-calls) mirroring the prior
+    // inline `maxSteps * maxAttempts * maxTool`. maxStepAttempts is not on the
+    // pipeline budgets here, so `maxRetries + 1` stands in for per-step attempts.
+    const b = cfg.budgets;
+    const mcpBound =
+      (b.maxSteps ?? 20) * ((b.maxRetries ?? 3) + 1) * (b.maxToolCalls ?? 10);
+    const ragRecallFactory: ToolLoopContextStrategyFactory = ({ run }) => {
+      const { rag, runId, meta, stepName } = run as {
+        rag: IKnowledgeRagHandle;
+        runId: string;
+        meta: KnowledgeEntryMetadata;
+        stepName: string;
+      };
+      return new RagRecallContextStrategy(
+        {
+          // Mirror the removed inline mcp-result write. Write `roundId` as its OWN
+          // metadata field so recall can exclude the raw-tail round by roundId;
+          // `identityKey` stays tool+args (fetch dedup) and is a DIFFERENT key.
+          record: (round, options) =>
+            writeArtifact(
+              rag,
+              {
+                ...meta,
+                artifactType: 'mcp-result',
+                task: stepName,
+                runId,
+                identityKey: round.meta?.[0]?.identityKey ?? round.roundId,
+                roundId: round.roundId,
+                // Monotonic per-write ordinal stamped by the handler. isBetterMcp
+                // tie-breaks on writeOrdinal FIRST (then createdAt); without it a
+                // later same-identityKey fetch cannot supersede a stale earlier one
+                // when createdAt ties (all mcp writes in a step share createdAt).
+                writeOrdinal: round.ordinal,
+                content: round.results
+                  .map((r) => String(r.content ?? ''))
+                  .join('\n'),
+              },
+              options,
+            ),
+          recall: async (queryText, excludeRoundIds, options) => {
+            const rows = await runScopedRecall(
+              rag,
+              queryText,
+              RECALL_K_MCP,
+              runId,
+              mcpBound,
+              ['mcp-result'],
+              options,
+            );
+            return (
+              buildRecallBlock(
+                rows.filter(
+                  (r) => !excludeRoundIds.includes(String(r.metadata?.roundId)),
+                ),
+                RECALL_MAX_CHARS_MCP,
+              ) ?? ''
+            );
+          },
+        },
+        { runId },
+      );
+    };
+
+    // Honor a CONSUMER-injected tool-loop context strategy on the controller
+    // path: `new SmartServer(cfg, { toolLoopContextStrategyFactory })` threads
+    // it onto `ctx.toolLoopContextStrategyFactory` (undefined when not injected).
+    // When the consumer supplied one it OVERRIDES the controller's RagRecall
+    // example default; otherwise RagRecall stands. We never silently drop an
+    // injected DI dependency.
+    const toolLoopContextStrategyFactory =
+      ctx.toolLoopContextStrategyFactory ?? ragRecallFactory;
+
     // The factory resolves the three role LLMs via makeRoleLlm, wraps them as
     // subagent clients, validates the embedder requirement, and builds the
     // handler. external-tool routing is decided PER-REQUEST inside the handler
@@ -191,12 +285,17 @@ export class ControllerPipelinePlugin
         ctx.makeLlm(
           cfg.subagents[role as 'evaluator' | 'planner' | 'executor'],
         ),
-      callMcp: (name, args) => mcpBridge(name, args),
+      callMcp: (name, args, signal) => mcpBridge(name, args, signal),
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
       selectTools,
       ...(skillsRecall ? { skillsRecall } : {}),
+      toolLoopContextStrategyFactory,
+      stepExecutionControl:
+        ctx.stepExecutionControl ?? new DefaultStepExecutionControl(),
+      runExecutionControl:
+        ctx.runExecutionControl ?? new NoopRunExecutionControl(),
     };
 
     const { handler } = await new ControllerFactory().build(

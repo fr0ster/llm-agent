@@ -49,6 +49,7 @@ import type {
   SubAgentRegistry,
   Subprompt,
   TimingEntry,
+  ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   OrchestratorError,
@@ -112,6 +113,8 @@ export interface PipelineContext {
   readonly llmCallStrategy: ILlmCallStrategy;
   /** Custom MCP failure classifier injected via DI. When absent the shared core uses DefaultMcpFailureClassifier. */
   readonly mcpFailureClassifier?: IMcpFailureClassifier;
+  /** Factory for per-loop tool-loop context strategy. When absent, resolved to Legacy at point-of-use. */
+  readonly toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 
   // -- Mutable state (populated by stages) ----------------------------------
 

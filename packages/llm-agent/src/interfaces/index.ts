@@ -211,6 +211,18 @@ export type {
   StateOracleResult,
 } from './state-oracle.js';
 export type {
+  IRunBudget,
+  IRunExecutionControl,
+  IStepBudget,
+  IStepExecutionControl,
+  RunControlContext,
+  RunState,
+  StepBudgetsView,
+  StepControlContext,
+  StepControlDecision,
+  StepRoundState,
+} from './step-execution-control.js';
+export type {
   Budget,
   IStepper,
   IStepperInput,
@@ -236,6 +248,15 @@ export type {
 } from './subagent-context.js';
 export type { ITaskFormalizer, ITaskSpec } from './task-spec.js';
 export { renderTaskSpec } from './task-spec.js';
+export type {
+  IToolLoopContextStrategy,
+  JsonValue,
+  SerializableStrategyState,
+  ToolLoopContextBase,
+  ToolLoopContextStrategyDeps,
+  ToolLoopContextStrategyFactory,
+  ToolRound,
+} from './tool-loop-context-strategy.js';
 export type { IToolSelectionStrategy } from './tool-selection-strategy.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {

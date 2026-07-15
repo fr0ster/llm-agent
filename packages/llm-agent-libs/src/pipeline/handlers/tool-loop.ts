@@ -25,10 +25,12 @@
  */
 
 import type {
+  IToolLoopContextStrategy,
   LlmFinishReason,
   LlmTool,
   Message,
   TimingEntry,
+  ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
   externalToolCallId,
@@ -38,6 +40,7 @@ import {
 import { OrchestratorError } from '../../agent.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
 import type { ISpan } from '../../tracer/types.js';
+import { LegacyAccumulateContextStrategy } from '../context/tool-loop-context/index.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import {
@@ -132,12 +135,34 @@ export class ToolLoopHandler implements IStageHandler {
     let currentTools: LlmTool[] = ctx.activeTools;
 
     messages = injectToolPriority(messages, externalTools);
-    messages = await injectPendingResults(
+    // staticPrefix is immutable across all iterations — re-emitted every round.
+    const staticPrefix = messages;
+    const strategy: IToolLoopContextStrategy = (
+      ctx.toolLoopContextStrategyFactory ??
+      (() => new LegacyAccumulateContextStrategy())
+    )({ run: undefined });
+    // controlTail carries validation-reprompt pairs (assistant+user) that are
+    // NOT tool rounds. It is pruned after the next recorded tool round.
+    const controlTail: Message[] = [];
+
+    const withPending = await injectPendingResults(
       messages,
       ctx.pendingToolResults,
       ctx.sessionId,
       ctx.options,
     );
+    if (withPending.length > staticPrefix.length) {
+      // Injected pending results form an assistant+tool group → record as round.
+      const injected = withPending.slice(staticPrefix.length);
+      const pendingRound: ToolRound = {
+        assistant: injected[0],
+        results: injected.slice(1),
+      };
+      await strategy.record(pendingRound);
+    }
+    messages = (
+      await strategy.form({ prefix: staticPrefix, queryText: ctx.inputText })
+    ).concat(controlTail);
 
     for (let iteration = 0; ; iteration++) {
       if (ctx.options?.signal?.aborted) {
@@ -530,7 +555,17 @@ export class ToolLoopHandler implements IStageHandler {
           ctx.options,
         );
         if (val.reprompt) {
-          messages = val.messages;
+          // Reprompt pairs (assistant+user correction) go into controlTail, NOT
+          // into the strategy — they are ephemeral and survive only until the
+          // next recorded tool round, at which point controlTail is pruned.
+          const appended = val.messages.slice(messages.length);
+          controlTail.push(...appended);
+          messages = (
+            await strategy.form({
+              prefix: staticPrefix,
+              queryText: ctx.inputText,
+            })
+          ).concat(controlTail);
           continue;
         }
         const summary = ctx.requestLogger.getSummary();
@@ -577,23 +612,43 @@ export class ToolLoopHandler implements IStageHandler {
 
       // -- Handle blocked tools ----------------------------------------------
       if (blockedCalls.length > 0) {
-        messages = buildBlockedToolMessages(
-          messages,
+        const group = buildBlockedToolMessages(
           content,
           blockedCalls,
           ctx.options,
         );
+        await strategy.record({
+          assistant: group.assistant,
+          results: group.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({
+            prefix: staticPrefix,
+            queryText: ctx.inputText,
+          })
+        ).concat(controlTail);
         continue;
       }
 
       // -- Handle hallucinated tools -----------------------------------------
       if (hallucinations.length > 0) {
-        messages = buildHallucinatedToolMessages(
-          messages,
+        const group = buildHallucinatedToolMessages(
           content,
           toolCalls,
           hallucinations,
         );
+        await strategy.record({
+          assistant: group.assistant,
+          results: group.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({
+            prefix: staticPrefix,
+            queryText: ctx.inputText,
+          })
+        ).concat(controlTail);
         continue;
       }
 
@@ -622,26 +677,34 @@ export class ToolLoopHandler implements IStageHandler {
         // HIT path: inject matched pairs (assistant tool_call + tool result),
         // each correlated by the SAME extId, and resolve them in-conversation.
         if (hits.length > 0) {
-          messages = [
-            ...messages,
-            {
-              role: 'assistant' as const,
-              content: null,
-              tool_calls: hits.map((tc) => ({
-                id: tc.extId,
-                type: 'function' as const,
-                function: {
-                  name: tc.name,
-                  arguments: JSON.stringify(tc.arguments),
-                },
-              })),
-            },
-            ...hits.map((tc) => ({
-              role: 'tool' as const,
-              content: ctx.externalResults?.get(tc.extId) ?? '',
-              tool_call_id: tc.extId,
+          const hitAssistant: Message = {
+            role: 'assistant' as const,
+            content: null,
+            tool_calls: hits.map((tc) => ({
+              id: tc.extId,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
             })),
-          ];
+          };
+          const hitResults: Message[] = hits.map((tc) => ({
+            role: 'tool' as const,
+            content: ctx.externalResults?.get(tc.extId) ?? '',
+            tool_call_id: tc.extId,
+          }));
+          await strategy.record({
+            assistant: hitAssistant,
+            results: hitResults,
+          });
+          controlTail.length = 0;
+          messages = (
+            await strategy.form({
+              prefix: staticPrefix,
+              queryText: ctx.inputText,
+            })
+          ).concat(controlTail);
           ctx.options?.sessionLogger?.logStep('external_results_resumed', {
             extIds: hits.map((tc) => tc.extId),
             toolNames: hits.map((tc) => tc.name),
@@ -711,23 +774,21 @@ export class ToolLoopHandler implements IStageHandler {
       }
 
       // -- Execute internal MCP tool calls -----------------------------------
-      if (content || internalCalls.length > 0) {
-        messages = [
-          ...messages,
-          {
-            role: 'assistant' as const,
-            content: content || null,
-            tool_calls: internalCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
+      // Capture the assistant message now; record the full round (assistant +
+      // tool results) atomically after the batch completes so the strategy
+      // always sees a complete ToolRound.
+      const batchAssistantMsg: Message = {
+        role: 'assistant' as const,
+        content: content || null,
+        tool_calls: internalCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
           },
-        ];
-      }
+        })),
+      };
 
       // Check tool call budget
       const remaining =
@@ -826,7 +887,16 @@ export class ToolLoopHandler implements IStageHandler {
       if (outcome.escalated) return false;
       currentTools = outcome.currentTools;
       toolCallCount = outcome.toolCallCount;
-      messages = [...messages, ...outcome.toolMessages];
+      const batchRound: ToolRound = {
+        assistant: batchAssistantMsg,
+        results: outcome.toolMessages,
+        meta: outcome.resultMeta,
+      };
+      await strategy.record(batchRound);
+      controlTail.length = 0;
+      messages = (
+        await strategy.form({ prefix: staticPrefix, queryText: ctx.inputText })
+      ).concat(controlTail);
     }
   }
 }

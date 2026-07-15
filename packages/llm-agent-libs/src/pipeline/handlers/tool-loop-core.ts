@@ -132,73 +132,59 @@ export async function injectPendingResults(
   return messages;
 }
 
-/** Append an assistant(tool_calls=blocked) + per-blocked tool-error messages;
- *  log the interception. Returns the extended messages. */
+export type SyntheticToolGroup = { assistant: Message; results: Message[] };
+
+/** Build an assistant(tool_calls=blocked) + per-blocked tool-error messages;
+ *  log the interception. Returns a `{ assistant, results }` group — the
+ *  caller appends `group.assistant, ...group.results` to its message list. */
 export function buildBlockedToolMessages(
-  messages: Message[],
   content: string,
   blockedCalls: ParsedToolCall[],
-  options: CallOptions | undefined,
-): Message[] {
-  let next: Message[] = [
-    ...messages,
-    {
-      role: 'assistant' as const,
-      content: content || null,
-      tool_calls: blockedCalls.map((tc) => ({
-        id: tc.id,
-        type: 'function' as const,
-        function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-      })),
-    },
-  ];
-  for (const blocked of blockedCalls) {
-    next = [
-      ...next,
-      {
-        role: 'tool' as const,
-        content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
-        tool_call_id: blocked.id,
-      },
-    ];
-  }
+  options?: CallOptions | undefined,
+): SyntheticToolGroup {
+  const assistant: Message = {
+    role: 'assistant' as const,
+    content: content || null,
+    tool_calls: blockedCalls.map((tc) => ({
+      id: tc.id,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+    })),
+  };
+  const results: Message[] = blockedCalls.map((blocked) => ({
+    role: 'tool' as const,
+    content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
+    tool_call_id: blocked.id,
+  }));
   options?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
     toolNames: blockedCalls.map((tc) => tc.name),
   });
-  return next;
+  return { assistant, results };
 }
 
-/** Append an assistant(tool_calls=ALL calls) + per-hallucination "not found"
- *  tool messages. Returns the extended messages. */
+/** Build an assistant(tool_calls=ALL calls) + per-hallucination "not found"
+ *  tool messages. Returns a `{ assistant, results }` group — the caller
+ *  appends `group.assistant, ...group.results` to its message list. */
 export function buildHallucinatedToolMessages(
-  messages: Message[],
   content: string,
   toolCalls: ParsedToolCall[],
   hallucinations: ParsedToolCall[],
-): Message[] {
-  let next: Message[] = [
-    ...messages,
-    {
-      role: 'assistant' as const,
-      content: content || null,
-      tool_calls: toolCalls.map((tc) => ({
-        id: tc.id,
-        type: 'function' as const,
-        function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-      })),
-    },
-  ];
-  for (const h of hallucinations) {
-    next = [
-      ...next,
-      {
-        role: 'tool' as const,
-        content: `Error: Tool "${h.name}" not found.`,
-        tool_call_id: h.id,
-      },
-    ];
-  }
-  return next;
+): SyntheticToolGroup {
+  const assistant: Message = {
+    role: 'assistant' as const,
+    content: content || null,
+    tool_calls: toolCalls.map((tc) => ({
+      id: tc.id,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+    })),
+  };
+  const results: Message[] = hallucinations.map((h) => ({
+    role: 'tool' as const,
+    content: `Error: Tool "${h.name}" not found.`,
+    tool_call_id: h.id,
+  }));
+  return { assistant, results };
 }
 
 export type ToolExecResult = {
@@ -212,6 +198,8 @@ export type ToolExecResult = {
   cached: boolean;
 };
 
+export type ToolResultMeta = { identityKey?: string; isError: boolean };
+
 export type BatchOutcome =
   | { escalated: true }
   | {
@@ -219,6 +207,7 @@ export type BatchOutcome =
       currentTools: LlmTool[];
       toolCallCount: number;
       toolMessages: Message[];
+      resultMeta: ToolResultMeta[];
     };
 
 export interface IExecuteToolBatchArgs {
@@ -343,6 +332,7 @@ export async function* executeToolBatchWithHeartbeat(
   }
 
   const toolMessages: Message[] = [];
+  const resultMeta: ToolResultMeta[] = [];
   for (const r of results) {
     const { tc, text, res } = r;
     if (!res) continue;
@@ -391,9 +381,18 @@ export async function* executeToolBatchWithHeartbeat(
       content: text,
       tool_call_id: tc.id,
     });
+    resultMeta.push({
+      isError: !res.ok || (res.ok && !!res.value.isError),
+    });
     onToolExecuted?.(r);
   }
-  return { escalated: false, currentTools, toolCallCount, toolMessages };
+  return {
+    escalated: false,
+    currentTools,
+    toolCallCount,
+    toolMessages,
+    resultMeta,
+  };
 }
 
 export interface IReprompt {
