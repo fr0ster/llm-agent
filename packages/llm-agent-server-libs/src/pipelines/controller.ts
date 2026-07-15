@@ -232,6 +232,11 @@ export class ControllerPipelinePlugin
                 runId,
                 identityKey: round.meta?.[0]?.identityKey ?? round.roundId,
                 roundId: round.roundId,
+                // Monotonic per-write ordinal stamped by the handler. isBetterMcp
+                // tie-breaks on writeOrdinal FIRST (then createdAt); without it a
+                // later same-identityKey fetch cannot supersede a stale earlier one
+                // when createdAt ties (all mcp writes in a step share createdAt).
+                writeOrdinal: round.ordinal,
                 content: round.results
                   .map((r) => String(r.content ?? ''))
                   .join('\n'),

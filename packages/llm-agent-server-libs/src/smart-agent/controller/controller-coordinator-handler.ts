@@ -1487,6 +1487,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // call. The strategy owns the per-round context (Window keeps a bounded
         // buffer; RagRecall (Task 13) persists the mcp-result + recalls it) — the
         // handler no longer writes the mcp-result artifact or grows a raw transcript.
+        // Durable monotonic write ordinal for this mcp-result write. RagRecall's
+        // run-scoped dedup (isBetterMcp) tie-breaks on writeOrdinal FIRST (then
+        // createdAt); since all mcp-result writes in a step share createdAt, a later
+        // same-identityKey fetch only wins with a strictly-higher ordinal. Increment
+        // BEFORE building the round so the value rides on it into strategy.record.
+        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
         const round: ToolRound = {
           assistant: {
             role: 'assistant',
@@ -1512,6 +1518,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           meta: [
             { identityKey: externalToolCallId(name, args), isError: false },
           ],
+          ordinal: bundle.writeOrdinal,
           roundId: undefined,
         };
         await strategy.record(round, ctx.options);

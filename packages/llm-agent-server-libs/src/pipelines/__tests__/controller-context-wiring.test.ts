@@ -117,6 +117,38 @@ describe('controller context wiring — RagRecall factory', () => {
     assert.match(writes[0].content, /RESULT-BODY/);
   });
 
+  it('record stamps the mcp-result artifact with writeOrdinal from round.ordinal (latest-fetch dedup)', async () => {
+    const factory = await buildAndCaptureFactory();
+    const writes: Array<{ content: string; metadata: KnowledgeEntryMetadata }> =
+      [];
+    const spyRag = {
+      write: async (entry: {
+        content: string;
+        metadata: KnowledgeEntryMetadata;
+      }) => {
+        writes.push(entry);
+      },
+      query: async () => [] as KnowledgeEntry[],
+    } as unknown as IKnowledgeRagHandle;
+
+    const strategy = factory({
+      run: { rag: spyRag, runId: 'run-o', meta: META, stepName: 'step-o' },
+    });
+
+    // The handler stamps a monotonic per-write ordinal onto the round; the record
+    // closure MUST carry it to metadata.writeOrdinal so isBetterMcp can tie-break a
+    // same-identityKey / same-createdAt re-fetch to the LATEST write (not a stale one).
+    const round = { ...aRound('BODY'), ordinal: 7 } as ToolRound;
+    await strategy.record(round);
+
+    assert.equal(writes.length, 1);
+    assert.equal(
+      writes[0].metadata.writeOrdinal,
+      7,
+      'writeOrdinal must be stamped from round.ordinal',
+    );
+  });
+
   it('recall (via form) runs runScopedRecall over [mcp-result] excluding the last roundId', async () => {
     const factory = await buildAndCaptureFactory();
     const queries: Array<{
