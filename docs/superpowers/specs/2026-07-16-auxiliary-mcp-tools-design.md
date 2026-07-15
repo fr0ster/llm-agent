@@ -5,7 +5,10 @@
 stateless *auxiliary/service* MCP tools (first tool: `wait`) into the tool-selection
 catalog and the `callMcp` execution bridge — always present (even MCP-less), composing
 with the per-step `perStepTimeoutMs`/`AbortSignal` control shipped in #224, and adding
-**zero lines** to the `smart-server.ts` / controller-handler monoliths.
+**no new logic or glue** to the `smart-server.ts` / controller-handler monoliths: the only
+touch to `smart-server.ts` is the same minimal additive DI field + `buildServerCtx`
+conditional-spread already used for `stepExecutionControl` (see §3.4); all composition logic
+lives in a new `compose-auxiliary.ts` module.
 
 ---
 
@@ -19,8 +22,11 @@ needs a way for the plan to **wait**.
 
 Rather than a new controller step KIND (an engine/controller change), we expose waiting as a
 **tool** the LLM selects like any other. This keeps the engine MCP-agnostic (it hardcodes no
-tool names; the consumer gnostifies via tools/skills), reuses the existing executor tool-loop,
-signal plumbing, and tool-selection, and works for **all** pipelines — not just the controller.
+tool names; the consumer gnostifies via tools/skills), and reuses the existing executor
+tool-loop, signal plumbing, and tool-selection. The **seam is designed to be usable by any
+pipeline** (the composition is generic), but **v1 wires the default `wait` only in the
+controller** (our example, where the livelock arose); other pipelines opt in later by composing
+the seam in their own `build()`. See §7.
 
 **RAG is explicitly OUT of scope of this seam.** RAG already has its own component
 (`IRag` / `IRagEditor` with `upsert`/`deleteById`/`clear`, `KnowledgeBackend` with
@@ -97,12 +103,17 @@ auxiliary tools to justify it.
 
 A small focused module (NOT appended to `smart-server.ts` / the handler). Two functions:
 
-- `composeAuxiliaryBridge(aux, domainBridge): callMcp` — returns a `callMcp(name, args, signal?)`
-  that:
+- `composeAuxiliaryBridge(aux, domainBridge): callMcp` — returns a
+  `callMcp(name, args, signal?): Promise<string>` matching the existing bridge contract
+  (`buildMcpBridge` and the controller/factory `callMcp` return **text**, not a `Result`;
+  see `controller.ts:288`). It:
   1. If `name` is auxiliary-owned (in `aux.listTools()`), calls `aux.callTool(name, args,
-     { signal })` and returns its result — the domain classifier/fail-loud is **not** run.
+     { signal })` and **maps its `Result<McpToolResult, McpError>` to the string contract**:
+     `ok` → `typeof content === 'string' ? content : JSON.stringify(content)`;
+     `!ok` → `error.message` (tool-level text — the domain classifier / fail-loud is **not**
+     run on the auxiliary branch). An abort **rejection** is NOT mapped — it propagates (see §4).
   2. Otherwise delegates to `domainBridge(name, args, signal)` unchanged.
-  Auxiliary is checked **first** (aux-first precedence).
+  Auxiliary is checked **first** (aux-first precedence; collisions are rejected at build — §3.4).
 - `composeAuxiliarySelect(aux, selectTools)` — wraps the pipeline's `selectTools(query, k,
   options)` so the auxiliary tool defs (`aux.listTools()`) are **merged into every selection
   result** (deduped by name, aux appended). Auxiliary tools are a small fixed utility set that
@@ -125,6 +136,7 @@ dispatch and the aux-in-selection behavior are wrappers over the pipeline's exis
   ```ts
   const aux =
     ctx.auxiliaryMcpTools ?? new DefaultAuxiliaryMcpTools([makeWaitTool(maxSeconds)]);
+  assertNoAuxCollision(aux, ctx.toolsRag);           // fail-loud at build (see below)
   const callMcp = composeAuxiliaryBridge(aux, buildMcpBridge(mcpClients, ctx.mcpFailureClassifier));
   const selectTools = composeAuxiliarySelect(aux, baseSelectTools); // aux defs merged into results
   ```
@@ -133,6 +145,15 @@ dispatch and the aux-in-selection behavior are wrappers over the pipeline's exis
   their `build()` (out of scope for v1 beyond the seam being available).
 - Always present, even MCP-less: with no domain MCP, `mcpClients` is empty, but `aux` is still
   composed → `wait` is selectable and callable.
+- **Collision handling — fail-loud at build.** Because aux-first makes a same-named domain tool
+  unreachable, `assertNoAuxCollision(aux, ctx.toolsRag)` runs at build: for each `aux.listTools()`
+  name it checks `ctx.toolsRag?.lookup(name)` (the existing sync catalog lookup, already
+  eager-loaded from the domain `listTools()` at startup — `knowledge-rag.ts:114`). A hit throws a
+  clear config error (`auxiliary tool '<name>' collides with a connected MCP tool — rename the
+  auxiliary tool`), so the consumer renames rather than silently shadowing a domain tool. MCP-less
+  (`ctx.toolsRag` undefined) → no domain tools → no check. This keeps the bridge wrapper free of a
+  logger / domain catalog (the objection to "warn inside the wrapper"): the check is a
+  deterministic build-time gate with the domain catalog and throw available.
 
 ## 4. Data flow (`wait`, end-to-end)
 
@@ -169,8 +190,9 @@ unchanged. Zero new cancellation machinery.
 - Abort during wait → `cancelableDelay` rejects with the abort; propagates through `callMcp` to
   the controller catch, where `budget.signal.aborted` maps it to `step-timeout` → replan.
 - Clamp to `maxSeconds` → silent clamp; result text notes the cap.
-- Name collision (an auxiliary name equal to a domain tool name) → aux-first wins; a **warning is
-  logged** at composition so it is not silent.
+- Name collision (an auxiliary name equal to a domain tool name) → **fail-loud at build**
+  (`assertNoAuxCollision`, §3.4) throws a config error so the consumer renames; the run never
+  starts with a silently-shadowed domain tool.
 
 ## 6. Testing (node:test, RED-first)
 
@@ -210,7 +232,9 @@ pipelines beyond the seam being available; a dedicated `llm-agent-aux-tools` pac
 5. **Variation points → strategies** — the whole provider is consumer-swappable via
    `ctx.auxiliaryMcpTools`.
 6. **Control file size** — interface in `llm-agent`; impl in a new `llm-agent-mcp/src/auxiliary/`;
-   composition in a new `compose-auxiliary.ts`. `smart-server.ts` / handler get **zero** new
-   lines. The monolith decomposition remains a separate tracked roadmap item, unaffected.
+   composition logic in a new `compose-auxiliary.ts`. `smart-server.ts` gets only the minimal
+   additive DI field + `buildServerCtx` spread (the established `stepExecutionControl` idiom, ~3-5
+   lines, no logic/glue); the controller handler is untouched. The monolith decomposition remains
+   a separate tracked roadmap item, unaffected.
 7. **Don't break components** — all additions are additive/optional; no-injection + no-`wait`
    path is byte-identical to today.
