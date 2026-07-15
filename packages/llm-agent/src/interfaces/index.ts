@@ -211,6 +211,18 @@ export type {
   StateOracleResult,
 } from './state-oracle.js';
 export type {
+  IRunBudget,
+  IRunExecutionControl,
+  IStepBudget,
+  IStepExecutionControl,
+  RunControlContext,
+  RunState,
+  StepBudgetsView,
+  StepControlContext,
+  StepControlDecision,
+  StepRoundState,
+} from './step-execution-control.js';
+export type {
   Budget,
   IStepper,
   IStepperInput,
