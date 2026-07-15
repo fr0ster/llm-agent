@@ -11,7 +11,9 @@ import {
   ControllerFactory,
   type ControllerFactoryDeps,
 } from '../factories/controller-factory.js';
+import { DefaultStepExecutionControl } from '../smart-agent/controller/default-step-execution-control.js';
 import { writeArtifact } from '../smart-agent/controller/memorizer.js';
+import { NoopRunExecutionControl } from '../smart-agent/controller/noop-run-execution-control.js';
 import {
   buildRecallBlock,
   RECALL_K_MCP,
@@ -278,13 +280,17 @@ export class ControllerPipelinePlugin
         ctx.makeLlm(
           cfg.subagents[role as 'evaluator' | 'planner' | 'executor'],
         ),
-      callMcp: (name, args) => mcpBridge(name, args),
+      callMcp: (name, args, signal) => mcpBridge(name, args, signal),
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
       selectTools,
       ...(skillsRecall ? { skillsRecall } : {}),
       toolLoopContextStrategyFactory,
+      stepExecutionControl:
+        ctx.stepExecutionControl ?? new DefaultStepExecutionControl(),
+      runExecutionControl:
+        ctx.runExecutionControl ?? new NoopRunExecutionControl(),
     };
 
     const { handler } = await new ControllerFactory().build(

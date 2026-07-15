@@ -4,6 +4,8 @@ import type {
   IEmbedder,
   IKnowledgeRagHandle,
   IPipelineFactory,
+  IRunExecutionControl,
+  IStepExecutionControl,
   LlmTool,
   PipelineFactoryDepsBase,
   ToolLoopContextStrategyFactory,
@@ -62,6 +64,14 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
    * (byte-identical to the historical growing transcript).
    */
   toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  /** Consumer-swappable per-step execution control (timeout / tool-call budget).
+   *  The controller pipeline resolves `ctx.stepExecutionControl ?? new DefaultStepExecutionControl()`.
+   *  Absent → the handler defaults (no timeout armed, never aborts). */
+  stepExecutionControl?: IStepExecutionControl;
+  /** Consumer-swappable per-run execution control (max steps / run timeout).
+   *  The controller pipeline resolves `ctx.runExecutionControl ?? new NoopRunExecutionControl()`.
+   *  Absent → the handler no-ops (never fires). */
+  runExecutionControl?: IRunExecutionControl;
 }
 
 /**
@@ -151,7 +161,7 @@ export class ControllerFactory
       backend: deps.backend,
       knowledgeRagFor: deps.knowledgeRagFor,
       embedder: deps.embedder,
-      callMcp: (name, args) => deps.callMcp(name, args),
+      callMcp: (name, args, signal) => deps.callMcp(name, args, signal),
       selectTools: deps.selectTools,
       ...(deps.isExternalTool ? { isExternalTool: deps.isExternalTool } : {}),
       ...(deps.skillsRecall ? { skillsRecall: deps.skillsRecall } : {}),
@@ -159,6 +169,12 @@ export class ControllerFactory
         ? {
             toolLoopContextStrategyFactory: deps.toolLoopContextStrategyFactory,
           }
+        : {}),
+      ...(deps.stepExecutionControl
+        ? { stepExecutionControl: deps.stepExecutionControl }
+        : {}),
+      ...(deps.runExecutionControl
+        ? { runExecutionControl: deps.runExecutionControl }
         : {}),
       reviewer: new LlmReviewer(makeSubagentClient(reviewerLlm)),
       finalizer: new LlmFinalizer(makeSubagentClient(finalizerLlm), {

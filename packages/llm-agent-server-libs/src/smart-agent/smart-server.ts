@@ -34,6 +34,8 @@ import type {
 import {
   type IMcpFailureClassifier,
   type IRag,
+  type IRunExecutionControl,
+  type IStepExecutionControl,
   isReadinessReporter,
   type ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
@@ -354,6 +356,14 @@ export interface BuildAgentDeps {
   /** Factory for per-loop tool-loop context strategy (DI/programmatic only — not in YAML).
    *  When absent, resolved to Legacy at point-of-use. */
   toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  /** Consumer-swappable per-step execution control (timeout / tool-call budget).
+   *  Threaded onto `IPipelineContext.stepExecutionControl`; the controller pipeline
+   *  falls back to `DefaultStepExecutionControl` when absent. */
+  stepExecutionControl?: IStepExecutionControl;
+  /** Consumer-swappable per-run execution control (max steps / run timeout).
+   *  Threaded onto `IPipelineContext.runExecutionControl`; the controller pipeline
+   *  falls back to `NoopRunExecutionControl` when absent. */
+  runExecutionControl?: IRunExecutionControl;
 }
 
 /**
@@ -734,6 +744,8 @@ export class SmartServer {
    */
   private readonly _mcpFailureClassifier: IMcpFailureClassifier;
   private readonly _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  private readonly _stepExecutionControl?: IStepExecutionControl;
+  private readonly _runExecutionControl?: IRunExecutionControl;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -767,6 +779,8 @@ export class SmartServer {
     // ctx read. A bare library consumer of DefaultPipeline/SmartAgent (no
     // SmartServer) still falls back to Legacy at point-of-use.
     this._toolLoopContextStrategyFactory = deps.toolLoopContextStrategyFactory;
+    this._stepExecutionControl = deps.stepExecutionControl;
+    this._runExecutionControl = deps.runExecutionControl;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -2076,6 +2090,12 @@ export class SmartServer {
             toolLoopContextStrategyFactory:
               this._toolLoopContextStrategyFactory,
           }
+        : {}),
+      ...(this._stepExecutionControl
+        ? { stepExecutionControl: this._stepExecutionControl }
+        : {}),
+      ...(this._runExecutionControl
+        ? { runExecutionControl: this._runExecutionControl }
         : {}),
       subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
         name: s.name,
