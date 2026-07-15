@@ -145,7 +145,7 @@ dispatch and the aux-in-selection behavior are wrappers over the pipeline's exis
   ```ts
   const aux =
     ctx.auxiliaryMcpTools ?? new DefaultAuxiliaryMcpTools([makeWaitTool(maxSeconds)]);
-  assertNoAuxCollision(aux, ctx.toolsRag);           // fail-loud at build (see below)
+  await assertNoAuxCollision(aux, ctx.toolsRag);     // fail-loud at build (see below)
   const callMcp = composeAuxiliaryBridge(aux, buildMcpBridge(mcpClients, ctx.mcpFailureClassifier));
   const selectTools = composeAuxiliarySelect(aux, baseSelectTools); // aux defs merged into results
   ```
@@ -155,14 +155,19 @@ dispatch and the aux-in-selection behavior are wrappers over the pipeline's exis
 - Always present, even MCP-less: with no domain MCP, `mcpClients` is empty, but `aux` is still
   composed → `wait` is selectable and callable.
 - **Collision handling — fail-loud at build.** Because aux-first makes a same-named domain tool
-  unreachable, `assertNoAuxCollision(aux, ctx.toolsRag)` runs at build: for each `aux.listTools()`
-  name it checks `ctx.toolsRag?.lookup(name)` (the existing sync catalog lookup, already
-  eager-loaded from the domain `listTools()` at startup — `knowledge-rag.ts:114`). A hit throws a
-  clear config error (`auxiliary tool '<name>' collides with a connected MCP tool — rename the
-  auxiliary tool`), so the consumer renames rather than silently shadowing a domain tool. MCP-less
-  (`ctx.toolsRag` undefined) → no domain tools → no check. This keeps the bridge wrapper free of a
-  logger / domain catalog (the objection to "warn inside the wrapper"): the check is a
-  deterministic build-time gate with the domain catalog and throw available.
+  unreachable, `async assertNoAuxCollision(aux, ctx.toolsRag)` runs (awaited) at build. It first
+  resolves the aux names: `const listed = await aux.listTools();` — on `!listed.ok` it throws a
+  build error surfacing `listed.error` (our in-process provider should never fail to list; a
+  failure is a real bug, not silently skipped). Then for each aux name it checks the **sync**
+  catalog `ctx.toolsRag.lookup(name)` (`IToolsRagHandle` is **non-optional** on
+  `IPipelineContext` — pipeline-plugin.ts:50 — and the server always supplies it, defaulting to
+  the `EMPTY_TOOLS_RAG` sentinel via `server-context.ts:113`; its `lookup` returns `undefined` for
+  every name). A defined result throws a clear config error (`auxiliary tool '<name>' collides
+  with a connected MCP tool — rename the auxiliary tool`), so the consumer renames rather than
+  silently shadowing a domain tool. No domain catalog (MCP-less) → `EMPTY_TOOLS_RAG.lookup(...)`
+  returns `undefined` → no collision. This keeps the bridge wrapper free of a logger / domain
+  catalog (the objection to "warn inside the wrapper"): the check is a deterministic build-time
+  gate with the domain catalog and throw available.
 
 ## 4. Data flow (`wait`, end-to-end)
 
@@ -215,9 +220,10 @@ unchanged. Zero new cancellation machinery.
 - `composeAuxiliarySelect` unit: the wrapped `selectTools` returns domain results **plus** the
   aux defs (deduped by name); with a domain `selectTools` returning `[]` (MCP-less) the result is
   exactly the aux defs.
-- `assertNoAuxCollision` unit (collision gate): a fake `toolsRag` whose `lookup('wait')` returns a
-  tool → build **throws** the clear config error; a `lookup` returning `undefined` for every aux
-  name → no throw; `ctx.toolsRag` undefined (MCP-less) → no throw.
+- `assertNoAuxCollision` unit (collision gate, async): a fake `toolsRag` whose `lookup('wait')`
+  returns a tool → the awaited gate **throws** the clear config error; a `lookup` returning
+  `undefined` for every aux name (incl. the `EMPTY_TOOLS_RAG` no-domain case) → no throw; an `aux`
+  whose `listTools()` returns `!ok` → the gate throws surfacing that error (not silently skipped).
 - DI-threading unit (mirrors the `stepExecutionControl` DI test): `new SmartServer(cfg,
   { auxiliaryMcpTools: custom })` → the resolved `IPipelineContext.auxiliaryMcpTools === custom`;
   and at pipeline build the consumer's `custom` provider **overrides** the default `wait` (the
