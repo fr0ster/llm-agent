@@ -3,7 +3,9 @@ import {
   externalToolCallId,
   type IEmbedder,
   type IKnowledgeRagHandle,
+  type IRunExecutionControl,
   type IStageHandler,
+  type IStepExecutionControl,
   type IToolLoopContextStrategy,
   type KnowledgeEntryMetadata,
   type LlmTool,
@@ -12,6 +14,7 @@ import {
   McpError,
   type Message,
   type ModelUsageEntry,
+  type StepRoundState,
   type ToolLoopContextStrategyFactory,
   type ToolRound,
 } from '@mcp-abap-adt/llm-agent';
@@ -28,6 +31,7 @@ import {
   BoardOverBudgetError,
   renderLiveBoard,
 } from './board.js';
+import { DefaultStepExecutionControl } from './default-step-execution-control.js';
 import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
 import type { Outcome } from './outcome.js';
@@ -51,11 +55,13 @@ import { hydrateBundle, persistBundle, resetRun } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
 import type {
+  ControlFailure,
   ControllerConfig,
   IControllerPlanner,
   PlannerKind,
   SessionBundle,
   Step,
+  SubagentResult,
 } from './types.js';
 import { makeLogUsage } from './usage-logging.js';
 
@@ -90,8 +96,14 @@ export interface ControllerHandlerDeps {
   /** Required only for distance-based target-state strategies
    *  (semantic-distance/auto); unused by consumer-confirm. */
   embedder?: IEmbedder;
-  /** Executes an INTERNAL (MCP) tool and returns its textual result. */
-  callMcp: (toolName: string, args: unknown) => Promise<string>;
+  /** Executes an INTERNAL (MCP) tool and returns its textual result. The
+   *  optional `signal` is the merged per-step budget + caller-cancel signal
+   *  (Task 5/7); the bridge cancels the in-flight MCP call when it aborts. */
+  callMcp: (
+    toolName: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ) => Promise<string>;
   /**
    * Semantic tool selection over the vectorized MCP catalog (toolsRag): returns
    * the top-K tools relevant to `query`. This is how INTERNAL tools reach the
@@ -154,6 +166,14 @@ export interface ControllerHandlerDeps {
    *  grows a raw transcript. Absent → `LegacyAccumulateContextStrategy` (byte-
    *  identical to the historical growing-transcript behaviour). */
   toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
+  /** Consumer-swappable per-step execution control (wall-clock time budget +
+   *  prospective maxToolCalls gate). Absent → `DefaultStepExecutionControl`
+   *  (time never fires unless `budgets.perStepTimeoutMs` is set, so behaviour is
+   *  byte-identical to the historical count-only bound). */
+  stepExecutionControl?: IStepExecutionControl;
+  /** Consumer-swappable run-level execution control. Reserved for the run-budget
+   *  wiring (a follow-up); not consulted by `runStep` yet. */
+  runExecutionControl?: IRunExecutionControl;
 }
 
 // ---------------------------------------------------------------------------
@@ -877,6 +897,41 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const cfg = deps.config.budgets;
     const maxToolCalls = cfg.maxToolCalls ?? 10;
     const inFlight = bundle.inFlightStep; // set by the caller (block A or B)
+    // Per-step execution control: a wall-clock time budget (perStepTimeoutMs) +
+    // the prospective maxToolCalls gate, consumer-swappable via deps. Its signal
+    // is merged with the caller's cancel signal (below) and fed into both the
+    // executor.send and callMcp so a non-converging / hung step is CUT rather than
+    // livelocking. Absent perStepTimeoutMs → time never fires → count-only bound.
+    const stepControl =
+      deps.stepExecutionControl ?? new DefaultStepExecutionControl();
+    const budget = stepControl.beginStep({
+      stepName: step.name,
+      seq: inFlight?.seq ?? 0,
+      attempt: inFlight?.attempt ?? 0,
+      budgets: { maxToolCalls, perStepTimeoutMs: cfg.perStepTimeoutMs },
+    });
+    const stepStartedAt = Date.now();
+    // Merge the caller's request/cancel signal with the step budget: an inner call
+    // is cancelled by EITHER. The step-timeout DISCRIMINATOR remains
+    // budget.signal.aborted SPECIFICALLY, so a pure caller-cancel is NOT mis-mapped
+    // to a step-timeout control-failure.
+    const callSignal = ctx.options?.signal
+      ? AbortSignal.any([ctx.options.signal, budget.signal])
+      : budget.signal;
+    // Typed reason code (StepControlDecision.reason) → human note. Preserves
+    // today's exact wording so existing suites stay byte-identical.
+    const noteFor = (r: string): string =>
+      r === 'maxToolCalls'
+        ? 'tool-call budget exhausted (maxToolCalls)'
+        : r === 'step-timeout'
+          ? 'step time budget exhausted (step-timeout)'
+          : r;
+    let roundNo = 0;
+    const state = (): StepRoundState => ({
+      round: roundNo,
+      toolCallCount: inFlight?.toolCallCount ?? 0,
+      elapsedMs: Date.now() - stepStartedAt,
+    });
     // Persist the step outcome ATOMICALLY: record lastOutcome (durable, so a
     // resume after a failed step replans instead of repeating it) AND advance the
     // planner cursor (onCommit) in the SAME persistBundle that records the step
@@ -1110,317 +1165,348 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       );
     };
 
+    // A controller-level (non-reviewer) cut: persist a 'failed' step-result +
+    // planner note (preserving today's wording via noteFor) + the TYPED durable
+    // ControlFailure, then settle('failed') so the planner replans at this seq.
+    const cutControlFailure = async (
+      reason: string,
+    ): Promise<'advanced' | 'failed' | 'partial'> => {
+      bundle.budgets.stepsUsed++;
+      await writeControlFailure(noteFor(reason));
+      bundle.plannerPrivate += `\n[seq ${
+        inFlight?.seq ?? bundle.nextSeq ?? 0
+      } ${step.name} control-failed] ${noteFor(reason)}`;
+      if (inFlight) {
+        inFlight.phase = 'awaiting-replan';
+        inFlight.controlFailure = {
+          reason: reason as ControlFailure['reason'],
+          seq: inFlight.seq,
+        };
+      }
+      return settle('failed');
+    };
+
     // Inner loop handles tool routing / error retries until the executor
     // produces content for this step (or the step suspends on an external tool).
-    while (true) {
-      // Form the per-round executor context: the immutable prefix + the strategy's
-      // rounds, then the bounded control tail (retries). NEVER a growing raw array.
-      const messages = (
-        await strategy.form(
-          { prefix: staticPrefix, queryText: step.instructions },
-          ctx.options,
-        )
-      ).concat(controlTail);
-      const res = await deps.executor.send(messages, offeredTools);
-      logUsage?.('executor', res.usage);
+    // The whole loop is wrapped so the step budget's timer is disposed on EVERY
+    // exit (settle / cut / suspend / abort / throw).
+    try {
+      while (true) {
+        roundNo++;
+        // TIME/abort gate BEFORE each executor round (count is gated per tool call).
+        const rc = budget.shouldContinueRound(state());
+        if (!rc.continue) return cutControlFailure(rc.reason);
+        // Form the per-round executor context: the immutable prefix + the strategy's
+        // rounds, then the bounded control tail (retries). NEVER a growing raw array.
+        const messages = (
+          await strategy.form(
+            { prefix: staticPrefix, queryText: step.instructions },
+            ctx.options,
+          )
+        ).concat(controlTail);
+        // Merged signal into the executor call. A reject WHILE the step budget is
+        // aborted is a step-timeout cut (NOT the executor-error retry); a normal
+        // return after the budget fired is ALSO a step-timeout cut.
+        let res: SubagentResult;
+        try {
+          res = await deps.executor.send(messages, offeredTools, {
+            ...ctx.options,
+            signal: callSignal,
+          });
+        } catch (e) {
+          if (budget.signal.aborted) return cutControlFailure('step-timeout');
+          throw e;
+        }
+        if (budget.signal.aborted) return cutControlFailure('step-timeout');
+        logUsage?.('executor', res.usage);
 
-      if (res.kind === 'content') {
-        // Hold the executor's result; the reviewer (NOT the executor) decides the
-        // outcome. Default reviewer (no deps.reviewer) approves as 'ok' (legacy).
-        let review: ReviewResult = deps.reviewer
-          ? await deps.reviewer.review(step, evidence, res.content, {
+        if (res.kind === 'content') {
+          // Hold the executor's result; the reviewer (NOT the executor) decides the
+          // outcome. Default reviewer (no deps.reviewer) approves as 'ok' (legacy).
+          let review: ReviewResult = deps.reviewer
+            ? await deps.reviewer.review(step, evidence, res.content, {
+                hint: deps.config.subagents.reviewer?.hint,
+                logUsage,
+                maxDigestChars: cfg.maxDigestChars ?? 500,
+              })
+            : {
+                kind: 'outcome',
+                outcome: {
+                  status: 'ok',
+                  approved: res.content,
+                  remainder: '',
+                  note: '',
+                  digest: res.content.slice(0, cfg.maxDigestChars ?? 500),
+                },
+              };
+
+          // Judge failure (provider error / malformed / contradictory ok-with-empty)
+          // is NOT a step failure: re-ask within maxReviewRetries, then ABORT (the
+          // outcome is unverifiable). Never mapped to settle('failed')/replan.
+          let reviewRetries = 0;
+          while (review.kind === 'judge-failure') {
+            reviewRetries++;
+            if (reviewRetries > (cfg.maxReviewRetries ?? 2)) {
+              // The reviewer could not produce a usable verdict within the retry
+              // budget (provider error / unparsable). DEGRADE to a failed step so the
+              // planner replans, rather than aborting the whole run — the terminal
+              // backstop is maxStepAttempts/maxSteps, not a single unverifiable verdict.
+              bundle.budgets.stepsUsed++;
+              await writeControlFailure(
+                `reviewer unverifiable after ${cfg.maxReviewRetries ?? 2} retries: ${review.reason}`,
+              );
+              bundle.plannerPrivate += `\n[seq ${
+                bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0
+              } ${step.name} failed] reviewer unverifiable after ${
+                cfg.maxReviewRetries ?? 2
+              } retries: ${review.reason}`;
+              return settle('failed');
+            }
+            review = await deps.reviewer!.review(step, evidence, res.content, {
               hint: deps.config.subagents.reviewer?.hint,
               logUsage,
               maxDigestChars: cfg.maxDigestChars ?? 500,
-            })
-          : {
-              kind: 'outcome',
-              outcome: {
-                status: 'ok',
-                approved: res.content,
-                remainder: '',
-                note: '',
-                digest: res.content.slice(0, cfg.maxDigestChars ?? 500),
-              },
-            };
-
-        // Judge failure (provider error / malformed / contradictory ok-with-empty)
-        // is NOT a step failure: re-ask within maxReviewRetries, then ABORT (the
-        // outcome is unverifiable). Never mapped to settle('failed')/replan.
-        let reviewRetries = 0;
-        while (review.kind === 'judge-failure') {
-          reviewRetries++;
-          if (reviewRetries > (cfg.maxReviewRetries ?? 2)) {
-            // The reviewer could not produce a usable verdict within the retry
-            // budget (provider error / unparsable). DEGRADE to a failed step so the
-            // planner replans, rather than aborting the whole run — the terminal
-            // backstop is maxStepAttempts/maxSteps, not a single unverifiable verdict.
-            bundle.budgets.stepsUsed++;
-            await writeControlFailure(
-              `reviewer unverifiable after ${cfg.maxReviewRetries ?? 2} retries: ${review.reason}`,
-            );
-            bundle.plannerPrivate += `\n[seq ${
-              bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0
-            } ${step.name} failed] reviewer unverifiable after ${
-              cfg.maxReviewRetries ?? 2
-            } retries: ${review.reason}`;
-            return settle('failed');
+            });
           }
-          review = await deps.reviewer!.review(step, evidence, res.content, {
-            hint: deps.config.subagents.reviewer?.hint,
-            logUsage,
-            maxDigestChars: cfg.maxDigestChars ?? 500,
-          });
-        }
 
-        const outcome = review.outcome;
-        const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
-        const attempt = bundle.inFlightStep?.attempt ?? 0;
-        // ONE post-review write carrying the COMPLETE Outcome + identity.
-        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
-        await writeArtifact(
-          rag,
-          {
-            ...meta,
-            artifactType: 'step-result',
-            task: step.name,
-            runId: bundle.runId,
-            seq,
-            attempt,
+          const outcome = review.outcome;
+          const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
+          const attempt = bundle.inFlightStep?.attempt ?? 0;
+          // ONE post-review write carrying the COMPLETE Outcome + identity.
+          bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+          await writeArtifact(
+            rag,
+            {
+              ...meta,
+              artifactType: 'step-result',
+              task: step.name,
+              runId: bundle.runId,
+              seq,
+              attempt,
+              status: outcome.status,
+              note: outcome.note,
+              remainder: outcome.remainder,
+              stepId: step.stepId,
+              digest: outcome.digest,
+              writeOrdinal: bundle.writeOrdinal,
+              content: outcome.approved,
+            },
+            ctx.options,
+          );
+          bundle.budgets.stepsUsed++;
+          const mapped = mapOutcome(outcome.status);
+          recordStepControl(bundle, {
+            seq: bundle.inFlightStep?.seq ?? seq,
+            name: step.name,
             status: outcome.status,
             note: outcome.note,
             remainder: outcome.remainder,
-            stepId: step.stepId,
-            digest: outcome.digest,
-            writeOrdinal: bundle.writeOrdinal,
-            content: outcome.approved,
-          },
-          ctx.options,
-        );
-        bundle.budgets.stepsUsed++;
-        const mapped = mapOutcome(outcome.status);
-        recordStepControl(bundle, {
-          seq: bundle.inFlightStep?.seq ?? seq,
-          name: step.name,
-          status: outcome.status,
-          note: outcome.note,
-          remainder: outcome.remainder,
-        });
-        return settle(mapped);
-      }
-
-      if (res.kind === 'error') {
-        retries++;
-        if (retries <= cfg.maxRetries) {
-          controlTail.push({
-            role: 'user',
-            content: `The previous attempt failed: ${res.error}. Retry the step.`,
           });
-          await persistExchange();
-          continue;
+          return settle(mapped);
         }
-        // Retries exhausted — feed the error back as the step result so the
-        // planner can replan on the next iteration.
-        bundle.budgets.stepsUsed++;
-        await writeControlFailure(`executor error: ${res.error}`);
-        bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error}`;
-        return settle('failed');
-      }
 
-      // res.kind === 'tool_call' → route the FIRST tool call.
-      const firstCall = res.toolCalls[0];
-      if (firstCall === undefined) {
-        // Empty tool-call array → treat as an executor error (retry/replan).
-        retries++;
-        if (retries <= cfg.maxRetries) {
-          controlTail.push({
-            role: 'user',
-            content:
-              'The previous attempt produced an empty tool call. Retry the step.',
-          });
-          await persistExchange();
-          continue;
-        }
-        bundle.budgets.stepsUsed++;
-        await writeControlFailure('empty tool call');
-        bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
-        return settle('failed');
-      }
-      // Normalize the StreamToolCall (full or delta) into an LlmToolCall inline.
-      const call: LlmToolCall =
-        'arguments' in firstCall &&
-        typeof firstCall.arguments === 'object' &&
-        firstCall.arguments !== null
-          ? {
-              id: ('id' in firstCall && firstCall.id) || 'call',
-              name: ('name' in firstCall && firstCall.name) || '',
-              arguments: firstCall.arguments as Record<string, unknown>,
-            }
-          : (() => {
-              let iArgs: Record<string, unknown> = {};
-              const raw =
-                'arguments' in firstCall ? firstCall.arguments : undefined;
-              if (typeof raw === 'string' && raw.length > 0) {
-                try {
-                  iArgs = JSON.parse(raw) as Record<string, unknown>;
-                } catch {
-                  iArgs = {};
-                }
-              }
-              return {
-                id: ('id' in firstCall && firstCall.id) || 'call',
-                name: ('name' in firstCall && firstCall.name) || '',
-                arguments: iArgs,
-              };
-            })();
-      const name = call.name;
-      const args = call.arguments;
-
-      if (isExternalTool(name)) {
-        // External round-trips share the SAME durable toolCallCount/maxToolCalls
-        // bound as internal calls; check BEFORE surfacing so an external tool
-        // cannot exceed the cap. Exhausted → control-failed replan at the same seq.
-        if (inFlight && inFlight.toolCallCount + 1 > maxToolCalls) {
+        if (res.kind === 'error') {
+          retries++;
+          if (retries <= cfg.maxRetries) {
+            controlTail.push({
+              role: 'user',
+              content: `The previous attempt failed: ${res.error}. Retry the step.`,
+            });
+            await persistExchange();
+            continue;
+          }
+          // Retries exhausted — feed the error back as the step result so the
+          // planner can replan on the next iteration.
           bundle.budgets.stepsUsed++;
-          await writeControlFailure(
-            'tool-call budget exhausted (maxToolCalls)',
-          );
-          bundle.plannerPrivate += `\n[seq ${inFlight.seq} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
-          inFlight.phase = 'awaiting-replan';
-          inFlight.controlFailure = {
-            reason: 'maxToolCalls',
-            seq: inFlight.seq,
-          };
+          await writeControlFailure(`executor error: ${res.error}`);
+          bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error}`;
           return settle('failed');
         }
-        // Snapshot the strategy state SO FAR before we suspend (the resume injection
-        // appends the external assistant/tool pair, recorded on the next invocation).
-        if (inFlight) inFlight.contextStrategyState = strategy.snapshot();
-        const extId = externalToolCallId(name, args);
-        if (inFlight) inFlight.toolCallCount += 1;
-        // The new marker REPLACES any prior pending (a fresh extId).
-        bundle.pending = {
-          kind: 'external-tool',
-          extId,
-          toolName: name,
-          args,
-          position: step.name,
-        };
-        bundle.runState = 'suspended';
-        await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceToolCall(
-          ctx,
-          { id: extId, name, arguments: args },
-          usageNow?.(),
-        );
-        return 'suspended';
-      }
 
-      // The executor may only call a tool that was OFFERED to it this step. A
-      // name that is neither external nor in the internal top-K (hallucinated /
-      // stale / out-of-scope) is rejected — NOT executed — and fed back as a
-      // tool-not-available error so the executor retries with an offered tool.
-      if (!offeredInternalNames.has(name)) {
-        retries++;
-        if (retries <= cfg.maxRetries) {
-          controlTail.push({
-            role: 'user',
-            content: `Tool "${name}" is not available for this step. Use only the tools provided to you.`,
-          });
-          await persistExchange();
-          continue;
+        // res.kind === 'tool_call' → route the FIRST tool call.
+        const firstCall = res.toolCalls[0];
+        if (firstCall === undefined) {
+          // Empty tool-call array → treat as an executor error (retry/replan).
+          retries++;
+          if (retries <= cfg.maxRetries) {
+            controlTail.push({
+              role: 'user',
+              content:
+                'The previous attempt produced an empty tool call. Retry the step.',
+            });
+            await persistExchange();
+            continue;
+          }
+          bundle.budgets.stepsUsed++;
+          await writeControlFailure('empty tool call');
+          bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
+          return settle('failed');
         }
-        bundle.budgets.stepsUsed++;
-        await writeControlFailure(`requested unavailable tool ${name}`);
-        bundle.plannerPrivate += `\n[step ${step.name} failed] requested unavailable tool ${name}`;
-        return settle('failed');
-      }
+        // Normalize the StreamToolCall (full or delta) into an LlmToolCall inline.
+        const call: LlmToolCall =
+          'arguments' in firstCall &&
+          typeof firstCall.arguments === 'object' &&
+          firstCall.arguments !== null
+            ? {
+                id: ('id' in firstCall && firstCall.id) || 'call',
+                name: ('name' in firstCall && firstCall.name) || '',
+                arguments: firstCall.arguments as Record<string, unknown>,
+              }
+            : (() => {
+                let iArgs: Record<string, unknown> = {};
+                const raw =
+                  'arguments' in firstCall ? firstCall.arguments : undefined;
+                if (typeof raw === 'string' && raw.length > 0) {
+                  try {
+                    iArgs = JSON.parse(raw) as Record<string, unknown>;
+                  } catch {
+                    iArgs = {};
+                  }
+                }
+                return {
+                  id: ('id' in firstCall && firstCall.id) || 'call',
+                  name: ('name' in firstCall && firstCall.name) || '',
+                  arguments: iArgs,
+                };
+              })();
+        const name = call.name;
+        const args = call.arguments;
 
-      // Durable round-trip count: ++ and persist BEFORE surfacing so it survives a
-      // resume (never a per-resume local).
-      if (inFlight) {
-        inFlight.toolCallCount += 1;
-        await persistBundle(deps.backend, sessionId, bundle);
-      }
-      if ((inFlight?.toolCallCount ?? 0) > maxToolCalls) {
-        // Controller-level failure (NOT a reviewer status): record durably and replan.
-        bundle.budgets.stepsUsed++;
-        await writeControlFailure('tool-call budget exhausted (maxToolCalls)');
-        bundle.plannerPrivate += `\n[seq ${inFlight?.seq ?? bundle.nextSeq ?? 0} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
-        if (inFlight) {
-          inFlight.phase = 'awaiting-replan';
-          inFlight.controlFailure = {
-            reason: 'maxToolCalls',
-            seq: inFlight.seq,
+        if (isExternalTool(name)) {
+          // External round-trips share the SAME budget as internal calls; the
+          // prospective count gate is consulted BEFORE the increment so an external
+          // tool cannot exceed the cap. Cut → control-failed replan at the same seq.
+          const g = budget.canExecuteTool(state());
+          if (!g.continue) return cutControlFailure(g.reason);
+          // Snapshot the strategy state SO FAR before we suspend (the resume injection
+          // appends the external assistant/tool pair, recorded on the next invocation).
+          if (inFlight) inFlight.contextStrategyState = strategy.snapshot();
+          const extId = externalToolCallId(name, args);
+          if (inFlight) inFlight.toolCallCount += 1;
+          // The new marker REPLACES any prior pending (a fresh extId).
+          bundle.pending = {
+            kind: 'external-tool',
+            extId,
+            toolName: name,
+            args,
+            position: step.name,
           };
-        }
-        return settle('failed');
-      }
-
-      // Execute locally, memorize, re-send to the executor.
-      // FAIL LOUD: surface an MCP-unavailable failure as a terminal abort (not a
-      // silent empty response). The bridge (buildMcpBridge) throws an McpError
-      // IFF the injected classifier deemed it 'unavailable'; a tool-level error
-      // is returned as TEXT, never thrown. So ANY McpError reaching this catch is
-      // already a classifier-unavailable verdict — trust that throw-contract
-      // rather than re-checking the code (which would drop a CUSTOM classifier's
-      // decision → rethrow → outer catch swallow → (no response)). A non-McpError
-      // is a genuine unexpected error and is re-thrown for the outer handler.
-      let result: string;
-      try {
-        result = await deps.callMcp(name, args);
-      } catch (mcpErr) {
-        if (mcpErr instanceof McpError) {
-          const now = deps.now ?? (() => new Date().toISOString());
-          const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
-          await this.abortTerminal(
+          bundle.runState = 'suspended';
+          await persistBundle(deps.backend, sessionId, bundle);
+          this.surfaceToolCall(
             ctx,
-            sessionId,
-            bundle,
-            `MCP server unavailable: ${mcpErr.message}`,
-            now,
-            terminalTtlMs,
+            { id: extId, name, arguments: args },
             usageNow?.(),
           );
-          return 'aborted';
+          return 'suspended';
         }
-        throw mcpErr;
-      }
-      // Record this exchange as a coherent assistant→tool ROUND (OpenAI protocol)
-      // via the context strategy so the executor LLM continues from its own tool
-      // call. The strategy owns the per-round context (Window keeps a bounded
-      // buffer; RagRecall (Task 13) persists the mcp-result + recalls it) — the
-      // handler no longer writes the mcp-result artifact or grows a raw transcript.
-      const round: ToolRound = {
-        assistant: {
-          role: 'assistant',
-          content: null,
-          tool_calls: [
+
+        // The executor may only call a tool that was OFFERED to it this step. A
+        // name that is neither external nor in the internal top-K (hallucinated /
+        // stale / out-of-scope) is rejected — NOT executed — and fed back as a
+        // tool-not-available error so the executor retries with an offered tool.
+        if (!offeredInternalNames.has(name)) {
+          retries++;
+          if (retries <= cfg.maxRetries) {
+            controlTail.push({
+              role: 'user',
+              content: `Tool "${name}" is not available for this step. Use only the tools provided to you.`,
+            });
+            await persistExchange();
+            continue;
+          }
+          bundle.budgets.stepsUsed++;
+          await writeControlFailure(`requested unavailable tool ${name}`);
+          bundle.plannerPrivate += `\n[step ${step.name} failed] requested unavailable tool ${name}`;
+          return settle('failed');
+        }
+
+        // Prospective count gate BEFORE the increment (the before-increment model:
+        // the increment happens only after canExecuteTool allows the call).
+        const g = budget.canExecuteTool(state());
+        if (!g.continue) return cutControlFailure(g.reason);
+        // Durable round-trip count: ++ and persist BEFORE surfacing so it survives a
+        // resume (never a per-resume local).
+        if (inFlight) {
+          inFlight.toolCallCount += 1;
+          await persistBundle(deps.backend, sessionId, bundle);
+        }
+
+        // Execute locally, memorize, re-send to the executor.
+        // FAIL LOUD: surface an MCP-unavailable failure as a terminal abort (not a
+        // silent empty response). The bridge (buildMcpBridge) throws an McpError
+        // IFF the injected classifier deemed it 'unavailable'; a tool-level error
+        // is returned as TEXT, never thrown. So ANY McpError reaching this catch is
+        // already a classifier-unavailable verdict — trust that throw-contract
+        // rather than re-checking the code (which would drop a CUSTOM classifier's
+        // decision → rethrow → outer catch swallow → (no response)). A non-McpError
+        // is a genuine unexpected error and is re-thrown for the outer handler.
+        let result: string;
+        try {
+          result = await deps.callMcp(name, args, callSignal);
+        } catch (mcpErr) {
+          // A step-timeout cancellation aborts the merged signal → the bridge rejects.
+          // Map that to a step-timeout control-failure BEFORE the McpError escalate so
+          // it is NOT mis-classified as MCP-unavailable (20.4.0 escalate order is
+          // otherwise unchanged).
+          if (budget.signal.aborted) return cutControlFailure('step-timeout');
+          if (mcpErr instanceof McpError) {
+            const now = deps.now ?? (() => new Date().toISOString());
+            const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
+            await this.abortTerminal(
+              ctx,
+              sessionId,
+              bundle,
+              `MCP server unavailable: ${mcpErr.message}`,
+              now,
+              terminalTtlMs,
+              usageNow?.(),
+            );
+            return 'aborted';
+          }
+          throw mcpErr;
+        }
+        // Record this exchange as a coherent assistant→tool ROUND (OpenAI protocol)
+        // via the context strategy so the executor LLM continues from its own tool
+        // call. The strategy owns the per-round context (Window keeps a bounded
+        // buffer; RagRecall (Task 13) persists the mcp-result + recalls it) — the
+        // handler no longer writes the mcp-result artifact or grows a raw transcript.
+        const round: ToolRound = {
+          assistant: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: call.id,
+                type: 'function',
+                function: { name, arguments: JSON.stringify(args) },
+              },
+            ],
+          },
+          results: [
             {
-              id: call.id,
-              type: 'function',
-              function: { name, arguments: JSON.stringify(args) },
+              role: 'tool',
+              tool_call_id: call.id,
+              content: result,
             },
           ],
-        },
-        results: [
-          {
-            role: 'tool',
-            tool_call_id: call.id,
-            content: result,
-          },
-        ],
-        // Stable fetch identity (tool+args) for run-scoped recall dedup. The
-        // controller has no tool-level error classifier here — an unavailable MCP
-        // server aborts BEFORE record; a returned string is a delivered result.
-        meta: [{ identityKey: externalToolCallId(name, args), isError: false }],
-        roundId: undefined,
-      };
-      await strategy.record(round, ctx.options);
-      // A recorded round supersedes any pending control retry → prune the tail.
-      controlTail.length = 0;
-      // The executor saw this round → make the strategy state durable before next.
-      await persistExchange();
+          // Stable fetch identity (tool+args) for run-scoped recall dedup. The
+          // controller has no tool-level error classifier here — an unavailable MCP
+          // server aborts BEFORE record; a returned string is a delivered result.
+          meta: [
+            { identityKey: externalToolCallId(name, args), isError: false },
+          ],
+          roundId: undefined,
+        };
+        await strategy.record(round, ctx.options);
+        // A recorded round supersedes any pending control retry → prune the tail.
+        controlTail.length = 0;
+        // The executor saw this round → make the strategy state durable before next.
+        await persistExchange();
+      }
+    } finally {
+      // Dispose the step budget (clears its wall-clock timer) on EVERY exit.
+      budget.dispose();
     }
   }
 
