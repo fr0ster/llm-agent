@@ -576,16 +576,17 @@ export function buildMcpBridge(
   clients: IMcpClient[],
   classifier: IMcpFailureClassifier = new DefaultMcpFailureClassifier(),
 ): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
-  return async (name: string, args: unknown, _signal?: AbortSignal) => {
+  return async (name: string, args: unknown, signal?: AbortSignal) => {
     const safeArgs =
       args != null && typeof args === 'object' && !Array.isArray(args)
         ? (args as Record<string, unknown>)
         : {};
+    const opts = signal ? { signal } : undefined;
     for (const client of clients) {
       const probe = client.healthCheck
         ? () => client.healthCheck!().then((r) => (r.ok ? r.value : false))
         : undefined;
-      const listed = await client.listTools();
+      const listed = await client.listTools(opts);
       if (!listed.ok) {
         // FAIL LOUD on an availability failure: a transient listTools() outage must
         // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
@@ -596,7 +597,7 @@ export function buildMcpBridge(
       }
       const owns = listed.value.some((t) => t.name === name);
       if (!owns) continue;
-      const result = await client.callTool(name, safeArgs);
+      const result = await client.callTool(name, safeArgs, opts);
       if (!result.ok) {
         // Availability failure → fail loud; a tool-level error → LLM feedback text.
         if ((await classifier.classify(result.error, probe)) === 'unavailable')
