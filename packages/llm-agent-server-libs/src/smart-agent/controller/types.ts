@@ -85,7 +85,7 @@ export type RunPhase = 'evaluating' | 'planning' | 'executing' | 'finalizing';
  *  inFlightStep.phase='awaiting-replan' so a crash before the replan keeps the
  *  reason; fed to the planner, then cleared when the revised step is set. */
 export interface ControlFailure {
-  reason: 'maxToolCalls';
+  reason: 'maxToolCalls' | 'step-timeout';
   seq: number;
 }
 
@@ -190,6 +190,8 @@ export interface ControllerConfig {
     maxRetries: number;
     maxRewinds: number;
     maxToolCalls?: number;
+    /** Per-step wall-clock timeout in ms; exceeded → `ControlFailure.reason = 'step-timeout'`. */
+    perStepTimeoutMs?: number;
     /** Durable fresh-attempt cap per step (bounds the non-advancing replan loop). */
     maxStepAttempts?: number;
     /** Durable crash-replay caps (one per LLM-invoking phase). */
