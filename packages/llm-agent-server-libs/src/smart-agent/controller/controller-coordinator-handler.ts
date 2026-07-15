@@ -1191,8 +1191,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         } ${step.name} control-failed] ${noteFor(reason)}`;
         if (inFlight) {
           inFlight.phase = 'awaiting-replan';
+          const typedReason: ControlFailure['reason'] =
+            reason === 'maxToolCalls' || reason === 'step-timeout'
+              ? reason
+              : 'control-failure';
           inFlight.controlFailure = {
-            reason: reason as ControlFailure['reason'],
+            reason: typedReason,
             seq: inFlight.seq,
           };
         }

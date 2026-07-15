@@ -83,9 +83,13 @@ export type RunPhase = 'evaluating' | 'planning' | 'executing' | 'finalizing';
 /** Controller-level (non-reviewer) failure that drives a replan with no reviewable
  *  artifact (e.g. the maxToolCalls budget). Persisted atomically with
  *  inFlightStep.phase='awaiting-replan' so a crash before the replan keeps the
- *  reason; fed to the planner, then cleared when the revised step is set. */
+ *  reason; fed to the planner, then cleared when the revised step is set.
+ *
+ *  `'control-failure'` is the generic bucket for a consumer-custom
+ *  `IStepExecutionControl` that returns a non-standard reason string; the raw
+ *  text is preserved in the human note / plannerPrivate feed via `noteFor`. */
 export interface ControlFailure {
-  reason: 'maxToolCalls' | 'step-timeout';
+  reason: 'maxToolCalls' | 'step-timeout' | 'control-failure';
   seq: number;
 }
 

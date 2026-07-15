@@ -430,6 +430,115 @@ describe('controller per-step execution control (Task 7)', () => {
     );
   });
 
+  it("(f) custom control reason: non-standard reason normalizes to 'control-failure' in persisted ControlFailure; raw text preserved in plannerPrivate", {
+    timeout: 5000,
+  }, async () => {
+    // Spy on backend.put to capture intermediate bundle snapshots — the durable
+    // ControlFailure is set BEFORE the replan (which clears inFlightStep), so we
+    // must inspect the snapshot written between cutControlFailure and the replan.
+    const capturedBundles: string[] = [];
+    const realBackend = new InMemoryKnowledgeBackend();
+    const spyBackend = new Proxy(realBackend, {
+      get(target, prop) {
+        if (prop === 'put') {
+          return async (
+            sid: string,
+            entry: { content: string; metadata: { artifactType: string } },
+          ) => {
+            if (entry.metadata.artifactType === 'controller-bundle') {
+              capturedBundles.push(entry.content);
+            }
+            return (target as typeof realBackend).put(sid, entry as never);
+          };
+        }
+        return (target as Record<string | symbol, unknown>)[prop];
+      },
+    }) as InMemoryKnowledgeBackend;
+
+    const rag = stubRag();
+
+    // A custom IStepExecutionControl whose canExecuteTool returns an arbitrary
+    // non-standard reason string — simulates a consumer-supplied budget.
+    const customControl: IStepExecutionControl = {
+      beginStep(): IStepBudget {
+        return {
+          signal: new AbortController().signal,
+          shouldContinueRound: () => ({ continue: true }),
+          canExecuteTool: () => ({ continue: false, reason: 'custom-budget' }),
+          dispose() {},
+        };
+      },
+    };
+
+    const deps: ControllerHandlerDeps = {
+      evaluator: scriptedClient([{ kind: 'content', content: 'Goal' }]),
+      planner: scriptedClient([
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+        { kind: 'content', content: JSON.stringify({ plan: [] }) }, // replan → empty
+        { kind: 'content', content: 'custom-done' }, // finalize
+      ]),
+      // Executor returns a tool call so canExecuteTool gate is reached.
+      executor: scriptedClient([
+        toolCall('SomeTool', {}),
+        { kind: 'content', content: 'never reached' },
+      ]),
+      backend: spyBackend,
+      knowledgeRagFor: () => rag,
+      embedder: stubEmbedder,
+      callMcp: async () => 'mcp-out',
+      selectTools: async (): Promise<LlmTool[]> => [
+        { name: 'SomeTool', description: '', inputSchema: {} },
+      ],
+      isExternalTool: () => false,
+      stepExecutionControl: customControl,
+      config: baseConfig(),
+      models: { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' },
+    };
+
+    const handler = new ControllerCoordinatorHandler(deps);
+    const { ctx, captured } = fakeCtx();
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+
+    // Find the snapshot where inFlightStep.controlFailure was set (phase='awaiting-replan').
+    const snapshotWithFailure = capturedBundles
+      .map(
+        (s) =>
+          JSON.parse(s) as {
+            inFlightStep?: { controlFailure?: { reason?: string } };
+          },
+      )
+      .find((b) => b.inFlightStep?.controlFailure != null);
+
+    assert.ok(
+      snapshotWithFailure,
+      'expected a bundle snapshot with controlFailure set',
+    );
+    // CORE ASSERTION: the persisted ControlFailure.reason must be the normalized bucket.
+    assert.equal(
+      snapshotWithFailure.inFlightStep?.controlFailure?.reason,
+      'control-failure',
+      `expected reason='control-failure' (normalized bucket), got '${snapshotWithFailure.inFlightStep?.controlFailure?.reason}'`,
+    );
+
+    // plannerPrivate must contain the raw 'custom-budget' text (information not lost via noteFor).
+    const finalBundle = await hydrateBundle(realBackend, 'sess-step');
+    assert.ok(
+      finalBundle.plannerPrivate.includes('custom-budget'),
+      `plannerPrivate must preserve raw reason text, got: ${finalBundle.plannerPrivate}`,
+    );
+    assert.ok(
+      stopChunk(captured, 'custom-done'),
+      'the run replanned and completed after custom control cut',
+    );
+  });
+
   it('(e) budget dispose on PRE-LOOP throw: a selectTools reject before the executor loop still disposes the step budget (no leaked timer)', {
     timeout: 5000,
   }, async () => {
