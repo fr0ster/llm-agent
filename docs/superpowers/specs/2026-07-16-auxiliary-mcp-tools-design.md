@@ -110,31 +110,39 @@ auxiliary tools to justify it.
 
 ### 3.3 Composition (`@mcp-abap-adt/llm-agent-server-libs/src/mcp/compose-auxiliary.ts`)
 
-A small focused module (NOT appended to `smart-server.ts` / the handler). Two functions:
+A small focused module (NOT appended to `smart-server.ts` / the handler). **`aux.listTools()` is
+called exactly once — at build — by `resolveAuxDefs`; both wrappers take the resolved, validated
+`auxDefs: McpTool[]` and never call `listTools()` at runtime.** This means a custom provider that
+cannot list its tools fails **loud at build**, and the hot paths (per tool call / per selection)
+do no async listing.
 
-- `composeAuxiliaryBridge(aux, domainBridge): callMcp` — returns a
+- `resolveAuxDefs(aux): Promise<McpTool[]>` — `const listed = await aux.listTools(); if
+  (!listed.ok) throw <build error surfacing listed.error>; return listed.value;`. The single
+  build-time listing; `!ok` is a real bug (our in-process provider), never silently skipped.
+- `composeAuxiliaryBridge(auxDefs, auxCallTool, domainBridge): callMcp` — returns a
   `callMcp(name, args, signal?): Promise<string>` matching the existing bridge contract
   (`buildMcpBridge` and the controller/factory `callMcp` return **text**, not a `Result`;
   see `controller.ts:288`). It:
-  1. If `name` is auxiliary-owned (in `aux.listTools()`), calls `aux.callTool(name, args,
-     { signal })` and **maps its `Result<McpToolResult, McpError>` to the string contract**:
+  1. If `name` is in the pre-resolved aux name set (`auxDefs.map(d => d.name)`), calls
+     `auxCallTool(name, args, { signal })` (= `aux.callTool`) and **maps its
+     `Result<McpToolResult, McpError>` to the string contract**:
      `ok` → `typeof content === 'string' ? content : JSON.stringify(content)`;
      `!ok` → `error.message` (tool-level text — the domain classifier / fail-loud is **not**
      run on the auxiliary branch). An abort **rejection** is NOT mapped — it propagates (see §4).
   2. Otherwise delegates to `domainBridge(name, args, signal)` unchanged.
   Auxiliary is checked **first** (aux-first precedence; collisions are rejected at build — §3.4).
-- `composeAuxiliarySelect(aux, selectTools)` — wraps the pipeline's `selectTools(query, k,
-  options)` so the auxiliary tool defs (`aux.listTools()`) are **merged into every selection
-  result** (deduped by name, aux appended). Auxiliary tools are a small fixed utility set that
-  should always be in scope for the executor, so they are **always included** rather than
-  semantically ranked — this also makes them work MCP-less (domain `selectTools` returns `[]` →
-  wrapped result is just the aux defs). This avoids needing an upsert into `toolsRag`:
-  `IToolsRagHandle` exposes only `query`/`lookup` (no write), and the domain catalog is
-  vectorized at startup from `client.listTools()` — a path we deliberately do not touch.
+- `composeAuxiliarySelect(auxDefs, selectTools)` — wraps the pipeline's `selectTools(query, k,
+  options)` so the resolved `auxDefs` are **merged into every selection result** (deduped by name,
+  aux appended). Auxiliary tools are a small fixed utility set that should always be in scope for
+  the executor, so they are **always included** rather than semantically ranked — this also makes
+  them work MCP-less (domain `selectTools` returns `[]` → wrapped result is just the aux defs).
+  This avoids needing an upsert into `toolsRag`: `IToolsRagHandle` exposes only `query`/`lookup`
+  (no write), and the domain catalog is vectorized at startup from `client.listTools()` — a path
+  we deliberately do not touch.
 
 `buildMcpBridge` and `IToolsRagHandle` in `smart-server.ts` are **unchanged**; both the aux-first
 dispatch and the aux-in-selection behavior are wrappers over the pipeline's existing
-`callMcp` and `selectTools`.
+`callMcp` and `selectTools`, parameterised by the once-resolved `auxDefs`.
 
 ### 3.4 DI slot and wiring at pipeline creation
 
@@ -145,9 +153,11 @@ dispatch and the aux-in-selection behavior are wrappers over the pipeline's exis
   ```ts
   const aux =
     ctx.auxiliaryMcpTools ?? new DefaultAuxiliaryMcpTools([makeWaitTool(maxSeconds)]);
-  await assertNoAuxCollision(aux, ctx.toolsRag);     // fail-loud at build (see below)
-  const callMcp = composeAuxiliaryBridge(aux, buildMcpBridge(mcpClients, ctx.mcpFailureClassifier));
-  const selectTools = composeAuxiliarySelect(aux, baseSelectTools); // aux defs merged into results
+  const auxDefs = await resolveAuxDefs(aux);         // single build-time listTools(); !ok → throw
+  assertNoAuxCollision(auxDefs, ctx.toolsRag);       // sync — fail-loud at build (see below)
+  const callMcp = composeAuxiliaryBridge(auxDefs, aux.callTool.bind(aux),
+    buildMcpBridge(mcpClients, ctx.mcpFailureClassifier));
+  const selectTools = composeAuxiliarySelect(auxDefs, baseSelectTools); // aux defs merged in
   ```
   The controller (our example) contributes the default `wait` at build; the consumer overrides
   the whole provider via `ctx.auxiliaryMcpTools`. Other pipelines opt in by doing the same at
@@ -155,10 +165,9 @@ dispatch and the aux-in-selection behavior are wrappers over the pipeline's exis
 - Always present, even MCP-less: with no domain MCP, `mcpClients` is empty, but `aux` is still
   composed → `wait` is selectable and callable.
 - **Collision handling — fail-loud at build.** Because aux-first makes a same-named domain tool
-  unreachable, `async assertNoAuxCollision(aux, ctx.toolsRag)` runs (awaited) at build. It first
-  resolves the aux names: `const listed = await aux.listTools();` — on `!listed.ok` it throws a
-  build error surfacing `listed.error` (our in-process provider should never fail to list; a
-  failure is a real bug, not silently skipped). Then for each aux name it checks the **sync**
+  unreachable, `assertNoAuxCollision(auxDefs, ctx.toolsRag)` runs at build over the
+  already-resolved `auxDefs` (from `resolveAuxDefs`, which has already thrown on a `!ok`
+  `listTools()`), so the gate itself is **sync**. For each `auxDefs[].name` it checks the **sync**
   catalog `ctx.toolsRag.lookup(name)` (`IToolsRagHandle` is **non-optional** on
   `IPipelineContext` — pipeline-plugin.ts:50 — and the server always supplies it, defaulting to
   the `EMPTY_TOOLS_RAG` sentinel via `server-context.ts:113`; its `lookup` returns `undefined` for
@@ -220,10 +229,16 @@ unchanged. Zero new cancellation machinery.
 - `composeAuxiliarySelect` unit: the wrapped `selectTools` returns domain results **plus** the
   aux defs (deduped by name); with a domain `selectTools` returning `[]` (MCP-less) the result is
   exactly the aux defs.
-- `assertNoAuxCollision` unit (collision gate, async): a fake `toolsRag` whose `lookup('wait')`
-  returns a tool → the awaited gate **throws** the clear config error; a `lookup` returning
-  `undefined` for every aux name (incl. the `EMPTY_TOOLS_RAG` no-domain case) → no throw; an `aux`
-  whose `listTools()` returns `!ok` → the gate throws surfacing that error (not silently skipped).
+- `resolveAuxDefs` unit: an `aux` whose `listTools()` returns `ok` → returns the defs; an `aux`
+  whose `listTools()` returns `!ok` → **throws** a build error surfacing the error (never returns
+  empty / silently skips).
+- `assertNoAuxCollision` unit (sync, over resolved defs): a fake `toolsRag` whose `lookup('wait')`
+  returns a tool → **throws** the clear config error; a `lookup` returning `undefined` for every
+  aux name (incl. the `EMPTY_TOOLS_RAG` no-domain case) → no throw.
+- Wrapper-caching unit: `composeAuxiliaryBridge` / `composeAuxiliarySelect` built from resolved
+  `auxDefs` do **not** call `aux.listTools()` at runtime (spy asserts zero calls across several
+  `callMcp` / `selectTools` invocations) — they dispatch on the cached name set / merge the cached
+  defs.
 - DI-threading unit (mirrors the `stepExecutionControl` DI test): `new SmartServer(cfg,
   { auxiliaryMcpTools: custom })` → the resolved `IPipelineContext.auxiliaryMcpTools === custom`;
   and at pipeline build the consumer's `custom` provider **overrides** the default `wait` (the
@@ -234,8 +249,9 @@ unchanged. Zero new cancellation machinery.
 ## 7. Scope (YAGNI)
 
 **IN (v1):** `IAuxiliaryMcpTools`; `DefaultAuxiliaryMcpTools`; `makeWaitTool` + `cancelableDelay`;
-`composeAuxiliaryBridge` + `composeAuxiliarySelect`; `ctx.auxiliaryMcpTools` /
-`BuildAgentDeps.auxiliaryMcpTools` DI slot; controller contributes the default `wait` at `build()`.
+`resolveAuxDefs` + `assertNoAuxCollision` + `composeAuxiliaryBridge` + `composeAuxiliarySelect`;
+`ctx.auxiliaryMcpTools` / `BuildAgentDeps.auxiliaryMcpTools` DI slot; controller contributes the
+default `wait` at `build()`.
 
 **OUT (deferred / separate):** RAG-as-tools (separate seam, entirely out); any auxiliary tool
 other than `wait`; the consumer guidance skill (consumer repo); rollout to non-controller
