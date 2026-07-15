@@ -1,14 +1,23 @@
-import type { ILlm, LlmTool, Message } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  ILlm,
+  LlmTool,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import type { SubagentResult } from './types.js';
 
 export interface ISubagentClient {
-  send(messages: Message[], tools?: LlmTool[]): Promise<SubagentResult>;
+  send(
+    messages: Message[],
+    tools?: LlmTool[],
+    options?: CallOptions,
+  ): Promise<SubagentResult>;
 }
 
 export function makeSubagentClient(llm: ILlm): ISubagentClient {
   return {
-    async send(messages, tools) {
-      const r = await llm.chat(messages, tools);
+    async send(messages, tools, options) {
+      const r = await llm.chat(messages, tools, options);
       if (!r.ok)
         return {
           kind: 'error',
