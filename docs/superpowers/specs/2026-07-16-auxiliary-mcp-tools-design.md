@@ -258,5 +258,11 @@ pipelines beyond the seam being available; a dedicated `llm-agent-aux-tools` pac
    additive DI field + `buildServerCtx` spread (the established `stepExecutionControl` idiom, ~3-5
    lines, no logic/glue); the controller handler is untouched. The monolith decomposition remains
    a separate tracked roadmap item, unaffected.
-7. **Don't break components** — all additions are additive/optional; no-injection + no-`wait`
-   path is byte-identical to today.
+7. **Don't break components** — all DI additions are additive/optional (no breaking API change).
+   Pipelines that do **not** compose the seam (v1: every pipeline except the controller) are
+   byte-identical to today. The controller's default (no-injection) path **intentionally** changes
+   its offered tools by adding `wait` — that is the point of the feature (the livelock fix), and
+   `composeAuxiliarySelect` always merges the aux defs into the offered set, so the tool surface /
+   prompt differs even when the executor never calls `wait`. A consumer can restore the prior
+   controller tool surface by injecting an empty provider
+   (`ctx.auxiliaryMcpTools = new DefaultAuxiliaryMcpTools([])`).
