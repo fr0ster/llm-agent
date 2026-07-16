@@ -441,6 +441,7 @@ import {
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
 import {
   buildSessionMcpClients,
+  serverOwnsMcpConnection,
   shouldIsolateMcpPerSession,
 } from './mcp/build-session-mcp-clients.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
@@ -1164,17 +1165,25 @@ export class SmartServer {
     // gate on presence (`!== undefined`), not length.
     const hasReadyClients = diOrPluginMcpClients !== undefined;
     // Per-session MCP isolation (#213): the server itself owns ONLY the YAML
-    // `mcp:` connection — that is the path eligible for per-session client
-    // isolation. Ready-client sources (deps/cfg/plugin) are consumer/plugin
-    // owned and stay shared, so `mcpFromYaml` is false whenever they are present.
-    const mcpFromYaml = !hasReadyClients && !!this.cfg.mcp;
+    // `mcp:` connection with NO injected seam — that is the path eligible for
+    // per-session client isolation. Ready-client sources (deps/cfg/plugin) are
+    // consumer/plugin owned and stay shared; an injected `connectMcp` seam is the
+    // SINGLE async provisioning point (auth/creds/stub/custom transport) and the
+    // sync per-session factory cannot re-invoke it, so it stays shared too. Both
+    // conditions are folded into `serverOwnsMcpConnection` → `mcpFromYaml` can
+    // never bypass the seam.
+    const mcpFromYaml = serverOwnsMcpConnection({
+      hasReadyClients,
+      hasMcpConfig: !!this.cfg.mcp,
+      mcpSeamInjected: this._mcpSeamInjected,
+    });
     // YAML `mcp:` with NO ready clients AND NO injected seam → keep the legacy
     // builder-owned connect so the builder VECTORIZES the tools (the ToolSelect
     // ranking contract). `_sharedMcpClients` + the tools-RAG handle are harvested
     // from the built handle AFTER `build()` (see the harvest block below). When
     // the seam IS injected we provision through it instead (no builder connect).
-    const yamlBuilderConnect =
-      !hasReadyClients && !!this.cfg.mcp && !this._mcpSeamInjected;
+    // Identical to `mcpFromYaml` (server-owned YAML connect) — reuse it.
+    const yamlBuilderConnect = mcpFromYaml;
 
     let mcpClients: IMcpClient[] | undefined;
     if (hasReadyClients) {

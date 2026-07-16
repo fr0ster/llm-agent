@@ -31,6 +31,23 @@ export function shouldIsolateMcpPerSession(o: {
   return o.mcpFromYaml && !o.mcpSharedClient;
 }
 
+/**
+ * Does the SERVER itself own the MCP connection (the only path eligible for
+ * per-session isolation)? True ONLY when there are no ready clients, a YAML
+ * `mcp:` block is present, AND no `connectMcp` seam was injected. When a seam is
+ * injected it is the SINGLE provisioning point (auth/creds/embedded-stub/custom
+ * transport) and the per-session factory — being sync — cannot re-invoke the
+ * async seam, so that path stays SHARED. Mirrors the local `yamlBuilderConnect`
+ * guard in `smart-server.ts` so `mcpFromYaml` can never bypass the seam (#213).
+ */
+export function serverOwnsMcpConnection(o: {
+  hasReadyClients: boolean;
+  hasMcpConfig: boolean;
+  mcpSeamInjected: boolean;
+}): boolean {
+  return !o.hasReadyClients && o.hasMcpConfig && !o.mcpSeamInjected;
+}
+
 export function buildSessionMcpClients(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
 ): { clients: IMcpClient[]; close: () => Promise<void> } {
