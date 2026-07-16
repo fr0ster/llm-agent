@@ -12,6 +12,7 @@ import type {
 import {
   assertNoAuxCollision,
   composeAuxiliaryBridge,
+  composeAuxiliarySelect,
   resolveAuxDefs,
 } from '../compose-auxiliary.js';
 
@@ -118,4 +119,45 @@ test('composeAuxiliaryBridge: an aux rejection (abort) propagates, not mapped', 
   };
   const bridge = composeAuxiliaryBridge([waitDef], auxCall, async () => 'D');
   await assert.rejects(bridge('wait', {}));
+});
+
+test('composeAuxiliarySelect merges aux defs into domain results (deduped)', async () => {
+  const domain = async () => [
+    { name: 'ReadTable', description: 'r', inputSchema: {} },
+  ];
+  const select = composeAuxiliarySelect([waitDef], domain);
+  const out = await select('do something', 5);
+  assert.deepEqual(out.map((t) => t.name), ['ReadTable', 'wait']);
+});
+
+test('composeAuxiliarySelect: empty domain (MCP-less) yields exactly the aux defs', async () => {
+  const select = composeAuxiliarySelect([waitDef], async () => []);
+  const out = await select('x');
+  assert.deepEqual(out.map((t) => t.name), ['wait']);
+});
+
+test('composeAuxiliarySelect dedupes if a domain tool already has the aux name', async () => {
+  const domain = async () => [{ name: 'wait', description: 'domain', inputSchema: {} }];
+  const select = composeAuxiliarySelect([waitDef], domain);
+  const out = await select('x');
+  assert.equal(out.filter((t) => t.name === 'wait').length, 1);
+});
+
+test('wrappers do not call aux.listTools at runtime (cached defs)', async () => {
+  // resolveAuxDefs is the ONLY listTools caller; the wrappers take auxDefs.
+  // Guard: build both wrappers from a defs array and exercise them; a spy aux
+  // whose listTools throws must never be invoked.
+  const spyAux: import('@mcp-abap-adt/llm-agent').IAuxiliaryMcpTools = {
+    async listTools() {
+      throw new Error('listTools must not be called at runtime');
+    },
+    async callTool() {
+      return { ok: true, value: { content: 'W' } };
+    },
+  };
+  const select = composeAuxiliarySelect([waitDef], async () => []);
+  const bridge = composeAuxiliaryBridge([waitDef], spyAux.callTool.bind(spyAux), async () => 'D');
+  await select('x');
+  await select('y');
+  assert.equal(await bridge('wait', {}), 'W');
 });

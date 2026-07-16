@@ -2,6 +2,7 @@ import type {
   CallOptions,
   IAuxiliaryMcpTools,
   IToolsRagHandle,
+  LlmTool,
   McpError,
   McpTool,
   McpToolResult,
@@ -63,6 +64,32 @@ export function assertNoAuxCollision(
  * (tool-level, the domain classifier / fail-loud is NOT run). An abort rejection
  * from `auxCallTool` propagates unchanged (see the controller's abort handling).
  */
+type SelectTools = (
+  query: string,
+  k?: number,
+  options?: CallOptions,
+) => Promise<readonly LlmTool[]>;
+
+/**
+ * Wrap the pipeline's `selectTools` so the resolved auxiliary defs are ALWAYS
+ * merged into every selection result (deduped by name; aux appended). Auxiliary
+ * tools are a small fixed utility set that should always be in scope — not
+ * semantically ranked — which also makes them available MCP-less (domain
+ * `selectTools` → [] → result is just the aux defs). `McpTool` is structurally
+ * an `LlmTool`, so aux defs are assignable into the `LlmTool[]` result.
+ */
+export function composeAuxiliarySelect(
+  auxDefs: McpTool[],
+  selectTools: SelectTools,
+): SelectTools {
+  return async (query, k, options) => {
+    const domain = await selectTools(query, k, options);
+    const domainNames = new Set(domain.map((t) => t.name));
+    const extra = auxDefs.filter((d) => !domainNames.has(d.name));
+    return [...domain, ...extra];
+  };
+}
+
 export function composeAuxiliaryBridge(
   auxDefs: McpTool[],
   auxCallTool: AuxCallTool,
