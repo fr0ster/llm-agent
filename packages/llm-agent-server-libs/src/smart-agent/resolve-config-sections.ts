@@ -252,6 +252,9 @@ export function resolveAgentSection(
           },
         }
       : {}),
+    ...(get(yaml, 'agent', 'mcpSharedClient') !== undefined
+      ? { mcpSharedClient: Boolean(get(yaml, 'agent', 'mcpSharedClient')) }
+      : {}),
   };
 }
 

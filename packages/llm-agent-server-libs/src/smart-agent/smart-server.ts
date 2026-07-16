@@ -198,6 +198,9 @@ export interface SmartServerAgentConfig {
   llmCallStrategy?: 'streaming' | 'non-streaming' | 'fallback';
   /** Tool-selection strategy over RAG results. Default: top-k. */
   toolSelection?: { strategy: string; minScore?: number };
+  /** Opt out of per-session MCP client isolation (default: per-session).
+   *  `true` → reuse one shared MCP client across all sessions (pre-#213 behavior). */
+  mcpSharedClient?: boolean;
 }
 
 export interface SmartServerPromptsConfig {
