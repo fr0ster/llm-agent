@@ -24,8 +24,9 @@ rag:
 mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://localhost:3001/mcp/stream/http}
-systemPrompt: |
-  You complete the task by calling the available tools. If a tool call fails or
-  returns an error / empty / "not found" result, do not guess or fabricate; try
-  another available tool or state the capability you still need. Produce your
-  final answer only once you actually have the data the task requires.
+prompts:
+  system: |
+    You complete the task by calling the available tools. If a tool call fails or
+    returns an error / empty / "not found" result, do not guess or fabricate; try
+    another available tool or state the capability you still need. Produce your
+    final answer only once you actually have the data the task requires.

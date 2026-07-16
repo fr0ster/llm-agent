@@ -30,7 +30,8 @@ mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
 
-systemPrompt: |
-  You are an ABAP repository worker. Use the available SAP MCP tools to fulfill
-  the single task you are given. NEVER fabricate object contents — call the
-  tools to get real data.
+prompts:
+  system: |
+    You are an ABAP repository worker. Use the available SAP MCP tools to fulfill
+    the single task you are given. NEVER fabricate object contents — call the
+    tools to get real data.

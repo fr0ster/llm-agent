@@ -26,7 +26,6 @@ mcp:
 agent:
   maxIterations: 10
   maxToolCalls: 30
-  ragRetrievalMode: always
   ragQueryK: 5
   historyAutoSummarizeLimit: 15
   retry:

@@ -39,8 +39,9 @@ mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
 
-systemPrompt: |
-  You are an inspection-only ABAP oracle. Answer short factual questions about
-  whether SAP repository objects exist and what type they are. Call ONE MCP
-  tool per question (SearchObject or GetTypeInfo). Reply in ONE sentence,
-  NO Markdown.
+prompts:
+  system: |
+    You are an inspection-only ABAP oracle. Answer short factual questions about
+    whether SAP repository objects exist and what type they are. Call ONE MCP
+    tool per question (SearchObject or GetTypeInfo). Reply in ONE sentence,
+    NO Markdown.

@@ -299,8 +299,17 @@ ollama pull bge-m3
 Or omit `rag.embedder` (BM25 keyword-only) — or remove the `rag:` block entirely — to run without Ollama.
 
 ### Cannot connect to MCP server
-Verify the endpoint is reachable and the MCP server is running. The agent continues without tools
-if an MCP connection fails (it logs the error and proceeds).
+Verify the endpoint is reachable and the MCP server is running.
+
+Behavior on MCP connection failure depends on the configured **connection strategy**:
+
+| Strategy (YAML `mcp.strategy`) | Behavior when MCP is unavailable |
+|---|---|
+| `noop` (default) | Agent starts with an empty tool catalog and continues without tools; the error is logged |
+| `lazy` | Server returns `HTTP 503` (readiness gate) until MCP connects; `/health` shows `ready: false` |
+| `periodic` | Same as `lazy` — background reconnect loop; requests are held until ready |
+
+Since v20.4.0, a mid-run MCP failure surfaces as a loud error via the `IMcpFailureClassifier` instead of silently producing `(no response)`. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#mcp-server-goes-offline-mid-run-and-the-agent-returns-no-response) for details.
 
 ### Cline not using the agent
 `hybrid` mode auto-detects Cline and routes it to `passthrough`. To force SmartAgent for all

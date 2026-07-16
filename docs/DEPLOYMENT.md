@@ -39,7 +39,7 @@ Both chat endpoints route through the same SmartAgent pipeline. See [CLIENT_SETU
 
 ```dockerfile
 # ---- Build stage ----
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -48,7 +48,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # ---- Production stage ----
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
@@ -243,7 +243,7 @@ All instances share the same vector store, ensuring consistent tool discovery an
 
 ### Health endpoint
 
-SmartServer exposes `GET /health` returning structured diagnostics:
+SmartServer exposes `GET /health` (aliased as `GET /v1/health`) returning structured diagnostics:
 
 ```bash
 curl http://localhost:4004/health
@@ -252,16 +252,33 @@ curl http://localhost:4004/health
 ```json
 {
   "status": "healthy",
-  "uptime": 3600,
+  "uptime": 3600000,
+  "version": "20.5.0",
+  "timestamp": "2026-07-16T10:00:00.000Z",
   "components": {
-    "llm": { "status": "healthy" },
-    "rag": { "status": "healthy" },
-    "mcp": { "status": "healthy", "toolCount": 12 }
-  }
+    "llm": true,
+    "rag": true,
+    "mcp": [
+      { "name": "http://localhost:3000/mcp", "ok": true },
+      { "name": "http://localhost:3001/mcp", "ok": false, "error": "ECONNREFUSED" }
+    ]
+  },
+  "ready": true
 }
 ```
 
-Use this for load balancer health checks and Kubernetes liveness/readiness probes.
+**Status codes:**
+
+| Condition | HTTP code | Meaning |
+|---|---|---|
+| `ready === true` | `200` | Server is ready; `status` may still be `degraded` (e.g. soft LLM/RAG failure) — clients can proceed |
+| `ready === false` | `503` | MCP is not connected yet (readiness gate); clients should retry |
+
+- `ready` is `false` when MCP is not available and the configured connection strategy has not yet brought it up (`LazyConnectionStrategy` / `PeriodicConnectionStrategy`). With `NoopConnectionStrategy` (default), `ready` is always `true`.
+- `status: 'degraded'` means LLM or RAG health probes returned soft failures but the server is still serving. A `200` with `status: 'degraded'` is normal under transient provider issues.
+- `components.mcp` is an array — one entry per configured MCP server — with `ok: boolean` and an optional `error` string.
+
+Use the `200`/`503` split for Kubernetes readiness probes; use `status` for alerting dashboards.
 
 ### Prometheus metrics
 

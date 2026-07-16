@@ -71,6 +71,27 @@ pipeline:
     budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 10 }
 ```
 
+**Budget fields** — all optional except the three required ones:
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `maxSteps` | ✅ | — | Maximum number of plan steps |
+| `maxRetries` | ✅ | — | Maximum step-level retries |
+| `maxRewinds` | ✅ | — | Maximum number of plan rewinds |
+| `maxToolCalls` | — | unlimited | Total tool calls per run |
+| `perStepTimeoutMs` | — | none | Per-step wall-clock limit in ms; exceeded → `ControlFailure.reason = 'step-timeout'` and replan. **Absent means a single step can run indefinitely — set this to prevent livelock.** |
+| `maxStepAttempts` | — | unlimited | Fresh-attempt cap per step (durable) |
+| `maxStepResumes` | — | unlimited | Crash-replay cap per step |
+| `maxPlannerResumes` | — | unlimited | Cap on planner resume cycles |
+| `maxEvalResumes` | — | unlimited | Cap on evaluator resume cycles |
+| `maxFinalizeRetries` | — | unlimited | Finalizer retry cap |
+| `maxReviewRetries` | — | unlimited | In-process re-ask budget for the reviewer |
+| `maxDigestChars` | — | unlimited | Board digest render budget (chars) |
+| `maxIntentChars` | — | unlimited | Goal/intent field length cap (chars) |
+| `maxBoardChars` | — | unlimited | Live board render size cap (chars) |
+| `maxActiveSteps` | — | unlimited | Concurrent in-flight steps cap |
+| `keepRecentDigests` | — | unlimited | How many recent digests to keep on the board |
+
 **Capability is preset-encoded — there is no `planner:` config key.** Select the
 pairing by pipeline name:
 
@@ -111,6 +132,17 @@ when composing in code — `ControllerFactory` is the public controller export).
 - Internal (MCP) tools are surfaced to the executor by **semantic top-K** from
   the vectorized tool catalog (`toolsRag`); a distance-based `targetState`
   strategy therefore needs an embedder (`consumer-confirm` does not).
+- **Auxiliary tools (`IAuxiliaryMcpTools`).** The controller executor receives a small set of
+  in-process auxiliary tools by default (currently: `wait` — lets the executor pause before
+  retrying a tool call). These are supplied by `DefaultAuxiliaryMcpTools` and are transparent
+  to consumers. To suppress them entirely (e.g. if a domain tool is also named `wait`), inject
+  `new DefaultAuxiliaryMcpTools([])` via `BuildAgentDeps.auxiliaryMcpTools`. Collision between
+  an auxiliary tool name and a domain MCP tool name fails loud at build time.
+- **Tool-loop context strategy (`IToolLoopContextStrategy`).** Controls how the executor's
+  context window grows across tool-loop iterations. The controller uses `RagRecall` (recall
+  relevant past turns from the session knowledge store), which bounds token growth per step.
+  The flat/server default is `Window` (sliding window); the bare builder default is `Legacy`
+  (append-only). Override via `BuildAgentDeps.toolLoopContextStrategy`.
 - `DEBUG_CONTROLLER=1` logs (stderr) the step instructions the planner delegates
   and per-role/total token spend. The HTTP response always carries total `usage`.
 - Ready-to-run examples: [`pipelines/controller.yaml`](../pipelines/controller.yaml)

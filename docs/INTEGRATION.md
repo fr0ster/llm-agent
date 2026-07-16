@@ -686,6 +686,44 @@ interface IMcpClient {
 }
 ```
 
+### MCPClientConfig — request timeouts
+
+`MCPClientWrapper` (the default `IMcpClient` implementation) supports per-client and per-tool timeouts via `MCPClientConfig`:
+
+```ts
+// packages/llm-agent-mcp/src/client.ts
+const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000;  // 2 minutes
+
+interface MCPClientConfig {
+  transport?: 'stdio' | 'sse' | 'stream-http' | 'auto' | 'embedded';
+  url?: string;
+  // ... other connection fields ...
+
+  /** Global MCP tool-call timeout in ms. Default: 120 000 ms (2 minutes). */
+  timeout?: number;
+
+  /**
+   * Per-tool timeout overrides in ms. Takes precedence over `timeout`.
+   * Resolution order: toolTimeouts[name] → timeout → DEFAULT_MCP_REQUEST_TIMEOUT_MS
+   */
+  toolTimeouts?: Record<string, number>;
+}
+```
+
+YAML equivalent (under `mcp:` or `pipeline.mcp[]:`)
+
+```yaml
+mcp:
+  - type: http
+    url: http://localhost:3000/mcp/stream/http
+    timeout: 60000          # global default for all tools (ms)
+    toolTimeouts:
+      SlowTool: 300000      # 5 minutes for a specific long-running tool
+      FastTool: 5000        # 5 seconds for a cheap lookup tool
+```
+
+Both fields are documented only in EXAMPLES.md. They are real production config and part of the `MCPClientConfig` interface.
+
 ### Example: Wrapping a non-MCP REST API catalog
 
 ```ts
@@ -1633,6 +1671,217 @@ const { agent, close } = await new SmartAgentBuilder({ mcp: mcpConfigs })
 ```
 
 `close()` calls `strategy.dispose()`, which clears timers and closes underlying transport connections.
+
+## IMcpFailureClassifier — MCP fail-loud (v20.4.0+)
+
+**File:** `packages/llm-agent/src/interfaces/mcp-failure-classifier.ts`
+
+Classifies a mid-run MCP error as either a transient tool failure or a server-unavailability event. The controller and executor use this decision to either surface a loud error or allow the step to retry.
+
+```ts
+type McpFailureKind = 'unavailable' | 'tool-error';
+
+interface IMcpFailureClassifier {
+  /**
+   * @param error  The error thrown by IMcpClient.callTool
+   * @param probeHealth  Optional callback — call it to actively ping the server
+   *                     when error-code heuristics are not enough.
+   */
+  classify(
+    error: unknown,
+    probeHealth?: () => Promise<boolean>,
+  ): Promise<McpFailureKind>;
+}
+```
+
+- `'unavailable'` — the server is down; the run fails loud so the user knows what happened (no more silent `(no response)`).
+- `'tool-error'` — the server is reachable but the specific tool call failed; the executor can retry or replan.
+
+### Default behavior
+
+The built-in classifier inspects the error object (connection-refused codes, HTTP 5xx, ENOTFOUND, etc.) and returns `'unavailable'`; all other errors return `'tool-error'`. Pass `probeHealth` to do an active health check beyond heuristics.
+
+### Custom classifier example
+
+```ts
+import type { IMcpFailureClassifier } from '@mcp-abap-adt/llm-agent';
+
+// Treat all errors as transient (tool-error) — server is self-healing
+class OptimisticClassifier implements IMcpFailureClassifier {
+  async classify(_error: unknown): Promise<'unavailable' | 'tool-error'> {
+    return 'tool-error';
+  }
+}
+
+// Inject via BuildAgentDeps when composing the controller pipeline:
+//   deps.mcpFailureClassifier = new OptimisticClassifier()
+```
+
+---
+
+## IReadinessReporter — readiness gate (v20.x+)
+
+**File:** `packages/llm-agent/src/interfaces/readiness-reporter.ts`
+
+A deliberately tiny interface — separated from lifecycle interfaces per ISP (Principle 4). Connection strategies that can tell whether they are ready implement it. SmartServer detects it via the type guard and uses it for the `/health` readiness gate and `HTTP 503` pre-dispatch guard.
+
+```ts
+interface IReadinessReporter {
+  isReady(): boolean;
+}
+
+// Type guard — detect at runtime without instanceof coupling:
+function isReadinessReporter(x: unknown): x is IReadinessReporter;
+```
+
+`LazyConnectionStrategy` and `PeriodicConnectionStrategy` implement both `IMcpConnectionStrategy` and `IReadinessReporter`. `NoopConnectionStrategy` does not implement `IReadinessReporter` (always treated as ready). A custom strategy that implements `IReadinessReporter` will be auto-detected by SmartServer.
+
+---
+
+## IToolLoopContextStrategy — context window management (v20.x+)
+
+**File:** `packages/llm-agent/src/interfaces/tool-loop-context-strategy.ts`
+
+Controls how the tool-loop builds and trims the message context across iterations. Prevents unbounded token growth in long-running runs.
+
+```ts
+interface IToolLoopContextStrategy {
+  /** Record a completed tool-loop round (called after each iteration). */
+  record(round: ToolRound, options?: RecordOptions): void;
+
+  /**
+   * Form the message list for the next LLM call.
+   * @param base  Full raw messages (system + history + all tool rounds so far)
+   */
+  form(base: ToolLoopContextBase, options?: FormOptions): Message[];
+
+  /** Serialize strategy state for durable suspend/resume. */
+  snapshot(): SerializableStrategyState;
+
+  /** Restore strategy state from a prior snapshot. */
+  restore(state: SerializableStrategyState): void;
+}
+```
+
+Built-in strategies (injected via `BuildAgentDeps.toolLoopContextStrategy`):
+
+| Strategy | Use case | Behavior |
+|---|---|---|
+| `Legacy` | Bare `SmartAgent` default | Append-only; passes full message history every iteration |
+| `Window` | `SmartServer` flat-pipeline default | Sliding window — keeps the last N rounds |
+| `RagRecall` | Controller executor default | Recalls relevant prior context from the session knowledge RAG; bounds token growth without losing important history |
+
+### Custom strategy example
+
+```ts
+import type { IToolLoopContextStrategy, ToolRound, ToolLoopContextBase, Message } from '@mcp-abap-adt/llm-agent';
+
+class DropOldToolResultsStrategy implements IToolLoopContextStrategy {
+  private readonly maxRounds: number;
+  private rounds: ToolRound[] = [];
+
+  constructor(maxRounds = 3) { this.maxRounds = maxRounds; }
+
+  record(round: ToolRound): void {
+    this.rounds.push(round);
+    if (this.rounds.length > this.maxRounds) this.rounds.shift();
+  }
+
+  form(base: ToolLoopContextBase): Message[] {
+    // Keep system + user message, then only the last maxRounds tool rounds
+    return [...base.preamble, ...this.rounds.flatMap((r) => r.messages)];
+  }
+
+  snapshot() { return { rounds: this.rounds }; }
+  restore(state: any) { this.rounds = state.rounds ?? []; }
+}
+```
+
+---
+
+## IStepExecutionControl — per-step budget gate (v20.x+)
+
+**File:** `packages/llm-agent/src/interfaces/step-execution-control.ts`
+
+Gives the controller executor a per-step budget object (`IStepBudget`) at the start of each step. The budget can fire a timeout signal, gate tool calls, and block continued round iterations.
+
+```ts
+interface IStepExecutionControl {
+  /**
+   * Called at the start of every step. Returns a budget handle for that step.
+   * Dispose the handle when the step finishes (releases any timer).
+   */
+  beginStep(ctx: StepControlContext): IStepBudget;
+}
+
+interface IStepBudget {
+  /** AbortSignal that fires when perStepTimeoutMs elapses. */
+  readonly signal: AbortSignal;
+
+  /** Returns false when the round limit for this step is exceeded. */
+  shouldContinueRound(state: StepRoundState): boolean;
+
+  /** Returns false when the tool-call cap for this step is exceeded. */
+  canExecuteTool(toolName: string): boolean;
+
+  /** Release the timer. Call this when the step finishes (success or failure). */
+  dispose(): void;
+}
+```
+
+The default implementation is driven by `budgets.perStepTimeoutMs` (wall-clock timeout) and `budgets.maxToolCalls` (total tool calls per run). A step that exceeds `perStepTimeoutMs` receives an AbortSignal → `ControlFailure.reason = 'step-timeout'` → replan.
+
+`IRunExecutionControl` is the run-level counterpart — it gates rewinds, resumptions, and global retry counts.
+
+### `perStepTimeoutMs` — livelock prevention
+
+```yaml
+pipeline:
+  name: controller
+  config:
+    budgets:
+      maxSteps: 20
+      maxRetries: 3
+      maxRewinds: 5
+      perStepTimeoutMs: 120000   # 2 minutes; absent = no timeout (livelock risk)
+```
+
+Without `perStepTimeoutMs`, a step that enters an infinite tool-call loop will only stop when the outer HTTP timeout fires. Always set it in production.
+
+---
+
+## IAuxiliaryMcpTools — in-process executor tools (v20.x+)
+
+**File:** `packages/llm-agent/src/interfaces/auxiliary-mcp-tools.ts`
+
+A thin tool-list + call interface for in-process tools offered to the controller executor alongside the real MCP catalog. Deliberately does **not** extend `IMcpClient` (no `healthCheck` — auxiliary tools are always in-process and never go through the MCP fail-loud classifier).
+
+```ts
+interface IAuxiliaryMcpTools {
+  listTools(): McpTool[];
+  callTool(name: string, args: Record<string, unknown>): Promise<McpToolResult>;
+}
+```
+
+The default implementation (`DefaultAuxiliaryMcpTools`) ships with a single built-in tool:
+
+- **`wait`** — lets the executor pause a configurable number of milliseconds before retrying a tool call. Useful when a tool returns a "not ready" result and the executor should poll.
+
+### Overriding auxiliary tools
+
+```ts
+import { DefaultAuxiliaryMcpTools } from '@mcp-abap-adt/llm-agent-server-libs';
+
+// Remove all auxiliary tools (e.g. if your domain has a tool named 'wait'):
+const noAux = new DefaultAuxiliaryMcpTools([]);
+
+// Inject via BuildAgentDeps:
+//   deps.auxiliaryMcpTools = noAux
+```
+
+> **Collision guard.** If a domain MCP tool has the same name as an auxiliary tool, the build fails loud. Use `new DefaultAuxiliaryMcpTools([])` to suppress the built-in set and avoid the conflict.
+
+---
 
 ## ILlmCallStrategy — Tool Loop LLM Call Strategy
 

@@ -69,12 +69,8 @@ pipeline:
   config:
     # The composition is described here directly — no `mode` needed.
     flow:
-      # interpreter is the same impl at every level; listed for completeness.
-      interpreter: { type: default }
       # finalizer synthesizes the accumulated knowledge-RAG into the answer.
       finalizer: { type: llm }
-      # review the plan/output at the root depth only (cheap gate).
-      reviewer: { atDepths: [0] }
 
       # Declared composition TREE — FULLY static (the yaml controls everything; no
       # LLM sub-planner that could emit redundant/wrong fetch steps). gather reads
@@ -101,6 +97,9 @@ pipeline:
       maxParallelSteps: 4
       maxDepth: 4
       tokenBudget: 400000
+      # review the plan/output at the root depth only (cheap gate).
+      reviewer:
+        atDepths: [0]
 
     # Tool permissioning is the MCP SERVER's responsibility — there is NO agent-side
     # gate. The agent calls whatever the server exposes; wire it to a read-only/scoped server.

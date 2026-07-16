@@ -37,7 +37,7 @@ Build your own agent against the interfaces exported by core. Useful for special
 
 | Symbol | v10 location | v11 package |
 |---|---|---|
-| `SmartAgent`, `SmartAgentBuilder`, `DefaultPipeline` | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged) |
+| `SmartAgent`, `SmartAgentBuilder`, `DefaultPipeline` | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged; moved to `@mcp-abap-adt/llm-agent-libs` at v12) |
 | Pipeline handlers | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged) |
 | `OpenAIProvider`, `OpenAIConfig` | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/openai-llm` |
 | `AnthropicProvider`, `AnthropicConfig` | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/anthropic-llm` |
@@ -48,11 +48,12 @@ Build your own agent against the interfaces exported by core. Useful for special
 | `SapAiCoreEmbedder`, `SapAiCoreEmbedderConfig` | `@mcp-abap-adt/llm-agent` | `@mcp-abap-adt/sap-aicore-embedder` |
 | `QdrantRag`, `QdrantRagProvider`, configs | `@mcp-abap-adt/llm-agent` | `@mcp-abap-adt/qdrant-rag` |
 | `BaseLLMProvider`, `LLMProvider` type | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent` (moved to core — now provider-agnostic) |
-| `FallbackRag`, `CircuitBreaker`, `RetryLlm`, `RateLimiterLlm` | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged) |
+| `FallbackRag`, `CircuitBreaker` | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged; moved to `@mcp-abap-adt/llm-agent` at v12) |
+| `RetryLlm`, `RateLimiterLlm` | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged; moved to `@mcp-abap-adt/llm-agent-libs` at v12) |
 | Interfaces (`IRag`, `ILlm`, `IEmbedder`, etc.) | `@mcp-abap-adt/llm-agent` | `@mcp-abap-adt/llm-agent` (unchanged) |
-| `MCPClientWrapper` and transports | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged) |
+| `MCPClientWrapper` and transports | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent-server` (unchanged; moved to `@mcp-abap-adt/llm-agent-mcp` at v12) |
 | `MissingProviderError` (NEW) | — | `@mcp-abap-adt/llm-agent` |
-| `prefetchEmbedderFactories`, `builtInEmbedderFactories` (factory registry moved) | `@mcp-abap-adt/llm-agent` (embedder-factories) | `@mcp-abap-adt/llm-agent-server` |
+| `prefetchEmbedderFactories`, `builtInEmbedderFactories` (factory registry moved) | `@mcp-abap-adt/llm-agent` (embedder-factories) | `@mcp-abap-adt/llm-agent-server` (moved to `@mcp-abap-adt/llm-agent-rag` at v12) |
 | Agent hierarchy (`OpenAIAgent`, etc.) | `@mcp-abap-adt/llm-agent-server` | **REMOVED** — use `SmartAgent` + provider |
 
 ## Agent hierarchy removal

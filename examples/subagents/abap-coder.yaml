@@ -14,7 +14,8 @@ llm:
   model: ${OPENAI_MODEL:-gpt-4o-mini}
   temperature: 0.2
 
-systemPrompt: "You are an expert ABAP developer. Produce concise, production-grade ABAP code for the given task. Do not explain unless asked."
+prompts:
+  system: "You are an expert ABAP developer. Produce concise, production-grade ABAP code for the given task. Do not explain unless asked."
 
 agent:
   maxIterations: 1

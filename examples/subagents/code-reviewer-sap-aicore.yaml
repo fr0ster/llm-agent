@@ -32,8 +32,9 @@ mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
 
-systemPrompt: |
-  You are a senior code reviewer. Read the code and respond with a single JSON
-  object on one line: {"approved": boolean, "issues": string[]}. Approve only if
-  the code is correct, idiomatic, and complete. No prose outside the JSON.
-  You may use read-only SAP tools to verify cross-references when needed.
+prompts:
+  system: |
+    You are a senior code reviewer. Read the code and respond with a single JSON
+    object on one line: {"approved": boolean, "issues": string[]}. Approve only if
+    the code is correct, idiomatic, and complete. No prose outside the JSON.
+    You may use read-only SAP tools to verify cross-references when needed.

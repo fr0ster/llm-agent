@@ -34,8 +34,6 @@ pipeline:
   config:
     planning: replan-on-error
     dispatch: hybrid
-    activation: auto
-    plannerLlm: helper
     maxSteps: 8
     maxRetriesPerStep: 1
     failPolicy: continue

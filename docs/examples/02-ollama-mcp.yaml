@@ -9,6 +9,7 @@ host: 0.0.0.0
 mode: smart
 
 llm:
+  provider: deepseek
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7

@@ -10,13 +10,14 @@ The MCP Client supports multiple transport protocols. You can specify the transp
 2. **`sse`** - Server-Sent Events (GET endpoint)
 3. **`stream-http`** - Streamable HTTP (POST endpoint, bidirectional NDJSON)
 4. **`auto`** - Automatically detect from URL (default)
+5. **`embedded`** - Direct in-process MCP server instance (same process, no transport; used for testing)
 
 ### Configuration Examples
 
 #### 1. Explicit Transport Selection
 
 ```typescript
-import { MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
+import { MCPClientWrapper } from '@mcp-abap-adt/llm-agent-mcp';
 
 // Stdio transport
 const stdioClient = new MCPClientWrapper({

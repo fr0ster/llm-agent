@@ -79,19 +79,17 @@ agent:
   maxToolCalls: 30
   toolUnavailableTtlMs: 600000
   toolResultCacheTtlMs: 300000
-  ragRetrievalMode: always
   ragQueryK: 5
   historyRecencyWindow: 4
   showReasoning: false
   historyAutoSummarizeLimit: 10
   queryExpansionEnabled: false
-  ragTranslationEnabled: true
+  ragTranslateEnabled: true
   refreshToolsPerIteration: false
   toolReselectPerIteration: true
   # SAP AI Core Orchestration requires non-streaming for tool-use (SSE errors on stream)
   llmCallStrategy: non-streaming
   streamMode: final
-  reportUsage: true
   # SAP AI Core needs >5s for LLM probe
   healthTimeoutMs: 15000
   retry:

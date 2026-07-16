@@ -75,7 +75,6 @@ agent:
   externalToolsValidationMode: permissive
   maxIterations: 10
   maxToolCalls: 30
-  ragRetrievalMode: always
   ## ragQueryK = top-K tools surfaced from toolsRag per request. Default 5
   ## can miss the right tool when the MCP catalog has >10 entries and the
   ## query's embedding doesn't rank it. Bump to 20 to be safe for small
@@ -83,13 +82,12 @@ agent:
   ragQueryK: 20
   historyRecencyWindow: 4
   showReasoning: false
-  ragTranslationEnabled: true
+  ragTranslateEnabled: true
   toolReselectPerIteration: true
   ## SAP AI Core Orchestration requires non-streaming for tool-use
   ## (SSE errors when the model emits tool calls mid-stream).
   llmCallStrategy: non-streaming
   streamMode: final
-  reportUsage: true
   ## SAP AI Core needs ≥5s for the startup LLM probe.
   healthTimeoutMs: 15000
   retry:

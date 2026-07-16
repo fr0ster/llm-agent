@@ -10,32 +10,33 @@ host: 0.0.0.0
 mode: smart
 
 pipeline:
-  llm:
-    main:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.7
-    classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
+  name: flat
 
-  rag:
-    tools:
-      type: qdrant
-      url: http://qdrant:6333
-      collectionName: llm-agent-tools
-      embedder: openai
-      model: text-embedding-3-small
-      apiKey: ${OPENAI_API_KEY}
+llm:
+  main:
+    provider: deepseek
+    apiKey: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
+    temperature: 0.7
+  classifier:
+    provider: deepseek
+    apiKey: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
+    temperature: 0.1
+  helper:
+    provider: deepseek
+    apiKey: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
+    temperature: 0.1
 
-  mcp:
-    - type: http
-      url: http://localhost:3001/mcp/stream/http
+rag:
+  type: qdrant
+  url: http://qdrant:6333
+  collectionName: llm-agent-tools
+  embedder: openai
+  model: text-embedding-3-small
+  apiKey: ${OPENAI_API_KEY}
+
+mcp:
+  - type: http
+    url: http://localhost:3001/mcp/stream/http

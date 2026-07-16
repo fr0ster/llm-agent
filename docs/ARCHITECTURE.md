@@ -195,7 +195,7 @@ Primary embeddable surfaces:
 - `@mcp-abap-adt/llm-agent-libs` -> `SmartAgentBuilder` (programmatic composition)
 - `@mcp-abap-adt/llm-agent-libs/testing` -> deterministic test doubles for consumer integration tests
 - `@mcp-abap-adt/llm-agent-libs/otel` -> OpenTelemetry tracer adapter
-- `@mcp-abap-adt/llm-agent-server` -> binary CLI (`llm-agent`, `llm-agent-check`) + HTTP server (not a library)
+- `@mcp-abap-adt/llm-agent-server` -> binary CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP server (not a library)
 
 Minimal programmatic integration:
 
@@ -329,7 +329,7 @@ sequenceDiagram
 ### 1. Server Boundary
 
 Entry points:
-- `SmartServer` — in `@mcp-abap-adt/llm-agent-server`
+- `SmartServer` — in `@mcp-abap-adt/llm-agent-server-libs`
 - `SmartAgentServer` — lightweight/legacy test server, in `@mcp-abap-adt/llm-agent-server`
 
 `SmartServer` responsibilities:
@@ -529,6 +529,12 @@ gnosticized at runtime.
 | `IRag` (`tools`/`history` + consumer-defined) | Retrieval and memory stores | `InMemoryRag` (BM25), `VectorRag` (in-memory + embedder), `QdrantRag`, `HanaVectorRag`, or `PgVectorRag` |
 | `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
 | `IMcpConnectionStrategy` | Per-request MCP reconnection / health recovery | `NoopConnectionStrategy` (no-op, default); `LazyConnectionStrategy` / `PeriodicConnectionStrategy` for auto-reconnect |
+| `IReadinessReporter` | Whether the server is ready to serve requests (readiness gate) | Connection strategies implement it; detected via `isReadinessReporter(x)` type guard |
+| `IMcpFailureClassifier` | Classifies mid-run MCP errors as `'unavailable'` (fail-loud) or `'tool-error'` (transient) | Default: error-based heuristic; inject custom via `BuildAgentDeps.mcpFailureClassifier` |
+| `IToolLoopContextStrategy` | Controls how the tool-loop context window grows across iterations (token management) | `RagRecall` (controller), `Window` (server default), `Legacy` (bare agent); injectable via `BuildAgentDeps` |
+| `IStepExecutionControl` | Per-step budget gate for the controller (`beginStep` → `IStepBudget` with `signal`, `shouldContinueRound`, `canExecuteTool`) | Default implementation driven by `budgets.perStepTimeoutMs` and `budgets.maxToolCalls` |
+| `IRunExecutionControl` | Run-level budget gate (rewinds, resumptions, retries) | Default driven by controller `budgets` fields |
+| `IAuxiliaryMcpTools` | In-process auxiliary tools offered to the executor (e.g. built-in `wait`) | `DefaultAuxiliaryMcpTools`; inject `new DefaultAuxiliaryMcpTools([])` to suppress all auxiliary tools |
 | `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |
 | `IPromptInjectionDetector` | Injection heuristics | `HeuristicInjectionDetector` (optional) |
 | `ISkillManager` | Skill discovery and content loading | `ClaudeSkillManager`, `CodexSkillManager`, `FileSystemSkillManager` (optional) |
@@ -539,7 +545,7 @@ gnosticized at runtime.
 - **`SmartAgentBuilder`** (in `@mcp-abap-adt/llm-agent-libs`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, `IPipeline`, etc. Has no knowledge of concrete providers. RAG stores are injected via `.setToolsRag(rag)` and `.setHistoryRag(rag)`; a custom pipeline is injected via `.setPipeline(pipeline)`. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
 - **`makeLlm`/`makeDefaultLlm`** (in `@mcp-abap-adt/llm-agent-libs`) — composition root for LLMs. The only place that imports concrete LLM provider packages. Resolves config → `ILlm` instance. **Async** since 12.0.1.
 - **`makeRag`/`resolveEmbedder`** (in `@mcp-abap-adt/llm-agent-rag`) — composition root for RAG/embedders. Resolves config → `IRag`/`IEmbedder`. `makeRag` is **async** and auto-prefetches — no warm-up needed for one-shot use. `resolveEmbedder` is **sync** — call `prefetchEmbedderFactories([...])` once at startup before using this hot-path resolver.
-- **`SmartServer`** (in `@mcp-abap-adt/llm-agent-server`) — uses `makeLlm`/`makeRag` to resolve config, then injects interfaces into `SmartAgentBuilder`.
+- **`SmartServer`** (in `@mcp-abap-adt/llm-agent-server-libs`) — uses `makeLlm`/`makeRag` to resolve config, then injects interfaces into `SmartAgentBuilder`.
 
 ## Execution Modes
 
@@ -641,7 +647,7 @@ Action policy:
 | Module | Package | Role |
 |---|---|---|
 | `SmartAgent` | `@mcp-abap-adt/llm-agent-libs` | Orchestration loop and tool execution control |
-| `SmartServer` | `@mcp-abap-adt/llm-agent-server` | Production OpenAI-compatible HTTP server |
+| `SmartServer` | `@mcp-abap-adt/llm-agent-server-libs` | Production OpenAI-compatible HTTP server |
 | `SmartAgentBuilder` | `@mcp-abap-adt/llm-agent-libs` | Interface-only dependency wiring (no provider knowledge) |
 | `makeLlm` / `makeDefaultLlm` | `@mcp-abap-adt/llm-agent-libs` | Composition root — concrete LLM provider resolution (async) |
 | `makeRag` / `resolveEmbedder` | `@mcp-abap-adt/llm-agent-rag` | RAG/embedder resolution |

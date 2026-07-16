@@ -7,16 +7,14 @@
 
 ## Current Project Snapshot
 
-- Packages: `@mcp-abap-adt/llm-agent` (contracts: interfaces, types, lightweight helpers), `@mcp-abap-adt/llm-agent-mcp` (MCP client), `@mcp-abap-adt/llm-agent-rag` (RAG/embedder composition), `@mcp-abap-adt/llm-agent-libs` (composition runtime: SmartAgentBuilder, pipeline, skills, ...), `@mcp-abap-adt/llm-agent-server` (binary only: CLI + HTTP server)
-- Version line: `12.x`
-- Main runtime: `SmartAgentBuilder` (in `@mcp-abap-adt/llm-agent-libs`); HTTP server `SmartServer` (binary only, in `@mcp-abap-adt/llm-agent-server`)
-- Public library exports: `@mcp-abap-adt/llm-agent` (contracts), `@mcp-abap-adt/llm-agent-mcp` (MCP), `@mcp-abap-adt/llm-agent-rag` (RAG), `@mcp-abap-adt/llm-agent-libs` (composition runtime), `@mcp-abap-adt/llm-agent-libs/testing`, `@mcp-abap-adt/llm-agent-libs/otel`
-
-Legacy modules under `src/agents`, `src/llm-providers`, and `src/mcp` are still present for compatibility and adapter reuse.
+- Packages: `@mcp-abap-adt/llm-agent` (contracts: interfaces, types, lightweight helpers), `@mcp-abap-adt/llm-agent-mcp` (MCP client), `@mcp-abap-adt/llm-agent-rag` (RAG/embedder composition), `@mcp-abap-adt/llm-agent-libs` (composition runtime: SmartAgentBuilder, pipeline, skills, ...), `@mcp-abap-adt/llm-agent-server-libs` (SmartServer composition library: pipeline factories, coordinator handlers, config parsing), `@mcp-abap-adt/llm-agent-server` (binary only: CLI + HTTP server)
+- Version line: `20.x`
+- Main runtime: `SmartAgentBuilder` (in `@mcp-abap-adt/llm-agent-libs`); HTTP server `SmartServer` (in `@mcp-abap-adt/llm-agent-server-libs`, binary in `@mcp-abap-adt/llm-agent-server`)
+- Public library exports: `@mcp-abap-adt/llm-agent` (contracts), `@mcp-abap-adt/llm-agent-mcp` (MCP), `@mcp-abap-adt/llm-agent-rag` (RAG), `@mcp-abap-adt/llm-agent-libs` (composition runtime), `@mcp-abap-adt/llm-agent-server-libs` (SmartServer library), `@mcp-abap-adt/llm-agent-libs/testing`, `@mcp-abap-adt/llm-agent-libs/otel`
 
 ## Architecture Facts (Keep in Sync)
 
-- `SmartServer` is the OpenAI-compatible HTTP boundary (`/v1/chat/completions`, SSE supported).
+- `SmartServer` is the HTTP boundary exposing: `POST /v1/chat/completions` (OpenAI-compatible, SSE streaming supported), `POST /v1/messages` (Anthropic-compatible adapter), `GET /v1/models`, `GET /v1/embedding-models`, `GET /v1/usage`, `GET /health` (also `/v1/health`), `GET|DELETE /v1/sessions/:id`, `GET /v1/sessions/:id/resume`, `PUT /v1/config`.
 - `SmartAgentBuilder` wires defaults and optional overrides (LLM/RAG/MCP/policy/logger).
 - `SmartAgent` runs classification, retrieval, tool loop, and response streaming.
 - Pipeline configuration supports `deepseek`, `openai`, `anthropic` providers.

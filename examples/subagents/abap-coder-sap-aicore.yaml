@@ -32,7 +32,8 @@ mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
 
-systemPrompt: |
-  You are an expert ABAP developer. Produce concise, production-grade ABAP code
-  for the given task. Use the available SAP tools to verify or create code in the
-  system when helpful. Do not explain unless asked.
+prompts:
+  system: |
+    You are an expert ABAP developer. Produce concise, production-grade ABAP code
+    for the given task. Use the available SAP tools to verify or create code in the
+    system when helpful. Do not explain unless asked.

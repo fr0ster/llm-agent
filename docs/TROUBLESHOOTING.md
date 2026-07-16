@@ -221,17 +221,48 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 ---
 
-### MCP server unreachable but the agent boots silently
+### MCP server unreachable at startup
 
-**Symptom.** Server starts cleanly with `event: server_started`, `/health` returns `mcpReachable: false` (or `mcp: []`), tool-using requests return "I don't have that tool" — and there is no log line explaining *why* the MCP wasn't connected. Issue tracking: #118.
+**Symptom.** Server starts cleanly with `event: server_started`, tool-using requests return "I don't have that tool", and `/health` shows `components.mcp[].ok: false`.
 
-**Cause.** `SmartAgentBuilder.build()` (then in `@mcp-abap-adt/llm-agent-server@11.0.0–11.1.0`; now in `@mcp-abap-adt/llm-agent-libs` since v12) wrapped the per-MCP-config setup loop in a bare `catch {}` with no binding and no log call. Connect failures (unreachable host, bad auth, 127.0.0.1 vs container gateway, blocked port) and post-connect failures (tool vectorization throwing) were equally invisible.
+**Cause.** The MCP server was not reachable when the connection strategy resolved at startup. With `NoopConnectionStrategy` (default) the agent starts with an empty tool catalog and proceeds without tools. With `LazyConnectionStrategy` / `PeriodicConnectionStrategy` the server returns `HTTP 503` until the MCP connection succeeds (`ready: false` in `/health`).
 
-**Fix.** Upgrade to `>=11.1.1`. The catch now emits a `warning` log entry — `MCP setup failed for <url-or-command>: <error message>` — matching the pattern used elsewhere in the same file. Graceful-degradation behavior is preserved (the agent still builds without that MCP server). For one-off diagnosis on older versions, run a probe inside the container:
+**Fix.**
 
-```bash
-docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-mcp").then(async ({MCPClientWrapper})=>{const w=new MCPClientWrapper({transport:"auto",url:process.env.MCP_SERVER_URL,headers:{Accept:"application/json, text/event-stream"}});try{await w.connect();console.log("OK")}catch(e){console.error("ERR:",e.message)}})'
+1. Confirm the MCP endpoint is reachable: `curl <mcp-url>` from inside the container or on the same network.
+2. Use `LazyConnectionStrategy` or `PeriodicConnectionStrategy` in YAML — these reconnect automatically when the MCP server becomes available:
+   ```yaml
+   mcp:
+     - type: http
+       url: http://localhost:3000/mcp/stream/http
+       strategy: lazy          # or: periodic
+   ```
+3. Check `/health` → `components.mcp` for the per-server `ok`/`error` fields to pinpoint which endpoint is failing.
+
+---
+
+### MCP server goes offline mid-run and the agent returns `(no response)`
+
+**Symptom.** An MCP-tool-using request returns `(no response)` with zero tokens after the MCP server drops mid-run.
+
+**Cause.** Before v20.4.0 a mid-run MCP failure could be swallowed silently. Since v20.4.0 (#223) the consumer-swappable `IMcpFailureClassifier` decides whether a tool error is transient (`tool-error`) or means the server is down (`unavailable`). The default classifier inspects the error object; when `unavailable`, the run fails loud with a descriptive error instead of returning empty output.
+
+**Fix.** Upgrade to `>=20.4.0`. If you need custom classification (e.g. treat all errors as transient), inject a custom `IMcpFailureClassifier`:
+
+```ts
+import type { IMcpFailureClassifier } from '@mcp-abap-adt/llm-agent';
+
+class AlwaysToolErrorClassifier implements IMcpFailureClassifier {
+  async classify(_error: unknown): Promise<'unavailable' | 'tool-error'> {
+    return 'tool-error';  // never treat as unavailable; let executor handle it
+  }
+}
+
+// Inject via BuildAgentDeps / ControllerSkillPipelineBuilder.build(deps):
+//   deps.mcpFailureClassifier = new AlwaysToolErrorClassifier()
 ```
+
+The default classifier (`IMcpFailureClassifier`) is defined in `packages/llm-agent/src/interfaces/mcp-failure-classifier.ts`. Pass `probeHealth` to it for active connection probing beyond error-code inspection.
 
 ---
 
@@ -276,6 +307,19 @@ docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-mcp").then(async ({M
 - `coordinator: { planning, dispatch, activation, plannerLlm, maxSteps, ... }` → `pipeline: { name: linear, config: { planning, dispatch, activation, ... } }`
 
 The `config:` keys are the SAME keys the old `coordinator:` block used. Load a custom pipeline via `plugins: ['@scope/my-pipeline']`. If you cannot migrate yet, pin a version ≤ 18.
+
+**v20 addition — `planner:` key rejected inside controller config.** If your controller YAML contains a `planner:` sub-key under `pipeline.config`, the server fails loud:
+
+```
+ConfigValidationError: pipeline.config.planner is not a valid controller config key.
+Use pipeline.name: "controller" (smart-executor) or "controller-weak" (weak-executor).
+```
+
+**Fix.** Remove `pipeline.config.planner` and select the pairing via the pipeline name:
+- `pipeline: { name: controller }` → smart-executor (coarse steps, capable executor self-expands)
+- `pipeline: { name: controller-weak }` → weak-executor (one action per step, for smaller models)
+
+`subagents.planner` / `flow.planner` remain valid; only the top-level `config.planner` key is removed.
 
 ---
 
