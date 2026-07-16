@@ -62,6 +62,22 @@ export interface SessionLifecycleOptions {
    * `IPipelineInstance.close()` captured by `buildPipelineInstance`.
    */
   onDispose?: (sessionId: string) => Promise<void>;
+  /**
+   * When present AND `!mcpSharedClient`, called once per session to build a
+   * fresh per-session MCP client set (`{ clients, close }`). The returned
+   * `close` is tracked by `sessionId` and invoked during session disposal
+   * (before `onDispose`). When absent, or when `mcpSharedClient` is `true`,
+   * the shared `mcpClients` array is used for every session.
+   */
+  buildPerSessionMcpClients?: () => {
+    clients: IMcpClient[];
+    close: () => Promise<void>;
+  };
+  /**
+   * Opt out of per-session isolation: when `true`, `buildPerSessionMcpClients`
+   * is never called and all sessions share the `mcpClients` reference.
+   */
+  mcpSharedClient?: boolean;
 }
 
 /**
@@ -86,13 +102,30 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
   invalidateAll: () => Promise<void>;
   registry: SessionRegistry;
 } {
+  const closeBySession = new Map<string, () => Promise<void>>();
+  const usePerSession =
+    !!opts.buildPerSessionMcpClients && !opts.mcpSharedClient;
+
   const factory = new SessionGraphFactory({
-    mcpClientFactory: (_identity) => opts.mcpClients,
+    mcpClientFactory: (identity) => {
+      if (!usePerSession || !opts.buildPerSessionMcpClients)
+        return opts.mcpClients;
+      const built = opts.buildPerSessionMcpClients();
+      closeBySession.set(identity.sessionId, built.close);
+      return built.clients;
+    },
     toolsRag: opts.toolsRag,
     ragRegistry: opts.ragRegistry,
     buildAgent: opts.buildAgent,
     logger: opts.logger,
-    onDispose: opts.onDispose,
+    onDispose: async (sessionId) => {
+      const close = closeBySession.get(sessionId);
+      if (close) {
+        closeBySession.delete(sessionId);
+        await close();
+      }
+      await opts.onDispose?.(sessionId);
+    },
   });
   const registry = new SessionRegistry({
     idleTtlMs: opts.idleTtlMs,
