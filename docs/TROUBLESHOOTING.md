@@ -225,18 +225,12 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 **Symptom.** Server starts cleanly with `event: server_started`, tool-using requests return "I don't have that tool", and `/health` shows `components.mcp[].ok: false`.
 
-**Cause.** The MCP server was not reachable when the connection strategy resolved at startup. With `NoopConnectionStrategy` (default) the agent starts with an empty tool catalog and proceeds without tools. With `LazyConnectionStrategy` / `PeriodicConnectionStrategy` the server returns `HTTP 503` until the MCP connection succeeds (`ready: false` in `/health`).
+**Cause.** The MCP server was not reachable when the connection strategy resolved at startup. When an `mcp:` block is configured, the default is a resilient `PeriodicConnectionStrategy` (connect + periodic reconnect + readiness), so the server returns `HTTP 503` (`ready: false` in `/health`) until the MCP connection succeeds, then serves normally. (A consumer that instead injects a `NoopConnectionStrategy` via the builder starts with an empty tool catalog and proceeds without tools.)
 
 **Fix.**
 
 1. Confirm the MCP endpoint is reachable: `curl <mcp-url>` from inside the container or on the same network.
-2. Use `LazyConnectionStrategy` or `PeriodicConnectionStrategy` in YAML — these reconnect automatically when the MCP server becomes available:
-   ```yaml
-   mcp:
-     - type: http
-       url: http://localhost:3000/mcp/stream/http
-       strategy: lazy          # or: periodic
-   ```
+2. The default strategy already reconnects automatically (~10 s interval) — just bring the endpoint up; `/health` flips to `ready: true` and requests start succeeding. There is **no YAML `strategy` key**; to change the strategy in embedded use, inject an `IMcpConnectionStrategy` via `SmartAgentBuilder.withMcpConnectionStrategy(...)`.
 3. Check `/health` → `components.mcp` for the per-server `ok`/`error` fields to pinpoint which endpoint is failing.
 
 ---

@@ -301,13 +301,7 @@ Or omit `rag.embedder` (BM25 keyword-only) — or remove the `rag:` block entire
 ### Cannot connect to MCP server
 Verify the endpoint is reachable and the MCP server is running.
 
-Behavior on MCP connection failure depends on the configured **connection strategy**:
-
-| Strategy (YAML `mcp.strategy`) | Behavior when MCP is unavailable |
-|---|---|
-| `noop` (default) | Agent starts with an empty tool catalog and continues without tools; the error is logged |
-| `lazy` | Server returns `HTTP 503` (readiness gate) until MCP connects; `/health` shows `ready: false` |
-| `periodic` | Same as `lazy` — background reconnect loop; requests are held until ready |
+When an `mcp:` block is configured, the server uses a **resilient connection strategy by default** — it connects, retries periodically (~10 s), and reports readiness. While MCP is not yet connected, `GET /health` shows `ready: false` and chat requests return **HTTP 503** (a pre-dispatch readiness gate); once MCP connects, requests are served normally. There is **no YAML key** to change this — an embedding consumer can inject a different `IMcpConnectionStrategy` via `SmartAgentBuilder.withMcpConnectionStrategy(...)` (e.g. a no-op strategy that starts with an empty tool catalog instead of gating).
 
 Since v20.4.0, a mid-run MCP failure surfaces as a loud error via the `IMcpFailureClassifier` instead of silently producing `(no response)`. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#mcp-server-goes-offline-mid-run-and-the-agent-returns-no-response) for details.
 

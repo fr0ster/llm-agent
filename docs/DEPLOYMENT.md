@@ -274,7 +274,7 @@ curl http://localhost:4004/health
 | `ready === true` | `200` | Server is ready; `status` may still be `degraded` (e.g. soft LLM/RAG failure) — clients can proceed |
 | `ready === false` | `503` | MCP is not connected yet (readiness gate); clients should retry |
 
-- `ready` is `false` when MCP is not available and the configured connection strategy has not yet brought it up (`LazyConnectionStrategy` / `PeriodicConnectionStrategy`). With `NoopConnectionStrategy` (default), `ready` is always `true`.
+- `ready` is `false` while the configured MCP connection strategy has not yet connected. With a YAML `mcp:` block the default is a resilient reconnecting strategy (`PeriodicConnectionStrategy`), so `ready` starts `false` and flips to `true` once MCP connects. (A consumer-injected `NoopConnectionStrategy` reports ready immediately and never gates.)
 - `status: 'degraded'` means LLM or RAG health probes returned soft failures but the server is still serving. A `200` with `status: 'degraded'` is normal under transient provider issues.
 - `components.mcp` is an array — one entry per configured MCP server — with `ok: boolean` and an optional `error` string.
 
