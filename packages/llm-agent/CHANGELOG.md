@@ -1,5 +1,23 @@
 # @mcp-abap-adt/llm-agent
 
+## 20.5.0
+
+### Features
+
+- **Per-round tool-loop context strategy — `IToolLoopContextStrategy` (#224).** A consumer-swappable seam for how each tool-loop round forms the executor's context, with four strategies: `LegacyAccumulate` (byte-identical default), `Window` (RAG-less bounded window), `RagRecall` (generic RAG-managed, fail-loud `runId`+counter), and `LegacyTranscript` (one-release resume migration). Threaded via a DI factory (builder + `ctx` + deps); the controller injects `RagRecall`, the server default and the direct `SmartAgent` inject `Window`, a bare agent keeps `LegacyAccumulate`. Both the shared tool-loop and the direct loop now form per-round context via the strategy (+ a `controlTail` for validation reprompts), dropping raw transcript accumulation. Effect on a heavy live run: the outlier prompt dropped from ~1.1M to ~134k tokens and per-round executor context from ~30.7k to ~7.8k.
+- **Controller per-step / per-run execution control — `IStepExecutionControl` + `IRunExecutionControl` (#224).** Two focused ISP seams that give the controller a *time* budget (it previously had only count budgets, so a non-converging plan step could run to the outer HTTP timeout — an executor livelock). `DefaultStepExecutionControl` adds a wall-clock `budgets.perStepTimeoutMs` (explicit `AbortController`+`setTimeout`) plus a prospective `maxToolCalls` gate; the per-step `AbortSignal` is merged (`AbortSignal.any`) into **both** the executor LLM call and MCP `callTool`/`listTools`, so the step is bounded regardless of what consumed the time. A cut is a typed `control-failure` (`'maxToolCalls' | 'step-timeout' | 'control-failure'`) that the planner replans on; the #223 MCP-unavailable fail-loud order is preserved. `IRunExecutionControl` ships as a no-op default (run-level budget deferred). Wired via `BuildAgentDeps` / `IPipelineContext` (no builder change); no injection + no `perStepTimeoutMs` ⇒ byte-identical.
+- **`IAuxiliaryMcpTools` — pipeline-level auxiliary/service MCP tools, first tool `wait` (#225).** A narrow, consumer-swappable seam (`listTools`/`callTool`, **not** `extends IMcpClient`, no `healthCheck`, outside the MCP fail-loud classifier) through which a pipeline contributes stateless service tools into the tool-selection catalog and the `callMcp` bridge — always present, even MCP-less. The default `wait` tool pauses N seconds (clamped to a max, and bounded above by `perStepTimeoutMs` — a wait beyond the step budget is cut → `step-timeout`→replan; an abort propagates and is never mapped to a string). `DefaultAuxiliaryMcpTools`/`makeWaitTool`/`cancelableDelay` live in `@mcp-abap-adt/llm-agent-mcp`; the composition (`resolveAuxDefs`/`assertNoAuxCollision`/`composeAuxiliaryBridge`/`composeAuxiliarySelect`) in `@mcp-abap-adt/llm-agent-server-libs`. Wired via `BuildAgentDeps.auxiliaryMcpTools` / `IPipelineContext.auxiliaryMcpTools`; the controller contributes the default `wait` at `build()`, consumer overrides the whole provider. RAG is deliberately **not** exposed through this seam.
+
+### Config
+
+- **`pipeline.config.budgets.perStepTimeoutMs`** (controller) — optional per-step wall-clock budget in ms. Absent ⇒ time never fires (count-only bound, as before).
+
+### Behavior notes
+
+- The controller default now adds `wait` to its offered tools (the livelock-mitigation point). Restore the prior tool surface by injecting an empty provider: `ctx.auxiliaryMcpTools = new DefaultAuxiliaryMcpTools([])`.
+- **Fail-loud collision:** a controller + MCP deployment whose domain catalog already exposes a tool named `wait` now **throws at build** (`assertNoAuxCollision`) — intentional (better than silently shadowing); remedy: rename the auxiliary tool or inject an empty provider.
+- The guidance for using `wait` (decompose an async `activate` into `activate → wait → verify` as separate plan steps) is a **consumer skill** (skills-RAG, runtime) reaching the controller planner via its existing skills-recall hook — it is NOT shipped in these packages.
+
 ## 20.4.0
 
 ### Fixes
