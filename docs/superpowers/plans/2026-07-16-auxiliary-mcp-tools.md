@@ -912,14 +912,19 @@ git commit -m "feat(server-libs): composeAuxiliarySelect (aux defs always merged
 
 - [ ] **Step 1: Write the failing test**
 
+**IMPORTANT — `buildServerCtx` requires a `scope` argument** (`smart-server.ts:2019`, it reads `scope.parts`). Do NOT call it with no args. Copy the sibling test's two helpers **verbatim** and use them:
+- `fakeScope()` — `step-run-execution-control-di.test.ts:61-76` (returns `{ sessionId, parts: { sessionId, mcpClients: [], toolsRag: undefined, ragRegistry, logger } }`)
+- `callBuildServerCtx(server)` — `step-run-execution-control-di.test.ts:85-103` (stubs `_workers` + `_stepperKnowledgeBackend`, then `server.buildServerCtx(fakeScope())`)
+
+Also copy from that file (verbatim): `MINIMAL_CFG`, and the `InMemoryKnowledgeBackend` + `SessionRequestLogger` imports.
+
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IAuxiliaryMcpTools } from '@mcp-abap-adt/llm-agent';
 import { SmartServer } from '../smart-server.js';
-// Reuse the exact minimal-config + buildServerCtx-cast harness from
-// step-run-execution-control-di.test.ts (same directory). Copy its
-// MINIMAL_CFG and the `_workers`/`_stepperKnowledgeBackend` stubs.
+// + MINIMAL_CFG, fakeScope(), callBuildServerCtx() copied verbatim from
+//   step-run-execution-control-di.test.ts (same directory).
 
 const sentinel: IAuxiliaryMcpTools = {
   async listTools() {
@@ -930,32 +935,18 @@ const sentinel: IAuxiliaryMcpTools = {
   },
 };
 
-test('BuildAgentDeps.auxiliaryMcpTools reaches IPipelineContext', async () => {
+test('(a) YES injection: buildServerCtx ctx carries consumer-injected auxiliaryMcpTools', async () => {
   const server = new SmartServer(MINIMAL_CFG, { auxiliaryMcpTools: sentinel });
-  // stub the same internals the sibling DI test stubs, then call the private
-  // buildServerCtx via cast:
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (server as any)._workers = { build: async () => new Map() };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (server as any)._stepperKnowledgeBackend = new InMemoryKnowledgeBackend();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = await (server as any).buildServerCtx();
+  const ctx = await callBuildServerCtx(server);
   assert.equal(ctx.auxiliaryMcpTools, sentinel);
 });
 
-test('no injection → ctx.auxiliaryMcpTools is undefined (default resolved later in the pipeline)', async () => {
+test('(b) NO injection: ctx.auxiliaryMcpTools is undefined (pipeline resolves its own default)', async () => {
   const server = new SmartServer(MINIMAL_CFG, {});
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (server as any)._workers = { build: async () => new Map() };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (server as any)._stepperKnowledgeBackend = new InMemoryKnowledgeBackend();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = await (server as any).buildServerCtx();
+  const ctx = await callBuildServerCtx(server);
   assert.equal(ctx.auxiliaryMcpTools, undefined);
 });
 ```
-
-(Copy `MINIMAL_CFG` and the `InMemoryKnowledgeBackend` import from `step-run-execution-control-di.test.ts`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -964,7 +955,13 @@ Expected: FAIL — `ctx.auxiliaryMcpTools` is `undefined` even when injected (fi
 
 - [ ] **Step 3: Add the field in all four spots**
 
-In `packages/llm-agent/src/interfaces/pipeline-plugin.ts`, after the `stepExecutionControl?: IStepExecutionControl;` line (import `IAuxiliaryMcpTools` from the barrel if not already available in that file — it is exported alongside `IMcpClient`):
+In `packages/llm-agent/src/interfaces/pipeline-plugin.ts`, add a **direct** sibling type import (NOT via the barrel — this file is itself part of the barrel; a barrel import would be self/cyclic. It already imports siblings directly, e.g. `import type { IMcpClient } from './mcp-client.js';`):
+
+```ts
+import type { IAuxiliaryMcpTools } from './auxiliary-mcp-tools.js';
+```
+
+Then, after the `stepExecutionControl?: IStepExecutionControl;` line, add the field:
 
 ```ts
   /** Consumer-swappable auxiliary/service MCP tools contributed at pipeline
