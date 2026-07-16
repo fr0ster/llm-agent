@@ -224,6 +224,7 @@ SmartServer is stateless by default — place multiple instances behind a load b
 
 - **InMemoryRag** is per-process — if using it, enable sticky sessions on the load balancer.
 - **Qdrant** or other external RAG stores provide shared state across instances — no affinity needed.
+- **MCP connections** are isolated per session by default (v20.6.0+): concurrent tool-using requests each get their own upstream MCP connection, so a single instance handles concurrency safely without responses crossing. If your upstream MCP server caps connections, set `agent.mcpSharedClient: true` and cap concurrency accordingly (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#concurrent-tool-using-requests-cross-responses-one-balloons-one-returns-no-response)).
 
 ### External RAG for shared state
 

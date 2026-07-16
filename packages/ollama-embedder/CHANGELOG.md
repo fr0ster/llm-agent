@@ -1,5 +1,34 @@
 # @mcp-abap-adt/ollama-embedder
 
+## 20.6.0
+
+### Fixed
+
+- **Per-session MCP client isolation for concurrent tool-use (#213, PR #226).**
+  Concurrent MCP-tool-using requests no longer cross responses. Previously every
+  session shared one global MCP client by reference, so concurrent `callTool`
+  invocations on the single connection interleaved — one response ballooned
+  (absorbing both conversations' tool results) while the other returned
+  `(no response)` with near-zero tokens. Each session now gets its own MCP client
+  for tool *execution* (lazy-connects on first call), while tool *selection*
+  still reads the shared, pre-vectorized catalog (no extra embedding work). Same
+  failure class as the LLM `keepAlive` fix (#219), now closed for the MCP client.
+
+### Added
+
+- **`agent.mcpSharedClient` opt-out (default `false`).** Set `true` to reuse one
+  shared MCP client across all sessions (the pre-isolation behavior) when the
+  upstream MCP server permits only a single connection. Isolation applies only to
+  the server-owned YAML `mcp:` path; injected clients (`withMcpClients`,
+  plugin-provided) and an injected `connectMcp` seam stay shared by design.
+
+### Docs
+
+- Documented per-session MCP isolation and `agent.mcpSharedClient` in
+  EXAMPLES.md, a new TROUBLESHOOTING.md entry (concurrent responses crossing),
+  and DEPLOYMENT.md session-affinity. Corrected earlier v20.5.0 doc fabrications
+  (no `mcp.strategy` YAML key; accurate interface signatures in INTEGRATION.md).
+
 ## 20.5.0
 
 ### Features

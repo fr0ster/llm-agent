@@ -508,6 +508,31 @@ agent:
 `strict`: reject invalid `tools` payload with `400 invalid_request_error`.
 `permissive` (default): drop invalid tools and continue.
 
+## Per-session MCP client isolation
+
+```yaml
+agent:
+  mcpSharedClient: false   # default — each session gets its own MCP connection
+```
+
+By default, when the server owns the MCP connection (the YAML `mcp:` block, no
+injected clients or `connectMcp` seam), **each session gets its own MCP client**
+for tool execution. Tool *selection* still reads the shared, pre-vectorized tool
+catalog, so isolation costs no extra embedding work — only a per-session upstream
+connection that lazily connects on the first tool call.
+
+- `mcpSharedClient: false` (default) — per-session isolation. Concurrent
+  tool-using requests never share one MCP connection, so their tool-call
+  responses cannot cross (the fix for the intermittent `(no response)` /
+  ballooned-token symptom under concurrency).
+- `mcpSharedClient: true` — reuse one shared MCP client across all sessions
+  (the pre-isolation behavior). Choose this only when the upstream MCP server
+  cannot tolerate more than one connection.
+
+Isolation applies **only** to the server-owned YAML `mcp:` path. Ready-client
+sources (`withMcpClients`, plugin-provided clients) and an injected `connectMcp`
+seam are consumer/plugin-owned and stay shared regardless of this flag.
+
 ## Test doubles for consumer integration tests
 
 ```ts

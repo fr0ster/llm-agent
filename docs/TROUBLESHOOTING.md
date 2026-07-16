@@ -272,6 +272,16 @@ The default classifier (`IMcpFailureClassifier`) is defined in `packages/llm-age
 
 ---
 
+### Concurrent tool-using requests cross responses (one balloons, one returns `(no response)`)
+
+**Symptom.** Two or more MCP-tool-using requests sent concurrently (distinct sessions — e.g. cookieless clients) interfere: one response absorbs both conversations' tool results and balloons in token count, while the other returns `(no response)` with near-zero tokens. Sequential requests are always correct; only concurrency triggers it.
+
+**Cause.** Before v20.6.0, every session shared **one** global MCP client by reference (the same failure class as the LLM `keepAlive` issue #219, but for the MCP client). Concurrent `callTool` invocations on the single shared connection interleave and their responses cross.
+
+**Fix.** Upgrade to **v20.6.0 or later** — the server now gives each session its own MCP client for tool execution by default (`agent.mcpSharedClient: false`). If you deliberately need the old shared-connection behavior (e.g. an upstream MCP server that permits only one connection), set `agent.mcpSharedClient: true` and serialize concurrent traffic upstream. Isolation applies only to the server-owned YAML `mcp:` path; injected clients / a `connectMcp` seam stay shared by design (they are the consumer's single provisioning point).
+
+---
+
 ### Coordinator-bearing pipeline stays inactive
 
 **Symptom.** `coordinator_configured` event appears in `smart-server.log` at startup. Live requests show no `coordinator_plan` / `coordinator_step_*` events, but `tool-loop iteration 1` warnings do. Response content looks like a normal tool-loop reply.
