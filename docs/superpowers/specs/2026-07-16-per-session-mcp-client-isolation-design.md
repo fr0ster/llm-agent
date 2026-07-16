@@ -80,10 +80,20 @@ behavior: one upstream connection, no concurrency isolation). Absent/`false` →
 ## 3. Components & touchpoints
 
 - `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts` — `buildSessionLifecycle`
-  gains (a) a `buildPerSessionMcpClients: () => IMcpClient[]` closure (fresh un-connected wrappers
-  from the resolved `mcp:` config + the request-headers strategy) and (b) the `mcpSharedClient`
-  flag. Its factory becomes
-  `mcpClientFactory: (identity) => mcpSharedClient ? opts.mcpClients : buildPerSessionMcpClients()`.
+  gains (a) a `buildPerSessionMcpClients: () => { clients: IMcpClient[]; close: () => Promise<void> }`
+  closure (fresh un-connected wrappers from the resolved `mcp:` config + the request-headers
+  strategy) and (b) the `mcpSharedClient` flag. `mcpClientFactory(identity)` captures the per-session
+  `close` and returns the clients:
+  ```ts
+  const closeBySession = new Map<string, () => Promise<void>>();
+  mcpClientFactory: (identity) => {
+    if (mcpSharedClient) return opts.mcpClients;          // shared: disposed globally, not tracked
+    const built = buildPerSessionMcpClients();            // { clients, close }
+    closeBySession.set(identity.sessionId, built.close);
+    return built.clients;
+  }
+  // onDispose(sessionId): const c = closeBySession.get(sessionId); if (c) { await c(); closeBySession.delete(sessionId); }
+  ```
 - A small helper (new focused module, e.g. `mcp/build-session-mcp-clients.ts`) that builds a fresh
   set of wrappers from the resolved MCP configs and returns **`{ clients: IMcpClient[]; close:
   () => Promise<void> }`** — mirroring how the startup path prepares wrappers (`prepareMcpConfigs`
