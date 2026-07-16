@@ -1747,13 +1747,13 @@ Controls how the tool-loop builds and trims the message context across iteration
 ```ts
 interface IToolLoopContextStrategy {
   /** Record a completed tool-loop round (called after each iteration). */
-  record(round: ToolRound, options?: RecordOptions): void;
+  record(round: ToolRound, options?: CallOptions): Promise<void>;
 
   /**
    * Form the message list for the next LLM call.
-   * @param base  Full raw messages (system + history + all tool rounds so far)
+   * @param base  The prefix (system + history) and an optional query text.
    */
-  form(base: ToolLoopContextBase, options?: FormOptions): Message[];
+  form(base: ToolLoopContextBase, options?: CallOptions): Promise<Message[]>;
 
   /** Serialize strategy state for durable suspend/resume. */
   snapshot(): SerializableStrategyState;
@@ -1763,7 +1763,7 @@ interface IToolLoopContextStrategy {
 }
 ```
 
-Built-in strategies (injected via `BuildAgentDeps.toolLoopContextStrategy`):
+Built-in strategies (injected via `BuildAgentDeps.toolLoopContextStrategyFactory` — a factory `(deps) => IToolLoopContextStrategy`):
 
 | Strategy | Use case | Behavior |
 |---|---|---|
@@ -1774,26 +1774,37 @@ Built-in strategies (injected via `BuildAgentDeps.toolLoopContextStrategy`):
 ### Custom strategy example
 
 ```ts
-import type { IToolLoopContextStrategy, ToolRound, ToolLoopContextBase, Message } from '@mcp-abap-adt/llm-agent';
+import type {
+  IToolLoopContextStrategy, ToolRound, ToolLoopContextBase, Message,
+  SerializableStrategyState, CallOptions,
+} from '@mcp-abap-adt/llm-agent';
 
-class DropOldToolResultsStrategy implements IToolLoopContextStrategy {
-  private readonly maxRounds: number;
+class LastNRoundsStrategy implements IToolLoopContextStrategy {
   private rounds: ToolRound[] = [];
 
-  constructor(maxRounds = 3) { this.maxRounds = maxRounds; }
+  constructor(private readonly maxRounds = 3) {}
 
-  record(round: ToolRound): void {
+  async record(round: ToolRound, _options?: CallOptions): Promise<void> {
     this.rounds.push(round);
     if (this.rounds.length > this.maxRounds) this.rounds.shift();
   }
 
-  form(base: ToolLoopContextBase): Message[] {
-    // Keep system + user message, then only the last maxRounds tool rounds
-    return [...base.preamble, ...this.rounds.flatMap((r) => r.messages)];
+  async form(base: ToolLoopContextBase, _options?: CallOptions): Promise<Message[]> {
+    // prefix (system + history) + the last maxRounds rounds; each round is the
+    // assistant turn (`assistant`) followed by its tool results (`results`).
+    return [
+      ...base.prefix,
+      ...this.rounds.flatMap((r) => [r.assistant, ...r.results]),
+    ];
   }
 
-  snapshot() { return { rounds: this.rounds }; }
-  restore(state: any) { this.rounds = state.rounds ?? []; }
+  // state must be JSON-serializable; `version` is required.
+  snapshot(): SerializableStrategyState {
+    return { version: 1, rounds: this.rounds } as unknown as SerializableStrategyState;
+  }
+  restore(state: SerializableStrategyState): void {
+    this.rounds = ((state as { rounds?: ToolRound[] }).rounds) ?? [];
+  }
 }
 ```
 
@@ -1818,11 +1829,13 @@ interface IStepBudget {
   /** AbortSignal that fires when perStepTimeoutMs elapses. */
   readonly signal: AbortSignal;
 
-  /** Returns false when the round limit for this step is exceeded. */
-  shouldContinueRound(state: StepRoundState): boolean;
+  /** Decide whether another round may start. `{ continue: false, reason }`
+   *  (e.g. `reason: 'step-timeout'`) stops the step and triggers a replan. */
+  shouldContinueRound(state: StepRoundState): StepControlDecision;
 
-  /** Returns false when the tool-call cap for this step is exceeded. */
-  canExecuteTool(toolName: string): boolean;
+  /** Decide whether another tool call may run this round (prospective count +
+   *  time). `{ continue: false, reason }` cuts the step. */
+  canExecuteTool(state: StepRoundState): StepControlDecision;
 
   /** Release the timer. Call this when the step finishes (success or failure). */
   dispose(): void;
@@ -1858,19 +1871,23 @@ A thin tool-list + call interface for in-process tools offered to the controller
 
 ```ts
 interface IAuxiliaryMcpTools {
-  listTools(): McpTool[];
-  callTool(name: string, args: Record<string, unknown>): Promise<McpToolResult>;
+  listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>>;
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    options?: CallOptions,
+  ): Promise<Result<McpToolResult, McpError>>;
 }
 ```
 
 The default implementation (`DefaultAuxiliaryMcpTools`) ships with a single built-in tool:
 
-- **`wait`** — lets the executor pause a configurable number of milliseconds before retrying a tool call. Useful when a tool returns a "not ready" result and the executor should poll.
+- **`wait`** — pauses a configurable number of **seconds** (input `{ seconds }`, clamped to a max, and bounded by `perStepTimeoutMs`) before continuing. Intended for an asynchronous create/activate step: pause, then verify, instead of polling in a tight loop.
 
 ### Overriding auxiliary tools
 
 ```ts
-import { DefaultAuxiliaryMcpTools } from '@mcp-abap-adt/llm-agent-server-libs';
+import { DefaultAuxiliaryMcpTools } from '@mcp-abap-adt/llm-agent-mcp';
 
 // Remove all auxiliary tools (e.g. if your domain has a tool named 'wait'):
 const noAux = new DefaultAuxiliaryMcpTools([]);
