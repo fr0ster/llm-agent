@@ -32,6 +32,7 @@ import type {
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  type IAuxiliaryMcpTools,
   type IMcpFailureClassifier,
   type IRag,
   type IRunExecutionControl,
@@ -364,6 +365,9 @@ export interface BuildAgentDeps {
    *  Threaded onto `IPipelineContext.runExecutionControl`; the controller pipeline
    *  falls back to `NoopRunExecutionControl` when absent. */
   runExecutionControl?: IRunExecutionControl;
+  /** Threaded onto `IPipelineContext.auxiliaryMcpTools`; the pipeline resolves
+   *  its own default (e.g. `wait`) when absent. */
+  auxiliaryMcpTools?: IAuxiliaryMcpTools;
 }
 
 /**
@@ -746,6 +750,7 @@ export class SmartServer {
   private readonly _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
   private readonly _stepExecutionControl?: IStepExecutionControl;
   private readonly _runExecutionControl?: IRunExecutionControl;
+  private readonly _auxiliaryMcpTools?: IAuxiliaryMcpTools;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -781,6 +786,7 @@ export class SmartServer {
     this._toolLoopContextStrategyFactory = deps.toolLoopContextStrategyFactory;
     this._stepExecutionControl = deps.stepExecutionControl;
     this._runExecutionControl = deps.runExecutionControl;
+    this._auxiliaryMcpTools = deps.auxiliaryMcpTools;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -2096,6 +2102,9 @@ export class SmartServer {
         : {}),
       ...(this._runExecutionControl
         ? { runExecutionControl: this._runExecutionControl }
+        : {}),
+      ...(this._auxiliaryMcpTools
+        ? { auxiliaryMcpTools: this._auxiliaryMcpTools }
         : {}),
       subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
         name: s.name,

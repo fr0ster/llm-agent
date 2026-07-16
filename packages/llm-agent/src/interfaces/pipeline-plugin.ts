@@ -5,6 +5,7 @@
  * so these contracts never import server/libs types.
  */
 import type { ILogger } from '../logger/types.js';
+import type { IAuxiliaryMcpTools } from './auxiliary-mcp-tools.js';
 import type { ISmartAgent } from './builder.js';
 import type { IKnowledgeRagHandle, IToolsRagHandle } from './knowledge-rag.js';
 import type { ILlm } from './llm.js';
@@ -66,6 +67,9 @@ export interface IPipelineContext {
    *  Injected via `BuildAgentDeps`; falls back to `NoopRunExecutionControl` in the
    *  controller pipeline when absent. No-op semantics when undefined. */
   runExecutionControl?: IRunExecutionControl;
+  /** Consumer-swappable auxiliary/service MCP tools contributed at pipeline
+   *  creation (e.g. `wait`). Undefined → the pipeline supplies its own default. */
+  auxiliaryMcpTools?: IAuxiliaryMcpTools;
 }
 
 /** A pipeline plugin = the implementation of an agent variant. It names itself,
