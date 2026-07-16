@@ -57,13 +57,6 @@ export function assertNoAuxCollision(
   }
 }
 
-/**
- * Wrap the domain `callMcp` bridge so auxiliary tools are dispatched FIRST
- * (aux-first; collisions were rejected at build). Auxiliary results are mapped
- * to the string bridge contract: ok → content text / JSON; !ok → error.message
- * (tool-level, the domain classifier / fail-loud is NOT run). An abort rejection
- * from `auxCallTool` propagates unchanged (see the controller's abort handling).
- */
 type SelectTools = (
   query: string,
   k?: number,
@@ -90,6 +83,13 @@ export function composeAuxiliarySelect(
   };
 }
 
+/**
+ * Wrap the domain `callMcp` bridge so auxiliary tools are dispatched FIRST
+ * (aux-first; collisions were rejected at build). Auxiliary results are mapped
+ * to the string bridge contract: ok → content text / JSON; !ok → error.message
+ * (tool-level, the domain classifier / fail-loud is NOT run). An abort rejection
+ * from `auxCallTool` propagates unchanged (see the controller's abort handling).
+ */
 export function composeAuxiliaryBridge(
   auxDefs: McpTool[],
   auxCallTool: AuxCallTool,
