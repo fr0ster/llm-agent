@@ -6,18 +6,6 @@ import {
 import type { SmartServerMcpConfig } from '../smart-server.js';
 
 /**
- * Build a FRESH, UN-CONNECTED set of MCP client wrappers from the resolved
- * `mcp:` config — one call per session so concurrent requests never share an
- * MCP connection (fixes #213). Mirrors `connectMcpClientsFromConfig` but does
- * NOT call `wrapper.connect()` (each wrapper lazily connects on its first
- * `callTool`/`listTools`) and does NOT vectorize (the caller reuses the shared
- * global tool catalog via the builder's provided-clients path).
- *
- * Returns `{ clients, close }`: `close()` disconnects the wrappers this helper
- * created — the only place that owns them. `IMcpClient`/`McpClientAdapter` do
- * not expose `disconnect`; the wrapper does.
- */
-/**
  * Decide whether MCP clients should be isolated per session (#213). Per-session
  * isolation applies ONLY to the YAML `mcp:` path — the connection the server
  * itself owns. Ready-client sources (`_deps.mcpClients` / `cfg.mcpClients` /
@@ -48,6 +36,18 @@ export function serverOwnsMcpConnection(o: {
   return !o.hasReadyClients && o.hasMcpConfig && !o.mcpSeamInjected;
 }
 
+/**
+ * Build a FRESH, UN-CONNECTED set of MCP client wrappers from the resolved
+ * `mcp:` config — one call per session so concurrent requests never share an
+ * MCP connection (fixes #213). Mirrors `connectMcpClientsFromConfig` but does
+ * NOT call `wrapper.connect()` (each wrapper lazily connects on its first
+ * `callTool`/`listTools`) and does NOT vectorize (the caller reuses the shared
+ * global tool catalog via the builder's provided-clients path).
+ *
+ * Returns `{ clients, close }`: `close()` disconnects the wrappers this helper
+ * created — the only place that owns them. `IMcpClient`/`McpClientAdapter` do
+ * not expose `disconnect`; the wrapper does.
+ */
 export function buildSessionMcpClients(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
 ): { clients: IMcpClient[]; close: () => Promise<void> } {
