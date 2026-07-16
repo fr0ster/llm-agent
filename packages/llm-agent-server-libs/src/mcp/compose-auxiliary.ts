@@ -1,8 +1,24 @@
 import type {
+  CallOptions,
   IAuxiliaryMcpTools,
   IToolsRagHandle,
+  McpError,
   McpTool,
+  McpToolResult,
+  Result,
 } from '@mcp-abap-adt/llm-agent';
+
+type CallMcp = (
+  name: string,
+  args: unknown,
+  signal?: AbortSignal,
+) => Promise<string>;
+
+type AuxCallTool = (
+  name: string,
+  args: Record<string, unknown>,
+  options?: CallOptions,
+) => Promise<Result<McpToolResult, McpError>>;
 
 /**
  * Resolve the auxiliary tool defs ONCE at build. `!ok` is a real bug in the
@@ -38,4 +54,34 @@ export function assertNoAuxCollision(
       );
     }
   }
+}
+
+/**
+ * Wrap the domain `callMcp` bridge so auxiliary tools are dispatched FIRST
+ * (aux-first; collisions were rejected at build). Auxiliary results are mapped
+ * to the string bridge contract: ok → content text / JSON; !ok → error.message
+ * (tool-level, the domain classifier / fail-loud is NOT run). An abort rejection
+ * from `auxCallTool` propagates unchanged (see the controller's abort handling).
+ */
+export function composeAuxiliaryBridge(
+  auxDefs: McpTool[],
+  auxCallTool: AuxCallTool,
+  domainBridge: CallMcp,
+): CallMcp {
+  const auxNames = new Set(auxDefs.map((d) => d.name));
+  return async (name, args, signal) => {
+    if (!auxNames.has(name)) return domainBridge(name, args, signal);
+    const safeArgs =
+      args != null && typeof args === 'object' && !Array.isArray(args)
+        ? (args as Record<string, unknown>)
+        : {};
+    const result = await auxCallTool(
+      name,
+      safeArgs,
+      signal ? { signal } : undefined,
+    );
+    if (!result.ok) return result.error.message;
+    const { content } = result.value;
+    return typeof content === 'string' ? content : JSON.stringify(content);
+  };
 }

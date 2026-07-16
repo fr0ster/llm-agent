@@ -4,9 +4,16 @@ import type {
   IAuxiliaryMcpTools,
   IToolsRagHandle,
   LlmTool,
+  McpError,
   McpTool,
+  McpToolResult,
+  Result,
 } from '@mcp-abap-adt/llm-agent';
-import { assertNoAuxCollision, resolveAuxDefs } from '../compose-auxiliary.js';
+import {
+  assertNoAuxCollision,
+  composeAuxiliaryBridge,
+  resolveAuxDefs,
+} from '../compose-auxiliary.js';
 
 const waitDef: McpTool = { name: 'wait', description: 'w', inputSchema: {} };
 
@@ -68,4 +75,47 @@ test('assertNoAuxCollision throws when a domain tool shares the name', () => {
 
 test('assertNoAuxCollision passes when lookup returns undefined (EMPTY/no-domain)', () => {
   assert.doesNotThrow(() => assertNoAuxCollision([waitDef], emptyToolsRag));
+});
+
+test('composeAuxiliaryBridge: aux name maps ok content to string; domain untouched', async () => {
+  let domainCalls = 0;
+  const domain = async () => {
+    domainCalls++;
+    return 'DOMAIN';
+  };
+  const auxCall = async (): Promise<Result<McpToolResult, McpError>> => ({
+    ok: true,
+    value: { content: 'Waited 1s' },
+  });
+  const bridge = composeAuxiliaryBridge([waitDef], auxCall, domain);
+  assert.equal(await bridge('wait', { seconds: 1 }), 'Waited 1s');
+  assert.equal(domainCalls, 0);
+  assert.equal(await bridge('ReadTable', {}), 'DOMAIN');
+  assert.equal(domainCalls, 1);
+});
+
+test('composeAuxiliaryBridge: aux ok object content is JSON-stringified', async () => {
+  const auxCall = async (): Promise<Result<McpToolResult, McpError>> => ({
+    ok: true,
+    value: { content: { a: 1 } },
+  });
+  const bridge = composeAuxiliaryBridge([waitDef], auxCall, async () => 'D');
+  assert.equal(await bridge('wait', {}), JSON.stringify({ a: 1 }));
+});
+
+test('composeAuxiliaryBridge: aux !ok maps to error.message (no throw, no domain)', async () => {
+  const auxCall = async (): Promise<Result<McpToolResult, McpError>> => ({
+    ok: false,
+    error: { message: 'bad args' } as McpError,
+  });
+  const bridge = composeAuxiliaryBridge([waitDef], auxCall, async () => 'D');
+  assert.equal(await bridge('wait', {}), 'bad args');
+});
+
+test('composeAuxiliaryBridge: an aux rejection (abort) propagates, not mapped', async () => {
+  const auxCall = async (): Promise<Result<McpToolResult, McpError>> => {
+    throw new DOMException('Aborted', 'AbortError');
+  };
+  const bridge = composeAuxiliaryBridge([waitDef], auxCall, async () => 'D');
+  await assert.rejects(bridge('wait', {}));
 });
