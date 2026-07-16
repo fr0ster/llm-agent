@@ -439,6 +439,10 @@ import {
   resolveToolSelectionStrategy,
 } from './config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
+import {
+  buildSessionMcpClients,
+  shouldIsolateMcpPerSession,
+} from './mcp/build-session-mcp-clients.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
@@ -1159,6 +1163,11 @@ export class SmartServer {
     // → builder short-circuits → no YAML connect), NOT the YAML connect branch. So
     // gate on presence (`!== undefined`), not length.
     const hasReadyClients = diOrPluginMcpClients !== undefined;
+    // Per-session MCP isolation (#213): the server itself owns ONLY the YAML
+    // `mcp:` connection — that is the path eligible for per-session client
+    // isolation. Ready-client sources (deps/cfg/plugin) are consumer/plugin
+    // owned and stay shared, so `mcpFromYaml` is false whenever they are present.
+    const mcpFromYaml = !hasReadyClients && !!this.cfg.mcp;
     // YAML `mcp:` with NO ready clients AND NO injected seam → keep the legacy
     // builder-owned connect so the builder VECTORIZES the tools (the ToolSelect
     // ranking contract). `_sharedMcpClients` + the tools-RAG handle are harvested
@@ -1322,6 +1331,17 @@ export class SmartServer {
       maxSessions: sessionCfg.maxSessions ?? 1000,
       cookieName: sessionCfg.cookieName ?? 'sid',
       mcpClients: globalMcpClients,
+      // Per-session MCP isolation (#213): only for the YAML `mcp:` path (the one
+      // the server itself connects). Ready-client sources (deps/cfg/plugin) are
+      // consumer/plugin-owned and stay shared. `agent.mcpSharedClient: true`
+      // opts the YAML path back out to a shared client.
+      mcpSharedClient: this.cfg.agent?.mcpSharedClient,
+      buildPerSessionMcpClients: shouldIsolateMcpPerSession({
+        mcpFromYaml,
+        mcpSharedClient: this.cfg.agent?.mcpSharedClient,
+      })
+        ? () => buildSessionMcpClients(this.cfg.mcp)
+        : undefined,
       // `this._toolsRag` === the `toolsRag` local captured in start(); reference
       // the field as the single source of truth for the tools store.
       toolsRag: this._toolsRag,

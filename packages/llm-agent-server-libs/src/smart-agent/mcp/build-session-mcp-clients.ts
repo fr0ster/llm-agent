@@ -17,6 +17,20 @@ import type { SmartServerMcpConfig } from '../smart-server.js';
  * created — the only place that owns them. `IMcpClient`/`McpClientAdapter` do
  * not expose `disconnect`; the wrapper does.
  */
+/**
+ * Decide whether MCP clients should be isolated per session (#213). Per-session
+ * isolation applies ONLY to the YAML `mcp:` path — the connection the server
+ * itself owns. Ready-client sources (`_deps.mcpClients` / `cfg.mcpClients` /
+ * plugin clients) are consumer/plugin-owned and stay SHARED (`mcpFromYaml`
+ * false). `agent.mcpSharedClient: true` opts the YAML path back out to shared.
+ */
+export function shouldIsolateMcpPerSession(o: {
+  mcpFromYaml: boolean;
+  mcpSharedClient?: boolean;
+}): boolean {
+  return o.mcpFromYaml && !o.mcpSharedClient;
+}
+
 export function buildSessionMcpClients(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
 ): { clients: IMcpClient[]; close: () => Promise<void> } {
