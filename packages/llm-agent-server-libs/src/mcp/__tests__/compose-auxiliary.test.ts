@@ -127,17 +127,25 @@ test('composeAuxiliarySelect merges aux defs into domain results (deduped)', asy
   ];
   const select = composeAuxiliarySelect([waitDef], domain);
   const out = await select('do something', 5);
-  assert.deepEqual(out.map((t) => t.name), ['ReadTable', 'wait']);
+  assert.deepEqual(
+    out.map((t) => t.name),
+    ['ReadTable', 'wait'],
+  );
 });
 
 test('composeAuxiliarySelect: empty domain (MCP-less) yields exactly the aux defs', async () => {
   const select = composeAuxiliarySelect([waitDef], async () => []);
   const out = await select('x');
-  assert.deepEqual(out.map((t) => t.name), ['wait']);
+  assert.deepEqual(
+    out.map((t) => t.name),
+    ['wait'],
+  );
 });
 
 test('composeAuxiliarySelect dedupes if a domain tool already has the aux name', async () => {
-  const domain = async () => [{ name: 'wait', description: 'domain', inputSchema: {} }];
+  const domain = async () => [
+    { name: 'wait', description: 'domain', inputSchema: {} },
+  ];
   const select = composeAuxiliarySelect([waitDef], domain);
   const out = await select('x');
   assert.equal(out.filter((t) => t.name === 'wait').length, 1);
@@ -156,7 +164,11 @@ test('wrappers do not call aux.listTools at runtime (cached defs)', async () => 
     },
   };
   const select = composeAuxiliarySelect([waitDef], async () => []);
-  const bridge = composeAuxiliaryBridge([waitDef], spyAux.callTool.bind(spyAux), async () => 'D');
+  const bridge = composeAuxiliaryBridge(
+    [waitDef],
+    spyAux.callTool.bind(spyAux),
+    async () => 'D',
+  );
   await select('x');
   await select('y');
   assert.equal(await bridge('wait', {}), 'W');

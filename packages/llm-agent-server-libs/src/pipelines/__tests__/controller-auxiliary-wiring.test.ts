@@ -30,8 +30,8 @@ async function buildAndCaptureControllerDeps(
   ControllerFactory.prototype.build = async function (cfg, deps, kind) {
     const d = deps as Record<string, unknown>;
     captured = {
-      callMcp: d['callMcp'] as CapturedDeps['callMcp'],
-      selectTools: d['selectTools'] as CapturedDeps['selectTools'],
+      callMcp: d.callMcp as CapturedDeps['callMcp'],
+      selectTools: d.selectTools as CapturedDeps['selectTools'],
     };
     return orig.call(this, cfg, deps, kind);
   } as typeof orig;
