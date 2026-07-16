@@ -63,9 +63,14 @@ behavior: one upstream connection, no concurrency isolation). Absent/`false` →
 
 ### 2.2 What is NOT changed
 
-- **Consumer-injected clients** (`BuildAgentDeps.mcpClients`) are shared by the consumer's
-  deliberate choice — the per-session default applies **only** to server-built-from-config
-  clients and never overrides an injection.
+- **Per-session isolation applies ONLY to the YAML `mcp:`-config path** — the one the server itself
+  connects (the branch the builder owns). **All "ready-client" sources are consumer/plugin-owned and
+  stay SHARED** across sessions, unchanged: `BuildAgentDeps.mcpClients` (the embeddable seam),
+  `cfg.mcpClients` (DI), and plugin-provided `mcpClients` (resolved at `smart-server.ts` ~1121 as
+  `this._deps.mcpClients ?? this.cfg.mcpClients ?? plugins.mcpClients`). The server does not own
+  these instances and must not clone/dispose them; the per-session factory is used only when clients
+  are derived from the YAML `mcp:` block. `agent.mcpSharedClient` therefore only affects the YAML
+  path (it is a no-op when a ready-client source is present, since those are always shared).
 - **The global startup connection stays** — it vectorizes the tool catalog at startup, backs the
   readiness/`/health` gate, and serves the embedded `buildAgent` path. Per-session connections
   are additional.
@@ -80,14 +85,18 @@ behavior: one upstream connection, no concurrency isolation). Absent/`false` →
   flag. Its factory becomes
   `mcpClientFactory: (identity) => mcpSharedClient ? opts.mcpClients : buildPerSessionMcpClients()`.
 - A small helper (new focused module, e.g. `mcp/build-session-mcp-clients.ts`) that builds a fresh
-  `McpClientAdapter(new MCPClientWrapper(cfg))[]` from the resolved MCP configs — mirroring how the
-  startup path prepares wrappers (`prepareMcpConfigs` / `connectMcpClientsFromConfig`) but WITHOUT
-  connecting (lazy) and WITHOUT vectorizing.
+  set of wrappers from the resolved MCP configs and returns **`{ clients: IMcpClient[]; close:
+  () => Promise<void> }`** — mirroring how the startup path prepares wrappers (`prepareMcpConfigs`
+  / `connectMcpClientsFromConfig`) but WITHOUT connecting (lazy) and WITHOUT vectorizing. **`close`
+  is essential**: `IMcpClient` (and `McpClientAdapter`) expose **no** `disconnect`/`dispose` —
+  `disconnect()` lives on the internal `MCPClientWrapper`. The helper constructs the
+  `MCPClientWrapper`s itself, so it captures them and its returned `close()` calls
+  `wrapper.disconnect()` on each. Callers dispose via `close`, never by casting an `IMcpClient`.
 - **Disposal stays in `server-libs`** (no `llm-agent-libs` change): the factory closure records the
-  clients it builds in a `Map<sessionId, IMcpClient[]>`, and the existing
-  `SessionLifecycleOptions.onDispose(sessionId)` hook — already run during `SessionGraph.dispose()`
-  — disconnects and removes them. `SessionGraphFactory.build` already passes the identity to the
-  factory; no change to `session-graph-factory.ts` is required.
+  per-session **`close` fn** (not the raw clients) in a `Map<sessionId, () => Promise<void>>`, and
+  the existing `SessionLifecycleOptions.onDispose(sessionId)` hook — already run during
+  `SessionGraph.dispose()` — invokes and removes it. `SessionGraphFactory.build` already passes the
+  identity to the factory; no change to `session-graph-factory.ts` is required.
 - `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts` — `resolveAgentSection`
   reads `agent.mcpSharedClient` (boolean, default `false`).
 - `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — the `buildSessionLifecycle`
@@ -103,13 +112,14 @@ behavior: one upstream connection, no concurrency isolation). Absent/`false` →
 Per-session clients are owned by the session. The builder's provided-clients path deliberately has
 "no per-client closeFns" (the provider owns disposal), so **we** own it in `server-libs`:
 
-- The factory closure records each session's fresh clients in a `Map<sessionId, IMcpClient[]>`
-  keyed by `identity.sessionId`. The existing `onDispose(sessionId)` hook — already invoked during
-  `SessionGraph.dispose()` (idle-TTL eviction, `maxSessions` LRU drain, `disposeAll`/`invalidateAll`)
-  — calls `disconnect()` on each and removes the map entry. (The server already wires `onDispose`
-  to close the pipeline instance; per-session MCP disconnect is added alongside.)
-- Lazy connect means a session that made no tool call has nothing to close (`disconnect()` on an
-  un-connected wrapper is idempotent). No connection leak.
+- The factory closure records each session's per-session **`close` fn** (returned by the helper) in
+  a `Map<sessionId, () => Promise<void>>` keyed by `identity.sessionId`. The existing
+  `onDispose(sessionId)` hook — already invoked during `SessionGraph.dispose()` (idle-TTL eviction,
+  `maxSessions` LRU drain, `disposeAll`/`invalidateAll`) — invokes and removes it. (The server
+  already wires `onDispose` to close the pipeline instance; the per-session MCP `close` is added
+  alongside.) `close` disconnects the `MCPClientWrapper`s the helper built.
+- Lazy connect means a session that made no tool call has nothing to close (`wrapper.disconnect()`
+  on an un-connected wrapper is idempotent). No connection leak.
 - The `agent.mcpSharedClient: true` path keeps today's disposal (the global clients are disposed at
   server shutdown, not per session).
 
@@ -139,7 +149,12 @@ Per-session clients are owned by the session. The builder's provided-clients pat
 - **Disposal:** evicting/disposing a session `disconnect()`s its per-session clients (spy asserts
   disconnect called; un-connected session → no-op, no throw).
 - **Backward-compat:** `agent.mcpSharedClient: true` reproduces the exact current wiring (factory
-  returns `opts.mcpClients`); an injected `BuildAgentDeps.mcpClients` is still shared.
+  returns `opts.mcpClients`); a ready-client source (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`,
+  or plugin clients) stays **shared** across sessions even with per-session default on (the factory
+  is not invoked for ready clients).
+- **Disposal type-safety:** the per-session helper returns `{ clients, close }` and `close`
+  disconnects the underlying `MCPClientWrapper`s — assert no code path calls a non-existent
+  `disconnect`/`dispose` on an `IMcpClient` (a compile check + a spy on the wrapper).
 - **Live acceptance:** the consumer's exact repro — 2 concurrent tool-use `POST` on trial MCP
   :9001 — returns two real distinct answers, `0` `(no response)`, no ballooning.
 
