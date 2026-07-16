@@ -7,6 +7,7 @@ export {
   type StopReason,
 } from './agent-contracts.js';
 export type { HistoryEntry, IContextAssembler } from './assembler.js';
+export type { IAuxiliaryMcpTools } from './auxiliary-mcp-tools.js';
 export type {
   ISmartAgent,
   SmartAgentHandle,

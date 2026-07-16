@@ -1,4 +1,11 @@
 export { McpClientAdapter } from './adapter.js';
+export { cancelableDelay } from './auxiliary/cancelable-delay.js';
+export { DefaultAuxiliaryMcpTools } from './auxiliary/default-auxiliary-mcp-tools.js';
+export type { AuxToolEntry } from './auxiliary/wait-tool.js';
+export {
+  DEFAULT_WAIT_MAX_SECONDS,
+  makeWaitTool,
+} from './auxiliary/wait-tool.js';
 export {
   type MCPClientConfig,
   MCPClientWrapper,

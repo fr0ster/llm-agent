@@ -8,9 +8,19 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { RagRecallContextStrategy } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  DefaultAuxiliaryMcpTools,
+  makeWaitTool,
+} from '@mcp-abap-adt/llm-agent-mcp';
+import {
   ControllerFactory,
   type ControllerFactoryDeps,
 } from '../factories/controller-factory.js';
+import {
+  assertNoAuxCollision,
+  composeAuxiliaryBridge,
+  composeAuxiliarySelect,
+  resolveAuxDefs,
+} from '../mcp/compose-auxiliary.js';
 import { DefaultStepExecutionControl } from '../smart-agent/controller/default-step-execution-control.js';
 import { writeArtifact } from '../smart-agent/controller/memorizer.js';
 import { NoopRunExecutionControl } from '../smart-agent/controller/noop-run-execution-control.js';
@@ -133,14 +143,30 @@ export class ControllerPipelinePlugin
     // an otherwise-tool-level code to 'unavailable') would be lost for the controller.
     const mcpBridge = buildMcpBridge(mcpClients, ctx.mcpFailureClassifier);
 
+    // Auxiliary/service tools contributed at pipeline creation (default: wait).
+    // Consumer overrides the whole provider via ctx.auxiliaryMcpTools.
+    const aux =
+      ctx.auxiliaryMcpTools ?? new DefaultAuxiliaryMcpTools([makeWaitTool()]);
+    const auxDefs = await resolveAuxDefs(aux); // single build-time listTools()
+    assertNoAuxCollision(auxDefs, ctx.toolsRag); // fail-loud on name collision
+    const auxCallMcp = composeAuxiliaryBridge(
+      auxDefs,
+      aux.callTool.bind(aux),
+      mcpBridge,
+    );
+
     // INTERNAL tools reach the executor/planner via SEMANTIC selection over the
     // vectorized MCP catalog (toolsRag) — relevant top-K per query, not a full
     // dump. The server vectorizes every MCP `tool:<name>` into toolsRag at
     // startup. When no toolsRag is wired (MCP-less / no embedder) selection
     // yields [] and the loop runs with external tools only.
     const toolsRag = ctx.toolsRag;
-    const selectTools = (query: string, k?: number, options?: CallOptions) =>
-      toolsRag ? toolsRag.query(query, k, options) : Promise.resolve([]);
+    const baseSelectTools = (
+      query: string,
+      k?: number,
+      options?: CallOptions,
+    ) => (toolsRag ? toolsRag.query(query, k, options) : Promise.resolve([]));
+    const selectTools = composeAuxiliarySelect(auxDefs, baseSelectTools);
 
     // Controller-OWN skills recall hook (B4). The controller pipeline builds its
     // subagent prompts itself (it does NOT use the context-assembler), so it needs
@@ -285,7 +311,7 @@ export class ControllerPipelinePlugin
         ctx.makeLlm(
           cfg.subagents[role as 'evaluator' | 'planner' | 'executor'],
         ),
-      callMcp: (name, args, signal) => mcpBridge(name, args, signal),
+      callMcp: (name, args, signal) => auxCallMcp(name, args, signal),
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
