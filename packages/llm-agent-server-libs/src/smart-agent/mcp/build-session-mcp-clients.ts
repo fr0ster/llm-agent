@@ -36,6 +36,74 @@ export function serverOwnsMcpConnection(o: {
   return !o.hasReadyClients && o.hasMcpConfig && !o.mcpSeamInjected;
 }
 
+/** Why per-session MCP isolation is off. Empty when it is on. */
+export type McpIsolationDisabledReason =
+  | 'mcpSharedClient'
+  | 'hasReadyClients'
+  | 'mcpSeamInjected'
+  | 'noMcpConfig';
+
+/** The resolved per-session MCP isolation decision + the facts behind it. Shape
+ *  of the `mcp_isolation` log event (#213 diagnostics). */
+export interface McpIsolationReport {
+  event: 'mcp_isolation';
+  mcpFromYaml: boolean;
+  hasReadyClients: boolean;
+  hasMcpConfig: boolean;
+  mcpSeamInjected: boolean;
+  /** Raw config value; `null` when unset, so it is distinguishable from `false`. */
+  mcpSharedClient: boolean | null;
+  perSession: boolean;
+  disabledReasons: McpIsolationDisabledReason[];
+}
+
+/**
+ * Resolve — ONCE — whether sessions get their own MCP client, and report the
+ * facts behind it (#213).
+ *
+ * This is the SINGLE source of truth: `smart-server.ts` feeds
+ * `buildPerSessionMcpClients` from `perSession` AND logs this object, so the
+ * diagnostic can never disagree with the wiring. It COMPOSES the two existing
+ * gates rather than restating their logic.
+ *
+ * `disabledReasons` exists so the `config_warning` message can name WHY isolation
+ * is off — a deliberate `agent.mcpSharedClient: true` opt-out must be
+ * distinguishable from an accidental fallback.
+ */
+export function describeMcpIsolation(o: {
+  hasReadyClients: boolean;
+  hasMcpConfig: boolean;
+  mcpSeamInjected: boolean;
+  mcpSharedClient?: boolean;
+}): McpIsolationReport {
+  const mcpFromYaml = serverOwnsMcpConnection({
+    hasReadyClients: o.hasReadyClients,
+    hasMcpConfig: o.hasMcpConfig,
+    mcpSeamInjected: o.mcpSeamInjected,
+  });
+  const perSession = shouldIsolateMcpPerSession({
+    mcpFromYaml,
+    mcpSharedClient: o.mcpSharedClient,
+  });
+  const disabledReasons: McpIsolationDisabledReason[] = [];
+  if (!perSession) {
+    if (o.mcpSharedClient === true) disabledReasons.push('mcpSharedClient');
+    if (o.hasReadyClients) disabledReasons.push('hasReadyClients');
+    if (o.mcpSeamInjected) disabledReasons.push('mcpSeamInjected');
+    if (!o.hasMcpConfig) disabledReasons.push('noMcpConfig');
+  }
+  return {
+    event: 'mcp_isolation',
+    mcpFromYaml,
+    hasReadyClients: o.hasReadyClients,
+    hasMcpConfig: o.hasMcpConfig,
+    mcpSeamInjected: o.mcpSeamInjected,
+    mcpSharedClient: o.mcpSharedClient ?? null,
+    perSession,
+    disabledReasons,
+  };
+}
+
 /**
  * Build a FRESH, UN-CONNECTED set of MCP client wrappers from the resolved
  * `mcp:` config — one call per session so concurrent requests never share an
