@@ -124,7 +124,8 @@ MCP per-session isolation OFF (shared client across sessions) — reason:
 mcpSharedClient=true | hasReadyClients=true | mcpSeamInjected=true
 ```
 
-listing whichever of the three facts is responsible.
+listing whichever of the facts is responsible. The reason list comes from
+`isolation.disabledReasons` (§3) — it is not composed inline here.
 
 `mcpSharedClient` is reported as the raw config value (`this.cfg.agent?.mcpSharedClient`,
 `undefined` → `null` in JSON) so an unset value is distinguishable from `false`.
@@ -195,8 +196,28 @@ export function describeMcpIsolation(o: {
   mcpSeamInjected: boolean;
   mcpSharedClient: boolean | null;
   perSession: boolean;
+  /** Which fact(s) disabled isolation — empty when `perSession` is true. Ordered
+   *  as listed here: 'mcpSharedClient' | 'hasReadyClients' | 'mcpSeamInjected'
+   *  | 'noMcpConfig'. */
+  disabledReasons: string[];
 };
 ```
+
+`disabledReasons` is part of the PAYLOAD, not composed inline at the call site: the
+warning message must be assertable by the unit test, and the reason belongs in the
+structured event anyway (the reporter reads the JSON line, not our prose). The
+`config_warning` message is then rendered from it:
+
+```ts
+if (!isolation.perSession && isolation.hasMcpConfig)
+  this.warn(
+    `MCP per-session isolation OFF (shared client across sessions) — reason: ${isolation.disabledReasons.join(', ')}`,
+  );
+```
+
+`noMcpConfig` never reaches the warning (guarded by `hasMcpConfig`) but is reported
+in the event, so "no MCP at all" is distinguishable from "MCP present, isolation
+lost".
 
 It composes the two existing gates rather than restating their logic.
 
@@ -246,7 +267,9 @@ not belong in an observability-only PR.
   | deliberate opt-out | `hasMcpConfig: true`, `mcpSharedClient: true` | `perSession: false` |
   | no MCP at all | `hasMcpConfig: false` | `perSession: false`, no warning |
 
-  Each fallback case also asserts the warning reason names the responsible fact.
+  Each fallback case also asserts `disabledReasons` names the responsible fact
+  (`mcpSharedClient` / `hasReadyClients` / `mcpSeamInjected` / `noMcpConfig`), which
+  is what the `config_warning` message is rendered from.
 
 - **Integration** on `SmartServer` with a fake `cfg.log`:
   1. pure YAML `mcp:` → one `mcp_isolation` event with `perSession: true`, and **no**
@@ -258,9 +281,25 @@ not belong in an observability-only PR.
      expensive ambiguity points (it is also a plausible H1 trigger in the field), so
      it earns an integration case and not just a unit row.
 
-Because the wiring consumes `isolation.perSession` (§3), asserting the event asserts
-the gate's resolved decision — not merely the log text — so these catch a regression
-of the gate itself.
+**The event alone is not enough.** Consuming `isolation.perSession` at the call site
+(§3) makes drift unlikely, but a test that only reads the log still passes while the
+wiring below it is broken — the event would be right and the sessions would still
+share a client. So the `perSession: true` integration case MUST also assert the
+observable consequence:
+
+- acquire TWO sessions from the built lifecycle and assert they receive **distinct**
+  `IMcpClient` instances (the `perSession: false` cases assert the **same** instance).
+
+This is hermetic and cheap: `buildSessionMcpClients` builds wrappers that connect
+LAZILY on first `callTool`/`listTools`
+(`mcp/build-session-mcp-clients.ts:41-45`), so two sessions can be acquired against a
+fake `mcp.url` without any MCP server existing. Reach the private wiring with the
+established white-box cast pattern already used for exactly this kind of test
+(`__tests__/mcp-single-connect.test.ts:44-53`) rather than adding a DI seam for
+tests only.
+
+With the consequence asserted, these tests catch a regression of the gate itself —
+not merely of the log text.
 
 ## Architecture Principles check
 
