@@ -182,6 +182,28 @@ async function startMcpStub(toolNames: string[]): Promise<McpStub> {
   };
 }
 
+/**
+ * Start the stub MCP server, or — if the sandbox forbids binding a local socket
+ * (EPERM/EACCES) — skip the test cleanly instead of failing. The assertions still
+ * run in CI and any environment that permits `listen`. Mirrors
+ * `__tests__/mcp-yaml-vectorization.test.ts`.
+ */
+async function startStubOrSkip(
+  t: { skip: (m?: string) => void },
+  names: string[],
+): Promise<McpStub | null> {
+  try {
+    return await startMcpStub(names);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'EPERM' || code === 'EACCES') {
+      t.skip(`environment forbids server.listen (${code})`);
+      return null;
+    }
+    throw err;
+  }
+}
+
 // --- Integration: SmartServer consumes the decision it logs -----------------
 
 /** Reach the private wiring without changing visibility (pattern:
@@ -220,10 +242,11 @@ function baseConfig(events: Record<string, unknown>[]): SmartServerConfig {
   } as unknown as SmartServerConfig;
 }
 
-test('#213: pure YAML mcp: → mcp_isolation perSession:true, no config_warning', async () => {
+test('#213: pure YAML mcp: → mcp_isolation perSession:true, no config_warning', async (t) => {
   const events: Record<string, unknown>[] = [];
   // Pure YAML → the startup builder DIALS. A stub is mandatory here.
-  const stub = await startMcpStub(['GetTable']);
+  const stub = await startStubOrSkip(t, ['GetTable']);
+  if (!stub) return;
   const cfg = {
     ...baseConfig(events),
     mcp: { type: 'stream-http', url: stub.url },
@@ -350,10 +373,11 @@ test('#213: no mcp: block → perSession:false, reason noMcpConfig, and NO warni
 // cases there is nothing to compare identity against — "no MCP" asserts the
 // absent warning, not a shared instance.
 
-test('#213 anti-drift: perSession:true → two sessions RECEIVE distinct client instances', async () => {
+test('#213 anti-drift: perSession:true → two sessions RECEIVE distinct client instances', async (t) => {
   const events: Record<string, unknown>[] = [];
   // Pure YAML → the startup builder DIALS before the lifecycle exists.
-  const stub = await startMcpStub(['GetTable']);
+  const stub = await startStubOrSkip(t, ['GetTable']);
+  if (!stub) return;
   const cfg = {
     ...baseConfig(events),
     mcp: { type: 'stream-http', url: stub.url },
