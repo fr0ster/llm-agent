@@ -117,15 +117,17 @@ that config fact must be visible with no env flag.
 The warning message MUST name the disabling reason, not just the outcome —
 otherwise the reporter learns "a warning happened" with nothing actionable, and
 the deliberate `agent.mcpSharedClient: true` opt-out is indistinguishable from an
-accidental fallback. Required shape:
+accidental fallback. Required shape — the reasons are the BARE keys of
+`isolation.disabledReasons` (§3), comma-joined, never re-formatted as `key=value`:
 
 ```
-MCP per-session isolation OFF (shared client across sessions) — reason:
-mcpSharedClient=true | hasReadyClients=true | mcpSeamInjected=true
+MCP per-session isolation OFF (shared client across sessions) — reason: mcpSharedClient
+MCP per-session isolation OFF (shared client across sessions) — reason: hasReadyClients, mcpSeamInjected
 ```
 
-listing whichever of the facts is responsible. The reason list comes from
-`isolation.disabledReasons` (§3) — it is not composed inline here.
+The reason list comes from `isolation.disabledReasons` and is not composed inline
+here. The values behind those keys are already in the same `mcp_isolation` event, so
+restating them in the message would only invite the two to disagree.
 
 `mcpSharedClient` is reported as the raw config value (`this.cfg.agent?.mcpSharedClient`,
 `undefined` → `null` in JSON) so an unset value is distinguishable from `false`.
@@ -265,11 +267,18 @@ not belong in an observability-only PR.
   | empty-array trap | same as above (`cfg.mcpClients: []` → presence, not length) | `perSession: false` |
   | seam injected | `mcpSeamInjected: true`, `hasMcpConfig: true` | `perSession: false` |
   | deliberate opt-out | `hasMcpConfig: true`, `mcpSharedClient: true` | `perSession: false` |
-  | no MCP at all | `hasMcpConfig: false` | `perSession: false`, no warning |
+  | no MCP at all | `hasMcpConfig: false` | `perSession: false`, `disabledReasons: ['noMcpConfig']` |
 
   Each fallback case also asserts `disabledReasons` names the responsible fact
   (`mcpSharedClient` / `hasReadyClients` / `mcpSeamInjected` / `noMcpConfig`), which
   is what the `config_warning` message is rendered from.
+
+  **Whether a warning FIRES is not assertable at this level** — `describeMcpIsolation`
+  reports facts and reasons, not a warning decision; the guard
+  `if (!isolation.perSession && isolation.hasMcpConfig)` lives in `SmartServer` (§1).
+  Adding a `shouldWarn` / `warningMessage` to the payload to make it unit-testable
+  would put a second, competing decision in the report — so the "no MCP → silent"
+  behavior is asserted by integration case 4 below instead.
 
 - **Integration** on `SmartServer` with a fake `cfg.log`:
   1. pure YAML `mcp:` → one `mcp_isolation` event with `perSession: true`, and **no**
@@ -279,7 +288,11 @@ not belong in an observability-only PR.
   3. injected `connectMcp` seam + `mcp:` → `perSession: false` **and** a
      `config_warning` naming `mcpSeamInjected`. The seam path is one of the more
      expensive ambiguity points (it is also a plausible H1 trigger in the field), so
-     it earns an integration case and not just a unit row.
+     it earns an integration case and not just a unit row;
+  4. **no `mcp:` block at all** → `mcp_isolation` with `perSession: false` and
+     `disabledReasons: ['noMcpConfig']`, and **no** `config_warning` — a
+     deployment that runs without MCP must not be nagged. This is where the
+     `hasMcpConfig` guard is actually asserted.
 
 **The event alone is not enough.** Consuming `isolation.perSession` at the call site
 (§3) makes drift unlikely, but a test that only reads the log still passes while the

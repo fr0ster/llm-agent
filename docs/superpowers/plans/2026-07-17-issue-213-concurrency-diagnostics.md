@@ -118,6 +118,9 @@ test('deliberate opt-out agent.mcpSharedClient: true → shared, reason names it
 });
 
 test('no mcp: block at all → not per-session, reason noMcpConfig', () => {
+  // NOTE: whether this SILENCES the config_warning is NOT assertable here —
+  // describeMcpIsolation reports facts, the `hasMcpConfig` guard lives in
+  // SmartServer. That behavior is covered by the integration case in Task 2.
   const r = describeMcpIsolation({
     hasReadyClients: false,
     hasMcpConfig: false,
@@ -359,13 +362,32 @@ test('#213: injected connectMcp seam + mcp: → perSession:false AND warning nam
   assert.ok(warn);
   assert.match(String(warn.message), /mcpSeamInjected/);
 });
+
+test('#213: no mcp: block → perSession:false, reason noMcpConfig, and NO warning', async () => {
+  // The `hasMcpConfig` guard is asserted HERE (not in the unit table):
+  // describeMcpIsolation reports the reason, SmartServer decides whether to warn.
+  // A deployment that runs without MCP must not be nagged about isolation.
+  const events: Record<string, unknown>[] = [];
+  const server = new SmartServer(baseConfig(events));
+  await (server as unknown as Internals)._buildInfra();
+
+  const iso = events.find((e) => e.event === 'mcp_isolation');
+  assert.ok(iso, 'the event fires even with no MCP at all');
+  assert.equal(iso.perSession, false);
+  assert.deepEqual(iso.disabledReasons, ['noMcpConfig']);
+  assert.equal(
+    events.find((e) => e.event === 'config_warning'),
+    undefined,
+    'no MCP configured → nothing to warn about',
+  );
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-isolation-diagnostics.test.ts'`
 
-Expected: the 3 new tests FAIL on `assert.ok(iso, 'mcp_isolation event emitted')` — the event does not exist yet. The 7 Task-1 tests still PASS.
+Expected: the 4 new tests FAIL on their `assert.ok(iso, ...)` — the event does not exist yet. The 7 Task-1 tests still PASS.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -440,7 +462,7 @@ import {
 
 Run: `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-isolation-diagnostics.test.ts'`
 
-Expected: PASS — 10 tests, 0 fail.
+Expected: PASS — 11 tests, 0 fail (7 from Task 1 + 4 event cases).
 
 - [ ] **Step 5: Prove the wiring is actually consumed (the anti-drift assertion)**
 
@@ -542,7 +564,7 @@ re-read `smart-server.ts:1358` and confirm `buildAgent` still routes through
 
 Run: `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-isolation-diagnostics.test.ts'`
 
-Expected: PASS — 12 tests, 0 fail (7 from Task 1 + 3 event cases + 2 anti-drift).
+Expected: PASS — 13 tests, 0 fail (7 from Task 1 + 4 event cases + 2 anti-drift).
 
 **Note for the implementer:** if `_buildInfra()` throws in any of these tests (missing credentials, model validation, an embedder fetch), do NOT weaken the assertions and do NOT add production code to make the test pass. Fix the TEST config — `skipProviderRuntimeChecks: true` is the intended escape hatch (`smart-server.ts:302`). If it still throws, mirror the config used by `__tests__/mcp-yaml-vectorization.test.ts`, or drive the narrower private method that contains the gate instead. Report what you had to do.
 
