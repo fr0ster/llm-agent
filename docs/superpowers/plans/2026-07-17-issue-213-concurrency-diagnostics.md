@@ -293,6 +293,27 @@ function fakeMcpClient(): IMcpClient {
   };
 }
 
+// ---------------------------------------------------------------------------
+// IMPORTANT — which cases need a real MCP stub, and which do not.
+//
+// On the PURE YAML path the STARTUP builder owns the connection and vectorizes
+// the catalog before the lifecycle exists (`yamlBuilderConnect`,
+// smart-server.ts:1180-1186), so `_buildInfra()` really dials `mcp.url`. Lazy
+// connect is a property of the PER-SESSION factory only
+// (mcp/build-session-mcp-clients.ts:43-44) — it does NOT make the startup path
+// offline-safe. So:
+//   • pure-YAML cases (event case 1, anti-drift perSession:true) → MUST run
+//     against the in-process stub below;
+//   • ready-client / seam / no-MCP cases → inject or skip clients and never
+//     dial, so no stub (and no `mcp.url` reachability) is needed.
+//
+// Do NOT write the stub from scratch: `__tests__/mcp-yaml-vectorization.test.ts`
+// already implements `startMcpStub(toolNames)` (a hermetic streamable-HTTP
+// JSON-RPC server on a localhost ephemeral port: `initialize` +
+// `notifications/initialized` + `tools/list`; returns `{url, close}`). Read that
+// file and copy the helper verbatim into this test file.
+// ---------------------------------------------------------------------------
+
 /** Minimal config that reaches the MCP gate without provider credentials. */
 function baseConfig(events: Record<string, unknown>[]): SmartServerConfig {
   return {
@@ -305,12 +326,18 @@ function baseConfig(events: Record<string, unknown>[]): SmartServerConfig {
 
 test('#213: pure YAML mcp: → mcp_isolation perSession:true, no config_warning', async () => {
   const events: Record<string, unknown>[] = [];
+  // Pure YAML → the startup builder DIALS. A stub is mandatory here.
+  const stub = await startMcpStub(['GetTable']);
   const cfg = {
     ...baseConfig(events),
-    mcp: { type: 'stream-http', url: 'http://127.0.0.1:9/mcp' },
+    mcp: { type: 'stream-http', url: stub.url },
   } as unknown as SmartServerConfig;
   const server = new SmartServer(cfg);
-  await (server as unknown as Internals)._buildInfra();
+  try {
+    await (server as unknown as Internals)._buildInfra();
+  } finally {
+    await stub.close();
+  }
 
   const iso = events.find((e) => e.event === 'mcp_isolation');
   assert.ok(iso, 'mcp_isolation event emitted');
@@ -381,6 +408,9 @@ test('#213: no mcp: block → perSession:false, reason noMcpConfig, and NO warni
     'no MCP configured → nothing to warn about',
   );
 });
+// NOTE: this case has NO client instance, so unlike the other perSession:false
+// cases there is nothing to compare identity against — "no MCP" asserts the
+// absent warning, not a shared instance.
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -487,9 +517,11 @@ not redeclare it. Append:
 ```ts
 test('#213 anti-drift: perSession:true → two sessions RECEIVE distinct client instances', async () => {
   const events: Record<string, unknown>[] = [];
+  // Pure YAML → the startup builder DIALS before the lifecycle exists.
+  const stub = await startMcpStub(['GetTable']);
   const cfg = {
     ...baseConfig(events),
-    mcp: { type: 'stream-http', url: 'http://127.0.0.1:9/mcp' },
+    mcp: { type: 'stream-http', url: stub.url },
   } as unknown as SmartServerConfig;
   const server = new SmartServer(cfg);
   const internals = server as unknown as Internals;
@@ -505,8 +537,10 @@ test('#213 anti-drift: perSession:true → two sessions RECEIVE distinct client 
   const iso = events.find((e) => e.event === 'mcp_isolation');
   assert.equal(iso?.perSession, true, 'precondition: the event claims isolation');
 
-  // The event must not be able to lie about what sessions actually get.
-  // Wrappers connect LAZILY, so nothing listens on 127.0.0.1:9 and none is needed.
+  // The event must not be able to lie about what sessions actually get. The
+  // PER-SESSION wrappers connect lazily, so acquiring sessions dials nothing —
+  // but the stub above is still required for the startup connect, and stays up
+  // until both acquires are done.
   await Promise.all([
     internals._lifecycle?.acquire('session-A'),
     internals._lifecycle?.acquire('session-B'),
@@ -518,11 +552,14 @@ test('#213 anti-drift: perSession:true → two sessions RECEIVE distinct client 
     captured[1]?.[0],
     'DISTINCT client instances per session',
   );
+  await stub.close();
 });
 
 test('#213 anti-drift: perSession:false → both sessions receive the SAME shared client', async () => {
   const events: Record<string, unknown>[] = [];
   const shared = fakeMcpClient();
+  // Ready clients override YAML → the startup builder never dials, so the
+  // unreachable URL is fine here and no stub is needed.
   const cfg = {
     ...baseConfig(events),
     mcp: { type: 'stream-http', url: 'http://127.0.0.1:9/mcp' },

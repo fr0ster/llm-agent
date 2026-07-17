@@ -106,7 +106,7 @@ emit:
 ```json
 { "event": "mcp_isolation", "mcpFromYaml": true, "hasReadyClients": false,
   "hasMcpConfig": true, "mcpSeamInjected": false, "mcpSharedClient": null,
-  "perSession": true }
+  "perSession": true, "disabledReasons": [] }
 ```
 
 Additionally, when `perSession === false` **and** `hasMcpConfig === true`, emit the
@@ -301,15 +301,26 @@ share a client. So the `perSession: true` integration case MUST also assert the
 observable consequence:
 
 - acquire TWO sessions from the built lifecycle and assert they receive **distinct**
-  `IMcpClient` instances (the `perSession: false` cases assert the **same** instance).
+  `IMcpClient` instances;
+- for the shared-client fallback cases that HAVE a client (ready clients, injected
+  seam), assert both sessions receive the **same** instance. This does not apply to
+  every `perSession: false` case: `mcpClients: []` yields an empty array and the
+  no-MCP case has no client at all, so there is no instance to compare — case 4
+  asserts empty/undefined clients plus the absence of a warning instead.
 
-This is hermetic and cheap: `buildSessionMcpClients` builds wrappers that connect
-LAZILY on first `callTool`/`listTools`
-(`mcp/build-session-mcp-clients.ts:41-45`), so two sessions can be acquired against a
-fake `mcp.url` without any MCP server existing. Reach the private wiring with the
-established white-box cast pattern already used for exactly this kind of test
-(`__tests__/mcp-single-connect.test.ts:44-53`) rather than adding a DI seam for
-tests only.
+**The pure-YAML integration case needs a real stub MCP server — a fake URL will
+not do.** Lazy connect is a property of the per-session factory only
+(`mcp/build-session-mcp-clients.ts:43-44`); on the pure YAML path the STARTUP
+builder still owns the connection and vectorizes the catalog before the lifecycle
+is built (`smart-server.ts:1180-1186`, `yamlBuilderConnect`), so `_buildInfra()`
+will actually dial `mcp.url`. Reuse the in-process streamable-HTTP stub that
+`__tests__/mcp-yaml-vectorization.test.ts:46` already implements for exactly this
+path (hermetic: localhost ephemeral port, no spawn, no network). The ready-client
+and seam cases need no stub — those paths inject clients and never dial.
+
+Reach the private wiring with the established white-box cast pattern already used
+for this kind of test (`__tests__/mcp-single-connect.test.ts:44-53`) rather than
+adding a DI seam for tests only.
 
 With the consequence asserted, these tests catch a regression of the gate itself —
 not merely of the log text.
