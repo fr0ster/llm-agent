@@ -441,8 +441,7 @@ import {
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
 import {
   buildSessionMcpClients,
-  serverOwnsMcpConnection,
-  shouldIsolateMcpPerSession,
+  describeMcpIsolation,
 } from './mcp/build-session-mcp-clients.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
@@ -1172,11 +1171,23 @@ export class SmartServer {
     // sync per-session factory cannot re-invoke it, so it stays shared too. Both
     // conditions are folded into `serverOwnsMcpConnection` → `mcpFromYaml` can
     // never bypass the seam.
-    const mcpFromYaml = serverOwnsMcpConnection({
+    // #213 diagnostics: resolve the decision ONCE. This object is BOTH logged
+    // (`mcp_isolation`) and consumed by the lifecycle wiring below, so the
+    // diagnostic can never disagree with which clients sessions actually get.
+    const isolation = describeMcpIsolation({
       hasReadyClients,
       hasMcpConfig: !!this.cfg.mcp,
       mcpSeamInjected: this._mcpSeamInjected,
+      mcpSharedClient: this.cfg.agent?.mcpSharedClient,
     });
+    log(isolation as unknown as Record<string, unknown>);
+    // A SILENT shared-client fallback is what made #213 expensive to diagnose —
+    // name the responsible fact so the deliberate opt-out is distinguishable.
+    if (!isolation.perSession && isolation.hasMcpConfig)
+      this.warn(
+        `MCP per-session isolation OFF (shared client across sessions) — reason: ${isolation.disabledReasons.join(', ')}`,
+      );
+    const mcpFromYaml = isolation.mcpFromYaml;
     // YAML `mcp:` with NO ready clients AND NO injected seam → keep the legacy
     // builder-owned connect so the builder VECTORIZES the tools (the ToolSelect
     // ranking contract). `_sharedMcpClients` + the tools-RAG handle are harvested
@@ -1345,10 +1356,9 @@ export class SmartServer {
       // consumer/plugin-owned and stay shared. `agent.mcpSharedClient: true`
       // opts the YAML path back out to a shared client.
       mcpSharedClient: this.cfg.agent?.mcpSharedClient,
-      buildPerSessionMcpClients: shouldIsolateMcpPerSession({
-        mcpFromYaml,
-        mcpSharedClient: this.cfg.agent?.mcpSharedClient,
-      })
+      // #213: consume the SAME resolved decision that was logged above — never
+      // re-derive it here, or the diagnostic and the wiring can drift.
+      buildPerSessionMcpClients: isolation.perSession
         ? () => buildSessionMcpClients(this.cfg.mcp)
         : undefined,
       // `this._toolsRag` === the `toolsRag` local captured in start(); reference
