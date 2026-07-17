@@ -17,7 +17,8 @@
 - **TypeScript strict; avoid `any`** (Biome warns).
 - **Zero behavior change.** The only new runtime effects are log lines. If a step would alter which clients a session gets, STOP — it is out of scope.
 - **Out of scope, do NOT touch:** runId-aware bundle keying (breaks intentional stateless resume, `run-scope.ts:151-157`); the `?? ''` empty-terminal commit at `controller-coordinator-handler.ts:1699`; `buildSessionLifecycle`'s third restatement `usePerSession` (`session-lifecycle/index.ts:106-107`); fixing the gate itself.
-- **Run before every commit:** `npm run format` then the package test command below. Biome sorts imports — unsorted imports fail lint.
+- **Run before every commit:** `npm run lint` (= `biome check --write packages`) then the package test command below.
+  **Use `npm run lint`, NOT `npm run format`** — `format` is `biome format --write` and does NOT sort imports, so it passes locally while the `lint:check` CI gate (`biome check`) fails on unsorted imports. This exact mistake broke PR #226's CI.
 - **Test command (server-libs):** `npm run test -w @mcp-abap-adt/llm-agent-server-libs`
 - **Single-file test run:** `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/<path>.test.ts'`
 
@@ -235,7 +236,7 @@ Expected: PASS — 7 tests, 0 fail.
 - [ ] **Step 5: Format, lint, full package tests**
 
 ```bash
-npm run format
+npm run lint          # biome check --write — format AND organizeImports
 npm run test -w @mcp-abap-adt/llm-agent-server-libs
 ```
 Expected: format clean; all package tests pass (the pre-existing suite must stay green — if a test that has nothing to do with this change fails, do NOT proceed; report it).
@@ -608,7 +609,7 @@ Expected: PASS — 13 tests, 0 fail (7 from Task 1 + 4 event cases + 2 anti-drif
 - [ ] **Step 6: Format, lint, full package tests**
 
 ```bash
-npm run format
+npm run lint          # biome check --write — format AND organizeImports
 npm run test -w @mcp-abap-adt/llm-agent-server-libs
 ```
 Expected: clean; the whole package suite green — especially `per-session-mcp-wiring.test.ts`, `issue-213-concurrent-tool-use.test.ts`, `mcp-single-connect.test.ts`, `readiness-gate.test.ts`, which cover the code paths touched here.
@@ -766,7 +767,7 @@ Expected: PASS — 2 tests, 0 fail.
 - [ ] **Step 5: Format, lint, full package tests**
 
 ```bash
-npm run format
+npm run lint          # biome check --write — format AND organizeImports
 npm run test -w @mcp-abap-adt/llm-agent-server-libs
 ```
 Expected: clean; whole suite green. The controller suite is large — confirm `controller-coordinator-handler.test.ts`, `round-trip.test.ts`, `run-scope.test.ts` still pass (they drive the same branches).
@@ -815,7 +816,7 @@ Expected: build clean (the new export must compile under strict mode); all works
 ```bash
 npm run lint:check
 ```
-Expected: 0 errors. (If it reports unsorted imports, run `npm run format` and amend the relevant commit.)
+Expected: 0 errors. (If it reports unsorted imports, run `npm run lint` — not `format` — and amend the relevant commit.)
 
 - [ ] **Step 5: Report**
 
