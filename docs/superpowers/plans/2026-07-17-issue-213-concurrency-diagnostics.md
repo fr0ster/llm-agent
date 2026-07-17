@@ -302,6 +302,12 @@ function fakeMcpClient(): IMcpClient {
 // JSON-RPC server on a localhost ephemeral port: `initialize` +
 // `notifications/initialized` + `tools/list`; returns `{url, close}`). Read that
 // file and copy the helper verbatim into this test file.
+//
+// EVERY stub MUST be closed in a `finally` — never only on the success path. A
+// leaked stub keeps the event loop alive, so `node --test` prints the results
+// and then HANGS FOREVER instead of exiting. If a test run seems to "time out"
+// after the assertions have already printed, this is why: it is a leaked
+// listener, not a slow test.
 // ---------------------------------------------------------------------------
 
 /** Minimal config that reaches the MCP gate without provider credentials. */
@@ -546,27 +552,36 @@ test('#213 anti-drift: perSession:true → two sessions RECEIVE distinct client 
     captured.push(parts.mcpClients);
     return undefined;
   };
-  await internals._buildInfra();
 
-  const iso = events.find((e) => e.event === 'mcp_isolation');
-  assert.equal(iso?.perSession, true, 'precondition: the event claims isolation');
+  // MANDATORY try/finally: `stub.close()` must run even when an assertion throws.
+  // A leaked stub keeps the event loop alive and `node --test` HANGS FOREVER
+  // instead of reporting the failure — which is exactly what happened when this
+  // test closed the stub only on the success path (the RED phase never reached
+  // the close, and every suite run had to be killed).
+  try {
+    await internals._buildInfra();
 
-  // The event must not be able to lie about what sessions actually get. The
-  // PER-SESSION wrappers connect lazily, so acquiring sessions dials nothing —
-  // but the stub above is still required for the startup connect, and stays up
-  // until both acquires are done.
-  await Promise.all([
-    internals._lifecycle?.acquire('session-A'),
-    internals._lifecycle?.acquire('session-B'),
-  ]);
-  assert.equal(captured.length, 2, 'both sessions acquired');
-  assert.notEqual(captured[0], captured[1], 'DISTINCT client arrays per session');
-  assert.notEqual(
-    captured[0]?.[0],
-    captured[1]?.[0],
-    'DISTINCT client instances per session',
-  );
-  await stub.close();
+    const iso = events.find((e) => e.event === 'mcp_isolation');
+    assert.equal(iso?.perSession, true, 'precondition: the event claims isolation');
+
+    // The event must not be able to lie about what sessions actually get. The
+    // PER-SESSION wrappers connect lazily, so acquiring sessions dials nothing —
+    // but the stub is still required for the startup connect and stays up until
+    // both acquires are done.
+    await Promise.all([
+      internals._lifecycle?.acquire('session-A'),
+      internals._lifecycle?.acquire('session-B'),
+    ]);
+    assert.equal(captured.length, 2, 'both sessions acquired');
+    assert.notEqual(captured[0], captured[1], 'DISTINCT client arrays per session');
+    assert.notEqual(
+      captured[0]?.[0],
+      captured[1]?.[0],
+      'DISTINCT client instances per session',
+    );
+  } finally {
+    await stub.close();
+  }
 });
 
 test('#213 anti-drift: perSession:false → both sessions receive the SAME shared client', async () => {
