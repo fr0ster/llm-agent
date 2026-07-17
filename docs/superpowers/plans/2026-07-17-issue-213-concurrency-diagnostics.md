@@ -84,17 +84,6 @@ test('ready clients present → shared, reason names hasReadyClients', () => {
   assert.deepEqual(r.disabledReasons, ['hasReadyClients']);
 });
 
-test('empty-array trap: cfg.mcpClients: [] is PRESENCE → shared', () => {
-  // The server gates on `diOrPluginMcpClients !== undefined` (smart-server.ts:1166),
-  // so an empty array is a deliberate "disable MCP" signal, NOT a YAML path.
-  const r = describeMcpIsolation({
-    hasReadyClients: true,
-    hasMcpConfig: true,
-    mcpSeamInjected: false,
-  });
-  assert.equal(r.perSession, false);
-});
-
 test('injected connectMcp seam → shared, reason names mcpSeamInjected', () => {
   const r = describeMcpIsolation({
     hasReadyClients: false,
@@ -231,7 +220,7 @@ export function describeMcpIsolation(o: {
 
 Run: `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-isolation-diagnostics.test.ts'`
 
-Expected: PASS — 7 tests, 0 fail.
+Expected: PASS — 6 tests, 0 fail.
 
 - [ ] **Step 5: Format, lint, full package tests**
 
@@ -352,6 +341,30 @@ test('#213: pure YAML mcp: → mcp_isolation perSession:true, no config_warning'
   );
 });
 
+test('#213: EMPTY-ARRAY TRAP — mcpClients: [] + mcp: is PRESENCE, not length → shared, no YAML dial', async () => {
+  // The gate is `diOrPluginMcpClients !== undefined` (smart-server.ts:1166): an
+  // empty array is a deliberate "disable MCP / override YAML" signal, so it takes
+  // the inject branch and per-session isolation stays OFF. This is asserted HERE,
+  // at the server, because presence-vs-length is the server's rule — the pure
+  // describeMcpIsolation only ever sees the resolved `hasReadyClients` boolean.
+  // The unreachable URL doubles as the proof that the YAML connect never fires:
+  // if `[]` were treated as absent, _buildInfra would dial it and throw.
+  const events: Record<string, unknown>[] = [];
+  const cfg = {
+    ...baseConfig(events),
+    mcp: { type: 'stream-http', url: 'http://127.0.0.1:9/mcp' },
+    mcpClients: [],
+  } as unknown as SmartServerConfig;
+  const server = new SmartServer(cfg);
+  await (server as unknown as Internals)._buildInfra();
+
+  const iso = events.find((e) => e.event === 'mcp_isolation');
+  assert.ok(iso);
+  assert.equal(iso.hasReadyClients, true, 'an empty array still counts as present');
+  assert.equal(iso.perSession, false);
+  assert.deepEqual(iso.disabledReasons, ['hasReadyClients']);
+});
+
 test('#213: ready clients + mcp: → perSession:false AND config_warning naming hasReadyClients', async () => {
   const events: Record<string, unknown>[] = [];
   const cfg = {
@@ -418,7 +431,7 @@ test('#213: no mcp: block → perSession:false, reason noMcpConfig, and NO warni
 
 Run: `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-isolation-diagnostics.test.ts'`
 
-Expected: the 4 new tests FAIL on their `assert.ok(iso, ...)` — the event does not exist yet. The 7 Task-1 tests still PASS.
+Expected: the 5 new tests FAIL on their `assert.ok(iso, ...)` — the event does not exist yet. The 6 Task-1 tests still PASS.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -493,7 +506,7 @@ import {
 
 Run: `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-isolation-diagnostics.test.ts'`
 
-Expected: PASS — 11 tests, 0 fail (7 from Task 1 + 4 event cases).
+Expected: PASS — 11 tests, 0 fail (6 from Task 1 + 5 event cases).
 
 - [ ] **Step 5: Prove the wiring is actually consumed (the anti-drift assertion)**
 
@@ -602,7 +615,7 @@ re-read `smart-server.ts:1358` and confirm `buildAgent` still routes through
 
 Run: `node --import tsx/esm --test --test-reporter=spec 'packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-isolation-diagnostics.test.ts'`
 
-Expected: PASS — 13 tests, 0 fail (7 from Task 1 + 4 event cases + 2 anti-drift).
+Expected: PASS — 13 tests, 0 fail (6 from Task 1 + 5 event cases + 2 anti-drift).
 
 **Note for the implementer:** if `_buildInfra()` throws in any of these tests (missing credentials, model validation, an embedder fetch), do NOT weaken the assertions and do NOT add production code to make the test pass. Fix the TEST config — `skipProviderRuntimeChecks: true` is the intended escape hatch (`smart-server.ts:302`). If it still throws, mirror the config used by `__tests__/mcp-yaml-vectorization.test.ts`, or drive the narrower private method that contains the gate instead. Report what you had to do.
 
