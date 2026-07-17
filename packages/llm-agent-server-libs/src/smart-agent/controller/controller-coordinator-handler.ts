@@ -284,6 +284,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       terminalExists,
     });
 
+    // #213 diagnostics: fires on EVERY branch (incl. the early-return replay /
+    // not-found ones). `bundle.runId` is deliberately NOT logged here — on a
+    // fresh run it is minted below, so it would always read `undefined`.
+    dlog(`classify session=${sessionId} cls=${cls.kind}`);
+
     if (cls.kind === 'replay') {
       const out = await readTerminal(deps.backend, sessionId, cls.runId, now());
       if (out) {
@@ -296,6 +301,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       resetRun(bundle, prompt);
       bundle.runId = mintRunId();
       await persistBundle(deps.backend, sessionId, bundle);
+      dlog(`run session=${sessionId} run=${bundle.runId} cls=${cls.kind}`);
     } else if (cls.kind === 'not-found') {
       return this.escalate(
         ctx,
@@ -308,7 +314,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       resetRun(bundle, prompt);
       bundle.runId = mintRunId();
       await persistBundle(deps.backend, sessionId, bundle);
+      dlog(`run session=${sessionId} run=${bundle.runId} cls=${cls.kind}`);
     } else if (cls.kind === 'resume' && bundle.runId) {
+      dlog(`run session=${sessionId} run=${bundle.runId} cls=${cls.kind}`);
       // STAGE 1 (terminal-first, any phase): a stored terminal outcome wins over the
       // persisted runPhase — adopt it and STOP, never re-run the phase.
       const term = await readTerminal(
