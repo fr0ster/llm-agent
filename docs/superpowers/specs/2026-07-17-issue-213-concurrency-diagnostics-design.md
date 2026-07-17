@@ -110,8 +110,21 @@ emit:
 ```
 
 Additionally, when `perSession === false` **and** `hasMcpConfig === true`, emit the
-existing `config_warning` event. A silent shared-client fallback is the exact thing
-that made this issue expensive; that config fact must be visible with no env flag.
+existing `config_warning` event via `this.warn(msg)` (`smart-server.ts:1992-1994`).
+A silent shared-client fallback is the exact thing that made this issue expensive;
+that config fact must be visible with no env flag.
+
+The warning message MUST name the disabling reason, not just the outcome —
+otherwise the reporter learns "a warning happened" with nothing actionable, and
+the deliberate `agent.mcpSharedClient: true` opt-out is indistinguishable from an
+accidental fallback. Required shape:
+
+```
+MCP per-session isolation OFF (shared client across sessions) — reason:
+mcpSharedClient=true | hasReadyClients=true | mcpSeamInjected=true
+```
+
+listing whichever of the three facts is responsible.
 
 `mcpSharedClient` is reported as the raw config value (`this.cfg.agent?.mcpSharedClient`,
 `undefined` → `null` in JSON) so an unset value is distinguishable from `false`.
@@ -119,12 +132,37 @@ that made this issue expensive; that config fact must be visible with no env fla
 ### 2. Per-request line (behind `DEBUG_CONTROLLER`)
 
 The controller already has an env-gated debug channel: `dlog`
-(`controller-coordinator-handler.ts:75-76`, `DEBUG_CONTROLLER`). Immediately after
-`classifyRequest` (`controller-coordinator-handler.ts:279-285`), emit one line:
+(`controller-coordinator-handler.ts:75-76`, `DEBUG_CONTROLLER`).
 
-```
-[controller] run session=<sessionId> run=<bundle.runId> cls=<cls.kind>
-```
+**The `runId` is not available at classify time.** For `cls.kind === 'fresh'` the
+run is minted *after* the branch, at `controller-coordinator-handler.ts:308-309`
+(`resetRun(bundle, prompt); bundle.runId = mintRunId()`); the same holds for the
+expired-terminal fall-through (`:296-297`). In the reporter's exact repro every
+cookieless request is a NEW session, so `hydrateBundle` returns an empty bundle and
+`bundle.runId` would be `undefined` at that point — always. A single line logged
+right after `classifyRequest` would therefore carry no run identity in precisely
+the case being diagnosed.
+
+So emit **two** lines:
+
+1. immediately after `classifyRequest` (`controller-coordinator-handler.ts:279-285`),
+   before any branch returns early:
+
+   ```
+   [controller] classify session=<sessionId> cls=<cls.kind>
+   ```
+
+2. once the run identity is settled — after the `fresh` / expired-replay mint
+   (`:296-297`, `:308-309`) and on the `resume` path where `bundle.runId` is already
+   populated:
+
+   ```
+   [controller] run session=<sessionId> run=<bundle.runId> cls=<cls.kind>
+   ```
+
+Line 1 alone is the discriminator below (it is the one that always fires, including
+on the early-return `replay` / `not-found` branches); line 2 adds run identity for
+correlating a run across its phases.
 
 This is the discriminator:
 
@@ -160,23 +198,69 @@ export function describeMcpIsolation(o: {
 };
 ```
 
-It composes the two existing gates rather than restating their logic, so the
-reported `perSession` cannot drift from the wiring at `smart-server.ts:1348-1352`.
+It composes the two existing gates rather than restating their logic.
+
+**Composing the gates is not by itself enough to prevent drift.** The wiring at
+`smart-server.ts:1348-1352` calls `shouldIsolateMcpPerSession` *separately*; if the
+log payload were computed alongside it, the two could diverge on a later edit and
+the diagnostic would lie. So the wiring MUST CONSUME the same value it logs — the
+single call site becomes the source of truth:
+
+```ts
+const isolation = describeMcpIsolation({
+  hasReadyClients,
+  hasMcpConfig: !!this.cfg.mcp,
+  mcpSeamInjected: this._mcpSeamInjected,
+  mcpSharedClient: this.cfg.agent?.mcpSharedClient,
+});
+log(isolation);
+if (!isolation.perSession && isolation.hasMcpConfig) this.warn(/* reason */);
+// ...
+buildPerSessionMcpClients: isolation.perSession
+  ? () => buildSessionMcpClients(this.cfg.mcp)
+  : undefined,
+```
+
+`mcpFromYaml` remains available as `isolation.mcpFromYaml` for the
+`yamlBuilderConnect` decision (`smart-server.ts:1186`), so that call site is
+unchanged in behavior.
+
+Scope limit, stated honestly: `buildSessionLifecycle` restates the rule a THIRD
+time as `usePerSession = !!opts.buildPerSessionMcpClients && !opts.mcpSharedClient`
+(`session-lifecycle/index.ts:106-107`). This design does not collapse that one —
+it receives both inputs from the same resolved decision, so the extra guard is
+redundant-but-consistent, and removing it is a behavior-adjacent change that does
+not belong in an observability-only PR.
 
 ## Testing
 
-- **Unit** on `describeMcpIsolation`: a table of inputs against expected
-  `perSession`, including the trap case `cfg.mcpClients: []` (presence, not length
-  → `hasReadyClients: true` → `perSession: false`) and `mcpSharedClient: true` on
-  the YAML path → `perSession: false`.
-- **Integration** on `SmartServer` with a fake `cfg.log`, covering exactly the two
-  configurations that discriminate the hypotheses:
+- **Unit** on `describeMcpIsolation` — a table covering EVERY cause of a fallback,
+  since each is an independent way isolation goes off silently:
+
+  | case | inputs | expect |
+  |---|---|---|
+  | pure YAML | `hasMcpConfig: true`, rest false/unset | `perSession: true` |
+  | ready clients | `hasReadyClients: true`, `hasMcpConfig: true` | `perSession: false` |
+  | empty-array trap | same as above (`cfg.mcpClients: []` → presence, not length) | `perSession: false` |
+  | seam injected | `mcpSeamInjected: true`, `hasMcpConfig: true` | `perSession: false` |
+  | deliberate opt-out | `hasMcpConfig: true`, `mcpSharedClient: true` | `perSession: false` |
+  | no MCP at all | `hasMcpConfig: false` | `perSession: false`, no warning |
+
+  Each fallback case also asserts the warning reason names the responsible fact.
+
+- **Integration** on `SmartServer` with a fake `cfg.log`:
   1. pure YAML `mcp:` → one `mcp_isolation` event with `perSession: true`, and **no**
      `config_warning`;
-  2. ready clients + `mcp:` → `perSession: false` **and** a `config_warning`.
+  2. ready clients + `mcp:` → `perSession: false` **and** a `config_warning` naming
+     `hasReadyClients`;
+  3. injected `connectMcp` seam + `mcp:` → `perSession: false` **and** a
+     `config_warning` naming `mcpSeamInjected`. The seam path is one of the more
+     expensive ambiguity points (it is also a plausible H1 trigger in the field), so
+     it earns an integration case and not just a unit row.
 
-These assert the gate's resolved decision, not merely the log text, so the test
-catches a regression of the gate itself.
+Because the wiring consumes `isolation.perSession` (§3), asserting the event asserts
+the gate's resolved decision — not merely the log text — so these catch a regression
+of the gate itself.
 
 ## Architecture Principles check
 
@@ -210,7 +294,7 @@ catches a regression of the gate itself.
 After merge + release, ask the reporter for:
 
 1. the `mcp_isolation` line from their `smart-server.log`;
-2. one 2-way concurrent run with `DEBUG_CONTROLLER=1`, enough to show
-   `session=`/`run=`/`cls=` for both requests.
+2. one 2-way concurrent run with `DEBUG_CONTROLLER=1`, enough to show the
+   `classify session=/cls=` line (and the follow-on `run=` line) for both requests.
 
 That closes the diagnosis without another round of speculation.
