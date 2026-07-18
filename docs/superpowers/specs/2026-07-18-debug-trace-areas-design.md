@@ -93,10 +93,13 @@ decided at construction:
 - Neither → the logger is null/no-op as today.
 
 `logStep(name, data, area)` writes iff `area` is in the enabled set (an untagged
-call defaults to area `general`, which is enabled only in the legacy `logDir`
-mode). Existing meaningful call sites (`llm_request_iter_N`, `mcp_tool_call`, …)
-get tagged with their area so they too become granular under the flags, while
-staying identical under `logDir`.
+call defaults to area `general`). `general` is a deliberate **internal sentinel** —
+NOT a member of the public `DEBUG_*` area registry and not settable by any flag; it
+is enabled ONLY in the legacy `logDir` mode (where the enabled set is "all"). So an
+untagged legacy `logStep` still writes under `logDir` and never writes under a bare
+`DEBUG_*` flag. Existing meaningful call sites (`llm_request_iter_N`,
+`mcp_tool_call`, …) get tagged with their real area so they become granular under
+the flags, while staying identical under `logDir`.
 
 ### 2. Capture sites (close the coverage gap)
 
