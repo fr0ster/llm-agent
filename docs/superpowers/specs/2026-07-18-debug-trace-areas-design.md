@@ -120,11 +120,18 @@ disk (e.g. `llm_request_iter_2`, `controller_decision_replan`).
     `CallOptions` (`options.sessionLogger`, `types.ts:45`). `send` reads
     `options?.sessionLogger?.logStep(..., 'llm')`.
   - **Required plumbing:** the callers that today drop `options` must pass it
-    (carrying `sessionLogger`) to `send`: `reviewer.ts:84`, `finalizer.ts:197`,
-    `target-state.ts:49`, `planner.ts:338/376`. The executor call already spreads
-    `...ctx.options` (`controller-coordinator-handler.ts:1228`). Threading
-    `options` to these is the plumbing this feature adds — small and local, and
-    it is per-call data, not shared state.
+    (carrying `sessionLogger`) to `send`:
+    - `reviewer.ts:84`, `finalizer.ts:197`, `target-state.ts:49`,
+      `planner.ts:376` — pass the `options` already in scope.
+    - `planner.ts:338` is inside `stepAtCursor()` (`planner.ts:329`), the legacy
+      no-dedicated-finalizer finalize path, which **does not accept `options` at
+      all**. It needs an added `options?: CallOptions` parameter, threaded from its
+      three call sites (`planner.ts:254/299/307`) which each have `options` in
+      scope. Without this the legacy planner-finalize LLM call is missed — the same
+      class of gap the review caught for reviewer/finalizer.
+    The executor call already spreads `...ctx.options`
+    (`controller-coordinator-handler.ts:1228`). All of this is per-call data, not
+    shared state.
   - The flat/tool-loop paths already emit `llm_request_iter_N` /
     `llm_response_iter_N` via `logStep`; this brings the controller to parity.
 - **Controller decisions (`controller`)** — at the decision points in
@@ -149,11 +156,12 @@ disk (e.g. `llm_request_iter_2`, `controller_decision_replan`).
   new plumbing, and it is per-call data, not shared state.
 - **Enablement independent of `cfg.logDir`:** at the construction site
   (`chat-route-handler.ts:118-119`), the base dir becomes
-  `cfg.logDir ?? (anyDebugAreaOn ? DEBUG_TRACE_DIR : null)` (default
-  `./.smart-agent-debug/`), and the enabled-areas set is computed per §1a
-  (all-areas when from `logDir`, else the on-flags). `cfg.logDir` still wins for
-  the dir and forces all-areas (legacy). This is the change to the `SessionLogger`
-  construction; the area-set plumbing lives inside `SessionLogger`.
+  `cfg.logDir ?? (anyDebugAreaOn ? traceDir : null)`, where `traceDir` comes from
+  the **env var `DEBUG_TRACE_DIR`** (uniform with the rest of the env-driven
+  design), defaulting to `./.smart-agent-debug/`. The enabled-areas set is
+  computed per §1a (all-areas when from `logDir`, else the on-flags). `cfg.logDir`
+  still wins for the dir and forces all-areas (legacy). This is the change to the
+  `SessionLogger` construction; the area-set plumbing lives inside `SessionLogger`.
 - **Format is unchanged:** numbered JSON files per step under
   `<dir>/session_<id>/req_<ts>_<traceId>/NN_<name>.json` — already correlates
   session / run / traceId / order. Filter by the area-tagged `name`. A consumer
@@ -182,16 +190,19 @@ cleanup).
   `controller` and the reason. Assert the tagged call happens; filtering is the
   logger's job (tested above), so these don't re-read env.
 - **Regression (the gap this feature exists for)** — with `DEBUG_LLM` on, a run
-  that exercises reviewer / finalizer / target-state each yields an `llm` record
-  for that call (proves `options`/`sessionLogger` is threaded to those `send`
-  calls, not just the executor). This is the exact miss the design review caught.
+  that exercises reviewer / finalizer / target-state / the legacy planner-finalize
+  path (`stepAtCursor`) each yields an `llm` record for that call (proves
+  `options`/`sessionLogger` is threaded to every non-executor `send`, including
+  `stepAtCursor`'s added `options` param). These are the exact misses the design
+  reviews caught.
 - **Contract** — the 7 `sessionLogger` declarations all carry the optional `area?`
   and an existing 2-arg `logStep(name, data)` caller still type-checks.
 - **Unit (backward-compat)** — a controller decision with `DEBUG_CONTROLLER` set
   still fires the existing stderr `dlog` AND now the tagged `logStep`.
 - **Integration** — `DEBUG_LLM` set, `cfg.logDir` unset → step files appear under
-  the `DEBUG_TRACE_DIR` default and contain only `llm`-area records; all flags and
-  `logDir` unset → no dir created, no `logStep` writes.
+  the `DEBUG_TRACE_DIR` default (`./.smart-agent-debug/`) and contain only
+  `llm`-area records; setting env `DEBUG_TRACE_DIR` to a custom path redirects
+  them there; all flags and `logDir` unset → no dir created, no `logStep` writes.
 - **Safety assertion** — written step data never contains the configured api key /
   service key / auth header.
 
