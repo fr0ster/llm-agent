@@ -43,7 +43,7 @@ export interface CallOptions {
   };
   /** Detailed session debugger logger. */
   sessionLogger?: {
-    logStep(name: string, data: unknown): void;
+    logStep(name: string, data: unknown, area?: string): void;
   };
   /** Per-request logger used by the embedder-boundary usage wrapper to attribute
    *  embedding spend to this request. Optional; absent outside a request. */

@@ -1,5 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { DebugArea } from './debug-areas.js';
+
+/** Enabled trace areas: 'all' = legacy logDir mode (every step, incl. the
+ *  untagged `general` sentinel); a Set = only those areas' tagged steps. */
+export type EnabledAreas = 'all' | Set<DebugArea>;
 
 export class SessionLogger {
   private requestDir: string | null = null;
@@ -9,6 +14,7 @@ export class SessionLogger {
     private readonly baseLogDir: string | null,
     private readonly sessionId: string,
     private readonly traceId: string,
+    private readonly enabledAreas: EnabledAreas = 'all',
   ) {
     if (!this.baseLogDir) return;
 
@@ -27,8 +33,14 @@ export class SessionLogger {
     }
   }
 
-  logStep(name: string, data: unknown): void {
+  /** Write a numbered step file iff the step's area is enabled. `area` omitted =
+   *  the internal `general` sentinel (only written under 'all'). */
+  logStep(name: string, data: unknown, area?: DebugArea): void {
     if (!this.requestDir) return;
+    if (this.enabledAreas !== 'all') {
+      // Untagged (general) never writes under a granular set; tagged writes iff on.
+      if (area === undefined || !this.enabledAreas.has(area)) return;
+    }
 
     const fileName = `${String(this.fileIndex).padStart(2, '0')}_${name}.json`;
     const filePath = path.join(this.requestDir, fileName);

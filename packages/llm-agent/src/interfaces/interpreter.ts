@@ -26,7 +26,7 @@ export interface InterpretContext {
   /** Per-request session debugger logger, threaded into each worker dispatch
    *  so worker stages write to the parent's per-request session-log directory. */
   sessionLogger?: {
-    logStep(name: string, data: unknown): void;
+    logStep(name: string, data: unknown, area?: string): void;
   };
   /** Forwarded into each `worker.run({ ..., onPartial })`; the
    *  interpreter annotates `nodeId` before calling and emits
