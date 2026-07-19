@@ -46,19 +46,23 @@ export async function establishTargetState(
   /** Optional consumer domain hint appended to the agnostic evaluator prompt. */
   hint?: string,
 ): Promise<TargetStateOutcome> {
-  const r = await deps.evaluator.send([
-    {
-      role: 'system',
-      content: appendHint(
-        'Restate the user request as a SHORT objective — the target state to ' +
-          'achieve — in one or two sentences. Do NOT answer the request, and do ' +
-          'NOT include any data, results, code, or explanations. Output only the ' +
-          'objective.',
-        hint,
-      ),
-    },
-    { role: 'user', content: prompt },
-  ]);
+  const r = await deps.evaluator.send(
+    [
+      {
+        role: 'system',
+        content: appendHint(
+          'Restate the user request as a SHORT objective — the target state to ' +
+            'achieve — in one or two sentences. Do NOT answer the request, and do ' +
+            'NOT include any data, results, code, or explanations. Output only the ' +
+            'objective.',
+          hint,
+        ),
+      },
+      { role: 'user', content: prompt },
+    ],
+    undefined,
+    options,
+  );
   const target = r.kind === 'content' ? r.content : '';
 
   if (cfg.strategy === 'consumer-confirm') {

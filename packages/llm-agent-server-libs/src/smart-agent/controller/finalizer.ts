@@ -1,4 +1,4 @@
-import type { LlmUsage } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
 import type { ISubagentClient } from './subagent-client.js';
 
@@ -17,6 +17,10 @@ export interface FinalizeOpts {
    * directives it states. Agnostic — content is consumer-supplied.
    */
   skillsBlock?: string;
+  /** Request-scoped call options (sessionLogger / trace / signal) threaded to
+   *  the underlying `send`, so the finalize LLM I/O is captured under the
+   *  same session/trace as the rest of the run. */
+  callOptions?: CallOptions;
 }
 
 export interface FinalizerPolicy {
@@ -194,10 +198,14 @@ export class LlmFinalizer implements IFinalizer {
     const userContent = skills
       ? `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}\n\nSkills (delivery directives):\n${skills}`
       : `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}`;
-    const res = await this.client.send([
-      { role: 'system', content: system },
-      { role: 'user', content: userContent },
-    ]);
+    const res = await this.client.send(
+      [
+        { role: 'system', content: system },
+        { role: 'user', content: userContent },
+      ],
+      undefined,
+      opts.callOptions,
+    );
     opts.logUsage?.('finalizer', res.usage);
     if (res.kind !== 'content') {
       throw new Error(

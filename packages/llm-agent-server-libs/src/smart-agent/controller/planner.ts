@@ -251,7 +251,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
         runId: bundle.runId ?? '',
         steps: minted,
       });
-      return this.stepAtCursor(bundle, prompt, logUsage, boardText);
+      return this.stepAtCursor(bundle, prompt, logUsage, boardText, options);
     }
 
     // 2. Previous step failed, OR an external-tool result just arrived → replan
@@ -296,7 +296,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
       // this replan does NOT replan again on resume, and a finalizer error after an
       // empty replan retries only the finalizer (not another replan).
       bundle.lastOutcome = undefined;
-      return this.stepAtCursor(bundle, prompt, logUsage, boardText);
+      return this.stepAtCursor(bundle, prompt, logUsage, boardText, options);
     }
 
     // 3. Otherwise emit the step at the cursor (or finalize). The cursor is
@@ -304,7 +304,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
     //    is persisted together with the step result (see Task 4), and a resume
     //    with lastOutcome=undefined continues from the next uncompleted step
     //    instead of repeating the last one.
-    return this.stepAtCursor(bundle, prompt, logUsage, boardText);
+    return this.stepAtCursor(bundle, prompt, logUsage, boardText, options);
   }
 
   /** Commit the just-finished step's outcome so the advance is persisted with it.
@@ -331,17 +331,22 @@ export class SmartExecutorPlanner implements IControllerPlanner {
     prompt: string,
     logUsage?: (role: string, u?: LlmUsage) => void,
     boardText?: string,
+    options?: CallOptions,
   ): Promise<NextStep | null> {
     const plan = bundle.plan ?? [];
     const cursor = bundle.planCursor ?? 0;
     if (cursor >= plan.length) {
-      const res = await this.planner.send([
-        { role: 'system', content: appendHint(FINALIZE_SYSTEM, this.hint) },
-        {
-          role: 'user',
-          content: `Goal: ${bundle.goal}\nRequest: ${prompt}\nProgress:${progressBlock(bundle, boardText)}`,
-        },
-      ]);
+      const res = await this.planner.send(
+        [
+          { role: 'system', content: appendHint(FINALIZE_SYSTEM, this.hint) },
+          {
+            role: 'user',
+            content: `Goal: ${bundle.goal}\nRequest: ${prompt}\nProgress:${progressBlock(bundle, boardText)}`,
+          },
+        ],
+        undefined,
+        options,
+      );
       logUsage?.('finalizer', res.usage);
       // Finalizer must produce content; an error or tool_call is NOT a successful
       // answer → null so the handler re-asks rather than faking "completed".
@@ -373,23 +378,27 @@ export class SmartExecutorPlanner implements IControllerPlanner {
     const skillsBlock = this.skillsRecall
       ? await this.skillsRecall(bundle.goal, options)
       : '';
-    const res = await this.planner.send([
-      {
-        role: 'system',
-        content:
-          appendHint(system, this.hint) +
-          (retrying
-            ? '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw JSON object.'
-            : ''),
-      },
-      {
-        role: 'user',
-        content: withSkillsBlock(
-          `Goal: ${bundle.goal}\nProgress:${progressBlock(bundle, boardText)}${completedBlock}\nRequest: ${prompt}`,
-          skillsBlock,
-        ),
-      },
-    ]);
+    const res = await this.planner.send(
+      [
+        {
+          role: 'system',
+          content:
+            appendHint(system, this.hint) +
+            (retrying
+              ? '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw JSON object.'
+              : ''),
+        },
+        {
+          role: 'user',
+          content: withSkillsBlock(
+            `Goal: ${bundle.goal}\nProgress:${progressBlock(bundle, boardText)}${completedBlock}\nRequest: ${prompt}`,
+            skillsBlock,
+          ),
+        },
+      ],
+      undefined,
+      options,
+    );
     logUsage?.('planner', res.usage);
     if (res.kind !== 'content') return null;
     return parsePlan(res.content);

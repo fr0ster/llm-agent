@@ -1244,6 +1244,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
                 hint: deps.config.subagents.reviewer?.hint,
                 logUsage,
                 maxDigestChars: cfg.maxDigestChars ?? 500,
+                callOptions: ctx.options,
               })
             : {
                 kind: 'outcome',
@@ -1282,6 +1283,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               hint: deps.config.subagents.reviewer?.hint,
               logUsage,
               maxDigestChars: cfg.maxDigestChars ?? 500,
+              callOptions: ctx.options,
             });
           }
 
@@ -1671,6 +1673,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               logUsage,
               log: (m) => dlog(m),
               skillsBlock,
+              callOptions: ctx.options,
             },
           );
           // Empty-but-ok finalizer output is a JUDGE failure (spec), not a valid
