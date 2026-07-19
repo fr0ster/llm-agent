@@ -52,7 +52,10 @@ import type { Evidence, IReviewer, ReviewResult } from './reviewer.js';
 import type { RunIdMinter } from './run-scope.js';
 import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';
 import { hydrateBundle, persistBundle, resetRun } from './session-bundle.js';
-import type { ISubagentClient } from './subagent-client.js';
+import {
+  diagnosticCallOptions,
+  type ISubagentClient,
+} from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
 import type {
   ControlFailure,
@@ -1306,7 +1309,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
                 hint: deps.config.subagents.reviewer?.hint,
                 logUsage,
                 maxDigestChars: cfg.maxDigestChars ?? 500,
-                callOptions: ctx.options,
+                callOptions: diagnosticCallOptions(ctx.options),
               })
             : {
                 kind: 'outcome',
@@ -1345,7 +1348,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               hint: deps.config.subagents.reviewer?.hint,
               logUsage,
               maxDigestChars: cfg.maxDigestChars ?? 500,
-              callOptions: ctx.options,
+              callOptions: diagnosticCallOptions(ctx.options),
             });
           }
 
@@ -1771,7 +1774,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               logUsage,
               log: (m) => dlog(m),
               skillsBlock,
-              callOptions: ctx.options,
+              callOptions: diagnosticCallOptions(ctx.options),
             },
           );
           // Empty-but-ok finalizer output is a JUDGE failure (spec), not a valid

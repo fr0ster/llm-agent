@@ -6,7 +6,10 @@ import {
 } from './artifacts.js';
 import { extractJsonObject } from './parser.js';
 import { appendHint } from './prompts.js';
-import type { ISubagentClient } from './subagent-client.js';
+import {
+  diagnosticCallOptions,
+  type ISubagentClient,
+} from './subagent-client.js';
 import {
   type IControllerPlanner,
   MAX_REQUIRE_CHARS,
@@ -345,7 +348,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
           },
         ],
         undefined,
-        options,
+        diagnosticCallOptions(options),
       );
       logUsage?.('finalizer', res.usage);
       // Finalizer must produce content; an error or tool_call is NOT a successful
@@ -397,7 +400,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
         },
       ],
       undefined,
-      options,
+      diagnosticCallOptions(options),
     );
     logUsage?.('planner', res.usage);
     if (res.kind !== 'content') return null;

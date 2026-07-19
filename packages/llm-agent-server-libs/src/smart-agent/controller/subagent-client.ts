@@ -14,6 +14,26 @@ export interface ISubagentClient {
   ): Promise<SubagentResult>;
 }
 
+/**
+ * Narrow a full `CallOptions` down to the diagnostic-only subset safe to hand to
+ * controller subagent roles (reviewer, finalizer, planner, target-state
+ * evaluator). These roles rely on STRUCTURED output (JSON plans, verdicts) —
+ * generation params (`model`/`temperature`/`maxTokens`/`topP`/`stop`) built from
+ * the client request body must NOT reach them, only the diagnostic-only fields
+ * needed for tracing/cancellation. `undefined` in → `undefined` out.
+ */
+export function diagnosticCallOptions(
+  opts?: CallOptions,
+): CallOptions | undefined {
+  if (!opts) return undefined;
+  const out: CallOptions = {};
+  if (opts.sessionLogger !== undefined) out.sessionLogger = opts.sessionLogger;
+  if (opts.trace !== undefined) out.trace = opts.trace;
+  if (opts.sessionId !== undefined) out.sessionId = opts.sessionId;
+  if (opts.signal !== undefined) out.signal = opts.signal;
+  return out;
+}
+
 export function makeSubagentClient(llm: ILlm): ISubagentClient {
   let seq = 0;
   return {

@@ -365,10 +365,14 @@ export class ToolLoopHandler implements IStageHandler {
       let iterCompletionTokens = 0;
       let iterTotalTokens = 0;
 
-      ctx.options?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
-        messages,
-        tools: currentTools,
-      });
+      ctx.options?.sessionLogger?.logStep(
+        `llm_request_iter_${iteration + 1}`,
+        {
+          messages,
+          tools: currentTools,
+        },
+        'llm',
+      );
       const iterationMessageSummary = summarizeIterationMessages(messages);
       const looksLikeFinalPass = messages.some(
         (msg) =>
@@ -543,6 +547,7 @@ export class ToolLoopHandler implements IStageHandler {
       ctx.options?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
         { content, toolCalls, finishReason },
+        'llm',
       );
 
       // -- No tool calls: validate and finish --------------------------------

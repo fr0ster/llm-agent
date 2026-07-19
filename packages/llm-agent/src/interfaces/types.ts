@@ -32,10 +32,13 @@ export interface CallOptions {
   topP?: number;
   stop?: string[];
   stream?: boolean;
-  /** Per-request model override. Applies to every controller subagent role that
-   *  receives this CallOptions (executor, reviewer, finalizer, planner,
-   *  target-state evaluator) — not just the main LLM. Same for temperature /
-   *  maxTokens / topP / stop. */
+  /** Per-request model override. Applies to the main working LLM path (the
+   *  controller executor still receives the full `CallOptions`, unchanged).
+   *  It does NOT reach the reviewer, finalizer, planner, or target-state
+   *  evaluator roles — those receive only a diagnostic-only subset
+   *  (`sessionLogger`/`trace`/`sessionId`/`signal`) so a client-supplied
+   *  override can never corrupt their internal structured output (JSON plans,
+   *  verdicts). Same for temperature / maxTokens / topP / stop. */
   model?: string;
   /** Filter RAG results by namespace or other metadata. */
   ragFilter?: {

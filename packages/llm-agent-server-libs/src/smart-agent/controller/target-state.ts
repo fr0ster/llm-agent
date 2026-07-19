@@ -1,6 +1,9 @@
 import type { CallOptions, IEmbedder, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
-import type { ISubagentClient } from './subagent-client.js';
+import {
+  diagnosticCallOptions,
+  type ISubagentClient,
+} from './subagent-client.js';
 import type { ControllerConfig } from './types.js';
 
 export interface TargetStateDeps {
@@ -61,7 +64,7 @@ export async function establishTargetState(
       { role: 'user', content: prompt },
     ],
     undefined,
-    options,
+    diagnosticCallOptions(options),
   );
   const target = r.kind === 'content' ? r.content : '';
 

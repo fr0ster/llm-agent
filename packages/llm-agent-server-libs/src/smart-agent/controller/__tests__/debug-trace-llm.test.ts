@@ -4,7 +4,10 @@ import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import { LlmFinalizer } from '../finalizer.js';
 import { makeControllerPlanner } from '../planner.js';
 import { LlmReviewer } from '../reviewer.js';
-import { makeSubagentClient } from '../subagent-client.js';
+import {
+  diagnosticCallOptions,
+  makeSubagentClient,
+} from '../subagent-client.js';
 import { establishTargetState } from '../target-state.js';
 import type { SessionBundle } from '../types.js';
 
@@ -70,7 +73,7 @@ test('reviewer threads callOptions.sessionLogger to send', async () => {
   );
 });
 
-test('reviewer threads callOptions.model to send (request-level override propagates)', async () => {
+test('reviewer does NOT receive callOptions.model — narrowed to diagnostic-only subset', async () => {
   let seenOptions: unknown;
   const client = {
     async send(_m: unknown, _t: unknown, o: unknown) {
@@ -80,13 +83,30 @@ test('reviewer threads callOptions.model to send (request-level override propaga
   };
   const sessionLogger = { logStep() {} };
   const reviewer = new LlmReviewer(client as never);
+  // Mirrors the handler call site: `callOptions: diagnosticCallOptions(ctx.options)`.
+  // A client-supplied `model`/generation override must NOT leak into the
+  // reviewer's structured-output call — only the diagnostic subset does.
   await reviewer.review(
     { name: 's', instructions: 'i' } as never,
     [] as never,
     'result',
-    { callOptions: { model: 'req-model', sessionLogger } } as never,
+    {
+      callOptions: diagnosticCallOptions({
+        model: 'req-model',
+        temperature: 0.9,
+        sessionLogger,
+      } as never),
+    } as never,
   );
-  assert.equal((seenOptions as { model?: unknown })?.model, 'req-model');
+  assert.equal((seenOptions as { model?: unknown })?.model, undefined);
+  assert.equal(
+    (seenOptions as { temperature?: unknown })?.temperature,
+    undefined,
+  );
+  assert.equal(
+    (seenOptions as { sessionLogger?: unknown })?.sessionLogger,
+    sessionLogger,
+  );
 });
 
 test('finalizer threads callOptions.sessionLogger to send', async () => {
