@@ -70,6 +70,25 @@ test('reviewer threads callOptions.sessionLogger to send', async () => {
   );
 });
 
+test('reviewer threads callOptions.model to send (request-level override propagates)', async () => {
+  let seenOptions: unknown;
+  const client = {
+    async send(_m: unknown, _t: unknown, o: unknown) {
+      seenOptions = o;
+      return { kind: 'content' as const, content: '{"verdict":"pass"}' };
+    },
+  };
+  const sessionLogger = { logStep() {} };
+  const reviewer = new LlmReviewer(client as never);
+  await reviewer.review(
+    { name: 's', instructions: 'i' } as never,
+    [] as never,
+    'result',
+    { callOptions: { model: 'req-model', sessionLogger } } as never,
+  );
+  assert.equal((seenOptions as { model?: unknown })?.model, 'req-model');
+});
+
 test('finalizer threads callOptions.sessionLogger to send', async () => {
   let seenOptions: unknown;
   const client = {

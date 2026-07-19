@@ -49,6 +49,18 @@ unrelated key. This design closes both holes.
   the flags only add trace output. One deliberate, documented exception: a
   `cfg.logDir` run gains additional controller trace files (see §1a) — strictly
   more diagnostic output, no processing change.
+  **Separate, accepted exception (independent of the debug flags):** the Task 4
+  LLM-capture wiring threads `ctx.options` (as `callOptions`) into the
+  reviewer / finalizer / planner / target-state-evaluator `send()` calls so those
+  roles can log via `sessionLogger`. Because `CallOptions` also carries
+  request-level `model` / `temperature` / `maxTokens` / `topP` / `stop`, those
+  controller roles now honor per-request overrides too — this happens whenever
+  `callOptions` is threaded, not only when a `DEBUG_*` flag is set. This is an
+  intentional, maintainer-accepted behavior change, consistent with the executor
+  (which already spread `...ctx.options` into its own calls); it is not a
+  zero-change side effect of debug-trace. The `CallOptions.model` contract doc
+  (`packages/llm-agent/src/interfaces/types.ts`) was updated to reflect that the
+  override now applies to every controller subagent role, not only the main LLM.
 
 ## Design
 
