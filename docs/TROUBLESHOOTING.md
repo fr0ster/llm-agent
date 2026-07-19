@@ -369,7 +369,7 @@ what `smart-server.log` captures.
 **Fix.** Enable one or more area flags (all off by default):
 
 ```bash
-DEBUG_LLM=1         # capture every LLM call's request + response
+DEBUG_LLM=1         # capture LLM request+response on the inference paths (flat agent loop, tool-loop, pass-through, controller subagents)
 DEBUG_CONTROLLER=1  # controller step decisions (also prints to stderr)
 DEBUG_MCP=1         # MCP tool call args/result/timing
 DEBUG_RAG=1         # RAG recall queries + returned extracts

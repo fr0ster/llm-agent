@@ -381,12 +381,16 @@ export class ToolLoopHandler implements IStageHandler {
             Array.isArray(msg.tool_calls) &&
             msg.tool_calls.length > 0),
       );
-      ctx.options?.sessionLogger?.logStep('llm_request_iter_context_summary', {
-        iteration: iteration + 1,
-        toolCount: currentTools.length,
-        looksLikeFinalPass,
-        summary: iterationMessageSummary,
-      });
+      ctx.options?.sessionLogger?.logStep(
+        'llm_request_iter_context_summary',
+        {
+          iteration: iteration + 1,
+          toolCount: currentTools.length,
+          looksLikeFinalPass,
+          summary: iterationMessageSummary,
+        },
+        'llm',
+      );
       ctx.logger?.log({
         type: 'warning',
         traceId: ctx.options?.trace?.traceId ?? 'tool-loop',
