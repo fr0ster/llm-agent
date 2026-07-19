@@ -51,3 +51,54 @@ test('default enabledAreas is "all" (backward-compat, 3-arg ctor)', () => {
   log.logStep('legacy', { a: 1 });
   assert.equal(stepFiles(dir).length, 1);
 });
+
+/*
+ * Path-traversal containment.
+ *
+ * `name` reaches SessionLogger from model-controlled text: tool-loop-core
+ * logs `mcp_call_${tc.name}` BEFORE resolving `tc.name` against the client
+ * map, so a hallucinated or injected tool name never has to match a real
+ * tool to land in a filesystem path. `sessionId`/`traceId` are likewise
+ * request-derived. Containment belongs here, at the sink, not at the N
+ * call sites that build these strings.
+ */
+
+test('logStep with a traversing name writes inside the request dir, not outside', () => {
+  const outside = path.join(dir, 'ESCAPED.json');
+  const log = new SessionLogger(dir, 'sid', 'tid', new Set(['mcp']));
+  log.logStep('mcp_call_../../../ESCAPED', { a: 1 }, 'mcp');
+
+  assert.equal(fs.existsSync(outside), false, 'must not escape request dir');
+  const files = stepFiles(dir);
+  assert.equal(files.length, 1);
+  assert.match(files[0], /\.json$/);
+  assert.equal(
+    files[0].includes('..'),
+    false,
+    'traversal segments must be stripped from the file name',
+  );
+});
+
+test('logStep name containing separators/NUL is flattened, still written', () => {
+  const log = new SessionLogger(dir, 'sid', 'tid', new Set(['mcp']));
+  log.logStep('mcp_result_a/b\\c', { a: 1 }, 'mcp');
+  const files = stepFiles(dir);
+  assert.equal(files.length, 1);
+  assert.equal(/[/\\]/.test(files[0]), false);
+});
+
+test('traversing sessionId/traceId cannot place the request dir outside base', () => {
+  const log = new SessionLogger(
+    dir,
+    '../../evil',
+    '../../tid',
+    new Set(['llm']),
+  );
+  log.logStep('llm_request', { a: 1 }, 'llm');
+
+  assert.equal(fs.existsSync(path.join(dir, '..', '..', 'evil')), false);
+  const entries = fs.readdirSync(dir);
+  assert.equal(entries.length, 1);
+  assert.match(entries[0], /^session_/);
+  assert.equal(stepFiles(dir).length, 1);
+});
