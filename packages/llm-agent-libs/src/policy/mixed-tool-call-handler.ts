@@ -56,10 +56,14 @@ export function fireInternalToolsAsync(
             : JSON.stringify(res.value.content);
         if (res.ok) ctx.toolCache.set(tc.name, tc.arguments, res.value);
         ctx.metrics.toolCallCount.add();
-        ctx.options?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
-          arguments: tc.arguments,
-          result: text,
-        });
+        ctx.options?.sessionLogger?.logStep(
+          `mcp_call_${tc.name}`,
+          {
+            arguments: tc.arguments,
+            result: text,
+          },
+          'mcp',
+        );
         return { toolCallId: tc.id, toolName: tc.name, text };
       } catch (err) {
         return {
