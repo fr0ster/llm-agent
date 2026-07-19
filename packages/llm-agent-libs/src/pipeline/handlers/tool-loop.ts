@@ -871,11 +871,15 @@ export class ToolLoopHandler implements IStageHandler {
           // coordinator_step_* entries. Include resolved timeout when available
           // so a durationMs ≈ timeoutMs clearly flags which tool to bump via
           // toolTimeouts config.
-          ctx.options?.sessionLogger?.logStep('mcp_tool_call', {
-            toolName: r.tc.name,
-            durationMs: r.duration,
-            isError,
-          });
+          ctx.options?.sessionLogger?.logStep(
+            'mcp_tool_call',
+            {
+              toolName: r.tc.name,
+              durationMs: r.duration,
+              isError,
+            },
+            'mcp',
+          );
         },
       });
       let step = await batchGen.next();

@@ -1353,11 +1353,15 @@ export class SmartAgent {
             isError,
             durationMs: r.duration,
           });
-          opts?.sessionLogger?.logStep('mcp_tool_call', {
-            toolName: r.tc.name,
-            durationMs: r.duration,
-            isError,
-          });
+          opts?.sessionLogger?.logStep(
+            'mcp_tool_call',
+            {
+              toolName: r.tc.name,
+              durationMs: r.duration,
+              isError,
+            },
+            'mcp',
+          );
         },
       });
       if (outcome.escalated) return;

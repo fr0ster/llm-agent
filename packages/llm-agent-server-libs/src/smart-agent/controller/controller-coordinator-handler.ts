@@ -76,6 +76,24 @@ function dlog(msg: string): void {
   if (process.env.DEBUG_CONTROLLER) console.error(`[controller] ${msg}`);
 }
 
+/** Decision-point capture (area `controller`): mirrors `dlog`'s stderr
+ *  breadcrumb into a per-request session-log record so a DEBUG_CONTROLLER run
+ *  shows WHY the controller looped/replanned/rejected, not just THAT it did.
+ *  A no-op when no sessionLogger is wired (observability only). */
+function logDecision(
+  ctx: PipelineContext,
+  kind: string,
+  reason: string,
+  extra?: Record<string, unknown>,
+): void {
+  dlog(`decision ${kind}: ${reason}`);
+  ctx.options?.sessionLogger?.logStep(
+    `controller_decision_${kind}`,
+    { kind, reason, ...extra },
+    'controller',
+  );
+}
+
 /** Flat usage triple + per-model breakdown — the canonical terminal-chunk shape. */
 export type TerminalUsage = LlmUsage & {
   models?: Record<string, ModelUsageEntry>;
@@ -409,6 +427,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           if (resolved.status === 'failed') {
             if (bundle.inFlightStep)
               bundle.inFlightStep.phase = 'awaiting-replan';
+            logDecision(
+              ctx,
+              'replan',
+              resolved.note ||
+                `step "${bundle.inFlightStep?.step.name ?? 'step'}" resolved failed (adopted artifact)`,
+            );
           } else {
             bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
             bundle.inFlightStep = undefined;
@@ -549,6 +573,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       bundle.evalCallInFlight = false;
       bundle.evalResumeCount = 0;
       logUsage('evaluator', outcome.usage);
+      logDecision(
+        ctx,
+        'target-state',
+        outcome.kind === 'established'
+          ? `goal established: ${outcome.goal}`
+          : `needs confirmation: ${outcome.question}`,
+        { kind: outcome.kind },
+      );
       if (outcome.kind === 'needs-confirmation') {
         // Persist the proposed target with the pending marker so a confirmation
         // on resume commits IT (not a bare "yes"). See the clarify-resume above.
@@ -625,6 +657,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           });
           if (resolved.status === 'failed') {
             inf.phase = 'awaiting-replan';
+            logDecision(
+              ctx,
+              'replan',
+              resolved.note ||
+                `step "${inf.step.name}" resolved failed (adopted artifact)`,
+            );
           } else {
             bundle.nextSeq = inf.seq + 1;
             bundle.inFlightStep = undefined;
@@ -821,11 +859,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       const prev = bundle.inFlightStep;
       const attempt = prev && prev.seq === seq ? prev.attempt + 1 : 0;
       if (attempt >= (cfg.maxStepAttempts ?? 5)) {
+        const reason = `step "${next.step.name}" exceeded maxStepAttempts`;
+        logDecision(ctx, 'retry-exhausted', reason);
         await this.abortTerminal(
           ctx,
           sessionId,
           bundle,
-          `step "${next.step.name}" exceeded maxStepAttempts`,
+          reason,
           now,
           terminalTtlMs,
           usageNow(),
@@ -945,6 +985,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // result — never in a separate write, so a crash cannot replay a completed step.
       const settle = async (
         outcome: 'advanced' | 'failed' | 'partial',
+        /** Human reason for a 'failed' settle — logged via logDecision (kind
+         *  'replan'); the caller usually already computed this string for the
+         *  plannerPrivate note / writeControlFailure call. Absent → a generic
+         *  fallback so the decision record is never missing a reason. */
+        reason?: string,
       ): Promise<'advanced' | 'failed' | 'partial'> => {
         bundle.lastOutcome = outcome;
         onCommit?.(outcome);
@@ -958,6 +1003,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           if (bundle.inFlightStep)
             bundle.inFlightStep.phase = 'awaiting-replan';
           bundle.runPhase = 'executing';
+          logDecision(
+            ctx,
+            'replan',
+            reason ?? `step "${step.name}" failed — awaiting replan`,
+          );
         }
         await persistBundle(deps.backend, sessionId, bundle);
         return outcome;
@@ -1001,6 +1051,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if (stepBlock) {
         staticPrefix.push({ role: 'user', content: stepBlock });
       }
+      ctx.options?.sessionLogger?.logStep(
+        'rag_recall',
+        {
+          query: recallText,
+          extracts: recalledSteps.map((e) => ({
+            task: e.metadata.task,
+            content: e.content,
+          })),
+        },
+        'rag',
+      );
 
       // Per-step tool-loop context strategy (record/form). Absent factory →
       // LegacyAccumulateContextStrategy (byte-identical to the historical growing
@@ -1200,7 +1261,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             seq: inFlight.seq,
           };
         }
-        return settle('failed');
+        logDecision(ctx, 'control-failure', noteFor(reason));
+        return settle('failed', noteFor(reason));
       };
 
       // Inner loop handles tool routing / error retries until the executor
@@ -1269,15 +1331,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               // planner replans, rather than aborting the whole run — the terminal
               // backstop is maxStepAttempts/maxSteps, not a single unverifiable verdict.
               bundle.budgets.stepsUsed++;
-              await writeControlFailure(
-                `reviewer unverifiable after ${cfg.maxReviewRetries ?? 2} retries: ${review.reason}`,
-              );
+              const unverifiableReason = `reviewer unverifiable after ${cfg.maxReviewRetries ?? 2} retries: ${review.reason}`;
+              await writeControlFailure(unverifiableReason);
               bundle.plannerPrivate += `\n[seq ${
                 bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0
-              } ${step.name} failed] reviewer unverifiable after ${
-                cfg.maxReviewRetries ?? 2
-              } retries: ${review.reason}`;
-              return settle('failed');
+              } ${step.name} failed] ${unverifiableReason}`;
+              logDecision(ctx, 'reviewer-unverifiable', unverifiableReason, {
+                retries: reviewRetries,
+              });
+              return settle('failed', unverifiableReason);
             }
             review = await deps.reviewer!.review(step, evidence, res.content, {
               hint: deps.config.subagents.reviewer?.hint,
@@ -1320,6 +1382,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             note: outcome.note,
             remainder: outcome.remainder,
           });
+          if (mapped === 'failed') {
+            const rejectReason =
+              outcome.note || `reviewer rejected step "${step.name}"`;
+            logDecision(ctx, 'reviewer-reject', rejectReason, {
+              status: outcome.status,
+            });
+            return settle(mapped, rejectReason);
+          }
           return settle(mapped);
         }
 
@@ -1336,9 +1406,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           // Retries exhausted — feed the error back as the step result so the
           // planner can replan on the next iteration.
           bundle.budgets.stepsUsed++;
-          await writeControlFailure(`executor error: ${res.error}`);
+          const executorErrorReason = `executor error: ${res.error}`;
+          await writeControlFailure(executorErrorReason);
           bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error}`;
-          return settle('failed');
+          return settle('failed', executorErrorReason);
         }
 
         // res.kind === 'tool_call' → route the FIRST tool call.
@@ -1358,7 +1429,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           bundle.budgets.stepsUsed++;
           await writeControlFailure('empty tool call');
           bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
-          return settle('failed');
+          return settle(
+            'failed',
+            `step "${step.name}" produced an empty tool call`,
+          );
         }
         // Normalize the StreamToolCall (full or delta) into an LlmToolCall inline.
         const call: LlmToolCall =
@@ -1434,9 +1508,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             continue;
           }
           bundle.budgets.stepsUsed++;
-          await writeControlFailure(`requested unavailable tool ${name}`);
-          bundle.plannerPrivate += `\n[step ${step.name} failed] requested unavailable tool ${name}`;
-          return settle('failed');
+          const unavailableToolReason = `requested unavailable tool ${name}`;
+          await writeControlFailure(unavailableToolReason);
+          bundle.plannerPrivate += `\n[step ${step.name} failed] ${unavailableToolReason}`;
+          return settle('failed', unavailableToolReason);
         }
 
         // Prospective count gate BEFORE the increment (the before-increment model:
@@ -1460,9 +1535,21 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // decision → rethrow → outer catch swallow → (no response)). A non-McpError
         // is a genuine unexpected error and is re-thrown for the outer handler.
         let result: string;
+        const mcpCallStartedAt = Date.now();
         try {
           result = await deps.callMcp(name, args, callSignal);
         } catch (mcpErr) {
+          ctx.options?.sessionLogger?.logStep(
+            'mcp_tool_call',
+            {
+              name,
+              args,
+              result: undefined,
+              isError: true,
+              durationMs: Date.now() - mcpCallStartedAt,
+            },
+            'mcp',
+          );
           // A step-timeout cancellation aborts the merged signal → the bridge rejects.
           // Map that to a step-timeout control-failure BEFORE the McpError escalate so
           // it is NOT mis-classified as MCP-unavailable (20.4.0 escalate order is
@@ -1484,6 +1571,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           }
           throw mcpErr;
         }
+        ctx.options?.sessionLogger?.logStep(
+          'mcp_tool_call',
+          {
+            name,
+            args,
+            result,
+            isError: false,
+            durationMs: Date.now() - mcpCallStartedAt,
+          },
+          'mcp',
+        );
         // Record this exchange as a coherent assistant→tool ROUND (OpenAI protocol)
         // via the context strategy so the executor LLM continues from its own tool
         // call. The strategy owns the per-round context (Window keeps a bounded
