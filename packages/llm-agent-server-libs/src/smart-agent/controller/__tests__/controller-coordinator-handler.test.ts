@@ -2099,6 +2099,61 @@ describe('ControllerCoordinatorHandler', () => {
     ]);
   });
 
+  it('a step with NO requires gets EMPTY evidence — not a self-lookup on its own text', async () => {
+    // Regression for #213. A leaf step (nothing to depend on) used to fall back
+    // to recalling its OWN instruction text. Nothing is stored for it yet, so
+    // evidence read `MISSING (no artifact found)`, and the reviewer — told to
+    // fail any unsatisfied required reference — rejected correct work and the
+    // controller replanned. That loop is the token balloon reported in #213.
+    let seenEvidence: unknown;
+    const ragQueries: string[] = [];
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'Fetch the source of ZDEMO' }],
+          }),
+        },
+        { kind: 'content', content: 'd' },
+      ],
+      executor: [{ kind: 'content', content: 'r' }],
+      ragQuery: async (text) => {
+        ragQueries.push(text);
+        return [];
+      },
+    });
+    h.deps.reviewer = {
+      async review(_s, evidence) {
+        seenEvidence = evidence;
+        return {
+          kind: 'outcome',
+          outcome: { status: 'ok', approved: 'r', remainder: '', note: '' },
+        };
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+
+    assert.deepEqual(
+      seenEvidence,
+      [],
+      'a step with no requires has no dependency evidence to present',
+    );
+    // NOTE: the step's own text IS still recalled once — over artifactType
+    // 'step-result', to build the context prefix from what earlier steps
+    // produced. That recall is legitimate and unrelated: it feeds context, not
+    // evidence, so a miss there can never read as an unsatisfied dependency.
+    assert.ok(
+      ragQueries.length > 0,
+      'the separate step-result context recall still runs',
+    );
+  });
+
   it('step-result recall is injected + budget-capped; mcp-result recall is NOT in the static prefix (moved to the context strategy, Task 11)', async () => {
     const seenMessages: Message[][] = [];
     const h = harness({
