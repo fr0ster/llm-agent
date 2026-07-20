@@ -269,19 +269,41 @@ of the system, not of the caller's patience.
 In the controller's step loop, a step with `type === 'wait'` short-circuits
 **before** evidence recall, tool selection, executor and reviewer:
 
+**Step 0 — branch on whether this is a fresh dispatch or a resume.** The
+in-flight step either already carries `appliedWaitMs` or it does not, and the
+two paths must not be merged: running the fresh path on a resume would reset
+`waitStartedAt` to now and charge `waitMsUsed` a second time, breaking both the
+deadline contract and the charge-once rule.
+
+**Fresh dispatch** (`appliedWaitMs` absent):
+
 1. compute the applied duration:
    `applied = min(waitMs, maxWaitMs, remaining maxTotalWaitMs)` — this is where
    a clamp or a total-cap skip is decided, and `applied` may be `0`;
 2. charge `waitMsUsed += applied` and persist it together with
    `waitStartedAt = now` and `appliedWaitMs = applied` on the in-flight step,
    BEFORE any sleeping;
-3. sleep `max(0, waitStartedAt + appliedWaitMs - now)`, interruptible by
-   `CallOptions.signal`. On a first dispatch this is simply `applied`; on a
+3. continue at step 4.
+
+**Resume** (`appliedWaitMs` present):
+
+1. do NOT recompute `applied`, do NOT re-charge `waitMsUsed`, do NOT touch
+   `waitStartedAt` — the deadline was fixed when the wait first started and a
+   later clamp or cap change must not move it retroactively;
+2. if `waitStartedAt` is absent while `appliedWaitMs` is present (or vice
+   versa), this is the torn-write case: control-failure and replan, per the
+   missing-deadline-fields rule above;
+3. continue at step 4.
+
+**Both paths converge:**
+
+4. sleep `max(0, waitStartedAt + appliedWaitMs - now)`, interruptible by
+   `CallOptions.signal`. On a fresh dispatch this is simply `applied`; on a
    resume it is whatever remains of the persisted deadline, which may be `0`;
-4. if the step settled, record the step-result for whichever of the four
+5. if the step settled, record the step-result for whichever of the four
    settling cases applies, so the board and the planner's view of progress stay
    coherent; on an abort, write nothing and leave the step in-flight;
-5. advance — but ONLY for the four settling cases. On an abort, return the
+6. advance — but ONLY for the four settling cases. On an abort, return the
    cancellation to the caller WITHOUT advancing: the step is still in-flight,
    and advancing past it would skip a wait that never completed.
 
@@ -364,7 +386,7 @@ outlive typical client, proxy and load-balancer timeouts long before it
 outlives our own budgets. So the ceiling that matters in practice is the
 deployment's request timeout, not `maxTotalWaitMs`. Operators raising
 `maxWaitMs` must raise their request timeout to match; the documentation says
-so, and a wait clamped by an abort is reported as a cancellation, not as a
+so, and a wait interrupted by an abort is reported as a cancellation, not as a
 settled step.
 
 ### What this spec does NOT do
@@ -430,6 +452,9 @@ create → use ordering.
   `maxSteps`;
 - `waitMsUsed` is charged before the sleep and persisted, charged exactly once
   per step, and a bundle written without the field resumes as `0`;
+- a resumed wait recomputes NOTHING: `applied` is not recalculated,
+  `waitMsUsed` is not charged again, and `waitStartedAt` is not moved, even if
+  `maxWaitMs` or `maxTotalWaitMs` changed between the two runs;
 - resume sleeps only the remaining time to the persisted deadline: an outage
   longer than the wait settles immediately AS THE `resumed after deadline` case
   (not as `normal`, which would claim a sleep that did not happen on this run,
