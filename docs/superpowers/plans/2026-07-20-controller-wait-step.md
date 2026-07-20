@@ -568,13 +568,60 @@ git commit -m "feat(controller): wait-step decision logic (fresh/resume/torn, cl
 - Consumes: everything from Tasks 1-4.
 - Produces: no new exports.
 
-**Integration note (read before coding):** the existing site already sets `bundle.inFlightStep` and then calls `persistBundle` *before* `runStep`. Set the fresh path's `waitStartedAt` / `appliedWaitMs` / `budgets.waitMsUsed` on those objects **before that existing `persistBundle` call**, so "persist before sleep" costs no extra write and cannot drift from the generic step-start persist.
+**Integration note (read before coding) — THERE ARE TWO CALL SITES.**
+
+The controller reaches `runStep` from two places, and a wait must be
+intercepted at BOTH:
+
+| site | line | condition |
+|---|---|---|
+| fresh dispatch | `handler:835-846` | `next.kind === 'next'` — sets `inFlightStep`, persists, calls `runStep(next.step)` |
+| crash-replay / continuation resume | `handler:636-659` | an existing `inf.phase === 'executing'` with no artifact — calls `runStep(inf.step)` directly |
+
+Wiring only the fresh site is the trap: a resumed wait would go to the
+executor and reviewer, breaking the deliverable's core promise and making the
+entire deadline contract unreachable — the resume path is precisely where that
+contract matters.
+
+So the branch is extracted as ONE private method, `serveWaitStep(...)`, called
+from both sites immediately before their `runStep` call.
+
+`serveWaitStep` also OWNS its artifact writes. Do not call `writeControlFailure`
+from these sites: that helper is local to `runStep` (`handler:1156`) and is not
+in scope here. `serveWaitStep` writes both the settling artifact and the
+torn-write control-failure itself, using the same `writeArtifact` metadata
+shape.
+
+Clock: capture `const waitNow = Date.parse(now())` ONCE per invocation and use
+that single value for both `planWait({ now: waitNow })` and
+`waitStartedAt = waitNow`. `deps.now` (`handler:221`) returns an ISO string, so
+it must be parsed to epoch ms. Two separate `Date.now()` reads would skew the
+deadline and defeat clock injection in tests.
+
+At the fresh site, the existing `persistBundle` already runs before `runStep`,
+so setting the deadline fields before it costs no extra write.
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `controller-coordinator-handler.test.ts`, following the `harness({...})` pattern already used there:
 
 ```ts
+it('serves a RESUMED wait without the executor — the crash-replay path', async () => {
+  // Guards the second call site: a bundle already carrying an in-flight wait
+  // must be served by the controller, not handed to runStep.
+  let executorCalls = 0;
+  const h = harness({ /* pre-seeded bundle: inFlightStep = a wait step,
+                         phase 'executing', waitStartedAt far in the past,
+                         appliedWaitMs 30_000, no artifact for this attempt */ });
+  const realExecutor = h.deps.subagents.executor;
+  h.deps.subagents.executor = {
+    async send(...a: unknown[]) { executorCalls++; return realExecutor.send(...(a as never)); },
+  } as never;
+
+  await new ControllerCoordinatorHandler(h.deps).execute(fakeCtx().ctx, {}, undefined);
+  assert.equal(executorCalls, 0, 'a resumed wait must not reach the executor');
+});
+
 it('serves a wait step with zero executor, reviewer and MCP calls', async () => {
   let executorCalls = 0;
   let reviewerCalls = 0;
@@ -628,96 +675,146 @@ Expected: FAIL — the executor is invoked for the wait step.
 
 - [ ] **Step 3: Implement the dispatch branch**
 
-At the step-start site, after `bundle.inFlightStep = {...}` and BEFORE `await persistBundle(...)`:
+Add a private method on the handler, then call it from both sites.
 
 ```ts
-      if (isWaitStep(next.step)) {
-        const plan = planWait({
-          step: next.step,
-          inFlight: bundle.inFlightStep,
-          maxWaitMs: cfg.maxWaitMs ?? 600_000,
-          maxTotalWaitMs: cfg.maxTotalWaitMs ?? 1_800_000,
-          waitMsUsed: bundle.budgets.waitMsUsed ?? 0,
-          now: Date.now(),
-        });
-        if (plan.kind === 'fresh') {
-          bundle.budgets.waitMsUsed = (bundle.budgets.waitMsUsed ?? 0) + plan.applied;
-          bundle.inFlightStep.waitStartedAt = Date.now();
-          bundle.inFlightStep.appliedWaitMs = plan.applied;
-        }
-        bundle.runPhase = 'executing';
-        await persistBundle(deps.backend, sessionId, bundle);   // deadline durable BEFORE sleep
+  /** Serve a `type: 'wait'` step: the controller waits itself — no executor,
+   *  no reviewer, no MCP. Returns 'served' when the step settled and the loop
+   *  should continue, 'aborted' when the caller cancelled (no artifact, no
+   *  advance), or 'not-a-wait' so the caller falls through to runStep. */
+  private async serveWaitStep(args: {
+    ctx: PipelineContext; sessionId: string; bundle: SessionBundle;
+    rag: IRunScopedRag; meta: ArtifactMeta; step: Step;
+    cfg: ControllerConfig['budgets']; nowIso: () => string;
+  }): Promise<'served' | 'aborted' | 'not-a-wait'> {
+    const { bundle, step, cfg } = args;
+    if (!isWaitStep(step) || !bundle.inFlightStep) return 'not-a-wait';
 
-        if (plan.kind === 'torn') {
-          await writeControlFailure(`wait deadline half-written: missing ${plan.missing}`);
-          continue;                                             // planner replans
-        }
-        const toSleep =
-          plan.kind === 'fresh'
-            ? plan.applied
-            : plan.remaining;
-        const outcome = await sleepUntilAborted(toSleep, ctx.options?.signal, globalThis);
-        if (outcome === 'aborted') return true;                 // no artifact, no advance
-        await settleWait(bundle, next.step, plan);              // one of the four settling cases
-        continue;
-      }
+    const waitNow = Date.parse(args.nowIso());
+    const plan = planWait({
+      step,
+      inFlight: bundle.inFlightStep,
+      maxWaitMs: cfg.maxWaitMs ?? 600_000,
+      maxTotalWaitMs: cfg.maxTotalWaitMs ?? 1_800_000,
+      waitMsUsed: bundle.budgets.waitMsUsed ?? 0,
+      now: waitNow,
+    });
+
+    if (plan.kind === 'fresh') {
+      bundle.budgets.waitMsUsed = (bundle.budgets.waitMsUsed ?? 0) + plan.applied;
+      bundle.inFlightStep.waitStartedAt = waitNow;      // SAME reading as planWait
+      bundle.inFlightStep.appliedWaitMs = plan.applied;
+      await persistBundle(this.deps.backend, args.sessionId, bundle);  // durable BEFORE sleep
+    }
+
+    if (plan.kind === 'torn') {
+      await this.writeWaitArtifact(args, 'failed',
+        `Wait deadline half-written: missing ${plan.missing}. The step never ran.`,
+        'half-written deadline');
+      bundle.inFlightStep = undefined;
+      bundle.runPhase = 'planning';
+      await persistBundle(this.deps.backend, args.sessionId, bundle);
+      return 'served';                                   // planner replans
+    }
+
+    const toSleep = plan.kind === 'fresh' ? plan.applied : plan.remaining;
+    const outcome = await sleepUntilAborted(toSleep, args.ctx.options?.signal, globalThis);
+    if (outcome === 'aborted') return 'aborted';         // no artifact, no advance
+
+    const { text, note } = describeWait(plan, step);
+    await this.writeWaitArtifact(args, 'ok', text, note);
+    bundle.budgets.stepsUsed++;
+    bundle.inFlightStep = undefined;
+    bundle.planCursor = (bundle.planCursor ?? 0) + 1;
+    await persistBundle(this.deps.backend, args.sessionId, bundle);
+    return 'served';
+  }
 ```
 
-Import `isWaitStep`, `planWait`, `sleepUntilAborted` from `./wait-step.js`.
-
-`settleWait` writes the step-result through the same `writeArtifact` shape the
-controller already uses, then increments `stepsUsed` and advances the cursor —
-mirroring what `settle('advanced', …)` does for an executed step:
+`describeWait` is a pure helper — put it in `wait-step.ts` beside `planWait` and
+unit-test it there:
 
 ```ts
-      const settleWait = async (plan: WaitPlan): Promise<void> => {
-        const text =
-          plan.kind === 'resume'
-            ? plan.deadlinePassed
-              ? `Wait deadline had already elapsed during the outage; no additional sleep was performed.`
-              : `Waited the remaining ${plan.remaining} ms of the scheduled pause.`
-            : plan.cappedSkip
-              ? `No wait performed: the run's total wait budget is spent.`
-              : plan.clamped
-                ? `Waited ${plan.applied} ms (requested ${next.step.waitMs} ms, clamped to maxWaitMs).`
-                : `Waited ${plan.applied} ms for the system to settle.`;
-        const note =
-          plan.kind === 'resume' && plan.deadlinePassed
-            ? 'resumed after deadline'
-            : plan.kind === 'fresh' && plan.cappedSkip
-              ? 'total wait budget spent'
-              : plan.kind === 'fresh' && plan.clamped
-                ? 'clamped to maxWaitMs'
-                : '';
-        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
-        await writeArtifact(
-          rag,
-          {
-            ...meta,
-            artifactType: 'step-result',
-            task: next.step.name,
-            runId: bundle.runId,
-            seq: bundle.inFlightStep.seq,
-            attempt: bundle.inFlightStep.attempt,
-            status: 'ok',
-            note,
-            remainder: '',
-            stepId: next.step.stepId,
-            digest: text.slice(0, cfg.maxDigestChars ?? 500),
-            writeOrdinal: bundle.writeOrdinal,
-            content: text,
-          },
-          ctx.options,
-        );
-        bundle.budgets.stepsUsed++;
-        bundle.inFlightStep = undefined;
-        bundle.planCursor = (bundle.planCursor ?? 0) + 1;
-        await persistBundle(deps.backend, sessionId, bundle);
-      };
+export function describeWait(plan: WaitPlan, step: Step): { text: string; note: string } {
+  if (plan.kind === 'resume') {
+    return plan.deadlinePassed
+      ? { text: 'Wait deadline had already elapsed during the outage; no additional sleep was performed.',
+          note: 'resumed after deadline' }
+      : { text: `Waited the remaining ${plan.remaining} ms of the scheduled pause.`, note: '' };
+  }
+  if (plan.kind === 'fresh' && plan.cappedSkip) {
+    return { text: "No wait performed: the run's total wait budget is spent.",
+             note: 'total wait budget spent' };
+  }
+  if (plan.kind === 'fresh' && plan.clamped) {
+    return { text: `Waited ${plan.applied} ms (requested ${step.waitMs} ms, clamped to maxWaitMs).`,
+             note: 'clamped to maxWaitMs' };
+  }
+  return { text: `Waited ${(plan as { applied: number }).applied} ms for the system to settle.`, note: '' };
+}
 ```
 
-`content` is never empty — an empty-content `ok` risks being carried into
-approved content and surfacing as a blank executed step in the final answer.
+`writeWaitArtifact` is a small private method wrapping the existing
+`writeArtifact` metadata shape — `content` is NEVER empty, since an
+empty-content `ok` risks being carried into approved content and surfacing as a
+blank executed step:
+
+```ts
+  private async writeWaitArtifact(
+    args: { rag: IRunScopedRag; meta: ArtifactMeta; bundle: SessionBundle; step: Step; ctx: PipelineContext },
+    status: 'ok' | 'failed', text: string, note: string,
+  ): Promise<void> {
+    const { bundle, step } = args;
+    bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+    await writeArtifact(args.rag, {
+      ...args.meta,
+      artifactType: 'step-result',
+      task: step.name,
+      runId: bundle.runId,
+      seq: bundle.inFlightStep?.seq ?? 0,
+      attempt: bundle.inFlightStep?.attempt ?? 0,
+      status, note, remainder: '',
+      stepId: step.stepId,
+      digest: text.slice(0, this.deps.config.budgets.maxDigestChars ?? 500),
+      writeOrdinal: bundle.writeOrdinal,
+      content: text,
+    }, args.ctx.options);
+  }
+```
+
+**Call site A — fresh dispatch (`handler:835-846`).** After
+`bundle.inFlightStep = {...}` and the existing `persistBundle`, before
+`runStep`:
+
+```ts
+      const waitOutcome = await this.serveWaitStep({
+        ctx, sessionId, bundle, rag, meta, step: next.step,
+        cfg: cfg, nowIso: now,
+      });
+      if (waitOutcome === 'aborted') return true;
+      if (waitOutcome === 'served') continue;
+```
+
+**Call site B — resume (`handler:636-659`).** Immediately before the
+`const completed = await this.runStep(... inf.step ...)` call:
+
+```ts
+      const waitOutcome = await this.serveWaitStep({
+        ctx, sessionId, bundle, rag, meta, step: inf.step,
+        cfg: cfg, nowIso: now,
+      });
+      if (waitOutcome === 'aborted') return true;
+      if (waitOutcome === 'served') continue;
+```
+
+Import `isWaitStep`, `planWait`, `describeWait`, `sleepUntilAborted` from
+`./wait-step.js`.
+
+**Verify the real signatures before writing.** There is a standing comment at
+`handler:656` warning that a previous plan misstated `runStep`'s parameter
+order. Read the actual declarations of `runStep`, `writeArtifact` and
+`persistBundle` in the file and match them — this plan's snippets are a guide,
+not a substitute for the source.
 
 - [ ] **Step 4: Write the remaining case tests**
 
