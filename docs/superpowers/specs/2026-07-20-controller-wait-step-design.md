@@ -112,12 +112,35 @@ entirely.
 durable bundle currently carries only `budgets: { stepsUsed, rewindsUsed }`
 (`types.ts:123`) — it needs `waitMsUsed: number`.
 
-The budget is charged **before** sleeping, and persisted with the same write
-that records the step as in-flight. That ordering is what makes resume safe: if
-the process dies mid-sleep, the resumed run sees the budget already spent and
-cannot sleep the same wait a second time on the cap's account. An in-flight
-wait that is resumed is re-served against the *remaining* budget, so worst case
-it sleeps again but the run-level ceiling still holds.
+The budget is charged **once, before sleeping**, and persisted with the same
+write that records the step as in-flight. It is never charged again for that
+step.
+
+**Resume contract — deadline, not duration.** The in-flight write also persists
+`waitStartedAt` (epoch ms) and `appliedWaitMs` (post-clamp). On resume, the
+controller sleeps only the remainder:
+
+```
+remaining = max(0, waitStartedAt + appliedWaitMs - now)
+```
+
+So an outage longer than the wait settles the step immediately, and a short
+outage costs only the time genuinely left. This is chosen over the alternatives
+deliberately:
+
+- re-sleeping the full duration would double the wall-clock cost of a crash and
+  could exceed the wait the planner asked for;
+- settling unconditionally on resume would report the system as settled after a
+  1-second outage of a 360-second wait — the exact lie the aborted-wait rule
+  above exists to prevent.
+
+Real elapsed time is what the planner is actually buying, and elapsed time
+keeps running during an outage. The deadline honours that; a duration does not.
+
+Missing `waitStartedAt` / `appliedWaitMs` on an in-flight wait (a bundle
+written before this change, or a torn write) is treated as an aborted wait —
+not settled — so the planner is never told a wait completed that cannot be
+proven.
 
 Missing `waitMsUsed` on a bundle written before this change reads as `0`
 (backward compatible).
@@ -230,8 +253,15 @@ create → use ordering.
   fails the plan format and triggers a planner retry, rather than defaulting;
 - a settled wait increments `stepsUsed`, so a plan of wait steps still hits
   `maxSteps`;
-- `waitMsUsed` is charged before the sleep and persisted, and a bundle written
-  without the field resumes as `0`;
+- `waitMsUsed` is charged before the sleep and persisted, charged exactly once
+  per step, and a bundle written without the field resumes as `0`;
+- resume sleeps only the remaining time to the persisted deadline: an outage
+  longer than the wait settles immediately, a short outage sleeps the remainder,
+  and neither re-charges the budget;
+- an in-flight wait missing `waitStartedAt` / `appliedWaitMs` resumes as
+  aborted, not settled;
+- `waitMs` present on a NON-wait step, and an unknown `type` value, both leave
+  dispatch behaviour byte-identical to today (principle 7 regression guard);
 - each of the four step-result cases (normal / clamped / skipped / aborted)
   writes its canonical artifact, and an aborted wait is NOT settled;
 - a plan with no `wait` steps behaves exactly as before (no regression in the
