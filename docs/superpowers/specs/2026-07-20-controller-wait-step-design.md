@@ -269,13 +269,27 @@ of the system, not of the caller's patience.
 In the controller's step loop, a step with `type === 'wait'` short-circuits
 **before** evidence recall, tool selection, executor and reviewer:
 
-**Step 0 — branch on whether this is a fresh dispatch or a resume.** The
-in-flight step either already carries `appliedWaitMs` or it does not, and the
-two paths must not be merged: running the fresh path on a resume would reset
-`waitStartedAt` to now and charge `waitMsUsed` a second time, breaking both the
-deadline contract and the charge-once rule.
+**Step 0 — branch on BOTH deadline fields, three ways.** The decision is made
+on `waitStartedAt` and `appliedWaitMs` together, never on one of them:
 
-**Fresh dispatch** (`appliedWaitMs` absent):
+| `waitStartedAt` | `appliedWaitMs` | path |
+|---|---|---|
+| absent | absent | **fresh dispatch** |
+| present | present | **resume** |
+| present | absent | **control-failure** (torn write) |
+| absent | present | **control-failure** (torn write) |
+
+Branching on `appliedWaitMs` alone is the trap: a torn write that persisted
+`waitStartedAt` but not `appliedWaitMs` would fall into the fresh path, reset
+`waitStartedAt` to now and charge `waitMsUsed` a second time — silently, and
+precisely in the crash case the durable contract exists to survive. Testing one
+field and handling the mismatch inside the resume branch does not work either,
+because that branch is never reached for that combination.
+
+Running the fresh path on a genuine resume is the same class of error: it
+resets the deadline and double-charges.
+
+**Fresh dispatch** (BOTH fields absent):
 
 1. compute the applied duration:
    `applied = min(waitMs, maxWaitMs, remaining maxTotalWaitMs)` — this is where
@@ -285,15 +299,16 @@ deadline contract and the charge-once rule.
    BEFORE any sleeping;
 3. continue at step 4.
 
-**Resume** (`appliedWaitMs` present):
+**Resume** (BOTH fields present):
 
 1. do NOT recompute `applied`, do NOT re-charge `waitMsUsed`, do NOT touch
    `waitStartedAt` — the deadline was fixed when the wait first started and a
    later clamp or cap change must not move it retroactively;
-2. if `waitStartedAt` is absent while `appliedWaitMs` is present (or vice
-   versa), this is the torn-write case: control-failure and replan, per the
-   missing-deadline-fields rule above;
-3. continue at step 4.
+2. continue at step 4.
+
+**Control-failure** (exactly one field present): write a `control-failure`
+step-result and let the planner replan, per the missing-deadline-fields rule
+above. Do not sleep, do not charge, do not advance.
 
 **Both paths converge:**
 
@@ -460,9 +475,11 @@ create → use ordering.
   (not as `normal`, which would claim a sleep that did not happen on this run,
   and not as `skipped`, which would claim the wait was never served), a short
   outage sleeps the remainder, and neither re-charges the budget;
-- an in-flight wait missing `waitStartedAt` / `appliedWaitMs` produces a
-  `control-failure` step-result and a replan — NOT an abort, which would resume
-  into the same state forever;
+- an in-flight wait with BOTH deadline fields absent takes the fresh path;
+- an in-flight wait with exactly ONE deadline field present (either way round)
+  produces a `control-failure` step-result and a replan — it must NOT take the
+  fresh path, which would reset `waitStartedAt` and charge `waitMsUsed` twice,
+  and NOT the abort path, which would resume into the same state forever;
 - an abort mid-wait does not advance the plan cursor;
 - `waitMs` present on a NON-wait step, and an unknown `type` value, both leave
   dispatch behaviour byte-identical to today (principle 7 regression guard);
