@@ -63,6 +63,38 @@ export async function hydrateBundle(
   return emptyBundle();
 }
 
+/**
+ * Atomically settle a just-finished step and persist it in ONE write: record the
+ * durable `lastOutcome`, advance the planner cursor via `onCommit`, move `nextSeq`
+ * (advanced/partial clear the in-flight step and return to 'planning'; 'failed'
+ * keeps the seq and marks `awaiting-replan`), and persist. Extracted from
+ * `runStep`'s local `settle` so the wait-step path settles through the SAME
+ * transition (never a hand-rolled divergence). The return value is the outcome,
+ * consumed directly by `runStep` (`return settle(mapped)`).
+ */
+export async function settleStep(
+  be: KnowledgeBackend,
+  sessionId: string,
+  bundle: SessionBundle,
+  outcome: 'advanced' | 'failed' | 'partial',
+  onCommit?: (o: 'advanced' | 'failed' | 'partial') => void,
+): Promise<'advanced' | 'failed' | 'partial'> {
+  bundle.lastOutcome = outcome;
+  onCommit?.(outcome);
+  if (outcome === 'advanced' || outcome === 'partial') {
+    bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
+    bundle.inFlightStep = undefined;
+    bundle.runPhase = 'planning';
+  } else {
+    // 'failed' — keep the same seq, mark awaiting-replan in the SAME persist so
+    // recovery routes by durable phase.
+    if (bundle.inFlightStep) bundle.inFlightStep.phase = 'awaiting-replan';
+    bundle.runPhase = 'executing';
+  }
+  await persistBundle(be, sessionId, bundle);
+  return outcome;
+}
+
 /** Atomic fresh-run reset: clears EVERY run-scoped field and starts in
  *  `evaluating`. The caller mints + assigns a fresh `runId` and the new
  *  `originalRequest`. The terminal store (a separate keyed TTL store) is NOT
