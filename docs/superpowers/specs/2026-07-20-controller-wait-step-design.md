@@ -264,6 +264,27 @@ defaults block in `ControllerPipelinePlugin.parseConfig()`
 default lives and where `...budgetsRaw` applies the operator's overrides.
 Defaulting anywhere else — in the wait helper, at the call site — would put
 two sources of truth in the codebase and silently ignore YAML overrides.
+
+**Operator-provided values are validated at load:**
+
+- `maxWaitMs` — a **positive** finite integer;
+- `maxTotalWaitMs` — a **non-negative** finite integer (`0` is meaningful: it
+  disables waiting, and every wait step settles as skipped).
+
+Anything else — a string from YAML, `NaN`, a negative, a fraction — throws
+during `parseConfig`, matching how that method already rejects a missing
+`subagents.<role>` and the removed `planner:` key (`controller.ts:86,100`).
+These two knobs drive an actual `sleep`, so a nonsensical value does not
+degrade gracefully: `maxWaitMs: -1` would clamp every wait to a negative
+duration, and `maxWaitMs: "600000"` from unquoted-YAML habits would compare as
+a string. Failing at load is far better than a plan that silently stops
+waiting in production.
+
+Scope note: the *existing* budget fields are not validated today —
+`...budgetsRaw` is cast blindly, so `maxSteps: "abc"` also passes through. That
+is a real pre-existing gap, but fixing it means touching every controller
+budget and its tests; this deliverable validates only the two fields it
+introduces rather than growing into a config-hardening change.
 A planner that emits an hour is clipped; a planner that emits 360 s is obeyed.
 Clamping is recorded, never silent. Once the cumulative budget is spent,
 further `wait` steps settle immediately rather than sleeping, and that is
@@ -320,6 +341,11 @@ create → use ordering.
 - `parseConfig()` defaults `maxWaitMs` to `600_000` and `maxTotalWaitMs` to
   `1_800_000`, and an explicit YAML value for either overrides the default —
   the guard against the defaults drifting into the wait helper;
+- `parseConfig()` THROWS for `maxWaitMs` given as a string, `NaN`, a fraction,
+  a negative or `0`, and for `maxTotalWaitMs` given as a string, `NaN`, a
+  fraction or a negative;
+- `maxTotalWaitMs: 0` is accepted and disables waiting: every wait step settles
+  as skipped without sleeping;
 - a planner-chosen duration inside the working range (30 s / 90 s / 120 s /
   360 s) is honoured exactly, not clipped;
 - `waitMs` beyond `maxWaitMs` is clamped and the clamp is reported;
