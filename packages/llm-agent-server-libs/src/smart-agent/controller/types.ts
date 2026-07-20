@@ -119,12 +119,18 @@ export interface InFlightStep {
   contextStrategyState?: SerializableStrategyState;
   /** Bounded message tail (control messages only) persisted across suspend/resume. */
   controlTail?: Message[];
+  /** Epoch ms when this wait's sleep began. Persisted BEFORE sleeping, with
+   *  `appliedWaitMs`, so a crash mid-sleep resumes against a fixed deadline.
+   *  Exactly one of the two present is a torn write → control-failure. */
+  waitStartedAt?: number;
+  /** Post-clamp duration this wait is serving. Never recomputed on resume. */
+  appliedWaitMs?: number;
 }
 
 export interface SessionBundle {
   goal: string;
   plannerPrivate: string;
-  budgets: { stepsUsed: number; rewindsUsed: number };
+  budgets: { stepsUsed: number; rewindsUsed: number; waitMsUsed?: number };
   plan?: Step[];
   planCursor?: number;
   /** Plan decisions the planner produced this turn (create/replan), NOT yet

@@ -83,6 +83,37 @@ describe('session-bundle', () => {
     assert.equal(got.goal, 'real goal'); // not the code artifact
   });
 
+  it('bundle round-trips wait deadline fields and waitMsUsed', async () => {
+    const be = memBackend();
+    const b = await hydrateBundle(be, 'sess-wait');
+    b.budgets.waitMsUsed = 30_000;
+    b.inFlightStep = {
+      seq: 1,
+      step: { name: 'w', instructions: 'w', type: 'wait', waitMs: 30_000 },
+      attempt: 0,
+      resumeCount: 0,
+      phase: 'executing',
+      transcript: [],
+      toolCallCount: 0,
+      waitStartedAt: 1_700_000_000_000,
+      appliedWaitMs: 30_000,
+    };
+    await persistBundle(be, 'sess-wait', b);
+
+    const again = await hydrateBundle(be, 'sess-wait');
+    assert.equal(again.budgets.waitMsUsed, 30_000);
+    assert.equal(again.inFlightStep?.waitStartedAt, 1_700_000_000_000);
+    assert.equal(again.inFlightStep?.appliedWaitMs, 30_000);
+  });
+
+  it('a bundle written without waitMsUsed reads as absent, not NaN', async () => {
+    const be = memBackend();
+    const b = await hydrateBundle(be, 'sess-legacy');
+    await persistBundle(be, 'sess-legacy', b);
+    const again = await hydrateBundle(be, 'sess-legacy');
+    assert.equal(again.budgets.waitMsUsed ?? 0, 0);
+  });
+
   it('resetRun clears every run-scoped field and starts in evaluating', () => {
     const b = {
       goal: 'old',
