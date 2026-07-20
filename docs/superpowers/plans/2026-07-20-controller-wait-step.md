@@ -551,7 +551,7 @@ export function sleepUntilAborted(
 ```bash
 npx tsx --test packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/wait-step.test.ts
 ```
-Expected: PASS (11 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Full gate and commit**
 
@@ -727,11 +727,13 @@ step, and the planner's cursor would never move.
 
 Lift that body into a module-level function in `wait-step.ts`'s sibling — or a
 private handler method — and have BOTH `runStep`'s local `settle` and
-`serveWaitStep` call it:
+`serveWaitStep` call it. Note the backend type: `persistBundle` takes a
+`KnowledgeBackend` imported from `@mcp-abap-adt/llm-agent-libs`
+(`session-bundle.ts:1,26`) — there is no `IBackend` in this codebase:
 
 ```ts
 export async function settleStep(
-  backend: IBackend, sessionId: string, bundle: SessionBundle,
+  backend: KnowledgeBackend, sessionId: string, bundle: SessionBundle,
   outcome: 'advanced' | 'failed' | 'partial',
   onCommit?: (o: 'advanced' | 'failed' | 'partial') => void,
 ): Promise<'advanced' | 'failed' | 'partial'> {
@@ -774,7 +776,7 @@ Then add the private method on the handler and call it from both sites.
    *  advance), or 'not-a-wait' so the caller falls through to runStep. */
   private async serveWaitStep(args: {
     ctx: PipelineContext; sessionId: string; bundle: SessionBundle;
-    rag: IRunScopedRag; meta: ArtifactMeta; step: Step;
+    rag: IKnowledgeRagHandle; meta: KnowledgeEntryMetadata; step: Step;
     cfg: ControllerConfig['budgets']; nowIso: () => string;
     onCommit?: (o: 'advanced' | 'failed' | 'partial') => void;
   }): Promise<'served' | 'aborted' | 'not-a-wait'> {
@@ -866,7 +868,7 @@ blank executed step:
 
 ```ts
   private async writeWaitArtifact(
-    args: { rag: IRunScopedRag; meta: ArtifactMeta; bundle: SessionBundle; step: Step; ctx: PipelineContext },
+    args: { rag: IKnowledgeRagHandle; meta: KnowledgeEntryMetadata; bundle: SessionBundle; step: Step; ctx: PipelineContext },
     status: 'ok' | 'failed', text: string, note: string,
   ): Promise<void> {
     const { bundle, step } = args;
@@ -931,6 +933,17 @@ must not be charged as one.
 
 Import `isWaitStep`, `planWait`, `describeWait`, `sleepUntilAborted` from
 `./wait-step.js`.
+
+**Type names used above, verified against the source** (do not guess these —
+an earlier draft of this plan invented `IBackend`, `IRunScopedRag` and
+`ArtifactMeta`, none of which exist):
+
+| in the snippets | real declaration |
+|---|---|
+| backend for `persistBundle` | `KnowledgeBackend` — `session-bundle.ts:1,26` |
+| `rag` | `IKnowledgeRagHandle` — `handler:888` |
+| `meta` | `KnowledgeEntryMetadata` — `handler:889` |
+| `writeArtifact`'s 2nd param | `Artifact` — `memorizer.ts:13` |
 
 **Verify the real signatures before writing.** There is a standing comment at
 `handler:656` warning that a previous plan misstated `runStep`'s parameter
