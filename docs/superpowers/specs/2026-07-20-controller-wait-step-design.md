@@ -88,16 +88,30 @@ after `waitMs`.
 
 ### Bounds
 
-`waitMs` is clamped by the engine to `[0, maxWaitMs]`, `maxWaitMs` configurable
-under `pipeline.config.budgets` with a conservative default (30 s). A planner
-that emits `waitMs: 3600000` must not hold a request for an hour. A clamp is
-logged, never silent.
+**The planner decides how long to wait.** It knows what it just asked the
+system to do — a DDL activation and a transport release do not settle on the
+same timescale — so 30 s, 90 s, 120 s and 360 s are all legitimate values it
+may emit. The engine does not second-guess them.
 
-Cumulative wait per run is bounded by its own budget, `maxTotalWaitMs` (default
-120 s). Once spent, further `wait` steps settle immediately instead of
-sleeping, and the fact is recorded. This deliverable defines its own cap rather
-than borrowing the run-level ceiling from deliverable 2, which does not exist
-yet.
+The clamp exists only to bound absurdity, and is therefore set well above the
+planner's working range: `maxWaitMs` default **600 s**, `maxTotalWaitMs`
+default **1800 s** per run, both configurable under `pipeline.config.budgets`.
+A planner that emits an hour is clipped; a planner that emits 360 s is obeyed.
+Clamping is recorded, never silent. Once the cumulative budget is spent,
+further `wait` steps settle immediately rather than sleeping, and that is
+recorded too.
+
+This deliverable defines its own cap rather than borrowing the run-level
+ceiling from deliverable 2, which does not exist yet.
+
+**Consequence to be explicit about:** a wait blocks the request. A plan with
+two 360 s waits holds an HTTP connection for over twelve minutes, which will
+outlive typical client, proxy and load-balancer timeouts long before it
+outlives our own budgets. So the ceiling that matters in practice is the
+deployment's request timeout, not `maxTotalWaitMs`. Operators raising
+`maxWaitMs` must raise their request timeout to match; the documentation says
+so, and a wait clamped by an abort is reported as a cancellation, not as a
+settled step.
 
 ### What this spec does NOT do
 
@@ -134,7 +148,11 @@ create → use ordering.
 - the settled `wait` step reports success into the plan's progress, so the
   planner sees "step done, OK" exactly as for an executed step;
 - the wait is interrupted by an abort signal rather than running to completion;
+- a planner-chosen duration inside the working range (30 s / 90 s / 120 s /
+  360 s) is honoured exactly, not clipped;
 - `waitMs` beyond `maxWaitMs` is clamped and the clamp is reported;
+- once `maxTotalWaitMs` is spent, a further `wait` settles immediately and
+  records that it was skipped;
 - a `wait` step produces a step-result the board reflects;
 - a plan with no `wait` steps behaves exactly as before (no regression in the
   existing controller suites).
@@ -153,8 +171,9 @@ the suite stays fast and deterministic.
    interface.
 4. **ISP** — nothing is added to an existing interface; `Step.type` already
    existed.
-5. **Strategies** — the wait *duration policy* is the planner's; the *clamp* is
-   an engine safety bound, deliberately not consumer-pluggable in this
+5. **Strategies** — the wait *duration* is the planner's decision, not the
+   engine's; the *clamp* is only an absurdity bound, set above the planner's
+   working range and configurable, deliberately not a pluggable policy in this
    deliverable.
 6. **File size** — dispatch of the wait branch goes into a small focused module
    rather than growing `controller-coordinator-handler.ts`, which is already
