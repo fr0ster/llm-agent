@@ -5,6 +5,7 @@ import {
   ENGLISH_INSTRUCTIONS_RULE,
   EXTERNAL_RESULT_REPLAN_SYSTEM,
   makeControllerPlanner,
+  parsePlan,
   REPLAN_SYSTEM,
   SMART_CREATE_PLAN_SYSTEM,
   SMART_EXTERNAL_RESULT_REPLAN_SYSTEM,
@@ -700,4 +701,57 @@ test('SmartExecutorPlanner create-plan prompt PERMITS coarse, self-expanding ste
   const sys = client.lastSystemContent();
   assert.match(sys, /a step MAY be COARSE/); // smart granularity clause present
   assert.doesNotMatch(sys, /EXACTLY ONE ATOMIC action/); // NOT the weak clause
+});
+
+test('parsePlan preserves waitMs on a wait step', () => {
+  const plan = parsePlan(
+    JSON.stringify({
+      plan: [
+        {
+          name: 'settle',
+          instructions: 'let activation settle',
+          type: 'wait',
+          waitMs: 30000,
+        },
+      ],
+    }),
+  );
+  assert.equal(plan?.[0].waitMs, 30000);
+  assert.equal(plan?.[0].type, 'wait');
+});
+
+for (const bad of [
+  undefined,
+  '30000',
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  -1,
+  0,
+  1.5,
+]) {
+  test(`parsePlan rejects a wait step with waitMs=${String(bad)}`, () => {
+    const plan = parsePlan(
+      JSON.stringify({
+        plan: [
+          {
+            name: 'settle',
+            instructions: 'x',
+            type: 'wait',
+            ...(bad === undefined ? {} : { waitMs: bad }),
+          },
+        ],
+      }),
+    );
+    assert.equal(plan, null);
+  });
+}
+
+test('waitMs on a NON-wait step is ignored, step still parses', () => {
+  const plan = parsePlan(
+    JSON.stringify({
+      plan: [{ name: 'read', instructions: 'read X', waitMs: 5 }],
+    }),
+  );
+  assert.equal(plan?.length, 1);
+  assert.equal(plan?.[0].waitMs, undefined);
 });

@@ -21,6 +21,10 @@ export interface Step {
   name: string;
   instructions: string;
   type?: string;
+  /** Pause duration for a `type: 'wait'` step, served by the controller itself
+   *  (no executor, no reviewer, no MCP). Planner-authored values must be a
+   *  positive finite integer; see the wait-step spec. Ignored on other types. */
+  waitMs?: number;
   /** Marks a discovery step whose result enumerates remaining work (§D). */
   discovery?: true;
   /** When this step REPLACES a failed step on replan, the superseded `stepId` (§F). */

@@ -155,7 +155,14 @@ const FINALIZE_SYSTEM =
  *  name/instructions (so a half-formed step is a retryable format error, not a
  *  silently-dropped step). An explicitly empty `{"plan":[]}` is VALID (= nothing
  *  left to do — used by replan to signal completion). */
-function parsePlan(content: string): Step[] | null {
+/** A planner-authored duration: positive, finite, integral. Zero is rejected —
+ *  it settles OK while granting no settle time, the same failure mode as a
+ *  dropped `waitMs`. */
+function isPositiveFiniteInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0;
+}
+
+export function parsePlan(content: string): Step[] | null {
   const json = extractJsonObject(content);
   if (json === null) return null;
   try {
@@ -169,11 +176,15 @@ function parsePlan(content: string): Step[] | null {
       }
       const req = validateRequires((raw as { requires?: unknown }).requires);
       if (req === false) return null; // malformed requires → format failure → retry
+      const isWait = s.type === 'wait';
+      const waitMs = (raw as { waitMs?: unknown }).waitMs;
+      if (isWait && !isPositiveFiniteInt(waitMs)) return null;
       steps.push({
         name: s.name,
         instructions: s.instructions,
         ...(s.type ? { type: s.type } : {}),
         ...(req ? { requires: req } : {}),
+        ...(isWait ? { waitMs: waitMs as number } : {}),
       });
     }
     return steps;
