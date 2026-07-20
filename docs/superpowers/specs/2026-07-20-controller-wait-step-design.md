@@ -174,19 +174,27 @@ deliberately:
 Real elapsed time is what the planner is actually buying, and elapsed time
 keeps running during an outage. The deadline honours that; a duration does not.
 
-**Missing deadline fields are a control failure, NOT an abort.** An in-flight
-wait whose `waitStartedAt` / `appliedWaitMs` are absent — a bundle written
-before this change, or a torn write — cannot be served: there is no deadline to
-compute a remainder from, and the elapsed time is unknowable.
+**A HALF-written deadline is a control failure, NOT an abort.** The rule is
+about *inconsistency*, not absence: exactly one of `waitStartedAt` /
+`appliedWaitMs` present is a torn write. Such a step cannot be served — there
+is no coherent deadline to compute a remainder from, and the elapsed time is
+unknowable.
 
-It must NOT reuse the abort contract. Abort deliberately leaves the step
-in-flight and resumable, so applying it here would resume into the same
-fields-missing state forever — a livelock, and one that costs nothing per
+Both fields absent is NOT this case. That is simply a wait that has not been
+charged or started yet, and it takes the ordinary fresh-dispatch path. This
+covers the legacy bundle too: an in-flight wait in a bundle written before this
+change has neither field, so it is dispatched fresh — computed, charged and
+slept for the first time. Nothing is double-charged, because the old bundle
+never charged anything: the field did not exist.
+
+A torn write must NOT reuse the abort contract. Abort deliberately leaves the
+step in-flight and resumable, so applying it here would resume into the same
+inconsistent state forever — a livelock, and one that costs nothing per
 iteration so nothing else would ever stop it.
 
 Instead the controller writes a `control-failure` step-result (the existing
 `writeControlFailure` path, generic `reason: 'control-failure'`, note naming
-the missing fields) and lets the planner replan. That reuses machinery the
+which field is missing) and lets the planner replan. That reuses machinery the
 controller already has, and inherits its bounds — `maxStepAttempts` and the
 replan budget — so the failure terminates instead of spinning. The planner can
 simply re-emit the wait, which is the correct recovery: the step never ran.
@@ -307,7 +315,7 @@ resets the deadline and double-charges.
 2. continue at step 4.
 
 **Control-failure** (exactly one field present): write a `control-failure`
-step-result and let the planner replan, per the missing-deadline-fields rule
+step-result and let the planner replan, per the half-written-deadline rule
 above. Do not sleep, do not charge, do not advance.
 
 **Both paths converge:**
