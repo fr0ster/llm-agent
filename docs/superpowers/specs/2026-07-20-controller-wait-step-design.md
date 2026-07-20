@@ -241,8 +241,16 @@ same timescale — so 30 s, 90 s, 120 s and 360 s are all legitimate values it
 may emit. The engine does not second-guess them.
 
 The clamp exists only to bound absurdity, and is therefore set well above the
-planner's working range: `maxWaitMs` default **600 s**, `maxTotalWaitMs`
-default **1800 s** per run, both configurable under `pipeline.config.budgets`.
+planner's working range: `maxWaitMs` default **600 000 ms**, `maxTotalWaitMs`
+default **1 800 000 ms** per run, both configurable under
+`pipeline.config.budgets`.
+
+Both knobs must be added to `ControllerConfig['budgets']` **and** to the
+defaults block in `ControllerPipelinePlugin.parseConfig()`
+(`pipelines/controller.ts:120`), which is the single place every other budget
+default lives and where `...budgetsRaw` applies the operator's overrides.
+Defaulting anywhere else — in the wait helper, at the call site — would put
+two sources of truth in the codebase and silently ignore YAML overrides.
 A planner that emits an hour is clipped; a planner that emits 360 s is obeyed.
 Clamping is recorded, never silent. Once the cumulative budget is spent,
 further `wait` steps settle immediately rather than sleeping, and that is
@@ -296,6 +304,9 @@ create → use ordering.
 - the settled `wait` step reports success into the plan's progress, so the
   planner sees "step done, OK" exactly as for an executed step;
 - the wait is interrupted by an abort signal rather than running to completion;
+- `parseConfig()` defaults `maxWaitMs` to `600_000` and `maxTotalWaitMs` to
+  `1_800_000`, and an explicit YAML value for either overrides the default —
+  the guard against the defaults drifting into the wait helper;
 - a planner-chosen duration inside the working range (30 s / 90 s / 120 s /
   360 s) is honoured exactly, not clipped;
 - `waitMs` beyond `maxWaitMs` is clamped and the clamp is reported;
