@@ -394,8 +394,9 @@ create → use ordering.
   aborted, not settled;
 - `waitMs` present on a NON-wait step, and an unknown `type` value, both leave
   dispatch behaviour byte-identical to today (principle 7 regression guard);
-- each of the four step-result cases (normal / clamped / skipped / aborted)
-  writes its canonical artifact, and an aborted wait is NOT settled;
+- each of the five step-result cases (normal / clamped / skipped /
+  resumed-after-deadline / aborted) writes its canonical artifact, and an
+  aborted wait is NOT settled;
 - a plan with no `wait` steps behaves exactly as before (no regression in the
   existing controller suites).
 
