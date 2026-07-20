@@ -34,7 +34,7 @@ paid for at inference prices.
 ## Design
 
 Waiting becomes a first-class plan step executed by the deterministic
-dispatcher. No LLM call, no MCP call, no tokens.
+dispatcher. Serving the step costs no LLM call, no MCP call and no tokens.
 
 | role | responsibility | LLM |
 |---|---|---|
@@ -54,8 +54,9 @@ as a delegation to some other component.
 **A `wait` step is never an MCP tool call.** That is the whole point: routing a
 pause through the tool catalog means the LLM must *decide* to wait and then
 *read back* the result, which is exactly the two-round-trip cost this
-deliverable removes. There is no code path in which `type: 'wait'` reaches an
-MCP client or a model.
+deliverable removes. No code path serves a `type: 'wait'` step by calling an MCP client, the
+executor or the reviewer. (The step still appears on the board afterwards, and
+the board reaches the planner — see the step-shape section.)
 
 The dispatch lives in `controller-coordinator-handler.ts`. Because that file is
 already oversized, the wait branch itself goes into a small focused module that
@@ -73,7 +74,21 @@ unrelated to this deliverable and is not touched.
 ```
 
 `instructions` stays required and human-readable ("wait for ZI_… activation to
-settle") so the board and digest remain legible; it is never sent to a model.
+settle") so the board and digest remain legible.
+
+Precisely: a wait step's `instructions` is never sent to the **executor or
+reviewer** — it is not an executable instruction, and nothing dispatches it as
+one. It *is* carried into the board like any other step (`board.ts:298`
+renders it into the board line) and therefore does reach the planner and
+finalizer through `boardText` (`planner.ts:342`). That is intended and must
+not be "fixed": the planner needs to see that it scheduled a wait and why,
+otherwise it cannot reason about the plan it built.
+
+Stated as a rule for the implementer: **do not strip a wait step from the
+board or shorten its instructions** in the name of saving tokens. The
+zero-token claim of this deliverable is about the wait's *dispatch* — no
+executor call, no reviewer call, no MCP call — not about the step being
+invisible to every model afterwards.
 
 ### Runtime contract (must be implemented, not inferred)
 
@@ -274,9 +289,10 @@ create → use ordering.
 
 ## Testing
 
-- a plan containing `type: 'wait'` settles the step with **zero** LLM calls and
-  **zero** MCP calls (asserted against spies, not by timing) — this is the
-  load-bearing test of the whole deliverable;
+- serving a `type: 'wait'` step makes **zero** executor, reviewer and MCP calls
+  (asserted against spies, not by timing) — this is the load-bearing test of the
+  whole deliverable. It asserts the DISPATCH, not that the step is absent from
+  later board-derived prompts, which it must not be;
 - the settled `wait` step reports success into the plan's progress, so the
   planner sees "step done, OK" exactly as for an executed step;
 - the wait is interrupted by an abort signal rather than running to completion;
