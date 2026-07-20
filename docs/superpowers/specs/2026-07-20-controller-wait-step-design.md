@@ -203,7 +203,8 @@ control-failure writer uses for a `failed` outcome, and an `ok` with empty
 content risks being carried into approved content and surfacing in the final
 answer as a blank executed step.
 
-Five canonical cases, all `status: 'ok'` except the last:
+Five canonical outcomes — the first four settle with `status: 'ok'` and write
+an artifact; the fifth writes nothing at all:
 
 | case | content / digest | note |
 |---|---|---|
@@ -211,7 +212,7 @@ Five canonical cases, all `status: 'ok'` except the last:
 | clamped | states the requested and the applied duration | clamp reason |
 | skipped (total cap spent) | states no wait was performed | cap reason |
 | resumed after deadline | states the deadline had already elapsed during the outage and no further sleep was performed | resume reason |
-| aborted mid-wait | not settled — reported as a cancellation | — |
+| aborted mid-wait | NO artifact written — step stays in-flight, resumable | — |
 
 The resumed case is deliberately its own row rather than being folded into
 `normal` or `skipped`. Recording it as `normal` would claim a sleep that never
@@ -221,6 +222,32 @@ down. Only a distinct case keeps the artifact honest about both.
 
 An aborted wait is **not** a settled step: reporting it as done would tell the
 planner the system had time to settle when it did not.
+
+**Durable state after an abort — the wait stays in-flight and resumable.**
+Abort writes NO step-result artifact and does NOT clear the in-flight step. The
+cancellation is reported to the *caller*; it is not a terminal state of the
+run. Concretely:
+
+- `waitStartedAt` / `appliedWaitMs` stay persisted, so the deadline keeps
+  meaning what it meant;
+- `waitMsUsed` stays charged, and that is correct rather than a leak — the
+  budget buys *elapsed wall-clock time*, and elapsed time went on passing
+  during and after the abort;
+- `stepsUsed` is NOT incremented, because the step has not settled;
+- on the next resume the step is served normally: the remainder to the
+  persisted deadline is slept, and if that deadline has since passed the step
+  settles as `resumed after deadline`.
+
+The alternative — treating abort as terminal, clearing the in-flight step —
+was rejected because it strands the already-charged `waitMsUsed` with no
+settling artifact, and because it throws away a wait the run may still want:
+the controller's whole suspend/resume design exists so an interrupted request
+can continue, and a pause is the cheapest possible thing to continue.
+
+The consequence to be explicit about: a caller that cancels and retries the
+same session does not restart the wait. It joins the one already running.
+That is the intended behaviour — the ABAP system's settle time is a property
+of the system, not of the caller's patience.
 
 ### Dispatch
 
@@ -236,8 +263,9 @@ In the controller's step loop, a step with `type === 'wait'` short-circuits
 3. sleep `max(0, waitStartedAt + appliedWaitMs - now)`, interruptible by
    `CallOptions.signal`. On a first dispatch this is simply `applied`; on a
    resume it is whatever remains of the persisted deadline, which may be `0`;
-4. record the step-result for whichever of the five cases applies, so the board
-   and the planner's view of progress stay coherent;
+4. if the step settled, record the step-result for whichever of the four
+   settling cases applies, so the board and the planner's view of progress stay
+   coherent; on an abort, write nothing and leave the step in-flight;
 5. advance.
 
 Step 2 preceding step 3 is what makes a crash mid-sleep safe: the deadline is
@@ -394,9 +422,12 @@ create → use ordering.
   aborted, not settled;
 - `waitMs` present on a NON-wait step, and an unknown `type` value, both leave
   dispatch behaviour byte-identical to today (principle 7 regression guard);
-- each of the five step-result cases (normal / clamped / skipped /
-  resumed-after-deadline / aborted) writes its canonical artifact, and an
-  aborted wait is NOT settled;
+- each of the four SETTLING cases (normal / clamped / skipped /
+  resumed-after-deadline) writes its canonical artifact;
+- an abort mid-wait writes NO step-result, leaves `waitStartedAt` /
+  `appliedWaitMs` / the charged `waitMsUsed` persisted, does NOT increment
+  `stepsUsed`, and the next resume serves the remainder — settling as
+  `resumed after deadline` when the deadline has passed in the meantime;
 - a plan with no `wait` steps behaves exactly as before (no regression in the
   existing controller suites).
 
