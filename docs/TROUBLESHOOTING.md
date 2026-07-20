@@ -360,6 +360,16 @@ Use pipeline.name: "controller" (smart-executor) or "controller-weak" (weak-exec
 
 ---
 
+### Controller `wait` step surfaces as a client-side timeout, not a completed plan
+
+**Symptom.** A controller-pipeline request that the planner scheduled with a `wait` step (e.g. "activate X, wait, then read X") hangs and then fails at the client/proxy/load-balancer with a generic timeout error, instead of returning a finished plan.
+
+**Cause.** A `wait` step is served synchronously by the controller — it blocks the request for `min(waitMs, maxWaitMs, remaining maxTotalWaitMs)` milliseconds before the next step runs (see `packages/llm-agent-server-libs/src/smart-agent/controller/wait-step.ts`). If the effective wait — or the sum of waits in a plan, once you add later steps' processing time — exceeds the deployment's own request timeout (HTTP client, reverse proxy, load balancer, gateway), that outer layer aborts the connection first. The controller never gets a chance to finish; the client sees a bare timeout, not the actual plan result.
+
+**Fix.** Whenever you raise `pipeline.controller.maxWaitMs` / `maxTotalWaitMs` (or the planner emits a plan with a long wait), raise the client/proxy/load-balancer request timeout together with it — the knob and the surrounding infrastructure timeout MUST move in lockstep. Also note: a client disconnect (e.g. the caller gives up and closes the connection) does not currently cancel an in-flight wait — the controller keeps sleeping and completes the step server-side regardless of whether anyone is still listening.
+
+---
+
 ## When in doubt
 
 - `smart-server.log` — every chat request, every tool-loop iteration with `toolCount` and a content summary.

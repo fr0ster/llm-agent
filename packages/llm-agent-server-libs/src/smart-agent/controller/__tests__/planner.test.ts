@@ -483,6 +483,18 @@ describe('planner prompt contract', () => {
         ENGLISH_INSTRUCTIONS_RULE.includes(String(MAX_REQUIRE_CHARS)),
     );
   });
+  it('the plan-creation prompt teaches the wait step', async () => {
+    const client = recordingFakeClient([JSON.stringify({ plan: [] })]);
+    const p = new SmartExecutorPlanner(client);
+    await p.next({
+      bundle: newBundle({ runId: 'run-1', goal: 'g' }),
+      prompt: 'g',
+      retrying: false,
+    });
+    const sys = client.lastSystemContent();
+    assert.match(sys, /type.*wait/i);
+    assert.match(sys, /waitMs/);
+  });
 });
 
 describe('SmartExecutorPlanner partial transition', () => {

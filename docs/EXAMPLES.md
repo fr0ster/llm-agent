@@ -93,6 +93,27 @@ OpenAI-compatible endpoint: `http://localhost:4004/v1/chat/completions`
 
 The pipeline is selected by name (`pipeline: { name, config }`); omit it for the default `flat` flow. See [PIPELINES.md](PIPELINES.md).
 
+#### A `wait` step in a controller plan
+
+When a step activates/creates something a later step depends on, the controller
+planner may insert a `wait` step between them so the system has time to settle.
+It is served by the controller itself (never dispatched to an executor), e.g.
+for a goal like "activate the class, then read its source":
+
+```json
+{
+  "plan": [
+    { "name": "activate-class", "instructions": "Activate the class ZCL_EXAMPLE" },
+    { "name": "settle", "instructions": "Let the activation settle", "type": "wait", "waitMs": 30000 },
+    { "name": "read-source", "instructions": "Read the source of the class ZCL_EXAMPLE" }
+  ]
+}
+```
+
+`waitMs` is capped by `pipeline.controller.maxWaitMs` / `maxTotalWaitMs` (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the request-timeout consequence of
+raising those knobs).
+
 ### MCP Configuration — Timeouts and Request Headers
 
 The SmartAgent runtime applies a generous default per-call MCP request timeout of **120000 ms (2 minutes)** as a safety net against stuck or hung tool calls. Configure it in YAML:
