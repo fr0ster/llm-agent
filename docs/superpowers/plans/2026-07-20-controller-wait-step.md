@@ -734,7 +734,7 @@ export async function settleStep(
   backend: IBackend, sessionId: string, bundle: SessionBundle,
   outcome: 'advanced' | 'failed' | 'partial',
   onCommit?: (o: 'advanced' | 'failed' | 'partial') => void,
-): Promise<void> {
+): Promise<'advanced' | 'failed' | 'partial'> {
   bundle.lastOutcome = outcome;
   onCommit?.(outcome);
   if (outcome === 'advanced' || outcome === 'partial') {
@@ -746,8 +746,14 @@ export async function settleStep(
     bundle.runPhase = 'executing';
   }
   await persistBundle(backend, sessionId, bundle);
+  return outcome;
 }
 ```
+
+The return type is NOT cosmetic: `runStep` consumes the value directly with
+`return settle(mapped)` (`handler:1321`), so a `Promise<void>` helper would
+either break the build or force a wrapper — defeating the point of extracting
+it. Keep the signature identical to today's local `settle`.
 
 Replace `runStep`'s local `settle` body with a call to it, so the two can never
 diverge. Its existing tests must stay green — that is the proof the extraction
