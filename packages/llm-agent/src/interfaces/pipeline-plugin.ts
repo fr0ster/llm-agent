@@ -18,6 +18,7 @@ import type {
   IStepExecutionControl,
 } from './step-execution-control.js';
 import type { ToolLoopContextStrategyFactory } from './tool-loop-context-strategy.js';
+import type { IWaitStrategy } from './wait-strategy.js';
 
 /** A value that may already be resolved or arrive as a promise. */
 export type MaybePromise<T> = T | Promise<T>;
@@ -70,6 +71,10 @@ export interface IPipelineContext {
   /** Consumer-swappable auxiliary/service MCP tools contributed at pipeline
    *  creation (e.g. `wait`). Undefined → the pipeline supplies its own default. */
   auxiliaryMcpTools?: IAuxiliaryMcpTools;
+  /** Consumer-swappable wait mechanism for controller `wait` steps. Injected via
+   *  `BuildAgentDeps`; falls back to `DefaultWaitStrategy` in the controller
+   *  pipeline when absent. */
+  waitStrategy?: IWaitStrategy;
 }
 
 /** A pipeline plugin = the implementation of an agent variant. It names itself,

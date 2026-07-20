@@ -9,7 +9,10 @@ import {
   type Message,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
-import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import type {
+  KnowledgeBackend,
+  PipelineContext,
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
@@ -2472,5 +2475,462 @@ describe('parseNextStep requires validation', () => {
       }),
     );
     assert.deepEqual(r?.kind === 'next' ? r.step.requires : [], ['table T100']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5 — the controller serves `type: 'wait'` steps itself (no executor,
+// no reviewer, no MCP, no tokens).
+// ---------------------------------------------------------------------------
+
+/** A wait strategy that never sleeps in real time; records the decided duration. */
+const instantWaiter = (slept: number[] = []) => ({
+  name: 'test-instant',
+  async wait(ms: number) {
+    slept.push(ms);
+    return 'elapsed' as const;
+  },
+});
+
+const waitStepJson = {
+  name: 'settle',
+  instructions: 'let it settle',
+  type: 'wait',
+  waitMs: 30_000,
+};
+const seededWaitStep = { ...waitStepJson, stepId: 'sw0' };
+
+/** Planner script for a single-wait plan: create-plan then finalize. */
+function waitPlanner(finalizeText = 'wait-final'): SubagentResult[] {
+  return [
+    { kind: 'content', content: JSON.stringify({ plan: [waitStepJson] }) },
+    { kind: 'content', content: finalizeText },
+  ];
+}
+
+/** Fresh single-wait harness with an injected instant waiter. */
+function waitHarness(
+  budgetsOver: Partial<ControllerConfig['budgets']> = {},
+  slept: number[] = [],
+): Harness {
+  const h = harness({
+    evaluator: [{ kind: 'content', content: 'Goal' }],
+    planner: waitPlanner(),
+    executor: [{ kind: 'content', content: 'should not be called' }],
+    config: baseConfig(budgetsOver),
+  });
+  h.deps.waitStrategy = instantWaiter(slept);
+  return h;
+}
+
+function stepResults(h: Harness): KnowledgeEntry[] {
+  return h.rag.written.filter((e) => e.metadata.artifactType === 'step-result');
+}
+
+/** Run the handler and return the single step-result artifact the wait wrote. */
+async function runAndReadStepResult(h: Harness): Promise<KnowledgeEntry> {
+  await new ControllerCoordinatorHandler(h.deps).execute(
+    fakeCtx().ctx,
+    {},
+    undefined,
+  );
+  const arts = stepResults(h);
+  assert.ok(arts.length >= 1, 'a step-result artifact was written');
+  return arts[arts.length - 1];
+}
+
+/** A KnowledgeBackend wrapper that records each persisted controller bundle. */
+function spyBackend(
+  sink: SessionBundle[],
+  inner: KnowledgeBackend,
+): KnowledgeBackend {
+  return {
+    async put(sessionId, entry, options) {
+      if (entry.metadata.artifactType === 'controller-bundle') {
+        try {
+          sink.push(JSON.parse(entry.content) as SessionBundle);
+        } catch {
+          /* ignore malformed */
+        }
+      }
+      return inner.put(sessionId, entry, options);
+    },
+    semanticQuery: (sessionId, text, k, filter, options) =>
+      inner.semanticQuery(sessionId, text, k, filter, options),
+    scan: (sessionId) => inner.scan(sessionId),
+    deleteSession: (sessionId) => inner.deleteSession(sessionId),
+    semanticRecallCapable: inner.semanticRecallCapable,
+  };
+}
+
+/** Seed a bundle carrying an in-flight wait step so the resume path serves it. */
+async function seedWaitResume(
+  backend: KnowledgeBackend,
+  inFlightOver: Record<string, unknown> = {},
+  bundleOver: Partial<SessionBundle> = {},
+): Promise<void> {
+  await persistBundle(backend, 'sess-1', {
+    goal: 'g',
+    plannerPrivate: '',
+    budgets: { stepsUsed: 0, rewindsUsed: 0 },
+    runId: 'R1',
+    runState: 'active',
+    runPhase: 'executing',
+    originalRequest: 'do the thing',
+    nextSeq: 0,
+    plan: [seededWaitStep],
+    planCursor: 0,
+    inFlightStep: {
+      seq: 0,
+      step: seededWaitStep,
+      attempt: 0,
+      resumeCount: 0,
+      phase: 'executing',
+      transcript: [],
+      toolCallCount: 0,
+      ...inFlightOver,
+    },
+    ...bundleOver,
+  } as never);
+}
+
+describe('ControllerCoordinatorHandler — wait steps', () => {
+  it('serves a wait step with zero executor, reviewer and MCP calls', async () => {
+    let executorCalls = 0;
+    let reviewerCalls = 0;
+    const h = waitHarness();
+    const realExecutor = h.deps.executor;
+    h.deps.executor = {
+      async send(...a: unknown[]) {
+        executorCalls++;
+        return (realExecutor.send as (...x: unknown[]) => unknown)(
+          ...a,
+        ) as never;
+      },
+    } as never;
+    h.deps.reviewer = {
+      async review() {
+        reviewerCalls++;
+        throw new Error('unreachable');
+      },
+    } as never;
+
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(executorCalls, 0, 'executor must not be invoked for a wait');
+    assert.equal(reviewerCalls, 0, 'reviewer must not be invoked for a wait');
+    assert.equal(h.mcpCalls.length, 0, 'MCP must not be called for a wait');
+  });
+
+  it('serves a RESUMED wait without the executor — the crash-replay path', async () => {
+    let executorCalls = 0;
+    const h = waitHarness();
+    // Resume: no create-plan needed (plan seeded); planner only finalizes.
+    h.deps.planner = scriptedClient([
+      { kind: 'content', content: 'resumed-final' },
+    ]);
+    await seedWaitResume(h.backend, {
+      waitStartedAt: 1_000,
+      appliedWaitMs: 30_000,
+    });
+    const realExecutor = h.deps.executor;
+    h.deps.executor = {
+      async send(...a: unknown[]) {
+        executorCalls++;
+        return (realExecutor.send as (...x: unknown[]) => unknown)(
+          ...a,
+        ) as never;
+      },
+    } as never;
+
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    assert.equal(
+      executorCalls,
+      0,
+      'a resumed wait must not reach the executor',
+    );
+  });
+
+  it('a settled wait leaves the bundle exactly as an executed step would', async () => {
+    // Executed-step baseline.
+    const exec = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+        { kind: 'content', content: 'final' },
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+    });
+    await new ControllerCoordinatorHandler(exec.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const eb = await hydrateBundle(exec.backend, 'sess-1');
+
+    // Wait-step run under the same conditions.
+    const w = waitHarness();
+    await new ControllerCoordinatorHandler(w.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const wb = await hydrateBundle(w.backend, 'sess-1');
+
+    // Parity of every durable settle effect.
+    assert.equal(wb.lastOutcome, eb.lastOutcome);
+    assert.equal(wb.lastOutcome, 'advanced');
+    assert.equal(wb.nextSeq, eb.nextSeq);
+    assert.equal(wb.nextSeq, 1);
+    assert.equal(
+      wb.planCursor,
+      eb.planCursor,
+      'planner cursor advanced (onCommit)',
+    );
+    assert.equal(wb.planCursor, 1);
+    assert.equal(wb.inFlightStep, undefined);
+    assert.equal(wb.budgets.stepsUsed, eb.budgets.stepsUsed);
+    // The wait appears on the board (recordStepControl → plannerPrivate).
+    assert.match(wb.plannerPrivate, /\[seq 0 settle ok\]/);
+  });
+
+  it('a settled wait consumes one stepsUsed unit', async () => {
+    const h = waitHarness();
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1);
+  });
+
+  it('a wait charges waitMsUsed and persists the deadline BEFORE sleeping', async () => {
+    const persisted: SessionBundle[] = [];
+    const h = waitHarness();
+    h.deps.backend = spyBackend(persisted, h.deps.backend);
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const withDeadline = persisted.find(
+      (b) => b.inFlightStep?.appliedWaitMs !== undefined,
+    );
+    assert.ok(withDeadline, 'deadline persisted before the sleep resolves');
+    assert.equal(withDeadline?.inFlightStep?.appliedWaitMs, 30_000);
+    assert.equal(withDeadline?.budgets.waitMsUsed, 30_000);
+    const bundle = await hydrateBundle(h.deps.backend, 'sess-1');
+    assert.equal(bundle.budgets.waitMsUsed, 30_000);
+  });
+
+  it('the controller decides the wait duration (slept records it)', async () => {
+    const slept: number[] = [];
+    const h = waitHarness({}, slept);
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    assert.deepEqual(slept, [30_000]);
+  });
+
+  it('clamped wait records the requested and the applied duration', async () => {
+    const h = waitHarness({ maxWaitMs: 600_000 });
+    // waitMs 3_600_000 > maxWaitMs → applied 600_000, clamped.
+    h.deps.planner = scriptedClient([
+      {
+        kind: 'content',
+        content: JSON.stringify({
+          plan: [{ ...waitStepJson, waitMs: 3_600_000 }],
+        }),
+      },
+      { kind: 'content', content: 'final' },
+    ]);
+    const art = await runAndReadStepResult(h);
+    assert.equal(art.metadata.status, 'ok');
+    assert.match(art.content, /600000/);
+    assert.match(art.metadata.note ?? '', /clamp/i);
+  });
+
+  it('a partial cap truncation reports a clamp, NOT "no wait performed"', async () => {
+    const h = waitHarness({ maxTotalWaitMs: 10_000 });
+    // waitMs 30_000, only 10_000 of the total budget remains → applied 10_000.
+    const art = await runAndReadStepResult(h);
+    assert.match(art.content, /10000/);
+    assert.doesNotMatch(art.content, /No wait performed/);
+    assert.match(art.metadata.note ?? '', /clamp/i);
+  });
+
+  it('total cap spent → wait is skipped without sleeping', async () => {
+    const h = waitHarness({ maxTotalWaitMs: 0 });
+    const art = await runAndReadStepResult(h);
+    assert.match(art.content, /No wait performed/);
+    assert.match(art.metadata.note ?? '', /budget spent/i);
+  });
+
+  it('resumed after an elapsed deadline settles without sleeping again', async () => {
+    const h = waitHarness();
+    h.deps.planner = scriptedClient([
+      { kind: 'content', content: 'resumed-final' },
+    ]);
+    await seedWaitResume(h.backend, {
+      waitStartedAt: 1_000,
+      appliedWaitMs: 30_000,
+    });
+    const art = await runAndReadStepResult(h);
+    assert.equal(art.metadata.status, 'ok');
+    assert.match(art.content, /already elapsed/);
+    assert.match(art.metadata.note ?? '', /resumed after deadline/);
+  });
+
+  it('repeated abort/resume of a wait does NOT consume maxStepResumes', async () => {
+    const h = waitHarness();
+    h.deps.planner = scriptedClient([
+      { kind: 'content', content: 'resumed-final' },
+    ]);
+    // resumeCount already at the cap; a wait remainder must not be charged.
+    await seedWaitResume(
+      h.backend,
+      { waitStartedAt: 1_000, appliedWaitMs: 30_000, resumeCount: 3 },
+      {},
+    );
+    const { ctx, captured } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    assert.ok(
+      !captured.find(
+        (c) => c.ok && /maxStepResumes/.test(c.value.content ?? ''),
+      ),
+      'a resumed wait must not be aborted as a crash replay',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1, 'the resumed wait advanced');
+  });
+
+  it('a torn deadline yields a control-failure and a replan, not a sleep', async () => {
+    const h = waitHarness();
+    // Empty planner queue → the failed wait replans (which never parses) and the
+    // run escalates, leaving the in-flight step intact for inspection.
+    h.deps.planner = scriptedClient([]);
+    const slept: number[] = [];
+    h.deps.waitStrategy = instantWaiter(slept);
+    await seedWaitResume(h.backend, { waitStartedAt: 5_000 }); // appliedWaitMs absent
+    const art = await runAndReadStepResult(h);
+    assert.equal(art.metadata.status, 'failed');
+    assert.match(
+      art.metadata.note ?? '',
+      /half-written|missing appliedWaitMs/i,
+    );
+    assert.deepEqual(slept, [], 'a torn deadline never sleeps');
+
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.match(
+      bundle.plannerPrivate,
+      /control-failed.*half-written/s,
+      'the planner must learn WHY it is replanning',
+    );
+    assert.equal(
+      bundle.inFlightStep?.controlFailure?.reason,
+      'control-failure',
+    );
+    assert.equal(bundle.inFlightStep?.phase, 'awaiting-replan');
+  });
+
+  it('an abort mid-wait writes no artifact, does not advance, keeps the deadline', async () => {
+    const h = waitHarness({}, []);
+    h.deps.planner = scriptedClient([
+      {
+        kind: 'content',
+        content: JSON.stringify({
+          plan: [{ ...waitStepJson, waitMs: 60_000 }],
+        }),
+      },
+      { kind: 'content', content: 'final' },
+    ]);
+    h.deps.waitStrategy = {
+      name: 'test-abort',
+      async wait() {
+        return 'aborted' as const;
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 0, 'must not advance');
+    assert.ok(bundle.inFlightStep?.appliedWaitMs, 'deadline stays persisted');
+    assert.equal(
+      bundle.budgets.waitMsUsed,
+      60_000,
+      'charged once, not refunded',
+    );
+    assert.equal(stepResults(h).length, 0, 'no artifact written on abort');
+  });
+
+  it('a resumed wait does not re-charge waitMsUsed', async () => {
+    const h = waitHarness();
+    h.deps.planner = scriptedClient([
+      { kind: 'content', content: 'resumed-final' },
+    ]);
+    await seedWaitResume(
+      h.backend,
+      { waitStartedAt: 1_000, appliedWaitMs: 60_000 },
+      { budgets: { stepsUsed: 0, rewindsUsed: 0, waitMsUsed: 60_000 } },
+    );
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.waitMsUsed, 60_000);
+  });
+
+  it('a plan with no wait step still reaches the executor once', async () => {
+    let executorCalls = 0;
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+        { kind: 'content', content: 'final' },
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+    });
+    h.deps.waitStrategy = instantWaiter();
+    const realExecutor = h.deps.executor;
+    h.deps.executor = {
+      async send(...a: unknown[]) {
+        executorCalls++;
+        return (realExecutor.send as (...x: unknown[]) => unknown)(
+          ...a,
+        ) as never;
+      },
+    } as never;
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    assert.equal(executorCalls, 1, 'a normal step reaches the executor once');
   });
 });

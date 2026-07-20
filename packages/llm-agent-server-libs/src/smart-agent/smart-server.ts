@@ -37,6 +37,7 @@ import {
   type IRag,
   type IRunExecutionControl,
   type IStepExecutionControl,
+  type IWaitStrategy,
   isReadinessReporter,
   type ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
@@ -371,6 +372,10 @@ export interface BuildAgentDeps {
   /** Threaded onto `IPipelineContext.auxiliaryMcpTools`; the pipeline resolves
    *  its own default (e.g. `wait`) when absent. */
   auxiliaryMcpTools?: IAuxiliaryMcpTools;
+  /** Consumer-swappable wait mechanism for controller `wait` steps.
+   *  Threaded onto `IPipelineContext.waitStrategy`; the controller pipeline
+   *  falls back to `DefaultWaitStrategy` when absent. */
+  waitStrategy?: IWaitStrategy;
 }
 
 /**
@@ -759,6 +764,7 @@ export class SmartServer {
   private readonly _stepExecutionControl?: IStepExecutionControl;
   private readonly _runExecutionControl?: IRunExecutionControl;
   private readonly _auxiliaryMcpTools?: IAuxiliaryMcpTools;
+  private readonly _waitStrategy?: IWaitStrategy;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -795,6 +801,7 @@ export class SmartServer {
     this._stepExecutionControl = deps.stepExecutionControl;
     this._runExecutionControl = deps.runExecutionControl;
     this._auxiliaryMcpTools = deps.auxiliaryMcpTools;
+    this._waitStrategy = deps.waitStrategy;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -2138,6 +2145,7 @@ export class SmartServer {
       ...(this._auxiliaryMcpTools
         ? { auxiliaryMcpTools: this._auxiliaryMcpTools }
         : {}),
+      ...(this._waitStrategy ? { waitStrategy: this._waitStrategy } : {}),
       subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
         name: s.name,
         description: s.description,

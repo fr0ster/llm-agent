@@ -23,6 +23,7 @@ import { test } from 'node:test';
 import type {
   IRunExecutionControl,
   IStepExecutionControl,
+  IWaitStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryKnowledgeBackend,
@@ -55,6 +56,13 @@ function sentinelRunControl(): IRunExecutionControl {
       shouldContinue: () => ({ continue: true as const }),
       dispose: () => {},
     }),
+  };
+}
+
+function sentinelWaitStrategy(): IWaitStrategy {
+  return {
+    name: 'sentinel-wait',
+    wait: async () => 'elapsed' as const,
   };
 }
 
@@ -151,4 +159,25 @@ test('(a) sanity: injected sentinels are distinct from each other (referential i
   // Cross-check: injected step-control is NOT in the run-control slot and vice-versa.
   assert.notStrictEqual(ctx.stepExecutionControl, run);
   assert.notStrictEqual(ctx.runExecutionControl, step);
+});
+
+test('(a) YES injection: buildServerCtx ctx carries consumer-injected waitStrategy', async () => {
+  const custom = sentinelWaitStrategy();
+  const server = new SmartServer(MINIMAL_CFG, { waitStrategy: custom });
+  const ctx = await callBuildServerCtx(server);
+  assert.strictEqual(
+    ctx.waitStrategy,
+    custom,
+    'ctx.waitStrategy must be the consumer-injected sentinel (not a default or undefined)',
+  );
+});
+
+test('(a) NO injection: buildServerCtx ctx omits waitStrategy', async () => {
+  const server = new SmartServer(MINIMAL_CFG);
+  const ctx = await callBuildServerCtx(server);
+  assert.equal(
+    ctx.waitStrategy,
+    undefined,
+    'no injection → ctx must NOT carry waitStrategy (the handler defaults to DefaultWaitStrategy)',
+  );
 });

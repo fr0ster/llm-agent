@@ -64,6 +64,19 @@ function progressBlock(bundle: SessionBundle, boardText?: string): string {
     : bundle.plannerPrivate;
 }
 
+/** Wait-step clause (Task 6): teaches the CREATE prompt to insert a settle-time
+ *  step between an object's creation/activation and a later step that consumes
+ *  it. AGNOSTIC: no tool names. Only the plan-creation prompt gets this — a
+ *  replan works from progress already fetched, so the settle window that
+ *  mattered has either already passed or the failure/new-result itself is the
+ *  signal to act on now. */
+const WAIT_STEP_RULE =
+  ' When a step creates or activates an object that a LATER step consumes, insert a ' +
+  'step {"name":...,"instructions":...,"type":"wait","waitMs":<ms>} between them, ' +
+  'so the system has time to settle. Choose waitMs from the operation: a short ' +
+  'settle is ~30000, a slow activation ~120000 or more. waitMs MUST be a positive ' +
+  'whole number of milliseconds. A wait step needs no "requires".';
+
 export const CREATE_PLAN_SYSTEM =
   'You are the planner. Produce the COMPLETE, ordered plan that covers the ENTIRE ' +
   'goal NOW, as a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. ' +
@@ -92,6 +105,7 @@ export const CREATE_PLAN_SYSTEM =
   'that summarizes, formats, or answers the user — a separate finalizer composes ' +
   'the answer from the fetched results, so the last step must be the last ' +
   'data-fetch/action the goal needs. Output JSON only.' +
+  WAIT_STEP_RULE +
   ENGLISH_INSTRUCTIONS_RULE;
 
 export const REPLAN_SYSTEM =
@@ -158,7 +172,14 @@ const FINALIZE_SYSTEM =
  *  name/instructions (so a half-formed step is a retryable format error, not a
  *  silently-dropped step). An explicitly empty `{"plan":[]}` is VALID (= nothing
  *  left to do — used by replan to signal completion). */
-function parsePlan(content: string): Step[] | null {
+/** A planner-authored duration: positive, finite, integral. Zero is rejected —
+ *  it settles OK while granting no settle time, the same failure mode as a
+ *  dropped `waitMs`. */
+function isPositiveFiniteInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0;
+}
+
+export function parsePlan(content: string): Step[] | null {
   const json = extractJsonObject(content);
   if (json === null) return null;
   try {
@@ -172,11 +193,15 @@ function parsePlan(content: string): Step[] | null {
       }
       const req = validateRequires((raw as { requires?: unknown }).requires);
       if (req === false) return null; // malformed requires → format failure → retry
+      const isWait = s.type === 'wait';
+      const waitMs = (raw as { waitMs?: unknown }).waitMs;
+      if (isWait && !isPositiveFiniteInt(waitMs)) return null;
       steps.push({
         name: s.name,
         instructions: s.instructions,
         ...(s.type ? { type: s.type } : {}),
         ...(req ? { requires: req } : {}),
+        ...(isWait ? { waitMs: waitMs as number } : {}),
       });
     }
     return steps;

@@ -21,6 +21,10 @@ export interface Step {
   name: string;
   instructions: string;
   type?: string;
+  /** Pause duration for a `type: 'wait'` step, served by the controller itself
+   *  (no executor, no reviewer, no MCP). Planner-authored values must be a
+   *  positive finite integer; see the wait-step spec. Ignored on other types. */
+  waitMs?: number;
   /** Marks a discovery step whose result enumerates remaining work (§D). */
   discovery?: true;
   /** When this step REPLACES a failed step on replan, the superseded `stepId` (§F). */
@@ -115,12 +119,18 @@ export interface InFlightStep {
   contextStrategyState?: SerializableStrategyState;
   /** Bounded message tail (control messages only) persisted across suspend/resume. */
   controlTail?: Message[];
+  /** Epoch ms when this wait's sleep began. Persisted BEFORE sleeping, with
+   *  `appliedWaitMs`, so a crash mid-sleep resumes against a fixed deadline.
+   *  Exactly one of the two present is a torn write → control-failure. */
+  waitStartedAt?: number;
+  /** Post-clamp duration this wait is serving. Never recomputed on resume. */
+  appliedWaitMs?: number;
 }
 
 export interface SessionBundle {
   goal: string;
   plannerPrivate: string;
-  budgets: { stepsUsed: number; rewindsUsed: number };
+  budgets: { stepsUsed: number; rewindsUsed: number; waitMsUsed?: number };
   plan?: Step[];
   planCursor?: number;
   /** Plan decisions the planner produced this turn (create/replan), NOT yet
@@ -211,6 +221,11 @@ export interface ControllerConfig {
     maxActiveSteps?: number;
     maxBoardChars?: number;
     keepRecentDigests?: number;
+    /** Absurdity bound on ONE wait step, ms. Set above the planner's working
+     *  range — it is not a policy that overrides the planner's judgement. */
+    maxWaitMs?: number;
+    /** Cumulative wait budget for the whole run, ms. `0` disables waiting. */
+    maxTotalWaitMs?: number;
   };
   /** Behaviour when the finalizer's retry budget is exhausted: 'error' → terminal
    *  control error (default); 'best-effort' → compose from approved results with an

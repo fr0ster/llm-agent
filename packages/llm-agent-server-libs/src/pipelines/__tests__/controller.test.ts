@@ -100,6 +100,69 @@ describe('ControllerPipelinePlugin', () => {
     assert.equal(cfg.budgets.maxDigestChars, 500); // untouched default
   });
 
+  it('parseConfig defaults the wait knobs', () => {
+    const plugin = new ControllerPipelinePlugin();
+    const cfg = plugin.parseConfig({
+      subagents: {
+        evaluator: { provider: 'openai' },
+        planner: { provider: 'openai' },
+        executor: { provider: 'openai' },
+      },
+    });
+    assert.equal(cfg.budgets.maxWaitMs, 600_000);
+    assert.equal(cfg.budgets.maxTotalWaitMs, 1_800_000);
+  });
+
+  it('parseConfig honours explicit wait knobs', () => {
+    const plugin = new ControllerPipelinePlugin();
+    const cfg = plugin.parseConfig({
+      subagents: {
+        evaluator: { provider: 'openai' },
+        planner: { provider: 'openai' },
+        executor: { provider: 'openai' },
+      },
+      budgets: { maxWaitMs: 90_000, maxTotalWaitMs: 0 },
+    });
+    assert.equal(cfg.budgets.maxWaitMs, 90_000);
+    assert.equal(cfg.budgets.maxTotalWaitMs, 0);
+  });
+
+  for (const bad of ['600000', Number.NaN, -1, 0, 1.5]) {
+    it(`parseConfig throws for maxWaitMs=${String(bad)}`, () => {
+      const plugin = new ControllerPipelinePlugin();
+      assert.throws(
+        () =>
+          plugin.parseConfig({
+            subagents: {
+              evaluator: { provider: 'openai' },
+              planner: { provider: 'openai' },
+              executor: { provider: 'openai' },
+            },
+            budgets: { maxWaitMs: bad },
+          }),
+        /maxWaitMs/,
+      );
+    });
+  }
+
+  for (const bad of ['1800000', Number.NaN, -1, 1.5]) {
+    it(`parseConfig throws for maxTotalWaitMs=${String(bad)}`, () => {
+      const plugin = new ControllerPipelinePlugin();
+      assert.throws(
+        () =>
+          plugin.parseConfig({
+            subagents: {
+              evaluator: { provider: 'openai' },
+              planner: { provider: 'openai' },
+              executor: { provider: 'openai' },
+            },
+            budgets: { maxTotalWaitMs: bad },
+          }),
+        /maxTotalWaitMs/,
+      );
+    });
+  }
+
   it('build returns an instance with agent + close', async () => {
     const plugin = new ControllerPipelinePlugin();
     const cfg = plugin.parseConfig({

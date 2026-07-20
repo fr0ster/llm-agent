@@ -4,6 +4,7 @@ import type {
   IMcpClient,
   IRunExecutionControl,
   IStepExecutionControl,
+  IWaitStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import { ControllerFactory } from '../../factories/controller-factory.js';
 import { DefaultStepExecutionControl } from '../../smart-agent/controller/default-step-execution-control.js';
@@ -16,6 +17,7 @@ import { fakeControllerServerCtx } from './fixtures.js';
 type CapturedHandlerDeps = {
   stepExecutionControl: unknown;
   runExecutionControl: unknown;
+  waitStrategy: unknown;
   callMcp: (
     name: string,
     args: unknown,
@@ -35,6 +37,7 @@ async function buildAndCaptureDeps(
     captured = {
       stepExecutionControl: d['stepExecutionControl'],
       runExecutionControl: d['runExecutionControl'],
+      waitStrategy: d['waitStrategy'],
       callMcp: d['callMcp'] as CapturedHandlerDeps['callMcp'],
     };
     return orig.call(this, cfg, deps, kind);
@@ -86,6 +89,13 @@ function sentinelRunControl(): IRunExecutionControl {
   };
 }
 
+function sentinelWaitStrategy(): IWaitStrategy {
+  return {
+    name: 'sentinel-wait',
+    wait: async () => 'elapsed' as const,
+  };
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe('controller step-control wiring — defaults (no injection)', () => {
@@ -134,6 +144,37 @@ describe('controller step-control wiring — consumer override (DI seam)', () =>
       deps.stepExecutionControl,
       sentinel,
       'without injection the handler must NOT receive the sentinel',
+    );
+  });
+});
+
+describe('controller step-control wiring — waitStrategy (DI seam)', () => {
+  it('does NOT pass a waitStrategy to the handler deps when ctx.waitStrategy is absent (the handler defaults it)', async () => {
+    const deps = await buildAndCaptureDeps();
+    assert.equal(
+      deps.waitStrategy,
+      undefined,
+      'no injection → ControllerFactoryDeps must NOT carry waitStrategy; the handler resolves DefaultWaitStrategy itself',
+    );
+  });
+
+  it('threads consumer-injected ctx.waitStrategy verbatim into handler deps', async () => {
+    const custom = sentinelWaitStrategy();
+    const deps = await buildAndCaptureDeps({ waitStrategy: custom });
+    assert.strictEqual(
+      deps.waitStrategy,
+      custom,
+      'handler deps must receive the consumer-injected waitStrategy, not undefined',
+    );
+  });
+
+  it('with NO injection the handler deps do NOT receive the consumer sentinel (sanity guard)', async () => {
+    const sentinel = sentinelWaitStrategy();
+    const deps = await buildAndCaptureDeps(); // no override
+    assert.notStrictEqual(
+      deps.waitStrategy,
+      sentinel,
+      'without injection the handler deps must NOT receive the sentinel',
     );
   });
 });

@@ -1,5 +1,6 @@
 import {
   type CallOptions,
+  DefaultWaitStrategy,
   externalToolCallId,
   type IEmbedder,
   type IKnowledgeRagHandle,
@@ -7,6 +8,7 @@ import {
   type IStageHandler,
   type IStepExecutionControl,
   type IToolLoopContextStrategy,
+  type IWaitStrategy,
   type KnowledgeEntryMetadata,
   type LlmTool,
   type LlmToolCall,
@@ -51,7 +53,12 @@ import {
 import type { Evidence, IReviewer, ReviewResult } from './reviewer.js';
 import type { RunIdMinter } from './run-scope.js';
 import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';
-import { hydrateBundle, persistBundle, resetRun } from './session-bundle.js';
+import {
+  hydrateBundle,
+  persistBundle,
+  resetRun,
+  settleStep,
+} from './session-bundle.js';
 import {
   diagnosticCallOptions,
   type ISubagentClient,
@@ -67,6 +74,7 @@ import type {
   SubagentResult,
 } from './types.js';
 import { makeLogUsage } from './usage-logging.js';
+import { describeWait, isWaitStep, planWait } from './wait-step.js';
 
 // ---------------------------------------------------------------------------
 // Debug logging — gated behind DEBUG_CONTROLLER (e.g. DEBUG_CONTROLLER=1).
@@ -192,6 +200,12 @@ export interface ControllerHandlerDeps {
    *  (time never fires unless `budgets.perStepTimeoutMs` is set, so behaviour is
    *  byte-identical to the historical count-only bound). */
   stepExecutionControl?: IStepExecutionControl;
+  /** Consumer-swappable wait mechanism for `type: 'wait'` steps. Absent →
+   *  `DefaultWaitStrategy` (a plain, signal-honouring timer). Lets a deployment
+   *  replace a blocking sleep with suspend/resume, jitter, or its own scheduler
+   *  without forking the controller. The ENGINE still owns whether/how long to
+   *  wait (planner duration + engine clamps); this strategy owns only the sleep. */
+  waitStrategy?: IWaitStrategy;
   /** Consumer-swappable run-level execution control. Reserved for the run-budget
    *  wiring (a follow-up); not consulted by `runStep` yet. */
   runExecutionControl?: IRunExecutionControl;
@@ -677,6 +691,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // No artifact for this attempt → re-run the SAME step directly. Distinguish a
         // live external CONTINUATION (bounded by toolCallCount) from a crash-replay
         // (charged to resumeCount).
+        //
+        // A `wait` step is served here FIRST — BEFORE the resumeCount accounting
+        // below. A wait remainder is a continuation against an already-durable
+        // deadline, NOT a crash replay: charging it to resumeCount would let
+        // repeated abort/resume of a long wait terminally kill the run. Non-wait
+        // steps fall through to the resume/replay accounting unchanged.
+        const resumeWait = await this.serveWaitStep({
+          ctx,
+          sessionId,
+          bundle,
+          rag,
+          meta,
+          step: inf.step,
+          cfg,
+          nowIso: now,
+          onCommit: (o) => planner.commit?.(bundle, o),
+        });
+        if (resumeWait === 'aborted') return true;
+        if (resumeWait === 'served') continue;
         if (externalContinuation) {
           externalContinuation = false;
         } else {
@@ -886,6 +919,22 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       };
       bundle.runPhase = 'executing';
       await persistBundle(deps.backend, sessionId, bundle);
+      // A `wait` step is served by the controller itself (no executor / reviewer /
+      // MCP). The in-flight step is already durable above, so serveWaitStep can
+      // persist its deadline and settle. Non-wait steps fall through to runStep.
+      const freshWait = await this.serveWaitStep({
+        ctx,
+        sessionId,
+        bundle,
+        rag,
+        meta,
+        step: next.step,
+        cfg,
+        nowIso: now,
+        onCommit: (o) => planner.commit?.(bundle, o),
+      });
+      if (freshWait === 'aborted') return true;
+      if (freshWait === 'served') continue;
       const completed = await this.runStep(
         ctx,
         sessionId,
@@ -986,7 +1035,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // resume after a failed step replans instead of repeating it) AND advance the
       // planner cursor (onCommit) in the SAME persistBundle that records the step
       // result — never in a separate write, so a crash cannot replay a completed step.
-      const settle = async (
+      const settle = (
         outcome: 'advanced' | 'failed' | 'partial',
         /** Human reason for a 'failed' settle — logged via logDecision (kind
          *  'replan'); the caller usually already computed this string for the
@@ -994,26 +1043,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
          *  fallback so the decision record is never missing a reason. */
         reason?: string,
       ): Promise<'advanced' | 'failed' | 'partial'> => {
-        bundle.lastOutcome = outcome;
-        onCommit?.(outcome);
-        if (outcome === 'advanced' || outcome === 'partial') {
-          bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
-          bundle.inFlightStep = undefined;
-          bundle.runPhase = 'planning';
-        } else {
-          // 'failed' — keep the same seq, mark awaiting-replan in the SAME persist so
-          // recovery routes by durable phase.
-          if (bundle.inFlightStep)
-            bundle.inFlightStep.phase = 'awaiting-replan';
-          bundle.runPhase = 'executing';
+        // #228 debug-trace: a 'failed' settle induces a replan — record it.
+        // The state mutation + atomic persist is the extracted settleStep (#229);
+        // logDecision is a trace side-effect, order vs persist is immaterial.
+        if (outcome === 'failed') {
           logDecision(
             ctx,
             'replan',
             reason ?? `step "${step.name}" failed — awaiting replan`,
           );
         }
-        await persistBundle(deps.backend, sessionId, bundle);
-        return outcome;
+        return settleStep(deps.backend, sessionId, bundle, outcome, onCommit);
       };
       // The IMMUTABLE per-round prefix: system + step user message + the step-result
       // recall block. Re-emitted verbatim every round via strategy.form(); the dynamic
@@ -1634,6 +1674,143 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // Dispose the step budget (clears its wall-clock timer) on EVERY exit.
       budget.dispose();
     }
+  }
+
+  // -- Wait steps (served by the controller itself) -----------------------
+
+  /** Serve a `type: 'wait'` step: the controller waits itself — no executor,
+   *  no reviewer, no MCP, no tokens. A fresh wait clamps the planner duration by
+   *  the engine wait bounds, charges `waitMsUsed`, and persists the deadline
+   *  (`waitStartedAt` + `appliedWaitMs`) BEFORE sleeping, so a crash mid-sleep
+   *  resumes against a FIXED deadline. Returns 'served' when the step settled and
+   *  the loop should continue, 'aborted' when the wait was cancelled (deadline
+   *  stays persisted, no artifact, no advance — the next resume serves the
+   *  remainder), or 'not-a-wait' so the caller falls through to `runStep`. */
+  private async serveWaitStep(args: {
+    ctx: PipelineContext;
+    sessionId: string;
+    bundle: SessionBundle;
+    rag: IKnowledgeRagHandle;
+    meta: KnowledgeEntryMetadata;
+    step: Step;
+    cfg: ControllerConfig['budgets'];
+    nowIso: () => string;
+    onCommit?: (o: 'advanced' | 'failed' | 'partial') => void;
+  }): Promise<'served' | 'aborted' | 'not-a-wait'> {
+    const { bundle, step, cfg } = args;
+    if (!isWaitStep(step) || !bundle.inFlightStep) return 'not-a-wait';
+
+    // ONE clock read for BOTH the plan decision and the persisted waitStartedAt,
+    // so the deadline is not skewed by two Date.now() reads (and clock injection
+    // works in tests). deps.now returns ISO → parse to epoch ms.
+    const waitNow = Date.parse(args.nowIso());
+    const plan = planWait({
+      step,
+      inFlight: bundle.inFlightStep,
+      maxWaitMs: cfg.maxWaitMs ?? 600_000,
+      maxTotalWaitMs: cfg.maxTotalWaitMs ?? 1_800_000,
+      waitMsUsed: bundle.budgets.waitMsUsed ?? 0,
+      now: waitNow,
+    });
+
+    // Torn write (exactly one deadline field persisted) → a control-failure +
+    // replan, handled BEFORE any describeWait/settling path (describeWait must
+    // never render a torn plan). Mirror cutControlFailure's bookkeeping exactly.
+    if (plan.kind === 'torn') {
+      const reason = `wait deadline half-written: missing ${plan.missing}`;
+      bundle.budgets.stepsUsed++;
+      await this.writeWaitArtifact(
+        args,
+        'failed',
+        `Wait deadline half-written: missing ${plan.missing}. The step never ran.`,
+        reason,
+      );
+      bundle.plannerPrivate += `\n[seq ${bundle.inFlightStep.seq} ${step.name} control-failed] ${reason}`;
+      bundle.inFlightStep.controlFailure = {
+        reason: 'control-failure', // generic; NOT widened for waits
+        seq: bundle.inFlightStep.seq,
+      };
+      await settleStep(
+        this.deps.backend,
+        args.sessionId,
+        bundle,
+        'failed',
+        args.onCommit,
+      );
+      return 'served'; // planner replans
+    }
+
+    if (plan.kind === 'fresh') {
+      bundle.budgets.waitMsUsed =
+        (bundle.budgets.waitMsUsed ?? 0) + plan.applied;
+      bundle.inFlightStep.waitStartedAt = waitNow; // SAME reading as planWait
+      bundle.inFlightStep.appliedWaitMs = plan.applied;
+      // Durable BEFORE the sleep — one extra write, on wait steps only.
+      await persistBundle(this.deps.backend, args.sessionId, bundle);
+    }
+
+    const toSleep = plan.kind === 'fresh' ? plan.applied : plan.remaining;
+    const waiter = this.deps.waitStrategy ?? new DefaultWaitStrategy();
+    const outcome = await waiter.wait(toSleep, args.ctx.options?.signal);
+    if (outcome === 'aborted') return 'aborted'; // no artifact, no advance
+
+    const { text, note } = describeWait(plan, step);
+    await this.writeWaitArtifact(args, 'ok', text, note);
+    bundle.budgets.stepsUsed++;
+    recordStepControl(bundle, {
+      seq: bundle.inFlightStep.seq,
+      name: step.name,
+      status: 'ok',
+      note,
+      remainder: '',
+    });
+    await settleStep(
+      this.deps.backend,
+      args.sessionId,
+      bundle,
+      'advanced',
+      args.onCommit,
+    );
+    return 'served';
+  }
+
+  /** Persist a `wait` step's step-result artifact using the same metadata shape
+   *  the executed-step path uses. `content` is NEVER empty (an empty-content 'ok'
+   *  risks surfacing as a blank executed step). Owns its own write because
+   *  runStep's `writeControlFailure` is local to that method. */
+  private async writeWaitArtifact(
+    args: {
+      rag: IKnowledgeRagHandle;
+      meta: KnowledgeEntryMetadata;
+      bundle: SessionBundle;
+      step: Step;
+      ctx: PipelineContext;
+    },
+    status: 'ok' | 'failed',
+    text: string,
+    note: string,
+  ): Promise<void> {
+    const { bundle, step } = args;
+    bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+    await writeArtifact(
+      args.rag,
+      {
+        ...args.meta,
+        artifactType: 'step-result',
+        task: step.name,
+        runId: bundle.runId,
+        seq: bundle.inFlightStep?.seq ?? 0,
+        attempt: bundle.inFlightStep?.attempt ?? 0,
+        status,
+        note,
+        remainder: '',
+        stepId: step.stepId,
+        digest: text.slice(0, this.deps.config.budgets.maxDigestChars ?? 500),
+        writeOrdinal: bundle.writeOrdinal,
+        content: text,
+      },
+      args.ctx.options,
+    );
   }
 
   // -- Escalation & surfacing (mirror StepperCoordinatorHandler) ----------

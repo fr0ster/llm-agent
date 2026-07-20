@@ -299,3 +299,5 @@ export {
 } from './types.js';
 export type { IOutputValidator, ValidationResult } from './validator.js';
 export { ValidatorError } from './validator.js';
+export type { IWaitStrategy } from './wait-strategy.js';
+export { DefaultWaitStrategy } from './wait-strategy.js';
