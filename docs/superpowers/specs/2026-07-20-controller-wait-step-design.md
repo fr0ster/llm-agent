@@ -75,6 +75,74 @@ unrelated to this deliverable and is not touched.
 `instructions` stays required and human-readable ("wait for ZI_… activation to
 settle") so the board and digest remain legible; it is never sent to a model.
 
+### Runtime contract (must be implemented, not inferred)
+
+`Step` today carries `type?: string` and **no duration field**, and
+`parsePlan()` (`planner.ts:172`) rebuilds each step from exactly four
+properties — `name`, `instructions`, `type`, `requires`. A `waitMs` the planner
+emits would therefore be silently dropped before dispatch. This deliverable
+must:
+
+1. add `waitMs?: number` to `Step`;
+2. preserve it in `parsePlan()` alongside the existing four;
+3. validate it.
+
+Validation, consistent with how `parsePlan` already treats a malformed `name`,
+`instructions` or `requires`: a step with `type: 'wait'` whose `waitMs` is
+absent, non-numeric, `NaN`, infinite or negative makes the **plan** malformed →
+`parsePlan` returns `null` → format failure → the planner retries. A silent
+default would let a planner that forgot the duration produce a zero-length
+"wait" that looks like it worked.
+
+`waitMs` on a step that is *not* `type: 'wait'` is ignored. A `type` value
+other than `'wait'` dispatches exactly as today — `type` is currently free-form
+and unused for dispatch, and that must stay true (principle 7).
+
+### Step budget
+
+A settled `wait` **consumes one `stepsUsed` unit**, like any other step. The
+main loop is gated by `while (bundle.budgets.stepsUsed < cfg.maxSteps)`
+(`controller-coordinator-handler.ts:594`); a wait branch that short-circuits
+without incrementing would let a plan of wait steps bypass `maxSteps`
+entirely.
+
+### Durable wait accounting
+
+`maxTotalWaitMs` is a per-run cap, so it must survive suspend/resume. The
+durable bundle currently carries only `budgets: { stepsUsed, rewindsUsed }`
+(`types.ts:123`) — it needs `waitMsUsed: number`.
+
+The budget is charged **before** sleeping, and persisted with the same write
+that records the step as in-flight. That ordering is what makes resume safe: if
+the process dies mid-sleep, the resumed run sees the budget already spent and
+cannot sleep the same wait a second time on the cap's account. An in-flight
+wait that is resumed is re-served against the *remaining* budget, so worst case
+it sleeps again but the run-level ceiling still holds.
+
+Missing `waitMsUsed` on a bundle written before this change reads as `0`
+(backward compatible).
+
+### Step-result shape
+
+A settled wait writes a normal step-result artifact so the board, planner and
+finalizer see a coherent plan — with the fields those consumers already
+require (`status`, `content`, `digest`, `note`, `seq`, `attempt`, `stepId`,
+`writeOrdinal`). It must not be an empty-content `ok` result, or it risks
+being carried into approved content and surfacing in the final answer as a
+blank executed step.
+
+Four canonical cases, all `status: 'ok'` except the last:
+
+| case | content / digest | note |
+|---|---|---|
+| normal | states the step waited and for how long | — |
+| clamped | states the requested and the applied duration | clamp reason |
+| skipped (total cap spent) | states no wait was performed | cap reason |
+| aborted mid-wait | not settled — reported as a cancellation | — |
+
+An aborted wait is **not** a settled step: reporting it as done would tell the
+planner the system had time to settle when it did not.
+
 ### Dispatch
 
 In the controller's step loop, a step with `type === 'wait'` short-circuits
@@ -156,6 +224,16 @@ create → use ordering.
 - once `maxTotalWaitMs` is spent, a further `wait` settles immediately and
   records that it was skipped;
 - a `wait` step produces a step-result the board reflects;
+- `parsePlan()` preserves `waitMs` — the regression that would otherwise make
+  every wait zero-length;
+- a `type: 'wait'` step with absent / non-numeric / `NaN` / negative `waitMs`
+  fails the plan format and triggers a planner retry, rather than defaulting;
+- a settled wait increments `stepsUsed`, so a plan of wait steps still hits
+  `maxSteps`;
+- `waitMsUsed` is charged before the sleep and persisted, and a bundle written
+  without the field resumes as `0`;
+- each of the four step-result cases (normal / clamped / skipped / aborted)
+  writes its canonical artifact, and an aborted wait is NOT settled;
 - a plan with no `wait` steps behaves exactly as before (no regression in the
   existing controller suites).
 
@@ -171,8 +249,11 @@ the suite stays fast and deterministic.
 3. **Interfaces** — no new concrete class is exposed to consumers here; the
    swappable failure/retry policy arrives in deliverable 2 as its own focused
    interface.
-4. **ISP** — nothing is added to an existing interface; `Step.type` already
-   existed.
+4. **ISP** — two optional fields are added to existing types: `Step.waitMs` and
+   `bundle.budgets.waitMsUsed`. Both are additive and optional, so no consumer
+   breaks (principle 7), but this is an honest amendment to the earlier claim
+   that nothing was touched: `Step.type` alone cannot carry a duration, and a
+   per-run cap cannot survive resume without durable state.
 5. **Strategies** — the wait *duration* is the planner's decision, not the
    engine's; the *clamp* is only an absurdity bound, set above the planner's
    working range and configurable, deliberately not a pluggable policy in this
