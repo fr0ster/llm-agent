@@ -92,6 +92,12 @@ export type {
   PipelineDeps,
   PipelineResult,
 } from './interfaces/pipeline.js';
+export {
+  DEBUG_ENV,
+  type DebugArea,
+  enabledAreasFromEnv,
+  isDebugArea,
+} from './logger/debug-areas.js';
 // ---------------------------------------------------------------------------
 // Logger
 // ---------------------------------------------------------------------------

@@ -256,9 +256,13 @@ export async function* executeToolBatchWithHeartbeat(
 
   const toolExecPromises = batch.map(async (tc): Promise<ToolExecResult> => {
     const toolStart = Date.now();
-    options?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
-      arguments: tc.arguments,
-    });
+    options?.sessionLogger?.logStep(
+      `mcp_call_${tc.name}`,
+      {
+        arguments: tc.arguments,
+      },
+      'mcp',
+    );
     const client = toolClientMap.get(tc.name);
     if (!client) return { tc, text: '', res: null, duration: 0, cached: false };
     const toolSpan = tracer.startSpan('smart_agent.tool_call', {
@@ -373,7 +377,11 @@ export async function* executeToolBatchWithHeartbeat(
         blockedUntil: entry.blockedUntil,
       });
     }
-    options?.sessionLogger?.logStep(`mcp_result_${tc.name}`, { result: text });
+    options?.sessionLogger?.logStep(
+      `mcp_result_${tc.name}`,
+      { result: text },
+      'mcp',
+    );
     toolCallCount++;
     metrics.toolCallCount.add();
     toolMessages.push({

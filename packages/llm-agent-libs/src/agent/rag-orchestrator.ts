@@ -187,16 +187,20 @@ export class RagOrchestrator implements IRagOrchestrator {
           translateStores?.has(storeName) && translatedText
             ? translatedText
             : combinedActionText;
-        opts?.sessionLogger?.logStep(`rag_query_${storeName}`, {
-          query: logQuery.slice(0, 200),
-          k,
-          resultCount: results.length,
-          results: results.map((r) => ({
-            id: r.metadata.id,
-            score: r.score,
-            text: r.text.slice(0, 120),
-          })),
-        });
+        opts?.sessionLogger?.logStep(
+          `rag_query_${storeName}`,
+          {
+            query: logQuery.slice(0, 200),
+            k,
+            resultCount: results.length,
+            results: results.map((r) => ({
+              id: r.metadata.id,
+              score: r.score,
+              text: r.text.slice(0, 120),
+            })),
+          },
+          'rag',
+        );
       }
 
       const ragToolNames = new Set(

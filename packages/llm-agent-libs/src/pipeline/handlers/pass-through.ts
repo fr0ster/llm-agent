@@ -19,6 +19,11 @@ export async function* runPassThrough(
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
   const passStart = Date.now();
   const traceId2 = opts?.trace?.traceId;
+  opts?.sessionLogger?.logStep(
+    'llm_request_pass',
+    { messages, tools: externalTools ?? [] },
+    'llm',
+  );
   const stream = llm.streamChat(messages, externalTools, opts);
   let passContent = '';
   const passToolCalls: unknown[] = [];
@@ -66,10 +71,14 @@ export async function* runPassThrough(
     const { usage: _omitUsage, ...rest } = chunk.value;
     yield { ok: true, value: rest };
   }
-  opts?.sessionLogger?.logStep('llm_response_pass', {
-    content: passContent,
-    toolCalls: passToolCalls.length > 0 ? passToolCalls : undefined,
-  });
+  opts?.sessionLogger?.logStep(
+    'llm_response_pass',
+    {
+      content: passContent,
+      toolCalls: passToolCalls.length > 0 ? passToolCalls : undefined,
+    },
+    'llm',
+  );
   logPassUsage();
   const passSummary = traceId2 ? requestLogger.getSummary(traceId2) : undefined;
   yield {

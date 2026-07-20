@@ -58,7 +58,7 @@ export interface IStepperInput {
    *  executor's tool-search is keyed on what is needed (18.1 needs-driven search). */
   evaluatorNeeds?: readonly string[];
   signal?: AbortSignal;
-  sessionLogger?: { logStep(name: string, data: unknown): void };
+  sessionLogger?: { logStep(name: string, data: unknown, area?: string): void };
   onProgress?: (event: StreamChunk) => void;
 }
 

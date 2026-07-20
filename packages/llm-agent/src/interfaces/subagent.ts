@@ -38,7 +38,7 @@ export interface ISubAgentInput {
    *  `.run/sessions/<sid>/<req>/` directory. Shape mirrors
    *  `CallOptions.sessionLogger` (structural to avoid import cycle). */
   sessionLogger?: {
-    logStep(name: string, data: unknown): void;
+    logStep(name: string, data: unknown, area?: string): void;
   };
   /** Optional per-event callback for streaming worker output upstream.
    *  Fire-and-forget — implementations must never let the callback throw

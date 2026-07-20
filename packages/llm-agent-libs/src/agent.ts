@@ -985,10 +985,14 @@ export class SmartAgent {
         iteration,
         opts,
       );
-      opts?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
-        messages,
-        tools: currentTools,
-      });
+      opts?.sessionLogger?.logStep(
+        `llm_request_iter_${iteration + 1}`,
+        {
+          messages,
+          tools: currentTools,
+        },
+        'llm',
+      );
       const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
         parent: toolLoopSpan,
         attributes: { 'llm.iteration': iteration + 1 },
@@ -1119,11 +1123,15 @@ export class SmartAgent {
         }
         return { id: tc.id, name: tc.name, arguments: args };
       });
-      opts?.sessionLogger?.logStep(`llm_response_iter_${iteration + 1}`, {
-        content,
-        toolCalls,
-        finishReason,
-      });
+      opts?.sessionLogger?.logStep(
+        `llm_response_iter_${iteration + 1}`,
+        {
+          content,
+          toolCalls,
+          finishReason,
+        },
+        'llm',
+      );
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
         // Output validation
         const val = await runOutputValidationReprompt(
@@ -1353,11 +1361,15 @@ export class SmartAgent {
             isError,
             durationMs: r.duration,
           });
-          opts?.sessionLogger?.logStep('mcp_tool_call', {
-            toolName: r.tc.name,
-            durationMs: r.duration,
-            isError,
-          });
+          opts?.sessionLogger?.logStep(
+            'mcp_tool_call',
+            {
+              toolName: r.tc.name,
+              durationMs: r.duration,
+              isError,
+            },
+            'mcp',
+          );
         },
       });
       if (outcome.escalated) return;

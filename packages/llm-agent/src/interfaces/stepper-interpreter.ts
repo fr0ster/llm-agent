@@ -32,7 +32,9 @@ export interface IStepperInterpreter {
       maxParallelSteps: number;
       mintStepperId: () => string;
       signal?: AbortSignal;
-      sessionLogger?: { logStep(name: string, data: unknown): void };
+      sessionLogger?: {
+        logStep(name: string, data: unknown, area?: string): void;
+      };
       onProgress?: (event: StreamChunk) => void;
     },
   ): Promise<IStepperResult>;

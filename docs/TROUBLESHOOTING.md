@@ -360,6 +360,33 @@ Use pipeline.name: "controller" (smart-executor) or "controller-weak" (weak-exec
 
 ---
 
+## Debug tracing
+
+**Symptom.** You need to see exactly what was sent to/from the LLM, which controller
+decisions were made, what MCP tool calls did, or what a RAG recall returned — beyond
+what `smart-server.log` captures.
+
+**Fix.** Enable one or more area flags (all off by default):
+
+```bash
+DEBUG_LLM=1         # capture LLM request+response on the inference paths (flat agent loop, tool-loop, pass-through, controller subagents)
+DEBUG_CONTROLLER=1  # controller step decisions (also prints to stderr)
+DEBUG_MCP=1         # MCP tool call args/result/timing
+DEBUG_RAG=1         # RAG recall queries + returned extracts
+DEBUG_TRACE_DIR=./.smart-agent-debug/   # optional, this is the default
+```
+
+Each enabled area writes per-step JSON files under `DEBUG_TRACE_DIR`, one subdirectory
+per session/request (e.g. `.smart-agent-debug/session_<id>/req_<id>/`). Areas are
+independent — enabling `DEBUG_LLM` alone produces only `*_llm_request_*` /
+`*_llm_response_*` files, no controller/MCP/RAG files.
+
+**Note.** A trace may contain your own prompt/business data (and, for MCP/RAG areas,
+tool arguments or retrieved document text). Review trace files before sharing them
+outside your team.
+
+---
+
 ## When in doubt
 
 - `smart-server.log` — every chat request, every tool-loop iteration with `toolCount` and a content summary.
