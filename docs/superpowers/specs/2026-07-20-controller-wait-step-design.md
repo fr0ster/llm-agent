@@ -103,11 +103,24 @@ must:
 3. validate it.
 
 Validation, consistent with how `parsePlan` already treats a malformed `name`,
-`instructions` or `requires`: a step with `type: 'wait'` whose `waitMs` is
-absent, non-numeric, `NaN`, infinite or negative makes the **plan** malformed →
-`parsePlan` returns `null` → format failure → the planner retries. A silent
-default would let a planner that forgot the duration produce a zero-length
-"wait" that looks like it worked.
+`instructions` or `requires`: **a planner-authored `waitMs` must be a positive,
+finite integer.** Absent, non-numeric, `NaN`, infinite, negative, **zero** or
+fractional makes the **plan** malformed → `parsePlan` returns `null` → format
+failure → the planner retries. A silent default would let a planner that forgot
+the duration produce a zero-length "wait" that looks like it worked.
+
+Zero is rejected for exactly that reason, not as pedantry: `waitMs: 0` reaches
+dispatch, settles OK, and reports to the planner that the system was given time
+to settle when it was given none — the same failure mode as a dropped `waitMs`,
+just spelled explicitly.
+
+**Zero is legal internally**, and only there: when the run's `maxTotalWaitMs` is
+already spent, or when a resumed deadline has already passed, the controller
+computes a remaining duration of `0` and settles the step without sleeping.
+That value is produced by the controller's own arithmetic, never accepted from
+a plan, and it is recorded as the "skipped" or resumed case rather than as a
+normal wait — so the distinction stays visible in the artifact instead of
+hiding behind an identical-looking success.
 
 `waitMs` on a step that is *not* `type: 'wait'` is ignored. A `type` value
 other than `'wait'` dispatches exactly as today — `type` is currently free-form
@@ -315,8 +328,13 @@ create → use ordering.
 - a `wait` step produces a step-result the board reflects;
 - `parsePlan()` preserves `waitMs` — the regression that would otherwise make
   every wait zero-length;
-- a `type: 'wait'` step with absent / non-numeric / `NaN` / negative `waitMs`
-  fails the plan format and triggers a planner retry, rather than defaulting;
+- a `type: 'wait'` step with absent / non-numeric / `NaN` / infinite / negative
+  / **zero** / fractional `waitMs` fails the plan format and triggers a planner
+  retry, rather than defaulting — `0` included, since it settles OK while
+  granting no settle time at all;
+- a controller-computed remaining duration of `0` (total cap spent, or a
+  resumed deadline already passed) settles WITHOUT sleeping and is recorded as
+  the skipped/resumed case, not as a normal wait — the one place zero is legal;
 - a settled wait increments `stepsUsed`, so a plan of wait steps still hits
   `maxSteps`;
 - `waitMsUsed` is charged before the sleep and persisted, charged exactly once
