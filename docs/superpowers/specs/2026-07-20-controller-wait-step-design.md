@@ -479,7 +479,8 @@ create → use ordering.
   later board-derived prompts, which it must not be;
 - the settled `wait` step reports success into the plan's progress, so the
   planner sees "step done, OK" exactly as for an executed step;
-- the wait is interrupted by an abort signal rather than running to completion;
+- the wait is interrupted by an abort signal rather than running to completion
+  (asserted through the injected `IWaitStrategy`, not by elapsed wall-clock);
 - `parseConfig()` defaults `maxWaitMs` to `600_000` and `maxTotalWaitMs` to
   `1_800_000`, and an explicit YAML value for either overrides the default —
   the guard against the defaults drifting into the wait helper;

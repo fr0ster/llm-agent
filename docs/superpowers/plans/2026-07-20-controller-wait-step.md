@@ -702,6 +702,19 @@ Symmetry is the wrong goal here — the two sites guard different things.
 Append to `controller-coordinator-handler.test.ts`, following the `harness({...})` pattern already used there:
 
 ```ts
+**Every Task 5 test injects a wait strategy** so nothing sleeps in real time:
+
+```ts
+const instantWaiter = (slept: number[] = []) => ({
+  name: 'test-instant',
+  async wait(ms: number) { slept.push(ms); return 'elapsed' as const; },
+});
+// h.deps.waitStrategy = instantWaiter(slept);   // then assert on `slept`
+```
+
+`slept` also lets a test assert the DURATION the controller decided on, which
+is stronger than asserting elapsed wall-clock and costs nothing.
+
 it('serves a RESUMED wait without the executor — the crash-replay path', async () => {
   // Guards the second call site: a bundle already carrying an in-flight wait
   // must be served by the controller, not handed to runStep.
@@ -1098,12 +1111,11 @@ it('a torn deadline yields a control-failure and a replan, not a sleep', async (
 });
 
 it('an abort mid-wait writes no artifact, does not advance, keeps the deadline', async () => {
-  const ac = new AbortController();
   const h = harness({ /* single wait step, waitMs 60_000 */ });
-  const p = new ControllerCoordinatorHandler(h.deps)
-    .execute(fakeCtx({ signal: ac.signal }).ctx, {}, undefined);
-  ac.abort();
-  await p;
+  // Assert the BRANCH via the strategy — do not race a real AbortController
+  // against a real timer.
+  h.deps.waitStrategy = { name: 'test-abort', async wait() { return 'aborted' as const; } };
+  await new ControllerCoordinatorHandler(h.deps).execute(fakeCtx().ctx, {}, undefined);
   const bundle = await hydrateBundle(h.deps.backend, 'sess-1');
   assert.equal(bundle.budgets.stepsUsed, 0, 'must not advance');
   assert.ok(bundle.inFlightStep?.appliedWaitMs, 'deadline stays persisted');
