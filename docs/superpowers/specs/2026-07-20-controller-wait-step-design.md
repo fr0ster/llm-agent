@@ -39,14 +39,17 @@ dispatcher. No LLM call, no MCP call, no tokens.
 | role | responsibility | LLM |
 |---|---|---|
 | planner | emits `wait` steps where a created object is used later | yes |
-| **interpreter** | executes `wait` itself, reports the step settled OK | **no** |
+| **controller** (the plan interpreter) | executes `wait` itself, reports the step settled OK | **no** |
 | executor | never sees a `wait` step | — |
 | reviewer | never sees a `wait` step | — |
 
-The interpreter is the role that physically hands a plan step to the executor.
-A `wait` step is the one kind of step it never hands over: it serves the step
-itself — sleep, then report "step done, OK" back into the plan's progress —
-and the executor is never invoked.
+**The controller IS the plan interpreter.** It is the component that walks the
+plan and hands each step to the executor, and a `wait` step is the one kind it
+never hands over: it serves the step itself — sleep, then report "step done,
+OK" into the plan's progress — without invoking the executor.
+
+So this behaviour belongs in the controller's own step loop by definition, not
+as a delegation to some other component.
 
 **A `wait` step is never an MCP tool call.** That is the whole point: routing a
 pause through the tool catalog means the LLM must *decide* to wait and then
@@ -54,12 +57,11 @@ pause through the tool catalog means the LLM must *decide* to wait and then
 deliverable removes. There is no code path in which `type: 'wait'` reaches an
 MCP client or a model.
 
-In the controller today this dispatch is inline in
-`controller-coordinator-handler.ts` rather than a named interpreter seam (the
-stepper composition has `IInterpreter`; the controller does not). This
-deliverable implements the wait branch as a small focused module consumed by
-that dispatch — it does not extract the full interpreter seam, which is a
-larger change and belongs in its own task.
+The dispatch lives in `controller-coordinator-handler.ts`. Because that file is
+already oversized, the wait branch itself goes into a small focused module that
+the dispatch consumes (principle 6) — a file-size measure, not a role
+boundary. The stepper composition's separate `IInterpreter` interface is
+unrelated to this deliverable and is not touched.
 
 ### Step shape
 
