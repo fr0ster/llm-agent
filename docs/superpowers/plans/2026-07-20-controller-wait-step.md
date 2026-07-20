@@ -782,9 +782,20 @@ Then add the private method on the handler and call it from both sites.
     }
 
     if (plan.kind === 'torn') {
+      // Mirror cutControlFailure (handler:1187) exactly — the artifact alone is
+      // not enough. plannerPrivate is how the planner LEARNS why it is
+      // replanning, and inFlightStep.controlFailure is how durable recovery
+      // routes by phase. Omit either and the replan happens blind.
+      const reason = `wait deadline half-written: missing ${plan.missing}`;
+      bundle.budgets.stepsUsed++;
       await this.writeWaitArtifact(args, 'failed',
         `Wait deadline half-written: missing ${plan.missing}. The step never ran.`,
-        'half-written deadline');
+        reason);
+      bundle.plannerPrivate += `\n[seq ${bundle.inFlightStep.seq} ${step.name} control-failed] ${reason}`;
+      bundle.inFlightStep.controlFailure = {
+        reason: 'control-failure',        // generic; NOT widened for waits
+        seq: bundle.inFlightStep.seq,
+      };
       await settleStep(this.deps.backend, args.sessionId, bundle, 'failed', args.onCommit);
       return 'served';                                   // planner replans
     }
@@ -873,8 +884,23 @@ blank executed step:
       if (waitOutcome === 'served') continue;
 ```
 
-**Call site B — resume (`handler:636-659`).** Immediately before the
-`const completed = await this.runStep(... inf.step ...)` call:
+**Call site B — resume (`handler:636-659`). PLACEMENT IS LOAD-BEARING.**
+
+Insert it immediately after the `// No artifact for this attempt` comment and
+**BEFORE** the `if (externalContinuation) { ... } else { inf.resumeCount += 1; ... }`
+block — NOT immediately before `runStep`.
+
+Between those two points the controller charges `inf.resumeCount += 1` and
+terminally aborts the run once `maxStepResumes` (default 3) is exceeded. That
+accounting exists for a step whose EXECUTOR crashed mid-flight and is being
+replayed. A wait is not being replayed: it is being continued against a
+deadline that is already durable, and continuing it costs nothing.
+
+Placing the branch after that accounting would mean a caller who cancels and
+reconnects four times during a 360-second wait terminally kills the run —
+directly contradicting the spec, which says an aborted wait stays in-flight and
+the next resume serves it normally. A wait remainder is not a crash replay and
+must not be charged as one.
 
 ```ts
       const waitOutcome = await this.serveWaitStep({
@@ -932,11 +958,26 @@ it('resumed after an elapsed deadline settles without sleeping again', async () 
   assert.match(art.metadata.note, /resumed after deadline/);
 });
 
+it('repeated abort/resume of a wait does NOT consume maxStepResumes', async () => {
+  // Guards the placement: the wait branch must run BEFORE resumeCount is charged.
+  const h = harness({ /* pre-seeded in-flight wait, resumeCount already at
+                         cfg.maxStepResumes (default 3) */ });
+  await new ControllerCoordinatorHandler(h.deps).execute(fakeCtx().ctx, {}, undefined);
+  const bundle = await hydrateBundle(h.deps.backend, 'sess-1');
+  assert.notEqual(bundle.runPhase, 'terminal', 'a resumed wait must not be aborted as a crash replay');
+});
+
 it('a torn deadline yields a control-failure and a replan, not a sleep', async () => {
   const h = harness({ /* bundle pre-seeded: waitStartedAt set, appliedWaitMs absent */ });
   const art = await runAndReadStepResult(h);
   assert.equal(art.metadata.status, 'failed');
   assert.match(art.metadata.note, /half-written|missing appliedWaitMs/i);
+
+  const bundle = await hydrateBundle(h.deps.backend, 'sess-1');
+  assert.match(bundle.plannerPrivate, /control-failed.*half-written/s,
+    'the planner must learn WHY it is replanning');
+  assert.equal(bundle.inFlightStep?.controlFailure?.reason, 'control-failure');
+  assert.equal(bundle.inFlightStep?.phase, 'awaiting-replan');
 });
 
 it('an abort mid-wait writes no artifact, does not advance, keeps the deadline', async () => {
