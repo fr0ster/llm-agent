@@ -61,28 +61,37 @@ export function planWait(args: {
   };
 }
 
-/** Render a `WaitPlan` as the step-result text a `wait` step reports to the
- *  board — pure formatting, no I/O. */
-export function describeWait(plan: WaitPlan, step: Step): string {
-  const requested = step.waitMs ?? 0;
-  switch (plan.kind) {
-    case 'fresh':
-      if (plan.cappedSkip) {
-        return `wait: skip — total-wait budget exhausted, requested ${requested}ms not served`;
-      }
-      if (plan.clamped) {
-        return `wait: ${plan.applied}ms (clamped from ${requested}ms)`;
-      }
-      return `wait: ${plan.applied}ms`;
-    case 'resume':
-      return plan.deadlinePassed
-        ? 'wait: resumed, deadline already passed — 0ms remaining'
-        : `wait: resumed, ${plan.remaining}ms remaining`;
-    case 'torn':
-      return `wait: control error — torn durable state, missing ${plan.missing}`;
-    default: {
-      const _exhaustive: never = plan;
-      return _exhaustive;
-    }
+/** Render a `WaitPlan` as the step-result text (and a short machine-checkable
+ *  `note`) a `wait` step reports to the board — pure formatting, no I/O. */
+export function describeWait(
+  plan: WaitPlan,
+  step: Step,
+): { text: string; note: string } {
+  if (plan.kind === 'resume') {
+    return plan.deadlinePassed
+      ? {
+          text: 'Wait deadline had already elapsed during the outage; no additional sleep was performed.',
+          note: 'resumed after deadline',
+        }
+      : {
+          text: `Waited the remaining ${plan.remaining} ms of the scheduled pause.`,
+          note: '',
+        };
   }
+  if (plan.kind === 'fresh' && plan.cappedSkip) {
+    return {
+      text: "No wait performed: the run's total wait budget is spent.",
+      note: 'total wait budget spent',
+    };
+  }
+  if (plan.kind === 'fresh' && plan.clamped) {
+    return {
+      text: `Waited ${plan.applied} ms (requested ${step.waitMs} ms, truncated by a wait bound).`,
+      note: 'clamped',
+    };
+  }
+  return {
+    text: `Waited ${(plan as { applied: number }).applied} ms for the system to settle.`,
+    note: '',
+  };
 }

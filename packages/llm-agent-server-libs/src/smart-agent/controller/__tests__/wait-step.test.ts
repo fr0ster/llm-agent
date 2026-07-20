@@ -115,31 +115,54 @@ test('torn: exactly one deadline field present, either way round', () => {
   });
 });
 
-test('describeWait: formats fresh, resume, and torn plans', () => {
+test('describeWait: fresh, non-clamped, non-skip → plain text, no note', () => {
   const s = step(30_000);
-  assert.match(
-    describeWait(
-      { kind: 'fresh', applied: 30_000, clamped: false, cappedSkip: false },
-      s,
-    ),
-    /30000\s*ms/,
+  const { text, note } = describeWait(
+    { kind: 'fresh', applied: 30_000, clamped: false, cappedSkip: false },
+    s,
   );
-  assert.match(
-    describeWait(
-      { kind: 'fresh', applied: 0, clamped: false, cappedSkip: true },
-      s,
-    ),
-    /skip/i,
+  assert.match(text, /30000\s*ms/);
+  assert.equal(note, '');
+});
+
+test('describeWait: fresh + cappedSkip → note matches "budget spent"', () => {
+  const s = step(30_000);
+  const { text, note } = describeWait(
+    { kind: 'fresh', applied: 0, clamped: false, cappedSkip: true },
+    s,
   );
-  assert.match(
-    describeWait(
-      { kind: 'resume', remaining: 20_000, deadlinePassed: false },
-      s,
-    ),
-    /20000\s*ms/,
+  assert.match(text, /skip|budget/i);
+  assert.equal(note, 'total wait budget spent');
+  assert.match(note, /budget spent/i);
+});
+
+test('describeWait: fresh + clamped → note matches "clamp"', () => {
+  const s = step(3_600_000);
+  const { text, note } = describeWait(
+    { kind: 'fresh', applied: 600_000, clamped: true, cappedSkip: false },
+    s,
   );
-  assert.match(
-    describeWait({ kind: 'torn', missing: 'appliedWaitMs' }, s),
-    /appliedWaitMs/,
+  assert.match(text, /600000\s*ms/);
+  assert.equal(note, 'clamped');
+  assert.match(note, /clamp/i);
+});
+
+test('describeWait: resume, deadline NOT passed → plain text, no note', () => {
+  const s = step(30_000);
+  const { text, note } = describeWait(
+    { kind: 'resume', remaining: 20_000, deadlinePassed: false },
+    s,
   );
+  assert.match(text, /20000\s*ms/);
+  assert.equal(note, '');
+});
+
+test('describeWait: resume, deadline passed → note matches "resumed after deadline"', () => {
+  const s = step(30_000);
+  const { note } = describeWait(
+    { kind: 'resume', remaining: 0, deadlinePassed: true },
+    s,
+  );
+  assert.equal(note, 'resumed after deadline');
+  assert.match(note, /resumed after deadline/);
 });
