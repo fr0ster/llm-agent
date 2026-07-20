@@ -215,6 +215,11 @@ export interface ControllerConfig {
     maxActiveSteps?: number;
     maxBoardChars?: number;
     keepRecentDigests?: number;
+    /** Absurdity bound on ONE wait step, ms. Set above the planner's working
+     *  range — it is not a policy that overrides the planner's judgement. */
+    maxWaitMs?: number;
+    /** Cumulative wait budget for the whole run, ms. `0` disables waiting. */
+    maxTotalWaitMs?: number;
   };
   /** Behaviour when the finalizer's retry budget is exhausted: 'error' → terminal
    *  control error (default); 'best-effort' → compose from approved results with an

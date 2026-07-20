@@ -106,6 +106,21 @@ export class ControllerPipelinePlugin
       );
     }
 
+    const requireInt = (
+      key: 'maxWaitMs' | 'maxTotalWaitMs',
+      min: number,
+    ): void => {
+      const v = budgetsRaw[key];
+      if (v === undefined) return;
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
+        throw new Error(
+          `controller: 'budgets.${key}' must be a ${min > 0 ? 'positive' : 'non-negative'} finite integer (ms), got ${JSON.stringify(v)}`,
+        );
+      }
+    };
+    requireInt('maxWaitMs', 1);
+    requireInt('maxTotalWaitMs', 0);
+
     return {
       subagents: subagents as ControllerConfig['subagents'],
       targetState: {
@@ -127,6 +142,8 @@ export class ControllerPipelinePlugin
         maxActiveSteps: 16,
         maxBoardChars: 12000,
         keepRecentDigests: 8,
+        maxWaitMs: 600_000,
+        maxTotalWaitMs: 1_800_000,
         ...budgetsRaw,
       } as ControllerConfig['budgets'],
     };
