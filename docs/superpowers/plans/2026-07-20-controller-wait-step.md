@@ -399,14 +399,14 @@ test('fresh: clamps above maxWaitMs and reports it', () => {
   assert.deepEqual(p, { kind: 'fresh', applied: 600_000, clamped: true, cappedSkip: false });
 });
 
-test('fresh: total cap spent → applied 0, cappedSkip', () => {
-  const p = call({ waitMsUsed: 1_800_000 });
-  assert.deepEqual(p, { kind: 'fresh', applied: 0, clamped: false, cappedSkip: true });
+test('fresh: partial remaining cap truncates but is NOT a skip', () => {
+  const p = call({ step: step(30_000), waitMsUsed: 1_790_000 });
+  assert.deepEqual(p, { kind: 'fresh', applied: 10_000, clamped: true, cappedSkip: false });
 });
 
-test('fresh: partial remaining cap truncates the wait', () => {
-  const p = call({ step: step(30_000), waitMsUsed: 1_790_000 });
-  assert.equal(p.kind === 'fresh' && p.applied, 10_000);
+test('fresh: cap fully spent is a skip, not a clamp', () => {
+  const p = call({ step: step(30_000), waitMsUsed: 1_800_000 });
+  assert.deepEqual(p, { kind: 'fresh', applied: 0, clamped: false, cappedSkip: true });
 });
 
 test('resume: sleeps only the remainder, never recomputes', () => {
@@ -513,8 +513,13 @@ export function planWait(args: {
   return {
     kind: 'fresh',
     applied,
-    clamped: applied < requested && applied === args.maxWaitMs,
-    cappedSkip: applied < requested && applied === capRemaining,
+    // Truncated by EITHER bound, but still sleeping. `clamped` says "shorter
+    // than asked", it does not say which bound won.
+    clamped: applied > 0 && applied < requested,
+    // Only a TRUE skip: no sleep at all. A partial truncation by the cap is a
+    // clamp, not a skip — reporting "no wait performed" while sleeping 10 s
+    // would be a false artifact.
+    cappedSkip: applied === 0 && requested > 0,
   };
 }
 
@@ -598,8 +603,13 @@ that single value for both `planWait({ now: waitNow })` and
 it must be parsed to epoch ms. Two separate `Date.now()` reads would skew the
 deadline and defeat clock injection in tests.
 
-At the fresh site, the existing `persistBundle` already runs before `runStep`,
-so setting the deadline fields before it costs no extra write.
+Persist ordering, stated once so the two descriptions cannot disagree:
+`serveWaitStep` is called AFTER the existing `persistBundle` at each site, and
+the fresh path does its OWN `persistBundle` before sleeping. That is one extra
+write, on wait steps only. An earlier draft of this plan claimed the deadline
+could ride along on the existing write "at no extra cost" — that only holds at
+the fresh site, and making the resume site behave differently is exactly the
+kind of asymmetry that produces a bug. One rule, both sites.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -647,6 +657,27 @@ it('serves a wait step with zero executor, reviewer and MCP calls', async () => 
   assert.equal(reviewerCalls, 0, 'reviewer must not be invoked for a wait step');
 });
 
+it('a settled wait leaves the bundle exactly as an executed step would', async () => {
+  // Guards settle parity: lastOutcome, the planner cursor (onCommit), nextSeq,
+  // runPhase and the board entry — not just stepsUsed.
+  const commits: string[] = [];
+  const h = harness({ /* single wait-step plan */ });
+  h.deps.planner = { ...h.deps.planner, commit: (_b, o) => commits.push(o) } as never;
+
+  await new ControllerCoordinatorHandler(h.deps).execute(fakeCtx().ctx, {}, undefined);
+  const bundle = await hydrateBundle(h.deps.backend, 'sess-1');
+
+  assert.equal(bundle.lastOutcome, 'advanced');
+  assert.deepEqual(commits, ['advanced'], 'planner cursor must advance via onCommit');
+  assert.equal(bundle.nextSeq, 1);
+  assert.equal(bundle.inFlightStep, undefined);
+  assert.equal(bundle.runPhase, 'planning');
+  assert.ok(
+    boardOf(bundle).some((e) => e.name === 'settle'),
+    'the wait must appear on the board (recordStepControl)',
+  );
+});
+
 it('a settled wait consumes one stepsUsed unit', async () => {
   const h = harness({ /* same single wait-step plan as above */ });
   const bundle = await runAndReadBundle(h);       // helper used by sibling tests
@@ -675,7 +706,49 @@ Expected: FAIL — the executor is invoked for the wait step.
 
 - [ ] **Step 3: Implement the dispatch branch**
 
-Add a private method on the handler, then call it from both sites.
+**First, extract the settle logic so the wait path cannot drift from it.**
+`runStep`'s local `settle` (`handler:946`) does more than the obvious: it sets
+`bundle.lastOutcome`, calls `onCommit?.(outcome)` — which is how the PLANNER's
+cursor advances — moves `nextSeq` (not `planCursor`), sets `runPhase`, and
+persists all of it in ONE write. A hand-rolled equivalent in the wait branch
+would silently leave the bundle in a state that does not match a completed
+step, and the planner's cursor would never move.
+
+Lift that body into a module-level function in `wait-step.ts`'s sibling — or a
+private handler method — and have BOTH `runStep`'s local `settle` and
+`serveWaitStep` call it:
+
+```ts
+export async function settleStep(
+  backend: IBackend, sessionId: string, bundle: SessionBundle,
+  outcome: 'advanced' | 'failed' | 'partial',
+  onCommit?: (o: 'advanced' | 'failed' | 'partial') => void,
+): Promise<void> {
+  bundle.lastOutcome = outcome;
+  onCommit?.(outcome);
+  if (outcome === 'advanced' || outcome === 'partial') {
+    bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
+    bundle.inFlightStep = undefined;
+    bundle.runPhase = 'planning';
+  } else {
+    if (bundle.inFlightStep) bundle.inFlightStep.phase = 'awaiting-replan';
+    bundle.runPhase = 'executing';
+  }
+  await persistBundle(backend, sessionId, bundle);
+}
+```
+
+Replace `runStep`'s local `settle` body with a call to it, so the two can never
+diverge. Its existing tests must stay green — that is the proof the extraction
+is behaviour-preserving.
+
+The wait path must also mirror the advanced path's other two steps, which
+happen BEFORE settle (`handler:1312-1320`): `bundle.budgets.stepsUsed++` and
+`recordStepControl(...)`. `recordStepControl` is the board projection — omit it
+and the wait step never appears on the board, contradicting the spec's
+legibility rule.
+
+Then add the private method on the handler and call it from both sites.
 
 ```ts
   /** Serve a `type: 'wait'` step: the controller waits itself — no executor,
@@ -686,6 +759,7 @@ Add a private method on the handler, then call it from both sites.
     ctx: PipelineContext; sessionId: string; bundle: SessionBundle;
     rag: IRunScopedRag; meta: ArtifactMeta; step: Step;
     cfg: ControllerConfig['budgets']; nowIso: () => string;
+    onCommit?: (o: 'advanced' | 'failed' | 'partial') => void;
   }): Promise<'served' | 'aborted' | 'not-a-wait'> {
     const { bundle, step, cfg } = args;
     if (!isWaitStep(step) || !bundle.inFlightStep) return 'not-a-wait';
@@ -711,9 +785,7 @@ Add a private method on the handler, then call it from both sites.
       await this.writeWaitArtifact(args, 'failed',
         `Wait deadline half-written: missing ${plan.missing}. The step never ran.`,
         'half-written deadline');
-      bundle.inFlightStep = undefined;
-      bundle.runPhase = 'planning';
-      await persistBundle(this.deps.backend, args.sessionId, bundle);
+      await settleStep(this.deps.backend, args.sessionId, bundle, 'failed', args.onCommit);
       return 'served';                                   // planner replans
     }
 
@@ -724,9 +796,14 @@ Add a private method on the handler, then call it from both sites.
     const { text, note } = describeWait(plan, step);
     await this.writeWaitArtifact(args, 'ok', text, note);
     bundle.budgets.stepsUsed++;
-    bundle.inFlightStep = undefined;
-    bundle.planCursor = (bundle.planCursor ?? 0) + 1;
-    await persistBundle(this.deps.backend, args.sessionId, bundle);
+    recordStepControl(bundle, {
+      seq: bundle.inFlightStep.seq,
+      name: step.name,
+      status: 'ok',
+      note,
+      remainder: '',
+    });
+    await settleStep(this.deps.backend, args.sessionId, bundle, 'advanced', args.onCommit);
     return 'served';
   }
 ```
@@ -747,8 +824,8 @@ export function describeWait(plan: WaitPlan, step: Step): { text: string; note: 
              note: 'total wait budget spent' };
   }
   if (plan.kind === 'fresh' && plan.clamped) {
-    return { text: `Waited ${plan.applied} ms (requested ${step.waitMs} ms, clamped to maxWaitMs).`,
-             note: 'clamped to maxWaitMs' };
+    return { text: `Waited ${plan.applied} ms (requested ${step.waitMs} ms, truncated by a wait bound).`,
+             note: 'clamped' };
   }
   return { text: `Waited ${(plan as { applied: number }).applied} ms for the system to settle.`, note: '' };
 }
@@ -790,6 +867,7 @@ blank executed step:
       const waitOutcome = await this.serveWaitStep({
         ctx, sessionId, bundle, rag, meta, step: next.step,
         cfg: cfg, nowIso: now,
+        onCommit: (o) => planner.commit?.(bundle, o),
       });
       if (waitOutcome === 'aborted') return true;
       if (waitOutcome === 'served') continue;
@@ -802,6 +880,7 @@ blank executed step:
       const waitOutcome = await this.serveWaitStep({
         ctx, sessionId, bundle, rag, meta, step: inf.step,
         cfg: cfg, nowIso: now,
+        onCommit: (o) => planner.commit?.(bundle, o),
       });
       if (waitOutcome === 'aborted') return true;
       if (waitOutcome === 'served') continue;
@@ -827,6 +906,14 @@ it('clamped wait records the requested and the applied duration', async () => {
   const art = await runAndReadStepResult(h);
   assert.equal(art.metadata.status, 'ok');
   assert.match(art.content, /600000/);
+  assert.match(art.metadata.note, /clamp/i);
+});
+
+it('a partial cap truncation reports a clamp, NOT "no wait performed"', async () => {
+  const h = harness({ /* waitMs 30_000; maxTotalWaitMs leaves only 10_000 */ });
+  const art = await runAndReadStepResult(h);
+  assert.match(art.content, /10000/);
+  assert.doesNotMatch(art.content, /No wait performed/);
   assert.match(art.metadata.note, /clamp/i);
 });
 
