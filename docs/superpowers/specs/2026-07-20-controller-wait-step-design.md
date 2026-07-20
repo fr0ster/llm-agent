@@ -203,14 +203,21 @@ control-failure writer uses for a `failed` outcome, and an `ok` with empty
 content risks being carried into approved content and surfacing in the final
 answer as a blank executed step.
 
-Four canonical cases, all `status: 'ok'` except the last:
+Five canonical cases, all `status: 'ok'` except the last:
 
 | case | content / digest | note |
 |---|---|---|
 | normal | states the step waited and for how long | — |
 | clamped | states the requested and the applied duration | clamp reason |
 | skipped (total cap spent) | states no wait was performed | cap reason |
+| resumed after deadline | states the deadline had already elapsed during the outage and no further sleep was performed | resume reason |
 | aborted mid-wait | not settled — reported as a cancellation | — |
+
+The resumed case is deliberately its own row rather than being folded into
+`normal` or `skipped`. Recording it as `normal` would claim a sleep that never
+happened on this run; recording it as `skipped` would claim the wait was never
+served, when in fact the full duration did elapse — just while the process was
+down. Only a distinct case keeps the artifact honest about both.
 
 An aborted wait is **not** a settled step: reporting it as done would tell the
 planner the system had time to settle when it did not.
@@ -220,14 +227,27 @@ planner the system had time to settle when it did not.
 In the controller's step loop, a step with `type === 'wait'` short-circuits
 **before** evidence recall, tool selection, executor and reviewer:
 
-1. sleep `waitMs`, interruptible by the caller's abort signal;
-2. record a step-result marking the step settled, so the board and the
-   planner's view of progress stay coherent;
-3. advance.
+1. compute the applied duration:
+   `applied = min(waitMs, maxWaitMs, remaining maxTotalWaitMs)` — this is where
+   a clamp or a total-cap skip is decided, and `applied` may be `0`;
+2. charge `waitMsUsed += applied` and persist it together with
+   `waitStartedAt = now` and `appliedWaitMs = applied` on the in-flight step,
+   BEFORE any sleeping;
+3. sleep `max(0, waitStartedAt + appliedWaitMs - now)`, interruptible by
+   `CallOptions.signal`. On a first dispatch this is simply `applied`; on a
+   resume it is whatever remains of the persisted deadline, which may be `0`;
+4. record the step-result for whichever of the five cases applies, so the board
+   and the planner's view of progress stay coherent;
+5. advance.
+
+Step 2 preceding step 3 is what makes a crash mid-sleep safe: the deadline is
+already durable, so the resumed run serves the remainder instead of restarting
+the wait or double-charging the cap.
 
 **Cancellation — exact scope.** The sleep is interruptible by
 `CallOptions.signal`, and that is *all* this deliverable promises. When a
-signal is present, the sleep ends immediately instead of running to `waitMs`.
+signal is present, the sleep ends immediately instead of running to the
+deadline.
 
 It must NOT be described as "an aborted HTTP request interrupts the wait",
 because today it does not. The chat route builds its options without a signal
@@ -366,8 +386,10 @@ create → use ordering.
 - `waitMsUsed` is charged before the sleep and persisted, charged exactly once
   per step, and a bundle written without the field resumes as `0`;
 - resume sleeps only the remaining time to the persisted deadline: an outage
-  longer than the wait settles immediately, a short outage sleeps the remainder,
-  and neither re-charges the budget;
+  longer than the wait settles immediately AS THE `resumed after deadline` case
+  (not as `normal`, which would claim a sleep that did not happen on this run,
+  and not as `skipped`, which would claim the wait was never served), a short
+  outage sleeps the remainder, and neither re-charges the budget;
 - an in-flight wait missing `waitStartedAt` / `appliedWaitMs` resumes as
   aborted, not settled;
 - `waitMs` present on a NON-wait step, and an unknown `type` value, both leave
