@@ -116,9 +116,18 @@ The budget is charged **once, before sleeping**, and persisted with the same
 write that records the step as in-flight. It is never charged again for that
 step.
 
-**Resume contract — deadline, not duration.** The in-flight write also persists
-`waitStartedAt` (epoch ms) and `appliedWaitMs` (post-clamp). On resume, the
-controller sleeps only the remainder:
+**Resume contract — deadline, not duration.** The deadline fields live on
+`InFlightStep` (`types.ts:96`), which is already the durable per-step record
+(it carries `seq`, `attempt`, `resumeCount`, `toolCallCount`,
+`controlFailure`). It gains:
+
+```ts
+waitStartedAt?: number;   // epoch ms, set when the sleep begins
+appliedWaitMs?: number;   // post-clamp duration actually being served
+```
+
+Both optional, so bundles written before this change deserialize unchanged.
+On resume, the controller sleeps only the remainder:
 
 ```
 remaining = max(0, waitStartedAt + appliedWaitMs - now)
@@ -147,12 +156,24 @@ Missing `waitMsUsed` on a bundle written before this change reads as `0`
 
 ### Step-result shape
 
-A settled wait writes a normal step-result artifact so the board, planner and
-finalizer see a coherent plan — with the fields those consumers already
-require (`status`, `content`, `digest`, `note`, `seq`, `attempt`, `stepId`,
-`writeOrdinal`). It must not be an empty-content `ok` result, or it risks
-being carried into approved content and surfacing in the final answer as a
-blank executed step.
+A settled wait writes a normal `step-result` artifact through the same
+`writeArtifact` call the controller already uses for step outcomes
+(`controller-coordinator-handler.ts:1160`), with that call's exact metadata
+shape:
+
+```ts
+{ ...meta, artifactType: 'step-result', task: step.name, runId, seq, attempt,
+  status, note, remainder, stepId, digest, writeOrdinal, content }
+```
+
+`writeOrdinal` comes from `bundle.writeOrdinal` (incremented per write, not per
+step) exactly as the existing writers do — the wait branch must not invent its
+own ordering.
+
+It must not be an empty-content `ok` result: empty `content` is what the
+control-failure writer uses for a `failed` outcome, and an `ok` with empty
+content risks being carried into approved content and surfacing in the final
+answer as a blank executed step.
 
 Four canonical cases, all `status: 'ok'` except the last:
 
@@ -176,8 +197,26 @@ In the controller's step loop, a step with `type === 'wait'` short-circuits
    planner's view of progress stay coherent;
 3. advance.
 
-Cancellation: an aborted request must interrupt the sleep immediately, not
-after `waitMs`.
+**Cancellation — exact scope.** The sleep is interruptible by
+`CallOptions.signal`, and that is *all* this deliverable promises. When a
+signal is present, the sleep ends immediately instead of running to `waitMs`.
+
+It must NOT be described as "an aborted HTTP request interrupts the wait",
+because today it does not. The chat route builds its options without a signal
+(`http/chat-route-handler.ts:158`), and the agent only merges one when a signal
+is already supplied or a `timeoutMs` exists (`agent.ts:610`). So a client
+disconnect or a proxy timeout does **not** currently reach the controller, and
+a 360-second wait keeps sleeping after the caller has gone.
+
+Wiring client-disconnect into `CallOptions.signal` is a SmartServer change with
+its own blast radius (it makes every long-running request cancellable, not just
+waits) and is deliberately out of scope here. It is worth doing — a wait makes
+the gap more visible, since a request can now sit idle for minutes by design —
+but as its own task, tested at the route level.
+
+Consequence to accept knowingly: until that task lands, the practical bound on
+an abandoned waiting request is the server's own request timeout, not the
+client's.
 
 ### Bounds
 
@@ -279,11 +318,20 @@ the suite stays fast and deterministic.
 3. **Interfaces** — no new concrete class is exposed to consumers here; the
    swappable failure/retry policy arrives in deliverable 2 as its own focused
    interface.
-4. **ISP** — two optional fields are added to existing types: `Step.waitMs` and
-   `bundle.budgets.waitMsUsed`. Both are additive and optional, so no consumer
-   breaks (principle 7), but this is an honest amendment to the earlier claim
-   that nothing was touched: `Step.type` alone cannot carry a duration, and a
-   per-run cap cannot survive resume without durable state.
+4. **ISP** — **four** optional fields are added to existing types, all additive
+   so no consumer breaks (principle 7):
+
+   | field | type | why |
+   |---|---|---|
+   | `Step.waitMs` | `number?` | `Step.type` alone cannot carry a duration |
+   | `SessionBundle.budgets.waitMsUsed` | `number?` | per-run cap must survive resume |
+   | `InFlightStep.waitStartedAt` | `number?` | deadline resume contract |
+   | `InFlightStep.appliedWaitMs` | `number?` | deadline resume contract |
+
+   This supersedes two earlier undercounts in this document's history (first
+   "nothing is added", then "two fields"). The deadline contract cannot be
+   implemented without a durable home for its two fields, and leaving that
+   unstated invites an ad-hoc implementation or a forgotten migration.
 5. **Strategies** — the wait *duration* is the planner's decision, not the
    engine's; the *clamp* is only an absurdity bound, set above the planner's
    working range and configurable, deliberately not a pluggable policy in this
