@@ -5,7 +5,7 @@ export interface StateOracleInput {
   sessionId?: string;
   signal?: AbortSignal;
   trace?: { traceId: string };
-  sessionLogger?: { logStep(name: string, data: unknown): void };
+  sessionLogger?: { logStep(name: string, data: unknown, area?: string): void };
 }
 
 export interface StateOracleResult {

@@ -365,10 +365,14 @@ export class ToolLoopHandler implements IStageHandler {
       let iterCompletionTokens = 0;
       let iterTotalTokens = 0;
 
-      ctx.options?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
-        messages,
-        tools: currentTools,
-      });
+      ctx.options?.sessionLogger?.logStep(
+        `llm_request_iter_${iteration + 1}`,
+        {
+          messages,
+          tools: currentTools,
+        },
+        'llm',
+      );
       const iterationMessageSummary = summarizeIterationMessages(messages);
       const looksLikeFinalPass = messages.some(
         (msg) =>
@@ -377,12 +381,16 @@ export class ToolLoopHandler implements IStageHandler {
             Array.isArray(msg.tool_calls) &&
             msg.tool_calls.length > 0),
       );
-      ctx.options?.sessionLogger?.logStep('llm_request_iter_context_summary', {
-        iteration: iteration + 1,
-        toolCount: currentTools.length,
-        looksLikeFinalPass,
-        summary: iterationMessageSummary,
-      });
+      ctx.options?.sessionLogger?.logStep(
+        'llm_request_iter_context_summary',
+        {
+          iteration: iteration + 1,
+          toolCount: currentTools.length,
+          looksLikeFinalPass,
+          summary: iterationMessageSummary,
+        },
+        'llm',
+      );
       ctx.logger?.log({
         type: 'warning',
         traceId: ctx.options?.trace?.traceId ?? 'tool-loop',
@@ -543,6 +551,7 @@ export class ToolLoopHandler implements IStageHandler {
       ctx.options?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
         { content, toolCalls, finishReason },
+        'llm',
       );
 
       // -- No tool calls: validate and finish --------------------------------
@@ -871,11 +880,15 @@ export class ToolLoopHandler implements IStageHandler {
           // coordinator_step_* entries. Include resolved timeout when available
           // so a durationMs ≈ timeoutMs clearly flags which tool to bump via
           // toolTimeouts config.
-          ctx.options?.sessionLogger?.logStep('mcp_tool_call', {
-            toolName: r.tc.name,
-            durationMs: r.duration,
-            isError,
-          });
+          ctx.options?.sessionLogger?.logStep(
+            'mcp_tool_call',
+            {
+              toolName: r.tc.name,
+              durationMs: r.duration,
+              isError,
+            },
+            'mcp',
+          );
         },
       });
       let step = await batchGen.next();

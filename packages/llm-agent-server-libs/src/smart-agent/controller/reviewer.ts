@@ -1,4 +1,4 @@
-import type { LlmUsage } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import type { ReviewOutcome } from './outcome.js';
 import { extractJsonObject } from './parser.js';
 import { appendHint } from './prompts.js';
@@ -17,6 +17,10 @@ export interface ReviewOpts {
   logUsage?: (role: string, u?: LlmUsage) => void;
   /** Defensive cap on the returned `digest` (§B). Defaults to 500 when omitted. */
   maxDigestChars?: number;
+  /** Request-scoped call options (sessionLogger / trace / signal) threaded to
+   *  the underlying `send`, so this review's LLM I/O is captured under the
+   *  same session/trace as the rest of the run. */
+  callOptions?: CallOptions;
 }
 
 /** The reviewer's return: EITHER an authoritative step Outcome (incl. a genuine
@@ -81,16 +85,20 @@ export class LlmReviewer implements IReviewer {
           : `- ${e.ref}: MISSING (no artifact found)`,
       )
       .join('\n');
-    const res = await this.client.send([
-      { role: 'system', content: appendHint(REVIEWER_SYSTEM, opts.hint) },
-      {
-        role: 'user',
-        content:
-          `Step: ${step.name}\nIntent: ${step.instructions}\n` +
-          `Evidence:\n${evidenceBlock || '(none)'}\n` +
-          `Executor result:\n${executorResult}`,
-      },
-    ]);
+    const res = await this.client.send(
+      [
+        { role: 'system', content: appendHint(REVIEWER_SYSTEM, opts.hint) },
+        {
+          role: 'user',
+          content:
+            `Step: ${step.name}\nIntent: ${step.instructions}\n` +
+            `Evidence:\n${evidenceBlock || '(none)'}\n` +
+            `Executor result:\n${executorResult}`,
+        },
+      ],
+      undefined,
+      opts.callOptions,
+    );
     opts.logUsage?.('reviewer', res.usage);
     if (res.kind !== 'content') {
       // Provider/transport error → JUDGE failure (the verdict is unknown), NOT a

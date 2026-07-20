@@ -17,6 +17,7 @@ import {
   type StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
+import { resolveTraceSink } from './debug-trace-sink.js';
 import {
   jsonError,
   jsonValidationError,
@@ -115,10 +116,12 @@ export async function handleChat(
   const traceId = session?.traceId ?? randomUUID();
   const sessionId =
     session?.sessionId ?? (req.headers['x-session-id'] as string) ?? 'default';
+  const traceSink = resolveTraceSink(cfg.logDir);
   const sessionLogger = new SessionLogger(
-    cfg.logDir || null,
+    traceSink.dir,
     sessionId,
     traceId,
+    traceSink.enabledAreas,
   );
   const toolsValidationMode =
     cfg.agent?.externalToolsValidationMode ?? 'permissive';

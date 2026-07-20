@@ -32,7 +32,13 @@ export interface CallOptions {
   topP?: number;
   stop?: string[];
   stream?: boolean;
-  /** Per-request model override. Affects only the main LLM. */
+  /** Per-request model override. Applies to the main working LLM path (the
+   *  controller executor still receives the full `CallOptions`, unchanged).
+   *  It does NOT reach the reviewer, finalizer, planner, or target-state
+   *  evaluator roles — those receive only a diagnostic-only subset
+   *  (`sessionLogger`/`trace`/`sessionId`/`signal`) so a client-supplied
+   *  override can never corrupt their internal structured output (JSON plans,
+   *  verdicts). Same for temperature / maxTokens / topP / stop. */
   model?: string;
   /** Filter RAG results by namespace or other metadata. */
   ragFilter?: {
@@ -43,7 +49,7 @@ export interface CallOptions {
   };
   /** Detailed session debugger logger. */
   sessionLogger?: {
-    logStep(name: string, data: unknown): void;
+    logStep(name: string, data: unknown, area?: string): void;
   };
   /** Per-request logger used by the embedder-boundary usage wrapper to attribute
    *  embedding spend to this request. Optional; absent outside a request. */

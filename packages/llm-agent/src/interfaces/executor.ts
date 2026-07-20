@@ -39,7 +39,9 @@ export interface IExecutor {
     budget: Budget;
     identity: RunIdentity;
     signal?: AbortSignal;
-    sessionLogger?: { logStep(name: string, data: unknown): void };
+    sessionLogger?: {
+      logStep(name: string, data: unknown, area?: string): void;
+    };
     onProgress?: (event: StreamChunk) => void;
   }): Promise<{
     status: 'ok' | 'incomplete' | 'budget-exhausted';

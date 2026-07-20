@@ -355,7 +355,11 @@ export class LlmAdapter implements ILlm, IModelProvider {
       const onDiagnostic: ParseDiagnosticSink | undefined =
         options?.sessionLogger
           ? (event) =>
-              options.sessionLogger?.logStep('llm_parse_diagnostic', event)
+              options.sessionLogger?.logStep(
+                'llm_parse_diagnostic',
+                event,
+                'llm',
+              )
           : undefined;
       const mcpTools =
         tools?.map((t) => ({
@@ -401,7 +405,11 @@ export class LlmAdapter implements ILlm, IModelProvider {
       const onDiagnostic: ParseDiagnosticSink | undefined =
         options?.sessionLogger
           ? (event) =>
-              options.sessionLogger?.logStep('llm_parse_diagnostic', event)
+              options.sessionLogger?.logStep(
+                'llm_parse_diagnostic',
+                event,
+                'llm',
+              )
           : undefined;
       const mcpTools =
         tools?.map((t) => ({
@@ -472,10 +480,14 @@ export class LlmAdapter implements ILlm, IModelProvider {
           : m.id === model || m.id.includes(model),
       );
       if (!listed) {
-        options?.sessionLogger?.logStep('llm_health_model_not_listed', {
-          model,
-          listedCount: models.length,
-        });
+        options?.sessionLogger?.logStep(
+          'llm_health_model_not_listed',
+          {
+            model,
+            listedCount: models.length,
+          },
+          'llm',
+        );
       }
       return { ok: true, value: true };
     } catch (err) {
