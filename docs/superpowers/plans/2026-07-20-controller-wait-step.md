@@ -589,7 +589,9 @@ entire deadline contract unreachable — the resume path is precisely where that
 contract matters.
 
 So the branch is extracted as ONE private method, `serveWaitStep(...)`, called
-from both sites immediately before their `runStep` call.
+from both sites — but at DIFFERENT points in each, see the placement table
+below. The fresh site takes it just before `runStep`; the resume site must take
+it earlier, before that path's `resumeCount` accounting.
 
 `serveWaitStep` also OWNS its artifact writes. Do not call `writeControlFailure`
 from these sites: that helper is local to `runStep` (`handler:1156`) and is not
@@ -603,13 +605,22 @@ that single value for both `planWait({ now: waitNow })` and
 it must be parsed to epoch ms. Two separate `Date.now()` reads would skew the
 deadline and defeat clock injection in tests.
 
-Persist ordering, stated once so the two descriptions cannot disagree:
-`serveWaitStep` is called AFTER the existing `persistBundle` at each site, and
-the fresh path does its OWN `persistBundle` before sleeping. That is one extra
-write, on wait steps only. An earlier draft of this plan claimed the deadline
-could ride along on the existing write "at no extra cost" — that only holds at
-the fresh site, and making the resume site behave differently is exactly the
-kind of asymmetry that produces a bug. One rule, both sites.
+**Placement and persist ordering — the two sites are NOT symmetric.** Say it
+once, here, so the per-site instructions below cannot drift from it:
+
+| site | insert `serveWaitStep` | why there |
+|---|---|---|
+| fresh (`handler:835-846`) | AFTER the existing `persistBundle`, before `runStep` | the in-flight step must already exist and be durable |
+| resume (`handler:636-659`) | BEFORE the `resumeCount` accounting AND before that path's `persistBundle` | a wait remainder must not be charged as a crash replay (see call site B) |
+
+In both cases the fresh path inside `serveWaitStep` does its OWN
+`persistBundle` before sleeping — one extra write, on wait steps only.
+
+An earlier draft said "after the existing persist at each site". That is wrong
+for the resume site: its `persistBundle` sits *after* the `resumeCount`
+increment and the `maxStepResumes` terminal abort, so obeying it would
+reintroduce the bug where repeated abort/resume of a long wait kills the run.
+Symmetry is the wrong goal here — the two sites guard different things.
 
 - [ ] **Step 1: Write the failing tests**
 
