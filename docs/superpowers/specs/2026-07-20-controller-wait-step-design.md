@@ -39,9 +39,27 @@ dispatcher. No LLM call, no MCP call, no tokens.
 | role | responsibility | LLM |
 |---|---|---|
 | planner | emits `wait` steps where a created object is used later | yes |
-| step dispatcher | executes `wait` — a timer, nothing else | **no** |
+| **interpreter** | executes `wait` itself, reports the step settled OK | **no** |
 | executor | never sees a `wait` step | — |
 | reviewer | never sees a `wait` step | — |
+
+The interpreter is the role that physically hands a plan step to the executor.
+A `wait` step is the one kind of step it never hands over: it serves the step
+itself — sleep, then report "step done, OK" back into the plan's progress —
+and the executor is never invoked.
+
+**A `wait` step is never an MCP tool call.** That is the whole point: routing a
+pause through the tool catalog means the LLM must *decide* to wait and then
+*read back* the result, which is exactly the two-round-trip cost this
+deliverable removes. There is no code path in which `type: 'wait'` reaches an
+MCP client or a model.
+
+In the controller today this dispatch is inline in
+`controller-coordinator-handler.ts` rather than a named interpreter seam (the
+stepper composition has `IInterpreter`; the controller does not). This
+deliverable implements the wait branch as a small focused module consumed by
+that dispatch — it does not extract the full interpreter seam, which is a
+larger change and belongs in its own task.
 
 ### Step shape
 
@@ -83,7 +101,9 @@ yet.
 
 ### What this spec does NOT do
 
-**It does not remove any MCP tool from the catalog.** The reporter's catalog
+**It does not remove any MCP tool from the catalog.** This is about what the
+executor may still reach for *during an ordinary step* — it does not weaken the
+rule above that a `wait` step itself never touches MCP. The reporter's catalog
 happens to contain a tool named `wait`, and it would be tempting to filter it
 out. The engine hardcodes no tool names — that is a standing invariant
 (`CLAUDE.md`, MCP-agnostic principle): tool-usage concerns are solved in MCP
@@ -109,7 +129,10 @@ create → use ordering.
 ## Testing
 
 - a plan containing `type: 'wait'` settles the step with **zero** LLM calls and
-  **zero** MCP calls (asserted against spies, not by timing);
+  **zero** MCP calls (asserted against spies, not by timing) — this is the
+  load-bearing test of the whole deliverable;
+- the settled `wait` step reports success into the plan's progress, so the
+  planner sees "step done, OK" exactly as for an executed step;
 - the wait is interrupted by an abort signal rather than running to completion;
 - `waitMs` beyond `maxWaitMs` is clamped and the clamp is reported;
 - a `wait` step produces a step-result the board reflects;
