@@ -334,10 +334,40 @@ Step 2 preceding step 3 is what makes a crash mid-sleep safe: the deadline is
 already durable, so the resumed run serves the remainder instead of restarting
 the wait or double-charging the cap.
 
-**Cancellation — exact scope.** The sleep is interruptible by
+### How the wait is performed — `IWaitStrategy`
+
+The engine decides WHETHER and HOW LONG to wait; HOW the waiting is performed
+is a consumer variation point and therefore a strategy (principle 5), injected
+exactly like the controller's existing `deps.stepExecutionControl ??
+new DefaultStepExecutionControl()` (`handler:906`):
+
+```ts
+// packages/llm-agent/src/interfaces/wait-strategy.ts
+export interface IWaitStrategy {
+  readonly name: string;
+  /** Wait `ms`, resolving early if `signal` aborts. */
+  wait(ms: number, signal?: AbortSignal): Promise<'elapsed' | 'aborted'>;
+}
+```
+
+`DefaultWaitStrategy` is a plain timer. The controller takes
+`deps.waitStrategy ?? new DefaultWaitStrategy()`.
+
+This is NOT a testing device that happens to be public. It is the seam for a
+real consumer need already identified in this document: a wait blocks the
+request, so minute-long pauses belong in suspend/resume rather than a held
+connection. A consumer who wants that — or jitter, or a wait that yields to
+their own scheduler — implements this interface instead of forking the
+controller. Testability follows as a consequence: suites inject a strategy that
+returns immediately, so no test ever sleeps in real time.
+
+The clamps stay engine-owned. A strategy chooses how to wait, not how long —
+otherwise the absurdity bound becomes negotiable.
+
+**Cancellation — exact scope.** The wait is interruptible by
 `CallOptions.signal`, and that is *all* this deliverable promises. When a
-signal is present, the sleep ends immediately instead of running to the
-deadline.
+signal is present, the wait ends immediately instead of running to the
+deadline. Honouring the signal is part of the `IWaitStrategy` contract.
 
 It must NOT be described as "an aborted HTTP request interrupts the wait",
 because today it does not. The chat route builds its options without a signal
@@ -441,6 +471,8 @@ create → use ordering.
 
 ## Testing
 
+- an injected `IWaitStrategy` is used for every wait — no suite sleeps in real
+  time, and a consumer-supplied strategy is honoured;
 - serving a `type: 'wait'` step makes **zero** executor, reviewer and MCP calls
   (asserted against spies, not by timing) — this is the load-bearing test of the
   whole deliverable. It asserts the DISPATCH, not that the step is absent from
@@ -509,9 +541,9 @@ the suite stays fast and deterministic.
    existing controller dispatch loop; adds no parallel mechanism.
 2. **The app is the example** — the behaviour lands in the controller pipeline
    library, not in SmartServer.
-3. **Interfaces** — no new concrete class is exposed to consumers here; the
-   swappable failure/retry policy arrives in deliverable 2 as its own focused
-   interface.
+3. **Interfaces** — `IWaitStrategy` is the consumer-facing contract; the
+   controller depends on it, never on a concrete timer. The swappable
+   failure/retry policy arrives in deliverable 2 as its own focused interface.
 4. **ISP** — **four** optional fields are added to existing types, all additive
    so no consumer breaks (principle 7):
 
@@ -526,10 +558,10 @@ the suite stays fast and deterministic.
    "nothing is added", then "two fields"). The deadline contract cannot be
    implemented without a durable home for its two fields, and leaving that
    unstated invites an ad-hoc implementation or a forgotten migration.
-5. **Strategies** — the wait *duration* is the planner's decision, not the
-   engine's; the *clamp* is only an absurdity bound, set above the planner's
-   working range and configurable, deliberately not a pluggable policy in this
-   deliverable.
+5. **Strategies** — three separated concerns: the *duration* is the planner's
+   decision; the *clamp* is an engine-owned absurdity bound (configurable, not
+   pluggable — a negotiable safety bound is not a safety bound); the *mechanism*
+   is `IWaitStrategy`, which the consumer may swap.
 6. **File size** — dispatch of the wait branch goes into a small focused module
    rather than growing `controller-coordinator-handler.ts`, which is already
    oversized.

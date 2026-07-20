@@ -16,14 +16,15 @@
 - Gate before every commit: `npm run build && npm run lint && npm test` — `npm run lint` (`biome check --write`), NOT `npm run format`, because only `check` sorts imports and CI runs `check`.
 - Additive changes only: every new field is optional; a plan with no `wait` step must behave byte-identically.
 - No new tool names in the engine. Nothing in this work may reference an MCP tool called `wait`.
-- Tests use an injected timer/clock — never a real multi-second sleep.
+- Tests inject an `IWaitStrategy` — never a real multi-second sleep. The controller must never construct a timer inline.
 - Branch: `feat/controller-wait-step` (already created, spec already committed).
 
 ## File Structure
 
 | File | Responsibility |
 |---|---|
-| `packages/llm-agent-server-libs/src/smart-agent/controller/wait-step.ts` | **new** — pure logic: path decision, applied duration, remaining sleep. No I/O. |
+| `packages/llm-agent/src/interfaces/wait-strategy.ts` | **new** — `IWaitStrategy` + `DefaultWaitStrategy`. The consumer-swappable mechanism. |
+| `packages/llm-agent-server-libs/src/smart-agent/controller/wait-step.ts` | **new** — pure logic: path decision, applied duration, remaining sleep. No I/O, no timer. |
 | `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/wait-step.test.ts` | **new** — unit tests for the above. |
 | `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts` | `Step.waitMs`, `InFlightStep.waitStartedAt/appliedWaitMs`, `budgets.waitMsUsed`, config knobs. |
 | `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts` | `parsePlan` preserves + validates `waitMs`; planner prompt rule. |
@@ -346,6 +347,119 @@ git commit -m "feat(controller): durable wait deadline fields and per-run wait b
 
 ---
 
+### Task 4a: `IWaitStrategy` — the consumer-swappable wait mechanism
+
+The engine decides whether and how long to wait; HOW the waiting happens is the
+consumer's variation point, so it is a strategy (principle 5), injected exactly
+like the controller's existing `deps.stepExecutionControl ?? new DefaultStepExecutionControl()`
+(`handler:906`). Testability follows for free — suites inject a strategy that
+returns immediately instead of sleeping.
+
+**Files:**
+- Create: `packages/llm-agent/src/interfaces/wait-strategy.ts`
+- Modify: `packages/llm-agent/src/index.ts` (export it the way sibling interfaces are exported)
+- Test: `packages/llm-agent/src/interfaces/__tests__/wait-strategy.test.ts`
+
+**Interfaces:**
+- Produces: `IWaitStrategy`, `DefaultWaitStrategy` — consumed by Task 5.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { DefaultWaitStrategy } from '../wait-strategy.js';
+
+test('DefaultWaitStrategy resolves elapsed after the delay', async () => {
+  const t0 = Date.now();
+  assert.equal(await new DefaultWaitStrategy().wait(20), 'elapsed');
+  assert.ok(Date.now() - t0 >= 15);
+});
+
+test('DefaultWaitStrategy returns aborted immediately for an already-aborted signal', async () => {
+  const ac = new AbortController();
+  ac.abort();
+  const t0 = Date.now();
+  assert.equal(await new DefaultWaitStrategy().wait(60_000, ac.signal), 'aborted');
+  assert.ok(Date.now() - t0 < 100, 'must not wait out the duration');
+});
+
+test('DefaultWaitStrategy resolves aborted when the signal fires mid-wait', async () => {
+  const ac = new AbortController();
+  const p = new DefaultWaitStrategy().wait(60_000, ac.signal);
+  ac.abort();
+  assert.equal(await p, 'aborted');
+});
+
+test('DefaultWaitStrategy treats a non-positive duration as elapsed', async () => {
+  assert.equal(await new DefaultWaitStrategy().wait(0), 'elapsed');
+});
+```
+
+- [ ] **Step 2: Run and verify they fail**
+
+```bash
+npx tsx --test packages/llm-agent/src/interfaces/__tests__/wait-strategy.test.ts
+```
+Expected: FAIL — `Cannot find module '../wait-strategy.js'`.
+
+- [ ] **Step 3: Implement**
+
+```ts
+/**
+ * How a controller `wait` step is actually served.
+ *
+ * The engine owns WHETHER to wait and FOR HOW LONG (planner duration, engine
+ * clamps). This interface owns only the MECHANISM, so a consumer can replace a
+ * blocking sleep with something their deployment prefers — suspending and
+ * resuming the run instead of holding an HTTP connection for minutes, adding
+ * jitter, or yielding to their own scheduler — without forking the controller.
+ */
+export interface IWaitStrategy {
+  readonly name: string;
+  /** Wait `ms`, resolving early with 'aborted' if `signal` aborts. */
+  wait(ms: number, signal?: AbortSignal): Promise<'elapsed' | 'aborted'>;
+}
+
+/** Plain timer. Honouring `signal` is part of the contract, not an extra. */
+export class DefaultWaitStrategy implements IWaitStrategy {
+  readonly name = 'default-wait';
+
+  wait(ms: number, signal?: AbortSignal): Promise<'elapsed' | 'aborted'> {
+    if (signal?.aborted) return Promise.resolve('aborted');
+    if (ms <= 0) return Promise.resolve('elapsed');
+    return new Promise((resolve) => {
+      const onAbort = (): void => {
+        clearTimeout(handle);
+        resolve('aborted');
+      };
+      const handle = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve('elapsed');
+      }, ms);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+}
+```
+
+- [ ] **Step 4: Run tests**
+
+```bash
+npx tsx --test packages/llm-agent/src/interfaces/__tests__/wait-strategy.test.ts
+```
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Full gate and commit**
+
+```bash
+npm run build && npm run lint && npm test
+git add -A
+git commit -m "feat(agent): add IWaitStrategy — consumer-swappable wait mechanism"
+```
+
+---
+
 ### Task 4: `wait-step.ts` — the decision logic
 
 All arithmetic and branching, with zero I/O, so it is exhaustively testable without a controller.
@@ -360,8 +474,7 @@ All arithmetic and branching, with zero I/O, so it is exhaustively testable with
   - `type WaitPlan = { kind: 'fresh'; applied: number; clamped: boolean; cappedSkip: boolean } | { kind: 'resume'; remaining: number; deadlinePassed: boolean } | { kind: 'torn'; missing: 'waitStartedAt' | 'appliedWaitMs' }`
   - `function isWaitStep(step: Step): boolean`
   - `function planWait(args: { step: Step; inFlight: Pick<InFlightStep,'waitStartedAt'|'appliedWaitMs'>; maxWaitMs: number; maxTotalWaitMs: number; waitMsUsed: number; now: number }): WaitPlan`
-  - `function sleepUntilAborted(ms: number, signal: AbortSignal | undefined, timer: TimerLike): Promise<'elapsed' | 'aborted'>`
-  - `interface TimerLike { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(h: unknown): void }`
+  - (the sleeping itself lives in `IWaitStrategy`, Task 4a — `wait-step.ts` stays pure)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -370,7 +483,7 @@ Create `__tests__/wait-step.test.ts`:
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isWaitStep, planWait, sleepUntilAborted } from '../wait-step.js';
+import { describeWait, isWaitStep, planWait } from '../wait-step.js';
 
 const step = (waitMs?: number) =>
   ({ name: 'w', instructions: 'w', type: 'wait', ...(waitMs ? { waitMs } : {}) }) as never;
@@ -433,17 +546,6 @@ test('torn: exactly one deadline field present, either way round', () => {
     { kind: 'torn', missing: 'waitStartedAt' });
 });
 
-test('sleepUntilAborted returns aborted immediately on an aborted signal', async () => {
-  const ac = new AbortController();
-  ac.abort();
-  const fake = { setTimeout: () => 1, clearTimeout: () => {} };
-  assert.equal(await sleepUntilAborted(60_000, ac.signal, fake), 'aborted');
-});
-
-test('sleepUntilAborted resolves elapsed via the injected timer', async () => {
-  const fake = { setTimeout: (fn: () => void) => { fn(); return 1; }, clearTimeout: () => {} };
-  assert.equal(await sleepUntilAborted(60_000, undefined, fake), 'elapsed');
-});
 ```
 
 - [ ] **Step 2: Run and verify they fail**
@@ -459,11 +561,6 @@ Create `wait-step.ts`:
 
 ```ts
 import type { InFlightStep, Step } from './types.js';
-
-export interface TimerLike {
-  setTimeout(fn: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
 
 export type WaitPlan =
   | { kind: 'fresh'; applied: number; clamped: boolean; cappedSkip: boolean }
@@ -522,28 +619,6 @@ export function planWait(args: {
     cappedSkip: applied === 0 && requested > 0,
   };
 }
-
-/** Sleep, resolving early when the signal aborts. The timer is injected so
- *  tests never wait in real time. */
-export function sleepUntilAborted(
-  ms: number,
-  signal: AbortSignal | undefined,
-  timer: TimerLike,
-): Promise<'elapsed' | 'aborted'> {
-  if (signal?.aborted) return Promise.resolve('aborted');
-  if (ms <= 0) return Promise.resolve('elapsed');
-  return new Promise((resolve) => {
-    const handle = timer.setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve('elapsed');
-    }, ms);
-    function onAbort(): void {
-      timer.clearTimeout(handle);
-      resolve('aborted');
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
 ```
 
 - [ ] **Step 4: Run tests**
@@ -551,7 +626,7 @@ export function sleepUntilAborted(
 ```bash
 npx tsx --test packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/wait-step.test.ts
 ```
-Expected: PASS (10 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 5: Full gate and commit**
 
@@ -820,7 +895,8 @@ Then add the private method on the handler and call it from both sites.
     }
 
     const toSleep = plan.kind === 'fresh' ? plan.applied : plan.remaining;
-    const outcome = await sleepUntilAborted(toSleep, args.ctx.options?.signal, globalThis);
+    const waiter = this.deps.waitStrategy ?? new DefaultWaitStrategy();
+    const outcome = await waiter.wait(toSleep, args.ctx.options?.signal);
     if (outcome === 'aborted') return 'aborted';         // no artifact, no advance
 
     const { text, note } = describeWait(plan, step);
@@ -931,8 +1007,19 @@ must not be charged as one.
       if (waitOutcome === 'served') continue;
 ```
 
-Import `isWaitStep`, `planWait`, `describeWait`, `sleepUntilAborted` from
-`./wait-step.js`.
+Import `isWaitStep`, `planWait`, `describeWait` from `./wait-step.js`, and
+`DefaultWaitStrategy` from `@mcp-abap-adt/llm-agent`.
+
+Add the dep beside the existing `stepExecutionControl?: IStepExecutionControl`
+(`handler:173`):
+
+```ts
+  waitStrategy?: IWaitStrategy;
+```
+
+The controller must NEVER construct a timer inline — every wait goes through
+the strategy, which is what makes the suites fast and lets a consumer replace
+blocking with suspend/resume.
 
 **Type names used above, verified against the source** (do not guess these —
 an earlier draft of this plan invented `IBackend`, `IRunScopedRag` and
