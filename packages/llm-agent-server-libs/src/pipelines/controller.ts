@@ -339,6 +339,7 @@ export class ControllerPipelinePlugin
         ctx.stepExecutionControl ?? new DefaultStepExecutionControl(),
       runExecutionControl:
         ctx.runExecutionControl ?? new NoopRunExecutionControl(),
+      ...(ctx.waitStrategy ? { waitStrategy: ctx.waitStrategy } : {}),
     };
 
     const { handler } = await new ControllerFactory().build(

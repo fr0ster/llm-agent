@@ -6,6 +6,7 @@ import type {
   IPipelineFactory,
   IRunExecutionControl,
   IStepExecutionControl,
+  IWaitStrategy,
   LlmTool,
   PipelineFactoryDepsBase,
   ToolLoopContextStrategyFactory,
@@ -72,6 +73,10 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
    *  The controller pipeline resolves `ctx.runExecutionControl ?? new NoopRunExecutionControl()`.
    *  Absent → the handler no-ops (never fires). */
   runExecutionControl?: IRunExecutionControl;
+  /** Consumer-swappable wait mechanism for `wait` steps.
+   *  Absent → the handler defaults to `DefaultWaitStrategy` (a plain,
+   *  signal-honouring timer). */
+  waitStrategy?: IWaitStrategy;
 }
 
 /**
@@ -176,6 +181,7 @@ export class ControllerFactory
       ...(deps.runExecutionControl
         ? { runExecutionControl: deps.runExecutionControl }
         : {}),
+      ...(deps.waitStrategy ? { waitStrategy: deps.waitStrategy } : {}),
       reviewer: new LlmReviewer(makeSubagentClient(reviewerLlm)),
       finalizer: new LlmFinalizer(makeSubagentClient(finalizerLlm), {
         budget: 12000,
