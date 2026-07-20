@@ -174,10 +174,25 @@ deliberately:
 Real elapsed time is what the planner is actually buying, and elapsed time
 keeps running during an outage. The deadline honours that; a duration does not.
 
-Missing `waitStartedAt` / `appliedWaitMs` on an in-flight wait (a bundle
-written before this change, or a torn write) is treated as an aborted wait —
-not settled — so the planner is never told a wait completed that cannot be
-proven.
+**Missing deadline fields are a control failure, NOT an abort.** An in-flight
+wait whose `waitStartedAt` / `appliedWaitMs` are absent — a bundle written
+before this change, or a torn write — cannot be served: there is no deadline to
+compute a remainder from, and the elapsed time is unknowable.
+
+It must NOT reuse the abort contract. Abort deliberately leaves the step
+in-flight and resumable, so applying it here would resume into the same
+fields-missing state forever — a livelock, and one that costs nothing per
+iteration so nothing else would ever stop it.
+
+Instead the controller writes a `control-failure` step-result (the existing
+`writeControlFailure` path, generic `reason: 'control-failure'`, note naming
+the missing fields) and lets the planner replan. That reuses machinery the
+controller already has, and inherits its bounds — `maxStepAttempts` and the
+replan budget — so the failure terminates instead of spinning. The planner can
+simply re-emit the wait, which is the correct recovery: the step never ran.
+
+`ControlFailure.reason` is NOT widened for this; the generic value carries it,
+with the specifics in the note.
 
 Missing `waitMsUsed` on a bundle written before this change reads as `0`
 (backward compatible).
@@ -266,7 +281,9 @@ In the controller's step loop, a step with `type === 'wait'` short-circuits
 4. if the step settled, record the step-result for whichever of the four
    settling cases applies, so the board and the planner's view of progress stay
    coherent; on an abort, write nothing and leave the step in-flight;
-5. advance.
+5. advance — but ONLY for the four settling cases. On an abort, return the
+   cancellation to the caller WITHOUT advancing: the step is still in-flight,
+   and advancing past it would skip a wait that never completed.
 
 Step 2 preceding step 3 is what makes a crash mid-sleep safe: the deadline is
 already durable, so the resumed run serves the remainder instead of restarting
@@ -418,8 +435,10 @@ create → use ordering.
   (not as `normal`, which would claim a sleep that did not happen on this run,
   and not as `skipped`, which would claim the wait was never served), a short
   outage sleeps the remainder, and neither re-charges the budget;
-- an in-flight wait missing `waitStartedAt` / `appliedWaitMs` resumes as
-  aborted, not settled;
+- an in-flight wait missing `waitStartedAt` / `appliedWaitMs` produces a
+  `control-failure` step-result and a replan — NOT an abort, which would resume
+  into the same state forever;
+- an abort mid-wait does not advance the plan cursor;
 - `waitMs` present on a NON-wait step, and an unknown `type` value, both leave
   dispatch behaviour byte-identical to today (principle 7 regression guard);
 - each of the four SETTLING cases (normal / clamped / skipped /
