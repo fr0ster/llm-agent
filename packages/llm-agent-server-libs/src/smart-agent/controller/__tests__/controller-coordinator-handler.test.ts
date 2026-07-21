@@ -142,7 +142,8 @@ function harness(opts: {
     embedder: opts.embedder ?? stubEmbedder,
     callMcp: async (name, args) => {
       mcpCalls.push({ name, args });
-      return opts.callMcpReturns ?? 'mcp-out';
+      const r = opts.callMcpReturns ?? 'mcp-out';
+      return typeof r === 'string' ? { text: r, isError: false } : r;
     },
     selectTools: async () => opts.selectTools ?? [],
     // isExternalTool is left undefined by default so the per-request

@@ -159,7 +159,10 @@ describe('controller runStep — per-round context strategy (Task 11)', () => {
       backend,
       knowledgeRagFor: () => rag,
       embedder: stubEmbedder,
-      callMcp: async (_n, args) => `RESULT-${JSON.stringify(args)}`,
+      callMcp: async (_n, args) => ({
+        text: `RESULT-${JSON.stringify(args)}`,
+        isError: false,
+      }),
       selectTools: async (): Promise<LlmTool[]> => [
         { name: 'GetData', description: '', inputSchema: {} },
       ],
@@ -220,7 +223,10 @@ describe('controller runStep — per-round context strategy (Task 11)', () => {
       backend,
       knowledgeRagFor: () => rag,
       embedder: stubEmbedder,
-      callMcp: async (_n, args) => `RESULT-${JSON.stringify(args)}`,
+      callMcp: async (_n, args) => ({
+        text: `RESULT-${JSON.stringify(args)}`,
+        isError: false,
+      }),
       selectTools: async (): Promise<LlmTool[]> => [
         { name: 'GetData', description: '', inputSchema: {} },
       ],
@@ -284,7 +290,7 @@ describe('controller runStep — per-round context strategy (Task 11)', () => {
       backend,
       knowledgeRagFor: () => rag,
       embedder: stubEmbedder,
-      callMcp: async () => 'ERROR: table not found',
+      callMcp: async () => ({ text: 'ERROR: table not found', isError: false }),
       selectTools: async (): Promise<LlmTool[]> => [
         { name: 'ErrTool', description: '', inputSchema: {} },
       ],
@@ -355,7 +361,10 @@ describe('controller runStep — per-round context strategy (Task 11)', () => {
       backend,
       knowledgeRagFor: () => rag,
       embedder: stubEmbedder,
-      callMcp: async (_n, args) => `RESULT-${JSON.stringify(args)}`,
+      callMcp: async (_n, args) => ({
+        text: `RESULT-${JSON.stringify(args)}`,
+        isError: false,
+      }),
       selectTools: async (): Promise<LlmTool[]> => [
         { name: 'GetData', description: '', inputSchema: {} },
       ],

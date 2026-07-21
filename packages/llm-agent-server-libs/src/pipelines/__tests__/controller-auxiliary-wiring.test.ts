@@ -13,7 +13,7 @@ type CapturedDeps = {
     name: string,
     args: unknown,
     signal?: AbortSignal,
-  ) => Promise<unknown>;
+  ) => Promise<{ text: string; isError: boolean }>;
   selectTools: (
     query: string,
     k?: number,
@@ -69,7 +69,8 @@ test('controller default: callMcp is aux-first and selectTools includes wait', a
   assert.ok(tools.some((t) => t.name === 'wait'));
   // calling wait goes through the aux branch and returns its text (not "Tool not found"):
   const out = await deps.callMcp('wait', { seconds: 0 });
-  assert.equal(out, 'Waited 0s');
+  assert.equal(out.text, 'Waited 0s');
+  assert.equal(out.isError, false);
 });
 
 test('controller consumer override beats the default wait', async () => {

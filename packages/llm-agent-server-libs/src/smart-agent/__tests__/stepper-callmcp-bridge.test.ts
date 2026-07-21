@@ -70,7 +70,11 @@ test('bridge dispatches callTool to the first owning client and returns string c
 
   const result = await callMcp('ReadProgram', { program: 'Z' });
 
-  assert.equal(result, 'REPORT z.', 'bridge should return tool result text');
+  assert.equal(
+    result.text,
+    'REPORT z.',
+    'bridge should return tool result text',
+  );
   assert.equal(client.callsMade.length, 1);
   assert.equal(client.callsMade[0].name, 'ReadProgram');
 });
@@ -96,7 +100,7 @@ test('bridge serialises structured content to JSON', async () => {
   const callMcp = buildMcpBridge([clientWithStructured]);
   const result = await callMcp('GetTable', {});
   assert.ok(
-    result.includes('"rows"'),
+    result.text.includes('"rows"'),
     'structured content should be JSON-stringified',
   );
 });
@@ -119,7 +123,7 @@ test('bridge returns error message string when callTool fails (no throw)', async
   const callMcp = buildMcpBridge([client]);
   const result = await callMcp('FailTool', {});
   assert.equal(
-    result,
+    result.text,
     'server timeout',
     'bridge should return error message, not throw',
   );
@@ -130,8 +134,8 @@ test('bridge returns Tool-not-found string when no client owns the tool', async 
   const callMcp = buildMcpBridge([client]);
   const result = await callMcp('UnknownTool', {});
   assert.ok(
-    result.startsWith('Tool not found'),
-    `expected Tool not found, got: ${result}`,
+    result.text.startsWith('Tool not found'),
+    `expected Tool not found, got: ${result.text}`,
   );
 });
 
@@ -153,7 +157,7 @@ test('bridge skips a client whose listTools fails and tries the next', async () 
   const good = fakeMcpClient(['ReadProgram'], { ReadProgram: 'source code' });
   const callMcp = buildMcpBridge([broken, good]);
   const result = await callMcp('ReadProgram', {});
-  assert.equal(result, 'source code');
+  assert.equal(result.text, 'source code');
   assert.equal(good.callsMade.length, 1);
 });
 
@@ -271,4 +275,57 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
     'bridge should have dispatched callTool exactly once',
   );
   assert.equal(client.callsMade[0].name, 'ReadProgram');
+});
+
+// ---------------------------------------------------------------------------
+// #213 regression: a tool result that SUCCEEDS at the transport level but is
+// marked isError:true (e.g. SAP "-32603 currently editing" comes back as a
+// delivered JSON-RPC result whose content is an error and isError=true) MUST
+// reach the caller with isError:true. Dropping it (the old Promise<string>
+// contract) made the lock error look like a delivered success, so the
+// controller executor retried it forever — the #213 balloon.
+// ---------------------------------------------------------------------------
+
+test('buildMcpBridge preserves isError:true on a delivered tool-error result (#213)', async () => {
+  const lockError =
+    'MCP error -32603: SAP Error: User X is currently editing ZFOO';
+  const client: IMcpClient = {
+    async listTools() {
+      return {
+        ok: true as const,
+        value: [{ name: 'UpdateTable', description: 'u', inputSchema: {} }],
+      };
+    },
+    async callTool() {
+      // ok at transport level, but a tool-level ERROR (the SAP lock).
+      return {
+        ok: true as const,
+        value: { content: lockError, isError: true },
+      };
+    },
+  };
+  const callMcp = buildMcpBridge([client]);
+  const result = await callMcp('UpdateTable', { table: 'ZFOO' });
+  assert.equal(result.text, lockError);
+  assert.equal(
+    result.isError,
+    true,
+    'a delivered tool-error must not be flattened to a success (#213)',
+  );
+});
+
+test('buildMcpBridge reports isError:false on a genuine success', async () => {
+  const client: IMcpClient = {
+    async listTools() {
+      return {
+        ok: true as const,
+        value: [{ name: 'GetTable', description: 'g', inputSchema: {} }],
+      };
+    },
+    async callTool() {
+      return { ok: true as const, value: { content: 'rows', isError: false } };
+    },
+  };
+  const result = await buildMcpBridge([client])('GetTable', {});
+  assert.deepEqual(result, { text: 'rows', isError: false });
 });
