@@ -33,7 +33,7 @@ export class LinearPipelinePlugin
     const deps = await parseLinearConfig(cfg, ctx);
     const { handler } = await new LinearFactory().build(deps, {
       makeRoleLlm: (role) => ctx.resolveLlm(role),
-      callMcp: (n, a, s) => ctx.callMcp(n, a, s).then(String),
+      callMcp: (n, a, s) => ctx.callMcp(n, a, s),
     });
     const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
     const handle = await builder.withStepperCoordinator(handler).build();

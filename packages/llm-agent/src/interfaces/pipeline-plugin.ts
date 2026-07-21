@@ -18,6 +18,7 @@ import type {
   IStepExecutionControl,
 } from './step-execution-control.js';
 import type { ToolLoopContextStrategyFactory } from './tool-loop-context-strategy.js';
+import type { McpCallResult } from './types.js';
 import type { IWaitStrategy } from './wait-strategy.js';
 
 /** A value that may already be resolved or arrive as a promise. */
@@ -51,7 +52,11 @@ export interface IPipelineContext {
    *  tools RAG is configured, so the contract stays stable for no-RAG deployments. */
   toolsRag: IToolsRagHandle;
   ragRegistry?: IRagRegistry;
-  callMcp(name: string, args: unknown, signal?: AbortSignal): Promise<unknown>;
+  callMcp(
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ): Promise<McpCallResult>;
   mcpClients?: IMcpClient[];
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   mintStepperId(): string;

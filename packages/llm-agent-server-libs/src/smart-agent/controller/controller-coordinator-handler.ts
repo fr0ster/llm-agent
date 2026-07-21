@@ -13,6 +13,7 @@ import {
   type LlmTool,
   type LlmToolCall,
   type LlmUsage,
+  type McpCallResult,
   McpError,
   type Message,
   type ModelUsageEntry,
@@ -132,7 +133,7 @@ export interface ControllerHandlerDeps {
     toolName: string,
     args: unknown,
     signal?: AbortSignal,
-  ) => Promise<string>;
+  ) => Promise<McpCallResult>;
   /**
    * Semantic tool selection over the vectorized MCP catalog (toolsRag): returns
    * the top-K tools relevant to `query`. This is how INTERNAL tools reach the
@@ -1577,7 +1578,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // rather than re-checking the code (which would drop a CUSTOM classifier's
         // decision → rethrow → outer catch swallow → (no response)). A non-McpError
         // is a genuine unexpected error and is re-thrown for the outer handler.
-        let result: string;
+        let result: McpCallResult;
         const mcpCallStartedAt = Date.now();
         try {
           result = await deps.callMcp(name, args, callSignal);
@@ -1619,8 +1620,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           {
             name,
             args,
-            result,
-            isError: false,
+            result: result.text,
+            // The REAL tool-level isError, threaded through the bridge (#213).
+            // Previously hardcoded false, so a locked-object error looked like a
+            // delivered result and the executor retried it forever.
+            isError: result.isError,
             durationMs: Date.now() - mcpCallStartedAt,
           },
           'mcp',
@@ -1652,14 +1656,19 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             {
               role: 'tool',
               tool_call_id: call.id,
-              content: result,
+              content: result.text,
             },
           ],
-          // Stable fetch identity (tool+args) for run-scoped recall dedup. The
-          // controller has no tool-level error classifier here — an unavailable MCP
-          // server aborts BEFORE record; a returned string is a delivered result.
+          // Stable fetch identity (tool+args) for run-scoped recall dedup, plus
+          // the tool-level isError threaded from the bridge (#213). An unavailable
+          // MCP server still aborts BEFORE record; a returned result carries its
+          // real isError so the executor sees a failed call as failed, not as a
+          // delivered success it retries forever.
           meta: [
-            { identityKey: externalToolCallId(name, args), isError: false },
+            {
+              identityKey: externalToolCallId(name, args),
+              isError: result.isError,
+            },
           ],
           ordinal: bundle.writeOrdinal,
           roundId: undefined,

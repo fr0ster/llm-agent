@@ -271,6 +271,7 @@ export type {
   LlmToolCall,
   LlmToolCallDelta,
   LlmUsage,
+  McpCallResult,
   McpTool,
   McpToolResult,
   ModelUsageEntry,
