@@ -131,7 +131,12 @@ export class McpClientAdapter implements IMcpClient {
                   | string
                   | Record<string, unknown>)
               : String(result.error ?? result.result),
-          isError: !!result.error,
+          // A tool-level failure is signalled EITHER by a returned `error`
+          // field OR by the MCP CallToolResult's own `isError` (a tool that ran
+          // and failed, e.g. a locked SAP object). Reading only `error` dropped
+          // the latter — an executor then retried an unrecoverable failure
+          // forever (#213/#231).
+          isError: !!result.error || result.isError === true,
         },
       };
     } catch (err) {

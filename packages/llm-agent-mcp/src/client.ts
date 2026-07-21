@@ -484,6 +484,7 @@ export class MCPClientWrapper {
         toolCallId: toolCall.id,
         name: toolCall.name,
         result: response.content,
+        isError: response.isError === true,
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -498,6 +499,7 @@ export class MCPClientWrapper {
           toolCallId: toolCall.id,
           name: toolCall.name,
           result: response.content,
+          isError: response.isError === true,
         };
       } catch (retryError: unknown) {
         // Resume-with-session failed — the server may have dropped the session.
@@ -513,6 +515,7 @@ export class MCPClientWrapper {
               toolCallId: toolCall.id,
               name: toolCall.name,
               result: response.content,
+              isError: response.isError === true,
             };
           } catch {
             /* fall through to throw */
