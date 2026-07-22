@@ -59,13 +59,24 @@ dropping the signal:
 1. **The failure must become legible to the planner.** This is the crux and has
    three candidate mechanisms — the plan must pick one; recommendation noted:
 
-   - **(a) controller marks the step failed on `isError` (deterministic).** When
-     a tool round returns `isError:true` and the executor cannot produce a valid
-     result from it, the controller records the step outcome as failed with the
-     tool's error text, WITHOUT relying on the LLM reviewer to notice. The
-     planner then sees a failed step + the error and decides. Robust against the
-     executor confabulating a "success" summary (the exact #213 failure: a
-     locked object reported as "updated successfully"). **Recommended.**
+   - **(a) controller marks the step failed on `isError` (deterministic). HARD
+     RULE — no LLM override.** If ANY tool round in an attempt returns
+     `isError:true`, that attempt's step outcome is **forced to `failed`** with
+     the failing tool's error text as the reason, **regardless of any later
+     executor content and regardless of a reviewer `ok`**. A confabulated
+     "updated successfully" summary (the exact #213 failure) cannot rescue the
+     step; a reviewer verdict of `ok` on an attempt that contains a failed tool
+     round is itself invalid and is overridden to `failed`. The controller
+     records this the moment it observes `isError:true` (it already sees
+     `result.isError` at the callMcp site), independent of the executor/reviewer
+     path. The planner then sees a failed step + the error and decides.
+     **Recommended.**
+
+     Precise condition: the trigger is "an attempt contains ≥1 tool round with
+     `isError:true`", NOT "the executor could not produce a result" — the latter
+     re-delegates the decision to the LLM, which is the failure mode. The step
+     text carried to the planner is the failing round's error text (first failed
+     round if several).
    - **(b) reviewer sees the round `isError`.** Feed the failed round's flag into
      the reviewer's evidence so its verdict reflects it. More LLM-dependent (the
      reviewer may still be talked into "ok").
@@ -97,9 +108,18 @@ dropping the signal:
   `abortTerminal` reasons (budget exhausted, planner-invalid). The consumer gets
   the real failure, not `(no response)`.
 
+**Canonical wire shape (single, enforced).** The planner emits exactly
+`{ "kind": "error", "error": "<the failure, in the consumer's language>" }` —
+the same discriminated shape as every other decision. A bare `{ "error": … }`
+without `kind` is NOT accepted. The parser (`parser.ts`) recognises
+`kind: 'error'` and rejects the bare/legacy shape; parser tests must cover both
+the accepted shape and the rejected `{ "error": … }` (parses to `null` →
+format failure → planner retries, exactly like a malformed `next`/`done`).
+
 The plan-creation / replan prompt gains a rule teaching this reasoning: on a
 tool failure, decide whether it is fixable within what the consumer asked; if
-not, return `{ "error": "<the failure, in the consumer's language>" }`.
+not, return `{ "kind": "error", "error": "<the failure, in the consumer's
+language>" }`.
 
 ### Layer 3 — the consumer seam (the tool)
 
@@ -122,17 +142,43 @@ is insufficient — the planner IS the decision seam (avoids a parallel
 - No run-level tool-call ceiling / repeat-detector: rejected earlier as a
   workaround that masks the loop instead of removing its cause.
 
+## Flat pipeline (no planner) — what "surface" means
+
+Made explicit (two very different behaviours; this spec picks one):
+
+**Chosen: LLM-mediated, no false success.** The failed tool message reaches the
+flat tool-loop LLM as it does today (the error text is in the tool result), and
+the final answer must reflect the failure — the pipeline must NOT present a
+delivered success when `isError:true` occurred. Concretely: the tool-loop marks
+the round failed (same `isError` carrier as the controller path) so a downstream
+that inspects rounds sees it, and the LLM is not handed a result that looks
+successful. This keeps flat's LLM-driven nature.
+
+**Rejected: raw-error bypass.** Returning the raw tool error as terminal output
+without the LLM would change flat from an LLM-answering pipeline into a
+pass-through; out of scope. (A consumer who wants that builds it — the seam
+exists.)
+
 ## Testing
 
-- a step whose tool call returns `isError:true` is legible to the reviewer as a
-  failed step (not a delivered result) — asserted on the reviewer's evidence/verdict;
+- **deterministic failure (no LLM):** an attempt containing a tool round with
+  `isError:true` sets `bundle.lastOutcome`/the step-result to `failed` with the
+  tool error text and appends the failure to `plannerPrivate` — asserted
+  directly on the durable bundle, NOT via the reviewer;
+- **no LLM override:** an attempt with a failed tool round PLUS an executor
+  "updated successfully" summary AND a reviewer `ok` verdict still settles the
+  step as `failed` (the confabulation cannot rescue it);
 - `isError` survives a RagRecall persist + rehydrate;
+- **parser:** `{ "kind": "error", "error": "…" }` parses to the `error`
+  decision; a bare `{ "error": "…" }` (no `kind`) parses to `null` → format
+  failure → planner retries;
 - the planner, given a failure it can fix within the prompt's freedom (a
   self-chosen name that is taken), replans; given a failure it cannot (a pinned
-  name), returns `{ kind: 'error' }`;
+  name), returns the `error` decision;
 - an `error` decision terminates the run and returns the tool's failure text to
   the consumer (NOT `(no response)`, NOT a generic abort reason);
-- a flat pipeline (no planner) surfaces a tool error to the consumer;
+- a flat pipeline (no planner) with a failed tool call produces a final answer
+  that reflects the failure and never a false success;
 - a plan with no tool error behaves byte-identically (no regression).
 
 ## Architecture principles check
