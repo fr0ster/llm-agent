@@ -116,33 +116,51 @@ failure reaches it deterministically, not through the LLM reviewer:
 
 ### Layer 2 — the planner's new `error` decision
 
-`NextStep` today is `next | done | rewind`. Add:
+**Where the decision actually lives (verified against the code).** The default
+`SmartExecutorPlanner.next()` does NOT parse its plan/replan output through
+`parseNextStep` — that function is test-only. `next()` builds the plan via
+`callPlan()` → `parsePlan()` (currently `content → Step[] | null`) from a
+`{"plan":[...]}` LLM response, then returns a `NextStep`. On a `null`/empty plan
+`next()` returns `null`, which the handler treats as a **format failure →
+retry** — so a naive `{"kind":"error",...}` in the replan output would be
+retried, NOT surfaced. Two contract changes are therefore required, not one:
 
-```ts
-| { kind: 'error'; error: string }   // cannot proceed within the prompt's freedom → surface to consumer
-```
+1. **`parsePlan` / `callPlan` contract** widens to
+   `Step[] | { kind: 'error'; error: string } | null`. `parsePlan` recognises a
+   `{"kind":"error","error":"…"}` plan-response as the error decision (not a
+   malformed plan), and `callPlan` returns it.
+2. **`SmartExecutorPlanner.next()` propagates** that error result as a new
+   `NextStep` variant to the handler (it already returns `NextStep`):
+
+   ```ts
+   | { kind: 'error'; error: string }   // cannot proceed within the prompt's freedom → surface to consumer
+   ```
+
+   `NextStep` = `next | done | rewind` gains `error`. `WeakExecutorPlanner`
+   inherits this (it extends `SmartExecutorPlanner`).
 
 - `rewind` stays "replan within the goal" (fix a name we chose, schedule a wait
   for a settling lock, …).
 - `error` is new: the planner has seen a failure it cannot fix within the
   consumer's constraints (a pinned name that is taken, an unauthorized
-  operation, a lock that will not clear) → the controller terminates the run and
+  operation, a lock that will not clear) → the handler terminates the run and
   **returns the actual tool error to the consumer**, distinct from the generic
   `abortTerminal` reasons (budget exhausted, planner-invalid). The consumer gets
   the real failure, not `(no response)`.
 
 **Canonical wire shape (single, enforced).** The planner emits exactly
-`{ "kind": "error", "error": "<the failure, in the consumer's language>" }` —
-the same discriminated shape as every other decision. A bare `{ "error": … }`
-without `kind` is NOT accepted. The parser (`parser.ts`) recognises
-`kind: 'error'` and rejects the bare/legacy shape; parser tests must cover both
-the accepted shape and the rejected `{ "error": … }` (parses to `null` →
-format failure → planner retries, exactly like a malformed `next`/`done`).
+`{ "kind": "error", "error": "<the failure, in the consumer's language>" }` in
+its plan/replan response — the same discriminated shape as a plan is
+`{"plan":[…]}`. A bare `{ "error": … }` without `kind` is NOT accepted:
+`parsePlan` returns `null` for it → format failure → planner retries. Parser
+tests (on **`parsePlan`**, the real path — plus `parseNextStep` if kept in sync)
+must cover the accepted `{"kind":"error",…}`, the rejected bare `{"error":…}`,
+and that a normal `{"plan":[…]}` still parses unchanged.
 
 The plan-creation / replan prompt gains a rule teaching this reasoning: on a
 tool failure, decide whether it is fixable within what the consumer asked; if
 not, return `{ "kind": "error", "error": "<the failure, in the consumer's
-language>" }`.
+language>" }` instead of a `{"plan":[…]}`.
 
 ### Layer 3 — the consumer seam (the tool)
 
@@ -221,9 +239,10 @@ default, because it has a planner to decide.
   survive persist + rehydrate, so a resumed run sees the failed step (asserted on
   the rehydrated bundle — NOT on an `mcp-result` artifact, which the cut may not
   write);
-- **parser:** `{ "kind": "error", "error": "…" }` parses to the `error`
-  decision; a bare `{ "error": "…" }` (no `kind`) parses to `null` → format
-  failure → planner retries;
+- **parser (`parsePlan`, the real path):** `{ "kind": "error", "error": "…" }`
+  parses to the `error` decision; a bare `{ "error": "…" }` (no `kind`) parses to
+  `null` → format failure → planner retries; a normal `{"plan":[…]}` still parses
+  to `Step[]` unchanged;
 - the planner, given a failure it can fix within the prompt's freedom (a
   self-chosen name that is taken), replans; given a failure it cannot (a pinned
   name), returns the `error` decision;
