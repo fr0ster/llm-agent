@@ -1044,6 +1044,45 @@ pluggable:
   - `ExplicitActivation` (default) — always activate; calling `withCoordinator()` or selecting a coordinator-bearing pipeline (`pipeline.name: linear|dag|stepper`) is itself the opt-in signal.
   - `AutoActivation` — activate only when subagents are registered OR the active skill declares `steps:`. Use for graceful fallback to `tool-loop` in mixed traffic.
 
+### Planners across pipelines (classification)
+
+The `IPlanningStrategy` above is the **generic coordinator's** planner seam —
+used by the `linear` pipeline and the `withCoordinator()` builder path. The
+built-in **`flat`** pipeline (the default) has **no planner at all**: it is a
+single tool-loop with no decomposition. Each remaining pipeline has its **own**
+planner abstraction — there is no single planner interface, because planning
+responsibilities differ by pipeline. The full landscape:
+
+| Pipeline | Abstraction | Implementations | Default | LLM? | Replans on error? |
+|---|---|---|---|---|---|
+| **flat** (default) | — none: single tool-loop, no planner or decomposition | — | — | no | no |
+| **coordinator** (linear) | `IPlanningStrategy` (`interfaces/coordinator.ts`) | `OneShotPlanning`, `SkillStepsPlanning`, `ReplanOnErrorPlanning` | `OneShotPlanning` | one-shot (skill-steps: no LLM) | only `ReplanOnErrorPlanning` |
+| **stepper** (cyclic / planned / deep-stepper) | `IStepperPlanner` (`interfaces/stepper-planner.ts`) | `trivialPlanner` (`flow.planner.type: none`), `StaticPlanner` (`static`), `LlmStepperPlanner` (`llm`) | config-driven by `flow.planner.type`: `none` → `trivialPlanner` (single-node plan whose goal is the prompt), `static` → `StaticPlanner` (declarative `flow.plan`), `llm` → `LlmStepperPlanner` | `none`/`static`: **no**; `llm`: yes | no |
+| **DAG** | `IPlanner` (`interfaces/planner.ts`) | `LlmDagPlanner` | `LlmDagPlanner` | yes | via a separate `IErrorStrategy` (`ReplanErrorStrategy`, bounded by `maxReplans`) |
+| **controller** | `IControllerPlanner` (`controller/types.ts`) | `SmartExecutorPlanner`, `WeakExecutorPlanner` (extends Smart, finest-grain prompts) | `SmartExecutorPlanner` (`PlannerKind: smart-executor`) | yes | yes — replans on an executor/step failure |
+
+Classification axes:
+
+- **LLM vs static** — three planners need no planner LLM: `StaticPlanner` (emits a
+  YAML-declared plan verbatim, fully inspectable from config), `SkillStepsPlanning`
+  (builds the plan from the active skill's `steps:` frontmatter), and the stepper's
+  `trivialPlanner` (`flow.planner.type: none` — a single-node plan whose goal is the
+  prompt). All others call a planner LLM.
+- **Replan capability** — the axis that matters for error handling: the
+  **controller** planner replans on a step failure; **DAG** replans through a
+  pluggable `IErrorStrategy`; the **coordinator** (linear) replans only if the
+  operator selects `ReplanOnErrorPlanning` (the default `OneShotPlanning` never
+  replans); **stepper** does not replan; the built-in **flat** pipeline has no
+  planner, so it never replans.
+- **Composition** — the **controller** is the composition component that wires
+  planner/executor/reviewer/finalizer into a pipeline, so routing a tool error
+  to the planner for a decision is a controller-composition concern, not a
+  cross-pipeline mechanism. A pipeline with **no planner** (the built-in `flat`)
+  makes the tool error **visible** to the model in the tool loop, but does not
+  deterministically enforce that the final answer reports it — that is the
+  consumer's policy via `IOutputValidator` (see
+  [Tool-error handling](#tool-error-handling-controller-pipeline)).
+
 ### Task composition & clarification
 
 The coordinator is the sole author of each executor's `task`; the raw client
