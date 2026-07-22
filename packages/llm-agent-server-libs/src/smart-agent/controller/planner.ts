@@ -78,6 +78,23 @@ const WAIT_STEP_RULE =
   'settle is ~30000, a slow activation ~120000 or more. waitMs MUST be a positive ' +
   'whole number of milliseconds. A wait step needs no "requires".';
 
+/** Error-decision clause (#213). On a tool FAILURE, the planner reasons whether
+ *  the failure is fixable within the consumer's request: something WE chose (a
+ *  self-picked object name that is taken) is fixable → replan; something the
+ *  CONSUMER pinned (a name given in the request, an unauthorized operation, a
+ *  lock that will not clear) is a constraint we cannot change → emit the error
+ *  decision so the real failure reaches the consumer. AGNOSTIC: no tool names,
+ *  no built-in error taxonomy — the planner classifies by reasoning. */
+const ERROR_DECISION_RULE =
+  ' On a tool FAILURE, decide whether it is fixable within what the consumer ' +
+  'asked: if the problem is with something YOU chose (e.g. a name you picked ' +
+  'that is already taken), fix it and return a normal {"plan":[…]}. If the ' +
+  'problem is with a constraint the CONSUMER fixed in the request (a name they ' +
+  'gave, an operation they are not allowed to perform, a lock that will not ' +
+  'clear) and you CANNOT resolve it within the request, return exactly ' +
+  '{"kind":"error","error":"<the failure, in the user\'s language>"} INSTEAD of ' +
+  'a plan. Output JSON only.';
+
 export const CREATE_PLAN_SYSTEM =
   'You are the planner. Produce the COMPLETE, ordered plan that covers the ENTIRE ' +
   'goal NOW, as a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. ' +
@@ -107,7 +124,8 @@ export const CREATE_PLAN_SYSTEM =
   'the answer from the fetched results, so the last step must be the last ' +
   'data-fetch/action the goal needs. Output JSON only.' +
   WAIT_STEP_RULE +
-  ENGLISH_INSTRUCTIONS_RULE;
+  ENGLISH_INSTRUCTIONS_RULE +
+  ERROR_DECISION_RULE;
 
 export const REPLAN_SYSTEM =
   'You are the planner. A step just FAILED. Given the goal, the progress so far ' +
@@ -118,7 +136,8 @@ export const REPLAN_SYSTEM =
   'final summarize/' +
   'answer step (a separate finalizer composes the answer). If the goal is ' +
   'already satisfied despite the failure, return {"plan":[]}. Output JSON only.' +
-  ENGLISH_INSTRUCTIONS_RULE;
+  ENGLISH_INSTRUCTIONS_RULE +
+  ERROR_DECISION_RULE;
 
 export const EXTERNAL_RESULT_REPLAN_SYSTEM =
   'You are the planner. A NEW external tool result just arrived (see Progress) — ' +

@@ -497,6 +497,26 @@ describe('planner prompt contract', () => {
   });
 });
 
+describe('error-decision prompt rule (#213)', () => {
+  it('CREATE and REPLAN prompts teach the {"kind":"error"} decision', () => {
+    for (const p of [CREATE_PLAN_SYSTEM, REPLAN_SYSTEM]) {
+      assert.match(p, /"kind"\s*:\s*"error"/);
+      assert.match(p, /fixable/i);
+    }
+  });
+
+  it('the rule flows into all smart/weak variants', () => {
+    for (const p of [
+      SMART_CREATE_PLAN_SYSTEM,
+      SMART_REPLAN_SYSTEM,
+      WEAK_CREATE_PLAN_SYSTEM,
+      WEAK_REPLAN_SYSTEM,
+    ]) {
+      assert.match(p, /"kind"\s*:\s*"error"/);
+    }
+  });
+});
+
 describe('SmartExecutorPlanner partial transition', () => {
   it('commit(partial) advances the cursor (accepted part not re-run)', () => {
     const p = new SmartExecutorPlanner(planner([]));
