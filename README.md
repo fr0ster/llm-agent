@@ -94,14 +94,14 @@ npm run test
 # Development with hot-reload
 npm run dev
 
-# Smart server production entrypoint
-npm run start
+# Smart server production entrypoint (installed bin; from a checkout use
+# `npm run start --workspace @mcp-abap-adt/llm-agent-server` after a build)
+npx llm-agent
 
 # Use specific example configs
 npm run dev:ollama        # examples/docker-ollama (fully local, no API keys)
 npm run dev:deepseek      # examples/docker-deepseek
 npm run dev:sap-ai-core   # examples/docker-sap-ai-core
-npm run test
 ```
 
 ## License

@@ -36,12 +36,18 @@
 
 ## Repository Commands
 
-- `npm run build`
-- `npm run dev`
-- `npm run start`
-- `npm run test:server`
-- `npm run test:all`
-- `npm run release:check`
+Root (repo-wide):
+
+- `npm run build` — compile every package
+- `npm run dev` — run the server via tsx (hot reload)
+- `npm test` — run every workspace's tests
+- `npm run lint` / `npm run lint:check` — Biome
+
+Server package (qualify with `--workspace @mcp-abap-adt/llm-agent-server`, or run from `packages/llm-agent-server`):
+
+- `npm run start --workspace @mcp-abap-adt/llm-agent-server` — `node dist/.../cli.js` (build first)
+- `npm run test:server --workspace @mcp-abap-adt/llm-agent-server`
+- `npm run release:check --workspace @mcp-abap-adt/llm-agent-server` — `tsc --noEmit`
 
 ## Documentation Sources of Truth
 

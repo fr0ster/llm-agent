@@ -46,14 +46,21 @@ export ANTHROPIC_BASE_URL=http://localhost:4004
 claude
 ```
 
-Or use the launcher script:
+Or use the launcher script. After a global install it is on your PATH as the
+`claude-via-agent` bin:
+
+```bash
+claude-via-agent
+```
+
+From a repo checkout the scripts live under the server package:
 
 ```bash
 # Linux / macOS
-./tools/claude-via-agent.sh
+./packages/llm-agent-server/tools/claude-via-agent.sh
 
 # Windows (PowerShell)
-./tools/claude-via-agent.ps1
+./packages/llm-agent-server/tools/claude-via-agent.ps1
 ```
 
 The launcher reads `.env` from the project root and auto-selects the pipeline config based on `LLM_PROVIDER`:
@@ -67,7 +74,8 @@ The launcher reads `.env` from the project root and auto-selects the pipeline co
 To override the auto-selected pipeline, pass `--config`:
 
 ```bash
-./tools/claude-via-agent.sh --config pipelines/sap-ai-core.yaml
+claude-via-agent --config pipelines/sap-ai-core.yaml
+# from a checkout: ./packages/llm-agent-server/tools/claude-via-agent.sh --config pipelines/sap-ai-core.yaml
 ```
 
 To verify the agent is running with the correct model, check the startup log line:
