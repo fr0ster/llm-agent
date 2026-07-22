@@ -1044,6 +1044,36 @@ pluggable:
   - `ExplicitActivation` (default) — always activate; calling `withCoordinator()` or selecting a coordinator-bearing pipeline (`pipeline.name: linear|dag|stepper`) is itself the opt-in signal.
   - `AutoActivation` — activate only when subagents are registered OR the active skill declares `steps:`. Use for graceful fallback to `tool-loop` in mixed traffic.
 
+### Planners across pipelines (classification)
+
+The `IPlanningStrategy` above is the **flat coordinator's** planner seam. Each
+other pipeline has its **own** planner abstraction — there is no single planner
+interface, because planning responsibilities differ by pipeline. The full
+landscape:
+
+| Pipeline | Abstraction | Implementations | Default | LLM? | Replans on error? |
+|---|---|---|---|---|---|
+| **flat / coordinator** | `IPlanningStrategy` (`interfaces/coordinator.ts`) | `OneShotPlanning`, `SkillStepsPlanning`, `ReplanOnErrorPlanning` | `OneShotPlanning` | one-shot (skill-steps: no LLM) | only `ReplanOnErrorPlanning` |
+| **stepper** (cyclic / planned / deep-stepper) | `IStepperPlanner` (`interfaces/stepper-planner.ts`) | `StaticPlanner`, `LlmStepperPlanner` | config-driven: a YAML `flow.plan` → `StaticPlanner`, else `LlmStepperPlanner` | Static: **no**; Llm: yes | no |
+| **DAG** | `IPlanner` (`interfaces/planner.ts`) | `LlmDagPlanner` | `LlmDagPlanner` | yes | via a separate `IErrorStrategy` (`ReplanErrorStrategy`, bounded by `maxReplans`) |
+| **controller** | `IControllerPlanner` (`controller/types.ts`) | `SmartExecutorPlanner`, `WeakExecutorPlanner` (extends Smart, finest-grain prompts) | `SmartExecutorPlanner` (`PlannerKind: smart-executor`) | yes | yes — replans on an executor/step failure |
+
+Classification axes:
+
+- **LLM vs static** — `StaticPlanner` is the only non-LLM planner: it emits a
+  YAML-declared plan verbatim, fully inspectable from config. All others call a
+  planner LLM.
+- **Replan capability** — the axis that matters for error handling: the
+  **controller** planner replans on a step failure; **DAG** replans through a
+  pluggable `IErrorStrategy`; **flat** replans only if the operator selects
+  `ReplanOnErrorPlanning` (the default `OneShotPlanning` never replans);
+  **stepper** does not replan.
+- **Composition** — the **controller** is the composition component that wires
+  planner/executor/reviewer/finalizer into a pipeline, so routing a tool error
+  to the planner for a decision is a controller-composition concern, not a
+  cross-pipeline mechanism. A pipeline with no planner (flat default) surfaces
+  the error to the consumer.
+
 ### Task composition & clarification
 
 The coordinator is the sole author of each executor's `task`; the raw client
