@@ -1063,9 +1063,10 @@ responsibilities differ by pipeline. The full landscape:
 
 Classification axes:
 
-- **LLM vs static** — `StaticPlanner` is the only non-LLM planner: it emits a
-  YAML-declared plan verbatim, fully inspectable from config. All others call a
-  planner LLM.
+- **LLM vs static** — two planners need no planner LLM: `StaticPlanner` (emits a
+  YAML-declared plan verbatim, fully inspectable from config) and
+  `SkillStepsPlanning` (builds the plan from the active skill's `steps:`
+  frontmatter). All others call a planner LLM.
 - **Replan capability** — the axis that matters for error handling: the
   **controller** planner replans on a step failure; **DAG** replans through a
   pluggable `IErrorStrategy`; the **coordinator** (linear) replans only if the
