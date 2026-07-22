@@ -914,6 +914,19 @@ class ContentModerationValidator implements IOutputValidator {
 }
 ```
 
+### Use: surfacing tool failures in a flat pipeline
+
+A flat (`tool-loop`, planner-less) pipeline makes a tool-level failure *visible*
+to the model — the failed round's `ToolRound.meta.isError` is set and the error
+text reaches the LLM — but it does not *force* the final answer to report the
+failure (that would be dictating the model's wording). If you need that
+guarantee deterministically (e.g. "never answer success while a tool call
+failed"), that is exactly what `IOutputValidator` is for: inspect the tool
+results in `context.messages` and return `valid: false` when a round failed but
+the answer claims success. In the **controller** pipeline this is unnecessary —
+its planner decides on a tool error and surfaces it (see
+[Tool-error handling](ARCHITECTURE.md#tool-error-handling-controller-pipeline)).
+
 ## IQueryExpander
 
 **File:** `packages/llm-agent/src/rag/query-expander.ts`
@@ -3040,3 +3053,17 @@ applies to the LLM provider, embedder, and skill source. For tests/embedding,
 Note that even the bare `.build()` (no injected deps) still runs config validation,
 so a `sap-ai-sdk` provider requires `AICORE_SERVICE_KEY` in the environment, and each
 role/embedder needs a `model`.
+
+### Tool-error policy is the planner's
+
+In the controller pipeline, what happens on a tool-level failure (a locked
+object, an unauthorized operation) is decided by the **planner**, not a separate
+error-handling knob. The shipped planners (`SmartExecutorPlanner` /
+`WeakExecutorPlanner`, selected by `PlannerKind = 'smart-executor' |
+'weak-executor'`) implement the default policy: a failure in something the
+planner chose is replanned; a failure against a constraint the consumer pinned in
+the request is surfaced to the consumer as a terminal `error` decision (see
+[Tool-error handling](ARCHITECTURE.md#tool-error-handling-controller-pipeline)).
+To steer that reasoning for a weaker model, pass a per-role planner `hint`; the
+decision seam is the planner itself, so there is no parallel error-strategy
+interface to implement.
