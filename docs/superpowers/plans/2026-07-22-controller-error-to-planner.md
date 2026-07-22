@@ -49,7 +49,7 @@ The highest-value, self-contained change: stop the #213 loop by cutting the step
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts` (widen harness `callMcpReturns` type; add the cut test)
 
 **Interfaces:**
-- Consumes (already in scope inside `runStep`): `cutControlFailure(reason: string): Promise<'advanced'|'failed'|'partial'>` (defined ~line 1289); `result: McpCallResult` with `{ text: string; isError: boolean }` (obtained at ~line 1584); the enclosing `while (true)` tool loop.
+- Consumes (already in scope inside `runStep`): `cutControlFailure(reason: string): Promise<'advanced'|'failed'|'partial'>` (defined ~line 1289; it runs `stepsUsed++` → `writeControlFailure(note)` → `plannerPrivate` append → `settleStep('failed')`); `result: McpCallResult` with `{ text: string; isError: boolean }` (obtained at ~line 1584); the enclosing `while (true)` tool loop. Test-side: the injectable `h.deps.reviewer` (`IReviewStrategy`, injected post-`harness()` per the pattern at test ~line 1459) and `h.rag.written` (the `KnowledgeEntry[]` capturing every artifact write).
 - Produces: no new exported symbol — a behavioural change (`return cutControlFailure(result.text)` on a delivered tool error).
 
 - [ ] **Step 1: Widen the harness `callMcpReturns` type so a test can deliver `isError:true`**
@@ -62,12 +62,14 @@ The harness already wraps a non-string into a `McpCallResult` (`typeof r === 'st
 
 No other harness change is needed — the wrapping ternary at ~line 146 already handles the object case.
 
-- [ ] **Step 2: Write the failing test — a delivered tool error cuts the step, no retry, no confabulation**
+- [ ] **Step 2: Write the failing test — a delivered tool error cuts the step, no retry, no confabulation, and writes the durable carrier**
 
-Add to `controller-coordinator-handler.test.ts` inside the `describe('ControllerCoordinatorHandler', …)` block. Follow the existing `harness` / `fakeCtx` / `hydrateBundle` patterns already used in the file.
+Add to `controller-coordinator-handler.test.ts` inside the `describe('ControllerCoordinatorHandler', …)` block. Follow the existing `harness` / `fakeCtx` / `hydrateBundle` patterns already used in the file. The reviewer spy uses the same `h.deps.reviewer = { async review() {…} }` injection pattern already used at ~line 1459 of this file (no harness change needed).
+
+The durable-carrier assertion is LOAD-BEARING: an implementation that calls `settleStep('failed')` WITHOUT `writeControlFailure` would still set `stepsUsed`/`plannerPrivate` yet lose the board's `step-result` artifact. This test must fail such an implementation — so it asserts a `step-result` artifact with `status:'failed'` and the tool error text (via `metadata.note`) in `h.rag.written`, exactly as the existing control-failure tests do (see ~lines 2387, 2528).
 
 ```ts
-  it('#213 cut: first isError:true tool round settles failed, no retry, no confabulation', async () => {
+  it('#213 cut: first isError:true tool round settles failed — no retry, no confabulation, no reviewer, durable step-result', async () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
       planner: [
@@ -93,6 +95,18 @@ Add to `controller-coordinator-handler.test.ts` inside the `describe('Controller
       isExternalTool: () => false,
       callMcpReturns: { text: 'ZOBJ is locked by user ALICE', isError: true },
     });
+    // Reviewer spy: proves the reviewer is NOT invoked for a cut step (the
+    // executor tool-loop is cut before any content round reaches the reviewer).
+    let reviewCalls = 0;
+    h.deps.reviewer = {
+      async review() {
+        reviewCalls++;
+        return {
+          kind: 'outcome',
+          outcome: { status: 'ok', approved: '', remainder: '' },
+        };
+      },
+    };
     const handler = new ControllerCoordinatorHandler(h.deps);
     const { ctx, captured } = fakeCtx();
 
@@ -101,14 +115,28 @@ Add to `controller-coordinator-handler.test.ts` inside the `describe('Controller
     assert.equal(ret, true);
     // 1. The tool was called exactly once — NOT retried on the locked object.
     assert.equal(h.mcpCalls.length, 1);
-    // 2. No confabulation: the run never surfaces the executor's "updated
+    // 2. The reviewer was never invoked (the step was cut, not reviewed).
+    assert.equal(reviewCalls, 0, 'reviewer must NOT run for a cut step');
+    // 3. No confabulation: the run never surfaces the executor's "updated
     //    successfully" summary (that round is never reached).
     assert.ok(
       !captured.some((c) => c.ok && c.value.content === 'updated successfully'),
       'confabulated success summary must never be surfaced',
     );
-    // 3. The step settled as a control failure: stepsUsed bumped + the tool
-    //    error text is in the durable plannerPrivate carrier.
+    // 4. Durable carrier: a 'failed' step-result artifact carrying the tool
+    //    error text was written (via writeControlFailure) — NOT settleStep alone.
+    const failed = h.rag.written.filter(
+      (e) =>
+        e.metadata.artifactType === 'step-result' &&
+        e.metadata.status === 'failed',
+    );
+    assert.ok(failed.length >= 1, 'a failed step-result artifact was written');
+    assert.match(
+      String(failed[0].metadata.note ?? ''),
+      /ZOBJ is locked by user ALICE/,
+      'the failed step-result carries the tool error text',
+    );
+    // 5. stepsUsed bumped + the tool error text is in the durable plannerPrivate.
     const bundle = await hydrateBundle(h.backend, 'sess-1');
     assert.equal(bundle.budgets.stepsUsed, 1);
     assert.match(bundle.plannerPrivate, /ZOBJ is locked by user ALICE/);
@@ -572,44 +600,79 @@ git commit -m "feat(controller): teach planner the error-decision rule for unfix
 
 ## Task 5: Flat pipeline — regression assertion that a failed tool round sets `ToolRound.meta.isError` (Layer 3 scope)
 
-Layer 3 adds NO new default behaviour. The visibility guarantee already ships in the flat tool-loop (#232) and is covered by `tool-loop-timing-log.test.ts` (`isError:true` emitted on a failed call). This task adds the single spec-named assertion that the flat loop's INTERNAL `ToolRound.meta.isError` is set on a delivered tool error — asserted on the internal round/meta, NOT on "the LLM receives isError" and NOT on the final answer wording (deterministic enforcement is the consumer's `IOutputValidator`, out of scope).
+Layer 3 adds NO new default behaviour. The existing `tool-loop-timing-log.test.ts` only covers a TRANSPORT failure (`ok:false`); it does NOT cover the actual #213 flat case — a DELIVERED tool result where `res.ok===true` but `res.value.isError===true` (the locked-object case). This task adds a real new signal: inject a spy context strategy via `ctx.toolLoopContextStrategyFactory`, run a tool that returns `{ ok:true, value:{ content:…, isError:true } }`, and assert the recorded `ToolRound.meta[0].isError === true`. Asserted on the INTERNAL round/meta — NOT on "the LLM receives isError" and NOT on the final answer wording (deterministic enforcement is the consumer's `IOutputValidator`, out of scope).
 
 **Files:**
-- Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` (read-only reference: the round build at ~lines 862-888 where `isError` is computed and placed on the round `meta`)
-- Test: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-timing-log.test.ts` (add one assertion) OR a sibling test file if the round `meta` is not observable from that harness
+- Read-only reference: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` — the strategy is `ctx.toolLoopContextStrategyFactory ?? (() => new LegacyAccumulateContextStrategy())` (~line 140); the batch round is `{ assistant, results, meta: outcome.resultMeta }` recorded via `strategy.record(batchRound)` (~lines 903-908). `resultMeta[i].isError = !res.ok || (res.ok && !!res.value.isError)` (`tool-loop-core.ts:392`).
+- Test: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-timing-log.test.ts` (add one test; reuse `makeCtx`/`SpyLogger`/`SpySessionLogger`/`makeSpan`/`ToolLoopHandler` already imported there)
 
 **Interfaces:**
-- Consumes: `ToolResultMeta = { identityKey?: string; isError: boolean }` (`tool-loop-core.ts:201`); the flat tool-loop's `isError = !r.res?.ok || (r.res.ok && !!r.res.value.isError)` (`tool-loop.ts:862`) and its placement on the round `meta` (`tool-loop.ts:876/888`).
+- Consumes:
+  - `ctx.toolLoopContextStrategyFactory: ToolLoopContextStrategyFactory = (deps: { run?: unknown }) => IToolLoopContextStrategy` — the injection seam (default falls back to `LegacyAccumulateContextStrategy`).
+  - `IToolLoopContextStrategy` (from `@mcp-abap-adt/llm-agent`): `record(round: ToolRound, options?): Promise<void>`; `form(base, options?): Promise<Message[]>`; `snapshot(): SerializableStrategyState`; `restore(state): void`.
+  - `ToolRound.meta?: ToolResultMeta[]` where `ToolResultMeta = { identityKey?: string; isError: boolean }`.
+  - `McpToolResult = { content: string | Record<string, unknown>; isError?: boolean }`.
 - Produces: test-only coverage; no production change.
 
-- [ ] **Step 1: Locate the observable seam**
+- [ ] **Step 1: Write the spy-strategy test asserting the delivered-error round meta**
 
-Run: `cd packages/llm-agent-libs && grep -n "isError" src/pipeline/handlers/__tests__/tool-loop-timing-log.test.ts`
-Read the existing "isError:true when tool call fails" test (~line 258) to see how it makes a tool return a failure and how it observes the result (the `tool_call` event / `mcp_tool_call` session step). Reuse that exact fixture.
-
-- [ ] **Step 2: Write the failing/authoritative assertion**
-
-Extend the existing "emits tool_call event with isError:true when tool call fails" test (or add a sibling test in the same file) to ALSO assert the round-level meta carries `isError:true`. If the harness exposes the recorded `ToolRound` (via the context strategy's recorded rounds or a spy on `strategy.record`), assert:
+Add to `tool-loop-timing-log.test.ts`. `makeCtx` returns a `PipelineContext`; assign the factory onto the returned ctx before running (it is not one of `makeCtx`'s params). The spy captures every recorded round.
 
 ```ts
-  // The failed tool round's INTERNAL meta carries isError:true — the executor
-  // sees the error text as visible content; deterministic surfacing is the
-  // consumer's IOutputValidator (out of scope). (#213 flat scope)
-  assert.equal(recordedRound.meta[0].isError, true);
+test('#213 flat: a delivered tool result with isError:true sets ToolRound.meta.isError', async () => {
+  const spy = new SpyLogger();
+  const session = new SpySessionLogger();
+  // A DELIVERED tool result (transport OK) that is a tool-level error.
+  const ctx = makeCtx(
+    {
+      async callTool() {
+        return {
+          ok: true as const,
+          value: { content: 'ZTAB is locked by user BOB', isError: true },
+        };
+      },
+    },
+    spy,
+    session,
+  );
+  // Inject a spy context strategy to observe the recorded ToolRound(s).
+  const rounds: ToolRound[] = [];
+  (ctx as { toolLoopContextStrategyFactory?: unknown }).toolLoopContextStrategyFactory =
+    () => ({
+      async record(round: ToolRound) {
+        rounds.push(round);
+      },
+      async form(base: { prefix: Message[] }) {
+        return base.prefix;
+      },
+      snapshot() {
+        return { version: 1 };
+      },
+      restore() {},
+    });
+
+  await new ToolLoopHandler().execute(ctx, {}, makeSpan());
+
+  // The recorded batch round carries the tool-level isError on its meta — the
+  // executor answers over a VISIBLE failure, not a flattened false success.
+  const failedRound = rounds.find((r) => r.meta?.some((m) => m.isError));
+  assert.ok(failedRound, 'a recorded round must carry meta.isError:true');
+  assert.equal(failedRound.meta?.[0]?.isError, true);
+});
 ```
 
-If the round `meta` is NOT observable from this harness, the existing `tool_call` event assertion (`evt.isError === true`) already proves the same plumbing end-to-end — in that case, do NOT fabricate a new seam: add a comment in the test file documenting that the round-meta guarantee is covered transitively by the emitted event (both derive from the same `isError` at `tool-loop.ts:862`), and leave the event assertion as the spec's flat coverage.
+Add the `ToolRound` and `Message` type imports at the top of the file if not already present (import from `@mcp-abap-adt/llm-agent`).
 
-- [ ] **Step 3: Run the test to verify it passes**
+- [ ] **Step 2: Run the test to verify it PASSES**
 
 Run: `cd packages/llm-agent-libs && node --import tsx/esm --test --test-reporter=spec src/pipeline/handlers/__tests__/tool-loop-timing-log.test.ts`
-Expected: PASS — the failed tool call sets `isError:true` on both the event and (if observable) the round meta.
+Expected: PASS — the flat loop builds `batchRound.meta` from `resultMeta`, whose `isError` is `res.ok && !!res.value.isError` = `true` for the delivered error. If it were to FAIL (empty `rounds` or `isError` false), that would mean the flat visibility guarantee regressed — investigate before proceeding.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-timing-log.test.ts
-git commit -m "test(flat): assert failed tool round sets ToolRound.meta.isError (#213 flat scope)"
+git commit -m "test(flat): assert a delivered isError:true tool result sets ToolRound.meta.isError (#213 flat scope)"
 ```
 
 ---
@@ -649,7 +712,7 @@ git commit -m "chore: lint/build gate for controller error-to-planner (#213)" ||
 | Spec requirement | Task |
 |------------------|------|
 | Layer 1 — immediate cut at callMcp site on first `isError:true`, reuse `cutControlFailure` (stepsUsed++ → writeControlFailure → plannerPrivate → settleStep) | Task 1 |
-| Durable carrier = failed step-result + plannerPrivate, NOT mcp-result | Task 1 (uses `cutControlFailure`, which writes the step-result via `writeControlFailure`; test asserts `plannerPrivate`) |
+| Durable carrier = failed step-result + plannerPrivate, NOT mcp-result | Task 1 (test asserts a `status:'failed'` `step-result` artifact carrying the tool error text in `h.rag.written` — fails a `settleStep`-only impl — AND `plannerPrivate`) |
 | Layer 2 — `parsePlan`/`callPlan` widen to `Step[] \| {kind:'error';error} \| null`; canonical `{"kind":"error",…}` accepted, bare `{"error":…}` rejected | Task 2 |
 | Layer 2 — `next()` propagates as `NextStep` `error` variant | Task 2 |
 | `NextStep` gains one `error` variant; `WeakExecutorPlanner` inherits | Task 2 |
@@ -658,10 +721,10 @@ git commit -m "chore: lint/build gate for controller error-to-planner (#213)" ||
 | Plan/replan prompt rule (fixable→replan, unfixable→error), agnostic, no taxonomy | Task 4 |
 | Planner replans a self-chosen taken name; emits `error` on a pinned name | Task 4 (prompt rule) + Task 2 (mechanism; behavioural end-to-end is LLM-dependent, asserted at the mechanism level) |
 | Confabulation cannot occur (cut pre-empts the success-summary round) | Task 1 test |
-| No further tool call / reviewer not invoked after the failed round | Task 1 test (mcpCalls.length===1; confabulated summary never surfaced) |
-| Resume carrier survives (failed step-result + plannerPrivate) | Task 1 test (plannerPrivate + stepsUsed on the rehydrated bundle) |
+| No further tool call / reviewer not invoked after the failed round | Task 1 test (mcpCalls.length===1; injected reviewer spy asserts `reviewCalls===0`; confabulated summary never surfaced) |
+| Resume carrier survives (failed step-result + plannerPrivate) | Task 1 test (asserts the durable `status:'failed'` `step-result` artifact + tool error text + `plannerPrivate` on the rehydrated bundle) |
 | `error` decision terminates + returns tool failure text | Task 3 test |
-| Flat — visibility only (meta.isError set, error text in content); NO deterministic enforcement | Task 5 |
+| Flat — visibility only (meta.isError set, error text in content); NO deterministic enforcement | Task 5 (spy-strategy test asserts `ToolRound.meta[0].isError===true` on a delivered `ok:true,isError:true` result) |
 | No plan-change regression | Task 6 full suite |
 | No error classifier; no run-level ceiling | Enforced by Global Constraints; no task adds either |
 
