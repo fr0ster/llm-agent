@@ -49,7 +49,7 @@ The highest-value, self-contained change: stop the #213 loop by cutting the step
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts` (widen harness `callMcpReturns` type; add the cut test)
 
 **Interfaces:**
-- Consumes (already in scope inside `runStep`): `cutControlFailure(reason: string): Promise<'advanced'|'failed'|'partial'>` (defined ~line 1289; it runs `stepsUsed++` → `writeControlFailure(note)` → `plannerPrivate` append → `settleStep('failed')`); `result: McpCallResult` with `{ text: string; isError: boolean }` (obtained at ~line 1584); the enclosing `while (true)` tool loop. Test-side: the injectable `h.deps.reviewer` (`IReviewStrategy`, injected post-`harness()` per the pattern at test ~line 1459) and `h.rag.written` (the `KnowledgeEntry[]` capturing every artifact write).
+- Consumes (already in scope inside `runStep`): `cutControlFailure(reason: string): Promise<'advanced'|'failed'|'partial'>` (defined ~line 1289; it runs `stepsUsed++` → `writeControlFailure(note)` → `plannerPrivate` append → `settleStep('failed')`); `result: McpCallResult` with `{ text: string; isError: boolean }` (obtained at ~line 1584); the enclosing `while (true)` tool loop. Test-side: the injectable `h.deps.reviewer` (`IReviewer` from `./reviewer.js`, injected post-`harness()` per the pattern at test ~line 1459) and `h.rag.written` (the `KnowledgeEntry[]` capturing every artifact write).
 - Produces: no new exported symbol — a behavioural change (`return cutControlFailure(result.text)` on a delivered tool error).
 
 - [ ] **Step 1: Widen the harness `callMcpReturns` type so a test can deliver `isError:true`**
@@ -748,7 +748,7 @@ git commit -m "chore: lint/build/targeted-test gate for controller error-to-plan
 | Resume carrier survives (failed step-result + plannerPrivate) | Task 1 test (asserts the durable `status:'failed'` `step-result` artifact + tool error text + `plannerPrivate` on the rehydrated bundle) |
 | `error` decision terminates + returns tool failure text | Task 3 test |
 | Flat — visibility only (meta.isError set, error text in content); NO deterministic enforcement | Task 5 (spy-strategy test asserts `ToolRound.meta[0].isError===true` on a delivered `ok:true,isError:true` result) |
-| No plan-change regression | Task 6 full suite |
+| No plan-change regression | Task 6 targeted gate (controller/planner/flat test dirs, diffed vs pre-change baseline) + whole-workspace build/lint |
 | No error classifier; no run-level ceiling | Enforced by Global Constraints; no task adds either |
 
 **2. Placeholder scan:** No "TBD"/"handle appropriately"/"add error handling" — every code step shows the exact code and every test shows assertions. Task 5 injects a spy context strategy via the verified `ctx.toolLoopContextStrategyFactory` seam and asserts `ToolRound.meta[0].isError === true` on a delivered `ok:true,isError:true` result — a concrete new signal, no fallback/comment escape hatch.
