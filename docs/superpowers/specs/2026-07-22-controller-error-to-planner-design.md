@@ -52,44 +52,47 @@ no separate constraints config. The planner reasons about what it may change:
 
 ### Layer 1 — plumbing: make the failure visible to the planner
 
-The planner decides from the board / step outcomes / `plannerPrivate`, which are
-fed by the reviewer's judgement of each step's result. Two carriers must stop
-dropping the signal:
+The planner decides from the board / step outcomes / `plannerPrivate`. The
+failure reaches it deterministically, not through the LLM reviewer:
 
-1. **The failure must become legible to the planner.** This is the crux and has
-   three candidate mechanisms — the plan must pick one; recommendation noted:
+1. **Immediate cut at the callMcp site (chosen — no LLM in the loop).** The
+   controller already observes `result.isError` at the callMcp site
+   (`controller-coordinator-handler.ts`, where PR #232 records it). The **first**
+   tool round in an attempt that returns `isError:true` **cuts the step
+   immediately**: the executor tool-loop does NOT continue, the reviewer does
+   NOT run for that step, and the step settles as `failed` with the failing
+   tool's error text as the reason — reusing the existing control-failure
+   settle path (`cutControlFailure`-style: `stepsUsed++`, `plannerPrivate` note,
+   `settleStep('failed')`). The planner then sees a failed step + the error and
+   decides.
 
-   - **(a) controller marks the step failed on `isError` (deterministic). HARD
-     RULE — no LLM override.** If ANY tool round in an attempt returns
-     `isError:true`, that attempt's step outcome is **forced to `failed`** with
-     the failing tool's error text as the reason, **regardless of any later
-     executor content and regardless of a reviewer `ok`**. A confabulated
-     "updated successfully" summary (the exact #213 failure) cannot rescue the
-     step; a reviewer verdict of `ok` on an attempt that contains a failed tool
-     round is itself invalid and is overridden to `failed`. The controller
-     records this the moment it observes `isError:true` (it already sees
-     `result.isError` at the callMcp site), independent of the executor/reviewer
-     path. The planner then sees a failed step + the error and decides.
-     **Recommended.**
+   **Why immediate cut, not a delayed "attempt-has-error" flag.** The two are
+   mutually exclusive and this spec picks immediate cut:
 
-     Precise condition: the trigger is "an attempt contains ≥1 tool round with
-     `isError:true`", NOT "the executor could not produce a result" — the latter
-     re-delegates the decision to the LLM, which is the failure mode. The step
-     text carried to the planner is the failing round's error text (first failed
-     round if several).
-   - **(b) reviewer sees the round `isError`.** Feed the failed round's flag into
-     the reviewer's evidence so its verdict reflects it. More LLM-dependent (the
-     reviewer may still be talked into "ok").
-   - **(c) executor stops and reports the error as its step result.** Requires
-     the executor's tool-loop to break on `isError:true` — but the executor is
-     an LLM and may keep trying; less deterministic.
+   - it directly stops the #213 loop — the executor never gets to retry the
+     locked object or confabulate an "updated successfully" summary, because the
+     tool-loop is cut on the first failed call;
+   - it removes the LLM entirely from the failure decision — there is no
+     executor summary and no reviewer verdict to override, so no "success can't
+     rescue it" edge case exists (the delayed-flag approach would run the whole
+     attempt and then discard it, wasting the calls and re-opening the exact
+     confabulation window we are closing);
+   - over-triggering is safe: if a step legitimately could have recovered from a
+     tool error, cutting to `failed` simply hands the planner a `rewind`/replan
+     opportunity — the planner recovers, no wrong final answer.
 
-   Under any choice, the context strategies and RagRecall writer must stop
-   dropping `isError` (carry the flag on the replayed round + persist it), so
-   whichever consumer reads it actually receives it. The plan nails the exact
-   "cannot produce a valid result from it" condition for (a).
-2. **Durable recall** — the RagRecall writer persists `isError` on the
-   `mcp-result` artifact so a resumed run still knows the call failed.
+   No `Message` extension and no context-strategy `meta` replay are needed for
+   the cut — it reads `result.isError` directly at the callMcp site before the
+   round is handed to the context strategy.
+
+2. **Durable recall carrier — `KnowledgeEntryMetadata.isError`.** For a run that
+   crashes mid-step and resumes, the persisted `mcp-result` artifact must carry
+   the flag. Concrete carrier: add `isError?: boolean` to
+   `KnowledgeEntryMetadata` and have the controller RagRecall writer
+   (`pipelines/controller.ts`) set it from `round.meta[].isError`. This is the
+   ONLY new carrier — `Message` is unchanged; there is no synthetic annotation
+   and no side channel, because the live path uses the immediate cut and only
+   the durable path needs persistence.
 
 ### Layer 2 — the planner's new `error` decision
 
@@ -142,33 +145,52 @@ is insufficient — the planner IS the decision seam (avoids a parallel
 - No run-level tool-call ceiling / repeat-detector: rejected earlier as a
   workaround that masks the loop instead of removing its cause.
 
-## Flat pipeline (no planner) — what "surface" means
+## Flat pipeline (no planner) — scope is honest, not over-claimed
 
-Made explicit (two very different behaviours; this spec picks one):
+The **deterministic** guarantee of this deliverable is **controller-only** (the
+immediate cut above). The flat pipeline is LLM-driven: after a tool call it
+feeds the tool result to the LLM, which writes the answer. We CANNOT
+deterministically force that LLM to report failure from inside this deliverable
+without an enforcement mechanism, and the reviewer is right that "the final
+answer must reflect the failure" is not enforceable by merely passing a
+`role:'tool'` message.
 
-**Chosen: LLM-mediated, no false success.** The failed tool message reaches the
-flat tool-loop LLM as it does today (the error text is in the tool result), and
-the final answer must reflect the failure — the pipeline must NOT present a
-delivered success when `isError:true` occurred. Concretely: the tool-loop marks
-the round failed (same `isError` carrier as the controller path) so a downstream
-that inspects rounds sees it, and the LLM is not handed a result that looks
-successful. This keeps flat's LLM-driven nature.
+So flat's scope here is precise and limited:
 
-**Rejected: raw-error bypass.** Returning the raw tool error as terminal output
-without the LLM would change flat from an LLM-answering pipeline into a
-pass-through; out of scope. (A consumer who wants that builds it — the seam
-exists.)
+- **What we guarantee:** the tool error is no longer *hidden* — with the #232
+  wrapper/adapter fix the flat tool-loop's tool result carries the real error
+  text and `isError` (it is no longer flattened to a false success), so the LLM
+  sees a failure to answer over. That is the enabler, already in this PR.
+- **What we do NOT add here:** a deterministic "the final answer must reflect
+  the failure" enforcement. That belongs to the existing consumer seam
+  `IOutputValidator` (a consumer that needs the guarantee plugs in a validator
+  that rejects a success answer when a tool round failed) — NOT a new
+  flat-specific mechanism baked into the default pipeline.
+- **Rejected: raw-error bypass** (return the raw tool error as terminal output,
+  no LLM). That converts flat from an LLM-answering pipeline into a
+  pass-through — out of scope; a consumer who wants it builds it on the seam.
+
+Rationale: forcing behaviour on an LLM-driven pipeline is exactly the consumer's
+`HOW`, which the maintainer said the consumer owns. The default flat pipeline
+makes the failure *visible*; deterministic *enforcement* is the consumer's via
+`IOutputValidator`. The controller pipeline is where we ship the deterministic
+default, because it has a planner to decide.
 
 ## Testing
 
-- **deterministic failure (no LLM):** an attempt containing a tool round with
-  `isError:true` sets `bundle.lastOutcome`/the step-result to `failed` with the
-  tool error text and appends the failure to `plannerPrivate` — asserted
-  directly on the durable bundle, NOT via the reviewer;
-- **no LLM override:** an attempt with a failed tool round PLUS an executor
-  "updated successfully" summary AND a reviewer `ok` verdict still settles the
-  step as `failed` (the confabulation cannot rescue it);
-- `isError` survives a RagRecall persist + rehydrate;
+- **immediate cut (no LLM in the decision):** the FIRST tool round returning
+  `isError:true` settles the step as `failed` with the tool error text, sets
+  `bundle.lastOutcome`, and appends the failure to `plannerPrivate` — asserted
+  directly on the durable bundle. Assert with a spy that **no further tool call
+  is made** after the failed one and that **the reviewer is NOT invoked** for
+  that step (the executor tool-loop is cut);
+- **confabulation cannot occur:** a mock executor that WOULD produce an
+  "updated successfully" summary after a failed tool round never reaches that
+  point — the step is already `failed` (proves the cut pre-empts the
+  confabulation window, replacing the old "override reviewer ok" test which no
+  longer applies under immediate cut);
+- `KnowledgeEntryMetadata.isError` survives a RagRecall persist + rehydrate, so a
+  resumed run sees the prior call failed;
 - **parser:** `{ "kind": "error", "error": "…" }` parses to the `error`
   decision; a bare `{ "error": "…" }` (no `kind`) parses to `null` → format
   failure → planner retries;
@@ -177,8 +199,11 @@ exists.)
   name), returns the `error` decision;
 - an `error` decision terminates the run and returns the tool's failure text to
   the consumer (NOT `(no response)`, NOT a generic abort reason);
-- a flat pipeline (no planner) with a failed tool call produces a final answer
-  that reflects the failure and never a false success;
+- **flat (scoped):** with the #232 fix a flat tool-loop's failed tool result
+  carries the real error text + `isError` and is not flattened to a false
+  success (asserted on the tool result the LLM receives). This deliverable does
+  NOT assert the LLM's final answer wording — deterministic enforcement is the
+  `IOutputValidator` seam, out of scope here;
 - a plan with no tool error behaves byte-identically (no regression).
 
 ## Architecture principles check
