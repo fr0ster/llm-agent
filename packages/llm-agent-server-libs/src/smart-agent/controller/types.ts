@@ -39,8 +39,11 @@ export const MAX_REQUIRES = 8;
 /** A reference is a SHORT phrase, not a payload. */
 export const MAX_REQUIRE_CHARS = 200;
 /** Validate a step's optional `requires`. `undefined` for absent OR `[]` (a step
- *  with no deps — normalize to undefined; downstream falls back to whole-step
- *  recall); the trimmed array when valid; `false` (→ parse failure / retry) when
+ *  with no deps — normalize to undefined; such a leaf step gets NO dependency
+ *  evidence and is judged from the executor's result alone — downstream does NOT
+ *  self-recall the step's own text, which would always read MISSING and drive a
+ *  spurious reviewer-reject/replan, cf. `refs = step.requires ?? []` in the
+ *  handler); the trimmed array when valid; `false` (→ parse failure / retry) when
  *  malformed: a non-array, > MAX_REQUIRES entries, a non-string entry, or an entry
  *  empty / > MAX_REQUIRE_CHARS after trim (a huge reference must not reach the
  *  semantic query / embedder). */
