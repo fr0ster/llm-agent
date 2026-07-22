@@ -1057,16 +1057,17 @@ responsibilities differ by pipeline. The full landscape:
 |---|---|---|---|---|---|
 | **flat** (default) | — none: single tool-loop, no planner or decomposition | — | — | no | no |
 | **coordinator** (linear) | `IPlanningStrategy` (`interfaces/coordinator.ts`) | `OneShotPlanning`, `SkillStepsPlanning`, `ReplanOnErrorPlanning` | `OneShotPlanning` | one-shot (skill-steps: no LLM) | only `ReplanOnErrorPlanning` |
-| **stepper** (cyclic / planned / deep-stepper) | `IStepperPlanner` (`interfaces/stepper-planner.ts`) | `StaticPlanner`, `LlmStepperPlanner` | config-driven: a YAML `flow.plan` → `StaticPlanner`, else `LlmStepperPlanner` | Static: **no**; Llm: yes | no |
+| **stepper** (cyclic / planned / deep-stepper) | `IStepperPlanner` (`interfaces/stepper-planner.ts`) | `trivialPlanner` (`flow.planner.type: none`), `StaticPlanner` (`static`), `LlmStepperPlanner` (`llm`) | config-driven by `flow.planner.type`: `none` → `trivialPlanner` (single-node plan whose goal is the prompt), `static` → `StaticPlanner` (declarative `flow.plan`), `llm` → `LlmStepperPlanner` | `none`/`static`: **no**; `llm`: yes | no |
 | **DAG** | `IPlanner` (`interfaces/planner.ts`) | `LlmDagPlanner` | `LlmDagPlanner` | yes | via a separate `IErrorStrategy` (`ReplanErrorStrategy`, bounded by `maxReplans`) |
 | **controller** | `IControllerPlanner` (`controller/types.ts`) | `SmartExecutorPlanner`, `WeakExecutorPlanner` (extends Smart, finest-grain prompts) | `SmartExecutorPlanner` (`PlannerKind: smart-executor`) | yes | yes — replans on an executor/step failure |
 
 Classification axes:
 
-- **LLM vs static** — two planners need no planner LLM: `StaticPlanner` (emits a
-  YAML-declared plan verbatim, fully inspectable from config) and
-  `SkillStepsPlanning` (builds the plan from the active skill's `steps:`
-  frontmatter). All others call a planner LLM.
+- **LLM vs static** — three planners need no planner LLM: `StaticPlanner` (emits a
+  YAML-declared plan verbatim, fully inspectable from config), `SkillStepsPlanning`
+  (builds the plan from the active skill's `steps:` frontmatter), and the stepper's
+  `trivialPlanner` (`flow.planner.type: none` — a single-node plan whose goal is the
+  prompt). All others call a planner LLM.
 - **Replan capability** — the axis that matters for error handling: the
   **controller** planner replans on a step failure; **DAG** replans through a
   pluggable `IErrorStrategy`; the **coordinator** (linear) replans only if the
