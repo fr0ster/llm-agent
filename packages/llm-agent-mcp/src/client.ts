@@ -439,11 +439,13 @@ export class MCPClientWrapper {
           );
         }
 
-        const isObj = typeof result === 'object' && result !== null;
-        const normalizedResult =
-          isObj && 'content' in result
-            ? (result as { content: unknown }).content
-            : result;
+        // Cast the object shape ONCE so `content`/`isError` reads narrow `unknown`
+        // (a stored boolean would NOT narrow `result` at the `in`/property sites).
+        const obj =
+          typeof result === 'object' && result !== null
+            ? (result as { content?: unknown; isError?: unknown })
+            : null;
+        const normalizedResult = obj && 'content' in obj ? obj.content : result;
         return {
           toolCallId: toolCall.id,
           name: toolCall.name,
@@ -452,7 +454,7 @@ export class MCPClientWrapper {
           // path — an embedded handler returning { content, isError:true } (a
           // locked object) must NOT be flattened to a success the controller
           // then retries. Derive from the object BEFORE stripping content.
-          isError: isObj && (result as { isError?: unknown }).isError === true,
+          isError: obj?.isError === true,
         };
       } catch (error: unknown) {
         const errorMessage =
