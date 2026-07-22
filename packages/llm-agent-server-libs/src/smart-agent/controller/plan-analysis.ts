@@ -423,6 +423,9 @@ async function analyze(
       lastOutcome = undefined;
       continue;
     }
+    if (next.kind === 'error') {
+      return { steps, done: false, plannerCalls, failed: next.error };
+    }
     steps.push(next.step.name);
     planner.commit?.(bundle, 'advanced');
     lastOutcome = 'advanced';
