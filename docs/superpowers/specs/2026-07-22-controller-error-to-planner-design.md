@@ -32,7 +32,12 @@ implementations that behave as intended**. For tool errors:
   reasoning over the error text AND the consumer's prompt. It either fixes the
   failure within its degrees of freedom (replan) or, if it cannot, surfaces the
   error to the consumer.
-- **No planner (flat/simple):** the error goes straight to the **consumer**.
+- **No planner (flat/simple):** the error is made **visible** to the LLM /
+  consumer pipeline — no longer flattened to a false success — but deterministic
+  surfacing (forcing the final answer to report the failure) is NOT default
+  behaviour here; it is the consumer's via `IOutputValidator` or a custom
+  pipeline. (See the Flat pipeline section for the exact, narrowed scope; this
+  is not a raw-error bypass.)
 - **We do NOT hardcode an error taxonomy.** There is no built-in "lock →
   retryable, auth → fatal" classifier. Either the planner (an LLM) classifies by
   reasoning, or we do not classify at all and report to the consumer.
@@ -61,10 +66,11 @@ failure reaches it deterministically, not through the LLM reviewer:
    tool round in an attempt that returns `isError:true` **cuts the step
    immediately**: the executor tool-loop does NOT continue, the reviewer does
    NOT run for that step, and the step settles as `failed` with the failing
-   tool's error text as the reason — reusing the existing control-failure
-   settle path (`cutControlFailure`-style: `stepsUsed++`, `plannerPrivate` note,
-   `settleStep('failed')`). The planner then sees a failed step + the error and
-   decides.
+   tool's error text as the reason — by reusing the existing `cutControlFailure`
+   path (`stepsUsed++` → `writeControlFailure(errorText)` which writes the
+   step-result artifact → `plannerPrivate` note → `settleStep('failed')`; see
+   the durable-carrier note below for why `settleStep` alone is insufficient).
+   The planner then sees a failed step + the error and decides.
 
    **Why immediate cut, not a delayed "attempt-has-error" flag.** The two are
    mutually exclusive and this spec picks immediate cut:
@@ -86,11 +92,19 @@ failure reaches it deterministically, not through the LLM reviewer:
    round is handed to the context strategy.
 
 2. **Durable recall carrier — the failed step-result + `plannerPrivate`, NOT the
-   mcp-result.** The immediate cut settles via `settleStep('failed')`, which
-   already writes a durable `step-result` artifact with `status:'failed'` + the
-   tool error text, sets `bundle.lastOutcome='failed'`, and appends the failure
-   to `bundle.plannerPrivate` — all durable. That IS the resume carrier: a run
-   that crashes after the cut rehydrates a `failed` step and the planner sees it.
+   mcp-result.** The immediate cut MUST reuse the existing `cutControlFailure`
+   path, not `settleStep` alone: `settleStep('failed')` only sets
+   `bundle.lastOutcome`/phase and persists the bundle — it does NOT write the
+   step-result artifact. The step-result is written by a separate
+   `writeControlFailure(errorText)` call. So the cut must, in order (mirroring
+   the existing `cutControlFailure`): `stepsUsed++` → `writeControlFailure(the
+   tool error text)` (writes the durable `step-result` artifact with
+   `status:'failed'`) → append the failure to `bundle.plannerPrivate` → set
+   `inFlightStep.controlFailure` → `settleStep('failed')`. All of that is
+   durable, and IS the resume carrier: a run that crashes after the cut
+   rehydrates a `failed` step + the error and the planner sees it. An
+   implementation that calls only `settleStep('failed')` would lose the board /
+   step-result artifact — do not do that.
 
    The `mcp-result` artifact is deliberately NOT relied on here: under immediate
    cut the round may never reach `strategy.record(round)` (the RagRecall writer),
