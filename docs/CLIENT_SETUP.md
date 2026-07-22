@@ -12,18 +12,17 @@ Both endpoints route through the SmartAgent pipeline with semantic tool filterin
 Start the llm-agent server:
 
 ```bash
-# Option 1: set environment variables directly
-export LLM_PROVIDER=openai          # or: anthropic, deepseek, sap-ai-sdk
-export LLM_API_KEY=sk-...           # API key for the provider
-export LLM_MODEL=gpt-4o             # model name as the provider expects
-export MCP_ENDPOINT=http://localhost:3001/mcp/stream/http  # optional MCP server
+# Configuration comes from a YAML file, not from standalone LLM_* environment
+# variables. The CLI loads .env into the environment at startup; env vars then
+# take effect only where the YAML references them as ${VAR} (e.g. apiKey:
+# ${DEEPSEEK_API_KEY}). PORT and LOG_FILE are the two the server also reads
+# directly; LLM_PROVIDER/LLM_API_KEY/LLM_MODEL are NOT config knobs on their own.
+
+# Option 1: first run with no config writes a smart-server.yaml template and exits.
+# Put your keys in .env, edit smart-server.yaml, then run again to start:
 npx llm-agent
 
-# Option 2: use a .env file (recommended)
-# Place all credentials in .env at the project root.
-# The launcher scripts read .env automatically and pick the matching
-# pipeline config (pipelines/deepseek.yaml or pipelines/sap-ai-core.yaml)
-# based on LLM_PROVIDER. Use --config to override.
+# Option 2 (recommended): point --config at a provider preset; secrets from .env.
 npx llm-agent --config pipelines/deepseek.yaml
 ```
 
@@ -46,48 +45,46 @@ export ANTHROPIC_BASE_URL=http://localhost:4004
 claude
 ```
 
-Or use the launcher script. After a global install it is on your PATH as the
-`claude-via-agent` bin:
+There is also a launcher script (`claude-via-agent`, on your PATH after a global
+install; `packages/llm-agent-server/tools/claude-via-agent.{sh,ps1}` in a checkout)
+that starts llm-agent and points Claude CLI at it in one step.
+
+**Caveat — config paths are resolved next to the server package.** The launcher
+reads `.env` and looks for `pipelines/<LLM_PROVIDER>.yaml` relative to the
+server-package directory (`packages/llm-agent-server/`) and `cd`s there before
+starting the agent. The shipped presets live at the **repo root** `pipelines/` and
+are **not** bundled into the published package, so from a repo checkout the
+auto-select finds nothing and a relative `--config pipelines/…` does not resolve
+(the CLI writes a template and exits). The launcher's auto-select only works when a
+`pipelines/` directory and `.env` sit next to the server package.
+
+The reliable path from a checkout is to start the agent yourself from the repo root
+(where `pipelines/` lives) with an explicit config, then point Claude CLI at it:
 
 ```bash
-claude-via-agent
+# terminal 1 — from the repo root
+npx llm-agent --config pipelines/sap-ai-core.yaml   # or pipelines/deepseek.yaml
+
+# terminal 2
+export ANTHROPIC_BASE_URL=http://localhost:4004
+claude
 ```
 
-From a repo checkout the scripts live under the server package:
+On startup the server prints its listen address (and the log file, when `--log-file`
+/ `log:` is set):
+
+```
+llm-agent listening on http://0.0.0.0:4004
+logs → ./smart-server.log
+```
+
+To verify the active model and inspect live request details, tail that JSONL event
+log, or read the per-request step files the session writer produces:
 
 ```bash
-# Linux / macOS
-./packages/llm-agent-server/tools/claude-via-agent.sh
-
-# Windows (PowerShell)
-./packages/llm-agent-server/tools/claude-via-agent.ps1
-```
-
-The launcher reads `.env` from the project root and auto-selects the pipeline config based on `LLM_PROVIDER`:
-
-| `LLM_PROVIDER` | Pipeline loaded |
-|---|---|
-| `deepseek` | `pipelines/deepseek.yaml` |
-| `sap-ai-sdk` | `pipelines/sap-ai-core.yaml` |
-| other | default `smart-server.yaml` |
-
-To override the auto-selected pipeline, pass `--config`:
-
-```bash
-claude-via-agent --config pipelines/sap-ai-core.yaml
-# from a checkout: ./packages/llm-agent-server/tools/claude-via-agent.sh --config pipelines/sap-ai-core.yaml
-```
-
-To verify the agent is running with the correct model, check the startup log line:
-
-```
-[SmartServer] LLM provider: sap-ai-sdk  model: anthropic--claude-sonnet-4-5
-```
-
-Or tail the session log for live request details:
-
-```bash
-tail -f sessions/latest.log
+tail -f smart-server.log
+# structured per-request artifacts:
+ls sessions/<session_id>/req_<timestamp>_<uuid>/*.json
 ```
 
 ### How it works

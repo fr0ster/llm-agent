@@ -6,4 +6,4 @@ Exports:
 - `SapCoreAIProvider` — implements ILlm, calls SAP AI Core orchestration API.
 - `SapCoreAIConfig` — configuration type.
 
-Optional peer dependency. Install when smart-server.yaml names `sap-ai-sdk` or `sap-core-ai` as LLM provider, or when constructing SapCoreAIProvider programmatically.
+Optional peer dependency. Install when smart-server.yaml names `sap-ai-sdk` as LLM provider, or when constructing SapCoreAIProvider programmatically.

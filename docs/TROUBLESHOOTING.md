@@ -325,8 +325,11 @@ The `config:` keys are the SAME keys the old `coordinator:` block used. Load a c
 **v20 addition — `planner:` key rejected inside controller config.** If your controller YAML contains a `planner:` sub-key under `pipeline.config`, the server fails loud:
 
 ```
-ConfigValidationError: pipeline.config.planner is not a valid controller config key.
-Use pipeline.name: "controller" (smart-executor) or "controller-weak" (weak-executor).
+Error: controller: `planner:` removed — capability is preset-encoded. Select
+pipeline: { name: controller } (smart-executor) or
+{ name: controller-weak } (weak-executor), or pass the kind to
+`new ControllerFactory().build(config, deps, "weak-executor")` when
+composing in code. No `planner:` alias exists.
 ```
 
 **Fix.** Remove `pipeline.config.planner` and select the pairing via the pipeline name:
@@ -376,7 +379,7 @@ Use pipeline.name: "controller" (smart-executor) or "controller-weak" (weak-exec
 
 **Cause.** A `wait` step is served synchronously by the controller — it blocks the request for `min(waitMs, maxWaitMs, remaining maxTotalWaitMs)` milliseconds before the next step runs (see `packages/llm-agent-server-libs/src/smart-agent/controller/wait-step.ts`). If the effective wait — or the sum of waits in a plan, once you add later steps' processing time — exceeds the deployment's own request timeout (HTTP client, reverse proxy, load balancer, gateway), that outer layer aborts the connection first. The controller never gets a chance to finish; the client sees a bare timeout, not the actual plan result.
 
-**Fix.** Whenever you raise `pipeline.controller.maxWaitMs` / `maxTotalWaitMs` (or the planner emits a plan with a long wait), raise the client/proxy/load-balancer request timeout together with it — the knob and the surrounding infrastructure timeout MUST move in lockstep. Also note: a client disconnect (e.g. the caller gives up and closes the connection) does not currently cancel an in-flight wait — the controller keeps sleeping and completes the step server-side regardless of whether anyone is still listening.
+**Fix.** Whenever you raise `pipeline.config.maxWaitMs` / `pipeline.config.maxTotalWaitMs` (or the planner emits a plan with a long wait), raise the client/proxy/load-balancer request timeout together with it — the knob and the surrounding infrastructure timeout MUST move in lockstep. Also note: a client disconnect (e.g. the caller gives up and closes the connection) does not currently cancel an in-flight wait — the controller keeps sleeping and completes the step server-side regardless of whether anyone is still listening.
 
 ---
 

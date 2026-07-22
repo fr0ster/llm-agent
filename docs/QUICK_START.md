@@ -69,7 +69,7 @@ Minimal working config (generated template contains all fields with comments):
 
 ```yaml
 port: 3001
-mode: hybrid      # smart | passthrough | hybrid (default)
+mode: smart       # hard | pass | smart (default: smart)
 
 llm:
   provider: deepseek      # deepseek | openai | anthropic | sap-ai-sdk | ollama
@@ -143,11 +143,17 @@ Endpoints exposed by the server:
 
 ## Request Routing Modes
 
-| Mode          | Behaviour                                                                 |
-|---------------|---------------------------------------------------------------------------|
-| `smart`       | All requests → SmartAgent (RAG tool selection + MCP orchestration)        |
-| `passthrough` | All requests → LLM directly (no agent; preserves Cline XML tool protocol) |
-| `hybrid`      | Auto-detect: Cline system prompt → passthrough, everything else → smart   |
+`mode` (default `smart`) is one of three values:
+
+| Mode    | Behaviour                                                                 |
+|---------|---------------------------------------------------------------------------|
+| `smart` | (default) All requests → full SmartAgent pipeline (RAG tool selection + MCP orchestration) |
+| `hard`  | MCP-only — tool/MCP orchestration without the full RAG pipeline           |
+| `pass`  | Direct LLM (no agent; transparent proxy)                                  |
+
+Cline handling is **independent of `mode`**: the `ClineClientAdapter` detects Cline's
+system prompt and adapts the response format in any mode — it is not a routing mode
+(there are no `hybrid`/`passthrough` modes).
 
 ---
 
@@ -306,8 +312,10 @@ When an `mcp:` block is configured, the server uses a **resilient connection str
 Since v20.4.0, a mid-run MCP failure surfaces as a loud error via the `IMcpFailureClassifier` instead of silently producing `(no response)`. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#mcp-server-goes-offline-mid-run-and-the-agent-returns-no-response) for details.
 
 ### Cline not using the agent
-`hybrid` mode auto-detects Cline and routes it to `passthrough`. To force SmartAgent for all
-clients set `mode: smart`.
+The default `smart` mode routes all clients (including Cline) through the SmartAgent. If you
+set `mode: pass`, requests go straight to the LLM instead — set `mode: smart` (or omit `mode`)
+to force the agent. Cline's tool-protocol formatting is handled automatically by the
+`ClineClientAdapter` regardless of mode.
 
 ---
 
