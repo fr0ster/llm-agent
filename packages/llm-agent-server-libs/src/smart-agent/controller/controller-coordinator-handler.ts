@@ -1629,6 +1629,18 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           },
           'mcp',
         );
+        // #213 immediate cut: a delivered tool-level error ends the step NOW.
+        // The executor tool-loop does NOT continue (no further tool call, no
+        // reviewer for this step); reuse cutControlFailure so the step settles
+        // 'failed' with the tool's error text and the planner replans / surfaces
+        // it. Read result.isError directly here — BEFORE the round reaches the
+        // context strategy — so no Message/meta replay is needed. The durable
+        // failed step-result + plannerPrivate note (written by cutControlFailure)
+        // ARE the resume carrier; the mcp-result artifact is intentionally not
+        // relied on (the cut may never call strategy.record).
+        if (result.isError) {
+          return cutControlFailure(result.text);
+        }
         // Record this exchange as a coherent assistant→tool ROUND (OpenAI protocol)
         // via the context strategy so the executor LLM continues from its own tool
         // call. The strategy owns the per-round context (Window keeps a bounded
