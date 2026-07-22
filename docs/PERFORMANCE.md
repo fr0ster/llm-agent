@@ -422,42 +422,22 @@ When the embedder circuit opens, RAG stores automatically fall back to `InMemory
 
 ## Benchmarking
 
-### RAG evaluation
+The repository does not currently ship a packaged benchmark harness (no
+`test:rag-eval` / `test:classifier-bench` npm scripts or an `e2e-rag-search`
+runner). Evaluate against your own golden corpus using the metrics below; the
+building blocks — configurable `IToolSelectionStrategy` / `ISearchStrategy`,
+swappable embedders, and the classifier — are all injectable for offline
+measurement (see [docs/INTEGRATION.md](INTEGRATION.md)).
 
-Run the golden corpus evaluation to measure retrieval quality:
-
-```bash
-npm run test:rag-eval    # Golden corpus (16 entries, 8 queries, all strategies)
-npm run test:mcp-eval    # MCP tools benchmark (40 tools, 15+ queries, all strategies)
-```
-
-Metrics: MRR (Mean Reciprocal Rank), precision@1, recall@k.
-
-### E2E search benchmark
-
-Test with real LLM translation + real embeddings against live MCP server:
-
-```bash
-node --import tsx/esm scripts/e2e-rag-search.ts
-```
-
-Requires: DeepSeek API key, Ollama with `bge-m3`, MCP server on localhost:3001.
-
-### Classifier benchmark
-
-Run the intent classification benchmark:
-
-```bash
-npm run test:classifier-bench
-```
-
-Metrics: type accuracy, count accuracy, per-type precision/recall across 20+ golden corpus entries covering all 5 intent types (action, fact, chat, state, feedback).
-
-### Full suite
-
-```bash
-npm run test:all   # Runs all tests including RAG eval and classifier bench
-```
+- **RAG / tool retrieval quality** — score retrieval over a labelled query→tool
+  (or query→document) set with **MRR** (Mean Reciprocal Rank), **precision@1**,
+  and **recall@k**. Compare embedders and search strategies on the same corpus.
+- **E2E search** — for a realistic measurement, run the full path (LLM query
+  translation + real embeddings against a live MCP catalog) and score the ranked
+  tool list against the expected tool per query.
+- **Intent classifier** — score the classifier over a labelled corpus with type
+  accuracy, count accuracy, and per-type precision/recall across the intent types
+  (action, fact, chat, state, feedback).
 
 ## Coordinator orchestration: when it pays off
 

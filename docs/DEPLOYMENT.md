@@ -8,8 +8,8 @@ This guide covers production deployment patterns for the SmartAgent monorepo (`@
 # 1. Install
 npm install -g @mcp-abap-adt/llm-agent-server
 
-# 2. Generate config
-npx llm-agent --init   # creates smart-server.yaml
+# 2. Generate config — the first run with no config writes a template and exits
+npx llm-agent   # creates smart-server.yaml with defaults, then exits
 
 # 3. Set environment variables
 #    Place all credentials in a single .env file at the project root.
