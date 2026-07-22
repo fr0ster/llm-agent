@@ -12,9 +12,11 @@ Both endpoints route through the SmartAgent pipeline with semantic tool filterin
 Start the llm-agent server:
 
 ```bash
-# Configuration comes from a YAML file, not from LLM_* environment variables:
-# secrets are referenced as ${VAR} inside the YAML and read from a .env file at
-# the project root. (The server itself only reads PORT from the environment.)
+# Configuration comes from a YAML file, not from standalone LLM_* environment
+# variables. The CLI loads .env into the environment at startup; env vars then
+# take effect only where the YAML references them as ${VAR} (e.g. apiKey:
+# ${DEEPSEEK_API_KEY}). PORT and LOG_FILE are the two the server also reads
+# directly; LLM_PROVIDER/LLM_API_KEY/LLM_MODEL are NOT config knobs on their own.
 
 # Option 1: first run with no config writes a smart-server.yaml template and exits.
 # Put your keys in .env, edit smart-server.yaml, then run again to start:
