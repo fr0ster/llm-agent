@@ -249,6 +249,7 @@ default, because it has a planner to decide.
    strategy interface unless proven necessary.
 4. **ISP** — `NextStep` gains one variant; nothing else grows.
 5. **Strategies / variation** — the consumer varies handling by swapping the
-   planner (or its prompt); the flat default surfaces to the consumer.
+   planner (or its prompt); the flat default makes the error visible, and a
+   consumer needing deterministic surfacing uses the `IOutputValidator` seam.
 7. **Don't break components** — `error` is additive; existing `next/done/rewind`
    unchanged; `isError` carriers are additive optional fields.
