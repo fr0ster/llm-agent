@@ -43,37 +43,29 @@ export ANTHROPIC_BASE_URL=http://localhost:4004
 claude
 ```
 
-Or use the launcher script. After a global install it is on your PATH as the
-`claude-via-agent` bin:
+There is also a launcher script (`claude-via-agent`, on your PATH after a global
+install; `packages/llm-agent-server/tools/claude-via-agent.{sh,ps1}` in a checkout)
+that starts llm-agent and points Claude CLI at it in one step.
+
+**Caveat — config paths are resolved next to the server package.** The launcher
+reads `.env` and looks for `pipelines/<LLM_PROVIDER>.yaml` relative to the
+server-package directory (`packages/llm-agent-server/`) and `cd`s there before
+starting the agent. The shipped presets live at the **repo root** `pipelines/` and
+are **not** bundled into the published package, so from a repo checkout the
+auto-select finds nothing and a relative `--config pipelines/…` does not resolve
+(the CLI writes a template and exits). The launcher's auto-select only works when a
+`pipelines/` directory and `.env` sit next to the server package.
+
+The reliable path from a checkout is to start the agent yourself from the repo root
+(where `pipelines/` lives) with an explicit config, then point Claude CLI at it:
 
 ```bash
-claude-via-agent
-```
+# terminal 1 — from the repo root
+npx llm-agent --config pipelines/sap-ai-core.yaml   # or pipelines/deepseek.yaml
 
-From a repo checkout the scripts live under the server package:
-
-```bash
-# Linux / macOS
-./packages/llm-agent-server/tools/claude-via-agent.sh
-
-# Windows (PowerShell)
-./packages/llm-agent-server/tools/claude-via-agent.ps1
-```
-
-The launcher reads `.env` from the project root and loads `pipelines/<LLM_PROVIDER>.yaml`
-if that file exists, else falls back to the default `smart-server.yaml`:
-
-| `LLM_PROVIDER` | Pipeline loaded |
-|---|---|
-| `deepseek` | `pipelines/deepseek.yaml` (shipped) |
-| `sap-ai-sdk` | falls back to `smart-server.yaml` — there is no `pipelines/sap-ai-sdk.yaml`; the shipped SAP preset is `pipelines/sap-ai-core.yaml`, so pass it explicitly with `--config pipelines/sap-ai-core.yaml` (or add a `pipelines/sap-ai-sdk.yaml`) |
-| other | default `smart-server.yaml` |
-
-To override the auto-selected pipeline, pass `--config`:
-
-```bash
-claude-via-agent --config pipelines/sap-ai-core.yaml
-# from a checkout: ./packages/llm-agent-server/tools/claude-via-agent.sh --config pipelines/sap-ai-core.yaml
+# terminal 2
+export ANTHROPIC_BASE_URL=http://localhost:4004
+claude
 ```
 
 On startup the server prints its listen address (and the log file, when `--log-file`

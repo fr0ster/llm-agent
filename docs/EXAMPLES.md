@@ -578,7 +578,7 @@ npm run dev -- --config docs/examples/09-parallel-optimized.yaml
 **Run the text client** (no npm script wires it — invoke the file directly):
 
 ```bash
-tsx packages/llm-agent-server/scripts/text-client.ts
+npx tsx packages/llm-agent-server/scripts/text-client.ts
 ```
 
 **Example session:**
@@ -609,7 +609,7 @@ Bye.
 Set `PORT` or `SESSION_ID` env variables to override defaults:
 
 ```bash
-PORT=5000 SESSION_ID=my-session tsx packages/llm-agent-server/scripts/text-client.ts
+PORT=5000 SESSION_ID=my-session npx tsx packages/llm-agent-server/scripts/text-client.ts
 ```
 
 ## Stream test client
@@ -617,9 +617,9 @@ PORT=5000 SESSION_ID=my-session tsx packages/llm-agent-server/scripts/text-clien
 A lightweight single-shot SSE client for testing streaming. Sends one message and prints the streamed response.
 
 ```bash
-tsx packages/llm-agent-server/scripts/test-stream-client.ts
-tsx packages/llm-agent-server/scripts/test-stream-client.ts "Which MCP tools are available?"
-PORT=5000 tsx packages/llm-agent-server/scripts/test-stream-client.ts
+npx tsx packages/llm-agent-server/scripts/test-stream-client.ts
+npx tsx packages/llm-agent-server/scripts/test-stream-client.ts "Which MCP tools are available?"
+PORT=5000 npx tsx packages/llm-agent-server/scripts/test-stream-client.ts
 ```
 
 ## Connecting OpenAI-compatible clients
