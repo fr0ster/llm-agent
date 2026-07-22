@@ -282,6 +282,16 @@ The default classifier (`IMcpFailureClassifier`) is defined in `packages/llm-age
 
 ---
 
+### A tool error (locked object) makes the controller loop, balloon, or return `(no response)`
+
+**Symptom.** A request that hits a tool-level failure — most often a locked or concurrently-edited SAP object — does not fail cleanly. Instead the controller retries the same failing call many times: the request balloons in token count (up to hundreds of thousands of tokens on a many-tool deployment), or hangs until the timeout and returns `(no response)`. In the worst case a failed create/activate is reported as "completed successfully" while the object is left inactive.
+
+**Cause.** Before v20.7.0 the MCP tool-result `isError` flag was dropped between the wire and the controller (the client wrapper and adapter read only the JSON-RPC error, not the tool result's own `isError`), so the controller recorded every failed call as a delivered success. The executor never saw the failure and retried it indefinitely. (This assumes the MCP tool actually signals the failure structurally with `isError: true`; a tool that returns a lock error as plain text with a false `success: true` must be fixed on the tool side first.)
+
+**Fix.** Upgrade to **v20.7.0 or later**. `isError` is now threaded end to end across all transports (including `embedded`), and the controller cuts the step on the first failed tool round: the planner then either replans (if the failure is in something it chose) or surfaces the real tool error to the consumer (if the request pinned the failing constraint) — never `(no response)`. No configuration is required. If you run a flat (planner-less) pipeline and need the final answer to *deterministically* report the failure, plug in an `IOutputValidator` that rejects a success answer when a tool round failed.
+
+---
+
 ### Coordinator-bearing pipeline stays inactive
 
 **Symptom.** `coordinator_configured` event appears in `smart-server.log` at startup. Live requests show no `coordinator_plan` / `coordinator_step_*` events, but `tool-loop iteration 1` warnings do. Response content looks like a normal tool-loop reply.
