@@ -151,8 +151,11 @@ The consumer can override HOW errors are handled without forking:
 - a consumer that wants different handling swaps the planner (already injectable)
   or its prompt/hint — the decision lives in the planner, so overriding the
   planner overrides the policy;
-- a flat pipeline (no planner) surfaces the error to the consumer by default —
-  the pipeline passes the tool error up rather than swallowing it.
+- a flat pipeline (no planner) makes the tool error **visible** to the LLM (not
+  flattened to a false success); deterministic surfacing to the consumer is NOT
+  default here — it is the consumer's via `IOutputValidator` or a custom
+  pipeline (see the Flat pipeline section). This is NOT a raw-error bypass or a
+  terminal override.
 
 No new strategy interface is added unless review shows the planner-override seam
 is insufficient — the planner IS the decision seam (avoids a parallel
