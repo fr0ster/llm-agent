@@ -439,14 +439,20 @@ export class MCPClientWrapper {
           );
         }
 
+        const isObj = typeof result === 'object' && result !== null;
         const normalizedResult =
-          typeof result === 'object' && result !== null && 'content' in result
+          isObj && 'content' in result
             ? (result as { content: unknown }).content
             : result;
         return {
           toolCallId: toolCall.id,
           name: toolCall.name,
           result: normalizedResult,
+          // #213: preserve the tool-level isError exactly like the stdio/http
+          // path — an embedded handler returning { content, isError:true } (a
+          // locked object) must NOT be flattened to a success the controller
+          // then retries. Derive from the object BEFORE stripping content.
+          isError: isObj && (result as { isError?: unknown }).isError === true,
         };
       } catch (error: unknown) {
         const errorMessage =
