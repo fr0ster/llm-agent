@@ -849,6 +849,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       planParseRetries = 0;
       resumedExternal = false; // a valid decision consumed any external-resume replan
 
+      if (next.kind === 'error') {
+        // The planner saw a failure it cannot fix within the consumer's
+        // constraints (a pinned name that is taken, an unauthorized op, a lock
+        // that will not clear). Terminate the run and return the REAL tool error
+        // to the consumer — distinct from the generic abortTerminal reasons and
+        // never (no response). (#213)
+        logDecision(ctx, 'planner-error', next.error);
+        await this.abortTerminal(
+          ctx,
+          sessionId,
+          bundle,
+          next.error,
+          now,
+          terminalTtlMs,
+          usageNow(),
+        );
+        return true;
+      }
+
       if (next.kind === 'done') {
         // Pass next.result as the legacy answer: used only when no finalizer is
         // injected (3-role config) — the plan-first planner already composed it.

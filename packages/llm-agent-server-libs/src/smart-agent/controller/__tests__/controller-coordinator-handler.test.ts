@@ -2249,6 +2249,41 @@ describe('ControllerCoordinatorHandler', () => {
     assert.match(bundle.plannerPrivate, /ZOBJ is locked by user ALICE/);
     assert.match(bundle.plannerPrivate, /control-failed/);
   });
+
+  it('#213 planner error decision terminates the run with the real tool error', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        // create-plan emits the cannot-proceed error decision directly
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'error',
+            error: 'domain ZD_YTEST already exists (name pinned by request)',
+          }),
+        },
+      ],
+      executor: [],
+    });
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    // The consumer receives the REAL failure, not (no response) / a generic abort.
+    assert.ok(
+      captured.some(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          /domain ZD_YTEST already exists/.test(c.value.content),
+      ),
+      'the real tool error must reach the consumer',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+  });
 });
 
 describe('Phase 2 — Live Digest Board integration', () => {
