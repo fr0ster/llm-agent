@@ -1,5 +1,22 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 20.7.1
+
+### Fixed
+
+- Controller leaf steps (no `requires`) no longer self-lookup their own evidence,
+  which read `MISSING` and drove a spurious reviewer-reject/replan loop (#213, #230).
+  A leaf step now gets no dependency evidence and is judged from the executor's
+  result alone.
+
+### Documentation
+
+- Planner classification across pipelines added to ARCHITECTURE (#233), and a full
+  pre-release documentation accuracy audit corrected stale/inaccurate references
+  across the whole doc set (#234, #235): CLI/scripts, routing modes, config keys,
+  interface signatures, the six builder-factories, launcher config paths, and
+  provider/package listings.
+
 ## 20.7.0
 
 ### Fixed

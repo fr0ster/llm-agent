@@ -9,6 +9,33 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [20.7.1] — 2026-07-22
+
+### Fixed
+
+- **Controller leaf steps no longer self-lookup evidence (#213, #230).** A step
+  with no `requires` (a leaf that depends on nothing) used to fall back to
+  recalling its own instruction text as "evidence". Nothing is stored for it yet,
+  so the evidence read `MISSING`, the reviewer rejected the correct work, and the
+  controller replanned — a spurious reviewer-reject/replan loop. A leaf step now
+  gets no dependency evidence and is judged from the executor's result alone.
+
+### Documentation
+
+- **Planner classification across pipelines** added to `ARCHITECTURE.md` (#233):
+  the flat (no planner), coordinator/linear (`IPlanningStrategy`), stepper
+  (`IStepperPlanner` — trivial/static/llm), DAG (`IPlanner`), and controller
+  (`IControllerPlanner`) planner abstractions, with LLM-vs-static and replan axes.
+- **Full pre-release documentation accuracy audit** (#234, #235): corrected stale
+  and inaccurate references across the whole doc set — CLI flags and first-run
+  behavior, root vs server-package npm scripts, request-routing modes
+  (`hard`/`pass`/`smart`), YAML config keys (`pipeline.config.*`), interface
+  signatures (`ISubAgentResult`, `callMcp` → `McpCallResult`, `checkScope`), the
+  six pipeline builder-factories (incl. `ControllerFactory`), the
+  `claude-via-agent` launcher's config-path resolution, provider naming, and
+  package listings — across README, ARCHITECTURE, INTEGRATION, QUICK_START,
+  CLIENT_SETUP, DEPLOYMENT, TROUBLESHOOTING, EXAMPLES, and package READMEs.
+
 ## [20.7.0] — 2026-07-22
 
 ### Fixed
