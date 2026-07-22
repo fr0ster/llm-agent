@@ -1,5 +1,33 @@
 # @mcp-abap-adt/qdrant-rag
 
+## 20.7.0
+
+### Fixed
+
+- Tool errors on locked/contended objects no longer loop, balloon, or hang
+  (#213, #231). A delivered MCP tool-level error (e.g. a locked SAP object
+  returning `isError: true`) was lost before it reached the controller, so a
+  failed call looked like a delivered result and the executor retried it
+  indefinitely (token balloon / `(no response)`, and a failed activation could be
+  reported as success). `isError` is now threaded end to end across all transports
+  (stdio, streamable-HTTP, embedded) via `McpCallResult { text; isError }`.
+
+### Changed
+
+- The controller acts on a delivered tool error: it cuts the step on the first
+  `isError: true` tool round (executor tool-loop stops, reviewer skipped), settles
+  it failed with the tool's error text, and the planner then replans (if the
+  failure is in something it chose) or emits a terminal `error` decision that
+  surfaces the real tool error to the consumer (if the request pinned the failing
+  constraint). No error taxonomy hardcoded.
+
+### Added
+
+- `NextStep` gains an `error` variant (`{ kind: 'error'; error: string }`),
+  produced by the controller planner (`parsePlan` / `callPlan` / `next()`) and
+  terminated by the coordinator handler. Additive; `next` / `done` / `rewind`
+  unchanged.
+
 ## 20.6.0
 
 ### Fixed
