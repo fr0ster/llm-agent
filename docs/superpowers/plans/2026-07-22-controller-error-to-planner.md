@@ -20,7 +20,7 @@
 - **`error` is additive.** `NextStep`'s existing `next/done/rewind` behaviour is unchanged; `error` is a new fourth variant. `WeakExecutorPlanner` inherits everything from `SmartExecutorPlanner`.
 - **Deterministic guarantee is controller-only.** The flat pipeline gets NO new default enforcement in this deliverable — only the already-shipped #232 visibility. Do not add flat-specific enforcement.
 - **All artifacts in English** (code, comments, commits). Conventional Commits.
-- Run a package's tests with: `cd packages/llm-agent-server-libs && npm test` (runs `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`). A single file: `node --import tsx/esm --test --test-reporter=spec src/smart-agent/controller/__tests__/<file>.test.ts`.
+- Run a SINGLE test file: `cd packages/llm-agent-server-libs && node --import tsx/esm --test --test-reporter=spec src/smart-agent/controller/__tests__/<file>.test.ts`. Run the controller test DIRECTORY: `… 'src/smart-agent/controller/__tests__/*.test.ts'`. Do NOT run the whole-package `npm test` (globs `src/**/*.test.ts`) — it is known to hang on the unrelated `chat-endpoint.test.ts` / `config-endpoints.test.ts` (see Task 6). Use targeted file/directory runs throughout.
 
 ---
 
@@ -677,30 +677,53 @@ git commit -m "test(flat): assert a delivered isError:true tool result sets Tool
 
 ---
 
-## Task 6: Full workspace build + test gate
+## Task 6: Build + lint + targeted-test gate
+
+**Known-unrelated pre-existing failures (do NOT let these block the gate):** in this workspace the WHOLE `llm-agent-server-libs` suite (`npm test` for that package, which globs `src/**/*.test.ts`) is known to fail and then HANG on `src/smart-agent/__tests__/chat-endpoint.test.ts` and `src/smart-agent/__tests__/config-endpoints.test.ts` — these are endpoint tests unrelated to #213 and this deliverable does not touch them. A whole-package/whole-workspace green run is therefore NOT the acceptance criterion; it would hang and obscure the #213 signal. The gate below is: full-workspace **build + lint** (neither hangs), plus a **targeted** test run over exactly the files this deliverable adds/changes, diffed against a fresh pre-change baseline of those same files.
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Lint (Biome check — not format; catches import-sort)**
+- [ ] **Step 1: Capture a fresh pre-change baseline of the targeted files**
 
-Run: `cd /home/okyslytsia/prj/llm-agent && npm run lint`
-Expected: clean (auto-fixes applied; re-run `npm run lint:check` to confirm zero diffs remain).
-
-- [ ] **Step 2: Build the whole workspace**
-
-Run: `cd /home/okyslytsia/prj/llm-agent && npm run build`
-Expected: TypeScript compiles all packages with no errors.
-
-- [ ] **Step 3: Run the full workspace test suite**
-
-Run: `cd /home/okyslytsia/prj/llm-agent && npm test`
-Expected: all packages pass, 0 failures. Compare the pass count against the pre-change baseline (`git stash` is NOT used — build first per project rule; instead note the count on `main`/pre-Task-1 was 2314 pass/0 fail after PR #232, and every task here only ADDS tests, so the count must be ≥ 2314 + new tests, 0 fail).
-
-- [ ] **Step 4: Commit any lockfile/formatting churn**
+BEFORE relying on the gate, confirm the targeted suites are green on the current branch tip WITHOUT this work — do this once, at the start of execution, on a clean checkout of `fix/issue-213-mcp-iserror` before Task 1 (or by reading the counts and re-running after). Build first (workspace imports resolve to `dist/`):
 
 ```bash
+cd /home/okyslytsia/prj/llm-agent && npm run build
+cd packages/llm-agent-server-libs && node --import tsx/esm --test --test-reporter=spec \
+  'src/smart-agent/controller/__tests__/*.test.ts' 2>&1 | tail -5
+cd ../llm-agent-libs && node --import tsx/esm --test --test-reporter=spec \
+  src/pipeline/handlers/__tests__/tool-loop-timing-log.test.ts 2>&1 | tail -5
+```
+
+Record the baseline `# pass / # fail` for each. Expected: 0 fail on both targeted sets (they exclude the known-hanging endpoint tests). If the controller set already has a failure on the untouched branch, STOP and report — it is a pre-existing issue to disposition before layering #213 on top.
+
+- [ ] **Step 2: Lint the whole workspace (Biome check — not format; catches import-sort)**
+
+Run: `cd /home/okyslytsia/prj/llm-agent && npm run lint`
+Expected: clean (auto-fixes applied; re-run `npm run lint:check` to confirm zero diffs remain). Lint does not run tests, so it does not hang.
+
+- [ ] **Step 3: Build the whole workspace**
+
+Run: `cd /home/okyslytsia/prj/llm-agent && npm run build`
+Expected: TypeScript compiles ALL packages with no errors (this is the whole-workspace correctness gate; the widened `NextStep`/`parsePlan` types must compile everywhere they are consumed).
+
+- [ ] **Step 4: Run the targeted test suites (the files this work touches)**
+
+```bash
+cd /home/okyslytsia/prj/llm-agent/packages/llm-agent-server-libs && node --import tsx/esm --test --test-reporter=spec \
+  'src/smart-agent/controller/__tests__/*.test.ts' 2>&1 | tail -8
+cd ../llm-agent-libs && node --import tsx/esm --test --test-reporter=spec \
+  src/pipeline/handlers/__tests__/tool-loop-timing-log.test.ts 2>&1 | tail -8
+```
+
+Expected: 0 failures on both sets, and the pass count is the Step-1 baseline PLUS the tests added by Tasks 1–5 (the immediate-cut test; the four parser/`next()` tests; the two prompt tests; the flat meta test). Any pre-existing pass that now fails is a real regression — investigate before proceeding. Do NOT run the whole `llm-agent-server-libs` package suite (it hangs on the unrelated endpoint tests noted above).
+
+- [ ] **Step 5: Commit any lockfile/formatting churn**
+
+```bash
+cd /home/okyslytsia/prj/llm-agent
 git add -A
-git commit -m "chore: lint/build gate for controller error-to-planner (#213)" || echo "nothing to commit"
+git commit -m "chore: lint/build/targeted-test gate for controller error-to-planner (#213)" || echo "nothing to commit"
 ```
 
 ---
@@ -728,6 +751,6 @@ git commit -m "chore: lint/build gate for controller error-to-planner (#213)" ||
 | No plan-change regression | Task 6 full suite |
 | No error classifier; no run-level ceiling | Enforced by Global Constraints; no task adds either |
 
-**2. Placeholder scan:** No "TBD"/"handle appropriately"/"add error handling" — every code step shows the exact code and every test shows assertions. Task 5 explicitly instructs NOT to fabricate a seam if the round meta is not observable (falls back to the existing event assertion) rather than leaving a placeholder.
+**2. Placeholder scan:** No "TBD"/"handle appropriately"/"add error handling" — every code step shows the exact code and every test shows assertions. Task 5 injects a spy context strategy via the verified `ctx.toolLoopContextStrategyFactory` seam and asserts `ToolRound.meta[0].isError === true` on a delivered `ok:true,isError:true` result — a concrete new signal, no fallback/comment escape hatch.
 
 **3. Type consistency:** `McpCallResult { text; isError }` (existing, from PR #232) is used verbatim in Tasks 1/3. `PlanError = { kind:'error'; error:string }` is defined in Task 2 (`types.ts`), consumed by `parsePlan`/`callPlan`/`next()` (Task 2) and by the handler `next.kind==='error'` branch (Task 3) — same property names (`kind`, `error`) throughout. `cutControlFailure(reason:string)` and `abortTerminal(…, error, …)` signatures match the code read at handler lines 1289 and 1843. `parsePlan` return type is widened identically in the `parsePlan` definition, the `callPlan` return type, and the `isPlanError` guard.
