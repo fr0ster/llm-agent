@@ -1222,10 +1222,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // any-candidate flag. Gathered SEQUENTIALLY (NOT Promise.all): each
       // relevantExtract is itself bounded-sequential, so the outer sequential loop
       // keeps at most ONE embed request in flight at a time (rate-limit-safe).
-      const refs =
-        step.requires && step.requires.length > 0
-          ? step.requires
-          : [recallText];
+      // ONLY declared dependencies produce evidence. A step with no `requires`
+      // is a leaf — it consumes nothing, so there is nothing to attest and the
+      // reviewer judges it from the executor's result alone. Falling back to a
+      // recall on the step's OWN text (as this once did) asks whether an
+      // artifact for the step exists BEFORE the step has produced one: always
+      // MISSING, and the reviewer is instructed to fail a missing required
+      // reference. That rejected correct work and triggered an endless
+      // replan loop — the token balloon in issue #213.
+      const refs = step.requires ?? [];
       const evBound =
         RECALL_K_STEP * (maxAttempts + 1) +
         cfg.maxSteps * maxAttempts * (cfg.maxToolCalls ?? 10);
