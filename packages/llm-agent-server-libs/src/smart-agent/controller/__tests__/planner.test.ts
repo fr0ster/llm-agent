@@ -767,3 +767,78 @@ test('waitMs on a NON-wait step is ignored, step still parses', () => {
   assert.equal(plan?.length, 1);
   assert.equal(plan?.[0].waitMs, undefined);
 });
+
+describe('parsePlan — error decision (#213)', () => {
+  it('parses the canonical {"kind":"error","error":…} to a PlanError', () => {
+    const r = parsePlan(
+      JSON.stringify({ kind: 'error', error: 'ZD is taken' }),
+    );
+    assert.deepEqual(r, { kind: 'error', error: 'ZD is taken' });
+  });
+
+  it('rejects a bare {"error":…} without kind → null (format failure → retry)', () => {
+    const r = parsePlan(JSON.stringify({ error: 'ZD is taken' }));
+    assert.equal(r, null);
+  });
+
+  it('still parses a normal {"plan":[…]} to Step[] unchanged', () => {
+    const r = parsePlan(
+      JSON.stringify({ plan: [{ name: 's1', instructions: 'do' }] }),
+    );
+    assert.ok(Array.isArray(r));
+    assert.equal((r as unknown[]).length, 1);
+    assert.deepEqual(r, [{ name: 's1', instructions: 'do' }]);
+  });
+
+  it('rejects {"kind":"error"} with a non-string error → null', () => {
+    const r = parsePlan(JSON.stringify({ kind: 'error', error: 42 }));
+    assert.equal(r, null);
+  });
+});
+
+describe('SmartExecutorPlanner.next — error propagation (#213)', () => {
+  it('create-plan error decision → NextStep {kind:error}', async () => {
+    const p = new SmartExecutorPlanner(
+      planner([
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'error',
+            error: 'pinned name ZD_X is taken',
+          }),
+        },
+      ]),
+    );
+    const b = bundle();
+    const r = await p.next({
+      bundle: b,
+      prompt: 'create ZD_X',
+      retrying: false,
+    });
+    assert.deepEqual(r, { kind: 'error', error: 'pinned name ZD_X is taken' });
+  });
+
+  it('replan error decision → NextStep {kind:error}', async () => {
+    const p = new SmartExecutorPlanner(
+      planner([
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'error',
+            error: 'lock will not clear',
+          }),
+        },
+      ]),
+    );
+    const b = bundle();
+    b.plan = [{ name: 's1', instructions: 'do' }];
+    b.planCursor = 0;
+    const r = await p.next({
+      bundle: b,
+      prompt: 'x',
+      retrying: false,
+      lastOutcome: 'failed',
+    });
+    assert.deepEqual(r, { kind: 'error', error: 'lock will not clear' });
+  });
+});

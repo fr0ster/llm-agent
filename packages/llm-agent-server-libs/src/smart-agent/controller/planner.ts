@@ -15,6 +15,7 @@ import {
   MAX_REQUIRE_CHARS,
   MAX_REQUIRES,
   type NextStep,
+  type PlanError,
   type PlannerKind,
   type PlannerNextInput,
   type SessionBundle,
@@ -179,11 +180,21 @@ function isPositiveFiniteInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v > 0;
 }
 
-export function parsePlan(content: string): Step[] | null {
+export function parsePlan(content: string): Step[] | PlanError | null {
   const json = extractJsonObject(content);
   if (json === null) return null;
   try {
-    const obj = JSON.parse(json) as { plan?: unknown };
+    const obj = JSON.parse(json) as {
+      plan?: unknown;
+      kind?: unknown;
+      error?: unknown;
+    };
+    // Canonical cannot-proceed decision. Enforced shape: BOTH kind:'error' AND a
+    // string error. A bare {"error":…} without kind falls through to the plan
+    // check → null → format failure → planner retries (per the spec).
+    if (obj.kind === 'error' && typeof obj.error === 'string') {
+      return { kind: 'error', error: obj.error };
+    }
     if (!Array.isArray(obj.plan)) return null;
     const steps: Step[] = [];
     for (const raw of obj.plan) {
@@ -208,6 +219,11 @@ export function parsePlan(content: string): Step[] | null {
   } catch {
     return null;
   }
+}
+
+/** True when a plan-response is the cannot-proceed error decision (§Layer 2). */
+function isPlanError(x: Step[] | PlanError | null): x is PlanError {
+  return x !== null && !Array.isArray(x) && x.kind === 'error';
 }
 
 /** Queue a plan decision for the controller to persist (§A boundary: the planner
@@ -266,6 +282,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
         options,
         boardText,
       );
+      if (isPlanError(plan)) return { kind: 'error', error: plan.error };
       // An EMPTY plan from createPlan is invalid: it would skip straight to the
       // finalizer and answer WITHOUT fetching the required data. Treat it as a
       // format failure → handler re-asks (bounded by maxRetries). (An empty plan
@@ -309,6 +326,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
         options,
         boardText,
       );
+      if (isPlanError(rest)) return { kind: 'error', error: rest.error };
       if (rest === null) return null;
       const anchor = bundle.plan[cursor]?.stepId ?? '';
       const mintedRest = mintReplanStepIds(rest, bundle.runId ?? '', anchor);
@@ -393,7 +411,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
     completed: Step[] = [],
     options?: CallOptions,
     boardText?: string,
-  ): Promise<Step[] | null> {
+  ): Promise<Step[] | PlanError | null> {
     // On replan, the planner MUST know which steps already ran (their results are
     // in Progress / the step-result collection) so it plans ONLY the remaining
     // work and never re-executes a completed step.

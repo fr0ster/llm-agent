@@ -13,6 +13,8 @@ export function parseNextStep(content: string): NextStep | null {
       return { kind: 'done', result: obj.result };
     if (obj.kind === 'rewind' && typeof obj.reason === 'string')
       return { kind: 'rewind', reason: obj.reason };
+    if (obj.kind === 'error' && typeof obj.error === 'string')
+      return { kind: 'error', error: obj.error };
     if (
       obj.kind === 'next' &&
       obj.step &&
