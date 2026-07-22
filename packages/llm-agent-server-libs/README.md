@@ -20,6 +20,7 @@ Each pipeline variant is a standalone, exportable factory implementing `IPipelin
 | `CyclicFactory` | `cyclic` | Stepper — planner `none` + cyclic-react executor |
 | `PlannedFactory` | `planned` | Stepper — LLM planner + cyclic-react executor |
 | `DeepStepperFactory` | `deep-stepper` | Stepper — LLM planner + recursive executor |
+| `ControllerFactory` | `controller` | Controller — evaluator + planner + executor + reviewer + finalizer (`build(config, deps, "weak-executor")` for the weak-executor kind) |
 
 ```ts
 import { CyclicFactory } from '@mcp-abap-adt/llm-agent-server-libs';

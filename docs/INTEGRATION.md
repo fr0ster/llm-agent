@@ -506,8 +506,8 @@ interface IRagProvider {
 ### AbstractRagProvider
 
 `AbstractRagProvider` is a base class with helpers for scope validation and editor construction:
-- `checkScope(scope, opts)` — validates `sessionId`/`userId` are present for the requested scope
-- `pickIdStrategy(scope, opts)` — returns a suitable `IIdStrategy` (`SessionScopedIdStrategy`, `UserScopedIdStrategy`, or `GlobalUniqueIdStrategy`)
+- `checkScope(scope)` — validates the requested scope is in `supportedScopes`, returning `Result<void, RagError>` (it does NOT throw, and does NOT check `sessionId`/`userId`)
+- `pickIdStrategy(scope, opts)` — returns a suitable `IIdStrategy`: `SessionScopedIdStrategy` (scope `session` with a `sessionId`) or `GlobalUniqueIdStrategy` (otherwise). Supply a custom `idStrategyFactory` for other schemes.
 - `buildEditor(writer, idStrategy)` — wraps an `IRagBackendWriter` into `DirectEditStrategy`
 
 Minimal custom provider example:
@@ -532,7 +532,8 @@ class MyDbRagProvider extends AbstractRagProvider {
     collectionName: string,
     opts: { scope: RagCollectionScope; sessionId?: string; userId?: string },
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>> {
-    this.checkScope(opts.scope, opts);  // throws RagError on missing sessionId/userId
+    const scopeCheck = this.checkScope(opts.scope);  // Result — UnsupportedScopeError if the scope isn't in supportedScopes
+    if (!scopeCheck.ok) return scopeCheck;
 
     try {
       // Create / ensure the collection exists in your DB
@@ -2649,9 +2650,13 @@ interface ISubAgentInput {
 
 interface ISubAgentResult {
   output: string;
-  toolCalls?: unknown[];
-  usage?: { totalTokens?: number };
+  toolCalls?: LlmToolCall[];
+  usage?: LlmUsage;                     // { promptTokens; completionTokens; totalTokens }
   metadata?: Record<string, unknown>;
+  errorClass?: 'epicfail';             // parent must not retry/replan when set
+  epicFailTrace?: EpicFailTrace;
+  status?: 'complete' | 'awaiting-external';
+  pendingExternalToolCalls?: LlmToolCall[];
 }
 ```
 
@@ -2958,7 +2963,7 @@ See `docs/PERFORMANCE.md` for cost analysis and token-budget tuning guidance.
 
 ## Reusing pipeline builder-factories
 
-The five coordinator pipelines are exposed as standalone, importable builder-factories from
+The six coordinator pipelines are exposed as standalone, importable builder-factories from
 `@mcp-abap-adt/llm-agent-server-libs`, so you can build any pipeline's `coordinator` stage handler
 in your own project without going through the YAML/`SmartServer` front-end.
 
@@ -2969,6 +2974,7 @@ in your own project without going through the YAML/`SmartServer` front-end.
 | `CyclicFactory` | `cyclic` | Stepper, planner `none` + cyclic-react executor |
 | `PlannedFactory` | `planned` | Stepper, LLM planner + cyclic-react executor |
 | `DeepStepperFactory` | `deep-stepper` | Stepper, LLM planner + recursive executor |
+| `ControllerFactory` | `controller` | Controller (evaluator + planner + executor + reviewer + finalizer); pass `"weak-executor"` to `build()` for the weak-executor kind |
 
 All factories implement `IPipelineFactory<TConfig>` (from `@mcp-abap-adt/llm-agent`):
 
@@ -2994,7 +3000,7 @@ const { handler } = await new CyclicFactory().build(
     // makeRoleLlm resolves the LLM per logical role ('planner'|'executor'|'finalizer'|
     // 'reviewer'|'evaluator'|'classifier') — supersedes the server's YAML llm-map.
     makeRoleLlm: async (_role) => myLlm,
-    callMcp,                 // (name, args, signal?) => Promise<string>
+    callMcp,                 // (name, args, signal?) => Promise<McpCallResult> ({ text, isError })
     knowledgeRagFor,         // (sessionId) => Promise<IKnowledgeRagHandle>
     toolsRag,                // IToolsRagHandle
     mintStepperId: () => crypto.randomUUID(),

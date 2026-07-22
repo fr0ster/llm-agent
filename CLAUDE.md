@@ -53,7 +53,7 @@ still install only what they need.)
 | **MCP client** | `@mcp-abap-adt/llm-agent-mcp` | `MCPClientWrapper`, `McpClientAdapter`, connection strategies |
 | **RAG/embedder** | `@mcp-abap-adt/llm-agent-rag` | `makeRag`, `resolveEmbedder`, prefetch helpers, backend factories |
 | **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins, `makeLlm` |
-| **SmartServer library** | `@mcp-abap-adt/llm-agent-server-libs` | `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, config parsing, sessions, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`) |
+| **SmartServer library** | `@mcp-abap-adt/llm-agent-server-libs` | `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, config parsing, sessions, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory`) |
 | **Binary** | `@mcp-abap-adt/llm-agent-server` | CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP listen; thin wrapper over `llm-agent-server-libs` |
 
 ### MCP transports

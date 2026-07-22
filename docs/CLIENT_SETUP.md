@@ -12,18 +12,15 @@ Both endpoints route through the SmartAgent pipeline with semantic tool filterin
 Start the llm-agent server:
 
 ```bash
-# Option 1: set environment variables directly
-export LLM_PROVIDER=openai          # or: anthropic, deepseek, sap-ai-sdk
-export LLM_API_KEY=sk-...           # API key for the provider
-export LLM_MODEL=gpt-4o             # model name as the provider expects
-export MCP_ENDPOINT=http://localhost:3001/mcp/stream/http  # optional MCP server
+# Configuration comes from a YAML file, not from LLM_* environment variables:
+# secrets are referenced as ${VAR} inside the YAML and read from a .env file at
+# the project root. (The server itself only reads PORT from the environment.)
+
+# Option 1: first run with no config writes a smart-server.yaml template and exits.
+# Put your keys in .env, edit smart-server.yaml, then run again to start:
 npx llm-agent
 
-# Option 2: use a .env file (recommended)
-# Place all credentials in .env at the project root.
-# The launcher scripts read .env automatically and pick the matching
-# pipeline config (pipelines/deepseek.yaml or pipelines/sap-ai-core.yaml)
-# based on LLM_PROVIDER. Use --config to override.
+# Option 2 (recommended): point --config at a provider preset; secrets from .env.
 npx llm-agent --config pipelines/deepseek.yaml
 ```
 
@@ -63,12 +60,13 @@ From a repo checkout the scripts live under the server package:
 ./packages/llm-agent-server/tools/claude-via-agent.ps1
 ```
 
-The launcher reads `.env` from the project root and auto-selects the pipeline config based on `LLM_PROVIDER`:
+The launcher reads `.env` from the project root and loads `pipelines/<LLM_PROVIDER>.yaml`
+if that file exists, else falls back to the default `smart-server.yaml`:
 
 | `LLM_PROVIDER` | Pipeline loaded |
 |---|---|
-| `deepseek` | `pipelines/deepseek.yaml` |
-| `sap-ai-sdk` | `pipelines/sap-ai-core.yaml` |
+| `deepseek` | `pipelines/deepseek.yaml` (shipped) |
+| `sap-ai-sdk` | falls back to `smart-server.yaml` — there is no `pipelines/sap-ai-sdk.yaml`; the shipped SAP preset is `pipelines/sap-ai-core.yaml`, so pass it explicitly with `--config pipelines/sap-ai-core.yaml` (or add a `pipelines/sap-ai-sdk.yaml`) |
 | other | default `smart-server.yaml` |
 
 To override the auto-selected pipeline, pass `--config`:
@@ -78,16 +76,21 @@ claude-via-agent --config pipelines/sap-ai-core.yaml
 # from a checkout: ./packages/llm-agent-server/tools/claude-via-agent.sh --config pipelines/sap-ai-core.yaml
 ```
 
-To verify the agent is running with the correct model, check the startup log line:
+On startup the server prints its listen address (and the log file, when `--log-file`
+/ `log:` is set):
 
 ```
-[SmartServer] LLM provider: sap-ai-sdk  model: anthropic--claude-sonnet-4-5
+llm-agent listening on http://0.0.0.0:4004
+logs → ./smart-server.log
 ```
 
-Or tail the session log for live request details:
+To verify the active model and inspect live request details, tail that JSONL event
+log, or read the per-request step files the session writer produces:
 
 ```bash
-tail -f sessions/latest.log
+tail -f smart-server.log
+# structured per-request artifacts:
+ls sessions/<session_id>/req_<timestamp>_<uuid>/*.json
 ```
 
 ### How it works

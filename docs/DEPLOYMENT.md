@@ -111,7 +111,7 @@ rag:
   url: ${QDRANT_URL:-http://qdrant:6333}
 ```
 
-Variables are resolved at startup by `resolveEnvVars()` in `packages/llm-agent-server/src/smart-agent/config.ts`.
+Variables are resolved at startup by `resolveEnvVars()` in `packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts` (re-exported from `.../config.ts`).
 
 ## systemd
 
@@ -254,7 +254,7 @@ curl http://localhost:4004/health
 {
   "status": "healthy",
   "uptime": 3600000,
-  "version": "20.5.0",
+  "version": "20.7.0",
   "timestamp": "2026-07-16T10:00:00.000Z",
   "components": {
     "llm": true,

@@ -20,7 +20,7 @@ Client → :20011/chat → llm-agent-compat → llm-agent-core:8010 → SAP AI C
 ## Stack
 
 - **LLM:** SAP AI Core Orchestration (`anthropic--claude-4.6-sonnet` via `sap-ai-sdk` provider)
-- **Embeddings:** SAP AI Core Vertex AI (`gemini-embedding`, 768-dim) via plugin
+- **Embeddings:** SAP AI Core Vertex AI (`gemini-embedding`, 3072-dim) via plugin
 - **RAG:** Qdrant vector DB (external, `host.docker.internal:6333`)
 - **MCP:** Stream HTTP transport to an external MCP server
 - **Skills:** File-system skill discovery (`SKILL.md` per subdirectory)

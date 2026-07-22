@@ -12,12 +12,13 @@ A high-performance, RAG-orchestrated LLM agent and OpenAI-compatible server with
 | [`@mcp-abap-adt/llm-agent-mcp`](packages/llm-agent-mcp/README.md) | `MCPClientWrapper`, `McpClientAdapter`, `createDefaultMcpClient`, and MCP connection strategies. |
 | [`@mcp-abap-adt/llm-agent-rag`](packages/llm-agent-rag/README.md) | RAG/embedder composition — `makeRag` (async), `resolveEmbedder` (sync), prefetch helpers, backend factories. |
 | [`@mcp-abap-adt/llm-agent-libs`](packages/llm-agent-libs/README.md) | Core composition runtime: `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, resilience, observability, plugins, skills, `makeLlm`/`makeDefaultLlm`. |
-| [`@mcp-abap-adt/llm-agent-server-libs`](packages/llm-agent-server-libs/README.md) | SmartServer composition library: `SmartServer`, `buildStepperRoot`/`buildFromComposition`, `StepperCoordinatorHandler`, coordinator config parsing, sessions, and the pipeline builder-factories (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`). Importable. |
+| [`@mcp-abap-adt/llm-agent-server-libs`](packages/llm-agent-server-libs/README.md) | SmartServer composition library: `SmartServer`, `buildStepperRoot`/`buildFromComposition`, `StepperCoordinatorHandler`, coordinator config parsing, sessions, and the pipeline builder-factories (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory`). Importable. |
 | [`@mcp-abap-adt/llm-agent-server`](packages/llm-agent-server/README.md) | **Binary only** — CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP `SmartServer`. Not importable as a library. Thin wrapper over `llm-agent-server-libs`. |
 | [`@mcp-abap-adt/openai-llm`](packages/openai-llm/README.md) | OpenAI LLM provider (`OpenAIProvider`). |
 | [`@mcp-abap-adt/anthropic-llm`](packages/anthropic-llm/README.md) | Anthropic LLM provider (`AnthropicProvider`). |
 | [`@mcp-abap-adt/deepseek-llm`](packages/deepseek-llm/README.md) | DeepSeek LLM provider (`DeepSeekProvider`, extends OpenAI-compatible). |
 | [`@mcp-abap-adt/sap-aicore-llm`](packages/sap-aicore-llm/README.md) | SAP AI Core LLM provider via `@sap-ai-sdk/orchestration`. |
+| [`@mcp-abap-adt/ollama-llm`](packages/ollama-llm/README.md) | Ollama LLM provider (`OllamaProvider`, extends OpenAI-compatible). |
 | [`@mcp-abap-adt/openai-embedder`](packages/openai-embedder/README.md) | OpenAI embeddings (`OpenAiEmbedder`). |
 | [`@mcp-abap-adt/ollama-embedder`](packages/ollama-embedder/README.md) | Ollama embeddings + RAG (`OllamaEmbedder`, `OllamaRag`). |
 | [`@mcp-abap-adt/sap-aicore-embedder`](packages/sap-aicore-embedder/README.md) | SAP AI Core embeddings (`SapAiCoreEmbedder`). |
