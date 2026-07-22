@@ -15,6 +15,7 @@ import {
   MAX_REQUIRE_CHARS,
   MAX_REQUIRES,
   type NextStep,
+  type PlanError,
   type PlannerKind,
   type PlannerNextInput,
   type SessionBundle,
@@ -77,6 +78,23 @@ const WAIT_STEP_RULE =
   'settle is ~30000, a slow activation ~120000 or more. waitMs MUST be a positive ' +
   'whole number of milliseconds. A wait step needs no "requires".';
 
+/** Error-decision clause (#213). On a tool FAILURE, the planner reasons whether
+ *  the failure is fixable within the consumer's request: something WE chose (a
+ *  self-picked object name that is taken) is fixable → replan; something the
+ *  CONSUMER pinned (a name given in the request, an unauthorized operation, a
+ *  lock that will not clear) is a constraint we cannot change → emit the error
+ *  decision so the real failure reaches the consumer. AGNOSTIC: no tool names,
+ *  no built-in error taxonomy — the planner classifies by reasoning. */
+const ERROR_DECISION_RULE =
+  ' On a tool FAILURE, decide whether it is fixable within what the consumer ' +
+  'asked: if the problem is with something YOU chose (e.g. a name you picked ' +
+  'that is already taken), fix it and return a normal {"plan":[…]}. If the ' +
+  'problem is with a constraint the CONSUMER fixed in the request (a name they ' +
+  'gave, an operation they are not allowed to perform, a lock that will not ' +
+  'clear) and you CANNOT resolve it within the request, return exactly ' +
+  '{"kind":"error","error":"<the failure, in the user\'s language>"} INSTEAD of ' +
+  'a plan. Output JSON only.';
+
 export const CREATE_PLAN_SYSTEM =
   'You are the planner. Produce the COMPLETE, ordered plan that covers the ENTIRE ' +
   'goal NOW, as a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. ' +
@@ -106,7 +124,8 @@ export const CREATE_PLAN_SYSTEM =
   'the answer from the fetched results, so the last step must be the last ' +
   'data-fetch/action the goal needs. Output JSON only.' +
   WAIT_STEP_RULE +
-  ENGLISH_INSTRUCTIONS_RULE;
+  ENGLISH_INSTRUCTIONS_RULE +
+  ERROR_DECISION_RULE;
 
 export const REPLAN_SYSTEM =
   'You are the planner. A step just FAILED. Given the goal, the progress so far ' +
@@ -117,7 +136,8 @@ export const REPLAN_SYSTEM =
   'final summarize/' +
   'answer step (a separate finalizer composes the answer). If the goal is ' +
   'already satisfied despite the failure, return {"plan":[]}. Output JSON only.' +
-  ENGLISH_INSTRUCTIONS_RULE;
+  ENGLISH_INSTRUCTIONS_RULE +
+  ERROR_DECISION_RULE;
 
 export const EXTERNAL_RESULT_REPLAN_SYSTEM =
   'You are the planner. A NEW external tool result just arrived (see Progress) — ' +
@@ -179,11 +199,21 @@ function isPositiveFiniteInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v > 0;
 }
 
-export function parsePlan(content: string): Step[] | null {
+export function parsePlan(content: string): Step[] | PlanError | null {
   const json = extractJsonObject(content);
   if (json === null) return null;
   try {
-    const obj = JSON.parse(json) as { plan?: unknown };
+    const obj = JSON.parse(json) as {
+      plan?: unknown;
+      kind?: unknown;
+      error?: unknown;
+    };
+    // Canonical cannot-proceed decision. Enforced shape: BOTH kind:'error' AND a
+    // string error. A bare {"error":…} without kind falls through to the plan
+    // check → null → format failure → planner retries (per the spec).
+    if (obj.kind === 'error' && typeof obj.error === 'string') {
+      return { kind: 'error', error: obj.error };
+    }
     if (!Array.isArray(obj.plan)) return null;
     const steps: Step[] = [];
     for (const raw of obj.plan) {
@@ -208,6 +238,11 @@ export function parsePlan(content: string): Step[] | null {
   } catch {
     return null;
   }
+}
+
+/** True when a plan-response is the cannot-proceed error decision (§Layer 2). */
+function isPlanError(x: Step[] | PlanError | null): x is PlanError {
+  return x !== null && !Array.isArray(x) && x.kind === 'error';
 }
 
 /** Queue a plan decision for the controller to persist (§A boundary: the planner
@@ -266,6 +301,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
         options,
         boardText,
       );
+      if (isPlanError(plan)) return { kind: 'error', error: plan.error };
       // An EMPTY plan from createPlan is invalid: it would skip straight to the
       // finalizer and answer WITHOUT fetching the required data. Treat it as a
       // format failure → handler re-asks (bounded by maxRetries). (An empty plan
@@ -309,6 +345,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
         options,
         boardText,
       );
+      if (isPlanError(rest)) return { kind: 'error', error: rest.error };
       if (rest === null) return null;
       const anchor = bundle.plan[cursor]?.stepId ?? '';
       const mintedRest = mintReplanStepIds(rest, bundle.runId ?? '', anchor);
@@ -393,7 +430,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
     completed: Step[] = [],
     options?: CallOptions,
     boardText?: string,
-  ): Promise<Step[] | null> {
+  ): Promise<Step[] | PlanError | null> {
     // On replan, the planner MUST know which steps already ran (their results are
     // in Progress / the step-result collection) so it plans ONLY the remaining
     // work and never re-executes a completed step.

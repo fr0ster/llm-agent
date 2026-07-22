@@ -62,7 +62,7 @@ export class StepperPipelinePlugin
     };
     const deps: StepperFactoryDeps = {
       makeRoleLlm: (role) => ctx.resolveLlm(role),
-      callMcp: (n, a, s) => ctx.callMcp(n, a, s).then(String),
+      callMcp: (n, a, s) => ctx.callMcp(n, a, s),
       // ctx.knowledgeRagFor is MaybePromise; StepperFactoryDeps wants Promise.
       knowledgeRagFor: async (sid) => ctx.knowledgeRagFor(sid),
       toolsRag: ctx.toolsRag,

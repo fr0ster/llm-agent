@@ -178,7 +178,7 @@ test('buildMcpBridge dispatches to a client whose listTools includes the tool', 
 
   const result = await callMcp('ReadProgram', { program: 'Z' });
 
-  assert.equal(result, 'REPORT z.');
+  assert.equal(result.text, 'REPORT z.');
   assert.equal(client.callsMade.length, 1);
   assert.equal(client.callsMade[0].name, 'ReadProgram');
 });
@@ -188,8 +188,8 @@ test('buildMcpBridge returns Tool-not-found when stepperMcpClients is empty (pre
   const callMcp = buildMcpBridge([]);
   const result = await callMcp('ReadProgram', {});
   assert.ok(
-    result.startsWith('Tool not found'),
-    `expected "Tool not found" for empty client list, got: ${result}`,
+    result.text.startsWith('Tool not found'),
+    `expected "Tool not found" for empty client list, got: ${result.text}`,
   );
 });
 
@@ -200,7 +200,7 @@ test('buildMcpBridge dispatches to second client when first does not own the too
 
   const result = await callMcp('ReadProgram', {});
 
-  assert.equal(result, 'REPORT z.');
+  assert.equal(result.text, 'REPORT z.');
   assert.equal(first.callsMade.length, 0, 'first client should not be called');
   assert.equal(second.callsMade.length, 1, 'second client should be called');
 });

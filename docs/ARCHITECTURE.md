@@ -1067,6 +1067,42 @@ If the request is too ambiguous to plan, the initial planner returns a
 consumer and dispatches nothing. Malformed plans (no steps and no clarification,
 or a step missing a `goal`) fail loud rather than producing blank output.
 
+### Tool-error handling (controller pipeline)
+
+A tool call can fail at the tool level — the transport succeeds but the tool
+returns an error (a locked SAP object, an unauthorized operation). MCP models
+this with a tool-result `isError: true`, distinct from a JSON-RPC protocol error.
+That flag is preserved end to end: the `callMcp` bridge returns
+`McpCallResult { text; isError }` and the wrapper/adapter thread the tool-result
+`isError` across every transport (stdio, streamable-HTTP, embedded). A tool that
+signals a failure only as content text (or a false `success: true`) defeats this —
+the tool itself must set `isError`.
+
+In the **controller pipeline** (the one whose planner is an `IControllerPlanner`,
+e.g. `SmartExecutorPlanner`) a delivered tool error is acted on, not retried:
+
+- **Immediate cut.** The first tool round in a step that returns `isError: true`
+  cuts the step at once — the executor tool-loop stops and the reviewer does not
+  run for that step. The step settles as `failed` with the tool's error text,
+  recorded as a durable step-result so a resumed run still sees the failure. This
+  is what stops the runaway retry loop (issue #213): the executor never gets to
+  re-invoke a locked object or confabulate an "updated successfully" summary.
+- **The planner decides.** On the failed step the planner reasons about whether
+  the failure is fixable *within the consumer's request*. If the problem is in
+  something the planner chose (e.g. an object name it picked that is already
+  taken) it **replans**. If it is a constraint the consumer pinned in the request
+  (a name they gave, an unauthorized operation, a lock that will not clear) and it
+  cannot be resolved, the planner emits a new terminal decision —
+  `NextStep = { kind: 'error'; error }` — and the handler surfaces the **real tool
+  error** to the consumer instead of `(no response)`. No error taxonomy is
+  hardcoded; the planner (an LLM) classifies by reasoning.
+
+A pipeline with **no planner** (flat/`tool-loop`) cannot decide — it makes the
+error *visible* (the round's `ToolRound.meta.isError` is set and the error text
+reaches the model), but deterministically forcing the final answer to report the
+failure is the consumer's job via `IOutputValidator` (see
+[docs/INTEGRATION.md](INTEGRATION.md)), not a default of the flat pipeline.
+
 ### Runtime activation
 
 The coordinator/tool-loop choice is made per-request, not at build time. A

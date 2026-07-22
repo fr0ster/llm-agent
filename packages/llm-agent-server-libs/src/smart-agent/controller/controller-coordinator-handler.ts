@@ -13,6 +13,7 @@ import {
   type LlmTool,
   type LlmToolCall,
   type LlmUsage,
+  type McpCallResult,
   McpError,
   type Message,
   type ModelUsageEntry,
@@ -132,7 +133,7 @@ export interface ControllerHandlerDeps {
     toolName: string,
     args: unknown,
     signal?: AbortSignal,
-  ) => Promise<string>;
+  ) => Promise<McpCallResult>;
   /**
    * Semantic tool selection over the vectorized MCP catalog (toolsRag): returns
    * the top-K tools relevant to `query`. This is how INTERNAL tools reach the
@@ -847,6 +848,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
       planParseRetries = 0;
       resumedExternal = false; // a valid decision consumed any external-resume replan
+
+      if (next.kind === 'error') {
+        // The planner saw a failure it cannot fix within the consumer's
+        // constraints (a pinned name that is taken, an unauthorized op, a lock
+        // that will not clear). Terminate the run and return the REAL tool error
+        // to the consumer — distinct from the generic abortTerminal reasons and
+        // never (no response). (#213)
+        logDecision(ctx, 'planner-error', next.error);
+        await this.abortTerminal(
+          ctx,
+          sessionId,
+          bundle,
+          next.error,
+          now,
+          terminalTtlMs,
+          usageNow(),
+        );
+        return true;
+      }
 
       if (next.kind === 'done') {
         // Pass next.result as the legacy answer: used only when no finalizer is
@@ -1577,7 +1597,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // rather than re-checking the code (which would drop a CUSTOM classifier's
         // decision → rethrow → outer catch swallow → (no response)). A non-McpError
         // is a genuine unexpected error and is re-thrown for the outer handler.
-        let result: string;
+        let result: McpCallResult;
         const mcpCallStartedAt = Date.now();
         try {
           result = await deps.callMcp(name, args, callSignal);
@@ -1619,12 +1639,27 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           {
             name,
             args,
-            result,
-            isError: false,
+            result: result.text,
+            // The REAL tool-level isError, threaded through the bridge (#213).
+            // Previously hardcoded false, so a locked-object error looked like a
+            // delivered result and the executor retried it forever.
+            isError: result.isError,
             durationMs: Date.now() - mcpCallStartedAt,
           },
           'mcp',
         );
+        // #213 immediate cut: a delivered tool-level error ends the step NOW.
+        // The executor tool-loop does NOT continue (no further tool call, no
+        // reviewer for this step); reuse cutControlFailure so the step settles
+        // 'failed' with the tool's error text and the planner replans / surfaces
+        // it. Read result.isError directly here — BEFORE the round reaches the
+        // context strategy — so no Message/meta replay is needed. The durable
+        // failed step-result + plannerPrivate note (written by cutControlFailure)
+        // ARE the resume carrier; the mcp-result artifact is intentionally not
+        // relied on (the cut may never call strategy.record).
+        if (result.isError) {
+          return cutControlFailure(result.text);
+        }
         // Record this exchange as a coherent assistant→tool ROUND (OpenAI protocol)
         // via the context strategy so the executor LLM continues from its own tool
         // call. The strategy owns the per-round context (Window keeps a bounded
@@ -1652,14 +1687,19 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             {
               role: 'tool',
               tool_call_id: call.id,
-              content: result,
+              content: result.text,
             },
           ],
-          // Stable fetch identity (tool+args) for run-scoped recall dedup. The
-          // controller has no tool-level error classifier here — an unavailable MCP
-          // server aborts BEFORE record; a returned string is a delivered result.
+          // Stable fetch identity (tool+args) for run-scoped recall dedup, plus
+          // the tool-level isError threaded from the bridge (#213). An unavailable
+          // MCP server still aborts BEFORE record; a returned result carries its
+          // real isError so the executor sees a failed call as failed, not as a
+          // delivered success it retries forever.
           meta: [
-            { identityKey: externalToolCallId(name, args), isError: false },
+            {
+              identityKey: externalToolCallId(name, args),
+              isError: result.isError,
+            },
           ],
           ordinal: bundle.writeOrdinal,
           roundId: undefined,

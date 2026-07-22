@@ -59,10 +59,17 @@ export function validateRequires(v: unknown): string[] | undefined | false {
   return out;
 }
 
+/** The planner's cannot-proceed decision: a failure it cannot fix within the
+ *  consumer's constraints (a pinned name that is taken, an unauthorized op, a
+ *  lock that will not clear). The handler terminates the run and returns this
+ *  real error to the consumer — distinct from the generic abort reasons. */
+export type PlanError = { kind: 'error'; error: string };
+
 export type NextStep =
   | { kind: 'next'; step: Step }
   | { kind: 'done'; result: string }
-  | { kind: 'rewind'; reason: string };
+  | { kind: 'rewind'; reason: string }
+  | PlanError;
 
 export type PendingMarker =
   | {

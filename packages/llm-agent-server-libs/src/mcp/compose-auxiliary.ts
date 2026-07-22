@@ -3,6 +3,7 @@ import type {
   IAuxiliaryMcpTools,
   IToolsRagHandle,
   LlmTool,
+  McpCallResult,
   McpError,
   McpTool,
   McpToolResult,
@@ -13,7 +14,7 @@ type CallMcp = (
   name: string,
   args: unknown,
   signal?: AbortSignal,
-) => Promise<string>;
+) => Promise<McpCallResult>;
 
 type AuxCallTool = (
   name: string,
@@ -86,9 +87,10 @@ export function composeAuxiliarySelect(
 /**
  * Wrap the domain `callMcp` bridge so auxiliary tools are dispatched FIRST
  * (aux-first; collisions were rejected at build). Auxiliary results are mapped
- * to the string bridge contract: ok → content text / JSON; !ok → error.message
- * (tool-level, the domain classifier / fail-loud is NOT run). An abort rejection
- * from `auxCallTool` propagates unchanged (see the controller's abort handling).
+ * to the `McpCallResult` bridge contract: ok → content text / JSON with the
+ * result's own `isError`; !ok → error.message with `isError:true` (a tool-level
+ * failure the caller MUST see). An abort rejection from `auxCallTool` propagates
+ * unchanged (see the controller's abort handling).
  */
 export function composeAuxiliaryBridge(
   auxDefs: McpTool[],
@@ -107,8 +109,11 @@ export function composeAuxiliaryBridge(
       safeArgs,
       signal ? { signal } : undefined,
     );
-    if (!result.ok) return result.error.message;
-    const { content } = result.value;
-    return typeof content === 'string' ? content : JSON.stringify(content);
+    if (!result.ok) return { text: result.error.message, isError: true };
+    const { content, isError } = result.value;
+    return {
+      text: typeof content === 'string' ? content : JSON.stringify(content),
+      isError: isError ?? false,
+    };
   };
 }

@@ -439,14 +439,22 @@ export class MCPClientWrapper {
           );
         }
 
-        const normalizedResult =
-          typeof result === 'object' && result !== null && 'content' in result
-            ? (result as { content: unknown }).content
-            : result;
+        // Cast the object shape ONCE so `content`/`isError` reads narrow `unknown`
+        // (a stored boolean would NOT narrow `result` at the `in`/property sites).
+        const obj =
+          typeof result === 'object' && result !== null
+            ? (result as { content?: unknown; isError?: unknown })
+            : null;
+        const normalizedResult = obj && 'content' in obj ? obj.content : result;
         return {
           toolCallId: toolCall.id,
           name: toolCall.name,
           result: normalizedResult,
+          // #213: preserve the tool-level isError exactly like the stdio/http
+          // path — an embedded handler returning { content, isError:true } (a
+          // locked object) must NOT be flattened to a success the controller
+          // then retries. Derive from the object BEFORE stripping content.
+          isError: obj?.isError === true,
         };
       } catch (error: unknown) {
         const errorMessage =
@@ -484,6 +492,7 @@ export class MCPClientWrapper {
         toolCallId: toolCall.id,
         name: toolCall.name,
         result: response.content,
+        isError: response.isError === true,
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -498,6 +507,7 @@ export class MCPClientWrapper {
           toolCallId: toolCall.id,
           name: toolCall.name,
           result: response.content,
+          isError: response.isError === true,
         };
       } catch (retryError: unknown) {
         // Resume-with-session failed — the server may have dropped the session.
@@ -513,6 +523,7 @@ export class MCPClientWrapper {
               toolCallId: toolCall.id,
               name: toolCall.name,
               result: response.content,
+              isError: response.isError === true,
             };
           } catch {
             /* fall through to throw */

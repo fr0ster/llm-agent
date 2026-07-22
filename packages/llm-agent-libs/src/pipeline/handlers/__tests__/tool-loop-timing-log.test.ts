@@ -30,6 +30,7 @@ import type {
   RequestSummary,
   Result,
   ToolCallEntry,
+  ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
@@ -370,4 +371,46 @@ test('tool-loop emits tool_call timing event before escalating on MCP unavailabi
     1,
     'mcp_tool_call step must be emitted exactly once',
   );
+});
+
+test('#213 flat: a delivered tool result with isError:true sets ToolRound.meta.isError', async () => {
+  const spy = new SpyLogger();
+  const session = new SpySessionLogger();
+  // A DELIVERED tool result (transport OK) that is a tool-level error.
+  const ctx = makeCtx(
+    {
+      async callTool() {
+        return {
+          ok: true as const,
+          value: { content: 'ZTAB is locked by user BOB', isError: true },
+        };
+      },
+    },
+    spy,
+    session,
+  );
+  // Inject a spy context strategy to observe the recorded ToolRound(s).
+  const rounds: ToolRound[] = [];
+  (
+    ctx as { toolLoopContextStrategyFactory?: unknown }
+  ).toolLoopContextStrategyFactory = () => ({
+    async record(round: ToolRound) {
+      rounds.push(round);
+    },
+    async form(base: { prefix: Message[] }) {
+      return base.prefix;
+    },
+    snapshot() {
+      return { version: 1 };
+    },
+    restore() {},
+  });
+
+  await new ToolLoopHandler().execute(ctx, {}, makeSpan());
+
+  // The recorded batch round carries the tool-level isError on its meta — the
+  // executor answers over a VISIBLE failure, not a flattened false success.
+  const failedRound = rounds.find((r) => r.meta?.some((m) => m.isError));
+  assert.ok(failedRound, 'a recorded round must carry meta.isError:true');
+  assert.equal(failedRound?.meta?.[0]?.isError, true);
 });

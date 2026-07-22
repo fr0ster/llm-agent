@@ -35,6 +35,11 @@ export interface ToolResult {
   name: string;
   result: unknown;
   error?: string;
+  /** Tool-level error flag from the MCP `CallToolResult.isError` — a tool that
+   *  RAN and FAILED (e.g. a locked SAP object). Preserved from the wire so the
+   *  caller can distinguish a failed call from a delivered result (#213/#231);
+   *  dropping it made an executor retry an unrecoverable failure forever. */
+  isError?: boolean;
 }
 
 export interface AgentResponse {

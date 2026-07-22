@@ -101,6 +101,30 @@ describe('McpClientAdapter.callTool()', () => {
     assert.ok(!r.value.isError);
   });
 
+  it('#231: tool-result isError:true is surfaced even with NO JSON-RPC error', async () => {
+    // The SAP MCP server marks a failed tool result with isError:true (e.g. a
+    // locked object) WITHOUT a JSON-RPC protocol error. The adapter used to read
+    // only `result.error`, so this failure was surfaced as isError:false and the
+    // executor retried it forever (#213). It must now honour ToolResult.isError.
+    const adapter = new McpClientAdapter(
+      makeClient({
+        callTool: async (tc: ToolCall): Promise<ToolResult> => ({
+          toolCallId: tc.id,
+          name: tc.name,
+          result: 'MCP error -32603: object is currently editing',
+          isError: true,
+        }),
+      }),
+    );
+    const r = await adapter.callTool('UpdateDomain', { domain_name: 'ZFOO' });
+    assert.ok(r.ok);
+    assert.equal(
+      r.value.content,
+      'MCP error -32603: object is currently editing',
+    );
+    assert.equal(r.value.isError, true, 'tool-result isError must be honoured');
+  });
+
   it('tool-level error — error string as content with isError=true', async () => {
     const adapter = new McpClientAdapter(
       makeClient({

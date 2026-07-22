@@ -58,7 +58,7 @@ test('bridge returns "Tool not found" when no client owns the name', async () =>
     },
   } as unknown as IMcpClient;
   const bridge = buildMcpBridge([client]);
-  assert.match(await bridge('Nope', {}), /Tool not found/);
+  assert.match((await bridge('Nope', {})).text, /Tool not found/);
 });
 
 test('bridge returns a tool-level error as text (not a throw)', async () => {
@@ -77,7 +77,10 @@ test('bridge returns a tool-level error as text (not a throw)', async () => {
     },
   } as unknown as IMcpClient;
   const bridge = buildMcpBridge([client]);
-  assert.equal(await bridge('GetTable', {}), 'table not found');
+  assert.deepEqual(await bridge('GetTable', {}), {
+    text: 'table not found',
+    isError: true,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -126,7 +129,10 @@ test('bridge uses CUSTOM classifier — tool-error with default classifier stays
   } as unknown as IMcpClient;
   // No classifier arg → default DefaultMcpFailureClassifier (MCP_ERROR = tool-error).
   const bridge = buildMcpBridge([client]);
-  assert.equal(await bridge('GetTable', {}), 'benign tool error');
+  assert.deepEqual(await bridge('GetTable', {}), {
+    text: 'benign tool error',
+    isError: true,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -188,5 +194,5 @@ test('bridge passes per-client probe to classifier — UP: returns tool-error te
     },
   } as unknown as IMcpClient;
   const bridge = buildMcpBridge([client], assumeUnavailableWhenNoProbe);
-  assert.equal(await bridge('t', {}), 'boom');
+  assert.deepEqual(await bridge('t', {}), { text: 'boom', isError: true });
 });

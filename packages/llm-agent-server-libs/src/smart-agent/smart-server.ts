@@ -28,6 +28,7 @@ import type {
   ISmartAgent,
   IToolsRagHandle,
   LoadedPlugins,
+  McpCallResult,
   PluginExports,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -602,7 +603,11 @@ export async function connectMcpClientsFromConfig(
 export function buildMcpBridge(
   clients: IMcpClient[],
   classifier: IMcpFailureClassifier = new DefaultMcpFailureClassifier(),
-): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
+): (
+  name: string,
+  args: unknown,
+  signal?: AbortSignal,
+) => Promise<McpCallResult> {
   return async (name: string, args: unknown, signal?: AbortSignal) => {
     const safeArgs =
       args != null && typeof args === 'object' && !Array.isArray(args)
@@ -626,15 +631,19 @@ export function buildMcpBridge(
       if (!owns) continue;
       const result = await client.callTool(name, safeArgs, opts);
       if (!result.ok) {
-        // Availability failure → fail loud; a tool-level error → LLM feedback text.
+        // Availability failure → fail loud; a tool-level error → LLM feedback
+        // text WITH isError:true so the caller can see it failed (#213).
         if ((await classifier.classify(result.error, probe)) === 'unavailable')
           throw result.error;
-        return result.error.message;
+        return { text: result.error.message, isError: true };
       }
-      const { content } = result.value;
-      return typeof content === 'string' ? content : JSON.stringify(content);
+      const { content, isError } = result.value;
+      return {
+        text: typeof content === 'string' ? content : JSON.stringify(content),
+        isError: isError ?? false,
+      };
     }
-    return `Tool not found: ${name}`;
+    return { text: `Tool not found: ${name}`, isError: true };
   };
 }
 
@@ -1880,7 +1889,7 @@ export class SmartServer {
     name: string,
     args: unknown,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<McpCallResult> {
     return buildMcpBridge(
       this._sharedMcpClients ?? [],
       this._mcpFailureClassifier,

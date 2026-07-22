@@ -59,7 +59,10 @@ export async function buildStepperCoordinator(
     buildBuilt: async (_ctx, logLlmCall) =>
       buildFromComposition(spec, {
         makeRoleLlm: deps.makeRoleLlm,
-        callMcp: deps.callMcp,
+        // The stepper root's callMcp contract is text-only; flatten the bridge's
+        // McpCallResult to its text here (the stepper path does not consume
+        // tool-level isError today — controller path #213 does).
+        callMcp: (n, a, s) => deps.callMcp(n, a, s).then((r) => r.text),
         mintStepperId: deps.mintStepperId,
         registry: deps.registry ?? new Map(),
         logLlmCall,

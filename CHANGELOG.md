@@ -9,6 +9,44 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [20.7.0] — 2026-07-22
+
+### Fixed
+
+- **Tool errors on locked/contended objects no longer loop, balloon, or hang
+  (#213, #231).** A delivered MCP tool-level error — e.g. a locked SAP object
+  returning `isError: true` — was lost on the way to the controller: the client
+  wrapper and adapter dropped the tool-result `isError`, and the controller
+  recorded every failed call as a success. The executor could not see the
+  failure, so it retried the same call indefinitely — the request ballooned in
+  token count (up to ~488K on a many-tool deployment) or hung and returned
+  `(no response)`, and a failed activation could even be reported as "completed
+  successfully". `isError` is now threaded end to end across **all** transports
+  (stdio, streamable-HTTP, and embedded) via a new `McpCallResult { text; isError }`
+  contract at the `callMcp` bridge.
+
+### Changed
+
+- **The controller now acts on a delivered tool error.** On the first tool round
+  that returns `isError: true`, the controller cuts the step immediately — the
+  executor tool-loop stops and the reviewer does not run — settling it as failed
+  with the tool's error text (a durable step-result, so a resumed run still sees
+  the failure). The planner then decides: if the failure is fixable within the
+  request (e.g. an object name it chose is already taken) it replans; if it is a
+  constraint the consumer pinned in the request (a name they gave, an
+  unauthorized operation, a lock that will not clear) it emits a new terminal
+  `error` decision and the **real tool error is surfaced to the consumer** instead
+  of `(no response)`. No error taxonomy is hardcoded — the planner classifies by
+  reasoning. Flat (planner-less) pipelines make the error visible to the model;
+  deterministic surfacing remains the consumer's via `IOutputValidator`.
+
+### Added
+
+- **`NextStep` gains an `error` variant** (`{ kind: 'error'; error: string }`),
+  produced by the controller planner (`parsePlan` / `callPlan` / `next()`) and
+  terminated by the coordinator handler. Additive — existing `next` / `done` /
+  `rewind` behaviour is unchanged.
+
 ## [20.6.0] — 2026-07-16
 
 ### Fixed

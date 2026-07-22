@@ -1,5 +1,6 @@
 import type { ILlm } from './llm.js';
 import type { IStageHandler } from './plugin.js';
+import type { McpCallResult } from './types.js';
 
 export type PipelineFactoryKind =
   | 'linear'
@@ -18,12 +19,13 @@ export interface BuiltCoordinator {
 export interface PipelineFactoryDepsBase {
   /** Resolve+construct the LLM for a logical role ('planner'|'executor'|...). */
   makeRoleLlm: (role: string) => Promise<ILlm>;
-  /** Invoke an MCP tool by name; returns its textual result. */
+  /** Invoke an MCP tool by name; returns its textual result plus the
+   *  tool-level `isError` (threaded from the bridge — never dropped, #213). */
   callMcp: (
     name: string,
     args: unknown,
     signal?: AbortSignal,
-  ) => Promise<string>;
+  ) => Promise<McpCallResult>;
 }
 
 /**

@@ -123,7 +123,7 @@ function harness(opts: {
   planner: SubagentResult[];
   executor: SubagentResult[];
   isExternalTool?: (n: string) => boolean;
-  callMcpReturns?: string;
+  callMcpReturns?: string | { text: string; isError: boolean };
   config?: ControllerConfig;
   embedder?: never;
   ragQuery?: IKnowledgeRagHandle['query'];
@@ -142,7 +142,8 @@ function harness(opts: {
     embedder: opts.embedder ?? stubEmbedder,
     callMcp: async (name, args) => {
       mcpCalls.push({ name, args });
-      return opts.callMcpReturns ?? 'mcp-out';
+      const r = opts.callMcpReturns ?? 'mcp-out';
+      return typeof r === 'string' ? { text: r, isError: false } : r;
     },
     selectTools: async () => opts.selectTools ?? [],
     // isExternalTool is left undefined by default so the per-request
@@ -2173,6 +2174,115 @@ describe('ControllerCoordinatorHandler', () => {
       joined.includes('S'.repeat(1)) && !joined.includes('S'.repeat(2001)),
       'the 50k step-result was injected but truncated to its own char budget',
     );
+  });
+
+  it('#213 cut: first isError:true tool round settles failed — no retry, no confabulation, no reviewer, durable step-result', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        // create-plan: one tool step
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'update the object' }],
+          }),
+        },
+        // replan after the cut (lastOutcome='failed'): nothing left → finalize
+        { kind: 'content', content: JSON.stringify({ plan: [] }) },
+        // finalize text (plain text → done result)
+        { kind: 'content', content: 'the object is locked; not updated' },
+      ],
+      executor: [
+        toolCall('UpdateObj', { name: 'ZOBJ' }),
+        // A confabulated "success" summary the executor WOULD emit on the next
+        // round — must never be consumed, because the cut ends the tool loop.
+        { kind: 'content', content: 'updated successfully' },
+      ],
+      selectTools: [{ name: 'UpdateObj', description: '', inputSchema: {} }],
+      isExternalTool: () => false,
+      callMcpReturns: { text: 'ZOBJ is locked by user ALICE', isError: true },
+    });
+    // Reviewer spy: proves the reviewer is NOT invoked for a cut step (the
+    // executor tool-loop is cut before any content round reaches the reviewer).
+    let reviewCalls = 0;
+    h.deps.reviewer = {
+      async review() {
+        reviewCalls++;
+        return {
+          kind: 'outcome',
+          outcome: { status: 'ok', approved: '', remainder: '' },
+        };
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    // 1. The tool was called exactly once — NOT retried on the locked object.
+    assert.equal(h.mcpCalls.length, 1);
+    // 2. The reviewer was never invoked (the step was cut, not reviewed).
+    assert.equal(reviewCalls, 0, 'reviewer must NOT run for a cut step');
+    // 3. No confabulation: the run never surfaces the executor's "updated
+    //    successfully" summary (that round is never reached).
+    assert.ok(
+      !captured.some((c) => c.ok && c.value.content === 'updated successfully'),
+      'confabulated success summary must never be surfaced',
+    );
+    // 4. Durable carrier: a 'failed' step-result artifact carrying the tool
+    //    error text was written (via writeControlFailure) — NOT settleStep alone.
+    const failed = h.rag.written.filter(
+      (e) =>
+        e.metadata.artifactType === 'step-result' &&
+        e.metadata.status === 'failed',
+    );
+    assert.ok(failed.length >= 1, 'a failed step-result artifact was written');
+    assert.match(
+      String(failed[0].metadata.note ?? ''),
+      /ZOBJ is locked by user ALICE/,
+      'the failed step-result carries the tool error text',
+    );
+    // 5. stepsUsed bumped + the tool error text is in the durable plannerPrivate.
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1);
+    assert.match(bundle.plannerPrivate, /ZOBJ is locked by user ALICE/);
+    assert.match(bundle.plannerPrivate, /control-failed/);
+  });
+
+  it('#213 planner error decision terminates the run with the real tool error', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        // create-plan emits the cannot-proceed error decision directly
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'error',
+            error: 'domain ZD_YTEST already exists (name pinned by request)',
+          }),
+        },
+      ],
+      executor: [],
+    });
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    // The consumer receives the REAL failure, not (no response) / a generic abort.
+    assert.ok(
+      captured.some(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          /domain ZD_YTEST already exists/.test(c.value.content),
+      ),
+      'the real tool error must reach the consumer',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
   });
 });
 

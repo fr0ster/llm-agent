@@ -259,6 +259,19 @@ export interface McpToolResult {
   isError?: boolean;
 }
 
+/**
+ * The flattened result of a `callMcp` bridge dispatch: the tool's text output
+ * plus whether it was a tool-level ERROR. `isError` MUST be preserved end to
+ * end — dropping it (returning only the text) makes an error indistinguishable
+ * from a delivered result, so a caller retries an unrecoverable failure forever
+ * (issue #213: a locked SAP object returns `isError:true` that used to be lost
+ * at the bridge, so the controller looped on it).
+ */
+export interface McpCallResult {
+  text: string;
+  isError: boolean;
+}
+
 export interface ToolCallRecord {
   call: LlmToolCall;
   result: McpToolResult;
