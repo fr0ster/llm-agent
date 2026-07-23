@@ -150,7 +150,7 @@ export type {
   RagCollectionMeta,
   RagCollectionScope,
 } from './rag.js';
-export { isBatchEmbedder } from './rag.js';
+export { isBatchEmbedder, isBatchSizeLimited } from './rag.js';
 export type { ILlmRateLimiter } from './rate-limiter.js';
 export {
   type IReadinessReporter,

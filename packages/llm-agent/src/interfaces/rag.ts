@@ -64,6 +64,29 @@ export function isBatchEmbedder(e: IEmbedder): e is IEmbedderBatch {
   );
 }
 
+/**
+ * An embedder that declares a provider-imposed cap on `embedBatch` input size.
+ * Deliberately TINY and SEPARATE from IEmbedderBatch (ISP) — an embedder with
+ * no known cap simply does not implement it.
+ */
+export interface IBatchSizeLimited {
+  /** Maximum number of texts accepted in a single embedBatch call. */
+  readonly maxBatchSize: number;
+}
+
+/**
+ * Value guard, NOT a key-presence guard: an implementer may declare
+ * `maxBatchSize?: number` and leave it undefined for models whose cap is
+ * unknown. Under ES2022 class fields that still creates an own property, so
+ * `'maxBatchSize' in e` would wrongly accept it.
+ */
+export function isBatchSizeLimited(
+  e: IEmbedder,
+): e is IEmbedder & IBatchSizeLimited {
+  const v = (e as { maxBatchSize?: unknown }).maxBatchSize;
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+}
+
 // Added in 9.0 refactor — see docs/superpowers/specs/2026-04-22-rag-registry-corrections-design.md
 
 export interface IRagEditor {

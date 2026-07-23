@@ -49,6 +49,10 @@ export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js'
 // LLM call policies
 export { NonStreamingLlmCallStrategy } from './policy/non-streaming-llm-call-strategy.js';
 export { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
+export {
+  BatchChunkingEmbedder,
+  DEFAULT_MAX_BATCH_SIZE,
+} from './resilience/batch-chunking-embedder.js';
 // Resilience
 export {
   CircuitBreaker,
@@ -58,6 +62,13 @@ export {
 export { CircuitBreakerEmbedder } from './resilience/circuit-breaker-embedder.js';
 export { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
 export { FallbackRag } from './resilience/fallback-rag.js';
+export {
+  type EmbedderRetryOptions,
+  extractStatusCode,
+  RetryBatchEmbedder,
+  RetryEmbedder,
+  withRetry,
+} from './resilience/retry-embedder.js';
 export {
   getStreamToolCallName,
   toToolCallDelta,
