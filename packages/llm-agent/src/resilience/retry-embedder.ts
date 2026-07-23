@@ -17,6 +17,8 @@ import { isBatchEmbedder } from '../interfaces/rag.js';
 // CallOptions lives in types.ts and is NOT re-exported by rag.ts.
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
+import type { IWaitStrategy } from '../interfaces/wait-strategy.js';
+import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
 
 export interface EmbedderRetryOptions {
   /** Maximum number of retries (total calls = maxAttempts + 1). Default: 3. */
@@ -25,12 +27,21 @@ export interface EmbedderRetryOptions {
   backoffMs: number;
   /** HTTP status codes that trigger a retry. Default: [429, 500, 502, 503]. */
   retryOn: number[];
+  /**
+   * Mechanism for the backoff sleep. Default: `DefaultWaitStrategy`.
+   *
+   * The same seam the controller's `wait` step uses: a deployment can replace
+   * a blocking timer with jitter, its own scheduler, or suspend/resume.
+   */
+  waitStrategy: IWaitStrategy;
 }
 
 const DEFAULT_OPTIONS: EmbedderRetryOptions = {
   maxAttempts: 3,
   backoffMs: 2000,
   retryOn: [429, 500, 502, 503],
+  // Stateless, so one shared instance is safe.
+  waitStrategy: new DefaultWaitStrategy(),
 };
 
 const MAX_CAUSE_DEPTH = 5;
@@ -102,26 +113,19 @@ export class RetryEmbedder implements IEmbedder {
     );
   }
 
+  /**
+   * Delegated to IWaitStrategy rather than hand-rolled: honouring the signal is
+   * part of that contract — an already-aborted signal returns immediately
+   * (addEventListener never fires for an event that already dispatched), and
+   * the listener is removed when the timer wins so a request- or session-scoped
+   * signal does not accumulate one per retry.
+   */
   protected async backoff(
     attempt: number,
     signal?: AbortSignal,
   ): Promise<void> {
     const delay = this.opts.backoffMs * 2 ** attempt;
-    await new Promise<void>((resolve) => {
-      // The listener is removed when the timer wins and fires at most once when
-      // abort wins. Without both, a signal that outlives one call — a
-      // request- or session-scoped one — accumulates a listener per retry and
-      // eventually trips MaxListenersExceededWarning.
-      const onAbort = (): void => {
-        clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        signal?.removeEventListener('abort', onAbort);
-        resolve();
-      }, delay);
-      signal?.addEventListener('abort', onAbort, { once: true });
-    });
+    await this.opts.waitStrategy.wait(delay, signal);
   }
 }
 

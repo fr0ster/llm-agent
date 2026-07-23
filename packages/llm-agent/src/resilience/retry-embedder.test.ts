@@ -95,6 +95,49 @@ describe('withRetry', () => {
     assert.equal(getEventListeners(ac.signal, 'abort').length, 0);
   });
 
+  it('does not sit through the backoff when abort landed during the call', async () => {
+    // addEventListener('abort') never fires on an already-aborted signal, so a
+    // backoff entered with one aborted mid-call would wait out the full delay
+    // before the loop's top-of-iteration check could throw.
+    const ac = new AbortController();
+    const inner = {
+      async embed(): Promise<IEmbedResult> {
+        ac.abort();
+        throw { status: 429 };
+      },
+    };
+    const started = Date.now();
+    await assert.rejects(() =>
+      withRetry(inner, { backoffMs: 5000 }).embed('x', { signal: ac.signal }),
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(
+      elapsed < 1000,
+      `expected prompt cancellation, waited ${elapsed}ms of a 5000ms backoff`,
+    );
+  });
+
+  it('serves the backoff through a swappable IWaitStrategy', async () => {
+    // The seam a deployment uses to replace the blocking timer (jitter, its own
+    // scheduler, suspend/resume) — the same one the controller's wait step has.
+    const waits: number[] = [];
+    const waitStrategy = {
+      name: 'recording',
+      async wait(ms: number): Promise<'elapsed' | 'aborted'> {
+        waits.push(ms);
+        return 'elapsed';
+      },
+    };
+    const inner = new ScriptedEmbedder([
+      { status: 429 },
+      { status: 429 },
+      'ok',
+    ]);
+    await withRetry(inner, { backoffMs: 1000, waitStrategy }).embed('x');
+    // Exponential: 1000 * 2^0, then 1000 * 2^1. No real time was spent.
+    assert.deepEqual(waits, [1000, 2000]);
+  });
+
   it('stops when the signal is aborted', async () => {
     const inner = new ScriptedEmbedder([{ status: 429 }]);
     const ac = new AbortController();
