@@ -9,6 +9,43 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP tool vectorization no longer exceeds a provider's batch cap (#236).**
+  Startup sent every tool in a single `embedBatch` call. Against SAP AI Core
+  `gemini-embedding` — which routes to Vertex and caps a batch at 250 instances
+  — a 356-tool catalog failed with `400 INVALID_ARGUMENT`, fell back to a
+  one-tool-per-request path with no retry, and that path tripped the provider's
+  rate limiter (`429`), leaving the catalog silently partial. Chunking and retry
+  are now properties of the embedder, composed once in `resolveEmbedder`, so
+  every `embedBatch` caller inherits them.
+
+### Added
+
+- **`rag.maxBatchSize`** (YAML) caps the number of texts per `embedBatch` call.
+  Precedence: `rag.maxBatchSize` → the provider's declared cap → `100`.
+  `FoundationModelsEmbedder` declares `250` for the `gemini` family; other
+  families declare nothing and take the default.
+- **`BatchChunkingEmbedder`, `RetryEmbedder`/`RetryBatchEmbedder` (via
+  `withRetry`), and `composeResilientEmbedder`** exported from
+  `@mcp-abap-adt/llm-agent`, alongside the `IBatchSizeLimited` contract. Retry
+  classifies by HTTP status (`status`/`statusCode`, then `cause`, then a
+  word-boundary message match) and defaults to `[429, 500, 502, 503]`.
+- **`/health` reports `components.toolCatalog`** — `vectorized`, `total`,
+  `complete`, `clientFailures` — and returns `status: "degraded"` when the
+  catalog is incomplete. The HTTP code stays `200` and readiness is untouched: a
+  partial catalog degrades service without preventing it. The full list of
+  failed tool names is available through the agent's `getToolCatalogStatus()`.
+
+### Changed
+
+- **Tool vectorization logs one summary line instead of one warning per tool** —
+  `vectorized 356/356 MCP tools`, or `vectorized 338/356 MCP tools, 18 failed: …`.
+  A tool now counts as vectorized only when the write returns `ok: true`; a
+  write that throws is charged to that tool and the loop continues. A tools
+  store with no writer is skipped entirely and reports no status, rather than
+  being reported as a fully failed catalog.
+
 ## [20.7.1] — 2026-07-22
 
 ### Fixed

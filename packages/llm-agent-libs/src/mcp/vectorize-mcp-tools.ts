@@ -105,6 +105,10 @@ export async function vectorizeMcpTools(
   if (!toolsRag || !writer) return undefined;
 
   const acc: Acc = { total: 0, vectorized: 0, failed: [], clientFailures: 0 };
+  // Why the batch path was abandoned, if it was. Reported once, inside the
+  // summary line: swallowing it entirely would hide exactly the provider
+  // message that made #236 diagnosable in the first place.
+  let batchFailure: string | undefined;
   // biome-ignore lint/suspicious/noExplicitAny: reading the store's private embedder for batch optimisation
   const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
 
@@ -162,11 +166,12 @@ export async function vectorizeMcpTools(
           scope: 'initialization',
           detail: 'tools',
         });
-      } catch {
+      } catch (err) {
         // Falls through to the sequential path below. Chunking and retry
         // already ran inside the embedder, so reaching here means the
         // provider is genuinely unusable for batch work.
         vectors = undefined;
+        batchFailure ??= err instanceof Error ? err.message : String(err);
       }
     }
 
@@ -213,11 +218,15 @@ export async function vectorizeMcpTools(
     complete: acc.clientFailures === 0 && acc.failed.length === 0,
   };
 
+  const batchNote = batchFailure
+    ? `; batch embedding unavailable, used the sequential fallback: ${batchFailure}`
+    : '';
+
   if (summary.complete) {
     logger?.log({
       type: 'warning',
       traceId: 'builder',
-      message: `vectorized ${summary.vectorized}/${summary.total} MCP tools`,
+      message: `vectorized ${summary.vectorized}/${summary.total} MCP tools${batchNote}`,
     });
   } else {
     const shown = summary.failed.slice(0, MAX_NAMES_IN_LOG).join(', ');
@@ -233,7 +242,8 @@ export async function vectorizeMcpTools(
         `${summary.failed.length} failed: ${shown}${more}` +
         (summary.clientFailures > 0
           ? `; ${summary.clientFailures} client(s) failed to list tools`
-          : ''),
+          : '') +
+        batchNote,
     });
   }
 

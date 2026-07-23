@@ -176,11 +176,12 @@ describe('vectorizeMcpTools', () => {
 
     await vectorizeMcpTools([makeClient(tools)], rag, reqLogger, logger);
 
-    // The fallback is silent: chunking and retry now live in the embedder, so
-    // a batch failure is not narrated separately. Only the summary is logged.
+    // Still ONE warning, but it must carry the provider's reason: swallowing it
+    // would hide exactly the message that made #236 diagnosable.
     const warnings = logger.events.filter((e) => e.type === 'warning');
     assert.equal(warnings.length, 1);
     assert.match(warnings[0].message, /^vectorized /);
+    assert.match(warnings[0].message, /sequential fallback: batch embed error/);
     // per-tool sequential upsert
     assert.equal(writer.upsertCalls.length, 2);
     assert.ok(writer.upsertCalls.includes('tool:tool-a'));

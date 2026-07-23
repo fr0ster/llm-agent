@@ -195,17 +195,55 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 ## Rate limiting
 
+### `400 INVALID_ARGUMENT ... batchSize value of N but the supported range is from 1 (inclusive) to 251 (exclusive)`
+
+**Symptom.** On startup the summary line reports the fallback and the provider's reason:
+
+```
+vectorized 338/356 MCP tools, 18 failed: GetObjectInfo, … ; batch embedding
+unavailable, used the sequential fallback: SAP AI Core embeddings call failed:
+400 Bad Request … batchSize value of 356 but the supported range is from 1
+(inclusive) to 251 (exclusive)
+```
+
+On releases before #236 the same situation produced one `Batch embedding failed` warning followed by hundreds of per-tool `429` warnings, and `/health` still reported `ok`.
+
+**Cause.** The embedding provider caps batch size — SAP AI Core `gemini-embedding` routes to Vertex, which rejects a batch of 251 or more — and the MCP catalog is larger than that cap.
+
+**Fix.** Upgrade to the release containing #236: the embedder chunks automatically, so a 356-tool catalog goes out as two calls of 250 and 106. If your tenant's real limit is lower than the model's documented one, set it explicitly:
+
+```yaml
+rag:
+  embedder: sap-ai-core
+  model: gemini-embedding
+  maxBatchSize: 100    # YAML → provider-declared cap → 100
+```
+
 ### SAP AI Core returns 429 / quota errors during startup tool-vectorization
 
-**Symptom.** A burst of `Tool vectorization failed ... 429 Too Many Requests` warnings on startup; some tools never make it into the RAG store.
+**Symptom.** A burst of `429 Too Many Requests` failures on startup; some tools never make it into the RAG store.
 
-**Cause.** `embedBatch` does send a single HTTP call for many inputs, but tool vectorization currently iterates tools one-by-one (`embedder.embed(text)`) when no batched writer interface is available, with no inter-call throttle. SAP AI Core enforces per-deployment rate limits.
+**Cause.** One embedding request per tool. This is now only reachable when the embedder is not batch-capable, or when the batch call failed and the sequential fallback ran: a batch-capable embedder issues one request per chunk instead (4 requests for 356 tools at the default cap of 100).
 
-**Fix (current).** Retry with exponential backoff is configured in YAML under `agent.retry`. That handles transient 429s but not sustained throttling. For sustained limits:
+**Fix.** Retry with exponential backoff is built into the embedder chain (`RetryEmbedder`, defaults `maxAttempts: 3`, `backoffMs: 2000`, `retryOn: [429, 500, 502, 503]`). That handles transient 429s but not sustained throttling. For sustained limits:
 
+- Use a batch-capable embedder so the catalog costs a handful of requests rather than one per tool.
 - Reduce the MCP tool count (limit the connected MCP server's exposed tool set).
 - Use a less rate-limited embedding-model deployment.
-- Open a follow-up to expose a configurable `embedder.throttleMs` option in `sap-aicore-embedder` and a YAML-driven `agent.rateLimiter` for the LLM.
+
+### `/health` reports `"status": "degraded"` with a `toolCatalog` block
+
+**Symptom.**
+
+```json
+{ "status": "degraded",
+  "components": { "toolCatalog": { "vectorized": 338, "total": 356,
+                                   "complete": false, "clientFailures": 0 } } }
+```
+
+**Cause.** Some MCP tools failed to embed, or a client's `tools/list` failed. RAG-based tool selection cannot see the missing tools. The HTTP code stays `200` — the server can still serve, so a load balancer must not drop it.
+
+**Cause vs. fix, by field.** `clientFailures > 0` points at an unreachable MCP endpoint; those tools never reached `total`, which is why `complete` — not `vectorized === total` — is the signal to read. A non-empty failure list with `clientFailures: 0` means embedding errors, usually rate limiting. The full list of failed tool names is not in the health body (it is polled too often for that); read it from the agent's `getToolCatalogStatus()`.
 
 ---
 
