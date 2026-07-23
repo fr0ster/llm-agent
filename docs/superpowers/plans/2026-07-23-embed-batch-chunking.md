@@ -254,7 +254,7 @@ describe('withRetry', () => {
     assert.equal(inner.calls, 1);
   });
 
-  it('does not retry when the message merely contains a retryable number', async () => {
+  it('uses a word-boundary message match as a last resort', async () => {
     const inner = new ScriptedEmbedder([
       new RagError('batchSize of 429 is not allowed', 'EMBED_ERROR'),
     ]);
@@ -280,11 +280,13 @@ describe('withRetry', () => {
 });
 ```
 
-Note on the fourth test: a message-only match is the last resort, so
-`'batchSize of 429 is not allowed'` **is** matched by the word-boundary
-fallback and retried — 1 initial call + 3 retries = 4. It is asserted to pin
-that behaviour, since the alternative (never matching messages) would break
-providers that only report status in text.
+Note on that fourth test: the expectation is deliberately the opposite of what
+its subject suggests. A message carrying `429` with no status property **is**
+retried — 1 initial call + 3 retries = 4 — because some adapters report the
+status only in text, and never matching messages would leave those providers
+unprotected. The word boundary narrows the false-positive window (an id like
+`x4291` will not match) but cannot close it. The assertion pins the accepted
+trade-off; do not "fix" it to 1 call.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -307,12 +309,13 @@ Create `packages/llm-agent/src/resilience/retry-embedder.ts`:
  */
 
 import type {
-  CallOptions,
   IEmbedder,
   IEmbedderBatch,
   IEmbedResult,
 } from '../interfaces/rag.js';
 import { isBatchEmbedder } from '../interfaces/rag.js';
+// CallOptions lives in types.ts and is NOT re-exported by rag.ts.
+import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 
 export interface EmbedderRetryOptions {
@@ -569,11 +572,9 @@ Create `packages/llm-agent/src/resilience/batch-chunking-embedder.ts`:
  * look batch-capable to isBatchEmbedder.
  */
 
-import type {
-  CallOptions,
-  IEmbedderBatch,
-  IEmbedResult,
-} from '../interfaces/rag.js';
+import type { IEmbedderBatch, IEmbedResult } from '../interfaces/rag.js';
+// CallOptions lives in types.ts and is NOT re-exported by rag.ts.
+import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 
 /**
@@ -1345,6 +1346,10 @@ describe('SmartServer embedder resilience threading', () => {
     );
     assert.equal(reused, shared);
     assert.equal(getResilienceMetadata(reused!)?.maxBatchSize, 250);
+    // The assertion that actually proves threading: without it the test passes
+    // even when the conflict never reaches the resolver.
+    assert.equal(events.length, 1);
+    assert.match(String((events[0] as { message: string }).message), /250.*64/);
   });
 });
 ```
@@ -1396,7 +1401,17 @@ export async function resolveToolsStoreEmbedder(
   extraFactories: Record<string, EmbedderFactory>,
   logger?: ILogger,
 ): Promise<IEmbedder | undefined> {
-  if (current) return current;
+  // Returning `current` directly would drop this store's maxBatchSize on the
+  // floor silently. Route it through the idempotent resolver instead: the
+  // shared instance comes back unchanged, and a conflicting explicit cap is
+  // reported once.
+  if (current) {
+    return resolveEmbedder(toolsStoreCfg, {
+      injectedEmbedder: current,
+      extraFactories,
+      logger,
+    });
+  }
   return resolveAgentEmbedder(toolsStoreCfg, diEmbedder, extraFactories, logger);
 }
 ```
@@ -1426,8 +1441,14 @@ Expected: no errors.
 
 - [ ] **Step 6: Commit**
 
+Stage by diff rather than by a fixed list: Step 3 updates every call site of the
+two functions, and those live in files this plan cannot name in advance. A
+hardcoded `git add` would leave them uncommitted and the build broken.
+
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-agent-embedder-resilience.test.ts
+git status --short
+git add $(git diff --name-only) $(git ls-files --others --exclude-standard)
+git status --short   # confirm nothing unexpected is staged
 git commit -m "feat(llm-agent-server-libs): thread maxBatchSize and logger through embedder resolution"
 ```
 
@@ -1613,6 +1634,56 @@ describe('vectorizeMcpTools summary', () => {
     assert.equal(summary?.complete, false);
   });
 
+  it('charges a throwing write to the tool, not the client, and keeps going', async () => {
+    let call = 0;
+    const rag = ragWith({
+      upsertRaw: async () => {
+        call++;
+        if (call === 1) throw new Error('boom');
+        return OK;
+      },
+    });
+    const summary = await vectorizeMcpTools(
+      [
+        makeClient([
+          { name: 'A', description: 'a' },
+          { name: 'B', description: 'b' },
+        ]),
+      ],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.deepEqual(summary?.failed, ['A']);
+    assert.equal(summary?.vectorized, 1);
+    assert.equal(summary?.clientFailures, 0);
+    assert.equal(summary?.total, 2);
+  });
+
+  it('logs exactly one usage record on the batch path', async () => {
+    const requestLogger = new CapturingRequestLogger();
+    const rag = makeWritableRag();
+    (rag as unknown as { embedder: unknown }).embedder = {
+      embed: async () => ({ vector: [0] }),
+      embedBatch: async (texts: string[]) => texts.map(() => ({ vector: [0] })),
+    };
+    await vectorizeMcpTools(
+      [
+        makeClient(
+          Array.from({ length: 5 }, (_, i) => ({
+            name: `T${i}`,
+            description: 'd',
+          })),
+        ),
+      ],
+      rag,
+      requestLogger,
+      undefined,
+    );
+    // One aggregated record for the embedBatch call — not one per tool.
+    assert.equal(requestLogger.entries.length, 1);
+  });
+
   it('returns undefined for a read-only store', async () => {
     const readOnly = { query: async () => ({ ok: true, value: [] }) } as unknown as IRag;
     const summary = await vectorizeMcpTools(
@@ -1740,6 +1811,7 @@ import type {
   IRagBackendWriter,
   IRequestLogger,
   ISkillManager,
+  LlmTool,
   ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
 import { isBatchEmbedder } from '@mcp-abap-adt/llm-agent';
@@ -1767,6 +1839,11 @@ function toolText(name: string, description: string | undefined): string {
  * Write one record. A tool counts as vectorized ONLY when the write returns
  * ok: true — the previous optional-chain form treated a missing writer as
  * success.
+ *
+ * Usage is logged ONLY on the sequential path (`vector === undefined`), where
+ * the write itself embeds the text. On the batch path the caller already logged
+ * one aggregated record for the whole `embedBatch`; logging here as well would
+ * produce N+1 records and inflate reported token usage.
  */
 async function writeOne(
   writer: IRagBackendWriter,
@@ -1781,7 +1858,7 @@ async function writeOne(
       ? await writer.upsertPrecomputedRaw(id, text, vector, {})
       : await writer.upsertRaw(id, text, {});
   const ok = result?.ok === true;
-  if (ok) {
+  if (ok && vector === undefined) {
     const est = Math.ceil(text.length / 4);
     requestLogger.logLlmCall({
       component: 'embedding',
@@ -1815,83 +1892,98 @@ export async function vectorizeMcpTools(
   const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
 
   for (const adapter of clients) {
+    // Only listing is guarded at client level. A write that throws must NOT be
+    // charged to the client, must not abort the remaining tools, and must land
+    // in `failed` — see the per-tool try/catch below.
+    let tools: LlmTool[];
     try {
       const toolsResult = await adapter.listTools();
       if (!toolsResult.ok) {
         acc.clientFailures++;
         continue;
       }
-      const tools = toolsResult.value;
-      acc.total += tools.length;
-      const texts = tools.map((t) => toolText(t.name, t.description));
+      tools = toolsResult.value;
+    } catch {
+      acc.clientFailures++;
+      continue;
+    }
 
-      let vectors: number[][] | undefined;
-      if (
-        storeEmbedder &&
-        isBatchEmbedder(storeEmbedder) &&
-        writer.upsertPrecomputedRaw !== undefined
-      ) {
-        const start = Date.now();
-        try {
-          const results = await storeEmbedder.embedBatch(texts);
-          vectors = results.map((r) => r.vector);
-          const real = results.reduce<{ p: number; t: number } | null>(
-            (a, r) =>
-              r.usage
-                ? {
-                    p: (a?.p ?? 0) + r.usage.promptTokens,
-                    t: (a?.t ?? 0) + r.usage.totalTokens,
-                  }
-                : a,
-            null,
-          );
-          const est = texts.reduce((s, t) => s + Math.ceil(t.length / 4), 0);
-          requestLogger.logLlmCall({
-            component: 'embedding',
-            model: 'embedder',
-            promptTokens: real?.p ?? est,
-            completionTokens: 0,
-            totalTokens: real?.t ?? est,
-            durationMs: Date.now() - start,
-            estimated: real === null,
-            scope: 'initialization',
-            detail: 'tools',
-          });
-        } catch {
-          // Falls through to the sequential path below. Chunking and retry
-          // already ran inside the embedder, so reaching here means the
-          // provider is genuinely unusable for batch work.
-          vectors = undefined;
-        }
+    acc.total += tools.length;
+    const texts = tools.map((t) => toolText(t.name, t.description));
+
+    let vectors: number[][] | undefined;
+    if (
+      storeEmbedder &&
+      isBatchEmbedder(storeEmbedder) &&
+      writer.upsertPrecomputedRaw !== undefined
+    ) {
+      const start = Date.now();
+      try {
+        const results = await storeEmbedder.embedBatch(texts);
+        vectors = results.map((r) => r.vector);
+        const real = results.reduce<{ p: number; t: number } | null>(
+          (a, r) =>
+            r.usage
+              ? {
+                  p: (a?.p ?? 0) + r.usage.promptTokens,
+                  t: (a?.t ?? 0) + r.usage.totalTokens,
+                }
+              : a,
+          null,
+        );
+        const est = texts.reduce((s, t) => s + Math.ceil(t.length / 4), 0);
+        // The ONLY usage record for the batch path; writeOne stays silent when
+        // it receives a precomputed vector.
+        requestLogger.logLlmCall({
+          component: 'embedding',
+          model: 'embedder',
+          promptTokens: real?.p ?? est,
+          completionTokens: 0,
+          totalTokens: real?.t ?? est,
+          durationMs: Date.now() - start,
+          estimated: real === null,
+          scope: 'initialization',
+          detail: 'tools',
+        });
+      } catch {
+        // Falls through to the sequential path below. Chunking and retry
+        // already ran inside the embedder, so reaching here means the
+        // provider is genuinely unusable for batch work.
+        vectors = undefined;
       }
+    }
 
-      for (let i = 0; i < tools.length; i++) {
-        const ok = await writeOne(
+    for (let i = 0; i < tools.length; i++) {
+      let ok = false;
+      try {
+        ok = await writeOne(
           writer,
           `tool:${tools[i].name}`,
           texts[i],
           vectors?.[i],
           requestLogger,
         );
-        if (!ok) acc.failed.push(tools[i].name);
-        else acc.vectorized++;
-
-        // Sequential path only: without precomputed vectors each write embeds
-        // one text, so this loop is one provider request per tool. Retry reacts
-        // only AFTER a 429 and does not throttle successful calls. The pause is
-        // kept because removing it strictly increases pressure — not because it
-        // is known to be sufficient: it was active during the incident in #236
-        // and the boot still logged 385 rate-limit failures.
-        if (
-          vectors === undefined &&
-          (i + 1) % SEQUENTIAL_PACING_EVERY === 0 &&
-          i < tools.length - 1
-        ) {
-          await new Promise((r) => setTimeout(r, SEQUENTIAL_PACING_MS));
-        }
+      } catch {
+        // A throwing write is this tool's failure, not the client's: the loop
+        // continues and the name lands in `failed`.
+        ok = false;
       }
-    } catch {
-      acc.clientFailures++;
+      if (!ok) acc.failed.push(tools[i].name);
+      else acc.vectorized++;
+
+      // Sequential path only: without precomputed vectors each write embeds
+      // one text, so this loop is one provider request per tool. Retry reacts
+      // only AFTER a 429 and does not throttle successful calls. The pause is
+      // kept because removing it strictly increases pressure — not because it
+      // is known to be sufficient: it was active during the incident in #236
+      // and the boot still logged 385 rate-limit failures.
+      if (
+        vectors === undefined &&
+        (i + 1) % SEQUENTIAL_PACING_EVERY === 0 &&
+        i < tools.length - 1
+      ) {
+        await new Promise((r) => setTimeout(r, SEQUENTIAL_PACING_MS));
+      }
     }
   }
 
