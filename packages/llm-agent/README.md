@@ -8,7 +8,7 @@ This package is the abstraction layer consumed by `@mcp-abap-adt/llm-agent-libs`
 - Shared types (Message, ToolCall, RagMetadata, CallOptions, Result, errors)
 - Lightweight RAG implementations (InMemoryRag, VectorRag, QdrantRag, InMemoryRagProvider, VectorRagProvider, QdrantRagProvider, SimpleRagRegistry, SimpleRagProviderRegistry, edit strategies, id strategies, corrections module, overlay rags, MCP tool factory)
 - Library helpers usable when embedding SmartAgent in your own server:
-  - **Resilience**: `CircuitBreaker`, `CircuitBreakerLlm`, `CircuitBreakerEmbedder`, `FallbackRag`
+  - **Resilience**: `CircuitBreaker`, `CircuitBreakerLlm`, `CircuitBreakerEmbedder`, `FallbackRag`, and the embedder chain — `BatchChunkingEmbedder`, `RetryEmbedder`/`withRetry`, `composeResilientEmbedder`
   - **LLM call policies**: `NonStreamingLlmCallStrategy`, `StreamingLlmCallStrategy`, `FallbackLlmCallStrategy`
   - **Tool cache**: `ToolCache`, `NoopToolCache`
   - **API adapters** (Anthropic Messages / OpenAI Chat Completions ↔ SmartAgent): `AnthropicApiAdapter`, `OpenAiApiAdapter`, with `NormalizedRequest` / `ApiRequestContext` / `ApiSseEvent` / `AdapterValidationError`

@@ -422,6 +422,31 @@ interface IEmbedder {
 
 `embed()` returns `IEmbedResult` rather than a raw `number[]`. Access the embedding via the `.vector` property. The optional `usage` field reports token consumption for providers that expose it (e.g. OpenAI, SAP AI Core).
 
+#### Batch support and provider caps
+
+Implement `IEmbedderBatch` when the provider accepts many inputs per call — startup MCP tool vectorization uses it, and falls back to one request per tool without it:
+
+```ts
+interface IEmbedderBatch extends IEmbedder {
+  embedBatch(texts: string[], options?: CallOptions): Promise<IEmbedResult[]>;
+}
+```
+
+If the provider caps how many texts one call may carry, declare it. `resolveEmbedder` reads the cap off the bare instance and chunks accordingly:
+
+```ts
+interface IBatchSizeLimited {
+  readonly maxBatchSize: number;
+}
+```
+
+Two things follow for a custom embedder:
+
+- **Your embedder is composed, not used raw.** `resolveEmbedder` wraps it with retry and — when it is batch-capable — chunking, then with usage logging. You never need to implement chunking or backoff yourself.
+- **Declare the cap or accept the default.** Precedence is `rag.maxBatchSize` (YAML) → your `maxBatchSize` → `DEFAULT_MAX_BATCH_SIZE` (100). Leave `maxBatchSize` `undefined` when the limit is unknown; the guard is a value check, so an undefined field is correctly treated as "no cap declared".
+
+Do **not** expose `embedBatch` unconditionally and throw inside it when the underlying provider cannot batch: `isBatchEmbedder` tests only for the method's presence, so callers would take the batch path and pay a wasted round trip before falling back.
+
 ### Runtime RAG store management
 
 `SmartAgent` exposes two methods for adding and removing custom RAG stores at runtime, without rebuilding the agent:

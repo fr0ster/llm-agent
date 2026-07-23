@@ -64,6 +64,18 @@ const embedder = new SapAiCoreEmbedder({
 // Auth: process.env.AICORE_SERVICE_KEY (client_credentials flow)
 ```
 
+#### Batch size cap
+
+`gemini-embedding` routes to Vertex, which rejects a batch of 251 or more
+instances. `FoundationModelsEmbedder` therefore declares `maxBatchSize = 250`
+for the `gemini` family (`IBatchSizeLimited`), and the embedder chain chunks to
+it automatically — no configuration needed.
+
+Other families declare no cap and fall back to the library default (100). No
+documented AI Core limit for the OpenAI family has been verified, so none is
+asserted. Override either with `rag.maxBatchSize` in YAML when the tenant's real
+quota is stricter than the model's documented limit.
+
 ## Authentication
 
 For the `orchestration` scenario (default), authentication is handled automatically by the SAP AI SDK orchestration client using `AICORE_SERVICE_KEY`.

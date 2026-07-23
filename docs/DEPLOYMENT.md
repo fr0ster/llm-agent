@@ -236,6 +236,10 @@ rag:
   url: http://qdrant.internal:6333
   collectionName: llm-agent-production
   dedupThreshold: 0.92
+  # Optional. Texts per embedBatch call: this → the provider's declared cap →
+  # 100. Set it only when the tenant's quota is stricter than the model's
+  # documented limit; exceeding a hard cap is a 400, not a slowdown.
+  # maxBatchSize: 250
 ```
 
 All instances share the same vector store, ensuring consistent tool discovery and knowledge retrieval.
@@ -262,7 +266,13 @@ curl http://localhost:4004/health
     "mcp": [
       { "name": "http://localhost:3000/mcp", "ok": true },
       { "name": "http://localhost:3001/mcp", "ok": false, "error": "ECONNREFUSED" }
-    ]
+    ],
+    "toolCatalog": {
+      "vectorized": 356,
+      "total": 356,
+      "complete": true,
+      "clientFailures": 0
+    }
   },
   "ready": true
 }
@@ -276,8 +286,9 @@ curl http://localhost:4004/health
 | `ready === false` | `503` | MCP is not connected yet (readiness gate); clients should retry |
 
 - `ready` is `false` while the configured MCP connection strategy has not yet connected. With a YAML `mcp:` block the default is a resilient reconnecting strategy (`PeriodicConnectionStrategy`), so `ready` starts `false` and flips to `true` once MCP connects. (A consumer-injected `NoopConnectionStrategy` reports ready immediately and never gates.)
-- `status: 'degraded'` means LLM or RAG health probes returned soft failures but the server is still serving. A `200` with `status: 'degraded'` is normal under transient provider issues.
+- `status: 'degraded'` means a soft signal — LLM or RAG probe failure, an open circuit breaker, or an incomplete MCP tool catalog — while the server is still serving. A `200` with `status: 'degraded'` is normal under transient provider issues.
 - `components.mcp` is an array — one entry per configured MCP server — with `ok: boolean` and an optional `error` string.
+- `components.toolCatalog` reports startup tool vectorization and is **absent** when none ran (no tools store, or a read-only one). `complete: false` ⇒ `degraded`. Read `complete`, not `vectorized === total`: a client whose `tools/list` failed contributes to neither counter, so the counters alone would look like a full catalog — `clientFailures` is what exposes it. The full list of failed tool names is deliberately not in this payload (it is polled on a hot path); read it from the agent's `getToolCatalogStatus()`.
 
 Use the `200`/`503` split for Kubernetes readiness probes; use `status` for alerting dashboards.
 
