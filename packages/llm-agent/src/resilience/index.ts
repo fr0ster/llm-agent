@@ -9,6 +9,14 @@ export {
 } from './circuit-breaker.js';
 export { CircuitBreakerEmbedder } from './circuit-breaker-embedder.js';
 export { CircuitBreakerLlm } from './circuit-breaker-llm.js';
+export {
+  brandResilient,
+  type ComposeResilienceOptions,
+  composeResilientEmbedder,
+  type EmbedderResilienceMetadata,
+  getResilienceMetadata,
+  RESILIENCE_META,
+} from './embedder-resilience.js';
 export { FallbackRag } from './fallback-rag.js';
 export {
   type EmbedderRetryOptions,

@@ -61,6 +61,14 @@ export {
 } from './resilience/circuit-breaker.js';
 export { CircuitBreakerEmbedder } from './resilience/circuit-breaker-embedder.js';
 export { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
+export {
+  brandResilient,
+  type ComposeResilienceOptions,
+  composeResilientEmbedder,
+  type EmbedderResilienceMetadata,
+  getResilienceMetadata,
+  RESILIENCE_META,
+} from './resilience/embedder-resilience.js';
 export { FallbackRag } from './resilience/fallback-rag.js';
 export {
   type EmbedderRetryOptions,
