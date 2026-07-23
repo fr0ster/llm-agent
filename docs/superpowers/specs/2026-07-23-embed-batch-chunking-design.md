@@ -39,8 +39,12 @@ Chunking and retry become properties of the **embedder**, expressed as
 caller benefits, not just MCP tool vectorization. This follows the repository's
 existing precedents:
 
+- `wrapEmbedder` (`packages/llm-agent-libs/src/adapters/usage-logging-embedder.ts:97-103`)
+  — the canonical decorator factory: brand-based idempotence, and a **class
+  chosen by `isBatchEmbedder(inner)` so the wrapper preserves, rather than
+  fabricates, batch capability**.
 - `CircuitBreakerEmbedder` (`packages/llm-agent/src/resilience/circuit-breaker-embedder.ts`)
-  — an `IEmbedder` decorator that already proxies `embedBatch` correctly.
+  — an `IEmbedder` decorator structure to follow.
 - `RetryLlm` (`packages/llm-agent-libs/src/resilience/retry-llm.ts`) — retry with
   exponential backoff and `retryOn: [429, 500, 502, 503]`.
 - `IReadinessReporter` (`packages/llm-agent/src/interfaces/readiness-reporter.ts`)
@@ -77,25 +81,46 @@ export function isBatchSizeLimited(
 
 `IEmbedderBatch` is not modified.
 
+**Contract direction: provider → composition, never decorator → decorator.** The
+cap is read from the bare provider instance at the composition point (§5),
+*before* any decorator is applied, and handed to the chunker as a plain number.
+Decorators therefore never re-detect it.
+
+This is deliberate. Requiring every transparent decorator to proxy every
+capability is an N×M obligation — each future decorator would have to know about
+each future capability, and forgetting one produces exactly the silent-default
+bug this design exists to prevent. It would also force edits to
+`CircuitBreakerEmbedder` and `wrapEmbedder`, which are currently correct.
+
 ### 2. `BatchChunkingEmbedder`
 
 New decorator in `packages/llm-agent/src/resilience/`, structured after
-`circuit-breaker-embedder.ts`.
+`circuit-breaker-embedder.ts`. Applied **only over a batch-capable inner**
+(see §4).
 
 ```ts
-new BatchChunkingEmbedder(inner, { maxBatchSize?: number })
+new BatchChunkingEmbedder(inner: IEmbedderBatch, maxBatchSize: number)
 ```
 
-Effective chunk size, in priority order:
+`maxBatchSize` is a required explicit number — the decorator performs no
+capability detection and has no fallback of its own.
 
-1. `options.maxBatchSize` (originates from YAML)
-2. `inner.maxBatchSize` when `isBatchSizeLimited(inner)`
-3. `DEFAULT_MAX_BATCH_SIZE` — a conservative constant
+**Validation (constructor, fail-fast):** `maxBatchSize` must be a positive safe
+integer. `0`, negative, fractional and `NaN` values throw a configuration error
+at construction. `0` would otherwise produce an infinite loop, and a fractional
+value non-deterministic chunk boundaries. Silent clamping is deliberately not
+used: a mistyped config should surface at boot, not as mysterious slowness.
 
 `embed()` passes through unchanged. `embedBatch()` splits the input, issues
 **sequential** `inner.embedBatch(chunk)` calls, and concatenates results in input
 order. Sequential rather than concurrent: parallel chunks would reintroduce the
 rate-limiting that caused the `429`.
+
+**Cardinality check:** every chunk must return exactly as many embeddings as it
+was given. A mismatch throws a typed `RagError` naming the expected and actual
+counts. Without it, a short response surfaces far away as
+`embedResults[i].vector` on `undefined` (`vectorize-mcp-tools.ts:58`) — an
+opaque `TypeError` followed by a full sequential replay.
 
 Empty input returns `[]` without calling `inner`.
 
@@ -111,25 +136,84 @@ new RetryEmbedder(inner, {
 })
 ```
 
-Defaults mirror `RetryLlm`'s `DEFAULT_OPTIONS` (`retry-llm.ts:31-36`).
-
-Difference from `RetryLlm`: `IEmbedder` throws rather than returning a `Result`,
-so the retry decision is made in a `catch` block by matching the status code in
-the thrown `RagError` message. Both `embed` and `embedBatch` are retried. Like
+Defaults mirror `RetryLlm`'s `DEFAULT_OPTIONS` (`retry-llm.ts:31-36`). Like
 `RetryLlm` (line 63), an aborted `options.signal` short-circuits without
 retrying.
 
-### 4. Composition order
+Retry applies regardless of batch capability, but it must **preserve** that
+capability rather than fabricate it — the same trap as §4. It therefore ships as
+two classes behind a factory, exactly like `wrapEmbedder`:
+
+```ts
+function withRetry(inner: IEmbedder, opts?): IEmbedder {
+  return isBatchEmbedder(inner)
+    ? new RetryBatchEmbedder(inner, opts)  // retries embed + embedBatch
+    : new RetryEmbedder(inner, opts);      // retries embed only
+}
+```
+
+A single class exposing `embedBatch` unconditionally would make every non-batch
+embedder look batch-capable to `isBatchEmbedder`, which is precisely the failure
+§4 exists to prevent.
+
+**Status extraction.** `IEmbedder` throws rather than returning a `Result`, and
+the thrown value is `unknown` — adapters may throw a `RagError`, an SDK error
+carrying `status`/`statusCode`, a wrapped error with a `cause`, or a `Response`.
+`RagError` itself (`packages/llm-agent/src/interfaces/types.ts:154-159`) carries
+only `message` and `code` — no status field. A shared extractor resolves the
+status in this order:
+
+1. a numeric `status` / `statusCode` property on the thrown value;
+2. the same, recursively, on `cause`;
+3. only then a cautious match against the message text.
+
+Step 3 is last on purpose. The precedent being ported, `RetryLlm.isRetryable`
+(`retry-llm.ts:134-137`), does `msg.includes(String(code))` over the entire
+message, so any message incidentally containing `429` or `500` — a line number,
+an id, a byte count — triggers a false retry. The new extractor must not
+reproduce that. `RetryLlm` itself is **not** modified here: touching the LLM path
+would widen this PR's blast radius.
+
+### 4. Composition
 
 ```
-wrapEmbedder( BatchChunkingEmbedder( RetryEmbedder( inner ) ) )
+wrapEmbedder(
+  isBatchEmbedder(provider)
+    ? new BatchChunkingEmbedder(new RetryBatchEmbedder(provider), cap)
+    : new RetryEmbedder(provider)
+)
 ```
 
-Retry sits **inside** chunking on purpose: each chunk retries independently, so a
-failure on chunk 20 does not re-issue chunks 1-19. `wrapEmbedder`
-(usage-logging) stays outermost, so one logical `embedBatch` produces one usage
-record carrying the aggregated result usage — chunking does not inflate the call
-count, and failed retry attempts, which return no usage, are not counted.
+Batch capability is thus preserved end-to-end and never invented: each layer
+picks its class from `isBatchEmbedder(inner)`, so `isBatchEmbedder(composed)`
+equals `isBatchEmbedder(provider)` for every input.
+
+Two rules:
+
+**Chunking only over a batch-capable inner.** `isBatchEmbedder`
+(`rag.ts:60-65`) tests only `'embedBatch' in e`, so a decorator that exposes
+`embedBatch` unconditionally would make a non-batch embedder *look* batch-capable
+— `vectorize-mcp-tools.ts:39-43` would then take the batch path and fail. This is
+not theoretical for a consumer's DI'd embedder, the very instance §5 requires us
+to wrap. All built-in embedders are batch-capable
+(`ollama.ts:78`, `openai-embedder.ts:93`, `foundation-embedder.ts:73`), so the
+exposure is precisely the custom-embedder path.
+
+`wrapEmbedder` already solves this exact problem and its shape is copied rather
+than reinvented: it selects `UsageLoggingBatchEmbedder` vs `UsageLoggingEmbedder`
+by `isBatchEmbedder(inner)` and documents that it "preserves `isBatchEmbedder`".
+
+**Retry inside chunking.** Each chunk retries independently, so a failure on
+chunk 20 does not re-issue chunks 1-19.
+
+`wrapEmbedder` (usage-logging) stays outermost, so one logical `embedBatch`
+produces one usage record carrying the aggregated result usage — chunking does
+not inflate the call count, and failed retry attempts, which return no usage, are
+not counted.
+
+**Idempotence** uses the same brand-symbol mechanism as `wrapEmbedder`
+(`usage-logging-embedder.ts:98`): an already-decorated embedder is returned
+unchanged.
 
 ### 5. Composition point
 
@@ -146,11 +230,15 @@ const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
 The fix must land here; wrapping only the agent-embedder chain would miss the
 failing path entirely.
 
+The cap is resolved here, on the bare provider instance, in this order:
+
+1. `cfg.maxBatchSize` (from YAML)
+2. `provider.maxBatchSize` when `isBatchSizeLimited(provider)`
+3. `DEFAULT_MAX_BATCH_SIZE`
+
 The early return at line 142 —
 `if (options?.injectedEmbedder) return options.injectedEmbedder;` — must be
-wrapped too, otherwise a consumer's DI'd embedder bypasses chunking. Wrapping is
-idempotent (following the `wrapEmbedder` precedent) so repeated resolution does
-not stack layers.
+decorated too, otherwise a consumer's DI'd embedder bypasses chunking.
 
 Idempotence is not hypothetical on the SmartServer path: `resolveAgentEmbedder`
 (`packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:41-42`)
@@ -159,7 +247,19 @@ that instance to `makeRag` as `injectedEmbedder` — where it reaches
 `resolveEmbedder`'s line 142 early return a second time. Without idempotence the
 decorators would stack on every boot.
 
-### 6. Cap declaration in `sap-aicore-embedder`
+### 6. Default cap
+
+```ts
+export const DEFAULT_MAX_BATCH_SIZE = 100;
+```
+
+Chosen with margin below the only hard cap we have confirmed (Vertex 250), and
+large enough that a 356-tool catalog costs 4 requests. Accepted side effect: a
+provider that declares no cap — ollama, for instance — now issues 4 calls where
+it previously issued one. That is the price of a default that is safe everywhere;
+a consumer who knows better raises it via YAML.
+
+### 7. Cap declaration in `sap-aicore-embedder`
 
 `FoundationModelsEmbedder` (`packages/sap-aicore-embedder/src/foundation-embedder.ts:42`)
 implements `IBatchSizeLimited`. The value derives from `this.family`, set by
@@ -168,11 +268,11 @@ selects the Vertex request shape `{ instances: [...] }` at line 100:
 
 - `gemini` → **250**. Confirmed by the provider's own error text: "supported
   range is from 1 (inclusive) to 251 (exclusive)".
-- Other families → no cap declared, so the decorator's conservative default
-  applies. No documented AI Core limit for the OpenAI family was verified, so
-  none is asserted.
+- Other families → no cap declared, so `DEFAULT_MAX_BATCH_SIZE` applies. No
+  documented AI Core limit for the OpenAI family was verified, so none is
+  asserted.
 
-### 7. YAML key
+### 8. YAML key
 
 `SmartServerRagConfig` (`packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:134`)
 gains `maxBatchSize?: number`, alongside existing tuning keys such as
@@ -184,7 +284,7 @@ Documented precedence: **YAML → provider interface → default**.
 This exists as an escape hatch: AI Core limits can depend on tenant quota, not
 only on the model, so a documented number may not match a given landscape.
 
-### 8. `vectorize-mcp-tools.ts` rewrite
+### 9. `vectorize-mcp-tools.ts` rewrite
 
 The three near-identical sequential loops collapse into one private helper that
 returns counters. The batch branch (lines 44-100) keeps its single
@@ -192,9 +292,21 @@ returns counters. The batch branch (lines 44-100) keeps its single
 because chunking and retry are the embedder's concern and the caller need not
 know about them. No batch-size constant appears in this file.
 
-The sequential fallback is retained as a genuine last resort: it now runs only
-when `embedBatch` fails after all retries. The manual 500 ms sleep every five
-items is removed — pacing is `RetryEmbedder`'s job.
+The sequential fallback is retained as a genuine last resort: it runs only when
+`embedBatch` fails after all retries.
+
+**Its existing 500 ms-per-5-items pacing is kept.** Retry reacts only *after* a
+`429`; it does not throttle successful requests, so a non-batch embedder still
+issues one request per tool. Retaining the pause is not, however, a proven
+safeguard — that exact pacing was active during the reported incident and the
+boot still logged 385 rate-limit failures. It is kept because removing it
+strictly increases pressure, not because it is known to help. A real rate
+limiter is deliberately not introduced without a measurement to size it.
+
+**Residual risk, accepted:** for a non-batch embedder with a large catalog, the
+sequential path can still hit the provider's rate limit, and exponential backoff
+then slows boot noticeably. Chunking does not help this path, because there is no
+batch call to chunk.
 
 Signature changes additively:
 
@@ -212,6 +324,25 @@ export async function vectorizeMcpTools(
 
 Existing callers that ignore the result are unaffected.
 
+**Aggregation across MCP clients.** `vectorizeMcpTools` iterates every client, so
+the summary is defined as follows:
+
+- One snapshot for the whole call, aggregated over all clients. `total` is the
+  sum of tools successfully listed across clients; `vectorized` and `failed`
+  accumulate likewise.
+- A failing `listTools()` — today silently skipped at line 30 — counts as a
+  client-level failure and marks the catalog incomplete, so a server whose second
+  MCP endpoint is down cannot report a complete catalog.
+- The status holder is published **once**, in a `finally`, so an exception
+  mid-way cannot leave a stale "complete" reading. Per-client updates are
+  explicitly avoided: the last client would otherwise overwrite its
+  predecessors' results.
+
+**Known limitation, out of scope:** identical tool names exported by different
+MCP servers collide today — the record id is `tool:${t.name}` (line 56), so the
+second write overwrites the first while both are counted. This predates the
+change and is left as a separate issue rather than widening this one.
+
 Logging replaces up to N warnings with one summary:
 
 ```
@@ -221,7 +352,7 @@ vectorized 338/356 MCP tools, 18 failed: GetObjectInfo, GetInclude, …
 
 Individual failures remain, demoted to `debug`.
 
-### 9. Tool-catalog visibility
+### 10. Tool-catalog visibility
 
 Another small interface in `llm-agent`, same ISP pattern:
 
@@ -232,6 +363,10 @@ export interface IToolCatalogReporter {
 
 export function isToolCatalogReporter(x: unknown): x is IToolCatalogReporter;
 ```
+
+`undefined` means "not yet known" — before vectorization completes, and for any
+deployment that never runs it. `HealthChecker` treats that as healthy, which
+preserves current behaviour.
 
 State lives in a small holder (`packages/llm-agent-libs/src/mcp/tool-catalog-status.ts`)
 that the builder creates, passes to `vectorizeMcpTools`, and places in the
@@ -271,9 +406,23 @@ top-up across restarts (245 → 334 → 338), which a crash loop would prevent.
   `embedBatch`; `vectorizeMcpTools` then takes the sequential fallback. Partial
   results from earlier chunks are not kept — mixing "half via batch, half via
   fallback" produces states that are hard to reproduce.
+- A chunk returning the wrong number of embeddings throws a typed `RagError`
+  (§2) rather than corrupting downstream indexing.
+- An invalid `maxBatchSize` fails fast at construction (§2).
 - `RetryEmbedder` does not retry when `options.signal` is aborted.
 - A single tool failing in the sequential path is recorded in `failed[]` and the
   loop continues. Boot never fails on vectorization.
+
+## Out of scope
+
+- **Upsert batching.** Chunking bounds the *embedding* calls, not the writes: the
+  batch branch still issues one `upsertPrecomputedRaw` per tool (lines 52-67),
+  which against Qdrant means 356 HTTP round-trips. This does not cause the
+  reported failure, but after this fix it dominates vectorization time. Noted
+  here so its absence reads as a decision rather than an oversight.
+- **`RetryLlm`'s substring status matching** (§3) — same defect class, LLM path,
+  separate change.
+- **Duplicate tool names across MCP servers** (§9).
 
 ## Testing
 
@@ -281,19 +430,51 @@ top-up across restarts (245 → 334 → 338), which a crash loop would prevent.
 `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts` (`IRag`,
 `IMcpClient`, `CapturingRequestLogger`).
 
-- `BatchChunkingEmbedder`: 356 texts with cap 250 → exactly 2 inner calls of
-  size 250 and 106, **vector order preserved**; empty input → 0 inner calls;
-  cap ≥ N → 1 call.
-- Cap resolution: YAML overrides interface; interface overrides default; an
-  embedder without the interface gets the default.
-- `RetryEmbedder`: `429` then success on the second attempt; exhausted attempts
-  throw; a non-retryable `400` throws immediately without backoff.
-- `FoundationModelsEmbedder`: `maxBatchSize === 250` for a gemini model.
-- `vectorizeMcpTools`: the summary counts correctly on partial failure; exactly
-  one warning is emitted instead of N.
-- `HealthChecker`: `vectorized < total` → `degraded`; equal → `healthy`; no
-  reporter → `healthy` (backward compatibility).
-- Final gate before merge: a live run against the reporter's 356-tool catalog.
+`BatchChunkingEmbedder`:
+
+- 356 texts, cap 250 → exactly 2 inner calls of size 250 and 106, **vector order
+  preserved**; empty input → 0 inner calls; cap ≥ N → 1 call.
+- `maxBatchSize` of `0`, `-1`, `1.5` → constructor throws.
+- A chunk returning fewer embeddings than texts → typed `RagError`.
+
+Composition:
+
+- **Over the full decorator chain, not a bare provider**: a provider declaring
+  `maxBatchSize = 250`, composed exactly as §4 does, still chunks at 250 — the
+  regression test for the capability-through-decorators defect.
+- Cap resolution: YAML overrides the provider interface; the interface overrides
+  the default; a provider with neither gets `DEFAULT_MAX_BATCH_SIZE`.
+- **An injected embedder implementing only `embed()`** stays non-batch after
+  composition: `isBatchEmbedder(composed) === false`, and `vectorizeMcpTools`
+  takes the sequential path instead of throwing. Asserted for the retry layer in
+  isolation as well, not only for the full chain — a batch-capable
+  `RetryEmbedder` would reintroduce the defect silently.
+- Composing twice yields the same instance (idempotence).
+
+`RetryEmbedder`:
+
+- `429` then success on the second attempt; exhausted attempts throw; a
+  non-retryable `400` throws immediately without backoff.
+- Status extraction: an error carrying `status: 429`, one carrying it on `cause`,
+  and one carrying it only in the message — all retried; a message containing
+  `429` incidentally with a non-retryable status property is **not** retried.
+- An aborted signal stops retrying.
+
+`FoundationModelsEmbedder`: `maxBatchSize === 250` for a gemini model.
+
+`vectorizeMcpTools`:
+
+- The summary aggregates across **two** clients rather than reporting the last
+  one; a failing `listTools()` on one client marks the catalog incomplete.
+- The status holder is published once, and is published even when vectorization
+  throws.
+- The summary counts correctly on partial failure, and exactly one warning is
+  emitted instead of N.
+
+`HealthChecker`: `vectorized < total` → `degraded`; equal → `healthy`; reporter
+absent or returning `undefined` → `healthy` (backward compatibility).
+
+Final gate before merge: a live run against the reporter's 356-tool catalog.
 
 ## Delivery
 
