@@ -312,6 +312,20 @@ is reported as the existing `{ type: 'warning' }` `LogEvent`; with no logger
 supplied the resolution stays silent. This is the idiom already used throughout
 `vectorize-mcp-tools.ts` (`logger?.log({ type: 'warning', … })`).
 
+Adding it to the low-level resolver alone would make the warning dead code in the
+only consumer that can hit the conflict. The multi-store path reaches
+`resolveEmbedder` through three frames that also lack a logger today, so all of
+them are threaded:
+
+- `RagResolutionOptions` (`rag-factories.ts:215-220`) → `makeRag`
+- `resolveAgentEmbedder` (`resolve-agent-embedder.ts:24-28`)
+- `resolveToolsStoreEmbedder` (`resolve-agent-embedder.ts:60-68`)
+
+All four additions are optional parameters, so no existing call site breaks. The
+covering test is an integration-level multi-store resolution, not a direct
+`resolveEmbedder` call — a unit test on the resolver would pass while the real
+path stayed silent.
+
 Fail-fast was considered and rejected here, unlike the invalid-value check in §2.
 A differing cap is reachable through a legitimate configuration: with multiple
 stores, `resolveToolsStoreEmbedder`
@@ -447,16 +461,16 @@ batch call to chunk.
 Signature changes additively:
 
 ```ts
-export interface ToolVectorizationSummary {
-  /** Tools successfully listed across all clients. */
-  total: number;
-  vectorized: number;
-  failed: string[]; // tool names
-  /** Clients whose listTools() failed — their tools are absent from `total`. */
-  clientFailures: number;
-  /** false when any client failed to list, or any listed tool failed to embed. */
-  complete: boolean;
-}
+/**
+ * Alias of ToolCatalogStatus, which is declared in `llm-agent` (§10) so the
+ * contracts package need not depend on this one.
+ *   total          — tools successfully listed across all clients
+ *   clientFailures — clients whose listTools() failed; their tools never
+ *                    reached `total`
+ *   complete       — false when any client failed to list, or any listed tool
+ *                    failed to be written
+ */
+export type ToolVectorizationSummary = ToolCatalogStatus;
 
 export async function vectorizeMcpTools(
   clients: IMcpClient[],
@@ -478,6 +492,30 @@ tools vectorized from client A and `listTools()` failing on client B, the
 counters read `{ vectorized: 10, total: 10 }` — indistinguishable from a healthy
 boot, since B's tools were never counted. Health therefore keys off `complete`,
 not off `vectorized === total`.
+
+**What counts as vectorized.** Today's sequential path writes through an optional
+chain (line 114-116):
+
+```ts
+const result = await toolsRag.writer?.()?.upsertRaw(`tool:${t.name}`, text, {});
+if (result && !result.ok) { /* warn */ } else { /* logged as success */ }
+```
+
+A missing writer yields `result === undefined`, which falls into the success
+branch — so a tool that was never written would be counted as vectorized. The
+contract is therefore explicit: **a tool counts as vectorized only when the write
+returns `ok: true`.** `undefined`, a thrown error, and `ok: false` all count as
+failures.
+
+The store-level case is treated differently from a per-tool failure, and this
+deviates from the obvious reading. If the store exposes **no writer at all**,
+vectorization is skipped before the loop and the status stays `undefined`
+("unknown", §10) rather than being reported as N failures. A writer-less tools
+store is a deliberate configuration — a pre-populated collection the deployment
+does not write to — and reporting it as a permanently incomplete catalog would
+leave such a server `degraded` forever, which is noise, not signal. `writer()` is
+a stable capability, not a transient condition, so there is no case where its
+absence means something went wrong at runtime.
 
 **Aggregation across MCP clients.** `vectorizeMcpTools` iterates every client, so
 the summary is defined as follows:
@@ -523,12 +561,32 @@ line truncates, to keep one message bounded when a whole catalog fails.
 Another small interface in `llm-agent`, same ISP pattern:
 
 ```ts
+export interface ToolCatalogStatus {
+  total: number;
+  vectorized: number;
+  failed: string[];
+  clientFailures: number;
+  complete: boolean;
+}
+
 export interface IToolCatalogReporter {
-  /** The full summary of the last vectorization run, or undefined if none ran. */
-  getToolCatalogStatus(): ToolVectorizationSummary | undefined;
+  /** The full status of the last vectorization run, or undefined if none ran. */
+  getToolCatalogStatus(): ToolCatalogStatus | undefined;
 }
 
 export function isToolCatalogReporter(x: unknown): x is IToolCatalogReporter;
+```
+
+The shape is declared **here**, in `llm-agent`, not next to `vectorizeMcpTools`.
+`llm-agent` is the leaf contracts package — its only dependency is `zod` — so
+referring to a type from `llm-agent-libs` would invert the dependency order and
+create `llm-agent-libs → llm-agent → llm-agent-libs`.
+
+`ToolVectorizationSummary` (§9) is therefore the same contract, re-exported from
+`llm-agent-libs` for callers of `vectorizeMcpTools`:
+
+```ts
+export type ToolVectorizationSummary = ToolCatalogStatus;
 ```
 
 `undefined` means "not yet known" — before vectorization completes, and for any
@@ -632,6 +690,10 @@ Composition:
   `wrapEmbedder`**: `resolveEmbedder(wrapEmbedder(composed))` returns it
   unchanged, the regression test for brand propagation (§4a). Asserted by
   counting inner calls, not by identity alone, so a stacked chunker is caught.
+- **Multi-store integration**: two stores sharing one embedder via
+  `resolveToolsStoreEmbedder`, the second declaring a different explicit
+  `maxBatchSize` → exactly one warning reaches the logger passed to
+  `resolveAgentEmbedder`, proving the parameter is threaded end to end.
 - **Provider-derived cap, no YAML override, second resolve emits no warning.**
   Gemini (250) → resilience → `wrapEmbedder` → resolve again with a config that
   has no `maxBatchSize`: the chain is returned untouched, the cap stays 250, and
@@ -674,6 +736,11 @@ Composition:
 - The summary counts correctly on partial embed failure, and exactly one warning
   is emitted instead of N — with the failed names truncated in the message but
   complete in `summary.failed`.
+- A writer returning `ok: false` counts as failed; a write resolving to
+  `undefined` counts as **failed, not vectorized** — the optional-chain trap at
+  lines 114-116.
+- A read-only `IRag` (no `writer()`) skips vectorization and leaves the status
+  `undefined`, so health stays `healthy` rather than permanently `degraded`.
 
 `HealthChecker`: `complete: false` → `degraded` (including the
 `vectorized === total` case above); `complete: true` → `healthy`; reporter absent
