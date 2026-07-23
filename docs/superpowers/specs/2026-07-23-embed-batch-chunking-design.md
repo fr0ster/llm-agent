@@ -205,9 +205,19 @@ composition ever sees it.
 
 The consequence is contained rather than fatal: chunking is applied,
 `vectorizeMcpTools` takes the batch path, the first call throws a `RagError` that
-is not retryable, and the sequential fallback (§9) runs — one warning, correct
-catalog, wasted round trip. That is the same outcome the pre-existing code
-produces today for such an embedder.
+is not retryable, and the sequential fallback (§9) is attempted — one warning and
+a wasted round trip. Whether the catalog then completes depends on the breaker
+staying closed, which is a property of the deployment, not of this design.
+
+Worth noting precisely, because it bounds the damage: the capability check throws
+at `circuit-breaker-embedder.ts:43-48`, **before** the `try` block that begins at
+line 49, and `recordFailure()` is only reached from that block's `catch`. The
+mismatch therefore does not itself count against the breaker — not even with a
+threshold of 1. The fallback starts from an untouched breaker; it can still open
+later on genuine provider failures, as it would on any path.
+
+This is the same outcome the pre-existing code produces today for such an
+embedder.
 
 Fixing it properly means giving `CircuitBreakerEmbedder` the same two-class
 factory treatment. That is **out of scope here**: the class is exported and
@@ -510,7 +520,8 @@ this return value are the same fact expressed once.
 The parameter list is unchanged — no status holder is threaded in. The function
 stays pure with respect to reporting: it returns the summary, and the builder
 publishes it (§10). It never throws; per-client failures are caught internally as
-they are today (lines 178-187), so the caller always receives a summary.
+they are today (lines 178-187), so the caller always receives a result — a
+summary when work was attempted, `undefined` when it was skipped.
 
 Existing callers that ignore the result are unaffected.
 
@@ -691,7 +702,8 @@ top-up across restarts (245 → 334 → 338), which a crash loop would prevent.
 - **`CircuitBreakerEmbedder` fabricating batch capability** (§4) — an exported
   class whose constructor consumers already call, so the two-class fix cannot be
   imposed from here. Its effect on this design is a wasted round trip followed by
-  the sequential fallback, not a wrong catalog.
+  the sequential fallback; the catalog is never silently wrong, though its
+  completeness then depends on the breaker staying closed (§4).
 - **Duplicate tool names across MCP servers** (§9).
 
 ## Testing
@@ -778,8 +790,10 @@ Composition:
   function → builder → holder → `HealthChecker` — since a function-level
   assertion alone would not catch a builder that published a zeroed summary.
 - A **pre-decorated injected embedder** that reports batch capability it does not
-  have (`CircuitBreakerEmbedder` over a non-batch inner, §4) still ends with a
-  complete catalog via the sequential fallback — the documented-limitation test.
+  have (`CircuitBreakerEmbedder` over a non-batch inner, §4) falls through to the
+  sequential path and, with the breaker closed, completes the catalog — the
+  documented-limitation test. It also asserts the breaker recorded no failure for
+  the capability mismatch, pinning the `try`-block boundary this relies on.
 
 `HealthChecker`: `complete: false` → `degraded` (including the
 `vectorized === total` case above); `complete: true` → `healthy`; reporter absent
