@@ -190,9 +190,30 @@ wrapEmbedder(
 )
 ```
 
-Batch capability is thus preserved end-to-end and never invented: each layer
-picks its class from `isBatchEmbedder(inner)`, so `isBatchEmbedder(composed)`
-equals `isBatchEmbedder(provider)` for every input.
+Each layer picks its class from `isBatchEmbedder(inner)`, so **the layers added
+here** never invent capability: `isBatchEmbedder(composed) ===
+isBatchEmbedder(inner)` for whatever instance composition receives.
+
+The guarantee stops there, and the limit is worth stating precisely, because an
+earlier draft claimed it held "for every input". It does not hold for an input
+that already lies. `CircuitBreakerEmbedder`
+(`packages/llm-agent/src/resilience/circuit-breaker-embedder.ts:34-48`) declares
+`embedBatch` unconditionally and throws `RagError('Inner embedder does not
+support batch embedding')` from inside it, so a consumer injecting
+`CircuitBreakerEmbedder(nonBatchEmbedder)` presents as batch-capable before our
+composition ever sees it.
+
+The consequence is contained rather than fatal: chunking is applied,
+`vectorizeMcpTools` takes the batch path, the first call throws a `RagError` that
+is not retryable, and the sequential fallback (§9) runs — one warning, correct
+catalog, wasted round trip. That is the same outcome the pre-existing code
+produces today for such an embedder.
+
+Fixing it properly means giving `CircuitBreakerEmbedder` the same two-class
+factory treatment. That is **out of scope here**: the class is exported and
+consumers construct it directly, so a factory cannot be forced on them, and
+changing the class's own behaviour would alter a published contract for a defect
+that predates this work. It is filed separately; §"Out of scope" records it.
 
 Two rules:
 
@@ -477,8 +498,14 @@ export async function vectorizeMcpTools(
   toolsRag: IRag | undefined,
   requestLogger: IRequestLogger,
   logger: ILogger | undefined,
-): Promise<ToolVectorizationSummary>;
+): Promise<ToolVectorizationSummary | undefined>;
 ```
+
+`undefined` means **nothing was attempted** — no tools RAG was supplied, or the
+supplied one exposes no writer. It is distinct from a summary reporting zero
+vectorized tools, which means an attempt was made and failed. The builder
+publishes only a defined summary, so the reporter's "unknown" state (§10) and
+this return value are the same fact expressed once.
 
 The parameter list is unchanged — no status holder is threaded in. The function
 stays pure with respect to reporting: it returns the summary, and the builder
@@ -526,7 +553,9 @@ the summary is defined as follows:
 - A failing `listTools()` — today silently skipped at line 30 — increments
   `clientFailures` and sets `complete: false`, so a server whose second MCP
   endpoint is down cannot report a complete catalog.
-- The builder publishes the returned summary **once**, after the call. Per-client
+- The builder publishes the returned summary **once**, after the call, and only
+  when it is defined — a skipped run (§9, no writer) leaves the holder empty
+  rather than storing a zeroed summary. Per-client
   publication is explicitly avoided: the last client would otherwise overwrite
   its predecessors' results.
 
@@ -659,6 +688,10 @@ top-up across restarts (245 → 334 → 338), which a crash loop would prevent.
   here so its absence reads as a decision rather than an oversight.
 - **`RetryLlm`'s substring status matching** (§3) — same defect class, LLM path,
   separate change.
+- **`CircuitBreakerEmbedder` fabricating batch capability** (§4) — an exported
+  class whose constructor consumers already call, so the two-class fix cannot be
+  imposed from here. Its effect on this design is a wasted round trip followed by
+  the sequential fallback, not a wrong catalog.
 - **Duplicate tool names across MCP servers** (§9).
 
 ## Testing
@@ -739,8 +772,14 @@ Composition:
 - A writer returning `ok: false` counts as failed; a write resolving to
   `undefined` counts as **failed, not vectorized** — the optional-chain trap at
   lines 114-116.
-- A read-only `IRag` (no `writer()`) skips vectorization and leaves the status
-  `undefined`, so health stays `healthy` rather than permanently `degraded`.
+- A read-only `IRag` (no `writer()`) skips vectorization: the function returns
+  `undefined`, the builder publishes nothing, `getToolCatalogStatus()` stays
+  `undefined`, and health reports `healthy`. Asserted across the whole path —
+  function → builder → holder → `HealthChecker` — since a function-level
+  assertion alone would not catch a builder that published a zeroed summary.
+- A **pre-decorated injected embedder** that reports batch capability it does not
+  have (`CircuitBreakerEmbedder` over a non-batch inner, §4) still ends with a
+  complete catalog via the sequential fallback — the documented-limitation test.
 
 `HealthChecker`: `complete: false` → `degraded` (including the
 `vectorized === total` case above); `complete: true` → `healthy`; reporter absent
