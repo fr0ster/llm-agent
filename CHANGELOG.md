@@ -9,6 +9,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [20.8.0] — 2026-07-23
+
+MCP tool vectorization no longer exceeds a provider's batch cap (#236). Chunking
+and retry are now properties of the embedder, composed once in `resolveEmbedder`,
+so every `embedBatch` caller inherits them. Adds `rag.maxBatchSize`, the
+`IBatchSizeLimited` contract, and `/health` `components.toolCatalog` reporting a
+partial catalog as `degraded` (HTTP stays 200; readiness untouched).
+
 ### Fixed
 
 - **MCP tool vectorization no longer exceeds a provider's batch cap (#236).**
