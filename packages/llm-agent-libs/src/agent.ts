@@ -17,6 +17,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  IToolCatalogReporter,
   IToolLoopContextStrategy,
   LlmFinishReason,
   LlmStreamChunk,
@@ -29,6 +30,7 @@ import type {
   StreamHookContext,
   Subprompt,
   TimingEntry,
+  ToolCatalogStatus,
   ToolLoopContextStrategyFactory,
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
@@ -127,6 +129,8 @@ export interface SmartAgentDeps {
   /** Shared embedder for RAG queries. When set, creates memoized IQueryEmbedding per request. */
   embedder?: IEmbedder;
   connectionStrategy?: IMcpConnectionStrategy;
+  /** Reports the startup tool-catalog vectorization result to health checks. */
+  toolCatalogStatus?: IToolCatalogReporter;
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
@@ -474,6 +478,16 @@ export class SmartAgent {
   isReady(): boolean {
     const strategy = this.deps.connectionStrategy;
     return isReadinessReporter(strategy) ? strategy.isReady() : true;
+  }
+
+  /**
+   * Tool-catalog status (implements `IToolCatalogReporter`): delegate to the
+   * holder the builder populated. `undefined` means nothing was vectorized.
+   * Consumers detect this via `isToolCatalogReporter(agent)` — no growth of
+   * `ISmartAgent`.
+   */
+  getToolCatalogStatus(): ToolCatalogStatus | undefined {
+    return this.deps.toolCatalogStatus?.getToolCatalogStatus();
   }
 
   async healthCheck(options?: CallOptions): Promise<
