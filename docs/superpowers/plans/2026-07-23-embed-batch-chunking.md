@@ -1441,14 +1441,26 @@ Expected: no errors.
 
 - [ ] **Step 6: Commit**
 
-Stage by diff rather than by a fixed list: Step 3 updates every call site of the
-two functions, and those live in files this plan cannot name in advance. A
-hardcoded `git add` would leave them uncommitted and the build broken.
+Step 3 updates every call site of the two functions, and this plan cannot name
+those files in advance. Resolve them first, then stage explicitly — never
+`git add $(git diff --name-only)` over the whole worktree, which would sweep in
+unrelated local changes and mishandle paths containing spaces.
 
 ```bash
+# 1. List what actually changed, scoped to this task's directory
+git status --short -- packages/llm-agent-server-libs/src/smart-agent
+
+# 2. Stage that directory plus the two files named in this task
+git add packages/llm-agent-server-libs/src/smart-agent
+
+# 3. Confirm nothing outside the task is staged
 git status --short
-git add $(git diff --name-only) $(git ls-files --others --exclude-standard)
-git status --short   # confirm nothing unexpected is staged
+```
+
+If Step 3 turned up a call site outside `smart-agent/`, add that path explicitly
+too. Then:
+
+```bash
 git commit -m "feat(llm-agent-server-libs): thread maxBatchSize and logger through embedder resolution"
 ```
 
@@ -1681,7 +1693,8 @@ describe('vectorizeMcpTools summary', () => {
       undefined,
     );
     // One aggregated record for the embedBatch call — not one per tool.
-    assert.equal(requestLogger.entries.length, 1);
+    // The stub's field is `calls`, not `entries`.
+    assert.equal(requestLogger.calls.length, 1);
   });
 
   it('returns undefined for a read-only store', async () => {
@@ -1786,10 +1799,60 @@ it('completes the catalog when a pre-decorated embedder fakes batch support', as
 });
 ```
 
+- [ ] **Step 1b: Update the three pre-existing logging assertions**
+
+The existing tests encode the OLD logging contract and **will** fail against the
+new one. This is expected and intended — update them, do not work around them.
+
+In `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts`:
+
+1. **Line ~158-159** — "no warnings" on the successful batch path. The new
+   contract emits exactly one summary line, so replace:
+
+```ts
+    // exactly one summary line, and it reports a complete catalog
+    const warnings = logger.events.filter((e) => e.type === 'warning');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].message, /^vectorized \d+\/\d+ MCP tools$/);
+```
+
+2. **Line ~162-176** — the `'Batch embedding failed'` fallback warning is gone:
+   chunking and retry now live in the embedder, and a batch failure is no longer
+   narrated separately. Rename the test to
+   `'Sequential fallback: batch throws → per-tool upsertRaw, per-tool logLlmCall'`
+   and replace the warning assertion with:
+
+```ts
+    // The fallback is silent; only the end-of-run summary is logged.
+    const warnings = logger.events.filter((e) => e.type === 'warning');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].message, /^vectorized /);
+```
+
+3. **Line ~203-217** — the per-tool `'Tool vectorization failed for "bad-tool"'`
+   warning is replaced by the aggregated summary. Rename the test to
+   `'Failure summary: upsertRaw returning {ok:false} lands in the summary'` and
+   replace the assertion with:
+
+```ts
+    const warnings = logger.events.filter((e) => e.type === 'warning');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].message, /1 failed: bad-tool/);
+    assert.deepEqual(summary?.failed, ['bad-tool']);
+```
+
+   Capture the return value (`const summary = await vectorizeMcpTools(...)`) —
+   the existing test discards it.
+
+Leave the `reqLogger.calls` assertions (lines ~153, ~183, ~198, ~228) unchanged:
+they encode the usage-accounting contract this change deliberately preserves.
+Line 153's `calls.length === 1` on the batch path is exactly the guard against
+the batch path logging once per tool.
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npm test --workspace @mcp-abap-adt/llm-agent-libs`
-Expected: FAIL — `vectorizeMcpTools` resolves to `undefined` (returns `void`), so every assertion on `summary?.total` fails.
+Expected: FAIL — `vectorizeMcpTools` resolves to `undefined` (returns `void`), so every assertion on `summary?.total` fails, and the three rewritten assertions fail against the old implementation.
 
 - [ ] **Step 3: Write minimal implementation**
 
