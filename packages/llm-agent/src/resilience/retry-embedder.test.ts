@@ -138,6 +138,19 @@ describe('withRetry', () => {
     assert.deepEqual(waits, [1000, 2000]);
   });
 
+  it('falls back to the default strategy on an explicit undefined', async () => {
+    // waitStrategy is optional, so `{ waitStrategy: undefined }` is valid input.
+    // A plain spread over the defaults would set it to undefined and crash on
+    // the first backoff.
+    const inner = new ScriptedEmbedder([{ status: 429 }, 'ok']);
+    const r = await withRetry(inner, {
+      backoffMs: 1,
+      waitStrategy: undefined,
+    }).embed('x');
+    assert.deepEqual(r.vector, [1]);
+    assert.equal(inner.calls, 2);
+  });
+
   it('stops when the signal is aborted', async () => {
     const inner = new ScriptedEmbedder([{ status: 429 }]);
     const ac = new AbortController();

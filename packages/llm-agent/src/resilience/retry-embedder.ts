@@ -32,11 +32,20 @@ export interface EmbedderRetryOptions {
    *
    * The same seam the controller's `wait` step uses: a deployment can replace
    * a blocking timer with jitter, its own scheduler, or suspend/resume.
+   *
+   * Optional, unlike the scalar knobs beside it: this is a collaborator, not a
+   * setting. A consumer assembling a full options literal should not have to
+   * name an internal mechanism, and the type stays expressible as plain data.
    */
-  waitStrategy: IWaitStrategy;
+  waitStrategy?: IWaitStrategy;
 }
 
-const DEFAULT_OPTIONS: EmbedderRetryOptions = {
+/** Internal shape after defaults are applied — every field is present. */
+type ResolvedRetryOptions = Omit<EmbedderRetryOptions, 'waitStrategy'> & {
+  waitStrategy: IWaitStrategy;
+};
+
+const DEFAULT_OPTIONS: ResolvedRetryOptions = {
   maxAttempts: 3,
   backoffMs: 2000,
   retryOn: [429, 500, 502, 503],
@@ -70,13 +79,20 @@ export function extractStatusCode(err: unknown): number | undefined {
 }
 
 export class RetryEmbedder implements IEmbedder {
-  protected readonly opts: EmbedderRetryOptions;
+  protected readonly opts: ResolvedRetryOptions;
 
   constructor(
     protected readonly inner: IEmbedder,
     options?: Partial<EmbedderRetryOptions>,
   ) {
-    this.opts = { ...DEFAULT_OPTIONS, ...options };
+    // waitStrategy is re-applied after the spread: an explicit
+    // `{ waitStrategy: undefined }` would otherwise overwrite the default with
+    // undefined and crash on the first backoff.
+    this.opts = {
+      ...DEFAULT_OPTIONS,
+      ...options,
+      waitStrategy: options?.waitStrategy ?? DEFAULT_OPTIONS.waitStrategy,
+    };
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
