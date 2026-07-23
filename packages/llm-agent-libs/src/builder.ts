@@ -87,6 +87,7 @@ import { HistorySummarizer } from './history/history-summarizer.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
+import { ToolCatalogStatusHolder } from './mcp/tool-catalog-status.js';
 import {
   vectorizeMcpTools,
   vectorizeSkills,
@@ -930,6 +931,9 @@ export class SmartAgentBuilder {
     const requestLogger = this._requestLogger ?? new DefaultRequestLogger();
 
     // ---- MCP clients + tool vectorization --------------------------------
+    // Reports the startup catalog to /health. Stays empty when vectorization is
+    // skipped (no tools store, or a read-only one), which reads as "unknown".
+    const toolCatalogStatus = new ToolCatalogStatusHolder();
     let mcpClients: IMcpClient[];
     const closeFns: Array<() => Promise<void>> = [];
     let connectionStrategy = this._connectionStrategy;
@@ -959,7 +963,15 @@ export class SmartAgentBuilder {
         ? await connectionStrategy.resolve([])
         : { clients: [] as IMcpClient[], toolsChanged: false };
       mcpClients = resolved.clients;
-      await vectorizeMcpTools(mcpClients, toolsRag, requestLogger, log);
+      const toolSummary = await vectorizeMcpTools(
+        mcpClients,
+        toolsRag,
+        requestLogger,
+        log,
+      );
+      // Published only when defined: a skipped run must leave the holder empty
+      // rather than storing a zeroed summary.
+      if (toolSummary) toolCatalogStatus.publish(toolSummary);
     }
 
     // ---- SmartAgent Config ------------------------------------------------
@@ -1183,6 +1195,7 @@ export class SmartAgentBuilder {
           : {}),
         ...(this._embedder ? { embedder: this._embedder } : {}),
         ...(connectionStrategy ? { connectionStrategy } : {}),
+        toolCatalogStatus,
         ...(historyMemory ? { historyMemory } : {}),
         ...(historySummarizer ? { historySummarizer } : {}),
         ...(this._llmCallStrategy

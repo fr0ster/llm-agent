@@ -32,6 +32,27 @@ ollama pull bge-m3
 
 The embedding dimensions are model-specific: `nomic-embed-text` produces 768-dimensional vectors; `bge-m3` produces 1024-dimensional vectors. Switching models requires a **full re-index** of any persistent vector store (qdrant, hana-vector, pg-vector). In-memory stores rebuild on each restart automatically.
 
+### maxBatchSize — requests vs. request size
+
+`rag.maxBatchSize` caps how many texts go into one `embedBatch` call. It trades the number of requests against the size of each one, and it is the knob that keeps startup tool vectorization inside a provider's limits.
+
+```yaml
+rag:
+  embedder: sap-ai-core
+  model: gemini-embedding
+  maxBatchSize: 250
+```
+
+Precedence: `rag.maxBatchSize` → the provider's declared cap → **100**.
+
+A catalog of `N` texts costs `ceil(N / maxBatchSize)` requests. Nothing in the agent is tuned to a particular catalog size — MCP servers add and remove tools, and the cap is a property of the embedding provider, not of the tool set.
+
+- The default of 100 is deliberately conservative: it is below every cap we have confirmed, so it is safe on any provider.
+- Raising it to the provider's real ceiling reduces round trips. `FoundationModelsEmbedder` already declares 250 for the `gemini` family, so that happens without configuration.
+- Lower it when the tenant's quota is stricter than the model's documented limit. Exceeding a hard cap is not a slowdown but a `400`.
+
+One shared embedder has one cap. When several stores share an instance, the first composition owns the value and a differing explicit cap on a later store is ignored with a warning.
+
 ---
 
 ## RAG Retrieval Tuning

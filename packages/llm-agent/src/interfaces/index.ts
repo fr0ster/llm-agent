@@ -150,7 +150,7 @@ export type {
   RagCollectionMeta,
   RagCollectionScope,
 } from './rag.js';
-export { isBatchEmbedder } from './rag.js';
+export { isBatchEmbedder, isBatchSizeLimited } from './rag.js';
 export type { ILlmRateLimiter } from './rate-limiter.js';
 export {
   type IReadinessReporter,
@@ -249,6 +249,11 @@ export type {
 } from './subagent-context.js';
 export type { ITaskFormalizer, ITaskSpec } from './task-spec.js';
 export { renderTaskSpec } from './task-spec.js';
+export {
+  type IToolCatalogReporter,
+  isToolCatalogReporter,
+  type ToolCatalogStatus,
+} from './tool-catalog.js';
 export type {
   IToolLoopContextStrategy,
   JsonValue,

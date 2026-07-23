@@ -2,12 +2,16 @@ import type {
   EmbedderFactory,
   IDocumentEnricher,
   IEmbedder,
+  ILogger,
   IQueryPreprocessor,
   IRag,
   ISearchStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  composeResilientEmbedder,
+  DEFAULT_MAX_BATCH_SIZE,
   InMemoryRag,
+  isBatchSizeLimited,
   MissingProviderError,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
@@ -118,6 +122,12 @@ export interface EmbedderResolutionConfig {
    * `'orchestration'` (default) uses the SAP SDK; `'foundation-models'` calls the REST inference API.
    */
   scenario?: 'orchestration' | 'foundation-models';
+  /**
+   * Cap on texts per embedBatch call. Precedence: this value → the provider's
+   * declared cap (IBatchSizeLimited) → DEFAULT_MAX_BATCH_SIZE. Set it when the
+   * tenant's real limit is lower than the model's documented one.
+   */
+  maxBatchSize?: number;
 }
 
 export interface EmbedderResolutionOptions {
@@ -125,6 +135,8 @@ export interface EmbedderResolutionOptions {
   injectedEmbedder?: IEmbedder;
   /** Additional embedder factories (merged with built-ins). */
   extraFactories?: Record<string, EmbedderFactory>;
+  /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
+  logger?: ILogger;
 }
 
 /**
@@ -139,7 +151,21 @@ export function resolveEmbedder(
   cfg: EmbedderResolutionConfig,
   options?: EmbedderResolutionOptions,
 ): IEmbedder {
-  if (options?.injectedEmbedder) return options.injectedEmbedder;
+  // Chunking and retry are properties of the embedder, applied HERE — this is
+  // the single choke point every RAG backend goes through, and the instance
+  // startup tool vectorization reaches via the store's private field.
+  const compose = (raw: IEmbedder): IEmbedder =>
+    composeResilientEmbedder(raw, {
+      explicitMaxBatchSize: cfg.maxBatchSize,
+      fallbackMaxBatchSize: isBatchSizeLimited(raw)
+        ? raw.maxBatchSize
+        : DEFAULT_MAX_BATCH_SIZE,
+      logger: options?.logger,
+    });
+
+  // The injected path is composed too: a consumer's DI'd embedder would
+  // otherwise bypass chunking entirely. composeResilientEmbedder is idempotent.
+  if (options?.injectedEmbedder) return compose(options.injectedEmbedder);
 
   const name = cfg.embedder ?? 'ollama';
   const opts = {
@@ -153,7 +179,7 @@ export function resolveEmbedder(
 
   // Check built-in prefetch-based factories first
   if (name in builtInEmbedderFactories) {
-    return builtInEmbedderFactories[name](opts);
+    return compose(builtInEmbedderFactories[name](opts));
   }
 
   // Fall back to consumer-registered extra factories
@@ -167,7 +193,7 @@ export function resolveEmbedder(
       `Unknown embedder "${name}". Register a factory or use: ${known.join(', ')}`,
     );
   }
-  return extraFactory(opts);
+  return compose(extraFactory(opts));
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +203,11 @@ export function resolveEmbedder(
 export interface RagResolutionConfig {
   type?: 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector';
   embedder?: string;
+  /**
+   * Cap on texts per embedBatch call. Precedence: this value → the provider's
+   * declared cap → DEFAULT_MAX_BATCH_SIZE.
+   */
+  maxBatchSize?: number;
   url?: string;
   apiKey?: string;
   model?: string;
@@ -217,6 +248,8 @@ export interface RagResolutionOptions {
   injectedEmbedder?: IEmbedder;
   /** Additional embedder factories (merged with built-ins). */
   extraFactories?: Record<string, EmbedderFactory>;
+  /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
+  logger?: ILogger;
 }
 
 /**

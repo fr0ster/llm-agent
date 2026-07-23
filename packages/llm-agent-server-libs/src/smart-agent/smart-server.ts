@@ -156,6 +156,12 @@ export interface SmartServerRagConfig {
   autoCreateSchema?: boolean;
   poolMax?: number;
   connectTimeout?: number;
+  /**
+   * Cap on texts per embedBatch call. Precedence: this value → the provider's
+   * declared cap → the library default (100). Set it when the tenant's real
+   * limit is lower than the model's documented one.
+   */
+  maxBatchSize?: number;
   /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
   resourceGroup?: string;
   /**
@@ -1039,6 +1045,7 @@ export class SmartServer {
       this.cfg.rag,
       this._deps.embedder ?? this.cfg.embedder,
       mergedEmbedderFactories,
+      this._fileLogger,
     );
     // Hold the resolved embedder so buildServerCtx can thread it onto every
     // pipeline context (the controller pipeline needs it for target-state).

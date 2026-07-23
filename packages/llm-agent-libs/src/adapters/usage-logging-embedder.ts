@@ -4,7 +4,11 @@ import type {
   IEmbedderBatch,
   IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
-import { isBatchEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  brandResilient,
+  getResilienceMetadata,
+  isBatchEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 
 const BRAND = Symbol.for('@mcp-abap-adt/usage-logging-embedder');
 
@@ -93,10 +97,17 @@ class UsageLoggingBatchEmbedder
 /**
  * Idempotent: returns `inner` unchanged if already wrapped; batch-capable when
  * `inner` is an IEmbedderBatch (preserves `isBatchEmbedder`).
+ *
+ * Also propagates the embedder-resilience metadata: `inner` is protected, so a
+ * caller holding this wrapper cannot see a brand that sits on a layer below,
+ * and re-resolution would compose the resilience decorators a second time.
  */
 export function wrapEmbedder(inner: IEmbedder): IEmbedder {
   if ((inner as { [BRAND]?: boolean })[BRAND]) return inner;
-  return isBatchEmbedder(inner)
+  const wrapped = isBatchEmbedder(inner)
     ? new UsageLoggingBatchEmbedder(inner)
     : new UsageLoggingEmbedder(inner);
+  const meta = getResilienceMetadata(inner);
+  if (meta) brandResilient(wrapped, meta);
+  return wrapped;
 }

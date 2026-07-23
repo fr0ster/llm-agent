@@ -46,7 +46,7 @@ The codebase is split across **six npm packages**:
 
 ### Package responsibilities
 
-- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces, shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
+- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces, shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, the embedder resilience decorators (`BatchChunkingEmbedder`, `RetryEmbedder`, `composeResilientEmbedder`), `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
 
 - **`@mcp-abap-adt/llm-agent-mcp`** — `MCPClientWrapper`, `McpClientAdapter`, factory (`createDefaultMcpClient`), and connection strategies (`LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`). Depends on `llm-agent`.
 
@@ -579,6 +579,18 @@ The `ILlm` chain supports two optional decorators, composed by the builder:
 - **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`.
 
 Composition order: `RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry sits outside the circuit breaker so retry attempts are not counted as separate failures. Token usage is tracked by `IRequestLogger` (injected via builder) rather than a decorator wrapper.
+
+The `IEmbedder` chain has its own pair, composed once by `resolveEmbedder` (`@mcp-abap-adt/llm-agent-rag`) so that **every** `embedBatch` caller inherits them — startup MCP tool vectorization, document ingest, and anything a consumer writes:
+
+- **`BatchChunkingEmbedder`** — splits `embedBatch` input into provider-safe chunks, sequentially (concurrent chunks would reintroduce the rate limiting chunking exists to avoid). The chunk size comes from `rag.maxBatchSize` → the provider's `IBatchSizeLimited.maxBatchSize` → `DEFAULT_MAX_BATCH_SIZE` (100). Validates the cap as a positive safe integer at construction and rejects a chunk that returns the wrong number of embeddings.
+- **`RetryEmbedder` / `RetryBatchEmbedder`** — retry with exponential backoff, selected by the `withRetry` factory.
+
+Composition order: `wrapEmbedder(BatchChunkingEmbedder(RetryBatchEmbedder(provider)))`. Retry sits **inside** chunking so each chunk retries independently — a failure on chunk 20 must not re-issue chunks 1-19.
+
+Two invariants hold across that chain:
+
+- **Batch capability is preserved, never fabricated.** `isBatchEmbedder` only tests for the presence of `embedBatch`, so each layer picks its class by inspecting its inner (the `wrapEmbedder` pattern). A decorator that exposed `embedBatch` unconditionally would make a non-batch embedder look batch-capable and send callers down the batch path.
+- **Composition is idempotent, and its metadata travels.** `composeResilientEmbedder` brands the chain with a symbol-keyed `{ maxBatchSize }`, and `wrapEmbedder` propagates that brand onto its own wrapper — its `inner` is `protected`, so a re-resolution could not otherwise see it and would stack the decorators. The cap is owned by the first composition; a later call carrying a *different explicit* `maxBatchSize` keeps the original and logs one warning.
 
 ## Protocol Contracts
 

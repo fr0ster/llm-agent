@@ -13,7 +13,11 @@
  * failed with empty context.
  */
 
-import type { EmbedderFactory, IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type {
+  EmbedderFactory,
+  IEmbedder,
+  ILogger,
+} from '@mcp-abap-adt/llm-agent';
 import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
   prefetchEmbedderFactories,
@@ -25,12 +29,21 @@ export async function resolveAgentEmbedder(
   rag: SmartServerRagConfig | undefined,
   diEmbedder: IEmbedder | undefined,
   extraFactories: Record<string, EmbedderFactory>,
+  logger?: ILogger,
 ): Promise<IEmbedder | undefined> {
   // Canonical owner: every non-undefined embedder is wrapped here so its
   // embed() calls log token usage to the per-request logger (carried on
   // CallOptions). wrapEmbedder is idempotent, so a later builder.withEmbedder
   // wrap is a no-op.
-  if (diEmbedder) return wrapEmbedder(diEmbedder);
+  //
+  // The DI'd embedder goes through resolveEmbedder as well, not straight to
+  // wrapEmbedder: otherwise a consumer-supplied embedder would bypass batch
+  // chunking and retry entirely.
+  if (diEmbedder) {
+    return wrapEmbedder(
+      resolveEmbedder(rag ?? {}, { injectedEmbedder: diEmbedder, logger }),
+    );
+  }
   // No RAG, or a bare in-memory BM25 store → no embedder is used.
   if (!rag || (rag.type === 'in-memory' && rag.embedder == null)) {
     return undefined;
@@ -38,7 +51,7 @@ export async function resolveAgentEmbedder(
   // Named embedders must be built-in (ollama/openai/sap-ai-core); custom
   // embedders are supplied via DI (handled above). Mirrors makeRag's contract.
   await prefetchEmbedderFactories([rag.embedder ?? 'ollama']);
-  const resolved = resolveEmbedder(rag, { extraFactories });
+  const resolved = resolveEmbedder(rag, { extraFactories, logger });
   return resolved ? wrapEmbedder(resolved) : undefined;
 }
 
@@ -62,7 +75,25 @@ export async function resolveToolsStoreEmbedder(
   toolsStoreCfg: SmartServerRagConfig,
   diEmbedder: IEmbedder | undefined,
   extraFactories: Record<string, EmbedderFactory>,
+  logger?: ILogger,
 ): Promise<IEmbedder | undefined> {
-  if (current) return current;
-  return resolveAgentEmbedder(toolsStoreCfg, diEmbedder, extraFactories);
+  if (current) {
+    // #141's contract is identity: an existing embedder must be reused, never
+    // rebuilt. So route through the resolver ONLY when this store explicitly
+    // asks for a cap — the sole input that can conflict. Without that, running
+    // the resolver would wrap a non-resilient `current` and change identity for
+    // configs that requested nothing.
+    if (toolsStoreCfg.maxBatchSize === undefined) return current;
+    return resolveEmbedder(toolsStoreCfg, {
+      injectedEmbedder: current,
+      extraFactories,
+      logger,
+    });
+  }
+  return resolveAgentEmbedder(
+    toolsStoreCfg,
+    diEmbedder,
+    extraFactories,
+    logger,
+  );
 }
