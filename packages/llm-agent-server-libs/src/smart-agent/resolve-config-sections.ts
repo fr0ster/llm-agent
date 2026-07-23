@@ -38,6 +38,28 @@ export function resolveLlmSection(
     : undefined;
 }
 
+/**
+ * Read an optional positive-integer YAML key, failing fast on a bad value.
+ *
+ * Silently coercing (`Number('many') === NaN`) would surface much later as an
+ * unexplained default, which is the failure mode this section is prone to: it
+ * projects YAML through an explicit allow-list, so anything unlisted or
+ * unparsed disappears without a word.
+ */
+function positiveIntOption(
+  value: unknown,
+  key: string,
+): Record<string, number> {
+  if (value === undefined) return {};
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < 1) {
+    throw new Error(
+      `Invalid ${key}: expected a positive integer, got ${JSON.stringify(value)}`,
+    );
+  }
+  return { [key.split('.').pop() as string]: n };
+}
+
 export function resolveRagSection(
   yaml: YamlConfig,
   args: Record<string, unknown>,
@@ -60,6 +82,12 @@ export function resolveRagSection(
         dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
         vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
         keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
+        // Left absent when unset so the provider's declared cap wins; see
+        // composeResilientEmbedder's precedence (YAML → provider → default).
+        ...positiveIntOption(
+          get(yaml, 'rag', 'maxBatchSize'),
+          'rag.maxBatchSize',
+        ),
         ...(get(yaml, 'rag', 'resourceGroup') !== undefined
           ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
           : {}),
