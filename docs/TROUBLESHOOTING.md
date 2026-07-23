@@ -210,7 +210,7 @@ On releases before #236 the same situation produced one `Batch embedding failed`
 
 **Cause.** The embedding provider caps batch size — SAP AI Core `gemini-embedding` routes to Vertex, which rejects a batch of 251 or more — and the MCP catalog is larger than that cap.
 
-**Fix.** Upgrade to the release containing #236: the embedder chunks automatically, so a 356-tool catalog goes out as two calls of 250 and 106. If your tenant's real limit is lower than the model's documented one, set it explicitly:
+**Fix.** Upgrade to the release containing #236: the embedder chunks automatically, splitting `N` tools into `ceil(N / cap)` calls whatever the catalog size happens to be. If your tenant's real limit is lower than the model's documented one, set it explicitly:
 
 ```yaml
 rag:
@@ -223,7 +223,7 @@ rag:
 
 **Symptom.** A burst of `429 Too Many Requests` failures on startup; some tools never make it into the RAG store.
 
-**Cause.** One embedding request per tool. This is now only reachable when the embedder is not batch-capable, or when the batch call failed and the sequential fallback ran: a batch-capable embedder issues one request per chunk instead (4 requests for 356 tools at the default cap of 100).
+**Cause.** One embedding request per tool. This is now only reachable when the embedder is not batch-capable, or when the batch call failed and the sequential fallback ran: a batch-capable embedder issues `ceil(N / cap)` requests instead of `N`.
 
 **Fix.** Retry with exponential backoff is built into the embedder chain (`RetryEmbedder`, defaults `maxAttempts: 3`, `backoffMs: 2000`, `retryOn: [429, 500, 502, 503]`). That handles transient 429s but not sustained throttling. For sustained limits:
 

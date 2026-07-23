@@ -40,7 +40,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 
 - **Tool vectorization logs one summary line instead of one warning per tool** —
-  `vectorized 356/356 MCP tools`, or `vectorized 338/356 MCP tools, 18 failed: …`.
+  `vectorized <n>/<total> MCP tools`, with the failed names (truncated) and the
+  provider's reason appended when the batch path was abandoned.
   A tool now counts as vectorized only when the write returns `ok: true`; a
   write that throws is charged to that tool and the loop continues. A tools
   store with no writer is skipped entirely and reports no status, rather than
