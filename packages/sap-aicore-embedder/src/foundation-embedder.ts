@@ -48,6 +48,16 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   private readonly tokenProvider: TokenProvider;
   private deploymentIdPromise: Promise<string> | null = null;
 
+  /**
+   * Provider batch cap, set only for families with a confirmed limit — see
+   * IBatchSizeLimited. Vertex rejects a batchSize of 251 or more:
+   * "supported range is from 1 (inclusive) to 251 (exclusive)".
+   *
+   * NOT `implements IBatchSizeLimited`: one class serves every family, and the
+   * interface's property is required, which would give every instance a cap.
+   */
+  readonly maxBatchSize?: number;
+
   constructor(config: FoundationModelsEmbedderConfig) {
     const creds = config.credentials ?? this.loadCredentialsFromEnv();
     this.model = config.model;
@@ -60,6 +70,7 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       clientSecret: creds.clientSecret,
       tokenUrl: creds.tokenUrl,
     });
+    if (this.family === 'gemini') this.maxBatchSize = 250;
   }
 
   async embed(text: string, _options?: CallOptions): Promise<IEmbedResult> {

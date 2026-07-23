@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import { isBatchSizeLimited } from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
 
 const originalFetch = globalThis.fetch;
@@ -275,4 +276,16 @@ test('embeddings request uses Bearer + AI-Resource-Group headers', async () => {
   assert.equal(headers.Authorization, 'Bearer tok');
   assert.equal(headers['AI-Resource-Group'], 'default');
   assert.equal(embedCall.init?.method, 'POST');
+});
+
+test('gemini declares the Vertex batch cap of 250', () => {
+  const e = makeGeminiEmbedder();
+  assert.equal(e.maxBatchSize, 250);
+  assert.equal(isBatchSizeLimited(e), true);
+});
+
+test('non-gemini declares no cap (undefined, not absent)', () => {
+  const e = makeOpenAiEmbedder();
+  assert.equal(e.maxBatchSize, undefined);
+  assert.equal(isBatchSizeLimited(e), false);
 });
