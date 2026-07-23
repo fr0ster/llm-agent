@@ -81,6 +81,11 @@ export function isBatchSizeLimited(
 
 `IEmbedderBatch` is not modified.
 
+The guard tests the **value**, not key presence: it returns `true` only for a
+positive safe integer. An implementer may carry `maxBatchSize?: number` and leave
+it `undefined` for models whose cap is unknown (§7), and `'maxBatchSize' in e`
+would wrongly accept that.
+
 **Contract direction: provider → composition, never decorator → decorator.** The
 cap is read from the bare provider instance at the composition point (§5),
 *before* any decorator is applied, and handed to the chunker as a plain number.
@@ -164,7 +169,8 @@ only `message` and `code` — no status field. A shared extractor resolves the
 status in this order:
 
 1. a numeric `status` / `statusCode` property on the thrown value;
-2. the same, recursively, on `cause`;
+2. the same, walking `cause` — bounded by a depth limit and a `visited` set, so a
+   self-referential or cyclic `cause` chain cannot hang the extractor;
 3. only then a cautious match against the message text.
 
 Step 3 is last on purpose. The precedent being ported, `RetryLlm.isRetryable`
@@ -211,9 +217,43 @@ produces one usage record carrying the aggregated result usage — chunking does
 not inflate the call count, and failed retry attempts, which return no usage, are
 not counted.
 
-**Idempotence** uses the same brand-symbol mechanism as `wrapEmbedder`
-(`usage-logging-embedder.ts:98`): an already-decorated embedder is returned
-unchanged.
+### 4a. Idempotence and configuration ownership
+
+Idempotence uses a brand symbol as `wrapEmbedder` does, but a brand alone is not
+sufficient here, and the reason is specific to this codebase.
+
+`wrapEmbedder`'s brand is an **own property of the wrapper instance**
+(`usage-logging-embedder.ts:9,39`):
+
+```ts
+const BRAND = Symbol.for('@mcp-abap-adt/usage-logging-embedder');
+class UsageLoggingEmbedder implements IEmbedder {
+  readonly [BRAND] = true;
+  constructor(protected readonly inner: IEmbedder) {}
+```
+
+`inner` is `protected`, so nothing outside can traverse the chain. Given
+`Usage(Chunk(Retry(provider)))`, a resilience brand checked on the outer object
+reads `undefined` — the brand sits on the hidden inner layer. A second pass
+through `resolveEmbedder` would therefore decorate again, and the re-resolved cap
+could silently drop from the provider's 250 to the default 100.
+
+Two rules close this:
+
+**Brand propagation.** `wrapEmbedder` copies the resilience brand from its inner
+embedder onto the wrapper it returns. This is a one-line additive change in our
+own package, and it is a narrow, explicit contract — one brand, propagated by the
+one decorator that composes over resilience — not the general "every decorator
+proxies every capability" obligation rejected in §1. The public helper
+`isResilient(e: IEmbedder): boolean` is the only supported way to ask.
+
+**Configuration ownership.** The cap is owned by the composition that first
+builds the chain. If a later call reaches an already-resilient embedder with a
+*different* `maxBatchSize`, the existing chain is returned unchanged and a
+warning names both values. Recomposition with new settings is explicitly not
+supported: silently rebuilding would double the decorators, and silently
+honouring the newer value would make the effective cap depend on call order.
+A consumer who needs a different cap sets it on the composition root.
 
 ### 5. Composition point
 
@@ -245,7 +285,10 @@ Idempotence is not hypothetical on the SmartServer path: `resolveAgentEmbedder`
 calls `resolveEmbedder`, wraps the result with `wrapEmbedder`, and then passes
 that instance to `makeRag` as `injectedEmbedder` — where it reaches
 `resolveEmbedder`'s line 142 early return a second time. Without idempotence the
-decorators would stack on every boot.
+decorators would stack on every boot — and because that second instance arrives
+already wrapped by `wrapEmbedder`, an own-property brand check is not enough.
+This is exactly what §4a's brand propagation exists for; the same section governs
+what happens when the two passes disagree about the cap.
 
 ### 6. Default cap
 
@@ -261,16 +304,36 @@ a consumer who knows better raises it via YAML.
 
 ### 7. Cap declaration in `sap-aicore-embedder`
 
-`FoundationModelsEmbedder` (`packages/sap-aicore-embedder/src/foundation-embedder.ts:42`)
-implements `IBatchSizeLimited`. The value derives from `this.family`, set by
-`detectFamily(config.model)` at line 54 — the same discriminator that already
-selects the Vertex request shape `{ instances: [...] }` at line 100:
+One class, `FoundationModelsEmbedder`
+(`packages/sap-aicore-embedder/src/foundation-embedder.ts:42`), serves every
+model family — `detectFamily(config.model)` at line 54 is the discriminator that
+already selects the Vertex request shape `{ instances: [...] }` at line 100.
+
+That rules out `implements IBatchSizeLimited`: the interface's `maxBatchSize` is
+required, so declaring it would give *every* instance a cap, including families
+whose real limit we have not verified. "No cap declared for other families" would
+be unimplementable.
+
+Instead the property is **conditionally assigned, without `implements`**:
+
+```ts
+/** Declared only for families with a confirmed provider cap (see IBatchSizeLimited). */
+readonly maxBatchSize?: number;
+
+// in the constructor:
+if (this.family === 'gemini') this.maxBatchSize = 250;
+```
 
 - `gemini` → **250**. Confirmed by the provider's own error text: "supported
   range is from 1 (inclusive) to 251 (exclusive)".
-- Other families → no cap declared, so `DEFAULT_MAX_BATCH_SIZE` applies. No
-  documented AI Core limit for the OpenAI family was verified, so none is
+- Other families → the property is absent, so `DEFAULT_MAX_BATCH_SIZE` applies.
+  No documented AI Core limit for the OpenAI family was verified, so none is
   asserted.
+
+`isBatchSizeLimited` must therefore be a **value** guard, not a key-presence
+guard: it accepts only a positive safe integer. `'maxBatchSize' in e` would be
+true for an instance carrying `undefined`, which is exactly the shape this
+produces.
 
 ### 8. YAML key
 
@@ -312,17 +375,36 @@ Signature changes additively:
 
 ```ts
 export interface ToolVectorizationSummary {
+  /** Tools successfully listed across all clients. */
   total: number;
   vectorized: number;
   failed: string[]; // tool names
+  /** Clients whose listTools() failed — their tools are absent from `total`. */
+  clientFailures: number;
+  /** false when any client failed to list, or any listed tool failed to embed. */
+  complete: boolean;
 }
 
 export async function vectorizeMcpTools(
-  /* unchanged params */
+  clients: IMcpClient[],
+  toolsRag: IRag | undefined,
+  requestLogger: IRequestLogger,
+  logger: ILogger | undefined,
 ): Promise<ToolVectorizationSummary>;
 ```
 
+The parameter list is unchanged — no status holder is threaded in. The function
+stays pure with respect to reporting: it returns the summary, and the builder
+publishes it (§10). It never throws; per-client failures are caught internally as
+they are today (lines 178-187), so the caller always receives a summary.
+
 Existing callers that ignore the result are unaffected.
+
+`complete` exists because counting alone cannot express the failure. With ten
+tools vectorized from client A and `listTools()` failing on client B, the
+counters read `{ vectorized: 10, total: 10 }` — indistinguishable from a healthy
+boot, since B's tools were never counted. Health therefore keys off `complete`,
+not off `vectorized === total`.
 
 **Aggregation across MCP clients.** `vectorizeMcpTools` iterates every client, so
 the summary is defined as follows:
@@ -330,13 +412,12 @@ the summary is defined as follows:
 - One snapshot for the whole call, aggregated over all clients. `total` is the
   sum of tools successfully listed across clients; `vectorized` and `failed`
   accumulate likewise.
-- A failing `listTools()` — today silently skipped at line 30 — counts as a
-  client-level failure and marks the catalog incomplete, so a server whose second
-  MCP endpoint is down cannot report a complete catalog.
-- The status holder is published **once**, in a `finally`, so an exception
-  mid-way cannot leave a stale "complete" reading. Per-client updates are
-  explicitly avoided: the last client would otherwise overwrite its
-  predecessors' results.
+- A failing `listTools()` — today silently skipped at line 30 — increments
+  `clientFailures` and sets `complete: false`, so a server whose second MCP
+  endpoint is down cannot report a complete catalog.
+- The builder publishes the returned summary **once**, after the call. Per-client
+  publication is explicitly avoided: the last client would otherwise overwrite
+  its predecessors' results.
 
 **Known limitation, out of scope:** identical tool names exported by different
 MCP servers collide today — the record id is `tool:${t.name}` (line 56), so the
@@ -358,7 +439,9 @@ Another small interface in `llm-agent`, same ISP pattern:
 
 ```ts
 export interface IToolCatalogReporter {
-  getToolCatalogStatus(): { vectorized: number; total: number } | undefined;
+  getToolCatalogStatus():
+    | { vectorized: number; total: number; complete: boolean }
+    | undefined;
 }
 
 export function isToolCatalogReporter(x: unknown): x is IToolCatalogReporter;
@@ -369,23 +452,24 @@ deployment that never runs it. `HealthChecker` treats that as healthy, which
 preserves current behaviour.
 
 State lives in a small holder (`packages/llm-agent-libs/src/mcp/tool-catalog-status.ts`)
-that the builder creates, passes to `vectorizeMcpTools`, and places in the
-agent's deps. `SmartAgent` delegates in three lines, exactly as `isReady()`
-already does (`packages/llm-agent-libs/src/agent.ts:474-477`). `ISmartAgent` does
-not grow.
+that the builder creates and places in the agent's deps. The builder — not
+`vectorizeMcpTools` — writes the returned summary into it, keeping the
+vectorization function free of reporting concerns (§9). `SmartAgent` delegates in
+three lines, exactly as `isReady()` already does
+(`packages/llm-agent-libs/src/agent.ts:474-477`). `ISmartAgent` does not grow.
 
 `HealthComponentStatus` (`packages/llm-agent/src/interfaces/health.ts:4`) gains an
 optional field:
 
 ```ts
-toolCatalog?: { vectorized: number; total: number };
+toolCatalog?: { vectorized: number; total: number; complete: boolean };
 ```
 
 `HealthChecker.check()` (`packages/llm-agent-libs/src/health/health-checker.ts:29`)
 reads it through the type guard and extends the condition at line 56:
 
 ```ts
-const toolCatalogOk = !tc || tc.vectorized === tc.total;
+const toolCatalogOk = !tc || tc.complete;
 if (!llmOk || !ragOk || !mcpAllOk || anyCircuitOpen || !toolCatalogOk)
   status = 'degraded';
 ```
@@ -449,7 +533,12 @@ Composition:
   takes the sequential path instead of throwing. Asserted for the retry layer in
   isolation as well, not only for the full chain — a batch-capable
   `RetryEmbedder` would reintroduce the defect silently.
-- Composing twice yields the same instance (idempotence).
+- Composing twice yields the same instance (idempotence) — **including through
+  `wrapEmbedder`**: `resolveEmbedder(wrapEmbedder(composed))` returns it
+  unchanged, the regression test for brand propagation (§4a). Asserted by
+  counting inner calls, not by identity alone, so a stacked chunker is caught.
+- Re-composing an already-resilient embedder with a different `maxBatchSize`
+  keeps the original cap and logs a warning naming both values.
 
 `RetryEmbedder`:
 
@@ -458,21 +547,30 @@ Composition:
 - Status extraction: an error carrying `status: 429`, one carrying it on `cause`,
   and one carrying it only in the message — all retried; a message containing
   `429` incidentally with a non-retryable status property is **not** retried.
+- A cyclic `cause` chain terminates instead of hanging.
 - An aborted signal stops retrying.
 
-`FoundationModelsEmbedder`: `maxBatchSize === 250` for a gemini model.
+`FoundationModelsEmbedder`:
+
+- `maxBatchSize === 250` for a gemini model, and `isBatchSizeLimited` accepts it.
+- For a non-gemini model the property is absent and `isBatchSizeLimited` returns
+  `false`, so the default applies.
+- `isBatchSizeLimited` rejects an object whose `maxBatchSize` is `undefined`,
+  `0` or fractional — the value-guard requirement from §1.
 
 `vectorizeMcpTools`:
 
 - The summary aggregates across **two** clients rather than reporting the last
-  one; a failing `listTools()` on one client marks the catalog incomplete.
-- The status holder is published once, and is published even when vectorization
-  throws.
-- The summary counts correctly on partial failure, and exactly one warning is
-  emitted instead of N.
+  one.
+- Client A lists 10 tools and all embed, client B's `listTools()` fails →
+  `{ vectorized: 10, total: 10, clientFailures: 1, complete: false }`. This is
+  the case that counters alone report as healthy.
+- The summary counts correctly on partial embed failure, and exactly one warning
+  is emitted instead of N.
 
-`HealthChecker`: `vectorized < total` → `degraded`; equal → `healthy`; reporter
-absent or returning `undefined` → `healthy` (backward compatibility).
+`HealthChecker`: `complete: false` → `degraded` (including the
+`vectorized === total` case above); `complete: true` → `healthy`; reporter absent
+or returning `undefined` → `healthy` (backward compatibility).
 
 Final gate before merge: a live run against the reporter's 356-tool catalog.
 
