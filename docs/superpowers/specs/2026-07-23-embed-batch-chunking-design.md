@@ -240,20 +240,40 @@ could silently drop from the provider's 250 to the default 100.
 
 Two rules close this:
 
-**Brand propagation.** `wrapEmbedder` copies the resilience brand from its inner
-embedder onto the wrapper it returns. This is a one-line additive change in our
-own package, and it is a narrow, explicit contract — one brand, propagated by the
-one decorator that composes over resilience — not the general "every decorator
-proxies every capability" obligation rejected in §1. The public helper
-`isResilient(e: IEmbedder): boolean` is the only supported way to ask.
+**Metadata propagation.** A boolean brand is not enough. The ownership rule below
+has to compare the *existing* effective cap against a newly requested one, and a
+`true` flag cannot answer that — while the chunker that knows the number is
+unreachable behind `protected inner`. The brand therefore carries data:
+
+```ts
+export interface IEmbedderResilience {
+  readonly resilience: { maxBatchSize?: number };
+}
+
+/** Undefined iff the embedder has no resilience layer. */
+export function getResilienceMetadata(
+  e: IEmbedder,
+): { maxBatchSize?: number } | undefined;
+```
+
+`maxBatchSize` is optional inside the metadata because a non-batch embedder gets
+retry without chunking (§4), so there is no cap to report.
+
+`wrapEmbedder` propagates the **metadata object**, not a flag, from its inner
+embedder onto the wrapper it returns. This is a narrow, explicit contract — one
+property, propagated by the one decorator that composes over resilience — not the
+general "every decorator proxies every capability" obligation rejected in §1.
+`getResilienceMetadata` is the only supported way to ask; there is no separate
+boolean helper, since `!== undefined` answers that question.
 
 **Configuration ownership.** The cap is owned by the composition that first
 builds the chain. If a later call reaches an already-resilient embedder with a
 *different* `maxBatchSize`, the existing chain is returned unchanged and a
-warning names both values. Recomposition with new settings is explicitly not
-supported: silently rebuilding would double the decorators, and silently
-honouring the newer value would make the effective cap depend on call order.
-A consumer who needs a different cap sets it on the composition root.
+warning names both values — which is possible only because the metadata carries
+the original number. Recomposition with new settings is explicitly not supported:
+silently rebuilding would double the decorators, and silently honouring the newer
+value would make the effective cap depend on call order. A consumer who needs a
+different cap sets it on the composition root.
 
 ### 5. Composition point
 
@@ -317,7 +337,7 @@ be unimplementable.
 Instead the property is **conditionally assigned, without `implements`**:
 
 ```ts
-/** Declared only for families with a confirmed provider cap (see IBatchSizeLimited). */
+/** Set only for families with a confirmed provider cap (see IBatchSizeLimited). */
 readonly maxBatchSize?: number;
 
 // in the constructor:
@@ -326,9 +346,16 @@ if (this.family === 'gemini') this.maxBatchSize = 250;
 
 - `gemini` → **250**. Confirmed by the provider's own error text: "supported
   range is from 1 (inclusive) to 251 (exclusive)".
-- Other families → the property is absent, so `DEFAULT_MAX_BATCH_SIZE` applies.
-  No documented AI Core limit for the OpenAI family was verified, so none is
-  asserted.
+- Other families → the property is `undefined`, so `DEFAULT_MAX_BATCH_SIZE`
+  applies. No documented AI Core limit for the OpenAI family was verified, so
+  none is asserted.
+
+`undefined`, not absent: `tsconfig.base.json` sets `"target": "ES2022"` and does
+not set `useDefineForClassFields`, which therefore defaults to `true`. A declared
+field without an initializer is emitted as an own property holding `undefined`,
+so a non-gemini instance still *has* `maxBatchSize`. A `declare readonly` type-only
+declaration would make the absence physical, but that is unnecessary cleverness
+here — the guard below makes physical absence irrelevant.
 
 `isBatchSizeLimited` must therefore be a **value** guard, not a key-presence
 guard: it accepts only a positive safe integer. `'maxBatchSize' in e` would be
@@ -428,10 +455,22 @@ Logging replaces up to N warnings with one summary:
 
 ```
 vectorized 356/356 MCP tools
-vectorized 338/356 MCP tools, 18 failed: GetObjectInfo, GetInclude, …
+vectorized 338/356 MCP tools, 18 failed: GetObjectInfo, GetInclude, … (+8 more)
 ```
 
-Individual failures remain, demoted to `debug`.
+**Per-tool failure messages are removed, not demoted.** `LogEvent`
+(`packages/llm-agent/src/logger/types.ts:5-64`) is a closed union of ten
+variants ending in `{ type: 'warning'; traceId; message }` — there is no `debug`
+variant, so "demote to debug" would not compile. Of the three ways out —
+add `debug` to the union, drop the per-tool messages, or keep them as warnings —
+the union is a public type and adding a member breaks exhaustive `switch`
+statements in consumer code, while keeping the warnings contradicts the whole
+point of the change.
+
+Dropping them loses nothing: the complete list of failed tool names is already
+carried in `ToolVectorizationSummary.failed`, which is returned to the caller and
+published to the health reporter. Only the log line truncates, to keep one
+message bounded when a whole catalog fails; the full list stays in the summary.
 
 ### 10. Tool-catalog visibility
 
@@ -538,7 +577,9 @@ Composition:
   unchanged, the regression test for brand propagation (§4a). Asserted by
   counting inner calls, not by identity alone, so a stacked chunker is caught.
 - Re-composing an already-resilient embedder with a different `maxBatchSize`
-  keeps the original cap and logs a warning naming both values.
+  keeps the original cap and logs a warning naming both values — which requires
+  `getResilienceMetadata` to survive `wrapEmbedder` and to carry the number, not
+  a flag (§4a).
 
 `RetryEmbedder`:
 
@@ -553,8 +594,9 @@ Composition:
 `FoundationModelsEmbedder`:
 
 - `maxBatchSize === 250` for a gemini model, and `isBatchSizeLimited` accepts it.
-- For a non-gemini model the property is absent and `isBatchSizeLimited` returns
-  `false`, so the default applies.
+- For a non-gemini model `maxBatchSize === undefined` — asserted as `undefined`,
+  not as an absent key, since ES2022 class fields define it (§7) — and
+  `isBatchSizeLimited` returns `false`, so the default applies.
 - `isBatchSizeLimited` rejects an object whose `maxBatchSize` is `undefined`,
   `0` or fractional — the value-guard requirement from §1.
 
@@ -566,7 +608,8 @@ Composition:
   `{ vectorized: 10, total: 10, clientFailures: 1, complete: false }`. This is
   the case that counters alone report as healthy.
 - The summary counts correctly on partial embed failure, and exactly one warning
-  is emitted instead of N.
+  is emitted instead of N — with the failed names truncated in the message but
+  complete in `summary.failed`.
 
 `HealthChecker`: `complete: false` → `degraded` (including the
 `vectorized === total` case above); `complete: true` → `healthy`; reporter absent
