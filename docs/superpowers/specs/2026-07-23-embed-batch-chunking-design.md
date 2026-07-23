@@ -246,15 +246,31 @@ has to compare the *existing* effective cap against a newly requested one, and a
 unreachable behind `protected inner`. The brand therefore carries data:
 
 ```ts
+/** Registered symbol — matches wrapEmbedder's Symbol.for(...) precedent. */
+export const RESILIENCE_META = Symbol.for(
+  '@mcp-abap-adt/embedder-resilience',
+);
+
+export interface EmbedderResilienceMetadata {
+  maxBatchSize?: number;
+}
+
 export interface IEmbedderResilience {
-  readonly resilience: { maxBatchSize?: number };
+  readonly [RESILIENCE_META]: EmbedderResilienceMetadata;
 }
 
 /** Undefined iff the embedder has no resilience layer. */
 export function getResilienceMetadata(
   e: IEmbedder,
-): { maxBatchSize?: number } | undefined;
+): EmbedderResilienceMetadata | undefined;
 ```
+
+The key is a symbol, not a string property such as `resilience`: a string key
+could be matched structurally by an unrelated consumer embedder that happens to
+carry the same field, and the guard would then read a foreign object as our
+metadata. `Symbol.for` mirrors `wrapEmbedder`'s existing brand
+(`usage-logging-embedder.ts:9`) and keeps the guard an identity check rather than
+a shape check.
 
 `maxBatchSize` is optional inside the metadata because a non-batch embedder gets
 retry without chunking (§4), so there is no cap to report.
@@ -267,13 +283,43 @@ general "every decorator proxies every capability" obligation rejected in §1.
 boolean helper, since `!== undefined` answers that question.
 
 **Configuration ownership.** The cap is owned by the composition that first
-builds the chain. If a later call reaches an already-resilient embedder with a
-*different* `maxBatchSize`, the existing chain is returned unchanged and a
-warning names both values — which is possible only because the metadata carries
-the original number. Recomposition with new settings is explicitly not supported:
+builds the chain. Recomposition with new settings is explicitly not supported:
 silently rebuilding would double the decorators, and silently honouring the newer
 value would make the effective cap depend on call order. A consumer who needs a
 different cap sets it on the composition root.
+
+The check must be driven by an **explicit** request, never by a re-derived one:
+
+```
+if (getResilienceMetadata(e)) {
+  if (cfg.maxBatchSize === undefined) return e;            // nothing was asked for
+  if (cfg.maxBatchSize === meta.maxBatchSize) return e;    // same as owned
+  warn(meta.maxBatchSize, cfg.maxBatchSize); return e;     // conflict, first wins
+}
+```
+
+Re-deriving the cap on the second pass would fire on every normal boot. A bare
+Gemini provider yields 250 on the first pass; `wrapEmbedder` then hides the
+provider, so on the second pass `isBatchSizeLimited(usageWrapper)` is `false` and
+the derived value falls to `DEFAULT_MAX_BATCH_SIZE`. Comparing 250 against that
+100 would report a conflict that nobody configured. Only `cfg.maxBatchSize` — a
+value a human actually wrote — may trigger the comparison.
+
+**Warning channel.** `EmbedderResolutionOptions` (`rag-factories.ts:123-128`)
+carries only `injectedEmbedder` and `extraFactories`, so there is no way to
+report anything today. It gains an optional `logger?: ILogger`, and the conflict
+is reported as the existing `{ type: 'warning' }` `LogEvent`; with no logger
+supplied the resolution stays silent. This is the idiom already used throughout
+`vectorize-mcp-tools.ts` (`logger?.log({ type: 'warning', … })`).
+
+Fail-fast was considered and rejected here, unlike the invalid-value check in §2.
+A differing cap is reachable through a legitimate configuration: with multiple
+stores, `resolveToolsStoreEmbedder`
+(`packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:60-68`)
+deliberately reuses the agent's embedder across stores, so a tools store
+declaring its own `maxBatchSize` would meet an instance built for another store's
+config. Throwing would break boots that work today; one shared instance can only
+have one cap, and first-wins is the honest resolution.
 
 ### 5. Composition point
 
@@ -467,10 +513,10 @@ the union is a public type and adding a member breaks exhaustive `switch`
 statements in consumer code, while keeping the warnings contradicts the whole
 point of the change.
 
-Dropping them loses nothing: the complete list of failed tool names is already
-carried in `ToolVectorizationSummary.failed`, which is returned to the caller and
-published to the health reporter. Only the log line truncates, to keep one
-message bounded when a whole catalog fails; the full list stays in the summary.
+Dropping them loses nothing: the complete list of failed tool names is carried in
+`ToolVectorizationSummary.failed`, returned to the builder and retained in the
+status holder, so `getToolCatalogStatus()` exposes it in full (§10). Only the log
+line truncates, to keep one message bounded when a whole catalog fails.
 
 ### 10. Tool-catalog visibility
 
@@ -478,9 +524,8 @@ Another small interface in `llm-agent`, same ISP pattern:
 
 ```ts
 export interface IToolCatalogReporter {
-  getToolCatalogStatus():
-    | { vectorized: number; total: number; complete: boolean }
-    | undefined;
+  /** The full summary of the last vectorization run, or undefined if none ran. */
+  getToolCatalogStatus(): ToolVectorizationSummary | undefined;
 }
 
 export function isToolCatalogReporter(x: unknown): x is IToolCatalogReporter;
@@ -501,8 +546,19 @@ three lines, exactly as `isReady()` already does
 optional field:
 
 ```ts
-toolCatalog?: { vectorized: number; total: number; complete: boolean };
+toolCatalog?: {
+  vectorized: number;
+  total: number;
+  complete: boolean;
+  clientFailures: number;
+};
 ```
+
+The holder keeps the whole `ToolVectorizationSummary`, so `failed` — the complete
+list of tool names — stays reachable through the reporter for any consumer that
+wants it. The health body deliberately carries counters only: embedding hundreds
+of tool names in a payload that a load balancer polls every few seconds is not a
+diagnostic, it is a leak of boot detail into a hot path.
 
 `HealthChecker.check()` (`packages/llm-agent-libs/src/health/health-checker.ts:29`)
 reads it through the type guard and extends the condition at line 56:
@@ -576,10 +632,18 @@ Composition:
   `wrapEmbedder`**: `resolveEmbedder(wrapEmbedder(composed))` returns it
   unchanged, the regression test for brand propagation (§4a). Asserted by
   counting inner calls, not by identity alone, so a stacked chunker is caught.
-- Re-composing an already-resilient embedder with a different `maxBatchSize`
-  keeps the original cap and logs a warning naming both values — which requires
+- **Provider-derived cap, no YAML override, second resolve emits no warning.**
+  Gemini (250) → resilience → `wrapEmbedder` → resolve again with a config that
+  has no `maxBatchSize`: the chain is returned untouched, the cap stays 250, and
+  the logger records nothing. Without this the normal SmartServer boot would warn
+  about a 250 → 100 conflict nobody configured.
+- Re-composing with an **explicit** `maxBatchSize` that differs keeps the
+  original cap and logs one warning naming both values — which requires
   `getResilienceMetadata` to survive `wrapEmbedder` and to carry the number, not
   a flag (§4a).
+- Re-composing with an explicit `maxBatchSize` equal to the owned one is silent.
+- An embedder carrying a plain `resilience` property but not the symbol is not
+  treated as resilient.
 
 `RetryEmbedder`:
 
