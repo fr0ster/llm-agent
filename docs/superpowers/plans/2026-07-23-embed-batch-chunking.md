@@ -1441,28 +1441,42 @@ Expected: no errors.
 
 - [ ] **Step 6: Commit**
 
-Step 3 updates every call site of the two functions, and this plan cannot name
-those files in advance. Resolve them first, then stage explicitly — never
-`git add $(git diff --name-only)` over the whole worktree, which would sweep in
-unrelated local changes and mishandle paths containing spaces.
+The call sites are known — verified by grep across `packages/`, there is exactly
+one production caller:
+
+- `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:1038` —
+  `resolveAgentEmbedder(...)` inside `start()`. Add the server's logger as the
+  fourth argument.
+- `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:67` —
+  the internal `resolveToolsStoreEmbedder → resolveAgentEmbedder` hop, covered
+  by the rewrite in Step 3.
+
+`resolveToolsStoreEmbedder` has **no production caller at all** — only its own
+test file (`__tests__/resolve-agent-embedder.test.ts`) and the compiled `dist/`.
+It is a public seam kept for consumers since #141, so it is still threaded and
+tested, but do not go looking for a SmartServer path that exercises it.
+
+Re-run the grep before staging, in case the tree moved on:
 
 ```bash
-# 1. List what actually changed, scoped to this task's directory
-git status --short -- packages/llm-agent-server-libs/src/smart-agent
-
-# 2. Stage that directory plus the two files named in this task
-git add packages/llm-agent-server-libs/src/smart-agent
-
-# 3. Confirm nothing outside the task is staged
-git status --short
+grep -rn "resolveAgentEmbedder\|resolveToolsStoreEmbedder" packages/*/src | grep -v __tests__
 ```
 
-If Step 3 turned up a call site outside `smart-agent/`, add that path explicitly
-too. Then:
+Then stage exactly the files this task touched — never a whole directory, and
+never `git add $(git diff --name-only)`, which sweeps in unrelated local changes
+and breaks on paths containing spaces:
 
 ```bash
+git add \
+  packages/llm-agent-server-libs/src/smart-agent/smart-server.ts \
+  packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts \
+  packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-agent-embedder-resilience.test.ts
+git status --short   # confirm nothing unexpected is staged
 git commit -m "feat(llm-agent-server-libs): thread maxBatchSize and logger through embedder resolution"
 ```
+
+If the grep turned up a call site not listed above, add that exact path to the
+`git add` — one file at a time, not a directory.
 
 ---
 
@@ -1618,11 +1632,9 @@ Append to the existing test file:
 ```ts
 describe('vectorizeMcpTools summary', () => {
   it('aggregates across clients and flags a listTools failure', async () => {
-    const rag = makeWritableRag();
-    const ok = makeClient([{ name: 'A', description: 'a' }]);
-    const broken = makeFailingListClient();
+    const rag = makeRagWithEmbedder(undefined, makeWriter());
     const summary = await vectorizeMcpTools(
-      [ok, broken],
+      [makeClient([makeTool('A')]), makeFailingListClient()],
       rag,
       new CapturingRequestLogger(),
       undefined,
@@ -1634,9 +1646,9 @@ describe('vectorizeMcpTools summary', () => {
   });
 
   it('counts a write that resolves to undefined as failed', async () => {
-    const rag = makeRagWhoseWriterReturnsUndefined();
+    const rag = makeRagWithEmbedder(undefined, makeUndefinedWriter());
     const summary = await vectorizeMcpTools(
-      [makeClient([{ name: 'A', description: 'a' }])],
+      [makeClient([makeTool('A')])],
       rag,
       new CapturingRequestLogger(),
       undefined,
@@ -1647,21 +1659,9 @@ describe('vectorizeMcpTools summary', () => {
   });
 
   it('charges a throwing write to the tool, not the client, and keeps going', async () => {
-    let call = 0;
-    const rag = ragWith({
-      upsertRaw: async () => {
-        call++;
-        if (call === 1) throw new Error('boom');
-        return OK;
-      },
-    });
+    const rag = makeRagWithEmbedder(undefined, makeThrowOnceWriter());
     const summary = await vectorizeMcpTools(
-      [
-        makeClient([
-          { name: 'A', description: 'a' },
-          { name: 'B', description: 'b' },
-        ]),
-      ],
+      [makeClient([makeTool('A'), makeTool('B')])],
       rag,
       new CapturingRequestLogger(),
       undefined,
@@ -1674,20 +1674,12 @@ describe('vectorizeMcpTools summary', () => {
 
   it('logs exactly one usage record on the batch path', async () => {
     const requestLogger = new CapturingRequestLogger();
-    const rag = makeWritableRag();
-    (rag as unknown as { embedder: unknown }).embedder = {
-      embed: async () => ({ vector: [0] }),
-      embedBatch: async (texts: string[]) => texts.map(() => ({ vector: [0] })),
-    };
+    const rag = makeRagWithEmbedder(
+      makeBatchEmbedder(),
+      makeWriter({ hasBatchRaw: true }),
+    );
     await vectorizeMcpTools(
-      [
-        makeClient(
-          Array.from({ length: 5 }, (_, i) => ({
-            name: `T${i}`,
-            description: 'd',
-          })),
-        ),
-      ],
+      [makeClient(['T0', 'T1', 'T2', 'T3', 'T4'].map(makeTool))],
       rag,
       requestLogger,
       undefined,
@@ -1698,9 +1690,9 @@ describe('vectorizeMcpTools summary', () => {
   });
 
   it('returns undefined for a read-only store', async () => {
-    const readOnly = { query: async () => ({ ok: true, value: [] }) } as unknown as IRag;
+    const readOnly = { writer: () => undefined } as unknown as IRag;
     const summary = await vectorizeMcpTools(
-      [makeClient([{ name: 'A', description: 'a' }])],
+      [makeClient([makeTool('A')])],
       readOnly,
       new CapturingRequestLogger(),
       undefined,
@@ -1710,9 +1702,13 @@ describe('vectorizeMcpTools summary', () => {
 
   it('emits one warning, not one per tool', async () => {
     const events: LogEvent[] = [];
-    const rag = makeRagFailingAllWrites();
+    const rag = makeRagWithEmbedder(
+      undefined,
+      makeWriter({ failUpsert: true }),
+    );
+    const tools = Array.from({ length: 20 }, (_, i) => makeTool(`T${i}`));
     await vectorizeMcpTools(
-      [makeClient(Array.from({ length: 20 }, (_, i) => ({ name: `T${i}`, description: 'd' })))],
+      [makeClient(tools)],
       rag,
       new CapturingRequestLogger(),
       { log: (e) => events.push(e) },
@@ -1722,46 +1718,31 @@ describe('vectorizeMcpTools summary', () => {
 });
 ```
 
-Add these helpers next to the file's existing stubs:
+Before writing these, confirm the two reused option flags still behave as
+assumed — `makeWriter({ failUpsert: true })` must make `upsertRaw` return
+`{ ok: false }`, and `makeWriter({ hasBatchRaw: true })` must expose
+`upsertPrecomputedRaw`. Read lines 65-100 of the test file rather than trusting
+this plan.
+
+**Reuse the file's existing helpers — do NOT redeclare them.** The file already
+provides, at top level:
+
+- `makeTool(name: string): LlmTool` (line 54) — builds a complete `LlmTool`
+  (`{ name, description, parameters }`); the object literals a new helper would
+  invent do not satisfy that contract without a cast.
+- `makeClient(tools: LlmTool[]): IMcpClient` (line 58)
+- `makeWriter(opts?: { failUpsert?: boolean; hasBatchRaw?: boolean })` (line 65),
+  which also records `upsertCalls` / `precomputedCalls`
+- `makeBatchEmbedder(opts?: { throwOnBatch?: boolean })` (line 101)
+- `makeRagWithEmbedder(embedder, writer): IRag` (line 116)
+
+So `makeClient([makeTool('A'), makeTool('B')])` replaces the invented
+`makeClient([{ name: 'A', description: 'a' }])` throughout the new tests, and
+`makeRagWithEmbedder(undefined, makeWriter())` replaces `makeWritableRag()`.
+
+Only three genuinely new helpers are needed, named so they cannot collide:
 
 ```ts
-const OK = { ok: true as const, value: undefined };
-
-function ragWith(writer: unknown): IRag {
-  return {
-    query: async () => ({ ok: true, value: [] }),
-    healthCheck: async () => ({ ok: true, value: undefined }),
-    getById: async () => ({ ok: true, value: null }),
-    writer: () => writer,
-  } as unknown as IRag;
-}
-
-function makeWritableRag(): IRag {
-  return ragWith({
-    upsertRaw: async () => OK,
-    upsertPrecomputedRaw: async () => OK,
-  });
-}
-
-function makeRagWhoseWriterReturnsUndefined(): IRag {
-  return ragWith({ upsertRaw: async () => undefined });
-}
-
-function makeRagFailingAllWrites(): IRag {
-  return ragWith({
-    upsertRaw: async () => ({
-      ok: false as const,
-      error: new RagError('nope', 'RAG_ERROR'),
-    }),
-  });
-}
-
-function makeClient(tools: Array<{ name: string; description: string }>): IMcpClient {
-  return {
-    listTools: async () => ({ ok: true as const, value: tools }),
-  } as unknown as IMcpClient;
-}
-
 function makeFailingListClient(): IMcpClient {
   return {
     listTools: async () => ({
@@ -1770,9 +1751,29 @@ function makeFailingListClient(): IMcpClient {
     }),
   } as unknown as IMcpClient;
 }
+
+/** Writer whose upsertRaw resolves to undefined — the optional-chain trap. */
+function makeUndefinedWriter(): IRagBackendWriter {
+  return { upsertRaw: async () => undefined } as unknown as IRagBackendWriter;
+}
+
+/** Writer that throws on the first call and succeeds afterwards. */
+function makeThrowOnceWriter(): IRagBackendWriter {
+  let n = 0;
+  return {
+    upsertRaw: async () => {
+      n++;
+      if (n === 1) throw new Error('boom');
+      return { ok: true as const, value: undefined };
+    },
+  } as unknown as IRagBackendWriter;
+}
 ```
 
-Import `McpError` and `RagError` from `@mcp-abap-adt/llm-agent` in the test file.
+Import `McpError` from `@mcp-abap-adt/llm-agent`; `IRagBackendWriter` is already
+imported by the file. Build the read-only store as
+`makeRagWithEmbedder(undefined, undefined as unknown as IRagBackendWriter)` —
+or, more honestly, a literal whose `writer()` returns `undefined`.
 
 Add one more test, the documented-limitation case from the spec — an injected
 embedder that claims batch capability it does not have:
@@ -1784,10 +1785,9 @@ it('completes the catalog when a pre-decorated embedder fakes batch support', as
     { embed: async () => ({ vector: [0] }) },
     breaker,
   );
-  const rag = makeWritableRag();
-  (rag as unknown as { embedder: unknown }).embedder = liar;
+  const rag = makeRagWithEmbedder(liar, makeWriter({ hasBatchRaw: true }));
   const summary = await vectorizeMcpTools(
-    [makeClient([{ name: 'A', description: 'a' }])],
+    [makeClient([makeTool('A')])],
     rag,
     new CapturingRequestLogger(),
     undefined,
