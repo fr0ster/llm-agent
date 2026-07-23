@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { describe, it } from 'node:test';
 import type { IEmbedResult } from '../interfaces/rag.js';
 import { isBatchEmbedder } from '../interfaces/rag.js';
@@ -80,6 +81,18 @@ describe('withRetry', () => {
       true,
     );
     assert.equal(isBatchEmbedder(withRetry(new EmbedOnly())), false);
+  });
+
+  it('leaves no abort listeners behind after retrying', async () => {
+    // A request- or session-scoped signal outlives a single call, so a listener
+    // added per backoff would accumulate and trip MaxListenersExceededWarning.
+    const inner = new ScriptedEmbedder([{ status: 429 }]);
+    const ac = new AbortController();
+    await assert.rejects(() =>
+      withRetry(inner, FAST).embed('x', { signal: ac.signal }),
+    );
+    assert.equal(inner.calls, 4); // 1 initial + 3 retries => 3 backoffs
+    assert.equal(getEventListeners(ac.signal, 'abort').length, 0);
   });
 
   it('stops when the signal is aborted', async () => {

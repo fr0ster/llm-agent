@@ -108,11 +108,19 @@ export class RetryEmbedder implements IEmbedder {
   ): Promise<void> {
     const delay = this.opts.backoffMs * 2 ** attempt;
     await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, delay);
-      signal?.addEventListener('abort', () => {
-        clearTimeout(t);
+      // The listener is removed when the timer wins and fires at most once when
+      // abort wins. Without both, a signal that outlives one call — a
+      // request- or session-scoped one — accumulates a listener per retry and
+      // eventually trips MaxListenersExceededWarning.
+      const onAbort = (): void => {
+        clearTimeout(timer);
         resolve();
-      });
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, delay);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 }
