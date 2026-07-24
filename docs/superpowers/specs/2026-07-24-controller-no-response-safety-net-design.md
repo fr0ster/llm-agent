@@ -63,15 +63,15 @@ deterministic equivalent of the planner's `error` decision, driven from the
 handler by reading the durable `controlFailure` marker; the planner itself is
 left unchanged.
 
-**Layer 2 — Backstop (surface-point guard).** The guarantee is enforced **at the
-moment a success terminal is formed**, not post-hoc. `finalize()` currently does
-`writeTerminal({ kind: 'success', answer })` then `surfaceFinal(answer)`
-(handler:2055-2064); if `answer` is empty the empty chunk is already sent and a
-durable empty success is stored — a later "was surfaceFinal called?" boolean is
-too late and reads `true`. Instead: **before** writing a success terminal, if the
-answer is empty/whitespace, write an **error** terminal and surface
-`capturedFailureText ?? GENERIC_NO_ANSWER`. Plus `surfaceFinal` gets a defensive
-guard so it can never yield `ok:true` with an empty body from any path.
+**Layer 2 — Backstop (choke-point guard).** The single place that forms a success
+terminal is `commitTerminalSuccess` (handler:2042) — the only caller of
+`writeTerminal({ kind: 'success' })`, reached from both finalize paths (1959,
+2028). The guard goes at its **top**: if `answer.trim()` is empty, call
+`abortTerminal(capturedFailureText ?? GENERIC_NO_ANSWER)` and return, instead of
+writing a success terminal and surfacing empty. Because every success terminal —
+current and future callers — passes through this one method, the invariant does
+not depend on any caller remembering to check. `surfaceFinal` additionally gets a
+defensive guard so it can never yield `ok:true` with an empty body from any path.
 
 Layer 1 provides the *right text* (the real tool error the user asked for) on the
 known path; Layer 2 provides the *guarantee* regardless of path.
@@ -112,12 +112,24 @@ forward progress for the in-flight step, the step is a dead-end iff
 `cutControlFailure` already persists. On detection: `abortTerminal(ctx, …,
 capturedFailureText(bundle) ?? GENERIC_NO_ANSWER, …)`.
 
-**4. Success-answer guard (Layer 2).** A single choke point for forming a success
-terminal. `finalize()` (the only place that writes `{ kind: 'success' }`) checks
-the answer first: `answer.trim()` empty → `abortTerminal(capturedFailureText ??
-GENERIC_NO_ANSWER)` instead of `writeTerminal(success)` + `surfaceFinal`. Because
-the guard is on the **write**, a resume replay can never read back an empty
-success (the durable record is always either a non-empty success or an error).
+**4. Success-answer guard (Layer 2), in `commitTerminalSuccess`.** This method is
+the sole writer of `{ kind: 'success' }`; its signature already carries every
+argument `abortTerminal` needs (`ctx, sessionId, bundle, now, terminalTtlMs,
+usage`). At its top:
+
+```ts
+if (answer.trim().length === 0) {
+  await this.abortTerminal(
+    ctx, sessionId, bundle,
+    capturedFailureText(bundle) ?? GENERIC_NO_ANSWER,
+    now, terminalTtlMs, usage,
+  );
+  return;
+}
+```
+
+Because the guard is on the sole write, a resume replay can never read back an
+empty success — the durable record is always a non-empty success or an error.
 
 **5. `surfaceFinal` defensive guard.** `surfaceFinal(content)` must never
 `ctx.yield({ ok: true, ... })` with empty/whitespace `content`. If it is ever
@@ -152,7 +164,7 @@ replaces the current `lastOutcome = undefined → finalize-empty`.
 Backstop (any path that would form an empty success terminal):
 
 ```
-finalize() computed answer (best-effort included), answer.trim() === ''
+commitTerminalSuccess(answer), answer.trim() === ''
   → abortTerminal(capturedFailureText ?? GENERIC_NO_ANSWER)   ← instead of writeTerminal(success)
 ```
 
@@ -187,9 +199,11 @@ Controller-handler unit tests, alongside `controller/__tests__`.
   `Class … not found`, `surfaceFinal` called with `Error: …`, body non-empty.
 - **Symptom B:** a `maxToolCalls` cut + empty replan → terminal carries
   `tool-call budget exhausted (maxToolCalls)`.
-- **Success-answer guard:** `finalize` with an empty answer writes an **error**
+- **Success-answer guard:** `commitTerminalSuccess('')` writes an **error**
   terminal (captured/generic) and surfaces it, never a success terminal with an
-  empty body; a resume then replays the error, not an empty success.
+  empty body; a resume then replays the error, not an empty success. Exercised
+  through both finalize callers (1959, 2028) **and** a direct
+  `commitTerminalSuccess('')` call, so the guarantee holds at the choke point.
 - **`surfaceFinal` defensive guard:** called with empty content → yields
   `GENERIC_NO_ANSWER`, never `ok:true` empty.
 - **Suspend unaffected:** an external-tool suspend forms no terminal and surfaces
@@ -213,8 +227,9 @@ One PR:
 
 - `types.ts` — add `ControlFailure.note?: string`.
 - `controller-coordinator-handler.ts` — `cutControlFailure` sets `note`; the
-  dead-end detector (Layer 1); the success-answer guard in `finalize`; the
-  `surfaceFinal` defensive guard; `capturedFailureText` helper; `GENERIC_NO_ANSWER`.
+  dead-end detector (Layer 1); the success-answer guard at the top of
+  `commitTerminalSuccess`; the `surfaceFinal` defensive guard;
+  `capturedFailureText` helper; `GENERIC_NO_ANSWER`.
 
 `finalize`'s retry/best-effort logic and `planner.ts` are unchanged. Additive; no
 public interface changes.
