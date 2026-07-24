@@ -101,7 +101,7 @@ Reads **only** the `controlFailure` marker; it never touches `plannerPrivate`.
 ```ts
 const cf = bundle.inFlightStep?.controlFailure;
 if (!cf) return undefined;
-if (cf.note) return cf.note;                    // primary, self-contained
+if (cf.note?.trim()) return cf.note.trim();     // primary, self-contained
 // Legacy marker (persisted before `note` existed): only typed reasons have a
 // safe human string. A generic 'control-failure' without a note has no
 // bundle-local text we can trust, so the caller falls back to GENERIC_NO_ANSWER.
@@ -207,8 +207,11 @@ Controller-handler unit tests, alongside `controller/__tests__`.
 
 - `ControlFailure.note`: `cutControlFailure` sets it to `noteFor(reason)` — raw
   text for a tool error, human sentence for a typed cut.
-- `capturedFailureText`: `note` wins; legacy typed reason maps to its human
-  sentence; a legacy generic marker or no marker → `undefined`.
+- `capturedFailureText`: a non-blank `note` wins (returned trimmed); a blank
+  `note` (`''`, `' \n\t '`) is treated as absent → typed-reason mapping or
+  `undefined`, so the backstop uses `GENERIC_NO_ANSWER` rather than surfacing
+  `Error: ` with whitespace; legacy typed reason maps to its human sentence; a
+  legacy generic marker or no marker → `undefined`.
 - **Negative (leak) tests:** with `controlFailure.note` unset and
   `plannerPrivate` ending in `[external tool … result] …`, `[clarify answer] …`,
   or `[rewind] …`, `capturedFailureText` returns `undefined` (never that text),
