@@ -204,34 +204,50 @@ in the same `__tests__` dir (their streams yield `{ toolCalls: [...], finishReas
 'tool_calls' }` and populate `toolClientMap`), then add a `makeCtx` override for
 `heartbeatIntervalMs` and a slow client:
 
+`ToolLoopHandler.execute` is `execute(ctx, config, parentSpan): Promise<boolean>` — NOT
+an async generator. Run it exactly as the existing tests in this file do
+(`const ok = await new ToolLoopHandler().execute(ctx, {}, makeSpan())`, lines 180/204),
+and collect client-facing chunks via `ctx.yield` (the harness's `yield` pushes to a
+local array — capture it by overriding `ctx.yield` after `makeCtx` returns):
+
 ```ts
 test('#246 caller #1: ToolLoopHandler with heartbeatIntervalMs 0 → no heartbeat, no busy loop', async () => {
-  // A stateful LLM stub: round 1 requests internal tool "Slow"; round 2 returns
-  // final content. (Model rounds on tool-loop-external.test.ts.)
-  // toolClientMap has a "Slow" client whose callTool awaits ~120ms.
-  // config override: heartbeatIntervalMs: 0.
-  const ctx = makeCtxWithSlowInternalTool({ heartbeatIntervalMs: 0, toolDelayMs: 120 });
-  const yielded = [];
+  // ctx built like the file's makeCtx, but with: config.heartbeatIntervalMs = 0;
+  // a "Slow" INTERNAL tool in toolClientMap whose callTool awaits ~120ms; and
+  // a streamFn that (round 1) yields { toolCalls: [Slow], finishReason: 'tool_calls' }
+  // then (round 2) yields final content. Copy the internal tool-call + slow-client
+  // shape from tool-loop-external.test.ts / heartbeat.test.ts in the same dirs.
+  const ctx = makeSlowInternalToolCtx({ heartbeatIntervalMs: 0, toolDelayMs: 120 });
+
+  // Capture what the handler yields to the client stream.
+  const captured: Result<LlmStreamChunk, unknown>[] = [];
+  (ctx as { yield: (c: Result<LlmStreamChunk, unknown>) => void }).yield = (c) => {
+    captured.push(c);
+  };
+
   const started = Date.now();
-  for await (const chunk of new ToolLoopHandler(/* same ctor args the file's tests use */).execute(ctx)) {
-    yielded.push(chunk);
-  }
+  const ok = await new ToolLoopHandler().execute(ctx, {}, makeSpan());
+
+  assert.equal(ok, true);
   assert.ok(Date.now() - started < 4000, 'must not busy-loop');
   assert.equal(
-    yielded.filter((c) => c.ok && (c.value as { heartbeat?: unknown }).heartbeat).length,
+    captured.filter(
+      (c) => c.ok && (c.value as { heartbeat?: unknown }).heartbeat !== undefined,
+    ).length,
     0,
     'disabled interval → no heartbeat chunk from the batch executor',
   );
 });
 ```
 
-> `makeCtxWithSlowInternalTool` = the file's existing `makeCtx` with three deltas:
-> `config.heartbeatIntervalMs` set from the arg; a `toolClientMap` entry for `Slow`
-> with a delayed `callTool` (copy the slow-client stub from `heartbeat.test.ts`); and
-> `selectedTools`/`activeTools` containing the `Slow` tool so the loop offers it.
-> Drive `.execute(ctx)` exactly as the existing tests in this file do (same handler
-> construction). If the handler is instead driven through a helper in this file,
-> reuse that helper.
+> `makeSlowInternalToolCtx` = the file's existing `makeCtx` shape with three deltas:
+> `config.heartbeatIntervalMs` from the arg; a `toolClientMap` entry for `Slow` whose
+> `callTool` awaits `toolDelayMs` (copy the slow-client stub from `heartbeat.test.ts`);
+> and `selectedTools`/`activeTools`/`mcpTools` listing `Slow` so the loop offers and
+> internally executes it (NOT in `externalTools`). The `streamFn`/`llmCallStrategy.call`
+> must be stateful: first round → a `tool_calls` chunk for `Slow`; second round →
+> final content (model the two-round shape on `tool-loop-external.test.ts`). Add
+> `Result`/`LlmStreamChunk` to the file's type imports if not already present.
 
 This file MUST be added to Task 2's `git add` (Step 8).
 
@@ -499,8 +515,8 @@ describe('attachSseKeepAlive', () => {
 > The `attachSseKeepAlive` beat-write is covered indirectly (its `onBeat` is a
 > one-liner `res.write(': keep-alive\n\n')`); the timer mechanics are fully
 > covered by the `createIdleHeartbeat` tests with the injected clock. The
-> integration test in Task 5 asserts the actual `: keep-alive` bytes over a real
-> (short-interval) stream.
+> integration test in Task 6 asserts the actual `: keep-alive` bytes over a real
+> (short-interval) stream through the handlers.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -838,6 +854,24 @@ function idleAgent(idleMs: number) {
   } as never; // cast to SmartAgent at the call site
 }
 
+/**
+ * Stub SmartAgent: yields `count` chunks each `gapMs` apart (no single gap is
+ * long). Used to prove the handler calls `reset()` per chunk: with reset, no gap
+ * reaches the interval → NO keep-alive; WITHOUT reset the watchdog fires on its
+ * initial arm regardless → a keep-alive appears. `gapMs` must be << the interval.
+ */
+function steadyAgent(count: number, gapMs: number) {
+  return {
+    async *streamProcess() {
+      for (let i = 0; i < count; i++) {
+        await new Promise((r) => setTimeout(r, gapMs));
+        yield { ok: true, value: { content: `x${i}` } };
+      }
+      yield { ok: true, value: { content: '', finishReason: 'stop' } };
+    },
+  } as never;
+}
+
 const noop = () => {};
 
 describe('#246 SSE keep-alive — /v1/chat/completions', () => {
@@ -860,6 +894,30 @@ describe('#246 SSE keep-alive — /v1/chat/completions', () => {
     assert.ok(firstKeepAlive >= 0, 'a keep-alive was written during the idle gap');
     assert.ok(firstKeepAlive < firstData, 'keep-alive precedes the first data line');
   });
+
+  it('calls reset() per chunk: steady output (gap << interval) → NO keep-alive', async () => {
+    // Kills the "removed keepAlive.reset()" mutant: 25 chunks × 4ms = ~100ms total
+    // (> the 50ms interval, so WITHOUT reset the watchdog would fire at ~50ms), but
+    // every gap is 4ms << 50ms, so WITH reset() no keep-alive is ever written.
+    const { res, writes } = fakeRes();
+    await handleChat(
+      makeReq({ model: 'm', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+      res,
+      new SessionRequestLogger(),
+      steadyAgent(25, 4),
+      noop as never,
+      noop as never,
+      noop,
+      undefined,
+      undefined,
+      { agent: { heartbeatIntervalMs: 50 } } as never,
+    );
+    assert.equal(
+      writes.filter((w) => w.startsWith(': keep-alive')).length,
+      0,
+      'reset() on each chunk keeps the watchdog from ever firing during steady output',
+    );
+  });
 });
 
 describe('#246 SSE keep-alive — /v1/messages (real adapter)', () => {
@@ -881,6 +939,34 @@ describe('#246 SSE keep-alive — /v1/messages (real adapter)', () => {
     assert.ok(
       writes.some((w) => w.startsWith(': keep-alive')),
       'a keep-alive was written during the idle gap on /v1/messages',
+    );
+  });
+
+  it('calls reset() per event: steady output → NO keep-alive', async () => {
+    // Same mutant-killer for the adapter path. Assumes AnthropicApiAdapter forwards
+    // content deltas incrementally (one `content_block_delta` event per content
+    // chunk), so the handler's per-event reset() keeps the watchdog reset. If the
+    // adapter is found to BATCH deltas (a single late event), replace this with the
+    // clock-injection variant (thread an injectable `schedule`/`cancel` through
+    // attachSseKeepAlive) rather than weakening the assertion.
+    const { res, writes } = fakeRes();
+    await handleAdapterRequest(
+      makeReq({
+        model: 'm',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+      res,
+      steadyAgent(25, 4),
+      new AnthropicApiAdapter(),
+      undefined,
+      50, // interval 50ms; gaps 4ms << 50ms
+    );
+    assert.equal(
+      writes.filter((w) => w.startsWith(': keep-alive')).length,
+      0,
+      'reset() on each event keeps the watchdog from ever firing during steady output',
     );
   });
 });
