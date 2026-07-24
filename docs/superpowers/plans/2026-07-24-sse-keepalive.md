@@ -287,14 +287,11 @@ In `tool-loop-core.ts`, replace the `while (!settled) { … }` block (~311-332) 
 
 - [ ] **Step 5: Normalize caller #1 (pipeline `ToolLoopHandler`)**
 
-In `tool-loop.ts`, add the import at the top (beside the existing `executeToolBatchWithHeartbeat` import from `./tool-loop-core.js`):
+In `tool-loop.ts`, add the import at the top (beside the existing `executeToolBatchWithHeartbeat` import from `./tool-loop-core.js`). Import the sibling module DIRECTLY — never the package barrel `../../index.js`, which would create an internal import cycle through the exports subtree:
 
 ```ts
-import { normalizeHeartbeatMs } from '../../index.js';
+import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
 ```
-
-> If importing from the barrel causes a cycle at build time, import directly:
-> `import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';`
 
 Replace the `heartbeatMs` resolution (lines 119-122):
 
@@ -479,30 +476,22 @@ describe('createIdleHeartbeat', () => {
 });
 
 describe('attachSseKeepAlive', () => {
-  it('writes ": keep-alive" on a beat and stops on res close', () => {
-    const clock = manualClock();
-    const writes: string[] = [];
+  it('registers a res "close" handler and stop() is safe after disconnect', () => {
+    // attachSseKeepAlive owns timer creation (no injected clock here); the timer
+    // mechanics are covered by the createIdleHeartbeat tests above. This asserts
+    // the SSE binding: a close handler is registered, and disconnect + stop are safe.
     const listeners: Record<string, () => void> = {};
     const res = {
-      write: (s: string) => {
-        writes.push(s);
-        return true;
-      },
+      write: () => true,
       on: (ev: string, cb: () => void) => {
         listeners[ev] = cb;
       },
     } as unknown as import('node:http').ServerResponse;
 
-    // Inject the manual clock by monkeypatching via createIdleHeartbeat is not
-    // possible here (attachSseKeepAlive owns creation), so assert the wiring:
-    // a real (default) timer is used; instead verify onBeat + close wiring by
-    // driving createIdleHeartbeat directly is covered above. Here assert close
-    // handler is registered and stop is wired.
     const hb = attachSseKeepAlive(res, 100);
     assert.equal(typeof listeners.close, 'function');
-    // Simulate client disconnect → stop() must be safe (no throw).
-    listeners.close();
-    hb.stop();
+    listeners.close(); // simulate client disconnect
+    hb.stop(); // idempotent / no throw
   });
 });
 ```
@@ -803,16 +792,22 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { describe, it } from 'node:test';
 import { SessionRequestLogger } from '@mcp-abap-adt/llm-agent-libs';
+import { AnthropicApiAdapter } from '@mcp-abap-adt/llm-agent';
 import { handleAdapterRequest } from './adapter-route-handler.js';
 import { handleChat } from './chat-route-handler.js';
-// The concrete adapter is constructed in smart-server.ts (`new AnthropicApiAdapter()`).
-// Resolve its import path with:
-//   grep -rn "class AnthropicApiAdapter" packages/*/src
-import { AnthropicApiAdapter } from '<resolve: same module smart-server.ts imports it from>';
 
-/** A request whose body is `json`; drives readBody via a real Readable. */
+/**
+ * A request whose body is `json`; drives readBody via a real Readable. Sets
+ * `headers` because handleChat reads `req.headers['x-session-id']` when no
+ * session is supplied (chat-route-handler.ts:118) — without it the handler
+ * throws before the keep-alive assertion.
+ */
 function makeReq(json: unknown): IncomingMessage {
-  return Readable.from([Buffer.from(JSON.stringify(json))]) as unknown as IncomingMessage;
+  const req = Readable.from([
+    Buffer.from(JSON.stringify(json)),
+  ]) as unknown as IncomingMessage;
+  (req as { headers: Record<string, string> }).headers = {};
+  return req;
 }
 
 /** Fake ServerResponse capturing writes + listeners. */
