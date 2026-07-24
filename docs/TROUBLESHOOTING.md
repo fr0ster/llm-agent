@@ -336,7 +336,7 @@ The default classifier (`IMcpFailureClassifier`) is defined in `packages/llm-age
 
 **Cause.** `control-failure → replan → empty plan → finalizer` could compose an empty answer, and an empty *success* terminal was written and surfaced as `(no response)`.
 
-**Fix.** Upgrade to the release containing **#243**. The finalizer still runs and a legitimate partial answer completes as before, but an **empty** answer is caught at `commitTerminalSuccess` and rerouted to an **error** terminal carrying the real failure text — `Error: Class … not found`, or `tool-call budget exhausted (maxToolCalls)`. A generic `The run ended without an answer.` means the failure predates the marker (a resumed older bundle) — re-run the request.
+**Fix.** Upgrade to the release containing **#243**. The finalizer still runs and a legitimate partial answer completes as before, but an **empty** answer is caught at `commitTerminalSuccess` and rerouted to an **error** terminal carrying the real failure text — `Error: Class … not found`, or `tool-call budget exhausted (maxToolCalls)`. A generic `The run ended without an answer.` means the controller had no safe captured failure text to surface — either a control failure whose marker predates the `note` field (a resumed older bundle), or a path that reached an empty finalizer with no control failure at all (a normal step that simply produced nothing). In both cases the body is never empty; re-run the request.
 
 ---
 

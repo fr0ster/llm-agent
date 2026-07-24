@@ -265,4 +265,59 @@ describe('#243 empty-success guard (Layer 2)', () => {
     );
     assert.equal(term?.kind, 'error');
   });
+
+  it('Symptom B: a maxToolCalls cut whose replan yields no legit answer surfaces the budget message', async () => {
+    // The intermittent-under-concurrency trigger: a per-step maxToolCalls cut
+    // (reason 'maxToolCalls', note = noteFor('maxToolCalls')) → empty replan →
+    // finalizer returns EMPTY → Layer 2 surfaces the captured budget message.
+    // maxToolCalls: 2 → the prospective gate fires on the round after 2 tool
+    // calls, cutting the step with the budget-exhausted marker.
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: look it up' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'look' }],
+          }),
+        },
+        { kind: 'content', content: JSON.stringify({ plan: [] }) }, // replan → empty
+        { kind: 'content', content: '' }, // finalizer → EMPTY (no progress)
+      ],
+      executor: [
+        toolCall('Look', {}),
+        toolCall('Look', {}),
+        toolCall('Look', {}),
+      ],
+      isExternalTool: () => false,
+      selectTools: [{ name: 'Look', description: '', inputSchema: {} }],
+      config: baseConfig({ maxToolCalls: 2 }),
+    });
+    const { ctx, captured } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+
+    const body = surfacedContent(captured);
+    assert.ok(body);
+    assert.equal(body, 'Error: tool-call budget exhausted (maxToolCalls)');
+
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const term = await readTerminal(
+      h.backend,
+      'sess-1',
+      // biome-ignore lint/style/noNonNullAssertion: runId set after execute
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(term?.kind, 'error');
+
+    // Replay the stored terminal → the same budget message, proving the guard
+    // wrote a durable error (never an empty success) for the concurrency repro.
+    const replay = fakeCtx({ options: { runId: bundle.runId } } as never);
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      replay.ctx,
+      {},
+      undefined,
+    );
+    assert.equal(surfacedContent(replay.captured), body);
+  });
 });
