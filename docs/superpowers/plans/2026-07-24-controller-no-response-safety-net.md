@@ -17,7 +17,7 @@
 - All artifacts (code, comments, commit messages) in **English**.
 - ESM only — relative imports end in `.js`.
 - TypeScript strict; avoid `any` (Biome warns).
-- Additive only — the one public surface change is a new `NextStep` union member (backward-compatible: existing consumers switch on `kind`).
+- Additive only. The new `NextStep` union member is **internal**: `NextStep` is not re-exported from the package barrel (`llm-agent-server-libs/src/index.ts`), so no external consumer switches on it — the change cannot break an outside exhaustive switch. It stays internal to the controller.
 - Biome gate: `npm run lint:check` (a **check**, not `format`).
 - Test command: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs`.
 - `capturedFailureText` reads **only** the `controlFailure` marker — never `plannerPrivate` (it holds external-tool results and clarify answers; surfacing its tail would leak private context).
@@ -36,16 +36,23 @@
 
 ---
 
-### Task 1: Type foundations — `ControlFailure.note` + `NextStep` dead-end variant
+### Task 1: `ControlFailure.note` field
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts:105-108` and `:71-75`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts:105-108`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `ControlFailure.note?: string`; `NextStep | { kind: 'dead-end' }`.
+- Produces: `ControlFailure.note?: string`.
 
-- [ ] **Step 1: Add the `note` field**
+**Note:** the `NextStep` `dead-end` variant is added in Task 3, together with the
+planner return and the handler dispatch, in one commit. Adding it here alone
+would break compilation — the handler narrows the residual branch to
+`kind: 'next'` (uses `next.step` at handler:909 without an explicit
+`kind === 'next'` guard), so a new union member with no dispatch makes `next.step`
+non-`'next'`-narrowed and fails `tsc`. Every task must end with a clean build.
+
+- [ ] **Step 1: Add the `note` field (optional — compiles clean on its own)**
 
 In `types.ts`, extend `ControlFailure`:
 
@@ -60,29 +67,16 @@ export interface ControlFailure {
 }
 ```
 
-- [ ] **Step 2: Add the `dead-end` NextStep variant**
-
-Extend `NextStep`:
-
-```ts
-export type NextStep =
-  | { kind: 'next'; step: Step }
-  | { kind: 'done'; result: string }
-  | { kind: 'rewind'; reason: string }
-  | { kind: 'dead-end' }
-  | PlanError;
-```
-
-- [ ] **Step 3: Build (types compile, no consumer breaks)**
+- [ ] **Step 2: Build (clean)**
 
 Run: `npm run build 2>&1 | tail -3`
-Expected: clean — a new union member does not break `kind`-switching consumers. If `tsc` flags a non-exhaustive `switch` on `NextStep`, that call site is one the plan touches later (handler dispatch, Task 3); note it and continue — it is fixed in Task 3.
+Expected: clean — an optional field breaks nothing.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts
-git commit -m "feat(controller): add ControlFailure.note and NextStep dead-end variant (#243)"
+git commit -m "feat(controller): add ControlFailure.note (#243)"
 ```
 
 ---
@@ -227,8 +221,11 @@ git commit -m "feat(controller): capturedFailureText + nonEmptyBody helpers, mar
 - Test: `controller/__tests__/controller-no-response.test.ts` (create)
 
 **Interfaces:**
-- Consumes: `ControlFailure.note`, `{ kind: 'dead-end' }` (Task 1), `capturedFailureText`, `GENERIC_NO_ANSWER` (Task 2), `abortTerminal` (existing).
-- Produces: a control-failed step whose replan is empty terminates with the captured error, before any finalizer call.
+- Consumes: `ControlFailure.note` (Task 1), `capturedFailureText`, `GENERIC_NO_ANSWER` (Task 2), `abortTerminal` (existing).
+- Produces: `NextStep | { kind: 'dead-end' }`; a control-failed step whose replan is empty terminates with the captured error, before any finalizer call.
+
+This task adds the `dead-end` union member, the planner return, and the handler
+dispatch **together**, so the build is clean at the single commit boundary.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -236,7 +233,28 @@ Create `controller-no-response.test.ts`. Copy the scaffolding (`fakeCtx`,
 `scriptedClient`, `stubRag`, `stubEmbedder`, `baseConfig`, `harness`, `toolCall`)
 from `controller-coordinator-handler.test.ts` lines 1-166, add
 `import { hydrateBundle } from '../session-bundle.js';`,
-`import { readTerminal } from '../run-scope.js';`, and:
+`import { readTerminal } from '../run-scope.js';`.
+
+**Adjust the copied `Harness` to expose the typed planner.** `ControllerHandlerDeps.planner`
+is statically `ISubagentClient` (no `calls`), so `h.deps.planner.calls` does not
+compile — the `& { calls }` from `scriptedClient` is erased when assigned into
+`deps`. Keep a separate reference:
+
+```ts
+interface Harness {
+  deps: ControllerHandlerDeps;
+  planner: ReturnType<typeof scriptedClient>; // typed, exposes .calls
+  rag: ReturnType<typeof stubRag>;
+  backend: InMemoryKnowledgeBackend;
+  mcpCalls: Array<{ name: string; args: unknown }>;
+}
+// inside harness():
+const planner = scriptedClient(opts.planner);
+const deps: ControllerHandlerDeps = { /* … */ planner, /* … */ };
+return { deps, planner, rag, backend, mcpCalls };
+```
+
+Then add:
 
 ```ts
 function surfacedContent(captured: ReturnType<typeof fakeCtx>['captured']): string | undefined {
@@ -268,7 +286,7 @@ describe('#243 Layer 1 dead-end', () => {
     assert.ok(body);
     assert.match(body, /Class ZZ_QX9B7 not found/);
     assert.doesNotMatch(body, /could not find anything relevant/); // finalizer never composed
-    assert.equal(h.deps.planner.calls, 2, 'finalizer LLM call never happened (2 planner calls: plan + replan)');
+    assert.equal(h.planner.calls, 2, 'finalizer LLM call never happened (2 planner calls: plan + replan)');
 
     // Durable terminal is an ERROR, not an empty/other success.
     const bundle = await hydrateBundle(h.backend, 'sess-1');
@@ -305,7 +323,22 @@ describe('#243 Layer 1 dead-end', () => {
 Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "Layer 1 dead-end"`
 Expected: FAIL — the finalizer answer is surfaced (`could not find…`), `planner.calls === 3`, and no dead-end interception.
 
-- [ ] **Step 3: Set `note` in `cutControlFailure`**
+- [ ] **Step 3: Add the `dead-end` NextStep variant**
+
+In `types.ts`, extend `NextStep` (build stays red until Steps 4-5 add the
+producer and dispatch — that is expected within this one task; the commit at the
+end is the first clean build):
+
+```ts
+export type NextStep =
+  | { kind: 'next'; step: Step }
+  | { kind: 'done'; result: string }
+  | { kind: 'rewind'; reason: string }
+  | { kind: 'dead-end' }
+  | PlanError;
+```
+
+- [ ] **Step 4: Set `note` in `cutControlFailure`**
 
 In `controller-coordinator-handler.ts`, where the marker is built:
 
@@ -319,7 +352,7 @@ In `controller-coordinator-handler.ts`, where the marker is built:
 
 `noteFor` is in scope (~line 1042).
 
-- [ ] **Step 4: Emit `dead-end` from `planner.next()`**
+- [ ] **Step 5: Emit `dead-end` from `planner.next()`**
 
 In `planner.ts`, in the replan branch immediately after
 `const mintedRest = mintReplanStepIds(...)` (~line 351), before
@@ -334,7 +367,7 @@ In `planner.ts`, in the replan branch immediately after
       }
 ```
 
-- [ ] **Step 5: Dispatch `dead-end` in the handler**
+- [ ] **Step 6: Dispatch `dead-end` in the handler**
 
 In `controller-coordinator-handler.ts`, immediately **before**
 `if (next.kind === 'done') {` (~line 871):
@@ -360,17 +393,17 @@ In `controller-coordinator-handler.ts`, immediately **before**
 `next.kind === 'error'` branch uses the same set). If Task 1 Step 3 flagged a
 non-exhaustive `switch`, this branch resolves it.
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 7: Run test to verify it passes**
 
 Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "Layer 1 dead-end"`
 Expected: PASS — both symptoms surface the real error; `planner.calls === 2`; terminal `kind === 'error'`.
 
-- [ ] **Step 7: Full suite + baseline**
+- [ ] **Step 8: Full suite + baseline**
 
 Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
 Expected: `fail 0`. A legit `done` after a successful recovery still finalizes — the dead-end fires only when `mintedRest` is empty AND `controlFailure` is set. If a pre-existing test fails, confirm it fails on `main`.
 
-- [ ] **Step 8: Build + lint, commit**
+- [ ] **Step 9: Build + lint, commit**
 
 ```bash
 npm run build && npm run lint:check
@@ -427,7 +460,11 @@ describe('#243 Layer 2 empty-success guard', () => {
     await new ControllerCoordinatorHandler(h.deps).execute(replay.ctx, {}, undefined);
     const replayBody = surfacedContent(replay.captured);
     assert.ok(replayBody);
-    assert.notEqual(replayBody.trim(), '', 'replay body never empty');
+    // Replay must return the SAME durable error, not merely something non-empty.
+    // abortTerminal surfaces `Error: ${error}` (handler:1901); here the error is
+    // GENERIC_NO_ANSWER, and replay re-surfaces the stored error (handler:361).
+    assert.equal(replayBody, body);
+    assert.equal(replayBody, `Error: ${GENERIC_NO_ANSWER}`);
   });
 });
 ```
