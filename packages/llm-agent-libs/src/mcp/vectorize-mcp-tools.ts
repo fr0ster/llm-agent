@@ -24,7 +24,11 @@ import type {
   RagMetadata,
   ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
-import { defaultToolRecordKey, isBatchEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  DefaultWaitStrategy,
+  defaultToolRecordKey,
+  isBatchEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 
 /**
  * Alias of ToolCatalogStatus, which is declared in `@mcp-abap-adt/llm-agent`
@@ -42,6 +46,9 @@ const MAX_NAMES_IN_LOG = 10;
 /** Preserved from the previous implementation — see the write loop below. */
 const SEQUENTIAL_PACING_EVERY = 5;
 const SEQUENTIAL_PACING_MS = 500;
+// Stateless; honours signal, including one already aborted (unlike a raw
+// addEventListener, which never fires for an event that already dispatched).
+const pacingWait = new DefaultWaitStrategy();
 
 interface Acc {
   total: number;
@@ -266,20 +273,10 @@ export async function vectorizeMcpTools(
         (i + 1) % SEQUENTIAL_PACING_EVERY === 0 &&
         i < tools.length - 1
       ) {
-        // Cancellable: abort resolves the pause immediately (the next loop
-        // iteration then breaks) instead of sleeping the full interval.
-        await new Promise<void>((resolve) => {
-          const signal = options?.signal;
-          const timer = setTimeout(() => {
-            signal?.removeEventListener('abort', onAbort);
-            resolve();
-          }, SEQUENTIAL_PACING_MS);
-          function onAbort(): void {
-            clearTimeout(timer);
-            resolve();
-          }
-          signal?.addEventListener('abort', onAbort, { once: true });
-        });
+        // Cancellable via DefaultWaitStrategy: an already-aborted signal returns
+        // immediately, so a request aborted during the preceding write does not
+        // sit through the full pause. The next loop iteration then breaks.
+        await pacingWait.wait(SEQUENTIAL_PACING_MS, options?.signal);
       }
     }
   }

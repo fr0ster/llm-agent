@@ -544,3 +544,41 @@ describe('vectorizeMcpTools record round-trip', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cancellation during the sequential pacing pause (#240 P2)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools pacing cancellation', () => {
+  it('does not sit through the pause when abort lands mid-write', async () => {
+    // Abort fires on the 5th write — i.e. exactly when the sequential path is
+    // about to pace. A raw addEventListener would miss the already-dispatched
+    // event and wait the full 500ms; DefaultWaitStrategy returns immediately.
+    const ac = new AbortController();
+    let writes = 0;
+    const writer = {
+      async upsertRaw() {
+        writes++;
+        if (writes === 5) ac.abort();
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagBackendWriter;
+    const rag = makeRagWithEmbedder(undefined, writer); // no embedder → sequential
+    const tools = Array.from({ length: 8 }, (_, i) => makeTool(`T${i}`));
+
+    const started = Date.now();
+    await vectorizeMcpTools(
+      [makeClient(tools)],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      undefined,
+      { signal: ac.signal },
+    );
+    const elapsed = Date.now() - started;
+    // Pacing interval is 500ms; prompt cancellation must be well under it.
+    assert.ok(elapsed < 250, `waited ${elapsed}ms of a 500ms pause`);
+    // Aborted right after the 5th write, before the 6th.
+    assert.equal(writes, 5);
+  });
+});
