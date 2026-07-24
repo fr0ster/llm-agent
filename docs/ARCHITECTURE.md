@@ -415,6 +415,8 @@ DefaultPipeline simply queries the stores it receives; it does not hard-code any
 
 The builder selects the `tools` store by key for tool/skill vectorization at startup. If no `tools` store is provided, tool vectorization is skipped and all MCP tools are included in every request context.
 
+Each tool's RAG record id comes from an `IToolRecordKey` strategy. The default keeps `tool:${name}` for a single MCP server and disambiguates by client index once several are connected (the `mcp:` config accepts an array), so identically named tools from different servers no longer overwrite each other. A consumer that knows its servers injects its own via `SmartAgentBuilder.withToolRecordKey` — keying by real server name, a per-server collection, or any scheme. Server↔client is 1:1, so the client index identifies the server for the default.
+
 **Idempotent upsert contract:** when `metadata.id` is provided, implementations MUST treat it as an idempotent key — repeated upserts with the same id replace the previous record instead of creating duplicates. All built-in implementations (`QdrantRag`, `InMemoryRag`, `VectorRag`) enforce this.
 
 **v9.1 additions:** `IRagProviderRegistry` manages named `IRagProvider` instances that the LLM can use (via MCP tools) to create collections at runtime. `IRagRegistry` is extended with `createCollection` / `deleteCollection` / `closeSession` to support this lifecycle. The existing `ragStores` map remains as a backwards-compatible live projection of all currently active collections. See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full details.
@@ -583,13 +585,14 @@ Composition order: `RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry sits o
 The `IEmbedder` chain has its own pair, composed once by `resolveEmbedder` (`@mcp-abap-adt/llm-agent-rag`) so that **every** `embedBatch` caller inherits them — startup MCP tool vectorization, document ingest, and anything a consumer writes:
 
 - **`BatchChunkingEmbedder`** — splits `embedBatch` input into provider-safe chunks, sequentially (concurrent chunks would reintroduce the rate limiting chunking exists to avoid). The chunk size comes from `rag.maxBatchSize` → the provider's `IBatchSizeLimited.maxBatchSize` → `DEFAULT_MAX_BATCH_SIZE` (100). Validates the cap as a positive safe integer at construction and rejects a chunk that returns the wrong number of embeddings.
-- **`RetryEmbedder` / `RetryBatchEmbedder`** — retry with exponential backoff, selected by the `withRetry` factory.
+- **`RetryEmbedder` / `RetryBatchEmbedder`** — retry with exponential backoff, selected by the `withRetry` factory. Retry classification is shared with `RetryLlm` via `isRetryableStatus` (structured status first, word-boundary message match as a last resort), so the two decorators cannot drift.
+- **`CircuitBreakerEmbedder` / `CircuitBreakerEmbedderBase`** — fail-fast on sustained failures, selected by the `withCircuitBreaker` factory. Not part of the default chain; a consumer composes it explicitly.
 
 Composition order: `wrapEmbedder(BatchChunkingEmbedder(RetryBatchEmbedder(provider)))`. Retry sits **inside** chunking so each chunk retries independently — a failure on chunk 20 must not re-issue chunks 1-19.
 
 Two invariants hold across that chain:
 
-- **Batch capability is preserved, never fabricated.** `isBatchEmbedder` only tests for the presence of `embedBatch`, so each layer picks its class by inspecting its inner (the `wrapEmbedder` pattern). A decorator that exposed `embedBatch` unconditionally would make a non-batch embedder look batch-capable and send callers down the batch path.
+- **Batch capability is preserved, never fabricated.** `isBatchEmbedder` only tests for the presence of `embedBatch`, so each layer picks its class by inspecting its inner (the `wrapEmbedder` pattern, shared by `withRetry` and `withCircuitBreaker`). A decorator that exposed `embedBatch` unconditionally would make a non-batch embedder look batch-capable and send callers down the batch path.
 - **Composition is idempotent, and its metadata travels.** `composeResilientEmbedder` brands the chain with a symbol-keyed `{ maxBatchSize }`, and `wrapEmbedder` propagates that brand onto its own wrapper — its `inner` is `protected`, so a re-resolution could not otherwise see it and would stack the decorators. The cap is owned by the first composition; a later call carrying a *different explicit* `maxBatchSize` keeps the original and logs one warning.
 
 ## Protocol Contracts
