@@ -55,13 +55,20 @@ answers "tell me plainly what the error was".
 
 Two layers, both built on the existing `abortTerminal`.
 
-**Layer 1 — Primary (targeted).** When the handler receives a replan that cannot
-make progress for a failed step — an empty plan on a step whose
-`inFlight.controlFailure` is set — route it to `abortTerminal` with the captured
-failure text, instead of clearing the marker and finalizing empty. This is the
-deterministic equivalent of the planner's `error` decision, driven from the
-handler by reading the durable `controlFailure` marker; the planner itself is
-left unchanged.
+**Layer 1 — Primary (early dead-end signal).** The dead-end must be caught
+**before** the finalizer runs. `planner.next()`'s replan branch, on an empty plan
+(`mintedRest.length === 0`) for a step whose `inFlightStep.controlFailure` is set,
+returns a new `{ kind: 'dead-end' }` `NextStep` **before** calling `stepAtCursor`
+— which would otherwise issue a `planner.send(FINALIZE_SYSTEM)` LLM call and
+compose an answer over the failure. The handler dispatches `dead-end` to
+`abortTerminal(capturedFailureText(bundle) ?? GENERIC_NO_ANSWER)`. The planner
+only *signals*; the handler resolves the text from the durable `controlFailure`
+marker.
+
+This requires two additive changes: a `{ kind: 'dead-end' }` variant on
+`NextStep`, and the early return in the replan branch. An empty replan on a
+`partial` outcome (remaining work genuinely done) has no `controlFailure` marker,
+so it is unaffected — only a control-failed step dead-ends.
 
 **Layer 2 — Backstop (choke-point guard).** The single place that forms a success
 terminal is `commitTerminalSuccess` (handler:2042) — the only caller of
@@ -120,11 +127,21 @@ input to the consumer. So the helper never parses it; a legacy generic marker
 degrades to `GENERIC_NO_ANSWER` rather than risk leaking. Tested in isolation,
 including negative cases.
 
-**3. Dead-end detector (Layer 1).** At the handler site where a replan yields no
-forward progress for the in-flight step, the step is a dead-end iff
-`inFlight?.controlFailure` is set. No new state — it reads the marker
-`cutControlFailure` already persists. On detection: `abortTerminal(ctx, …,
-capturedFailureText(bundle) ?? GENERIC_NO_ANSWER, …)`.
+**3. Dead-end signal (Layer 1).** Two parts:
+
+- `NextStep` gains `{ kind: 'dead-end' }` (no payload — the text lives on the
+  marker).
+- `planner.next()`'s replan branch, immediately after computing `mintedRest`,
+  returns `{ kind: 'dead-end' }` when `mintedRest.length === 0` **and**
+  `bundle.inFlightStep?.controlFailure` is set — before `stepAtCursor` (which
+  would call the finalizer). The `controlFailure` marker is left in place so the
+  handler can read it.
+- The handler dispatches `dead-end` (beside the existing `error`/`done`
+  branches): `abortTerminal(ctx, …, capturedFailureText(bundle) ??
+  GENERIC_NO_ANSWER, …)`.
+
+Determinism: no finalizer LLM call happens on this path, so no hallucinated
+answer is composed and no finalizer token spend occurs.
 
 **4. Success-answer guard (Layer 2), in `commitTerminalSuccess`.** This method is
 the sole writer of `{ kind: 'success' }`; its signature already carries every
@@ -166,14 +183,15 @@ body.
 Symptom A (deterministic tool error):
 
 ```
-executor tool error → cutControlFailure (controlFailure marker + writeControlFailure)
+executor tool error → cutControlFailure (controlFailure marker with note + writeControlFailure)
   → settle('failed')
-  → main loop → planner.next() → replan → empty plan on a failed step   ← Layer 1 detects
-  → abortTerminal(capturedFailureText)
+  → main loop → planner.next() → replan → mintedRest empty + controlFailure set
+  → return { kind: 'dead-end' }              ← BEFORE stepAtCursor / finalizer LLM call
+  → handler: abortTerminal(capturedFailureText)
   → surfaceFinal("Error: Class ZZ… not found")
 ```
 
-replaces the current `lastOutcome = undefined → finalize-empty`.
+replaces the current `empty replan → stepAtCursor → finalizer LLM → done`.
 
 Backstop (any path that would form an empty success terminal):
 
@@ -217,22 +235,27 @@ Controller-handler unit tests, alongside `controller/__tests__`.
   or `[rewind] …`, `capturedFailureText` returns `undefined` (never that text),
   and the backstop surfaces `GENERIC_NO_ANSWER` — the private tail is never
   surfaced.
-- **Symptom A:** a failed step (tool error) + empty replan → terminal carries
-  `Class … not found`, `surfaceFinal` called with `Error: …`, body non-empty.
-- **Symptom B:** a `maxToolCalls` cut + empty replan → terminal carries
-  `tool-call budget exhausted (maxToolCalls)`.
-- **Success-answer guard:** `commitTerminalSuccess('')` writes an **error**
-  terminal (captured/generic) and surfaces it, never a success terminal with an
-  empty body; a resume then replays the error, not an empty success. Exercised
-  through both finalize callers (1959, 2028) **and** a direct
-  `commitTerminalSuccess('')` call, so the guarantee holds at the choke point.
-- **`surfaceFinal` defensive guard:** called with empty content → yields
-  `GENERIC_NO_ANSWER`, never `ok:true` empty.
+- **Symptom A:** a failed step (tool error) + empty replan → the run surfaces
+  `Error: Class … not found`, and the **durable terminal record is `kind:
+  'error'`** (read it back, not just `runState`). A non-empty finalize reply is
+  scripted to prove Layer 1 fired *before* the finalizer, not that its answer was
+  discarded — the finalize reply must NOT appear in the surfaced body.
+- **Symptom B:** a `maxToolCalls` cut + empty replan → surfaces `tool-call budget
+  exhausted (maxToolCalls)`; terminal record `kind: 'error'`.
+- **Success-answer guard:** an empty finalize answer → the durable terminal is
+  read back as `kind: 'error'` (not an empty success), and the surfaced body is
+  non-empty. Then **resume/replay the same run and assert the same non-empty
+  error is returned** — proving the guard is on the write, so no empty success is
+  ever persisted for replay.
+- **`surfaceFinal` never yields empty:** covered by a pure `nonEmptyBody` unit
+  test **and** at least one integration path (the Symptom A surfaced body is
+  non-empty through the real `surfaceFinal`).
 - **Suspend unaffected:** an external-tool suspend forms no terminal and surfaces
-  nothing; neither guard fires.
+  nothing; no guard fires.
 
-Invariant the tests pin: no run ever writes a success terminal with an empty
-answer, and `surfaceFinal` never yields `ok:true` with an empty body.
+Invariants the tests pin: the durable terminal is never a `success` with an empty
+answer; a dead-end run's replay returns the same non-empty error; `surfaceFinal`
+never yields `ok:true` with an empty body.
 
 ## Out of scope (tracked separately)
 
@@ -247,11 +270,15 @@ from the handler.
 
 One PR:
 
-- `types.ts` — add `ControlFailure.note?: string`.
+- `types.ts` — add `ControlFailure.note?: string` and the `{ kind: 'dead-end' }`
+  variant on `NextStep`.
+- `planner.ts` — the early `dead-end` return in the replan branch (before
+  `stepAtCursor`).
 - `controller-coordinator-handler.ts` — `cutControlFailure` sets `note`; the
-  dead-end detector (Layer 1); the success-answer guard at the top of
-  `commitTerminalSuccess`; the `surfaceFinal` defensive guard;
-  `capturedFailureText` helper; `GENERIC_NO_ANSWER`.
+  `dead-end` dispatch (Layer 1); the success-answer guard at the top of
+  `commitTerminalSuccess`; `surfaceFinal` routes through `nonEmptyBody`;
+  `capturedFailureText`, `nonEmptyBody`, `GENERIC_NO_ANSWER`.
 
-`finalize`'s retry/best-effort logic and `planner.ts` are unchanged. Additive; no
-public interface changes.
+`finalize`'s retry/best-effort logic is unchanged. Additive; the only public
+surface change is a new `NextStep` variant, which is backward-compatible (a new
+union member; existing consumers switch on `kind`).
