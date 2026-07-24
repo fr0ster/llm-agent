@@ -1,18 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  externalToolCallId,
   type IKnowledgeRagHandle,
   type KnowledgeEntry,
   type LlmStreamChunk,
   type LlmTool,
-  type Message,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
-import type {
-  KnowledgeBackend,
-  PipelineContext,
-} from '@mcp-abap-adt/llm-agent-libs';
+import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
 import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
@@ -20,14 +15,13 @@ import {
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
-  parseNextStep,
+  GENERIC_NO_ANSWER,
 } from '../controller-coordinator-handler.js';
-import { hydrateBundle, persistBundle } from '../session-bundle.js';
+import { readTerminal } from '../run-scope.js';
+import { hydrateBundle } from '../session-bundle.js';
 import type { ISubagentClient } from '../subagent-client.js';
 import type {
   ControllerConfig,
-  IControllerPlanner,
-  NextStep,
   SessionBundle,
   SubagentResult,
 } from '../types.js';
@@ -169,9 +163,6 @@ const toolCall = (
 // ---------------------------------------------------------------------------
 // #243 no-response safety-net
 // ---------------------------------------------------------------------------
-import { hydrateBundle } from '../session-bundle.js';
-import { readTerminal } from '../run-scope.js';
-import { GENERIC_NO_ANSWER } from '../controller-coordinator-handler.js';
 
 function surfacedContent(
   captured: ReturnType<typeof fakeCtx>['captured'],
@@ -183,7 +174,6 @@ function surfacedContent(
   );
   return c?.value.content;
 }
-
 
 describe('#243 empty-success guard (Layer 2)', () => {
   it('an empty finalizer answer → error terminal + non-empty body, and replay returns the same', async () => {
