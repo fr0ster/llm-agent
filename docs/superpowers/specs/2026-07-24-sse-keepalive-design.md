@@ -47,6 +47,13 @@ own their tool loop (controller, stepper) emit no heartbeat at all.
   phase under **any** pipeline. Plus documentation of the DAG coordinator's
   finalizer-is-sole-content-source contract (a distinct, second symptom in the
   issue).
+- **In scope (config-semantics coherence):** a single `heartbeatIntervalMs`
+  normalization applied to BOTH the new transport watchdog AND the existing flat
+  tool-loop heartbeat. The flat tool-loop (`tool-loop-core.ts:315`,
+  `setTimeout(…, heartbeatMs)`) currently consumes the same key with no validation, so
+  `0` / negative / `NaN` busy-loops the flat pipeline **today**. Fixing only the new
+  watchdog would leave that pre-existing footgun and make the "invalid disables
+  keep-alive" claim false. One normalizer, both call sites.
 - **Out of scope (tracked as a follow-up issue):** forwarding the DAG interpreter's
   content to the client live (token-by-token) with de-duplication against a
   re-emitting finalizer. The finalizer stays the sole content source; a
@@ -96,6 +103,32 @@ The public `StreamChunk` union, the coordinators, and `SmartAgent.process()` are
 
 ## Components
 
+### 0. `normalizeHeartbeatMs` — the single config-semantics authority
+
+New tiny exported helper in `@mcp-abap-adt/llm-agent-libs` (so BOTH the flat tool-loop,
+which lives there, and the server's transport watchdog, which depends on it, import the
+same rule). It is the ONE definition of what a raw `heartbeatIntervalMs` means:
+
+```ts
+/** `null` = keep-alive disabled (no timer); otherwise a finite positive interval. */
+export function normalizeHeartbeatMs(
+  raw: number | undefined,
+  defaultMs = 5000,
+): number | null;
+```
+
+Rule (one place, applied at every call site):
+
+- `undefined` (not configured) → `defaultMs` (5000).
+- finite and `> 0` → the value.
+- anything else — `<= 0`, `NaN`, `Infinity`, `-Infinity` → `null` (disabled).
+
+A **present but invalid** value disables keep-alive rather than guessing a default, and
+never yields a near-zero timer. `resolve-config-sections.ts:255` (`Number(...)`) should
+additionally log a warning when a configured value normalizes to `null` (defence in
+depth + observability), but the normalizer is the safety authority — it protects every
+caller regardless of source.
+
 ### 1. `createIdleHeartbeat` — reusable idle watchdog
 
 New focused module `packages/llm-agent-server-libs/src/smart-agent/http/sse-heartbeat.ts`.
@@ -133,16 +166,18 @@ which does NOT validate — `heartbeatIntervalMs: abc` yields `NaN`, and a bare
 `intervalMs <= 0` check does not catch `NaN` (`NaN <= 0` is `false`), while
 `setTimeout(cb, NaN)` schedules at the minimum delay. Because the callback re-arms, a
 non-finite interval would spin an unbounded write/CPU loop on every streaming request.
-The helper therefore guards at its entry:
+`createIdleHeartbeat` therefore normalizes at its entry via the shared authority
+(Component 0):
 
 ```ts
-if (!Number.isFinite(intervalMs) || intervalMs <= 0) return NOOP_HEARTBEAT;
+const ms = normalizeHeartbeatMs(intervalMs);
+if (ms === null) return NOOP_HEARTBEAT;   // <= 0 / NaN / ±Infinity → disabled
+// … use `ms` (finite positive) as the timer interval …
 ```
 
 so `NaN`, `Infinity`, `-Infinity`, `0`, and negatives all collapse to a no-op stub
-(keep-alive disabled), never a busy loop. (Config resolution MAY additionally reject
-non-numeric values as defence-in-depth, but the helper guard is the authority — it
-protects every caller regardless of source.)
+(keep-alive disabled), never a busy loop — the SAME rule the flat tool-loop now applies
+(Component 3).
 
 ### 2. A thin SSE binding, consumed by BOTH streaming handlers
 
@@ -159,27 +194,48 @@ It creates `createIdleHeartbeat({ intervalMs, onBeat: () => res.write(': keep-al
 registers `res.on('close', () => hb.stop())` (client disconnect — never write to a dead
 socket), and returns the handle. Both handlers use it identically:
 
+Both handlers pass the RAW `cfg.agent?.heartbeatIntervalMs` (possibly `undefined`);
+`attachSseKeepAlive` → `createIdleHeartbeat` → `normalizeHeartbeatMs` owns the default
+and the disabled case, so no call site repeats `?? 5000` or any validation.
+
 - **`chat-route-handler` `if (body.stream)` branch** (`chat-route-handler.ts:262+`):
-  read the interval as `cfg.agent?.heartbeatIntervalMs ?? 5000`; `const hb =
-  attachSseKeepAlive(res, intervalMs)`; `hb.reset()` before the loop and at the top of
-  each `for await` iteration; `hb.stop()` in a `finally`. The existing
-  `value.heartbeat` handling (`:304-308`) stays — on the flat path it writes
-  `: heartbeat tool=… elapsed=…ms` and, being a chunk, resets the watchdog, so the flat
-  path keeps its richer per-tool comment (possibly preceded by a `: keep-alive` per the
-  flat-path contract above).
+  `const hb = attachSseKeepAlive(res, cfg.agent?.heartbeatIntervalMs)`; `hb.reset()`
+  before the loop and at the top of each `for await` iteration; `hb.stop()` in a
+  `finally`. The existing `value.heartbeat` handling (`:304-308`) stays — on the flat
+  path it writes `: heartbeat tool=… elapsed=…ms` and, being a chunk, resets the
+  watchdog, so the flat path keeps its richer per-tool comment (possibly preceded by a
+  `: keep-alive` per the flat-path contract above).
 - **`adapter-route-handler` streaming loop** (`adapter-route-handler.ts:66-77`): same
   pattern around the `for await (event of adapter.transformStream(...))` loop —
   `hb.reset()` per event, `hb.stop()` in `finally`. `handleAdapterRequest` currently
   takes `(req, res, agent, adapter, session)` and has NO `cfg`; add a
-  `heartbeatIntervalMs: number` parameter, resolved by the caller in `smart-server.ts`
-  as `cfg.agent?.heartbeatIntervalMs ?? 5000` (the same value chat-route uses) and
-  passed at the call site.
+  `heartbeatIntervalMs: number | undefined` parameter, passed by the caller in
+  `smart-server.ts` as `cfg.agent?.heartbeatIntervalMs` (raw, unnormalized).
 
 **Config typing.** `resolveAgentSection` (`resolve-config-sections.ts:253-259`) already
 spreads `heartbeatIntervalMs` into `cfg.agent` at runtime, but the
 `SmartServerAgentConfig` interface (`smart-server.ts:188`) does not declare it. Add
 `heartbeatIntervalMs?: number` to that interface so both reads are type-safe — no new
 parsing, just typing a field that is already populated.
+
+### 3. Flat tool-loop applies the SAME normalizer (fixes the pre-existing busy loop)
+
+`tool-loop.ts:119-122` resolves `heartbeatMs = config.heartbeatIntervalMs ??
+ctx.config.heartbeatIntervalMs ?? 5000` with no validation, and
+`executeToolBatchWithHeartbeat` (`tool-loop-core.ts:311-332`) races `allDone` against
+`setTimeout(…, heartbeatMs)` in a `while` loop — so `0` / negative / `NaN` makes the
+tick win immediately and busy-loops heartbeat yields until the batch settles. Apply the
+shared normalizer:
+
+- `tool-loop.ts`: `const heartbeatMs = normalizeHeartbeatMs(config.heartbeatIntervalMs
+  ?? ctx.config.heartbeatIntervalMs)` → `number | null`; pass it down.
+- `tool-loop-core.ts`: the batch executor's `heartbeatMs` param becomes
+  `number | null`. When `null` (disabled), it awaits **only** `allDone` — no timer, no
+  tick branch, no heartbeat yields. When a finite positive number, the existing race is
+  unchanged.
+
+This removes the latent busy loop AND makes `<= 0` a real "disable heartbeats" switch on
+the flat path, matching the transport watchdog.
 
 The non-streaming (JSON) branches of both handlers are untouched — there is no
 connection to keep alive.
@@ -207,8 +263,10 @@ flat pipeline (two independent timers, same interval):
   then tool-loop ": heartbeat tool=…" arrives (t+ε+interval) and resets the watchdog
   → both are transparent comments; order is not relied upon
 
-non-finite / <= 0 interval:
-  attachSseKeepAlive → createIdleHeartbeat guard → NOOP_HEARTBEAT → never schedules a timer
+non-finite / <= 0 interval (BOTH paths, one normalizer):
+  transport: attachSseKeepAlive → createIdleHeartbeat → normalizeHeartbeatMs → null → NOOP
+  flat:      tool-loop → normalizeHeartbeatMs → null → executor awaits allDone, no timer
+  → neither path ever schedules a near-zero timer
 ```
 
 ## Error handling / edge cases
@@ -219,10 +277,12 @@ non-finite / <= 0 interval:
   cancelled on every exit path.
 - **Non-streaming request:** watchdog is created only inside the streaming branch of
   each handler.
-- **`heartbeatIntervalMs` unset / invalid:** unset → default 5000; `<= 0` → disabled
-  no-op stub (a deployment can turn keep-alive off); **non-finite (`NaN`/`±Infinity`,
-  e.g. from `heartbeatIntervalMs: abc` in yaml) → no-op stub, never a zero-delay busy
-  loop** (see the mandatory guard in Component 1).
+- **`heartbeatIntervalMs` unset / invalid (BOTH paths, via `normalizeHeartbeatMs`):**
+  unset → default 5000; `<= 0` → disabled (a deployment can turn keep-alive off);
+  non-finite (`NaN`/`±Infinity`, e.g. from `heartbeatIntervalMs: abc` in yaml) →
+  disabled — never a zero-delay busy loop. This holds identically for the transport
+  watchdog **and** the flat tool-loop (Component 3), so the pre-existing flat busy loop
+  on `0`/`NaN` is fixed too.
 - **Backpressure** (`res.write` returns false): keep-alive comments are a few bytes;
   no flow control needed.
 - **Concurrency:** Node is single-threaded; the timer callback's `res.write` runs only
@@ -236,6 +296,9 @@ non-finite / <= 0 interval:
 
 ## Testing
 
+- **Unit `normalize-heartbeat-ms.test.ts`** (`llm-agent-libs`): `undefined` → 5000;
+  finite positive → itself; `0`, negative, `NaN`, `Infinity`, `-Infinity` → `null`
+  (disabled). This is the single-authority test the two consumers rely on.
 - **Unit `sse-heartbeat.test.ts`** (injected manual scheduler — deterministic, no real
   time): a beat fires after one idle `intervalMs`; a beat repeats every `intervalMs`
   while idle; `reset()` before the window elapses cancels the pending beat and
@@ -244,6 +307,11 @@ non-finite / <= 0 interval:
   beat):** `NaN`, `Infinity`, `-Infinity`, `0`, and a negative value each return the
   no-op stub. `attachSseKeepAlive` on a fake `res` writes `: keep-alive` on a beat and
   stops on `res` `'close'`.
+- **Regression `tool-loop-core` heartbeat (`llm-agent-libs`):** with the batch
+  executor given a disabled interval (`null`, from normalizing `0` / negative / `NaN` /
+  `±Infinity`), a batch whose tools resolve after a delay **completes**, yields **no**
+  heartbeat chunk, and schedules **no** timer (no busy loop); with a finite positive
+  interval it still yields `value.heartbeat` while a tool is pending (unchanged).
 - **Integration — BOTH endpoints** (short real interval e.g. 20ms): for
   `/v1/chat/completions` (`chat-route-handler`) AND `/v1/messages`
   (`adapter-route-handler`): a fake agent stream idle > interval then a chunk/event →
@@ -260,8 +328,10 @@ non-finite / <= 0 interval:
 ## Documentation (whole set)
 
 - **CHANGELOG** (Unreleased → folds into v20.9.0): SSE keep-alive during long tool
-  execution across all coordinator pipelines (#246); note the DAG
-  finalizer-sole-content-source contract.
+  execution across all coordinator pipelines (#246); a single `heartbeatIntervalMs`
+  normalization (`<= 0`/invalid disables, no busy loop) applied to both the transport
+  keep-alive and the flat tool-loop; note the DAG finalizer-sole-content-source
+  contract.
 - **TROUBLESHOOTING:** symptom "SSE connection closes / `No response` after ~22s
   during a long MCP tool call under the linear / DAG / controller / stepper / cyclic
   pipelines (the flat pipeline was unaffected)" → cause (tool execution runs below the
@@ -281,19 +351,30 @@ non-finite / <= 0 interval:
 
 One PR (folds into the held v20.9.0):
 
-- `smart-agent/http/sse-heartbeat.ts` — `createIdleHeartbeat` (with the non-finite/≤0
-  guard) + `attachSseKeepAlive` + types.
+**`@mcp-abap-adt/llm-agent-libs`:**
+- `normalizeHeartbeatMs` — the single config-semantics helper (+ unit test).
+- `pipeline/handlers/tool-loop.ts` — normalize `heartbeatMs` via it; pass `number | null`.
+- `pipeline/handlers/tool-loop-core.ts` — batch executor accepts `number | null`; when
+  `null`, await only `allDone` (no timer) (+ regression test).
+
+**`@mcp-abap-adt/llm-agent-server-libs`:**
+- `smart-agent/http/sse-heartbeat.ts` — `createIdleHeartbeat` (normalizes via
+  `normalizeHeartbeatMs`) + `attachSseKeepAlive` + types.
 - `smart-agent/smart-server.ts` — declare `heartbeatIntervalMs?: number` on
-  `SmartServerAgentConfig` (already populated by `resolveAgentSection`); pass the
-  resolved interval to `handleAdapterRequest` at its call site.
+  `SmartServerAgentConfig` (already populated by `resolveAgentSection`); pass the raw
+  `cfg.agent?.heartbeatIntervalMs` to `handleAdapterRequest` at its call site.
 - `smart-agent/http/chat-route-handler.ts` — consume `attachSseKeepAlive` in the
   streaming branch; `hb.reset()` per chunk; `finally` stop.
-- `smart-agent/http/adapter-route-handler.ts` — add a `heartbeatIntervalMs: number`
-  parameter; consume `attachSseKeepAlive` around the `transformStream` loop;
+- `smart-agent/http/adapter-route-handler.ts` — add a `heartbeatIntervalMs: number |
+  undefined` parameter; consume `attachSseKeepAlive` around the `transformStream` loop;
   `hb.reset()` per event; `finally` stop.
 - `smart-agent/http/__tests__/sse-heartbeat.test.ts` + streaming integration tests for
   BOTH `/v1/chat/completions` and `/v1/messages`.
-- CHANGELOG / TROUBLESHOOTING / ARCHITECTURE doc updates.
+- `resolve-config-sections.ts` — optionally warn when a configured `heartbeatIntervalMs`
+  normalizes to disabled (observability; non-blocking).
 
-Additive; no public type or coordinator change. A follow-up issue is filed for live
-DAG interpreter-content forwarding.
+**Docs:** CHANGELOG / TROUBLESHOOTING / ARCHITECTURE updates.
+
+Additive; no public type or coordinator change (the flat tool-loop internal param
+widening to `number | null` is internal). A follow-up issue is filed for live DAG
+interpreter-content forwarding.
