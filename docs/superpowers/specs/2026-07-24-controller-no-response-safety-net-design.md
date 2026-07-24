@@ -93,18 +93,32 @@ durable `writeControlFailure` and the `plannerPrivate` append. `noteFor` maps a
 typed code to its human string (`maxToolCalls → "tool-call budget exhausted
 (maxToolCalls)"`) and passes anything else through, so for a tool error `note` is
 the raw text (`Class ZZ… not found`) and for a budget cut it is the human
-sentence. The marker becomes self-contained; the helper never parses
-`plannerPrivate`.
+sentence. The marker is self-contained — the helper reads only it.
 
 **2. `capturedFailureText(bundle): string | undefined` — pure helper.**
-Priority order, all readable from the bundle:
+Reads **only** the `controlFailure` marker; it never touches `plannerPrivate`.
 
-1. `inFlight.controlFailure.note` — already the right human/raw string (see
-   above),
-2. else the tail of `plannerPrivate` (defensive fallback for a failure recorded
-   without a marker).
+```ts
+const cf = bundle.inFlightStep?.controlFailure;
+if (!cf) return undefined;
+if (cf.note) return cf.note;                    // primary, self-contained
+// Legacy marker (persisted before `note` existed): only typed reasons have a
+// safe human string. A generic 'control-failure' without a note has no
+// bundle-local text we can trust, so the caller falls back to GENERIC_NO_ANSWER.
+if (cf.reason === 'maxToolCalls')
+  return 'tool-call budget exhausted (maxToolCalls)';
+if (cf.reason === 'step-timeout')
+  return 'step time budget exhausted (step-timeout)';
+return undefined;
+```
 
-`undefined` when none is present. Tested in isolation.
+**Why not `plannerPrivate`.** It is an internal scratchpad holding, among other
+things, `[external tool <name> result] <data>` and `[clarify answer] <user
+text>` (handler:526, 552), plus rewind/board/step notes. Its tail is arbitrary
+internal context — surfacing it could leak a sensitive tool result or private
+input to the consumer. So the helper never parses it; a legacy generic marker
+degrades to `GENERIC_NO_ANSWER` rather than risk leaking. Tested in isolation,
+including negative cases.
 
 **3. Dead-end detector (Layer 1).** At the handler site where a replan yields no
 forward progress for the in-flight step, the step is a dead-end iff
@@ -193,8 +207,13 @@ Controller-handler unit tests, alongside `controller/__tests__`.
 
 - `ControlFailure.note`: `cutControlFailure` sets it to `noteFor(reason)` — raw
   text for a tool error, human sentence for a typed cut.
-- `capturedFailureText`: `controlFailure.note` wins; `plannerPrivate` fallback;
-  empty → `undefined`.
+- `capturedFailureText`: `note` wins; legacy typed reason maps to its human
+  sentence; a legacy generic marker or no marker → `undefined`.
+- **Negative (leak) tests:** with `controlFailure.note` unset and
+  `plannerPrivate` ending in `[external tool … result] …`, `[clarify answer] …`,
+  or `[rewind] …`, `capturedFailureText` returns `undefined` (never that text),
+  and the backstop surfaces `GENERIC_NO_ANSWER` — the private tail is never
+  surfaced.
 - **Symptom A:** a failed step (tool error) + empty replan → terminal carries
   `Class … not found`, `surfaceFinal` called with `Error: …`, body non-empty.
 - **Symptom B:** a `maxToolCalls` cut + empty replan → terminal carries
