@@ -510,8 +510,11 @@ describe('attachSseKeepAlive', () => {
   it('registers a res "close" handler', () => {
     const { res, listeners } = fakeRes();
     const hb = attachSseKeepAlive(res, 100);
-    assert.equal(typeof listeners.close, 'function');
-    hb.stop(); // must stop: the heartbeat re-arms setTimeout and would leak the timer
+    try {
+      assert.equal(typeof listeners.close, 'function');
+    } finally {
+      hb.stop(); // stop even if the assertion throws — the heartbeat re-arms setTimeout
+    }
   });
 
   it('after res close during idle, NO further keep-alive is written (real timer)', async () => {
