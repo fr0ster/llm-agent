@@ -225,24 +225,39 @@ spreads `heartbeatIntervalMs` into `cfg.agent` at runtime, but the
 `heartbeatIntervalMs?: number` to that interface so both reads are type-safe — no new
 parsing, just typing a field that is already populated.
 
-### 3. Flat tool-loop applies the SAME normalizer (fixes the pre-existing busy loop)
+### 3. BOTH flat tool-loop callers apply the SAME normalizer (fixes the pre-existing busy loop)
 
-`tool-loop.ts:119-122` resolves `heartbeatMs = config.heartbeatIntervalMs ??
-ctx.config.heartbeatIntervalMs ?? 5000` with no validation, and
 `executeToolBatchWithHeartbeat` (`tool-loop-core.ts:311-332`) races `allDone` against
 `setTimeout(…, heartbeatMs)` in a `while` loop — so `0` / negative / `NaN` makes the
-tick win immediately and busy-loops heartbeat yields until the batch settles. Apply the
-shared normalizer:
+tick win immediately and busy-loops heartbeat yields until the batch settles. It has
+**two** production callers, both of which resolve `heartbeatMs` with no validation and
+BOTH must normalize:
+
+- **Pipeline `ToolLoopHandler`** — `tool-loop.ts:119-122` (`config.heartbeatIntervalMs
+  ?? ctx.config.heartbeatIntervalMs ?? 5000`), call at `tool-loop.ts:840`.
+- **Direct `SmartAgent.streamProcess`** — `agent.ts:1346`
+  (`this.config.heartbeatIntervalMs ?? 5000`), call at `agent.ts:1360`. This is the
+  plain SmartAgent flat tool-loop named in the root cause.
+
+The change:
 
 - `tool-loop.ts`: `const heartbeatMs = normalizeHeartbeatMs(config.heartbeatIntervalMs
-  ?? ctx.config.heartbeatIntervalMs)` → `number | null`; pass it down.
+  ?? ctx.config.heartbeatIntervalMs)` → `number | null`.
+- `agent.ts:1346`: `const heartbeatMs = normalizeHeartbeatMs(this.config.heartbeatIntervalMs)`
+  → `number | null` (drop the `?? 5000`; the normalizer owns the default).
 - `tool-loop-core.ts`: the batch executor's `heartbeatMs` param becomes
   `number | null`. When `null` (disabled), it awaits **only** `allDone` — no timer, no
   tick branch, no heartbeat yields. When a finite positive number, the existing race is
   unchanged.
 
+**Note — the compiler will NOT catch a missed caller.** `number` is assignable to
+`number | null`, so a call site still passing a bare `?? 5000` compiles clean and keeps
+the bug. Both call sites (`tool-loop.ts`, `agent.ts`) must be updated explicitly; the
+regression tests below exercise each production caller so a missed one fails a test, not
+just review.
+
 This removes the latent busy loop AND makes `<= 0` a real "disable heartbeats" switch on
-the flat path, matching the transport watchdog.
+BOTH flat paths, matching the transport watchdog.
 
 The non-streaming (JSON) branches of both handlers are untouched — there is no
 connection to keep alive.
@@ -319,6 +334,11 @@ non-finite / <= 0 interval (BOTH paths, one normalizer):
   `±Infinity`), a batch whose tools resolve after a delay **completes**, yields **no**
   heartbeat chunk, and schedules **no** timer (no busy loop); with a finite positive
   interval it still yields `value.heartbeat` while a tool is pending (unchanged).
+- **Both production callers normalize (matrix):** exercise the disabled interval via
+  EACH caller so a missed call site fails a test — (a) the pipeline `ToolLoopHandler`
+  (`tool-loop.ts`) and (b) the direct `SmartAgent.streamProcess` (`agent.ts`) path.
+  With `heartbeatIntervalMs: 0` (or `NaN`) each runs a slow-tool batch to completion
+  with no heartbeat chunk and no busy loop.
 - **Integration — BOTH endpoints** (short real interval e.g. 20ms): for
   `/v1/chat/completions` (`chat-route-handler`) AND `/v1/messages`
   (`adapter-route-handler`): a fake agent stream idle > interval then a chunk/event →
@@ -360,9 +380,12 @@ One PR (folds into the held v20.9.0):
 
 **`@mcp-abap-adt/llm-agent-libs`:**
 - `normalizeHeartbeatMs` — the single config-semantics helper (+ unit test).
-- `pipeline/handlers/tool-loop.ts` — normalize `heartbeatMs` via it; pass `number | null`.
-- `pipeline/handlers/tool-loop-core.ts` — batch executor accepts `number | null`; when
-  `null`, await only `allDone` (no timer) (+ regression test).
+- `pipeline/handlers/tool-loop-core.ts` — batch executor `heartbeatMs` param becomes
+  `number | null`; when `null`, await only `allDone` (no timer) (+ regression test).
+- `pipeline/handlers/tool-loop.ts` — caller #1 (pipeline `ToolLoopHandler`): normalize
+  via `normalizeHeartbeatMs`; pass `number | null`.
+- `agent.ts` (~1346) — caller #2 (direct `SmartAgent.streamProcess`): normalize via
+  `normalizeHeartbeatMs`, dropping `?? 5000` (+ a streamProcess disabled-interval test).
 
 **`@mcp-abap-adt/llm-agent-server-libs`:**
 - `smart-agent/http/sse-heartbeat.ts` — `createIdleHeartbeat` (normalizes via
