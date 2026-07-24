@@ -4,7 +4,8 @@
  * A variation point the consumer owns: the default gives a working,
  * collision-free key, and a consumer who knows its servers (real names, a
  * per-server collection layout, or a faster-but-conflicting scheme) swaps in
- * its own. The engine stays MCP-agnostic — it never assumes a fixed server set.
+ * its own — provided the id keeps the `tool:` prefix (see `key`). The engine
+ * stays MCP-agnostic — it never assumes a fixed server set.
  */
 export interface ToolKeyContext {
   /** The tool's own name, as exposed by its MCP server. */

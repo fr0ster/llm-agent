@@ -479,7 +479,7 @@ describe('vectorizeMcpTools tool record key', () => {
     assert.equal(summary?.total, 2);
   });
 
-  it('honours a consumer-supplied key strategy', async () => {
+  it('honours a consumer-supplied key strategy (keeping the tool: prefix)', async () => {
     const writer = makeWriter();
     const rag = makeRagWithEmbedder(undefined, writer);
     await vectorizeMcpTools(
@@ -487,9 +487,27 @@ describe('vectorizeMcpTools tool record key', () => {
       rag,
       new CapturingRequestLogger(),
       undefined,
-      { key: ({ toolName }) => `custom::${toolName}` },
+      { key: ({ toolName }) => `tool:srv1/${toolName}` },
     );
-    assert.deepEqual(writer.upsertCalls, ['custom::Search']);
+    assert.deepEqual(writer.upsertCalls, ['tool:srv1/Search']);
+  });
+
+  it('fails fast when a key strategy drops the tool: prefix', async () => {
+    // Such a record would be written and counted, but every retrieval path
+    // ignores a non-tool: id — so reject it at write time instead.
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await assert.rejects(
+      () =>
+        vectorizeMcpTools(
+          [makeClient([makeTool('Search')])],
+          rag,
+          new CapturingRequestLogger(),
+          undefined,
+          { key: ({ toolName }) => `custom::${toolName}` },
+        ),
+      /must start with "tool:"/,
+    );
   });
 });
 

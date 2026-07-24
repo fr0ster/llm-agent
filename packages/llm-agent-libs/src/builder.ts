@@ -474,7 +474,8 @@ export class SmartAgentBuilder {
    *  RAG record id. Default: {@link defaultToolRecordKey}, which keeps
    *  `tool:${name}` for a single server and disambiguates by client index when
    *  several are connected. Swap it to key by real server name, a per-server
-   *  collection, or any scheme the consumer prefers. */
+   *  collection, or any scheme — as long as the id keeps the `tool:` prefix, so
+   *  retrieval still tells tools apart from skills. */
   withToolRecordKey(strategy: IToolRecordKey): this {
     this._toolRecordKey = strategy;
     return this;

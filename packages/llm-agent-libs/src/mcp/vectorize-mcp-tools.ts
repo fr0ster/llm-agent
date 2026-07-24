@@ -119,8 +119,19 @@ export async function vectorizeMcpTools(
 
   for (let clientIndex = 0; clientIndex < clients.length; clientIndex++) {
     const adapter = clients[clientIndex];
-    const keyFor = (toolName: string): string =>
-      toolRecordKey.key({ toolName, clientIndex, clientCount });
+    const keyFor = (toolName: string): string => {
+      const id = toolRecordKey.key({ toolName, clientIndex, clientCount });
+      // Enforce the IToolRecordKey contract at write time: a key without the
+      // `tool:` prefix would be written and counted as vectorized, but every
+      // retrieval path (toolNameFromRecord) would ignore it — a silent
+      // unretrievable record. Fail fast instead.
+      if (!id.startsWith('tool:')) {
+        throw new Error(
+          `IToolRecordKey produced "${id}" for tool "${toolName}"; a tool record id must start with "tool:" so retrieval can tell it apart from skills.`,
+        );
+      }
+      return id;
+    };
     // Only listing is guarded at client level. A write that throws must NOT be
     // charged to the client, must not abort the remaining tools, and must land
     // in `failed` — see the per-tool try/catch below.
@@ -139,6 +150,9 @@ export async function vectorizeMcpTools(
 
     acc.total += tools.length;
     const texts = tools.map((t) => toolText(t.name, t.description));
+    // Computed once, outside any per-tool try/catch, so an invalid key strategy
+    // fails the boot fast rather than landing every tool in `failed`.
+    const ids = tools.map((t) => keyFor(t.name));
 
     let vectors: number[][] | undefined;
     if (
@@ -191,7 +205,7 @@ export async function vectorizeMcpTools(
       const bulk = await writer
         .upsertManyPrecomputedRaw(
           tools.map((t, i) => ({
-            id: keyFor(t.name),
+            id: ids[i],
             text: texts[i],
             vector: (vectors as number[][])[i],
             // Store the name so retrieval recovers it via toolNameFromRecord,
@@ -215,7 +229,7 @@ export async function vectorizeMcpTools(
       try {
         ok = await writeOne(
           writer,
-          keyFor(tools[i].name),
+          ids[i],
           texts[i],
           vectors?.[i],
           requestLogger,
