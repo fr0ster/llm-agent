@@ -187,21 +187,58 @@ describe('Heartbeat — disabled interval (#246)', () => {
 > chunks while tool is executing" test at ~line 135 shows the precise deps and
 > config it uses — copy that shape, changing only `heartbeatIntervalMs`).
 >
-> **Both callers required (spec matrix).** The two tests above drive caller #2
-> (`SmartAgent.streamProcess` → `agent.ts:1360`). Add ONE more test for caller #1
-> (pipeline `ToolLoopHandler` → `tool-loop.ts:840`): first locate a harness that
-> constructs the handler / a `PipelineContext` (`grep -rl "ToolLoopHandler\|new
-> ToolLoopHandler" packages/*/src --include=*.test.ts`, and check
-> `packages/llm-agent-server-libs/src/pipelines` flat-pipeline tests). Drive the
-> flat pipeline with a slow tool and `heartbeatIntervalMs: 0`; assert it completes
-> and yields no `value.heartbeat`. If no harness makes this feasible without a
-> disproportionate fixture, STOP and report to the reviewer rather than skipping
-> silently — do not mark the task done with caller #1 unverified.
+The two tests above drive caller #2 (`SmartAgent.streamProcess` → `agent.ts:1360`).
+Caller #1 (pipeline `ToolLoopHandler` → `tool-loop.ts:840`) gets its own test in the
+next step — the spec matrix requires BOTH.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 1b: Write the failing caller #1 test (pipeline `ToolLoopHandler`)**
 
-Run: `npx tsx --test packages/llm-agent-libs/src/__tests__/heartbeat.test.ts`
-Expected: FAIL — before the fix, `heartbeatIntervalMs: 0` makes the batch executor busy-loop and emit many heartbeat chunks (`heartbeats.length` > 0), and the run may not settle promptly.
+Add to the EXISTING harness file
+`packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-stream.test.ts` —
+it already builds a `ToolLoopHandler` and a `PipelineContext` via `makeCtx(streamFn,
+onPartial)` (config carries `heartbeatIntervalMs: 5000`). To reach
+`executeToolBatchWithHeartbeat`, the batch must contain an INTERNAL tool call (a tool
+present in `toolClientMap`, not in `externalTools`). Copy the internal-tool-call
+driving shape from `tool-loop-external.test.ts` / `tool-loop-mcp-unavailable.test.ts`
+in the same `__tests__` dir (their streams yield `{ toolCalls: [...], finishReason:
+'tool_calls' }` and populate `toolClientMap`), then add a `makeCtx` override for
+`heartbeatIntervalMs` and a slow client:
+
+```ts
+test('#246 caller #1: ToolLoopHandler with heartbeatIntervalMs 0 → no heartbeat, no busy loop', async () => {
+  // A stateful LLM stub: round 1 requests internal tool "Slow"; round 2 returns
+  // final content. (Model rounds on tool-loop-external.test.ts.)
+  // toolClientMap has a "Slow" client whose callTool awaits ~120ms.
+  // config override: heartbeatIntervalMs: 0.
+  const ctx = makeCtxWithSlowInternalTool({ heartbeatIntervalMs: 0, toolDelayMs: 120 });
+  const yielded = [];
+  const started = Date.now();
+  for await (const chunk of new ToolLoopHandler(/* same ctor args the file's tests use */).execute(ctx)) {
+    yielded.push(chunk);
+  }
+  assert.ok(Date.now() - started < 4000, 'must not busy-loop');
+  assert.equal(
+    yielded.filter((c) => c.ok && (c.value as { heartbeat?: unknown }).heartbeat).length,
+    0,
+    'disabled interval → no heartbeat chunk from the batch executor',
+  );
+});
+```
+
+> `makeCtxWithSlowInternalTool` = the file's existing `makeCtx` with three deltas:
+> `config.heartbeatIntervalMs` set from the arg; a `toolClientMap` entry for `Slow`
+> with a delayed `callTool` (copy the slow-client stub from `heartbeat.test.ts`); and
+> `selectedTools`/`activeTools` containing the `Slow` tool so the loop offers it.
+> Drive `.execute(ctx)` exactly as the existing tests in this file do (same handler
+> construction). If the handler is instead driven through a helper in this file,
+> reuse that helper.
+
+This file MUST be added to Task 2's `git add` (Step 8).
+
+- [ ] **Step 2: Run both new tests to verify they fail**
+
+Run: `npx tsx --test packages/llm-agent-libs/src/__tests__/heartbeat.test.ts packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-stream.test.ts`
+Expected: FAIL — before the fix, `heartbeatIntervalMs: 0` makes the batch executor busy-loop and emit many heartbeat chunks (`heartbeats.length` / heartbeat-chunk count > 0), and the run may not settle promptly, for BOTH callers.
 
 - [ ] **Step 3: Widen the core param**
 
@@ -282,10 +319,10 @@ Replace line 1346:
       const heartbeatMs = normalizeHeartbeatMs(this.config.heartbeatIntervalMs);
 ```
 
-- [ ] **Step 7: Run the regression + the full libs suite**
+- [ ] **Step 7: Run both regressions + the full libs suite**
 
-Run: `npx tsx --test packages/llm-agent-libs/src/__tests__/heartbeat.test.ts`
-Expected: PASS — the disabled-interval tests pass; the existing "yields heartbeat chunks" (default 5000) and "no heartbeat for fast tools" tests still pass.
+Run: `npx tsx --test packages/llm-agent-libs/src/__tests__/heartbeat.test.ts packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-stream.test.ts`
+Expected: PASS — both callers' disabled-interval tests pass; the existing "yields heartbeat chunks" (default 5000), "no heartbeat for fast tools", and the existing tool-loop-stream tests still pass.
 
 Run: `npm test --workspace @mcp-abap-adt/llm-agent-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
 Expected: `fail 0`. If a pre-existing test fails, confirm it also fails on `main`.
@@ -294,7 +331,7 @@ Expected: `fail 0`. If a pre-existing test fails, confirm it also fails on `main
 
 ```bash
 npm run build && npm run lint:check
-git add packages/llm-agent-libs/src/pipeline/handlers/tool-loop-core.ts packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/__tests__/heartbeat.test.ts
+git add packages/llm-agent-libs/src/pipeline/handlers/tool-loop-core.ts packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/__tests__/heartbeat.test.ts packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-stream.test.ts
 git commit -m "fix(agent): disable flat heartbeat on <=0/invalid interval, no busy loop (#246)"
 ```
 
@@ -392,6 +429,26 @@ describe('createIdleHeartbeat', () => {
     assert.equal(clock.armed, false);
     clock.tick();
     assert.equal(beats, 0);
+  });
+
+  it('stop() called synchronously DURING onBeat does not re-arm', () => {
+    const clock = manualClock();
+    let beats = 0;
+    let hb: import('./sse-heartbeat.js').IdleHeartbeat;
+    hb = createIdleHeartbeat({
+      intervalMs: 100,
+      onBeat: () => {
+        beats++;
+        hb.stop(); // e.g. res 'close' fires while we write the beat
+      },
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+    clock.tick(); // fires onBeat → beats=1 → stop()
+    assert.equal(beats, 1);
+    assert.equal(clock.armed, false, 'must NOT re-arm after stop during beat');
+    clock.tick(); // nothing armed → no further beat
+    assert.equal(beats, 1);
   });
 
   it('disabled intervals never arm a timer: 0, negative, NaN, ±Infinity, and via undefined→default it DOES arm', () => {
@@ -504,8 +561,11 @@ export function createIdleHeartbeat(opts: IdleHeartbeatOptions): IdleHeartbeat {
   let stopped = false;
 
   const arm = (): void => {
+    if (stopped) return; // never schedule after stop
     handle = schedule(() => {
+      if (stopped) return; // a stop() between scheduling and firing
       opts.onBeat();
+      if (stopped) return; // onBeat() may have stopped us synchronously (e.g. res close)
       arm();
     }, ms);
   };
@@ -695,7 +755,8 @@ Around the streaming `for await (const event of adapter.transformStream(agent.st
 
 - [ ] **Step 3: Pass the interval at the call site**
 
-In `smart-server.ts`, find the `handleAdapterRequest(` call (grep: `grep -n "handleAdapterRequest(" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`) and add the final argument:
+In `smart-server.ts`, the `handleAdapterRequest(` call is at ~line 2628 (verify with
+`grep -n "handleAdapterRequest(" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`). Add the final argument:
 
 ```ts
         this.cfg.agent?.heartbeatIntervalMs,
@@ -717,26 +778,44 @@ git commit -m "feat(server): SSE keep-alive on /v1/messages (adapter surface) (#
 
 ---
 
-### Task 6: Both-endpoint integration test
+### Task 6: Both-endpoint integration test — invoke the REAL handlers
 
 **Files:**
 - Test: `packages/llm-agent-server-libs/src/smart-agent/http/keepalive-integration.test.ts` (create)
 
 **Interfaces:**
-- Consumes: `handleChat`, `handleAdapterRequest`, `attachSseKeepAlive`.
+- Consumes: `handleChat` (from `./chat-route-handler.js`), `handleAdapterRequest` (from `./adapter-route-handler.js`), a real `AnthropicApiAdapter`.
 
-- [ ] **Step 1: Write the test**
+**Why real handlers:** the test MUST call `handleChat`/`handleAdapterRequest` so it
+catches missing wiring, a wrong config parameter, or a missing `reset()` in the real
+loops — a helper-only simulation would not. Use a real Node `Readable` for the request
+body (satisfies `readBody`'s `req.on('data'/'end')`), a fake `ServerResponse`, a stub
+`SmartAgent` whose `streamProcess` stays idle then yields content, and a REAL adapter
+for the `/v1/messages` path.
 
-Create `keepalive-integration.test.ts`. Use a fake `ServerResponse` that records
-writes and a `SmartAgent` whose `streamProcess` is a stub async generator that
-stays idle longer than a short interval, then yields one content chunk.
+- [ ] **Step 1: Write the failing test**
+
+Create `keepalive-integration.test.ts`:
 
 ```ts
 import assert from 'node:assert/strict';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
 import { describe, it } from 'node:test';
-import { attachSseKeepAlive } from './sse-heartbeat.js';
+import { SessionRequestLogger } from '@mcp-abap-adt/llm-agent-libs';
+import { handleAdapterRequest } from './adapter-route-handler.js';
+import { handleChat } from './chat-route-handler.js';
+// The concrete adapter is constructed in smart-server.ts (`new AnthropicApiAdapter()`).
+// Resolve its import path with:
+//   grep -rn "class AnthropicApiAdapter" packages/*/src
+import { AnthropicApiAdapter } from '<resolve: same module smart-server.ts imports it from>';
 
-/** Minimal ServerResponse double capturing writes + the close listener. */
+/** A request whose body is `json`; drives readBody via a real Readable. */
+function makeReq(json: unknown): IncomingMessage {
+  return Readable.from([Buffer.from(JSON.stringify(json))]) as unknown as IncomingMessage;
+}
+
+/** Fake ServerResponse capturing writes + listeners. */
 function fakeRes() {
   const writes: string[] = [];
   const listeners: Record<string, () => void> = {};
@@ -750,58 +829,81 @@ function fakeRes() {
     },
     end: () => {},
     writeHead: () => res,
-  } as unknown as import('node:http').ServerResponse;
+  } as unknown as ServerResponse;
   return { res, writes, listeners };
 }
 
-/** An async generator idle for `idleMs`, then one content chunk. */
-async function* idleThenContent(idleMs: number) {
-  await new Promise((r) => setTimeout(r, idleMs));
-  yield { ok: true, value: { content: 'hello' } };
+/** Stub SmartAgent: streamProcess idles `idleMs`, then yields one content chunk. */
+function idleAgent(idleMs: number) {
+  return {
+    async *streamProcess() {
+      await new Promise((r) => setTimeout(r, idleMs));
+      yield { ok: true, value: { content: 'hello', finishReason: 'stop' } };
+    },
+  } as never; // cast to SmartAgent at the call site
 }
 
-describe('#246 SSE keep-alive integration', () => {
-  it('emits ": keep-alive" during an idle gap, before the first content write', async () => {
+const noop = () => {};
+
+describe('#246 SSE keep-alive — /v1/chat/completions', () => {
+  it('emits ": keep-alive" during an idle gap before the first data line', async () => {
     const { res, writes } = fakeRes();
-    const keepAlive = attachSseKeepAlive(res, 20); // 20ms interval
-    try {
-      for await (const chunk of idleThenContent(70)) {
-        keepAlive.reset();
-        res.write(`data: ${JSON.stringify(chunk.value)}\n\n`);
-      }
-    } finally {
-      keepAlive.stop();
-    }
-    const keepAlives = writes.filter((w) => w.startsWith(': keep-alive'));
-    const firstData = writes.findIndex((w) => w.startsWith('data:'));
-    assert.ok(keepAlives.length >= 1, 'at least one keep-alive during the idle gap');
+    await handleChat(
+      makeReq({ model: 'm', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+      res,
+      new SessionRequestLogger(),
+      idleAgent(80), // stub SmartAgent
+      noop as never, // _chat (unused on the stream path)
+      noop as never, // _streamChat
+      noop, // log
+      undefined, // modelProvider
+      undefined, // session
+      { agent: { heartbeatIntervalMs: 20 } } as never, // cfg
+    );
     const firstKeepAlive = writes.findIndex((w) => w.startsWith(': keep-alive'));
+    const firstData = writes.findIndex((w) => w.startsWith('data:'));
+    assert.ok(firstKeepAlive >= 0, 'a keep-alive was written during the idle gap');
     assert.ok(firstKeepAlive < firstData, 'keep-alive precedes the first data line');
   });
+});
 
-  it('no keep-alive after res close', async () => {
-    const { res, writes, listeners } = fakeRes();
-    const keepAlive = attachSseKeepAlive(res, 20);
-    listeners.close(); // client disconnects immediately
-    keepAlive.stop();
-    await new Promise((r) => setTimeout(r, 60));
-    assert.equal(writes.filter((w) => w.startsWith(': keep-alive')).length, 0);
-  });
-
-  it('disabled interval (0) never writes a keep-alive', async () => {
+describe('#246 SSE keep-alive — /v1/messages (real adapter)', () => {
+  it('emits ": keep-alive" during an idle gap', async () => {
     const { res, writes } = fakeRes();
-    const keepAlive = attachSseKeepAlive(res, 0);
-    await new Promise((r) => setTimeout(r, 60));
-    keepAlive.stop();
-    assert.equal(writes.filter((w) => w.startsWith(': keep-alive')).length, 0);
+    await handleAdapterRequest(
+      makeReq({
+        model: 'm',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+      res,
+      idleAgent(80), // stub SmartAgent
+      new AnthropicApiAdapter(),
+      undefined, // session
+      20, // heartbeatIntervalMs
+    );
+    assert.ok(
+      writes.some((w) => w.startsWith(': keep-alive')),
+      'a keep-alive was written during the idle gap on /v1/messages',
+    );
   });
 });
 ```
 
-- [ ] **Step 2: Run test to verify it passes**
+> Align the exact `handleChat` argument list to its signature
+> (`chat-route-handler.ts:33-46`) — the arg order above matches it. If
+> `AnthropicApiAdapter.normalizeRequest` rejects the minimal body, copy a valid
+> Anthropic request body from an existing adapter test or the adapter's own
+> normalize code. The point of the assertion is the `: keep-alive` line, not the
+> response body.
+
+- [ ] **Step 2: Run test to verify it fails (RED), then passes after wiring**
 
 Run: `npx tsx --test packages/llm-agent-server-libs/src/smart-agent/http/keepalive-integration.test.ts`
-Expected: PASS — 3 tests. (This exercises the exact wiring both handlers use.)
+Expected once Tasks 4-5 are done: PASS. (If you write this test BEFORE wiring the
+handlers, it FAILS — no `: keep-alive` — which is the RED you want; it goes green once
+`attachSseKeepAlive` is wired into both handlers.)
 
 - [ ] **Step 3: Full server-libs suite + baseline**
 
@@ -812,7 +914,7 @@ Expected: `fail 0`. Existing `chat-route-handler` / `adapter-route-handler` stre
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/http/keepalive-integration.test.ts
-git commit -m "test(server): #246 SSE keep-alive integration (idle gap, close, disabled) (#246)"
+git commit -m "test(server): #246 SSE keep-alive integration via real handleChat + handleAdapterRequest (#246)"
 ```
 
 ---
