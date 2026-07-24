@@ -18,10 +18,11 @@ import type {
   IRagBackendWriter,
   IRequestLogger,
   ISkillManager,
+  IToolRecordKey,
   LlmTool,
   ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
-import { isBatchEmbedder } from '@mcp-abap-adt/llm-agent';
+import { defaultToolRecordKey, isBatchEmbedder } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Alias of ToolCatalogStatus, which is declared in `@mcp-abap-adt/llm-agent`
@@ -97,6 +98,7 @@ export async function vectorizeMcpTools(
   toolsRag: IRag | undefined,
   requestLogger: IRequestLogger,
   logger: ILogger | undefined,
+  toolRecordKey: IToolRecordKey = defaultToolRecordKey,
 ): Promise<ToolVectorizationSummary | undefined> {
   const writer = toolsRag?.writer?.();
   // No store, or a deliberately read-only one: nothing is attempted, and the
@@ -111,8 +113,12 @@ export async function vectorizeMcpTools(
   let batchFailure: string | undefined;
   // biome-ignore lint/suspicious/noExplicitAny: reading the store's private embedder for batch optimisation
   const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
+  const clientCount = clients.length;
 
-  for (const adapter of clients) {
+  for (let clientIndex = 0; clientIndex < clients.length; clientIndex++) {
+    const adapter = clients[clientIndex];
+    const keyFor = (toolName: string): string =>
+      toolRecordKey.key({ toolName, clientIndex, clientCount });
     // Only listing is guarded at client level. A write that throws must NOT be
     // charged to the client, must not abort the remaining tools, and must land
     // in `failed` — see the per-tool try/catch below.
@@ -183,7 +189,7 @@ export async function vectorizeMcpTools(
       const bulk = await writer
         .upsertManyPrecomputedRaw(
           tools.map((t, i) => ({
-            id: `tool:${t.name}`,
+            id: keyFor(t.name),
             text: texts[i],
             vector: (vectors as number[][])[i],
             metadata: {},
@@ -205,7 +211,7 @@ export async function vectorizeMcpTools(
       try {
         ok = await writeOne(
           writer,
-          `tool:${tools[i].name}`,
+          keyFor(tools[i].name),
           texts[i],
           vectors?.[i],
           requestLogger,

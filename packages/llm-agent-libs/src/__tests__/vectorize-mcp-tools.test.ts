@@ -445,3 +445,49 @@ describe('vectorizeMcpTools bulk upsert', () => {
     assert.equal(summary?.complete, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tool record key strategy (#240)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools tool record key', () => {
+  it('single client keeps the historical tool:${name} key', async () => {
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.deepEqual(writer.upsertCalls, ['tool:Search']);
+  });
+
+  it('same-named tools from two servers no longer collide', async () => {
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    const summary = await vectorizeMcpTools(
+      [makeClient([makeTool('Search')]), makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    // Two distinct records, not one overwriting the other.
+    assert.deepEqual(writer.upsertCalls, ['tool:0:Search', 'tool:1:Search']);
+    assert.equal(summary?.vectorized, 2);
+    assert.equal(summary?.total, 2);
+  });
+
+  it('honours a consumer-supplied key strategy', async () => {
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      { key: ({ toolName }) => `custom::${toolName}` },
+    );
+    assert.deepEqual(writer.upsertCalls, ['custom::Search']);
+  });
+});

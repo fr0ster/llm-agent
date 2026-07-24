@@ -263,6 +263,11 @@ export type {
   ToolLoopContextStrategyFactory,
   ToolRound,
 } from './tool-loop-context-strategy.js';
+export {
+  defaultToolRecordKey,
+  type IToolRecordKey,
+  type ToolKeyContext,
+} from './tool-record-key.js';
 export type { IToolSelectionStrategy } from './tool-selection-strategy.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {
