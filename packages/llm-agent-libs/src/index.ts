@@ -127,6 +127,7 @@ export {
   WindowContextStrategy,
   type WindowContextStrategyOptions,
 } from './pipeline/context/tool-loop-context/index.js';
+export { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
