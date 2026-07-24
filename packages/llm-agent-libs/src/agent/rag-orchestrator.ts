@@ -12,6 +12,7 @@ import {
   OrchestratorError,
   QueryEmbedding,
   TextOnlyEmbedding,
+  toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../tracer/types.js';
 import { summarizeHistory, toEnglishForRag } from './rag-helpers.js';
@@ -205,9 +206,8 @@ export class RagOrchestrator implements IRagOrchestrator {
 
       const ragToolNames = new Set(
         allRagResults
-          .map((r) => r.metadata.id as string)
-          .filter((id) => id?.startsWith('tool:'))
-          .map((id) => id.slice(5).replace(/:.*$/, '')),
+          .map((r) => toolNameFromRecord(r.metadata))
+          .filter((n): n is string => n !== undefined),
       );
       const selectedMcpTools =
         ragToolNames.size > 0

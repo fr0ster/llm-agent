@@ -20,6 +20,7 @@ import type {
   ISkillManager,
   IToolRecordKey,
   LlmTool,
+  RagMetadata,
   ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
 import { defaultToolRecordKey, isBatchEmbedder } from '@mcp-abap-adt/llm-agent';
@@ -69,12 +70,13 @@ async function writeOne(
   vector: number[] | undefined,
   requestLogger: IRequestLogger,
   detail: 'tools' | 'skills',
+  metadata: RagMetadata = {},
 ): Promise<boolean> {
   const start = Date.now();
   const result =
     vector && writer.upsertPrecomputedRaw
-      ? await writer.upsertPrecomputedRaw(id, text, vector, {})
-      : await writer.upsertRaw(id, text, {});
+      ? await writer.upsertPrecomputedRaw(id, text, vector, metadata)
+      : await writer.upsertRaw(id, text, metadata);
   const ok = result?.ok === true;
   if (ok && vector === undefined) {
     const est = Math.ceil(text.length / 4);
@@ -192,7 +194,9 @@ export async function vectorizeMcpTools(
             id: keyFor(t.name),
             text: texts[i],
             vector: (vectors as number[][])[i],
-            metadata: {},
+            // Store the name so retrieval recovers it via toolNameFromRecord,
+            // independent of the key scheme (default or a custom one).
+            metadata: { name: t.name },
           })),
         )
         .catch((err: unknown) => ({
@@ -216,6 +220,7 @@ export async function vectorizeMcpTools(
           vectors?.[i],
           requestLogger,
           'tools',
+          { name: tools[i].name },
         );
       } catch {
         // A throwing write is this tool's failure, not the client's: the loop
@@ -305,6 +310,7 @@ export async function vectorizeSkills(
         undefined,
         requestLogger,
         'skills',
+        { name: s.name },
       );
     } catch {
       ok = false;

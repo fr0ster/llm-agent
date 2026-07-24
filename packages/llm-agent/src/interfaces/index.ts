@@ -267,6 +267,7 @@ export {
   defaultToolRecordKey,
   type IToolRecordKey,
   type ToolKeyContext,
+  toolNameFromRecord,
 } from './tool-record-key.js';
 export type { IToolSelectionStrategy } from './tool-selection-strategy.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';

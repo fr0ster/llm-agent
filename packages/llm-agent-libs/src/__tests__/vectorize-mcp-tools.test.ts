@@ -21,6 +21,7 @@ import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   McpError,
+  toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 
 // Import from the new module path (RED until 2b)
@@ -489,5 +490,39 @@ describe('vectorizeMcpTools tool record key', () => {
       { key: ({ toolName }) => `custom::${toolName}` },
     );
     assert.deepEqual(writer.upsertCalls, ['custom::Search']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: written records decode back to tool names (#240 P1)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools record round-trip', () => {
+  it('multi-client records decode to the tool name, not the client index', async () => {
+    // The regression the write-only #240 tests missed: retrieval reads the name
+    // back via toolNameFromRecord. `tool:1:Search` must yield "Search".
+    const captured: Array<{ id: string; name?: unknown }> = [];
+    const writer = {
+      upsertCalls: [] as string[],
+      async upsertRaw(id: string, _t: string, meta: { name?: unknown }) {
+        captured.push({ id, name: meta.name });
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagBackendWriter;
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')]), makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    // ids disambiguate, but decoding each record recovers the same tool name.
+    assert.deepEqual(
+      captured.map((r) => r.id),
+      ['tool:0:Search', 'tool:1:Search'],
+    );
+    for (const r of captured) {
+      assert.equal(toolNameFromRecord(r), 'Search');
+    }
   });
 });
