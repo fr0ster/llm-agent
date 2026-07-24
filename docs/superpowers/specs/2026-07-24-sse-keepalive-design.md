@@ -111,15 +111,17 @@ same rule). It is the ONE definition of what a raw `heartbeatIntervalMs` means:
 
 ```ts
 /** `null` = keep-alive disabled (no timer); otherwise a finite positive interval. */
-export function normalizeHeartbeatMs(
-  raw: number | undefined,
-  defaultMs = 5000,
-): number | null;
+export function normalizeHeartbeatMs(raw: number | undefined): number | null;
 ```
 
-Rule (one place, applied at every call site):
+No configurable default parameter: a caller-supplied `defaultMs` could itself be
+`0`/`NaN`/`Infinity` and would be returned unchecked, breaking the "finite positive or
+null" return contract. The default is a fixed internal `5000`; no caller needs another.
 
-- `undefined` (not configured) → `defaultMs` (5000).
+Rule (one place, applied at every call site) — the return is ALWAYS a finite positive
+number or `null`, nothing else:
+
+- `undefined` (not configured) → `5000` (the fixed default).
 - finite and `> 0` → the value.
 - anything else — `<= 0`, `NaN`, `Infinity`, `-Infinity` → `null` (disabled).
 
@@ -142,9 +144,10 @@ export interface IdleHeartbeat {
 }
 
 export interface IdleHeartbeatOptions {
-  /** Idle window in ms. Non-finite (NaN/±Infinity) or `<= 0` disables (no-op stub). */
-  intervalMs: number;
-  /** Invoked once each time the stream stays idle for `intervalMs`. */
+  /** Raw configured interval (may be undefined). Normalized internally via
+   *  normalizeHeartbeatMs: undefined → 5000; non-finite / `<= 0` → disabled (no-op). */
+  intervalMs: number | undefined;
+  /** Invoked once each time the stream stays idle for the normalized interval. */
   onBeat: () => void;
   /** Timer injection for deterministic tests. Default: global setTimeout/clearTimeout. */
   schedule?: (cb: () => void, ms: number) => unknown;
@@ -186,8 +189,12 @@ binding in the same module:
 
 ```ts
 /** Wires createIdleHeartbeat to an SSE response: onBeat writes a keep-alive
- *  comment, and res 'close' stops the timer. Returns { reset, stop }. */
-export function attachSseKeepAlive(res: ServerResponse, intervalMs: number): IdleHeartbeat;
+ *  comment, and res 'close' stops the timer. `intervalMs` is the RAW configured
+ *  value (may be undefined) — normalization happens inside. Returns { reset, stop }. */
+export function attachSseKeepAlive(
+  res: ServerResponse,
+  intervalMs: number | undefined,
+): IdleHeartbeat;
 ```
 
 It creates `createIdleHeartbeat({ intervalMs, onBeat: () => res.write(': keep-alive\n\n') })`,
