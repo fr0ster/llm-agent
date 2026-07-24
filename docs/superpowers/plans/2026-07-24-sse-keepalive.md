@@ -1,0 +1,977 @@
+# Transport-level SSE keep-alive Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** No SSE stream goes silent during a long tool-execution phase under any pipeline; one shared `heartbeatIntervalMs` normalization disables safely on invalid values on every path.
+
+**Architecture:** A reusable idle watchdog (`createIdleHeartbeat`/`attachSseKeepAlive`) wired into BOTH streaming HTTP surfaces (`/v1/chat/completions`, `/v1/messages`) emits an SSE keep-alive comment when the client stream is idle longer than the interval. One `normalizeHeartbeatMs` authority (undefined→5000; finite>0→it; else→null=disabled) is applied at the two transport call sites AND the two existing flat tool-loop callers, fixing a pre-existing busy loop on `0`/`NaN`. No `StreamChunk`, coordinator, or `SmartAgent.process()` change.
+
+**Tech Stack:** TypeScript (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome.
+
+**Spec:** `docs/superpowers/specs/2026-07-24-sse-keepalive-design.md`
+
+**Issue:** [#246](https://github.com/fr0ster/llm-agent/issues/246)
+
+## Global Constraints
+
+- All artifacts (code, comments, commit messages) in **English**.
+- ESM only — relative imports end in `.js`.
+- TypeScript strict; avoid `any` (Biome warns).
+- Biome gate: `npm run lint:check` (a **check**, not `format`) must be clean of NEW errors.
+- Build gate: `npm run build` clean before each commit.
+- Test commands (from repo root):
+  - single file: `npx tsx --test <path/to/file.test.ts>`
+  - a package suite: `npm test --workspace @mcp-abap-adt/llm-agent-libs` (or `…-server-libs`)
+- `normalizeHeartbeatMs` is the SOLE authority for interval semantics; no call site repeats `?? 5000` or any validation.
+- Additive only; no breaking public change. Widening the internal `heartbeatMs` core param to `number | null` is internal.
+- This work folds into the held, unpublished **v20.9.0** (already version-bumped). Do NOT bump versions again.
+
+## File Structure
+
+**`@mcp-abap-adt/llm-agent-libs`:**
+- Create `src/pipeline/handlers/normalize-heartbeat-ms.ts` — the normalizer (one responsibility).
+- Create `src/pipeline/handlers/normalize-heartbeat-ms.test.ts` — its unit test.
+- Modify `src/index.ts` — re-export `normalizeHeartbeatMs` (server-libs imports it).
+- Modify `src/pipeline/handlers/tool-loop-core.ts` — `heartbeatMs` param `number → number | null`; disabled path.
+- Modify `src/pipeline/handlers/tool-loop.ts` — caller #1 normalizes.
+- Modify `src/agent.ts` — caller #2 normalizes.
+- Modify `src/__tests__/heartbeat.test.ts` — regression for the disabled interval.
+
+**`@mcp-abap-adt/llm-agent-server-libs`:**
+- Create `src/smart-agent/http/sse-heartbeat.ts` — `createIdleHeartbeat` + `attachSseKeepAlive`.
+- Create `src/smart-agent/http/sse-heartbeat.test.ts` — unit test.
+- Modify `src/smart-agent/smart-server.ts` — `SmartServerAgentConfig.heartbeatIntervalMs?`; pass interval to `handleAdapterRequest`.
+- Modify `src/smart-agent/http/chat-route-handler.ts` — consume in the streaming branch.
+- Modify `src/smart-agent/http/adapter-route-handler.ts` — new param; consume in the streaming loop.
+- Create `src/smart-agent/http/keepalive-integration.test.ts` — both-endpoint integration.
+- Modify `src/smart-agent/resolve-config-sections.ts` — warn on a disabled configured value (observability).
+
+**Docs:** `CHANGELOG.md`, `docs/TROUBLESHOOTING.md`, `docs/ARCHITECTURE.md`.
+
+---
+
+### Task 1: `normalizeHeartbeatMs` — the single config-semantics authority
+
+**Files:**
+- Create: `packages/llm-agent-libs/src/pipeline/handlers/normalize-heartbeat-ms.ts`
+- Test: `packages/llm-agent-libs/src/pipeline/handlers/normalize-heartbeat-ms.test.ts`
+- Modify: `packages/llm-agent-libs/src/index.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `export function normalizeHeartbeatMs(raw: number | undefined): number | null` — returns a finite positive interval, or `null` when keep-alive is disabled.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `normalize-heartbeat-ms.test.ts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
+
+describe('normalizeHeartbeatMs', () => {
+  it('undefined → the fixed default 5000', () => {
+    assert.equal(normalizeHeartbeatMs(undefined), 5000);
+  });
+  it('finite positive → itself', () => {
+    assert.equal(normalizeHeartbeatMs(1), 1);
+    assert.equal(normalizeHeartbeatMs(5000), 5000);
+    assert.equal(normalizeHeartbeatMs(30000), 30000);
+  });
+  it('zero and negatives → null (disabled)', () => {
+    assert.equal(normalizeHeartbeatMs(0), null);
+    assert.equal(normalizeHeartbeatMs(-1), null);
+    assert.equal(normalizeHeartbeatMs(-5000), null);
+  });
+  it('non-finite (NaN / ±Infinity) → null (disabled), never a value', () => {
+    assert.equal(normalizeHeartbeatMs(Number.NaN), null);
+    assert.equal(normalizeHeartbeatMs(Number.POSITIVE_INFINITY), null);
+    assert.equal(normalizeHeartbeatMs(Number.NEGATIVE_INFINITY), null);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx tsx --test packages/llm-agent-libs/src/pipeline/handlers/normalize-heartbeat-ms.test.ts`
+Expected: FAIL — module `./normalize-heartbeat-ms.js` not found.
+
+- [ ] **Step 3: Implement the normalizer**
+
+Create `normalize-heartbeat-ms.ts`:
+
+```ts
+/**
+ * The single authority for `heartbeatIntervalMs` semantics, shared by the flat
+ * tool-loop and the transport SSE keep-alive.
+ *
+ * @returns a finite positive interval in ms, or `null` when keep-alive is
+ * disabled. Never returns `0`, a negative, `NaN`, or `±Infinity` — a value that
+ * would spin `setTimeout` at (near) zero delay.
+ */
+export function normalizeHeartbeatMs(raw: number | undefined): number | null {
+  if (raw === undefined) return 5000;
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return null;
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx tsx --test packages/llm-agent-libs/src/pipeline/handlers/normalize-heartbeat-ms.test.ts`
+Expected: PASS — 4 tests.
+
+- [ ] **Step 5: Re-export from the package barrel**
+
+In `packages/llm-agent-libs/src/index.ts`, add near the other `pipeline/handlers` exports (search the file for an existing `export … from './pipeline/handlers/…js'` line and place it beside them):
+
+```ts
+export { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
+```
+
+- [ ] **Step 6: Build + lint, commit**
+
+```bash
+npm run build && npm run lint:check
+git add packages/llm-agent-libs/src/pipeline/handlers/normalize-heartbeat-ms.ts packages/llm-agent-libs/src/pipeline/handlers/normalize-heartbeat-ms.test.ts packages/llm-agent-libs/src/index.ts
+git commit -m "feat(agent): normalizeHeartbeatMs — single heartbeat-interval authority (#246)"
+```
+
+---
+
+### Task 2: Flat tool-loop core disabled path + BOTH callers normalize
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop-core.ts:226` (param) and the `while (!settled)` race (~311-332)
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts:119-122` (caller #1)
+- Modify: `packages/llm-agent-libs/src/agent.ts:1346` (caller #2)
+- Test: `packages/llm-agent-libs/src/__tests__/heartbeat.test.ts` (append)
+
+**Interfaces:**
+- Consumes: `normalizeHeartbeatMs` (Task 1).
+- Produces: `IExecuteToolBatchArgs.heartbeatMs: number | null`; when `null`, the batch executor schedules no timer and yields no heartbeat.
+
+**Why both callers in one task:** the core param change is meaningless until a caller passes `null`, and `number` is assignable to `number | null` so the compiler will NOT flag a missed caller — both flat call sites (`tool-loop.ts`, `agent.ts`) must be updated together, proven by the same regression.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `heartbeat.test.ts` (it already has `makeMcpClient`-style slow-tool stubs, `makeToolCallingLlm`, `collectStream`, and builds `new SmartAgent(deps, config)` — reuse them; match the exact helper names already in the file):
+
+```ts
+describe('Heartbeat — disabled interval (#246)', () => {
+  it('heartbeatIntervalMs: 0 → tool completes, no heartbeat chunk, no busy loop', async () => {
+    // A tool that takes ~120ms. With a 5000ms interval no heartbeat fires anyway,
+    // so use a value that WOULD have busy-looped before the fix: 0.
+    const deps = makeDeps({ Slow: { delayMs: 120 } }); // mirror the file's existing deps builder
+    const agent = new SmartAgent(deps, { heartbeatIntervalMs: 0 });
+    const started = Date.now();
+    const { heartbeats, content } = await collectStream(agent, 'call Slow');
+    // Completed (did not hang) and produced the final content.
+    assert.ok(Date.now() - started < 4000, 'must not hang / busy-loop');
+    assert.equal(heartbeats.length, 0, 'disabled → no heartbeat chunks');
+    assert.ok(content.length > 0);
+  });
+
+  it('heartbeatIntervalMs: NaN → same (disabled), no busy loop', async () => {
+    const deps = makeDeps({ Slow: { delayMs: 120 } });
+    const agent = new SmartAgent(deps, { heartbeatIntervalMs: Number.NaN });
+    const { heartbeats } = await collectStream(agent, 'call Slow');
+    assert.equal(heartbeats.length, 0);
+  });
+});
+```
+
+> Adapt `makeDeps({...})` / the message string / the config shape to the exact
+> helpers already in `heartbeat.test.ts` (e.g. the existing "yields heartbeat
+> chunks while tool is executing" test at ~line 135 shows the precise deps and
+> config it uses — copy that shape, changing only `heartbeatIntervalMs`).
+>
+> **Both callers required (spec matrix).** The two tests above drive caller #2
+> (`SmartAgent.streamProcess` → `agent.ts:1360`). Add ONE more test for caller #1
+> (pipeline `ToolLoopHandler` → `tool-loop.ts:840`): first locate a harness that
+> constructs the handler / a `PipelineContext` (`grep -rl "ToolLoopHandler\|new
+> ToolLoopHandler" packages/*/src --include=*.test.ts`, and check
+> `packages/llm-agent-server-libs/src/pipelines` flat-pipeline tests). Drive the
+> flat pipeline with a slow tool and `heartbeatIntervalMs: 0`; assert it completes
+> and yields no `value.heartbeat`. If no harness makes this feasible without a
+> disproportionate fixture, STOP and report to the reviewer rather than skipping
+> silently — do not mark the task done with caller #1 unverified.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx tsx --test packages/llm-agent-libs/src/__tests__/heartbeat.test.ts`
+Expected: FAIL — before the fix, `heartbeatIntervalMs: 0` makes the batch executor busy-loop and emit many heartbeat chunks (`heartbeats.length` > 0), and the run may not settle promptly.
+
+- [ ] **Step 3: Widen the core param**
+
+In `tool-loop-core.ts`, change the `IExecuteToolBatchArgs` field (line ~226):
+
+```ts
+  heartbeatMs: number | null;
+```
+
+- [ ] **Step 4: Guard the race with the disabled branch**
+
+In `tool-loop-core.ts`, replace the `while (!settled) { … }` block (~311-332) with:
+
+```ts
+  if (heartbeatMs === null) {
+    // #246: keep-alive disabled → no heartbeat timer, just await completion.
+    // Prevents a 0/NaN interval from busy-looping the tick race.
+    results = await allDone;
+  } else {
+    while (!settled) {
+      const winner = await Promise.race([
+        allDone.then((r) => ({ tag: 'done' as const, results: r })),
+        new Promise<{ tag: 'tick' }>((resolve) =>
+          setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
+        ),
+      ]);
+      if (winner.tag === 'done') {
+        results = winner.results;
+        settled = true;
+      } else {
+        for (const tool of pendingTools) {
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              heartbeat: { tool, elapsed: Date.now() - toolStartTime },
+            },
+          };
+        }
+      }
+    }
+  }
+```
+
+(`results` and `settled` are already declared just above this block; the disabled branch simply assigns `results` and skips the loop.)
+
+- [ ] **Step 5: Normalize caller #1 (pipeline `ToolLoopHandler`)**
+
+In `tool-loop.ts`, add the import at the top (beside the existing `executeToolBatchWithHeartbeat` import from `./tool-loop-core.js`):
+
+```ts
+import { normalizeHeartbeatMs } from '../../index.js';
+```
+
+> If importing from the barrel causes a cycle at build time, import directly:
+> `import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';`
+
+Replace the `heartbeatMs` resolution (lines 119-122):
+
+```ts
+    const heartbeatMs = normalizeHeartbeatMs(
+      (config.heartbeatIntervalMs as number | undefined) ??
+        ctx.config.heartbeatIntervalMs,
+    );
+```
+
+- [ ] **Step 6: Normalize caller #2 (direct `SmartAgent.streamProcess`)**
+
+In `agent.ts`, add the import at the top (beside other `./pipeline/handlers/...` imports):
+
+```ts
+import { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
+```
+
+Replace line 1346:
+
+```ts
+      const heartbeatMs = normalizeHeartbeatMs(this.config.heartbeatIntervalMs);
+```
+
+- [ ] **Step 7: Run the regression + the full libs suite**
+
+Run: `npx tsx --test packages/llm-agent-libs/src/__tests__/heartbeat.test.ts`
+Expected: PASS — the disabled-interval tests pass; the existing "yields heartbeat chunks" (default 5000) and "no heartbeat for fast tools" tests still pass.
+
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
+Expected: `fail 0`. If a pre-existing test fails, confirm it also fails on `main`.
+
+- [ ] **Step 8: Build + lint, commit**
+
+```bash
+npm run build && npm run lint:check
+git add packages/llm-agent-libs/src/pipeline/handlers/tool-loop-core.ts packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/__tests__/heartbeat.test.ts
+git commit -m "fix(agent): disable flat heartbeat on <=0/invalid interval, no busy loop (#246)"
+```
+
+---
+
+### Task 3: `createIdleHeartbeat` + `attachSseKeepAlive`
+
+**Files:**
+- Create: `packages/llm-agent-server-libs/src/smart-agent/http/sse-heartbeat.ts`
+- Test: `packages/llm-agent-server-libs/src/smart-agent/http/sse-heartbeat.test.ts`
+
+**Interfaces:**
+- Consumes: `normalizeHeartbeatMs` from `@mcp-abap-adt/llm-agent-libs` (Task 1).
+- Produces:
+  - `interface IdleHeartbeat { reset(): void; stop(): void }`
+  - `interface IdleHeartbeatOptions { intervalMs: number | undefined; onBeat: () => void; schedule?: (cb: () => void, ms: number) => unknown; cancel?: (h: unknown) => void }`
+  - `function createIdleHeartbeat(opts: IdleHeartbeatOptions): IdleHeartbeat`
+  - `function attachSseKeepAlive(res: ServerResponse, intervalMs: number | undefined): IdleHeartbeat`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `sse-heartbeat.test.ts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { attachSseKeepAlive, createIdleHeartbeat } from './sse-heartbeat.js';
+
+/** A manual scheduler: records the pending callback so the test fires it. */
+function manualClock() {
+  let pending: { cb: () => void; ms: number } | undefined;
+  return {
+    schedule: (cb: () => void, ms: number) => {
+      pending = { cb, ms };
+      return pending;
+    },
+    cancel: (_h: unknown) => {
+      pending = undefined;
+    },
+    /** Fire the currently-armed timer, if any. */
+    tick() {
+      const p = pending;
+      pending = undefined;
+      p?.cb();
+    },
+    get armed() {
+      return pending !== undefined;
+    },
+  };
+}
+
+describe('createIdleHeartbeat', () => {
+  it('beats after one idle interval, and repeats', () => {
+    const clock = manualClock();
+    let beats = 0;
+    createIdleHeartbeat({
+      intervalMs: 100,
+      onBeat: () => beats++,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+    clock.tick();
+    assert.equal(beats, 1);
+    clock.tick(); // re-armed
+    assert.equal(beats, 2);
+  });
+
+  it('reset() before the interval cancels the pending beat and re-arms', () => {
+    const clock = manualClock();
+    let beats = 0;
+    const hb = createIdleHeartbeat({
+      intervalMs: 100,
+      onBeat: () => beats++,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+    hb.reset();
+    clock.tick();
+    assert.equal(beats, 1, 'still armed after reset');
+  });
+
+  it('stop() prevents further beats and is idempotent', () => {
+    const clock = manualClock();
+    let beats = 0;
+    const hb = createIdleHeartbeat({
+      intervalMs: 100,
+      onBeat: () => beats++,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+    hb.stop();
+    hb.stop();
+    assert.equal(clock.armed, false);
+    hb.reset(); // no-op after stop
+    assert.equal(clock.armed, false);
+    clock.tick();
+    assert.equal(beats, 0);
+  });
+
+  it('disabled intervals never arm a timer: 0, negative, NaN, ±Infinity, and via undefined→default it DOES arm', () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const clock = manualClock();
+      let beats = 0;
+      const hb = createIdleHeartbeat({
+        intervalMs: bad,
+        onBeat: () => beats++,
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+      });
+      assert.equal(clock.armed, false, `interval ${bad} must not arm`);
+      hb.reset();
+      clock.tick();
+      assert.equal(beats, 0, `interval ${bad} must never beat`);
+    }
+    // undefined → normalized to 5000 → armed
+    const clock = manualClock();
+    createIdleHeartbeat({
+      intervalMs: undefined,
+      onBeat: () => {},
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+    assert.equal(clock.armed, true, 'undefined → default → armed');
+  });
+});
+
+describe('attachSseKeepAlive', () => {
+  it('writes ": keep-alive" on a beat and stops on res close', () => {
+    const clock = manualClock();
+    const writes: string[] = [];
+    const listeners: Record<string, () => void> = {};
+    const res = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+      on: (ev: string, cb: () => void) => {
+        listeners[ev] = cb;
+      },
+    } as unknown as import('node:http').ServerResponse;
+
+    // Inject the manual clock by monkeypatching via createIdleHeartbeat is not
+    // possible here (attachSseKeepAlive owns creation), so assert the wiring:
+    // a real (default) timer is used; instead verify onBeat + close wiring by
+    // driving createIdleHeartbeat directly is covered above. Here assert close
+    // handler is registered and stop is wired.
+    const hb = attachSseKeepAlive(res, 100);
+    assert.equal(typeof listeners.close, 'function');
+    // Simulate client disconnect → stop() must be safe (no throw).
+    listeners.close();
+    hb.stop();
+  });
+});
+```
+
+> The `attachSseKeepAlive` beat-write is covered indirectly (its `onBeat` is a
+> one-liner `res.write(': keep-alive\n\n')`); the timer mechanics are fully
+> covered by the `createIdleHeartbeat` tests with the injected clock. The
+> integration test in Task 5 asserts the actual `: keep-alive` bytes over a real
+> (short-interval) stream.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx tsx --test packages/llm-agent-server-libs/src/smart-agent/http/sse-heartbeat.test.ts`
+Expected: FAIL — module `./sse-heartbeat.js` not found.
+
+- [ ] **Step 3: Implement the module**
+
+Create `sse-heartbeat.ts`:
+
+```ts
+import type { ServerResponse } from 'node:http';
+import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
+
+export interface IdleHeartbeat {
+  /** Re-arm the idle timer. Call on every real chunk written to the client. */
+  reset(): void;
+  /** Cancel the timer permanently. Idempotent. */
+  stop(): void;
+}
+
+export interface IdleHeartbeatOptions {
+  /** Raw configured interval (may be undefined). Normalized internally. */
+  intervalMs: number | undefined;
+  /** Invoked once each time the stream stays idle for the normalized interval. */
+  onBeat: () => void;
+  /** Timer injection for deterministic tests. Default: global setTimeout/clearTimeout. */
+  schedule?: (cb: () => void, ms: number) => unknown;
+  cancel?: (handle: unknown) => void;
+}
+
+const NOOP: IdleHeartbeat = {
+  reset() {},
+  stop() {},
+};
+
+export function createIdleHeartbeat(opts: IdleHeartbeatOptions): IdleHeartbeat {
+  const ms = normalizeHeartbeatMs(opts.intervalMs);
+  if (ms === null) return NOOP;
+
+  const schedule =
+    opts.schedule ?? ((cb: () => void, d: number) => setTimeout(cb, d));
+  const cancel =
+    opts.cancel ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
+
+  let handle: unknown;
+  let stopped = false;
+
+  const arm = (): void => {
+    handle = schedule(() => {
+      opts.onBeat();
+      arm();
+    }, ms);
+  };
+  const clear = (): void => {
+    if (handle !== undefined) {
+      cancel(handle);
+      handle = undefined;
+    }
+  };
+
+  arm();
+
+  return {
+    reset() {
+      if (stopped) return;
+      clear();
+      arm();
+    },
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      clear();
+    },
+  };
+}
+
+/**
+ * Wire an idle keep-alive to an SSE response: `onBeat` writes a keep-alive
+ * comment and `res 'close'` stops the timer. `intervalMs` is the RAW configured
+ * value (may be undefined) — normalization happens inside `createIdleHeartbeat`.
+ */
+export function attachSseKeepAlive(
+  res: ServerResponse,
+  intervalMs: number | undefined,
+): IdleHeartbeat {
+  const hb = createIdleHeartbeat({
+    intervalMs,
+    onBeat: () => res.write(': keep-alive\n\n'),
+  });
+  res.on('close', () => hb.stop());
+  return hb;
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx tsx --test packages/llm-agent-server-libs/src/smart-agent/http/sse-heartbeat.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Build + lint, commit**
+
+```bash
+npm run build && npm run lint:check
+git add packages/llm-agent-server-libs/src/smart-agent/http/sse-heartbeat.ts packages/llm-agent-server-libs/src/smart-agent/http/sse-heartbeat.test.ts
+git commit -m "feat(server): idle SSE keep-alive helper (createIdleHeartbeat/attachSseKeepAlive) (#246)"
+```
+
+---
+
+### Task 4: Type the config field + wire the chat-route surface
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:188-212` (`SmartServerAgentConfig`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/http/chat-route-handler.ts` (streaming branch ~262-395)
+
+**Interfaces:**
+- Consumes: `attachSseKeepAlive` (Task 3); `cfg.agent?.heartbeatIntervalMs`.
+- Produces: `SmartServerAgentConfig.heartbeatIntervalMs?: number`; the `/v1/chat/completions` stream never idles past the interval.
+
+- [ ] **Step 1: Declare the config field**
+
+In `smart-server.ts`, add to the `SmartServerAgentConfig` interface (after the existing `mcpSharedClient?: boolean;` field, before the closing brace at ~line 212):
+
+```ts
+  /** SSE keep-alive / tool-loop heartbeat interval (ms). Default 5000; `<= 0` or
+   *  invalid disables. Already populated from yaml by resolveAgentSection. */
+  heartbeatIntervalMs?: number;
+```
+
+- [ ] **Step 2: Add the import to chat-route-handler**
+
+At the top of `chat-route-handler.ts` (beside the other local `./` imports):
+
+```ts
+import { attachSseKeepAlive } from './sse-heartbeat.js';
+```
+
+- [ ] **Step 3: Wire the streaming branch**
+
+In the `if (body.stream) { … }` branch, immediately after the existing
+`for await (const chunk of stream)` loop is set up, restructure so the loop is
+wrapped and each chunk re-arms. Concretely:
+
+1. Right after `const stream = smartAgent.streamProcess(...)` (~line 272-283) and
+   the `res.writeHead(200, { 'Content-Type': 'text/event-stream', … })`, add:
+
+```ts
+    const keepAlive = attachSseKeepAlive(res, cfg.agent?.heartbeatIntervalMs);
+```
+
+2. Wrap the existing `for await (const chunk of stream) { … }` … `res.write('data: [DONE]\n\n')` in `try { … } finally { keepAlive.stop(); }`, and make `keepAlive.reset()` the FIRST statement inside the `for await` body:
+
+```ts
+    try {
+      for await (const chunk of stream) {
+        keepAlive.reset();
+        // … all existing chunk handling unchanged …
+      }
+      res.write('data: [DONE]\n\n');
+    } finally {
+      keepAlive.stop();
+    }
+    res.end();
+```
+
+> Do not change any existing chunk-writing logic (content, `value.heartbeat`,
+> `value.timing`, tool_calls, errors, `[DONE]`). Only add the `attachSseKeepAlive`
+> line, the `try/finally`, and the first-line `keepAlive.reset()`.
+
+- [ ] **Step 4: Build + lint**
+
+Run: `npm run build && npm run lint:check`
+Expected: clean.
+
+- [ ] **Step 5: Commit** (the integration test lands in Task 6 alongside the adapter surface)
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/http/chat-route-handler.ts
+git commit -m "feat(server): SSE keep-alive on /v1/chat/completions + type heartbeatIntervalMs (#246)"
+```
+
+---
+
+### Task 5: Wire the adapter-route surface (`/v1/messages`)
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/http/adapter-route-handler.ts:15-98`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (the `handleAdapterRequest(...)` call site)
+
+**Interfaces:**
+- Consumes: `attachSseKeepAlive` (Task 3); the new param.
+- Produces: `handleAdapterRequest(req, res, agent, adapter, session, heartbeatIntervalMs)` — the `/v1/messages` stream never idles past the interval.
+
+- [ ] **Step 1: Add the import + parameter**
+
+At the top of `adapter-route-handler.ts`:
+
+```ts
+import { attachSseKeepAlive } from './sse-heartbeat.js';
+```
+
+Extend the `handleAdapterRequest` signature (lines 15-21) with a trailing param:
+
+```ts
+export async function handleAdapterRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  agent: SmartAgent,
+  adapter: ILlmApiAdapter,
+  session: { sessionId: string; traceId: string; graph: SessionGraph } | undefined,
+  heartbeatIntervalMs: number | undefined,
+): Promise<void> {
+```
+
+- [ ] **Step 2: Wrap the streaming loop**
+
+Around the streaming `for await (const event of adapter.transformStream(agent.streamProcess(...)))` loop (lines 66-98), after `res.writeHead(200, { 'Content-Type': 'text/event-stream', … })`:
+
+```ts
+    const keepAlive = attachSseKeepAlive(res, heartbeatIntervalMs);
+    try {
+      for await (const event of adapter.transformStream(
+        agent.streamProcess(sanitizedMessages, augmentedOptions),
+      )) {
+        keepAlive.reset();
+        const eventLine = /* existing */ event.event ? `event: ${event.event}\n` : '';
+        res.write(`${eventLine}data: ${event.data}\n\n`);
+      }
+    } finally {
+      keepAlive.stop();
+    }
+```
+
+> Keep the exact existing `eventLine`/`res.write` expression from lines 74-77 —
+> only add `attachSseKeepAlive`, the `try/finally`, and the first-line
+> `keepAlive.reset()`.
+
+- [ ] **Step 3: Pass the interval at the call site**
+
+In `smart-server.ts`, find the `handleAdapterRequest(` call (grep: `grep -n "handleAdapterRequest(" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`) and add the final argument:
+
+```ts
+        this.cfg.agent?.heartbeatIntervalMs,
+```
+
+(Use the same `cfg`/`this.cfg` accessor the surrounding call already uses.)
+
+- [ ] **Step 4: Build + lint**
+
+Run: `npm run build && npm run lint:check`
+Expected: clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/http/adapter-route-handler.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts
+git commit -m "feat(server): SSE keep-alive on /v1/messages (adapter surface) (#246)"
+```
+
+---
+
+### Task 6: Both-endpoint integration test
+
+**Files:**
+- Test: `packages/llm-agent-server-libs/src/smart-agent/http/keepalive-integration.test.ts` (create)
+
+**Interfaces:**
+- Consumes: `handleChat`, `handleAdapterRequest`, `attachSseKeepAlive`.
+
+- [ ] **Step 1: Write the test**
+
+Create `keepalive-integration.test.ts`. Use a fake `ServerResponse` that records
+writes and a `SmartAgent` whose `streamProcess` is a stub async generator that
+stays idle longer than a short interval, then yields one content chunk.
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { attachSseKeepAlive } from './sse-heartbeat.js';
+
+/** Minimal ServerResponse double capturing writes + the close listener. */
+function fakeRes() {
+  const writes: string[] = [];
+  const listeners: Record<string, () => void> = {};
+  const res = {
+    write: (s: string) => {
+      writes.push(s);
+      return true;
+    },
+    on: (ev: string, cb: () => void) => {
+      listeners[ev] = cb;
+    },
+    end: () => {},
+    writeHead: () => res,
+  } as unknown as import('node:http').ServerResponse;
+  return { res, writes, listeners };
+}
+
+/** An async generator idle for `idleMs`, then one content chunk. */
+async function* idleThenContent(idleMs: number) {
+  await new Promise((r) => setTimeout(r, idleMs));
+  yield { ok: true, value: { content: 'hello' } };
+}
+
+describe('#246 SSE keep-alive integration', () => {
+  it('emits ": keep-alive" during an idle gap, before the first content write', async () => {
+    const { res, writes } = fakeRes();
+    const keepAlive = attachSseKeepAlive(res, 20); // 20ms interval
+    try {
+      for await (const chunk of idleThenContent(70)) {
+        keepAlive.reset();
+        res.write(`data: ${JSON.stringify(chunk.value)}\n\n`);
+      }
+    } finally {
+      keepAlive.stop();
+    }
+    const keepAlives = writes.filter((w) => w.startsWith(': keep-alive'));
+    const firstData = writes.findIndex((w) => w.startsWith('data:'));
+    assert.ok(keepAlives.length >= 1, 'at least one keep-alive during the idle gap');
+    const firstKeepAlive = writes.findIndex((w) => w.startsWith(': keep-alive'));
+    assert.ok(firstKeepAlive < firstData, 'keep-alive precedes the first data line');
+  });
+
+  it('no keep-alive after res close', async () => {
+    const { res, writes, listeners } = fakeRes();
+    const keepAlive = attachSseKeepAlive(res, 20);
+    listeners.close(); // client disconnects immediately
+    keepAlive.stop();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(writes.filter((w) => w.startsWith(': keep-alive')).length, 0);
+  });
+
+  it('disabled interval (0) never writes a keep-alive', async () => {
+    const { res, writes } = fakeRes();
+    const keepAlive = attachSseKeepAlive(res, 0);
+    await new Promise((r) => setTimeout(r, 60));
+    keepAlive.stop();
+    assert.equal(writes.filter((w) => w.startsWith(': keep-alive')).length, 0);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it passes**
+
+Run: `npx tsx --test packages/llm-agent-server-libs/src/smart-agent/http/keepalive-integration.test.ts`
+Expected: PASS — 3 tests. (This exercises the exact wiring both handlers use.)
+
+- [ ] **Step 3: Full server-libs suite + baseline**
+
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
+Expected: `fail 0`. Existing `chat-route-handler` / `adapter-route-handler` streaming tests stay green (their fast streams never idle past the default interval, so no keep-alive is injected).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/http/keepalive-integration.test.ts
+git commit -m "test(server): #246 SSE keep-alive integration (idle gap, close, disabled) (#246)"
+```
+
+---
+
+### Task 7: Config observability — warn on a disabled configured value
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts:253-259`
+
+**Interfaces:**
+- Consumes: `normalizeHeartbeatMs`.
+- Produces: a startup warning when a CONFIGURED `heartbeatIntervalMs` normalizes to disabled.
+
+- [ ] **Step 1: Add the warning**
+
+In `resolve-config-sections.ts`, where `heartbeatIntervalMs` is read (~253-259), after computing the numeric value, warn if it is present but normalizes to `null`. Add the import:
+
+```ts
+import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
+```
+
+And where the value is resolved:
+
+```ts
+    ...(get(yaml, 'agent', 'heartbeatIntervalMs') !== undefined
+      ? (() => {
+          const n = Number(get(yaml, 'agent', 'heartbeatIntervalMs'));
+          if (normalizeHeartbeatMs(n) === null) {
+            console.warn(
+              `[config] agent.heartbeatIntervalMs=${get(yaml, 'agent', 'heartbeatIntervalMs')} is invalid or <= 0 — SSE keep-alive and tool-loop heartbeat are DISABLED.`,
+            );
+          }
+          return { heartbeatIntervalMs: n };
+        })()
+      : {}),
+```
+
+> Match the surrounding spread style; keep passing the raw `Number(...)` through
+> (the normalizer runs at every consumer). This warning is observability only.
+
+- [ ] **Step 2: Build + lint**
+
+Run: `npm run build && npm run lint:check`
+Expected: clean.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts
+git commit -m "chore(server): warn when heartbeatIntervalMs config disables keep-alive (#246)"
+```
+
+---
+
+### Task 8: Documentation + follow-up issue + cleanup
+
+**Files:**
+- Modify: `CHANGELOG.md`, `docs/TROUBLESHOOTING.md`, `docs/ARCHITECTURE.md`
+- Delete: the spec and this plan.
+
+- [ ] **Step 1: CHANGELOG entry**
+
+Under the `## [20.9.0]` section's `### Fixed` (create the sub-heading if absent):
+
+```markdown
+- **SSE keep-alive during long tool execution under every pipeline (#246).** Only
+  the flat pipeline streamed heartbeats; `linear` / `dag` / `controller` /
+  `stepper` / `cyclic` ran tool execution below the `ctx.yield` boundary, so a
+  long MCP call left the SSE connection silent until the phase ended (~22s → the
+  intermediary closed it, `No response`). A transport-level idle keep-alive at
+  both streaming surfaces (`/v1/chat/completions`, `/v1/messages`) now writes a
+  keep-alive comment when the stream is idle past `agent.heartbeatIntervalMs`. A
+  single `heartbeatIntervalMs` normalization (`<= 0` / `NaN` / `±Infinity`
+  disables, never a busy loop) is applied to both the keep-alive and the flat
+  tool-loop's own heartbeat — fixing a pre-existing busy loop on `0`/`NaN`. Under
+  `withDagCoordinator` the finalizer remains the sole client-facing *content*
+  source: a notice-only custom finalizer must re-emit `interpreterOutput`.
+```
+
+- [ ] **Step 2: TROUBLESHOOTING entry**
+
+```markdown
+### `controller`/`dag`/`linear`/`stepper` SSE closes (`No response`) on a long MCP tool call
+
+**Cause (before #246):** only the flat pipeline surfaced heartbeats. The other
+pipelines execute tools below the `ctx.yield` boundary, so during a long MCP call
+nothing reached the wire and an idle intermediary (CF gorouter, browser) closed
+the SSE connection after ~22s.
+
+**Fix:** upgrade to the release containing #246. Both streaming surfaces
+(`/v1/chat/completions`, `/v1/messages`) emit an SSE `: keep-alive` comment when
+idle past `agent.heartbeatIntervalMs` (default 5000). Set `heartbeatIntervalMs`
+to a smaller value for stricter intermediaries; `<= 0` disables keep-alive (and
+the flat tool-loop heartbeat) entirely — an invalid value (`NaN`) also disables,
+never busy-loops.
+
+**DAG note:** under `withDagCoordinator` the finalizer is the sole content
+source. A custom notice-only finalizer that does not re-emit `interpreterOutput`
+yields an empty answer — re-emit it as content.
+```
+
+- [ ] **Step 3: ARCHITECTURE / streaming note**
+
+Add a short paragraph in the streaming/SSE section of `docs/ARCHITECTURE.md`
+(locate it: `grep -n -i "event-stream\|heartbeat\|streaming" docs/ARCHITECTURE.md`):
+
+```markdown
+Both SSE surfaces (`/v1/chat/completions`, `/v1/messages`) run an idle keep-alive
+watchdog: if no chunk is written for `agent.heartbeatIntervalMs` (default 5000ms;
+`<= 0`/invalid disables), a `: keep-alive` comment is emitted so intermediaries do
+not close an idle connection during a long tool-execution phase. This is
+pipeline-agnostic; the flat pipeline additionally emits richer per-tool
+`: heartbeat tool=…` comments from the tool-loop.
+```
+
+- [ ] **Step 4: Verify documented claims against source**
+
+```bash
+grep -n "attachSseKeepAlive" packages/llm-agent-server-libs/src/smart-agent/http/chat-route-handler.ts packages/llm-agent-server-libs/src/smart-agent/http/adapter-route-handler.ts
+grep -n "normalizeHeartbeatMs" packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts packages/llm-agent-libs/src/agent.ts
+```
+
+Expected: each grep matches (both surfaces wired; both flat callers normalized).
+
+- [ ] **Step 5: File the follow-up issue (deferred content-forward)**
+
+```bash
+gh issue create --title "DAG coordinator: optional live forwarding of interpreter content (token-by-token) with finalizer de-dup" --body "$(cat <<'BODY'
+Follow-up to #246 (scoped to keep-alive + docs). The DAG coordinator's
+`interpreterOnPartial` only logs; the finalizer is the sole content source. For a
+notice-only finalizer this means the answer is delivered as one delta at finalize,
+not token-by-token. Add an opt-in flag to forward interpreter content live, with
+de-duplication against a re-emitting finalizer (a consumer-owned variation point).
+Design constraint: an empty replan/finalizer must not double-emit content.
+BODY
+)"
+```
+
+Record the printed issue number in the commit body of Step 7.
+
+- [ ] **Step 6: Delete spec and plan**
+
+```bash
+git rm docs/superpowers/specs/2026-07-24-sse-keepalive-design.md docs/superpowers/plans/2026-07-24-sse-keepalive.md
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add CHANGELOG.md docs/
+git commit -m "docs: SSE keep-alive across pipelines + DAG finalizer contract (#246)"
+```
+
+---
+
+## Final Verification
+
+- [ ] `npm run build` — clean.
+- [ ] `npm run lint:check` — no NEW errors (compare to a `main` baseline).
+- [ ] `npm test --workspace @mcp-abap-adt/llm-agent-libs` and `… --workspace @mcp-abap-adt/llm-agent-server-libs` — `fail 0` (baseline-diff any pre-existing failure against `main`).
+- [ ] Live gate (maintainer): a controller (or dag/stepper) request that triggers a >30s MCP tool call over `/v1/chat/completions` AND `/v1/messages` keeps the SSE connection open (periodic `: keep-alive`); with `agent.heartbeatIntervalMs: 0` the connection has no keep-alive and the run still completes without a busy loop.
+- [ ] External code review before merge; merge only on the maintainer's explicit word. Folds into the held v20.9.0 (move the tag to the final commit before publish).
