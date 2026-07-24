@@ -61,20 +61,22 @@ export class McpToolRegistry implements IMcpToolRegistry {
 
   private async revectorizeTools(
     clients: IMcpClient[],
-    _opts?: CallOptions,
+    opts?: CallOptions,
   ): Promise<void> {
     const toolsRag = this.ragStores.tools ?? Object.values(this.ragStores)[0];
     if (!toolsRag) return;
     // Reuse the single startup vectorization path so reconnect gets the same
     // IToolRecordKey, the name stored in metadata, and batch/bulk writing —
     // rather than a second hand-rolled loop that hardcoded `tool:${name}` and
-    // reintroduced the #240 collision on multi-server reconnects.
+    // reintroduced the #240 collision on multi-server reconnects. `opts` carries
+    // the request signal so an aborted reconnect stops promptly.
     await vectorizeMcpTools(
       clients,
       toolsRag,
       this.requestLogger,
       this.logger,
       this.toolRecordKey,
+      opts,
     );
   }
 

@@ -64,4 +64,20 @@ describe('McpToolRegistry reconnect revectorization', () => {
       assert.equal(toolNameFromRecord(w), 'Search');
     }
   });
+
+  it('stops reconnect revectorization when the request signal is aborted', async () => {
+    const clients = [makeClient([makeTool('Search')])];
+    const strategy: IMcpConnectionStrategy = {
+      resolve: async () => ({ clients, toolsChanged: true }),
+    } as unknown as IMcpConnectionStrategy;
+    const { rag, writes } = capturingRag();
+    const registry = new McpToolRegistry(clients, strategy, { tools: rag });
+
+    const ac = new AbortController();
+    ac.abort();
+    await registry.resolveActiveClients({ signal: ac.signal });
+
+    // Aborted before any work: nothing written, no background run.
+    assert.deepEqual(writes, []);
+  });
 });

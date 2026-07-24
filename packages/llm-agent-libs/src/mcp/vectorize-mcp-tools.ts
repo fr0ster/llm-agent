@@ -11,6 +11,7 @@
  */
 
 import type {
+  CallOptions,
   IEmbedder,
   ILogger,
   IMcpClient,
@@ -71,12 +72,13 @@ async function writeOne(
   requestLogger: IRequestLogger,
   detail: 'tools' | 'skills',
   metadata: RagMetadata = {},
+  options?: CallOptions,
 ): Promise<boolean> {
   const start = Date.now();
   const result =
     vector && writer.upsertPrecomputedRaw
-      ? await writer.upsertPrecomputedRaw(id, text, vector, metadata)
-      : await writer.upsertRaw(id, text, metadata);
+      ? await writer.upsertPrecomputedRaw(id, text, vector, metadata, options)
+      : await writer.upsertRaw(id, text, metadata, options);
   const ok = result?.ok === true;
   if (ok && vector === undefined) {
     const est = Math.ceil(text.length / 4);
@@ -101,12 +103,17 @@ export async function vectorizeMcpTools(
   requestLogger: IRequestLogger,
   logger: ILogger | undefined,
   toolRecordKey: IToolRecordKey = defaultToolRecordKey,
+  options?: CallOptions,
 ): Promise<ToolVectorizationSummary | undefined> {
   const writer = toolsRag?.writer?.();
   // No store, or a deliberately read-only one: nothing is attempted, and the
   // status stays unknown rather than reporting a permanently incomplete
   // catalog for a configuration that never intended to write.
   if (!toolsRag || !writer) return undefined;
+  // Cancellable: reconnect revectorization carries a request signal, so an
+  // aborted request must stop listing, embedding and writing rather than run to
+  // completion in the background.
+  if (options?.signal?.aborted) return undefined;
 
   const acc: Acc = { total: 0, vectorized: 0, failed: [], clientFailures: 0 };
   // Why the batch path was abandoned, if it was. Reported once, inside the
@@ -118,6 +125,7 @@ export async function vectorizeMcpTools(
   const clientCount = clients.length;
 
   for (let clientIndex = 0; clientIndex < clients.length; clientIndex++) {
+    if (options?.signal?.aborted) break;
     const adapter = clients[clientIndex];
     const keyFor = (toolName: string): string => {
       const id = toolRecordKey.key({ toolName, clientIndex, clientCount });
@@ -137,7 +145,7 @@ export async function vectorizeMcpTools(
     // in `failed` — see the per-tool try/catch below.
     let tools: LlmTool[];
     try {
-      const toolsResult = await adapter.listTools();
+      const toolsResult = await adapter.listTools(options);
       if (!toolsResult.ok) {
         acc.clientFailures++;
         continue;
@@ -162,7 +170,7 @@ export async function vectorizeMcpTools(
     ) {
       const start = Date.now();
       try {
-        const results = await storeEmbedder.embedBatch(texts);
+        const results = await storeEmbedder.embedBatch(texts, options);
         vectors = results.map((r) => r.vector);
         const real = results.reduce<{ p: number; t: number } | null>(
           (a, r) =>
@@ -212,6 +220,7 @@ export async function vectorizeMcpTools(
             // independent of the key scheme (default or a custom one).
             metadata: { name: t.name },
           })),
+          options,
         )
         .catch((err: unknown) => ({
           ok: false as const,
@@ -225,6 +234,7 @@ export async function vectorizeMcpTools(
     }
 
     for (let i = 0; i < tools.length; i++) {
+      if (options?.signal?.aborted) break;
       let ok = false;
       try {
         ok = await writeOne(
@@ -235,6 +245,7 @@ export async function vectorizeMcpTools(
           requestLogger,
           'tools',
           { name: tools[i].name },
+          options,
         );
       } catch {
         // A throwing write is this tool's failure, not the client's: the loop
@@ -255,7 +266,20 @@ export async function vectorizeMcpTools(
         (i + 1) % SEQUENTIAL_PACING_EVERY === 0 &&
         i < tools.length - 1
       ) {
-        await new Promise((r) => setTimeout(r, SEQUENTIAL_PACING_MS));
+        // Cancellable: abort resolves the pause immediately (the next loop
+        // iteration then breaks) instead of sleeping the full interval.
+        await new Promise<void>((resolve) => {
+          const signal = options?.signal;
+          const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+          }, SEQUENTIAL_PACING_MS);
+          function onAbort(): void {
+            clearTimeout(timer);
+            resolve();
+          }
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
       }
     }
   }
