@@ -63,50 +63,77 @@ deterministic equivalent of the planner's `error` decision, driven from the
 handler by reading the durable `controlFailure` marker; the planner itself is
 left unchanged.
 
-**Layer 2 — Backstop (invariant).** A single invariant enforced as `execute()`
-concludes a turn: the run never reaches a **terminal** state without a surfaced
-answer or error. If it would, `abortTerminal(capturedFailureText ?? GENERIC_NO_ANSWER)`.
-This catches any other empty path, so the guarantee does not depend on having
-enumerated every branch.
+**Layer 2 — Backstop (surface-point guard).** The guarantee is enforced **at the
+moment a success terminal is formed**, not post-hoc. `finalize()` currently does
+`writeTerminal({ kind: 'success', answer })` then `surfaceFinal(answer)`
+(handler:2055-2064); if `answer` is empty the empty chunk is already sent and a
+durable empty success is stored — a later "was surfaceFinal called?" boolean is
+too late and reads `true`. Instead: **before** writing a success terminal, if the
+answer is empty/whitespace, write an **error** terminal and surface
+`capturedFailureText ?? GENERIC_NO_ANSWER`. Plus `surfaceFinal` gets a defensive
+guard so it can never yield `ok:true` with an empty body from any path.
 
 Layer 1 provides the *right text* (the real tool error the user asked for) on the
 known path; Layer 2 provides the *guarantee* regardless of path.
 
 ## Components
 
-**1. `capturedFailureText(bundle): string | undefined` — pure helper.**
-Returns the best available failure text in priority order:
+**1. `ControlFailure.note` — carry the raw text on the marker.** Today
+`ControlFailure` is `{ reason: 'maxToolCalls' | 'step-timeout' |
+'control-failure'; seq }` (`types.ts:105`) — a typed enum only. For a tool error,
+`cutControlFailure(result.text)` (handler:1666) has the exact text
+(`Class ZZ… not found`), writes it durably via `writeControlFailure` **and** into
+`plannerPrivate`, but the marker keeps only the generic `'control-failure'`. The
+`writeControlFailure` note lives in a RAG step-result artifact, **not** in the
+`SessionBundle` — so a pure `helper(bundle)` cannot read it.
 
-1. `inFlight.controlFailure` reason (typed: `maxToolCalls` / `step-timeout` /
-   `control-failure`, mapped to a human string),
-2. the last `writeControlFailure` note,
-3. the tail of `plannerPrivate`.
+Add an optional `note?: string` to `ControlFailure` and have `cutControlFailure`
+set it to `noteFor(reason)` — the exact string it already computes for the
+durable `writeControlFailure` and the `plannerPrivate` append. `noteFor` maps a
+typed code to its human string (`maxToolCalls → "tool-call budget exhausted
+(maxToolCalls)"`) and passes anything else through, so for a tool error `note` is
+the raw text (`Class ZZ… not found`) and for a budget cut it is the human
+sentence. The marker becomes self-contained; the helper never parses
+`plannerPrivate`.
+
+**2. `capturedFailureText(bundle): string | undefined` — pure helper.**
+Priority order, all readable from the bundle:
+
+1. `inFlight.controlFailure.note` — already the right human/raw string (see
+   above),
+2. else the tail of `plannerPrivate` (defensive fallback for a failure recorded
+   without a marker).
 
 `undefined` when none is present. Tested in isolation.
 
-**2. Dead-end detector (Layer 1).** At the handler site where a replan yields no
+**3. Dead-end detector (Layer 1).** At the handler site where a replan yields no
 forward progress for the in-flight step, the step is a dead-end iff
 `inFlight?.controlFailure` is set. No new state — it reads the marker
 `cutControlFailure` already persists. On detection: `abortTerminal(ctx, …,
 capturedFailureText(bundle) ?? GENERIC_NO_ANSWER, …)`.
 
-**3. Terminal-exit invariant (Layer 2).** A local `surfaced` flag, set by
-`surfaceFinal`. Before `execute()` returns in a way that concludes the run
-(i.e. `bundle.runState === 'terminal'` and `!surfaced`), emit
-`abortTerminal(capturedFailureText ?? GENERIC_NO_ANSWER)`. A **suspend** return
-(external-tool round-trip) leaves `runState` non-terminal, so the invariant does
-not fire — this boundary is load-bearing.
+**4. Success-answer guard (Layer 2).** A single choke point for forming a success
+terminal. `finalize()` (the only place that writes `{ kind: 'success' }`) checks
+the answer first: `answer.trim()` empty → `abortTerminal(capturedFailureText ??
+GENERIC_NO_ANSWER)` instead of `writeTerminal(success)` + `surfaceFinal`. Because
+the guard is on the **write**, a resume replay can never read back an empty
+success (the durable record is always either a non-empty success or an error).
 
-**4. `GENERIC_NO_ANSWER` constant.** e.g. `"The run ended without an answer."`.
+**5. `surfaceFinal` defensive guard.** `surfaceFinal(content)` must never
+`ctx.yield({ ok: true, ... })` with empty/whitespace `content`. If it is ever
+reached with empty content it surfaces `GENERIC_NO_ANSWER` instead — a last-ditch
+net so no code path can emit `ok:true` empty, independent of the callers.
+
+**6. `GENERIC_NO_ANSWER` constant.** e.g. `"The run ended without an answer."`.
 Ensures a non-empty body even when no failure text was captured.
 
-**5. Empty-finalizer — covered, not rewritten.** `finalize()` already retries an
-empty finalizer answer (`throw` inside a `while (answer === undefined)` loop
-bounded by `maxFinalizeRetries`) and then falls back to a best-effort answer.
-We do **not** change that. The backstop (component 3) is the final guarantee: if
-even the best-effort answer is empty, the terminal-exit invariant surfaces
-`capturedFailureText ?? GENERIC_NO_ANSWER` rather than letting an empty body
-through. No new behaviour in `finalize` itself.
+**7. Empty-finalizer — covered by the guard, `finalize` logic unchanged.**
+`finalize()` already retries an empty finalizer answer (`throw` inside a
+`while (answer === undefined)` loop bounded by `maxFinalizeRetries`) then falls
+back to a best-effort answer. We keep that. The success-answer guard (component 4)
+runs on whatever answer results: if even best-effort is empty, it writes an error
+terminal with the captured failure rather than a success terminal with an empty
+body.
 
 ## Data flow
 
@@ -122,49 +149,54 @@ executor tool error → cutControlFailure (controlFailure marker + writeControlF
 
 replaces the current `lastOutcome = undefined → finalize-empty`.
 
-Backstop (any other terminal path):
+Backstop (any path that would form an empty success terminal):
 
 ```
-execute() about to conclude the run, runState = 'terminal', surfaced = false
-  → abortTerminal(capturedFailureText ?? GENERIC_NO_ANSWER)
+finalize() computed answer (best-effort included), answer.trim() === ''
+  → abortTerminal(capturedFailureText ?? GENERIC_NO_ANSWER)   ← instead of writeTerminal(success)
 ```
 
-Symptom B is the same path with `capturedFailureText` =
-`tool-call budget exhausted (maxToolCalls)`.
+Symptom B is Layer 1 with `capturedFailureText` = `controlFailure.note` =
+`noteFor('maxToolCalls')` = `tool-call budget exhausted (maxToolCalls)`.
 
 ## Error handling / edge cases
 
 - **Empty captured text** → `GENERIC_NO_ANSWER`. Body is never empty.
-- **Double surface.** `abortTerminal` sets `runState = 'terminal'` and calls
-  `surfaceFinal` (which sets `surfaced`), so the backstop is a no-op when Layer 1
-  already surfaced. Idempotent.
-- **Suspend ≠ terminal.** A legitimate external-tool suspend returns `true` with
-  `runState` non-terminal; the backstop keys on `terminal && !surfaced`, so it
-  never fires on suspend — this must not regress the external round-trip.
-- **Resume of an already-terminal run** reads the durable `writeTerminal` record
-  and surfaces without recomputation.
+- **No double surface.** Layer 1 and the success-answer guard both funnel into
+  `abortTerminal`, which writes a terminal and surfaces exactly once; they are
+  mutually exclusive per run (Layer 1 fires before finalize is reached).
+- **Suspend unaffected.** The guards are on forming a **terminal** answer; a
+  legitimate external-tool suspend forms no terminal and surfaces nothing, so
+  neither guard touches it — the external round-trip is unchanged.
+- **Resume of an already-terminal run** reads the durable `writeTerminal` record;
+  because the success-answer guard is on the **write**, a stored success is
+  always non-empty, so the replay surface is never empty.
 - **Empty finalizer** → `finalize`'s own retry + best-effort runs first
-  (unchanged); only if that still yields empty does the backstop surface
-  captured/generic. No `finalize` behaviour change.
+  (unchanged); if it still yields empty, the success-answer guard writes an error
+  terminal instead of an empty success. No `finalize` retry-logic change.
 
 ## Testing
 
 Controller-handler unit tests, alongside `controller/__tests__`.
 
-- `capturedFailureText`: the priority chain; empty → `undefined`.
+- `ControlFailure.note`: `cutControlFailure` sets it to `noteFor(reason)` — raw
+  text for a tool error, human sentence for a typed cut.
+- `capturedFailureText`: `controlFailure.note` wins; `plannerPrivate` fallback;
+  empty → `undefined`.
 - **Symptom A:** a failed step (tool error) + empty replan → terminal carries
   `Class … not found`, `surfaceFinal` called with `Error: …`, body non-empty.
 - **Symptom B:** a `maxToolCalls` cut + empty replan → terminal carries
   `tool-call budget exhausted (maxToolCalls)`.
-- **Backstop:** a run that reaches terminal without a surface → the gate emits
-  captured/generic, never `ok:true` with an empty body.
-- **Suspend unaffected:** an external-tool suspend returns `true`, no backstop
-  fire, no premature terminal.
-- **Empty finalizer** → best-effort runs first; a still-empty result is caught by
-  the backstop, never `ok:true` empty.
+- **Success-answer guard:** `finalize` with an empty answer writes an **error**
+  terminal (captured/generic) and surfaces it, never a success terminal with an
+  empty body; a resume then replays the error, not an empty success.
+- **`surfaceFinal` defensive guard:** called with empty content → yields
+  `GENERIC_NO_ANSWER`, never `ok:true` empty.
+- **Suspend unaffected:** an external-tool suspend forms no terminal and surfaces
+  nothing; neither guard fires.
 
-Invariant the tests pin: every terminal `surfaceFinal` has non-empty content, and
-no run-termination path leaves `ok:true` with an empty body.
+Invariant the tests pin: no run ever writes a success terminal with an empty
+answer, and `surfaceFinal` never yields `ok:true` with an empty body.
 
 ## Out of scope (tracked separately)
 
@@ -177,7 +209,12 @@ from the handler.
 
 ## Delivery
 
-One PR, confined to `controller-coordinator-handler.ts` (dead-end detector +
-terminal-exit invariant + `surfaced` flag + `capturedFailureText` helper +
-`GENERIC_NO_ANSWER`). `finalize` and `planner.ts` are unchanged. Additive; no
+One PR:
+
+- `types.ts` — add `ControlFailure.note?: string`.
+- `controller-coordinator-handler.ts` — `cutControlFailure` sets `note`; the
+  dead-end detector (Layer 1); the success-answer guard in `finalize`; the
+  `surfaceFinal` defensive guard; `capturedFailureText` helper; `GENERIC_NO_ANSWER`.
+
+`finalize`'s retry/best-effort logic and `planner.ts` are unchanged. Additive; no
 public interface changes.
