@@ -303,6 +303,50 @@ describe('Timing — breakdown included in final chunk', () => {
   });
 });
 
+describe('Heartbeat — disabled interval (#246)', () => {
+  it('heartbeatIntervalMs: 0 → tool completes, no heartbeat chunk, no busy loop', async () => {
+    // A tool that takes ~120ms. With a 5000ms interval no heartbeat fires anyway,
+    // so use a value that WOULD have busy-looped before the fix: 0.
+    const client = makeDelayedMcpClient(
+      [{ name: 'slow_tool', description: 'Slow', inputSchema: {} }],
+      new Map([['slow_tool', { content: 'done', delayMs: 120 }]]),
+    );
+    const llm = makeToolCallingLlm(['slow_tool'], 'final answer');
+    const { deps } = makeDefaultDeps({ mcpClients: [client] });
+    deps.mainLlm = llm;
+
+    const agent = new SmartAgent(deps, {
+      ...DEFAULT_CONFIG,
+      heartbeatIntervalMs: 0,
+    });
+    const started = Date.now();
+    const { heartbeats, content } = await collectStream(agent, 'test');
+
+    // Completed (did not hang) and produced the final content.
+    assert.ok(Date.now() - started < 4000, 'must not hang / busy-loop');
+    assert.equal(heartbeats.length, 0, 'disabled → no heartbeat chunks');
+    assert.ok(content.length > 0);
+  });
+
+  it('heartbeatIntervalMs: NaN → same (disabled), no busy loop', async () => {
+    const client = makeDelayedMcpClient(
+      [{ name: 'slow_tool', description: 'Slow', inputSchema: {} }],
+      new Map([['slow_tool', { content: 'done', delayMs: 120 }]]),
+    );
+    const llm = makeToolCallingLlm(['slow_tool'], 'final answer');
+    const { deps } = makeDefaultDeps({ mcpClients: [client] });
+    deps.mainLlm = llm;
+
+    const agent = new SmartAgent(deps, {
+      ...DEFAULT_CONFIG,
+      heartbeatIntervalMs: Number.NaN,
+    });
+    const { heartbeats } = await collectStream(agent, 'test');
+
+    assert.equal(heartbeats.length, 0);
+  });
+});
+
 describe('Timing — no tool calls', () => {
   it('timing has llm_call_1 and total only', async () => {
     const { deps } = makeDefaultDeps({

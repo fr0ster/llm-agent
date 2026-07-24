@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import type {
   CallOptions,
   ILlm,
+  IMcpClient,
   IRequestLogger,
   LlmCallEntry,
   LlmError,
@@ -205,4 +206,153 @@ test('tool-loop without onPartial does not throw (silent default)', async () => 
 
   assert.equal(ok, true, 'tool-loop completed without onPartial');
   assert.equal(extraCalls, 0, 'no unexpected side effects');
+});
+
+// ---------------------------------------------------------------------------
+// #246 — disabled heartbeat interval for an INTERNAL (toolClientMap) tool call
+// ---------------------------------------------------------------------------
+
+const SLOW_TOOL: LlmTool = {
+  type: 'function',
+  function: { name: 'Slow', description: 'slow internal tool', parameters: {} },
+} as unknown as LlmTool;
+
+/** MCP client stub whose callTool awaits `delayMs` before resolving. */
+function slowInternalClient(delayMs: number): IMcpClient {
+  return {
+    async listTools() {
+      return {
+        ok: true as const,
+        value: [{ name: 'Slow', description: 'slow', inputSchema: {} }],
+      };
+    },
+    async callTool() {
+      await new Promise((r) => setTimeout(r, delayMs));
+      return { ok: true as const, value: { content: 'slow result' } };
+    },
+  } as IMcpClient;
+}
+
+/** LLM that streams one Slow tool call on round 1, final text on round 2. */
+function slowToolThenTextLlm(): ILlm {
+  let n = 0;
+  async function* stream(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    if (++n === 1) {
+      yield {
+        ok: true,
+        value: {
+          content: '',
+          toolCalls: [{ id: 'c0', name: 'Slow', arguments: {} }],
+          finishReason: 'tool_calls',
+        },
+      } as Result<LlmStreamChunk, LlmError>;
+      return;
+    }
+    yield {
+      ok: true,
+      value: { content: 'final', finishReason: 'stop' },
+    } as Result<LlmStreamChunk, LlmError>;
+  }
+  return {
+    model: 'stub',
+    async chat(): Promise<Result<LlmResponse, LlmError>> {
+      return { ok: true, value: { content: '', finishReason: 'stop' } };
+    },
+    streamChat: stream,
+  } as ILlm;
+}
+
+/** Builds a ctx that drives ToolLoopHandler through an INTERNAL (toolClientMap)
+ *  tool call to a slow client, with a configurable heartbeatIntervalMs. */
+function makeSlowInternalToolCtx(opts: {
+  heartbeatIntervalMs: number;
+  toolDelayMs: number;
+}): PipelineContext {
+  const llm = slowToolThenTextLlm();
+  const client = slowInternalClient(opts.toolDelayMs);
+
+  return {
+    config: {
+      maxIterations: 3,
+      maxToolCalls: 5,
+      heartbeatIntervalMs: opts.heartbeatIntervalMs,
+      mode: 'smart',
+      refreshToolsPerIteration: false,
+    } as PipelineContext['config'],
+    options: {} as CallOptions,
+    sessionId: 's-slow-internal',
+    mcpClients: [client],
+    mainLlm: llm,
+    inputText: '',
+    history: [] as Message[],
+    assembledMessages: [{ role: 'user', content: 'call Slow' } as Message],
+    activeTools: [SLOW_TOOL],
+    externalTools: [] as LlmTool[],
+    selectedTools: [SLOW_TOOL],
+    mcpTools: [],
+    toolClientMap: new Map<string, IMcpClient>([['Slow', client]]),
+    toolCache: new NoopToolCache(),
+    ragStores: {},
+    timing: [],
+    pendingToolResults: new PendingToolResultsRegistry(),
+    toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
+    requestLogger: new NoopLogger(),
+    metrics: {
+      llmCallCount: { add() {} },
+      llmCallLatency: { record() {} },
+      toolCallCount: { add() {} },
+      toolCacheHitCount: { add() {} },
+    } as unknown as PipelineContext['metrics'],
+    tracer: {
+      startSpan: () => makeSpan(),
+    } as unknown as PipelineContext['tracer'],
+    sessionManager: {
+      addTokens() {},
+      isOverBudget: () => false,
+      reset() {},
+      totalTokens: 0,
+    } as unknown as PipelineContext['sessionManager'],
+    outputValidator: {
+      async validate() {
+        return { ok: true, value: { valid: true } };
+      },
+    } as unknown as PipelineContext['outputValidator'],
+    llmCallStrategy: {
+      call: () => llm.streamChat?.([], [], undefined),
+    } as unknown as PipelineContext['llmCallStrategy'],
+    yield() {},
+  } as unknown as PipelineContext;
+}
+
+test('#246 caller #1: ToolLoopHandler with heartbeatIntervalMs 0 → no heartbeat, no busy loop', async () => {
+  // ctx built like the file's makeCtx, but with: config.heartbeatIntervalMs = 0;
+  // a "Slow" INTERNAL tool in toolClientMap whose callTool awaits ~120ms; and
+  // a streamFn that (round 1) yields { toolCalls: [Slow], finishReason: 'tool_calls' }
+  // then (round 2) yields final content.
+  const ctx = makeSlowInternalToolCtx({
+    heartbeatIntervalMs: 0,
+    toolDelayMs: 120,
+  });
+
+  // Capture what the handler yields to the client stream.
+  const captured: Result<LlmStreamChunk, unknown>[] = [];
+  (ctx as { yield: (c: Result<LlmStreamChunk, unknown>) => void }).yield = (
+    c,
+  ) => {
+    captured.push(c);
+  };
+
+  const started = Date.now();
+  const ok = await new ToolLoopHandler().execute(ctx, {}, makeSpan());
+
+  assert.equal(ok, true);
+  assert.ok(Date.now() - started < 4000, 'must not busy-loop');
+  assert.equal(
+    captured.filter(
+      (c) =>
+        c.ok && (c.value as { heartbeat?: unknown }).heartbeat !== undefined,
+    ).length,
+    0,
+    'disabled interval → no heartbeat chunk from the batch executor',
+  );
 });

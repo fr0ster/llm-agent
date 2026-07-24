@@ -44,6 +44,7 @@ import type { ISpan } from '../../tracer/types.js';
 import { LegacyAccumulateContextStrategy } from '../context/tool-loop-context/index.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
 import {
   buildBlockedToolMessages,
   buildHallucinatedToolMessages,
@@ -116,10 +117,10 @@ export class ToolLoopHandler implements IStageHandler {
       (config.maxIterations as number) ?? ctx.config.maxIterations;
     const maxToolCalls =
       (config.maxToolCalls as number) ?? ctx.config.maxToolCalls;
-    const heartbeatMs =
-      (config.heartbeatIntervalMs as number) ??
-      ctx.config.heartbeatIntervalMs ??
-      5000;
+    const heartbeatMs = normalizeHeartbeatMs(
+      (config.heartbeatIntervalMs as number | undefined) ??
+        ctx.config.heartbeatIntervalMs,
+    );
 
     // External (client-provided) tools are mode-independent (spec D1/D4): the
     // worker never executes them, so `hard` (which constrains only INTERNAL
