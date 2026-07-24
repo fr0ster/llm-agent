@@ -21,6 +21,7 @@ export { FallbackRag } from './fallback-rag.js';
 export {
   type EmbedderRetryOptions,
   extractStatusCode,
+  isRetryableStatus,
   RetryBatchEmbedder,
   RetryEmbedder,
   withRetry,

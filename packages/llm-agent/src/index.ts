@@ -73,6 +73,7 @@ export { FallbackRag } from './resilience/fallback-rag.js';
 export {
   type EmbedderRetryOptions,
   extractStatusCode,
+  isRetryableStatus,
   RetryBatchEmbedder,
   RetryEmbedder,
   withRetry,
