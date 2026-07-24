@@ -78,6 +78,25 @@ export function extractStatusCode(err: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Whether a thrown value should be retried against a set of HTTP status codes.
+ *
+ * A structured status (own `status`/`statusCode`, or the same on `cause`) is
+ * authoritative. Only when none is present does it fall back to the message,
+ * and there it matches on **word boundaries** — a bare `includes('429')` also
+ * fires on `4290`, an id, or a byte count, turning a hard error into a
+ * multi-second backoff stall.
+ *
+ * Shared by both retry decorators (embedder and LLM) so the classification
+ * cannot drift between them.
+ */
+export function isRetryableStatus(err: unknown, retryOn: number[]): boolean {
+  const status = extractStatusCode(err);
+  if (status !== undefined) return retryOn.includes(status);
+  const msg = err instanceof Error ? err.message : String(err);
+  return retryOn.some((code) => new RegExp(`\\b${code}\\b`).test(msg));
+}
+
 export class RetryEmbedder implements IEmbedder {
   protected readonly opts: ResolvedRetryOptions;
 
@@ -118,15 +137,7 @@ export class RetryEmbedder implements IEmbedder {
   }
 
   protected isRetryable(err: unknown): boolean {
-    const status = extractStatusCode(err);
-    if (status !== undefined) return this.opts.retryOn.includes(status);
-    // Last resort: some adapters report the status only in the message. Match
-    // on word boundaries rather than a bare substring, so an id or a byte count
-    // containing "429" does not trigger a retry.
-    const msg = err instanceof Error ? err.message : String(err);
-    return this.opts.retryOn.some((code) =>
-      new RegExp(`\\b${code}\\b`).test(msg),
-    );
+    return isRetryableStatus(err, this.opts.retryOn);
   }
 
   /**

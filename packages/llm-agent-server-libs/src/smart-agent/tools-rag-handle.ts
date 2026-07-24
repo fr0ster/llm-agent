@@ -6,6 +6,7 @@ import {
   type IToolsRagHandle,
   type LlmTool,
   QueryEmbedding,
+  toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -51,9 +52,8 @@ export async function makeToolsRagHandle(
         if (ragResult.ok) {
           const hits: LlmTool[] = [];
           for (const r of ragResult.value) {
-            const id = r.metadata.id as string | undefined;
-            if (id?.startsWith('tool:')) {
-              const name = id.slice(5).replace(/:.*$/, '');
+            const name = toolNameFromRecord(r.metadata);
+            if (name !== undefined) {
               const tool = catalog.get(name);
               if (tool) hits.push(tool);
             }

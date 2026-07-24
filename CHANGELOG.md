@@ -9,6 +9,42 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **`RetryLlm` no longer retries on a status code buried in the message (#239).**
+  `isRetryable` searched the message with `includes(String(code))`, so any text
+  merely containing `429`/`500`/`502`/`503` — `4290` tokens, an id, a byte count
+  — was retried up to `maxAttempts` times with backoff, turning a hard error
+  into a multi-second stall. Both retry decorators (LLM and embedder) now share
+  one `isRetryableStatus`: a structured status wins, the message is a
+  word-boundary last resort.
+
+### Added
+
+- **Bulk tool-catalog upsert (#238).** Chunking (20.8.0) bounded the embedding
+  calls but not the writes — the batch path still upserted one record per tool.
+  New optional additive `IRagBackendWriter.upsertManyPrecomputedRaw`, implemented
+  by `QdrantRag` as a single PUT with all points, replaces N store round trips
+  with 1. `vectorizeMcpTools` uses it when present and falls back to the
+  per-record path (which classifies the failing record) on error.
+- **`withCircuitBreaker` factory (#241)** in `@mcp-abap-adt/llm-agent`. The
+  exported `CircuitBreakerEmbedder` declares `embedBatch` unconditionally, so it
+  reports batch capability a non-batch inner lacks. The factory selects a
+  batch/non-batch class by inspecting the inner — the same shape as
+  `wrapEmbedder`/`withRetry`. The class is unchanged for direct construction.
+- **`IToolRecordKey` tool-record-key strategy (#240), storage-level.**
+  Identically named tools from different MCP servers (a `mcp:` array is
+  supported) were keyed by name alone, so one **overwrote** the other in the
+  tools RAG store — the store held only one, hurting recall. The default now
+  keeps `tool:${name}` for a single server and disambiguates by client index for
+  several, so both records survive; inject a custom strategy via
+  `SmartAgentBuilder.withToolRecordKey`. No migration — the engine re-vectorizes
+  on boot and stays MCP-agnostic. **Known limitation:** this is a *storage* fix.
+  Tool *selection* still deduplicates by name (LLM tool-calling requires unique
+  tool names), so when two servers expose the same name the executor resolves it
+  to the first client. Making a specific colliding tool callable needs tool-name
+  namespacing across exposure/calling/executor (#244).
+
 ## [20.8.0] — 2026-07-23
 
 MCP tool vectorization no longer exceeds a provider's batch cap (#236). Chunking

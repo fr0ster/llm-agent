@@ -59,7 +59,11 @@ export {
   type CircuitBreakerConfig,
   type CircuitState,
 } from './resilience/circuit-breaker.js';
-export { CircuitBreakerEmbedder } from './resilience/circuit-breaker-embedder.js';
+export {
+  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
+  withCircuitBreaker,
+} from './resilience/circuit-breaker-embedder.js';
 export { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
 export {
   brandResilient,
@@ -73,6 +77,7 @@ export { FallbackRag } from './resilience/fallback-rag.js';
 export {
   type EmbedderRetryOptions,
   extractStatusCode,
+  isRetryableStatus,
   RetryBatchEmbedder,
   RetryEmbedder,
   withRetry,

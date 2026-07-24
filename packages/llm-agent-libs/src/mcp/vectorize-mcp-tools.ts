@@ -11,6 +11,7 @@
  */
 
 import type {
+  CallOptions,
   IEmbedder,
   ILogger,
   IMcpClient,
@@ -18,10 +19,16 @@ import type {
   IRagBackendWriter,
   IRequestLogger,
   ISkillManager,
+  IToolRecordKey,
   LlmTool,
+  RagMetadata,
   ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
-import { isBatchEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  DefaultWaitStrategy,
+  defaultToolRecordKey,
+  isBatchEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 
 /**
  * Alias of ToolCatalogStatus, which is declared in `@mcp-abap-adt/llm-agent`
@@ -39,6 +46,9 @@ const MAX_NAMES_IN_LOG = 10;
 /** Preserved from the previous implementation — see the write loop below. */
 const SEQUENTIAL_PACING_EVERY = 5;
 const SEQUENTIAL_PACING_MS = 500;
+// Stateless; honours signal, including one already aborted (unlike a raw
+// addEventListener, which never fires for an event that already dispatched).
+const pacingWait = new DefaultWaitStrategy();
 
 interface Acc {
   total: number;
@@ -68,12 +78,14 @@ async function writeOne(
   vector: number[] | undefined,
   requestLogger: IRequestLogger,
   detail: 'tools' | 'skills',
+  metadata: RagMetadata = {},
+  options?: CallOptions,
 ): Promise<boolean> {
   const start = Date.now();
   const result =
     vector && writer.upsertPrecomputedRaw
-      ? await writer.upsertPrecomputedRaw(id, text, vector, {})
-      : await writer.upsertRaw(id, text, {});
+      ? await writer.upsertPrecomputedRaw(id, text, vector, metadata, options)
+      : await writer.upsertRaw(id, text, metadata, options);
   const ok = result?.ok === true;
   if (ok && vector === undefined) {
     const est = Math.ceil(text.length / 4);
@@ -97,12 +109,18 @@ export async function vectorizeMcpTools(
   toolsRag: IRag | undefined,
   requestLogger: IRequestLogger,
   logger: ILogger | undefined,
+  toolRecordKey: IToolRecordKey = defaultToolRecordKey,
+  options?: CallOptions,
 ): Promise<ToolVectorizationSummary | undefined> {
   const writer = toolsRag?.writer?.();
   // No store, or a deliberately read-only one: nothing is attempted, and the
   // status stays unknown rather than reporting a permanently incomplete
   // catalog for a configuration that never intended to write.
   if (!toolsRag || !writer) return undefined;
+  // Cancellable: reconnect revectorization carries a request signal, so an
+  // aborted request must stop listing, embedding and writing rather than run to
+  // completion in the background.
+  if (options?.signal?.aborted) return undefined;
 
   const acc: Acc = { total: 0, vectorized: 0, failed: [], clientFailures: 0 };
   // Why the batch path was abandoned, if it was. Reported once, inside the
@@ -111,14 +129,30 @@ export async function vectorizeMcpTools(
   let batchFailure: string | undefined;
   // biome-ignore lint/suspicious/noExplicitAny: reading the store's private embedder for batch optimisation
   const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
+  const clientCount = clients.length;
 
-  for (const adapter of clients) {
+  for (let clientIndex = 0; clientIndex < clients.length; clientIndex++) {
+    if (options?.signal?.aborted) break;
+    const adapter = clients[clientIndex];
+    const keyFor = (toolName: string): string => {
+      const id = toolRecordKey.key({ toolName, clientIndex, clientCount });
+      // Enforce the IToolRecordKey contract at write time: a key without the
+      // `tool:` prefix would be written and counted as vectorized, but every
+      // retrieval path (toolNameFromRecord) would ignore it — a silent
+      // unretrievable record. Fail fast instead.
+      if (!id.startsWith('tool:')) {
+        throw new Error(
+          `IToolRecordKey produced "${id}" for tool "${toolName}"; a tool record id must start with "tool:" so retrieval can tell it apart from skills.`,
+        );
+      }
+      return id;
+    };
     // Only listing is guarded at client level. A write that throws must NOT be
     // charged to the client, must not abort the remaining tools, and must land
     // in `failed` — see the per-tool try/catch below.
     let tools: LlmTool[];
     try {
-      const toolsResult = await adapter.listTools();
+      const toolsResult = await adapter.listTools(options);
       if (!toolsResult.ok) {
         acc.clientFailures++;
         continue;
@@ -131,6 +165,9 @@ export async function vectorizeMcpTools(
 
     acc.total += tools.length;
     const texts = tools.map((t) => toolText(t.name, t.description));
+    // Computed once, outside any per-tool try/catch, so an invalid key strategy
+    // fails the boot fast rather than landing every tool in `failed`.
+    const ids = tools.map((t) => keyFor(t.name));
 
     let vectors: number[][] | undefined;
     if (
@@ -140,7 +177,7 @@ export async function vectorizeMcpTools(
     ) {
       const start = Date.now();
       try {
-        const results = await storeEmbedder.embedBatch(texts);
+        const results = await storeEmbedder.embedBatch(texts, options);
         vectors = results.map((r) => r.vector);
         const real = results.reduce<{ p: number; t: number } | null>(
           (a, r) =>
@@ -175,16 +212,47 @@ export async function vectorizeMcpTools(
       }
     }
 
+    // Bulk fast path: when we have precomputed vectors AND the writer supports
+    // a native bulk upsert, write the whole catalog in one call instead of N.
+    // All-or-nothing, so on failure we fall through to the per-tool loop, which
+    // classifies exactly which record is bad.
+    if (vectors && writer.upsertManyPrecomputedRaw) {
+      const bulk = await writer
+        .upsertManyPrecomputedRaw(
+          tools.map((t, i) => ({
+            id: ids[i],
+            text: texts[i],
+            vector: (vectors as number[][])[i],
+            // Store the name so retrieval recovers it via toolNameFromRecord,
+            // independent of the key scheme (default or a custom one).
+            metadata: { name: t.name },
+          })),
+          options,
+        )
+        .catch((err: unknown) => ({
+          ok: false as const,
+          error: err instanceof Error ? err : new Error(String(err)),
+        }));
+      if (bulk.ok) {
+        acc.vectorized += tools.length;
+        continue;
+      }
+      // else: fall through to the per-tool loop below.
+    }
+
     for (let i = 0; i < tools.length; i++) {
+      if (options?.signal?.aborted) break;
       let ok = false;
       try {
         ok = await writeOne(
           writer,
-          `tool:${tools[i].name}`,
+          ids[i],
           texts[i],
           vectors?.[i],
           requestLogger,
           'tools',
+          { name: tools[i].name },
+          options,
         );
       } catch {
         // A throwing write is this tool's failure, not the client's: the loop
@@ -205,7 +273,10 @@ export async function vectorizeMcpTools(
         (i + 1) % SEQUENTIAL_PACING_EVERY === 0 &&
         i < tools.length - 1
       ) {
-        await new Promise((r) => setTimeout(r, SEQUENTIAL_PACING_MS));
+        // Cancellable via DefaultWaitStrategy: an already-aborted signal returns
+        // immediately, so a request aborted during the preceding write does not
+        // sit through the full pause. The next loop iteration then breaks.
+        await pacingWait.wait(SEQUENTIAL_PACING_MS, options?.signal);
       }
     }
   }
@@ -274,6 +345,7 @@ export async function vectorizeSkills(
         undefined,
         requestLogger,
         'skills',
+        { name: s.name },
       );
     } catch {
       ok = false;

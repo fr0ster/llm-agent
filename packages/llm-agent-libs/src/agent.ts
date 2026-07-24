@@ -19,6 +19,7 @@ import type {
   IToolCache,
   IToolCatalogReporter,
   IToolLoopContextStrategy,
+  IToolRecordKey,
   LlmFinishReason,
   LlmStreamChunk,
   LlmTool,
@@ -48,6 +49,7 @@ import {
   type StopReason,
   StreamingLlmCallStrategy,
   TextOnlyEmbedding,
+  toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
@@ -131,6 +133,8 @@ export interface SmartAgentDeps {
   connectionStrategy?: IMcpConnectionStrategy;
   /** Reports the startup tool-catalog vectorization result to health checks. */
   toolCatalogStatus?: IToolCatalogReporter;
+  /** Tool-record-key strategy, reused on reconnect revectorization. */
+  toolRecordKey?: IToolRecordKey;
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
@@ -296,6 +300,11 @@ export class SmartAgent {
       deps.mcpClients,
       deps.connectionStrategy,
       deps.ragStores,
+      {
+        requestLogger: this.requestLogger,
+        logger: deps.logger,
+        toolRecordKey: deps.toolRecordKey,
+      },
     );
     this._mainLlm = deps.mainLlm;
     this._helperLlm = deps.helperLlm;
@@ -957,9 +966,8 @@ export class SmartAgent {
             if (ragResult.ok && ragResult.value.length > 0) {
               const newToolNames = new Set(
                 ragResult.value
-                  .map((r) => (r.metadata?.id as string) || '')
-                  .filter((id) => id.startsWith('tool:'))
-                  .map((id) => id.slice(5).replace(/:.*$/, '')),
+                  .map((r) => toolNameFromRecord(r.metadata))
+                  .filter((n): n is string => n !== undefined),
               );
 
               if (newToolNames.size > 0) {

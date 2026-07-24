@@ -9,6 +9,7 @@
 import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  isRetryableStatus,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
@@ -134,8 +135,10 @@ export class RetryLlm implements ILlm {
   }
 
   private isRetryable(error: LlmError): boolean {
-    const msg = error.message;
-    return this.opts.retryOn.some((code) => msg.includes(String(code)));
+    // Shared with RetryEmbedder: structured status wins, message match is a
+    // word-boundary last resort. Replaces a bare includes() that fired on any
+    // message merely containing the digits (e.g. "4290").
+    return isRetryableStatus(error, this.opts.retryOn);
   }
 
   private isMidStreamRetryable(error: LlmError): boolean {

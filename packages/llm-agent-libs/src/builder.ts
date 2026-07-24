@@ -34,6 +34,7 @@ import type {
   ISubAgent,
   ISubpromptClassifier,
   IToolCache,
+  IToolRecordKey,
   IToolSelectionStrategy,
   McpConnectionConfig,
   SmartAgentRagStores,
@@ -182,6 +183,7 @@ export class SmartAgentBuilder {
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
   private _mcpFailureClassifier?: IMcpFailureClassifier;
+  private _toolRecordKey?: IToolRecordKey;
   private _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
@@ -465,6 +467,17 @@ export class SmartAgentBuilder {
    *  tool-level error (LLM feedback). Default: DefaultMcpFailureClassifier. */
   withMcpFailureClassifier(classifier: IMcpFailureClassifier): this {
     this._mcpFailureClassifier = classifier;
+    return this;
+  }
+
+  /** Inject a custom tool-record-key strategy — how an MCP tool maps to its
+   *  RAG record id. Default: {@link defaultToolRecordKey}, which keeps
+   *  `tool:${name}` for a single server and disambiguates by client index when
+   *  several are connected. Swap it to key by real server name, a per-server
+   *  collection, or any scheme — as long as the id keeps the `tool:` prefix, so
+   *  retrieval still tells tools apart from skills. */
+  withToolRecordKey(strategy: IToolRecordKey): this {
+    this._toolRecordKey = strategy;
     return this;
   }
 
@@ -968,6 +981,7 @@ export class SmartAgentBuilder {
         toolsRag,
         requestLogger,
         log,
+        this._toolRecordKey,
       );
       // Published only when defined: a skipped run must leave the holder empty
       // rather than storing a zeroed summary.
@@ -1196,6 +1210,7 @@ export class SmartAgentBuilder {
         ...(this._embedder ? { embedder: this._embedder } : {}),
         ...(connectionStrategy ? { connectionStrategy } : {}),
         toolCatalogStatus,
+        ...(this._toolRecordKey ? { toolRecordKey: this._toolRecordKey } : {}),
         ...(historyMemory ? { historyMemory } : {}),
         ...(historySummarizer ? { historySummarizer } : {}),
         ...(this._llmCallStrategy

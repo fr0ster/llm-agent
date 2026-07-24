@@ -312,10 +312,17 @@ interface IRagBackendWriter {
   deleteByIdRaw(id: string, options?: CallOptions): Promise<Result<boolean, RagError>>;
   clearAll?(): Promise<Result<void, RagError>>;
   upsertPrecomputedRaw?(id: string, text: string, vector: number[], metadata: RagMetadata, options?: CallOptions): Promise<Result<void, RagError>>;
+  // Optional bulk write, backed by the store's native batch API. All-or-nothing.
+  upsertManyPrecomputedRaw?(
+    items: ReadonlyArray<{ id: string; text: string; vector: number[]; metadata: RagMetadata }>,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>>;
 }
 ```
 
 `IRag` is the read path (query + health). `IRagBackendWriter` is the raw storage write path (no embeddings). `IRagEditor` is the consumer-facing write API — it handles embedding and ID assignment before delegating to `IRagBackendWriter`. Use `DirectEditStrategy` to wrap a backend writer into an `IRagEditor`.
+
+Implement `upsertManyPrecomputedRaw` when the store has a native bulk API (Qdrant accepts many points per PUT). Startup tool vectorization uses it to write the whole catalog in one call instead of one per tool; a writer without it is unaffected and takes the per-record path.
 
 ### Example: Wrapping Pinecone
 

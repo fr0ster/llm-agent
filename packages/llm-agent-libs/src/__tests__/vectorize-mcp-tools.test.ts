@@ -21,6 +21,7 @@ import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   McpError,
+  toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 
 // Import from the new module path (RED until 2b)
@@ -70,12 +71,22 @@ function makeClient(tools: LlmTool[]): IMcpClient {
 function makeWriter(opts?: {
   failUpsert?: boolean;
   hasBatchRaw?: boolean;
-}): IRagBackendWriter & { upsertCalls: string[]; precomputedCalls: string[] } {
+  hasBulk?: boolean;
+  failBulk?: boolean;
+}): IRagBackendWriter & {
+  upsertCalls: string[];
+  precomputedCalls: string[];
+  bulkCalls: number;
+  bulkSizes: number[];
+} {
   const upsertCalls: string[] = [];
   const precomputedCalls: string[] = [];
+  const bulkSizes: number[] = [];
   return {
     upsertCalls,
     precomputedCalls,
+    bulkCalls: 0,
+    bulkSizes,
     async upsertRaw(id: string, _text: string, _meta: object) {
       upsertCalls.push(id);
       if (opts?.failUpsert)
@@ -97,9 +108,25 @@ function makeWriter(opts?: {
           },
         }
       : {}),
+    ...(opts?.hasBulk
+      ? {
+          async upsertManyPrecomputedRaw(
+            this: { bulkCalls: number },
+            items: ReadonlyArray<{ id: string }>,
+          ) {
+            this.bulkCalls++;
+            bulkSizes.push(items.length);
+            if (opts?.failBulk)
+              return { ok: false as const, error: new Error('bulk error') };
+            return { ok: true as const, value: undefined };
+          },
+        }
+      : {}),
   } as unknown as IRagBackendWriter & {
     upsertCalls: string[];
     precomputedCalls: string[];
+    bulkCalls: number;
+    bulkSizes: number[];
   };
 }
 
@@ -373,5 +400,189 @@ describe('vectorizeMcpTools summary', () => {
     // The capability check throws BEFORE CircuitBreakerEmbedder's try block, so
     // recordFailure() is never reached and the breaker stays closed.
     assert.equal(breaker.state, 'closed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bulk upsert path (#238)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools bulk upsert', () => {
+  it('uses one bulk call instead of one write per tool', async () => {
+    const writer = makeWriter({ hasBatchRaw: true, hasBulk: true });
+    const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);
+    const tools = ['a', 'b', 'c'].map(makeTool);
+    const summary = await vectorizeMcpTools(
+      [makeClient(tools)],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.equal(writer.bulkCalls, 1);
+    assert.deepEqual(writer.bulkSizes, [3]);
+    // Per-record precomputed writer must NOT also run on the bulk path.
+    assert.equal(writer.precomputedCalls.length, 0);
+    assert.equal(summary?.vectorized, 3);
+    assert.equal(summary?.complete, true);
+  });
+
+  it('falls back to per-tool writes when the bulk call fails', async () => {
+    const writer = makeWriter({
+      hasBatchRaw: true,
+      hasBulk: true,
+      failBulk: true,
+    });
+    const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);
+    const tools = ['a', 'b'].map(makeTool);
+    const summary = await vectorizeMcpTools(
+      [makeClient(tools)],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.equal(writer.bulkCalls, 1); // tried once
+    assert.equal(writer.precomputedCalls.length, 2); // then per-tool
+    assert.equal(summary?.vectorized, 2);
+    assert.equal(summary?.complete, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool record key strategy (#240)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools tool record key', () => {
+  it('single client keeps the historical tool:${name} key', async () => {
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.deepEqual(writer.upsertCalls, ['tool:Search']);
+  });
+
+  it('same-named tools from two servers no longer collide', async () => {
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    const summary = await vectorizeMcpTools(
+      [makeClient([makeTool('Search')]), makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    // Two distinct records, not one overwriting the other.
+    assert.deepEqual(writer.upsertCalls, ['tool:0:Search', 'tool:1:Search']);
+    assert.equal(summary?.vectorized, 2);
+    assert.equal(summary?.total, 2);
+  });
+
+  it('honours a consumer-supplied key strategy (keeping the tool: prefix)', async () => {
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      { key: ({ toolName }) => `tool:srv1/${toolName}` },
+    );
+    assert.deepEqual(writer.upsertCalls, ['tool:srv1/Search']);
+  });
+
+  it('fails fast when a key strategy drops the tool: prefix', async () => {
+    // Such a record would be written and counted, but every retrieval path
+    // ignores a non-tool: id — so reject it at write time instead.
+    const writer = makeWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await assert.rejects(
+      () =>
+        vectorizeMcpTools(
+          [makeClient([makeTool('Search')])],
+          rag,
+          new CapturingRequestLogger(),
+          undefined,
+          { key: ({ toolName }) => `custom::${toolName}` },
+        ),
+      /must start with "tool:"/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: written records decode back to tool names (#240 P1)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools record round-trip', () => {
+  it('same-named tools from two servers are stored as two records (recall), both named Search', async () => {
+    // STORAGE-LEVEL scope of #240: the two records no longer overwrite each
+    // other, so RAG retrieval sees both instead of one. Both still decode to
+    // "Search" — that is correct here: retrieval must map a hit back to the
+    // tool name. Making a *specific* colliding tool callable (call-path
+    // disambiguation) needs tool-name namespacing and is tracked separately;
+    // this test deliberately does not claim it.
+    const captured: Array<{ id: string; name?: unknown }> = [];
+    const writer = {
+      upsertCalls: [] as string[],
+      async upsertRaw(id: string, _t: string, meta: { name?: unknown }) {
+        captured.push({ id, name: meta.name });
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagBackendWriter;
+    const rag = makeRagWithEmbedder(undefined, writer);
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')]), makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    // Two distinct records survive (recall), each decoding to the tool name.
+    assert.deepEqual(
+      captured.map((r) => r.id),
+      ['tool:0:Search', 'tool:1:Search'],
+    );
+    for (const r of captured) {
+      assert.equal(toolNameFromRecord(r), 'Search');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cancellation during the sequential pacing pause (#240 P2)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools pacing cancellation', () => {
+  it('does not sit through the pause when abort lands mid-write', async () => {
+    // Abort fires on the 5th write — i.e. exactly when the sequential path is
+    // about to pace. A raw addEventListener would miss the already-dispatched
+    // event and wait the full 500ms; DefaultWaitStrategy returns immediately.
+    const ac = new AbortController();
+    let writes = 0;
+    const writer = {
+      async upsertRaw() {
+        writes++;
+        if (writes === 5) ac.abort();
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagBackendWriter;
+    const rag = makeRagWithEmbedder(undefined, writer); // no embedder → sequential
+    const tools = Array.from({ length: 8 }, (_, i) => makeTool(`T${i}`));
+
+    const started = Date.now();
+    await vectorizeMcpTools(
+      [makeClient(tools)],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      undefined,
+      { signal: ac.signal },
+    );
+    const elapsed = Date.now() - started;
+    // Pacing interval is 500ms; prompt cancellation must be well under it.
+    assert.ok(elapsed < 250, `waited ${elapsed}ms of a 500ms pause`);
+    // Aborted right after the 5th write, before the 6th.
+    assert.equal(writes, 5);
   });
 });
