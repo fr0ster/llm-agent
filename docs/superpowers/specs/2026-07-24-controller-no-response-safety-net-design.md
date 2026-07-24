@@ -53,22 +53,32 @@ answers "tell me plainly what the error was".
 
 ## Architecture
 
-Two layers, both built on the existing `abortTerminal`.
+> **Design note (implementation revision).** An earlier version of this design had
+> a "Layer 1" — an *early* dead-end signal from `planner.next()` that surfaced the
+> captured error **before** the finalizer ran. Implementation proved it wrong: six
+> existing `controller-step-control` tests model `control-failure → empty replan →
+> the finalizer legitimately completing from partial progress` (`time-done`). An
+> empty replan is **not** always a dead end — whether it is depends on the
+> finalizer's output, which an early signal cannot see, and the `controlFailure`
+> reason does not distinguish it (test `(f)`, a `control-failure` reason, completes;
+> Symptom A, also `control-failure`, dead-ends). Layer 1 was dropped. The guard
+> below (formerly "Layer 2") is the whole mechanism: the finalizer runs as before,
+> and only an *empty* result is rerouted to an error terminal.
 
-**Layer 1 — Primary (early dead-end signal).** The dead-end must be caught
-**before** the finalizer runs. `planner.next()`'s replan branch, on an empty plan
-(`mintedRest.length === 0`) for a step whose `inFlightStep.controlFailure` is set,
-returns a new `{ kind: 'dead-end' }` `NextStep` **before** calling `stepAtCursor`
-— which would otherwise issue a `planner.send(FINALIZE_SYSTEM)` LLM call and
-compose an answer over the failure. The handler dispatches `dead-end` to
-`abortTerminal(capturedFailureText(bundle) ?? GENERIC_NO_ANSWER)`. The planner
-only *signals*; the handler resolves the text from the durable `controlFailure`
-marker.
+**The guard — reject an empty success at the single choke point.** The finalizer
+runs unchanged; a non-empty answer completes the run (a legitimate `time-done`
+included). `commitTerminalSuccess` — the sole writer of a success terminal —
+checks the answer first: if empty/whitespace, it writes an **error** terminal
+carrying `capturedFailureText(bundle) ?? GENERIC_NO_ANSWER` via the existing
+`abortTerminal`, instead of a success terminal with an empty body. For Symptom A
+(a tool error whose replan and finalizer produce nothing) the surfaced text is
+the real tool error (`Class ZZ… not found`), read from the durable
+`controlFailure` marker. `surfaceFinal` additionally routes through a pure
+`nonEmptyBody` as a last-ditch net, so no path yields `ok:true` with an empty
+body.
 
-This requires two additive changes: a `{ kind: 'dead-end' }` variant on
-`NextStep`, and the early return in the replan branch. An empty replan on a
-`partial` outcome (remaining work genuinely done) has no `controlFailure` marker,
-so it is unaffected — only a control-failed step dead-ends.
+Planner and `NextStep` are unchanged — the fix is entirely in
+`controller-coordinator-handler.ts` plus the raw text recorded on the marker.
 
 **Layer 2 — Backstop (choke-point guard).** The single place that forms a success
 terminal is `commitTerminalSuccess` (handler:2042) — the only caller of
