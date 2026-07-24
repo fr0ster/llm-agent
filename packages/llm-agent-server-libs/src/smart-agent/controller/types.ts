@@ -105,6 +105,10 @@ export type RunPhase = 'evaluating' | 'planning' | 'executing' | 'finalizing';
 export interface ControlFailure {
   reason: 'maxToolCalls' | 'step-timeout' | 'control-failure';
   seq: number;
+  /** Human/raw failure text (noteFor(reason)); the surface source for #243.
+   *  Optional: bundles persisted before this field degrade to a typed-reason
+   *  mapping or GENERIC_NO_ANSWER (see capturedFailureText). */
+  note?: string;
 }
 
 export interface InFlightStep {

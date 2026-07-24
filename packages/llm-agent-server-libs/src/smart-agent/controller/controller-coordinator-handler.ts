@@ -220,6 +220,33 @@ export { parseNextStep } from './parser.js';
 export { relevantExtract, runScopedRecall } from './recall.js';
 export { makeLogUsage } from './usage-logging.js';
 
+/** Consumer-facing fallback when no failure text was captured (#243). */
+export const GENERIC_NO_ANSWER = 'The run ended without an answer.';
+
+/**
+ * The failure text to surface for a dead-ended run, read ONLY from the
+ * controlFailure marker — never plannerPrivate, which holds external-tool
+ * results and clarify answers whose tail would leak private context.
+ * A non-blank note wins (trimmed); a blank note is treated as absent; a legacy
+ * typed reason maps to its human sentence; a legacy generic marker → undefined.
+ */
+export function capturedFailureText(bundle: SessionBundle): string | undefined {
+  const cf = bundle.inFlightStep?.controlFailure;
+  if (!cf) return undefined;
+  if (cf.note?.trim()) return cf.note.trim();
+  if (cf.reason === 'maxToolCalls')
+    return 'tool-call budget exhausted (maxToolCalls)';
+  if (cf.reason === 'step-timeout')
+    return 'step time budget exhausted (step-timeout)';
+  return undefined;
+}
+
+/** #243 last-ditch net: an empty/whitespace body becomes GENERIC_NO_ANSWER, so
+ *  no code path can yield ok:true with an empty body. */
+export function nonEmptyBody(content: string): string {
+  return content.trim().length === 0 ? GENERIC_NO_ANSWER : content;
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -1327,6 +1354,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           inFlight.controlFailure = {
             reason: typedReason,
             seq: inFlight.seq,
+            note: noteFor(reason),
           };
         }
         logDecision(ctx, 'control-failure', noteFor(reason));
@@ -2048,6 +2076,21 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     terminalTtlMs: number,
     usage?: TerminalUsage,
   ): Promise<void> {
+    // #243: never form a success terminal with an empty body. Route to an error
+    // terminal carrying the captured failure (or a generic message) — this is
+    // the sole writer of a success terminal, so the guarantee holds here.
+    if (answer.trim().length === 0) {
+      await this.abortTerminal(
+        ctx,
+        sessionId,
+        bundle,
+        capturedFailureText(bundle) ?? GENERIC_NO_ANSWER,
+        now,
+        terminalTtlMs,
+        usage,
+      );
+      return;
+    }
     await writeTerminal(
       this.deps.backend,
       sessionId,
@@ -2086,7 +2129,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   ): void {
     ctx.yield({
       ok: true,
-      value: { content, finishReason: 'stop', ...(usage ? { usage } : {}) },
+      value: {
+        content: nonEmptyBody(content),
+        finishReason: 'stop',
+        ...(usage ? { usage } : {}),
+      },
     });
   }
 

@@ -11,6 +11,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Controller never terminates a run with `(no response)` (#243).** A tool-level
+  error (object not found) or a per-step `maxToolCalls` cut could drive
+  `control-failure → replan → empty`, returning an empty completion (0 tokens,
+  rendered `(no response)`) and discarding the captured error. `commitTerminalSuccess`
+  — the sole writer of a success terminal — now rejects an empty answer and writes
+  an **error** terminal carrying the real failure text (`Error: Class … not found`),
+  with `surfaceFinal` as a last-ditch net so no path yields an empty body. The
+  finalizer still runs and a legitimate partial answer completes as before; only
+  an empty result is rerouted. The captured text is read only from the failure
+  marker, never from the internal planner scratchpad.
 - **`RetryLlm` no longer retries on a status code buried in the message (#239).**
   `isRetryable` searched the message with `includes(String(code))`, so any text
   merely containing `429`/`500`/`502`/`503` — `4290` tokens, an id, a byte count

@@ -330,6 +330,16 @@ The default classifier (`IMcpFailureClassifier`) is defined in `packages/llm-age
 
 ---
 
+### Controller returns `(no response)` on a not-found object, or intermittently under concurrency (v20.8.0)
+
+**Symptom.** On v20.8.0, `isError` reaches the controller (from #213/#232) but the *next* hop is lossy: a tool-level error (e.g. `read a non-existent class`) whose replan makes no progress, or a per-step `maxToolCalls` cut under concurrency, terminates the run with an empty body — `(no response)`, 0 tokens, `request_done ok:true` — discarding the captured error even when the user asked to be told it.
+
+**Cause.** `control-failure → replan → empty plan → finalizer` could compose an empty answer, and an empty *success* terminal was written and surfaced as `(no response)`.
+
+**Fix.** Upgrade to the release containing **#243**. The finalizer still runs and a legitimate partial answer completes as before, but an **empty** answer is caught at `commitTerminalSuccess` and rerouted to an **error** terminal carrying the real failure text — `Error: Class … not found`, or `tool-call budget exhausted (maxToolCalls)`. A generic `The run ended without an answer.` means the controller had no safe captured failure text to surface — either a control failure whose marker predates the `note` field (a resumed older bundle), or a path that reached an empty finalizer with no control failure at all (a normal step that simply produced nothing). In both cases the body is never empty; re-run the request.
+
+---
+
 ### Coordinator-bearing pipeline stays inactive
 
 **Symptom.** `coordinator_configured` event appears in `smart-server.log` at startup. Live requests show no `coordinator_plan` / `coordinator_step_*` events, but `tool-loop iteration 1` warnings do. Response content looks like a normal tool-loop reply.
