@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The controller never terminates a run with `(no response)`; a failed step whose replan cannot progress surfaces the real tool error, and no path can emit an empty success.
+**Goal:** The controller never terminates a run with `(no response)`; a failed step whose replan cannot progress surfaces the real tool error (before any finalizer call), and no path can emit an empty success.
 
-**Architecture:** Two layers in `controller-coordinator-handler.ts`, both routing through the existing `abortTerminal`. Layer 1 (dead-end detector) surfaces the captured failure the moment a replan finalizes over an unresolved `control-failure`. Layer 2 (choke-point guard) rejects an empty answer inside `commitTerminalSuccess` — the sole writer of a success terminal — plus a defensive guard in `surfaceFinal`.
+**Architecture:** Layer 1 — `planner.next()` returns a new `{ kind: 'dead-end' }` `NextStep` on an empty replan over a control-failed step, **before** `stepAtCursor` issues the finalizer LLM call; the handler dispatches it to the existing `abortTerminal`. Layer 2 — a guard at the top of `commitTerminalSuccess` (the sole writer of a success terminal) rejects an empty answer, plus `surfaceFinal` routes through a pure `nonEmptyBody`. The captured text is read only from the `controlFailure` marker.
 
 **Tech Stack:** TypeScript (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome.
 
@@ -17,75 +17,35 @@
 - All artifacts (code, comments, commit messages) in **English**.
 - ESM only — relative imports end in `.js`.
 - TypeScript strict; avoid `any` (Biome warns).
-- Additive only — no existing exported signature becomes incompatible; new fields/params optional.
+- Additive only — the one public surface change is a new `NextStep` union member (backward-compatible: existing consumers switch on `kind`).
 - Biome gate: `npm run lint:check` (a **check**, not `format`).
-- Test command: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs` → `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`.
+- Test command: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs`.
 - `capturedFailureText` reads **only** the `controlFailure` marker — never `plannerPrivate` (it holds external-tool results and clarify answers; surfacing its tail would leak private context).
-- Build before running: `npm run build` (workspace imports resolve to `dist/`).
+- Build before running: `npm run build`.
 
 ## File Structure
 
-- `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts` — add optional `ControlFailure.note`.
-- `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` — `cutControlFailure` sets `note`; `capturedFailureText` + `GENERIC_NO_ANSWER` (module-level, exported); Layer 1 detector; Layer 2 guard in `commitTerminalSuccess`; defensive guard in `surfaceFinal`.
+- `controller/types.ts` — `ControlFailure.note?: string`; `NextStep` gains `{ kind: 'dead-end' }`.
+- `controller/planner.ts` — early `dead-end` return in the replan branch.
+- `controller/controller-coordinator-handler.ts` — `cutControlFailure` sets `note`; `dead-end` dispatch; `commitTerminalSuccess` guard; `surfaceFinal` via `nonEmptyBody`; `capturedFailureText`, `nonEmptyBody`, `GENERIC_NO_ANSWER`.
 - Tests:
-  - `controller/__tests__/captured-failure-text.test.ts` (new) — pure helper.
-  - `controller/__tests__/controller-no-response.test.ts` (new) — Symptoms A/B, guards, leak negatives, via `execute()` orchestration.
+  - `controller/__tests__/captured-failure-text.test.ts` (new) — pure helpers.
+  - `controller/__tests__/controller-no-response.test.ts` (new) — Symptoms A/B, guards, replay, leak negatives, via `execute()`.
+
+**Why note is not unit-tested in isolation:** both `abortTerminal` and `commitTerminalSuccess` clear `bundle.inFlightStep` (handler:1897, 2062), so a post-`execute()` assertion on `inFlightStep.controlFailure.note` is always `undefined`. `note` is therefore proven end-to-end: the Symptom A surfaced body **is** the note text, which only appears if `cutControlFailure` set it and `capturedFailureText` read it.
 
 ---
 
-### Task 1: `ControlFailure.note` carries the failure text
+### Task 1: Type foundations — `ControlFailure.note` + `NextStep` dead-end variant
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts:105-108`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (`cutControlFailure`, ~1313-1335)
-- Test: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-no-response.test.ts` (create)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts:105-108` and `:71-75`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `ControlFailure.note?: string`, set by `cutControlFailure` to `noteFor(reason)`.
+- Produces: `ControlFailure.note?: string`; `NextStep | { kind: 'dead-end' }`.
 
-- [ ] **Step 1: Write the failing test**
-
-Create `controller/__tests__/controller-no-response.test.ts`. Copy the scaffolding
-(`fakeCtx`, `scriptedClient`, `stubRag`, `stubEmbedder`, `baseConfig`, `harness`,
-`toolCall`) from `controller-coordinator-handler.test.ts` lines 1-166, then add:
-
-```ts
-import { hydrateBundle } from '../session-bundle.js';
-
-describe('#243 ControlFailure.note', () => {
-  it('a tool-error control-failure records the raw text on the marker', async () => {
-    // Executor asks for a tool; the MCP call returns a tool-level error.
-    // That drives cutControlFailure(result.text) → note = the raw text.
-    const h = harness({
-      evaluator: [{ kind: 'content', content: 'Goal: read a class' }],
-      planner: [
-        {
-          kind: 'content',
-          content: JSON.stringify({ plan: [{ name: 's1', instructions: 'read' }] }),
-        },
-        { kind: 'content', content: JSON.stringify({ plan: [] }) }, // replan → empty
-      ],
-      executor: [toolCall('ReadClass', { name: 'ZZ_QX9B7' })],
-      isExternalTool: () => false,
-      selectTools: [{ name: 'ReadClass', description: '', inputSchema: {} }],
-      callMcpReturns: { text: 'Class ZZ_QX9B7 not found', isError: true },
-    });
-    await new ControllerCoordinatorHandler(h.deps).execute(
-      fakeCtx().ctx, {}, undefined,
-    );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
-    assert.equal(bundle.inFlightStep?.controlFailure?.note, 'Class ZZ_QX9B7 not found');
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A3 "ControlFailure.note"`
-Expected: FAIL — `controlFailure.note` is `undefined` (field does not exist / not set).
-
-- [ ] **Step 3: Add the `note` field**
+- [ ] **Step 1: Add the `note` field**
 
 In `types.ts`, extend `ControlFailure`:
 
@@ -100,54 +60,45 @@ export interface ControlFailure {
 }
 ```
 
-- [ ] **Step 4: Set `note` in `cutControlFailure`**
+- [ ] **Step 2: Add the `dead-end` NextStep variant**
 
-In `controller-coordinator-handler.ts`, inside `cutControlFailure` where the
-marker is built (`inFlight.controlFailure = { reason: typedReason, seq: inFlight.seq }`),
-add `note`:
+Extend `NextStep`:
 
 ```ts
-          inFlight.controlFailure = {
-            reason: typedReason,
-            seq: inFlight.seq,
-            note: noteFor(reason),
-          };
+export type NextStep =
+  | { kind: 'next'; step: Step }
+  | { kind: 'done'; result: string }
+  | { kind: 'rewind'; reason: string }
+  | { kind: 'dead-end' }
+  | PlanError;
 ```
 
-`noteFor` is already in scope (defined ~line 1042): it maps `maxToolCalls` /
-`step-timeout` to their human sentences and passes any other string (a raw tool
-error) through unchanged.
+- [ ] **Step 3: Build (types compile, no consumer breaks)**
 
-- [ ] **Step 5: Run test to verify it passes**
+Run: `npm run build 2>&1 | tail -3`
+Expected: clean — a new union member does not break `kind`-switching consumers. If `tsc` flags a non-exhaustive `switch` on `NextStep`, that call site is one the plan touches later (handler dispatch, Task 3); note it and continue — it is fixed in Task 3.
 
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A3 "ControlFailure.note"`
-Expected: PASS.
-
-- [ ] **Step 6: Build + lint**
-
-Run: `npm run build && npm run lint:check`
-Expected: no errors.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-no-response.test.ts
-git commit -m "feat(controller): record raw failure text on ControlFailure.note (#243)"
+git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts
+git commit -m "feat(controller): add ControlFailure.note and NextStep dead-end variant (#243)"
 ```
 
 ---
 
-### Task 2: `capturedFailureText` helper + `GENERIC_NO_ANSWER`
+### Task 2: Pure helpers — `capturedFailureText`, `nonEmptyBody`, `GENERIC_NO_ANSWER`
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (module-level exports)
-- Test: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/captured-failure-text.test.ts` (create)
+- Modify: `controller/controller-coordinator-handler.ts` (module-level exports, near the `parseNextStep` re-export ~line 219)
+- Test: `controller/__tests__/captured-failure-text.test.ts` (create)
 
 **Interfaces:**
 - Consumes: `ControlFailure.note` (Task 1), `SessionBundle`.
 - Produces:
   - `export const GENERIC_NO_ANSWER = 'The run ended without an answer.'`
   - `export function capturedFailureText(bundle: SessionBundle): string | undefined`
+  - `export function nonEmptyBody(content: string): string`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -157,7 +108,11 @@ Create `controller/__tests__/captured-failure-text.test.ts`:
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { SessionBundle } from '../types.js';
-import { capturedFailureText } from '../controller-coordinator-handler.js';
+import {
+  capturedFailureText,
+  GENERIC_NO_ANSWER,
+  nonEmptyBody,
+} from '../controller-coordinator-handler.js';
 
 function bundleWith(cf: unknown, plannerPrivate = ''): SessionBundle {
   return {
@@ -173,71 +128,61 @@ describe('capturedFailureText', () => {
       'Class X not found',
     );
   });
-
-  it('treats a blank note as absent (falls through, no whitespace surface)', () => {
+  it('treats a blank note as absent', () => {
     assert.equal(capturedFailureText(bundleWith({ reason: 'control-failure', seq: 0, note: '' })), undefined);
     assert.equal(capturedFailureText(bundleWith({ reason: 'control-failure', seq: 0, note: ' \n\t ' })), undefined);
   });
-
   it('maps a legacy typed reason (no note) to its human sentence', () => {
-    assert.equal(
-      capturedFailureText(bundleWith({ reason: 'maxToolCalls', seq: 0 })),
-      'tool-call budget exhausted (maxToolCalls)',
-    );
-    assert.equal(
-      capturedFailureText(bundleWith({ reason: 'step-timeout', seq: 0 })),
-      'step time budget exhausted (step-timeout)',
-    );
+    assert.equal(capturedFailureText(bundleWith({ reason: 'maxToolCalls', seq: 0 })), 'tool-call budget exhausted (maxToolCalls)');
+    assert.equal(capturedFailureText(bundleWith({ reason: 'step-timeout', seq: 0 })), 'step time budget exhausted (step-timeout)');
   });
-
-  it('a legacy generic marker (no note) → undefined', () => {
+  it('a legacy generic marker or no marker → undefined', () => {
     assert.equal(capturedFailureText(bundleWith({ reason: 'control-failure', seq: 0 })), undefined);
-  });
-
-  it('no marker → undefined', () => {
     assert.equal(capturedFailureText(bundleWith(undefined)), undefined);
   });
-
-  it('NEVER surfaces plannerPrivate — external tool result / clarify / rewind tail', () => {
-    // No marker note, but plannerPrivate ends in private context. Must stay undefined.
+  it('NEVER surfaces plannerPrivate — external tool / clarify / rewind tail', () => {
     for (const tail of [
       '\n[external tool ReadClass result] SECRET-PAYLOAD',
       '\n[clarify answer] my private prompt',
       '\n[rewind] backtracking',
     ]) {
       assert.equal(capturedFailureText(bundleWith(undefined, tail)), undefined);
-      assert.equal(
-        capturedFailureText(bundleWith({ reason: 'control-failure', seq: 0 }, tail)),
-        undefined,
-      );
+      assert.equal(capturedFailureText(bundleWith({ reason: 'control-failure', seq: 0 }, tail)), undefined);
     }
+  });
+});
+
+describe('nonEmptyBody', () => {
+  it('passes non-empty content through', () => {
+    assert.equal(nonEmptyBody('Error: Class X not found'), 'Error: Class X not found');
+  });
+  it('replaces empty/whitespace with GENERIC_NO_ANSWER', () => {
+    assert.equal(nonEmptyBody(''), GENERIC_NO_ANSWER);
+    assert.equal(nonEmptyBody('   \n\t '), GENERIC_NO_ANSWER);
   });
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A3 "capturedFailureText"`
-Expected: FAIL — `capturedFailureText` is not exported.
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A3 "capturedFailureText\|nonEmptyBody"`
+Expected: FAIL — helpers not exported.
 
-- [ ] **Step 3: Implement the helper**
+- [ ] **Step 3: Implement the helpers**
 
-In `controller-coordinator-handler.ts`, at module level (near the other exports,
-e.g. below the `parseNextStep` re-export line 219):
+In `controller-coordinator-handler.ts`, at module level (below the `parseNextStep`
+re-export, ~line 219):
 
 ```ts
-/** Consumer-facing fallback text when no failure text was captured. */
+/** Consumer-facing fallback when no failure text was captured. */
 export const GENERIC_NO_ANSWER = 'The run ended without an answer.';
 
 /**
  * The failure text to surface for a dead-ended run, read ONLY from the
  * controlFailure marker — never plannerPrivate, which holds external-tool
  * results and clarify answers whose tail would leak private context.
- *
- * A non-blank `note` wins (returned trimmed). A blank note is treated as absent.
- * A legacy marker without a note maps a typed reason to its human sentence; a
- * legacy generic marker has no bundle-local text we can trust → undefined, and
- * the caller falls back to GENERIC_NO_ANSWER.
+ * A non-blank note wins (trimmed); a blank note is treated as absent; a legacy
+ * typed reason maps to its human sentence; a legacy generic marker → undefined.
  */
 export function capturedFailureText(bundle: SessionBundle): string | undefined {
   const cf = bundle.inFlightStep?.controlFailure;
@@ -249,98 +194,253 @@ export function capturedFailureText(bundle: SessionBundle): string | undefined {
     return 'step time budget exhausted (step-timeout)';
   return undefined;
 }
+
+/** #243 last-ditch net: an empty/whitespace body becomes GENERIC_NO_ANSWER, so
+ *  no code path can yield ok:true with an empty body. */
+export function nonEmptyBody(content: string): string {
+  return content.trim().length === 0 ? GENERIC_NO_ANSWER : content;
+}
 ```
 
-Confirm `SessionBundle` is already imported in the file (it is — used
-throughout). No new import needed.
+`SessionBundle` is already imported in the file.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A2 "capturedFailureText"`
-Expected: PASS — 6 tests.
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A2 "capturedFailureText\|nonEmptyBody"`
+Expected: PASS — 7 + 2 tests.
 
-- [ ] **Step 5: Build + lint**
-
-Run: `npm run build && npm run lint:check`
-Expected: no errors.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Build + lint, commit**
 
 ```bash
+npm run build && npm run lint:check
 git add packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/captured-failure-text.test.ts
-git commit -m "feat(controller): capturedFailureText reads only the marker, never plannerPrivate (#243)"
+git commit -m "feat(controller): capturedFailureText + nonEmptyBody helpers, marker-only source (#243)"
 ```
 
 ---
 
-### Task 3: Layer 2 — success-answer guard in `commitTerminalSuccess`
+### Task 3: Layer 1 — early dead-end signal (note + planner signal + dispatch)
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (`commitTerminalSuccess`, ~2042-2065)
-- Test: `controller/__tests__/controller-no-response.test.ts` (append)
+- Modify: `controller/controller-coordinator-handler.ts` — `cutControlFailure` sets `note` (~1327); `dead-end` dispatch before `if (next.kind === 'done')` (~871).
+- Modify: `controller/planner.ts` — early `dead-end` return in the replan branch (~351).
+- Test: `controller/__tests__/controller-no-response.test.ts` (create)
 
 **Interfaces:**
-- Consumes: `capturedFailureText`, `GENERIC_NO_ANSWER` (Task 2), `abortTerminal` (existing).
-- Produces: `commitTerminalSuccess` writes an error terminal for an empty answer, never a success terminal with an empty body.
+- Consumes: `ControlFailure.note`, `{ kind: 'dead-end' }` (Task 1), `capturedFailureText`, `GENERIC_NO_ANSWER` (Task 2), `abortTerminal` (existing).
+- Produces: a control-failed step whose replan is empty terminates with the captured error, before any finalizer call.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `controller-no-response.test.ts`. This drives a real run where the
-finalizer yields empty content — the scripted planner's finalize reply is `''`
-(the `scriptedClient` default), and no captured failure exists, so the guard must
-surface `GENERIC_NO_ANSWER`.
+Create `controller-no-response.test.ts`. Copy the scaffolding (`fakeCtx`,
+`scriptedClient`, `stubRag`, `stubEmbedder`, `baseConfig`, `harness`, `toolCall`)
+from `controller-coordinator-handler.test.ts` lines 1-166, add
+`import { hydrateBundle } from '../session-bundle.js';`,
+`import { readTerminal } from '../run-scope.js';`, and:
 
 ```ts
-import { GENERIC_NO_ANSWER } from '../controller-coordinator-handler.js';
+function surfacedContent(captured: ReturnType<typeof fakeCtx>['captured']): string | undefined {
+  const c = captured.find(
+    (x): x is { ok: true; value: { content: string } } =>
+      x.ok === true && typeof (x.value as { content?: unknown }).content === 'string',
+  );
+  return c?.value.content;
+}
 
-describe('#243 empty-success guard', () => {
-  it('an empty finalizer answer surfaces GENERIC_NO_ANSWER, never an empty body', async () => {
+describe('#243 Layer 1 dead-end', () => {
+  it('Symptom A: tool error → empty replan surfaces the real error, before any finalizer', async () => {
     const h = harness({
-      evaluator: [{ kind: 'content', content: 'Goal: do it' }],
+      evaluator: [{ kind: 'content', content: 'Goal: read a class, report errors' }],
       planner: [
-        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'go' }] }) },
-        { kind: 'content', content: '' }, // finalize → EMPTY answer
+        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'read' }] }) },
+        { kind: 'content', content: JSON.stringify({ plan: [] }) },        // replan → empty
+        { kind: 'content', content: 'I could not find anything relevant.' }, // finalize — must NOT run
       ],
-      executor: [{ kind: 'content', content: 'did s1' }],
+      executor: [toolCall('ReadClass', { name: 'ZZ_QX9B7' })],
+      isExternalTool: () => false,
+      selectTools: [{ name: 'ReadClass', description: '', inputSchema: {} }],
+      callMcpReturns: { text: 'Class ZZ_QX9B7 not found', isError: true },
     });
     const { ctx, captured } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
 
-    const surfaced = captured.find(
-      (c): c is { ok: true; value: { content: string } } =>
-        c.ok === true && typeof (c.value as { content?: unknown }).content === 'string',
-    );
-    assert.ok(surfaced, 'a final chunk was surfaced');
-    assert.notEqual(surfaced.value.content.trim(), '', 'body is never empty');
-    assert.match(surfaced.value.content, new RegExp(GENERIC_NO_ANSWER));
+    const body = surfacedContent(captured);
+    assert.ok(body);
+    assert.match(body, /Class ZZ_QX9B7 not found/);
+    assert.doesNotMatch(body, /could not find anything relevant/); // finalizer never composed
+    assert.equal(h.deps.planner.calls, 2, 'finalizer LLM call never happened (2 planner calls: plan + replan)');
 
-    // Durable terminal is an error, not an empty success.
+    // Durable terminal is an ERROR, not an empty/other success.
     const bundle = await hydrateBundle(h.backend, 'sess-1');
-    assert.equal(bundle.runState, 'terminal');
+    const term = await readTerminal(h.backend, 'sess-1', bundle.runId!, new Date().toISOString());
+    assert.equal(term?.kind, 'error');
+  });
+
+  it('Symptom B: maxToolCalls cut → empty replan surfaces the budget message', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: look it up' }],
+      planner: [
+        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'look' }] }) },
+        { kind: 'content', content: JSON.stringify({ plan: [] }) },
+        { kind: 'content', content: 'done anyway' }, // finalize — must NOT run
+      ],
+      executor: [toolCall('Look', {}), toolCall('Look', {}), toolCall('Look', {})],
+      isExternalTool: () => false,
+      selectTools: [{ name: 'Look', description: '', inputSchema: {} }],
+      config: baseConfig({ maxToolCalls: 2 }),
+    });
+    const { ctx, captured } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+
+    const body = surfacedContent(captured);
+    assert.ok(body);
+    assert.match(body, /tool-call budget exhausted \(maxToolCalls\)/);
+    assert.doesNotMatch(body, /done anyway/);
   });
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "empty-success guard"`
-Expected: FAIL — the surfaced content is empty (`(no response)`); `finalize`/`commitTerminalSuccess` wrote an empty success.
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "Layer 1 dead-end"`
+Expected: FAIL — the finalizer answer is surfaced (`could not find…`), `planner.calls === 3`, and no dead-end interception.
 
-- [ ] **Step 3: Add the guard at the top of `commitTerminalSuccess`**
+- [ ] **Step 3: Set `note` in `cutControlFailure`**
 
-In `controller-coordinator-handler.ts`, `commitTerminalSuccess` begins:
+In `controller-coordinator-handler.ts`, where the marker is built:
 
 ```ts
-  private async commitTerminalSuccess(
-    ctx: PipelineContext,
-    sessionId: string,
-    bundle: SessionBundle,
-    answer: string,
-    now: () => string,
-    terminalTtlMs: number,
-    usage?: TerminalUsage,
-  ): Promise<void> {
+          inFlight.controlFailure = {
+            reason: typedReason,
+            seq: inFlight.seq,
+            note: noteFor(reason),
+          };
 ```
+
+`noteFor` is in scope (~line 1042).
+
+- [ ] **Step 4: Emit `dead-end` from `planner.next()`**
+
+In `planner.ts`, in the replan branch immediately after
+`const mintedRest = mintReplanStepIds(...)` (~line 351), before
+`bundle.plan = [...]`:
+
+```ts
+      // #243 Layer 1: an empty replan over a control-failed step is a dead end —
+      // nothing to retry. Signal it BEFORE stepAtCursor (which would issue the
+      // finalizer LLM call), leaving the controlFailure marker for the handler.
+      if (mintedRest.length === 0 && bundle.inFlightStep?.controlFailure) {
+        return { kind: 'dead-end' };
+      }
+```
+
+- [ ] **Step 5: Dispatch `dead-end` in the handler**
+
+In `controller-coordinator-handler.ts`, immediately **before**
+`if (next.kind === 'done') {` (~line 871):
+
+```ts
+      if (next.kind === 'dead-end') {
+        const failure = capturedFailureText(bundle) ?? GENERIC_NO_ANSWER;
+        logDecision(ctx, 'dead-end', failure);
+        await this.abortTerminal(
+          ctx,
+          sessionId,
+          bundle,
+          failure,
+          now,
+          terminalTtlMs,
+          usageNow(),
+        );
+        return true;
+      }
+```
+
+`logDecision`, `now`, `terminalTtlMs`, `usageNow` are all in scope (the adjacent
+`next.kind === 'error'` branch uses the same set). If Task 1 Step 3 flagged a
+non-exhaustive `switch`, this branch resolves it.
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "Layer 1 dead-end"`
+Expected: PASS — both symptoms surface the real error; `planner.calls === 2`; terminal `kind === 'error'`.
+
+- [ ] **Step 7: Full suite + baseline**
+
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
+Expected: `fail 0`. A legit `done` after a successful recovery still finalizes — the dead-end fires only when `mintedRest` is empty AND `controlFailure` is set. If a pre-existing test fails, confirm it fails on `main`.
+
+- [ ] **Step 8: Build + lint, commit**
+
+```bash
+npm run build && npm run lint:check
+git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-no-response.test.ts
+git commit -m "feat(controller): planner emits dead-end before the finalizer; handler surfaces the real error (#243)"
+```
+
+---
+
+### Task 4: Layer 2 — empty-success guard + `surfaceFinal` net
+
+**Files:**
+- Modify: `controller/controller-coordinator-handler.ts` — guard at top of `commitTerminalSuccess` (~2042); `surfaceFinal` routes through `nonEmptyBody` (~2082).
+- Test: `controller/__tests__/controller-no-response.test.ts` (append)
+
+**Interfaces:**
+- Consumes: `capturedFailureText`, `GENERIC_NO_ANSWER`, `nonEmptyBody` (Task 2), `abortTerminal` (existing).
+- Produces: no path writes a success terminal with an empty answer; `surfaceFinal` never yields an empty body; a dead-end replay returns the same non-empty error.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `controller-no-response.test.ts`:
+
+```ts
+describe('#243 Layer 2 empty-success guard', () => {
+  it('an empty finalizer answer → error terminal + non-empty body, and replay returns the same', async () => {
+    // A run that reaches finalize with an empty answer (finalize reply ''), no
+    // captured failure → GENERIC_NO_ANSWER.
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: do it' }],
+      planner: [
+        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'go' }] }) },
+        { kind: 'content', content: '' }, // finalize → EMPTY
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+    });
+    const { ctx, captured } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+
+    const body = surfacedContent(captured);
+    assert.ok(body);
+    assert.notEqual(body.trim(), '', 'never an empty body');
+    assert.match(body, new RegExp(GENERIC_NO_ANSWER));
+
+    // Durable terminal is an error, never an empty success.
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const term = await readTerminal(h.backend, 'sess-1', bundle.runId!, new Date().toISOString());
+    assert.equal(term?.kind, 'error');
+
+    // Replay the stored terminal → same non-empty error. The handler reads an
+    // explicit key from `ctx.options.runId` (handler:307); with a terminal
+    // present, classifyRequest returns `replay` (run-scope.ts:142).
+    const replay = fakeCtx({ options: { runId: bundle.runId } } as never);
+    await new ControllerCoordinatorHandler(h.deps).execute(replay.ctx, {}, undefined);
+    const replayBody = surfacedContent(replay.captured);
+    assert.ok(replayBody);
+    assert.notEqual(replayBody.trim(), '', 'replay body never empty');
+  });
+});
+```
+
+Import `GENERIC_NO_ANSWER` at the top of the file:
+`import { GENERIC_NO_ANSWER } from '../controller-coordinator-handler.js';`
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "Layer 2 empty-success"`
+Expected: FAIL — the surfaced body is empty (`commitTerminalSuccess('')` wrote an empty success).
+
+- [ ] **Step 3: Guard at the top of `commitTerminalSuccess`**
 
 Insert immediately after the opening brace, before `await writeTerminal(...)`:
 
@@ -361,83 +461,7 @@ Insert immediately after the opening brace, before `await writeTerminal(...)`:
     }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "empty-success guard"`
-Expected: PASS.
-
-- [ ] **Step 5: Full suite (no regression on existing terminal tests)**
-
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
-Expected: `fail 0`. Compare against a `main` baseline if any pre-existing failure appears.
-
-- [ ] **Step 6: Build + lint**
-
-Run: `npm run build && npm run lint:check`
-Expected: no errors.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-no-response.test.ts
-git commit -m "feat(controller): reject an empty success terminal at the commit choke point (#243)"
-```
-
----
-
-### Task 4: `surfaceFinal` defensive guard via a pure `nonEmptyBody`
-
-**Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (module-level `nonEmptyBody`; `surfaceFinal` uses it, ~2082-2090)
-- Test: `controller/__tests__/captured-failure-text.test.ts` (append — same pure-helper file)
-
-**Interfaces:**
-- Consumes: `GENERIC_NO_ANSWER` (Task 2).
-- Produces: `export function nonEmptyBody(content: string): string` — used by `surfaceFinal` so no path yields `ok:true` with empty/whitespace content.
-
-Rationale for a pure helper: `surfaceFinal` is private, and the empty path that
-would reach it (`replay` of a legacy empty-success terminal) needs an explicit
-run key — without one, `classifyRequest` routes a post-terminal same-request call
-to `fresh`, not `replay` (`run-scope.ts`). Extracting the trim decision into a
-pure function makes the guarantee deterministically testable and keeps
-`surfaceFinal` a one-liner over it.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `captured-failure-text.test.ts`:
-
-```ts
-import { nonEmptyBody, GENERIC_NO_ANSWER } from '../controller-coordinator-handler.js';
-
-describe('nonEmptyBody', () => {
-  it('passes non-empty content through', () => {
-    assert.equal(nonEmptyBody('Error: Class X not found'), 'Error: Class X not found');
-  });
-  it('replaces empty/whitespace with GENERIC_NO_ANSWER', () => {
-    assert.equal(nonEmptyBody(''), GENERIC_NO_ANSWER);
-    assert.equal(nonEmptyBody('   \n\t '), GENERIC_NO_ANSWER);
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A3 "nonEmptyBody"`
-Expected: FAIL — `nonEmptyBody` is not exported.
-
-- [ ] **Step 3: Implement `nonEmptyBody` and use it in `surfaceFinal`**
-
-Add at module level, beside `GENERIC_NO_ANSWER`:
-
-```ts
-/** #243 last-ditch net: an empty/whitespace body becomes GENERIC_NO_ANSWER, so
- *  no code path can yield ok:true with an empty body. */
-export function nonEmptyBody(content: string): string {
-  return content.trim().length === 0 ? GENERIC_NO_ANSWER : content;
-}
-```
-
-Change `surfaceFinal` to route through it:
+- [ ] **Step 4: Route `surfaceFinal` through `nonEmptyBody`**
 
 ```ts
   private surfaceFinal(
@@ -456,163 +480,30 @@ Change `surfaceFinal` to route through it:
   }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 5: Run test to verify it passes**
 
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A2 "nonEmptyBody"`
+Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "Layer 2 empty-success"`
 Expected: PASS.
 
-- [ ] **Step 5: Full suite**
+- [ ] **Step 6: Full suite**
 
 Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
-Expected: `fail 0` — existing terminal tests still pass (non-empty content is passed through unchanged).
+Expected: `fail 0` — existing terminal tests pass (non-empty content passes through unchanged).
 
-- [ ] **Step 6: Build + lint, then commit**
+- [ ] **Step 7: Build + lint, commit**
 
 ```bash
 npm run build && npm run lint:check
-git add packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/captured-failure-text.test.ts
-git commit -m "feat(controller): surfaceFinal routes through nonEmptyBody — never an empty body (#243)"
-```
-
----
-
-### Task 5: Layer 1 — dead-end detector surfaces the real error
-
-**Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (before `if (next.kind === 'done')`, ~871)
-- Test: `controller/__tests__/controller-no-response.test.ts` (append)
-
-**Interfaces:**
-- Consumes: `capturedFailureText`, `GENERIC_NO_ANSWER` (Task 2), `abortTerminal`, `ControlFailure.note` (Task 1).
-- Produces: a replan that finalizes over an unresolved `control-failure` terminates with the captured failure text, not a finalizer pass.
-
-- [ ] **Step 1: Write the failing test**
-
-Append the two symptoms. Without Layer 1, Task 3's guard already prevents an
-*empty* body — but if the finalizer returns non-empty hallucinated content the
-consumer would get that instead of the real error. Layer 1 guarantees the real
-tool error is surfaced. Script the finalize reply as non-empty to prove Layer 1
-(not Layer 3) is doing the work.
-
-```ts
-describe('#243 dead-end detector (Layer 1)', () => {
-  it('Symptom A: tool error → replan-empty surfaces the real error, not a finalizer answer', async () => {
-    const h = harness({
-      evaluator: [{ kind: 'content', content: 'Goal: read a class, report errors' }],
-      planner: [
-        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'read' }] }) },
-        { kind: 'content', content: JSON.stringify({ plan: [] }) },       // replan → empty
-        { kind: 'content', content: 'I could not find anything relevant.' }, // finalize (should NOT be used)
-      ],
-      executor: [toolCall('ReadClass', { name: 'ZZ_QX9B7' })],
-      isExternalTool: () => false,
-      selectTools: [{ name: 'ReadClass', description: '', inputSchema: {} }],
-      callMcpReturns: { text: 'Class ZZ_QX9B7 not found', isError: true },
-    });
-    const { ctx, captured } = fakeCtx();
-    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
-
-    const surfaced = captured.find(
-      (c): c is { ok: true; value: { content: string } } =>
-        c.ok === true && typeof (c.value as { content?: unknown }).content === 'string',
-    );
-    assert.ok(surfaced);
-    assert.match(surfaced.value.content, /Class ZZ_QX9B7 not found/);
-    assert.doesNotMatch(surfaced.value.content, /could not find anything relevant/);
-  });
-
-  it('Symptom B: maxToolCalls cut → replan-empty surfaces the budget message', async () => {
-    const h = harness({
-      evaluator: [{ kind: 'content', content: 'Goal: look it up' }],
-      planner: [
-        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'look' }] }) },
-        { kind: 'content', content: JSON.stringify({ plan: [] }) },  // replan → empty
-        { kind: 'content', content: 'done anyway' },                 // finalize (should NOT be used)
-      ],
-      executor: [
-        toolCall('Look', {}), toolCall('Look', {}), toolCall('Look', {}),
-      ],
-      isExternalTool: () => false,
-      selectTools: [{ name: 'Look', description: '', inputSchema: {} }],
-      config: baseConfig({ maxToolCalls: 2 }),
-    });
-    const { ctx, captured } = fakeCtx();
-    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
-
-    const surfaced = captured.find(
-      (c): c is { ok: true; value: { content: string } } =>
-        c.ok === true && typeof (c.value as { content?: unknown }).content === 'string',
-    );
-    assert.ok(surfaced);
-    assert.match(surfaced.value.content, /tool-call budget exhausted \(maxToolCalls\)/);
-    assert.doesNotMatch(surfaced.value.content, /done anyway/);
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "dead-end detector"`
-Expected: FAIL — the finalizer answer (`could not find…` / `done anyway`) is surfaced instead of the real error, because nothing intercepts the finalize-over-control-failure.
-
-- [ ] **Step 3: Insert the Layer 1 detector**
-
-In `controller-coordinator-handler.ts`, immediately **before** `if (next.kind === 'done') {` (~line 871):
-
-```ts
-      // #243 Layer 1: the planner is finalizing (done) but the in-flight step
-      // control-failed and the replan produced no forward progress — a dead end.
-      // Surface the captured failure instead of letting the finalizer compose an
-      // answer over a failure. planner.ts does not clear inFlightStep, so the
-      // marker is still here.
-      if (next.kind === 'done' && bundle.inFlightStep?.controlFailure) {
-        const failure = capturedFailureText(bundle) ?? GENERIC_NO_ANSWER;
-        logDecision(ctx, 'dead-end', failure);
-        await this.abortTerminal(
-          ctx,
-          sessionId,
-          bundle,
-          failure,
-          now,
-          terminalTtlMs,
-          usageNow(),
-        );
-        return true;
-      }
-```
-
-`logDecision`, `now`, `terminalTtlMs`, `usageNow` are all in scope at this site
-(the neighbouring `next.kind === 'error'` branch uses the same set).
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -A4 "dead-end detector"`
-Expected: PASS — both symptoms surface the real error.
-
-- [ ] **Step 5: Full suite + baseline check**
-
-Run: `npm test --workspace @mcp-abap-adt/llm-agent-server-libs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
-Expected: `fail 0`. If a pre-existing controller test now fails, confirm it fails on `main` too before attributing it here — a legit `done` after a successful recovery must still finalize (the detector only fires when `controlFailure` is set, i.e. the last step was an unresolved failure).
-
-- [ ] **Step 6: Build + lint**
-
-Run: `npm run build && npm run lint:check`
-Expected: no errors.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-no-response.test.ts
-git commit -m "feat(controller): surface the real error when a replan dead-ends over a control-failure (#243)"
+git commit -m "feat(controller): guard the success-terminal choke point + surfaceFinal net (#243)"
 ```
 
 ---
 
-### Task 6: Documentation
+### Task 5: Documentation
 
 **Files:**
-- Modify: `CHANGELOG.md`
-- Modify: `docs/TROUBLESHOOTING.md`
+- Modify: `CHANGELOG.md`, `docs/TROUBLESHOOTING.md`
 - Delete: the spec and this plan.
 
 - [ ] **Step 1: CHANGELOG entry**
@@ -623,40 +514,35 @@ Under the unreleased `### Fixed`:
 - **Controller never terminates a run with `(no response)` (#243).** A tool-level
   error (object not found) or a per-step `maxToolCalls` cut could drive
   `control-failure → replan → empty`, returning an empty completion and
-  discarding the captured error. The controller now surfaces the real failure
-  text when a replan dead-ends over a control-failure, and no path can emit an
-  empty success terminal (guarded at the single commit point plus a defensive
-  net in the final surface). The captured text is read only from the failure
-  marker, never from the internal planner scratchpad.
+  discarding the captured error. The planner now signals a dead end on an empty
+  replan over a control-failed step — before any finalizer call — and the
+  controller surfaces the real failure text; no path can emit an empty success
+  terminal (guarded at the single commit point plus a defensive net in the final
+  surface). The captured text is read only from the failure marker, never from
+  the internal planner scratchpad.
 ```
 
 - [ ] **Step 2: TROUBLESHOOTING entry**
-
-Follow the symptom → cause → fix format:
 
 ```markdown
 ### `controller` returns `(no response)` / empty body on a tool error or under concurrency
 
 **Cause (before #243):** a failed step whose replan could not make progress
 (`object not found`, or a per-step `maxToolCalls` cut under concurrency)
-terminated the run with no finalizer and an empty body.
+terminated the run with an empty body.
 
 **Fix:** upgrade to the release containing #243. The controller surfaces the real
-error (`Error: Class … not found`, or `tool-call budget exhausted (maxToolCalls)`)
-instead of an empty completion. If you still see a generic
-`The run ended without an answer.`, the failure predates the marker (a resumed
-older bundle) — re-run the request.
+error (`Error: Class … not found`, or `tool-call budget exhausted (maxToolCalls)`).
+A generic `The run ended without an answer.` means the failure predates the
+marker (a resumed older bundle) — re-run the request.
 ```
 
-- [ ] **Step 3: Verify every documented claim against source**
+- [ ] **Step 3: Verify documented claims against source**
 
 ```bash
 grep -n "GENERIC_NO_ANSWER = " packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts
-grep -n "note?: string" packages/llm-agent-server-libs/src/smart-agent/controller/types.ts
+grep -n "kind: 'dead-end'" packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts
 ```
-
-Confirm the surfaced strings in the docs match the code (`GENERIC_NO_ANSWER`
-value, the `maxToolCalls` human sentence from `noteFor`).
 
 - [ ] **Step 4: Delete spec and plan**
 
@@ -678,5 +564,5 @@ git commit -m "docs: controller no-response safety-net (#243)"
 - [ ] `npm run build` — clean.
 - [ ] `npm run lint:check` — clean (check, not format).
 - [ ] `npm test` — compare against a `main` baseline before attributing any failure to this branch.
-- [ ] Live gate (maintainer, both repros from #243): (A) a controller + SAP AI Core request reading a non-existent class → the response carries `Class … not found`, not `(no response)`; (B) two concurrent single-tool lookups, repeated ~6×, → no `(no response)`, the budget-exhausted one surfaces the budget message.
+- [ ] Live gate (maintainer, both repros from #243): (A) a controller + SAP AI Core request reading a non-existent class → the response carries `Class … not found`, not `(no response)`, with **no finalizer token line** in the trace; (B) two concurrent single-tool lookups, repeated ~6×, → no `(no response)`, the budget-exhausted one surfaces the budget message.
 - [ ] External code review before merge; merge only on the maintainer's explicit word.
