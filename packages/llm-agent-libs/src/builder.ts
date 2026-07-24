@@ -1210,6 +1210,7 @@ export class SmartAgentBuilder {
         ...(this._embedder ? { embedder: this._embedder } : {}),
         ...(connectionStrategy ? { connectionStrategy } : {}),
         toolCatalogStatus,
+        ...(this._toolRecordKey ? { toolRecordKey: this._toolRecordKey } : {}),
         ...(historyMemory ? { historyMemory } : {}),
         ...(historySummarizer ? { historySummarizer } : {}),
         ...(this._llmCallStrategy

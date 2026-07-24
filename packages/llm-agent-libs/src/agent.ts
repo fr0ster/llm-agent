@@ -19,6 +19,7 @@ import type {
   IToolCache,
   IToolCatalogReporter,
   IToolLoopContextStrategy,
+  IToolRecordKey,
   LlmFinishReason,
   LlmStreamChunk,
   LlmTool,
@@ -132,6 +133,8 @@ export interface SmartAgentDeps {
   connectionStrategy?: IMcpConnectionStrategy;
   /** Reports the startup tool-catalog vectorization result to health checks. */
   toolCatalogStatus?: IToolCatalogReporter;
+  /** Tool-record-key strategy, reused on reconnect revectorization. */
+  toolRecordKey?: IToolRecordKey;
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
@@ -297,6 +300,11 @@ export class SmartAgent {
       deps.mcpClients,
       deps.connectionStrategy,
       deps.ragStores,
+      {
+        requestLogger: this.requestLogger,
+        logger: deps.logger,
+        toolRecordKey: deps.toolRecordKey,
+      },
     );
     this._mainLlm = deps.mainLlm;
     this._helperLlm = deps.helperLlm;

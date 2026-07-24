@@ -2,9 +2,14 @@ import type {
   CallOptions,
   IMcpClient,
   IRag,
+  IRequestLogger,
+  IToolRecordKey,
   McpTool,
 } from '@mcp-abap-adt/llm-agent';
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
+import type { ILogger } from '../logger/index.js';
+import { NoopRequestLogger } from '../logger/noop-request-logger.js';
+import { vectorizeMcpTools } from './vectorize-mcp-tools.js';
 
 export interface ToolRegistryResult {
   tools: McpTool[];
@@ -19,12 +24,23 @@ export interface IMcpToolRegistry {
 
 export class McpToolRegistry implements IMcpToolRegistry {
   private activeClients: IMcpClient[];
+  private readonly requestLogger: IRequestLogger;
+  private readonly logger?: ILogger;
+  private readonly toolRecordKey?: IToolRecordKey;
   constructor(
     initialClients: IMcpClient[],
     private readonly connectionStrategy: IMcpConnectionStrategy | undefined,
     private readonly ragStores: Record<string, IRag>,
+    deps?: {
+      requestLogger?: IRequestLogger;
+      logger?: ILogger;
+      toolRecordKey?: IToolRecordKey;
+    },
   ) {
     this.activeClients = [...initialClients];
+    this.requestLogger = deps?.requestLogger ?? new NoopRequestLogger();
+    this.logger = deps?.logger;
+    this.toolRecordKey = deps?.toolRecordKey;
   }
 
   getActiveClients(): IMcpClient[] {
@@ -45,18 +61,21 @@ export class McpToolRegistry implements IMcpToolRegistry {
 
   private async revectorizeTools(
     clients: IMcpClient[],
-    opts?: CallOptions,
+    _opts?: CallOptions,
   ): Promise<void> {
     const toolsRag = this.ragStores.tools ?? Object.values(this.ragStores)[0];
     if (!toolsRag) return;
-    for (const client of clients) {
-      const result = await client.listTools(opts);
-      if (!result.ok) continue;
-      for (const tool of result.value) {
-        const text = `Tool: ${tool.name} — ${tool.description}`;
-        await toolsRag.writer?.()?.upsertRaw(`tool:${tool.name}`, text, {});
-      }
-    }
+    // Reuse the single startup vectorization path so reconnect gets the same
+    // IToolRecordKey, the name stored in metadata, and batch/bulk writing —
+    // rather than a second hand-rolled loop that hardcoded `tool:${name}` and
+    // reintroduced the #240 collision on multi-server reconnects.
+    await vectorizeMcpTools(
+      clients,
+      toolsRag,
+      this.requestLogger,
+      this.logger,
+      this.toolRecordKey,
+    );
   }
 
   async resolve(opts?: CallOptions): Promise<ToolRegistryResult> {
