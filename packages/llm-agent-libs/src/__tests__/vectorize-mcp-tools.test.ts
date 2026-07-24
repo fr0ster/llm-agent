@@ -516,9 +516,13 @@ describe('vectorizeMcpTools tool record key', () => {
 // ---------------------------------------------------------------------------
 
 describe('vectorizeMcpTools record round-trip', () => {
-  it('multi-client records decode to the tool name, not the client index', async () => {
-    // The regression the write-only #240 tests missed: retrieval reads the name
-    // back via toolNameFromRecord. `tool:1:Search` must yield "Search".
+  it('same-named tools from two servers are stored as two records (recall), both named Search', async () => {
+    // STORAGE-LEVEL scope of #240: the two records no longer overwrite each
+    // other, so RAG retrieval sees both instead of one. Both still decode to
+    // "Search" — that is correct here: retrieval must map a hit back to the
+    // tool name. Making a *specific* colliding tool callable (call-path
+    // disambiguation) needs tool-name namespacing and is tracked separately;
+    // this test deliberately does not claim it.
     const captured: Array<{ id: string; name?: unknown }> = [];
     const writer = {
       upsertCalls: [] as string[],
@@ -534,7 +538,7 @@ describe('vectorizeMcpTools record round-trip', () => {
       new CapturingRequestLogger(),
       undefined,
     );
-    // ids disambiguate, but decoding each record recovers the same tool name.
+    // Two distinct records survive (recall), each decoding to the tool name.
     assert.deepEqual(
       captured.map((r) => r.id),
       ['tool:0:Search', 'tool:1:Search'],
