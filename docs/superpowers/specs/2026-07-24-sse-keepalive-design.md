@@ -69,11 +69,23 @@ both of which go silent under the broken pipelines — the design must cover BOT
 
 The watchdog writes an SSE keep-alive comment whenever the client stream has been idle
 longer than `heartbeatIntervalMs`; every real chunk/event resets it. It is
-pipeline-agnostic — it does not know or care how any coordinator executes tools. The
-flat pipeline is unaffected: its `value.heartbeat` chunks arrive every interval and
-keep the watchdog reset, so it never fires there and flat behaviour is byte-for-byte
-unchanged. SSE `:`-comments are valid on both the OpenAI and Anthropic streams and are
-ignored by clients.
+pipeline-agnostic — it does not know or care how any coordinator executes tools. SSE
+`:`-comments are valid on both the OpenAI and Anthropic streams and are ignored by
+clients, so an extra one is always harmless.
+
+**Flat-path contract (explicit — the two timers are independent).** The watchdog and
+the tool-loop's own `value.heartbeat` share the `heartbeatIntervalMs` value but NOT a
+clock: the watchdog arms on the last progress chunk, whereas the tool-loop arms its
+timer only later, once the generator reaches `executeToolBatchWithHeartbeat`. So the
+watchdog deadline typically elapses slightly BEFORE the first tool heartbeat, and on
+the flat path the client MAY see a `: keep-alive` shortly before the richer
+`: heartbeat tool=… elapsed=…ms` (which then resets the watchdog). This is accepted by
+design: both are transparent comments, and correctness never depends on the two timers'
+relative order. We therefore do NOT claim "flat is byte-for-byte unchanged" and do NOT
+assert the absence of `: keep-alive` on the flat path — only that the richer
+`: heartbeat` is still present. (Rejected alternatives: a `2 × interval` watchdog grace
+would let a higher configured interval, e.g. 15 s → 30 s, exceed the ~22 s intermediary
+timeout it exists to beat; centralising both timers is out-of-scope over-engineering.)
 
 This is exactly the interim workaround the reporter applied (an independent SSE
 keep-alive at the HTTP handler), moved into the library as a reusable component so no
@@ -152,8 +164,9 @@ socket), and returns the handle. Both handlers use it identically:
   attachSseKeepAlive(res, intervalMs)`; `hb.reset()` before the loop and at the top of
   each `for await` iteration; `hb.stop()` in a `finally`. The existing
   `value.heartbeat` handling (`:304-308`) stays — on the flat path it writes
-  `: heartbeat tool=… elapsed=…ms` and, being a chunk, also resets the watchdog, so the
-  flat path keeps its richer per-tool comment and the watchdog never fires there.
+  `: heartbeat tool=… elapsed=…ms` and, being a chunk, resets the watchdog, so the flat
+  path keeps its richer per-tool comment (possibly preceded by a `: keep-alive` per the
+  flat-path contract above).
 - **`adapter-route-handler` streaming loop** (`adapter-route-handler.ts:66-77`): same
   pattern around the `for await (event of adapter.transformStream(...))` loop —
   `hb.reset()` per event, `hb.stop()` in `finally`. `handleAdapterRequest` currently
@@ -189,9 +202,10 @@ streaming branch (chat-route OR adapter-route):
 long MCP call under linear/DAG/controller/stepper/cyclic (either endpoint):
   stream idle > interval → onBeat → res.write(": keep-alive\n\n") → connection stays open
 
-flat pipeline:
-  value.heartbeat chunk every ~5s → written as ": heartbeat …" AND hb.reset()
-  → watchdog never fires → behaviour unchanged
+flat pipeline (two independent timers, same interval):
+  watchdog armed on last chunk (t) → may write ": keep-alive" at t+interval,
+  then tool-loop ": heartbeat tool=…" arrives (t+ε+interval) and resets the watchdog
+  → both are transparent comments; order is not relied upon
 
 non-finite / <= 0 interval:
   attachSseKeepAlive → createIdleHeartbeat guard → NOOP_HEARTBEAT → never schedules a timer
@@ -214,8 +228,11 @@ non-finite / <= 0 interval:
 - **Concurrency:** Node is single-threaded; the timer callback's `res.write` runs only
   while the `for await` is parked on the next chunk, so it never interleaves with a
   chunk write.
-- **No double keep-alive on the flat path:** its `value.heartbeat` chunks keep the
-  watchdog reset, so only the existing `: heartbeat …` comment is written.
+- **Flat-path redundant comment is accepted:** because the watchdog and the tool-loop
+  heartbeat run on independent timers (same interval, different start), the flat path
+  MAY emit a `: keep-alive` just before a `: heartbeat …`. Both are transparent SSE
+  comments; the client ignores them. The design does not rely on their order and does
+  not promise "flat unchanged" (see the flat-path contract in Approach).
 
 ## Testing
 
@@ -233,7 +250,9 @@ non-finite / <= 0 interval:
   the SSE output contains a `: keep-alive` line written **before** the first real
   `data:` line; on `res` close mid-idle, no write after close. Plus the flat case
   (chat-route): a stream that yields `value.heartbeat` chunks → output contains
-  `: heartbeat tool=…` and **no** `: keep-alive` (watchdog stayed reset).
+  `: heartbeat tool=…`. This test asserts the rich heartbeat is **present**; it does
+  NOT assert the absence of `: keep-alive` (the two timers are independent — asserting
+  absence would be flaky, per the flat-path contract).
 - **Regression:** existing `chat-route-handler` and `adapter-route-handler` streaming
   tests stay green (content, tool_calls, `[DONE]`, adapter event lines, usage paths
   unchanged).
