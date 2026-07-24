@@ -1354,6 +1354,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           inFlight.controlFailure = {
             reason: typedReason,
             seq: inFlight.seq,
+            note: noteFor(reason),
           };
         }
         logDecision(ctx, 'control-failure', noteFor(reason));
@@ -2075,6 +2076,21 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     terminalTtlMs: number,
     usage?: TerminalUsage,
   ): Promise<void> {
+    // #243: never form a success terminal with an empty body. Route to an error
+    // terminal carrying the captured failure (or a generic message) — this is
+    // the sole writer of a success terminal, so the guarantee holds here.
+    if (answer.trim().length === 0) {
+      await this.abortTerminal(
+        ctx,
+        sessionId,
+        bundle,
+        capturedFailureText(bundle) ?? GENERIC_NO_ANSWER,
+        now,
+        terminalTtlMs,
+        usage,
+      );
+      return;
+    }
     await writeTerminal(
       this.deps.backend,
       sessionId,
@@ -2113,7 +2129,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   ): void {
     ctx.yield({
       ok: true,
-      value: { content, finishReason: 'stop', ...(usage ? { usage } : {}) },
+      value: {
+        content: nonEmptyBody(content),
+        finishReason: 'stop',
+        ...(usage ? { usage } : {}),
+      },
     });
   }
 
