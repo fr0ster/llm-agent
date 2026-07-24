@@ -492,22 +492,52 @@ describe('createIdleHeartbeat', () => {
 });
 
 describe('attachSseKeepAlive', () => {
-  it('registers a res "close" handler and stop() is safe after disconnect', () => {
-    // attachSseKeepAlive owns timer creation (no injected clock here); the timer
-    // mechanics are covered by the createIdleHeartbeat tests above. This asserts
-    // the SSE binding: a close handler is registered, and disconnect + stop are safe.
+  function fakeRes() {
+    const writes: string[] = [];
     const listeners: Record<string, () => void> = {};
     const res = {
-      write: () => true,
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
       on: (ev: string, cb: () => void) => {
         listeners[ev] = cb;
       },
     } as unknown as import('node:http').ServerResponse;
+    return { res, writes, listeners };
+  }
 
-    const hb = attachSseKeepAlive(res, 100);
+  it('registers a res "close" handler', () => {
+    const { res, listeners } = fakeRes();
+    attachSseKeepAlive(res, 100);
     assert.equal(typeof listeners.close, 'function');
-    listeners.close(); // simulate client disconnect
-    hb.stop(); // idempotent / no throw
+  });
+
+  it('after res close during idle, NO further keep-alive is written (real timer)', async () => {
+    // Behavioral proof of the attach → close → stop composition: with a 20ms
+    // interval, fire "close" before the first beat, then wait > 3 intervals and
+    // assert zero keep-alive writes. A broken close→stop wiring would let the
+    // watchdog keep firing.
+    const { res, writes, listeners } = fakeRes();
+    attachSseKeepAlive(res, 20);
+    listeners.close(); // client disconnects before any beat
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(
+      writes.filter((w) => w.startsWith(': keep-alive')).length,
+      0,
+      'no keep-alive after close',
+    );
+  });
+
+  it('writes ": keep-alive" while idle when NOT closed (real timer, control)', async () => {
+    const { res, writes } = fakeRes();
+    const hb = attachSseKeepAlive(res, 20);
+    await new Promise((r) => setTimeout(r, 50));
+    hb.stop();
+    assert.ok(
+      writes.filter((w) => w.startsWith(': keep-alive')).length >= 1,
+      'the control case DOES beat, proving the close test above is meaningful',
+    );
   });
 });
 ```
@@ -872,6 +902,23 @@ function steadyAgent(count: number, gapMs: number) {
   } as never;
 }
 
+/**
+ * Stub SmartAgent whose stream includes a flat-pipeline `value.heartbeat` chunk
+ * (as tool-loop-core emits) plus final content — used to prove the transport
+ * watchdog did NOT remove the existing per-tool `: heartbeat tool=…` SSE output.
+ */
+function heartbeatEmittingAgent() {
+  return {
+    async *streamProcess() {
+      yield {
+        ok: true,
+        value: { content: '', heartbeat: { tool: 'ReadClass', elapsed: 5 } },
+      };
+      yield { ok: true, value: { content: 'done', finishReason: 'stop' } };
+    },
+  } as never;
+}
+
 const noop = () => {};
 
 describe('#246 SSE keep-alive — /v1/chat/completions', () => {
@@ -916,6 +963,29 @@ describe('#246 SSE keep-alive — /v1/chat/completions', () => {
       writes.filter((w) => w.startsWith(': keep-alive')).length,
       0,
       'reset() on each chunk keeps the watchdog from ever firing during steady output',
+    );
+  });
+
+  it('flat-path regression: a value.heartbeat chunk still yields ": heartbeat tool=…"', async () => {
+    // The transport watchdog must NOT break the existing per-tool heartbeat SSE
+    // output (chat-route-handler.ts:304-308). A default interval (no override →
+    // 5000) means the watchdog never fires here; the tool heartbeat must survive.
+    const { res, writes } = fakeRes();
+    await handleChat(
+      makeReq({ model: 'm', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+      res,
+      new SessionRequestLogger(),
+      heartbeatEmittingAgent(),
+      noop as never,
+      noop as never,
+      noop,
+      undefined,
+      undefined,
+      {} as never, // no agent.heartbeatIntervalMs override → default 5000
+    );
+    assert.ok(
+      writes.some((w) => w.startsWith(': heartbeat tool=ReadClass')),
+      'existing per-tool heartbeat comment is preserved',
     );
   });
 });
