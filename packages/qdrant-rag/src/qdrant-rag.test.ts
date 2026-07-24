@@ -312,6 +312,35 @@ describe('QdrantRag', () => {
     assert.equal(state.collections.get('test-del')?.length, 0);
   });
 
+  it('writer().upsertManyPrecomputedRaw writes every point in one PUT', async () => {
+    state.collections.set('test-bulk', []);
+    let putPointsCalls = 0;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const u = String(input);
+      if (u.endsWith('/points') && init?.method === 'PUT') putPointsCalls++;
+      return origFetch(input as string, init);
+    }) as typeof fetch;
+    try {
+      const rag = new QdrantRag({
+        url: baseUrl,
+        collectionName: 'test-bulk',
+        embedder: makeEmbedder(),
+      });
+      const w = rag.writer();
+      const res = await w.upsertManyPrecomputedRaw?.([
+        { id: 'a', text: 'ta', vector: [0.1, 0.2], metadata: {} },
+        { id: 'b', text: 'tb', vector: [0.3, 0.4], metadata: {} },
+        { id: 'c', text: 'tc', vector: [0.5, 0.6], metadata: {} },
+      ]);
+      assert.ok(res?.ok, 'bulk upsert should succeed');
+      assert.equal(state.collections.get('test-bulk')?.length, 3);
+      assert.equal(putPointsCalls, 1, 'one PUT for the whole batch');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it('writer().clearAll empties the collection', async () => {
     state.collections.set('test-clear', []);
     const rag = new QdrantRag({

@@ -43,7 +43,9 @@ describe('RetryLlm — status classification', () => {
       new LlmError('model context of 4290 tokens exceeded', 'LLM_ERROR'),
       1,
     );
-    const r = await new RetryLlm(llm, { backoffMs: 1, maxAttempts: 3 }).chat([]);
+    const r = await new RetryLlm(llm, { backoffMs: 1, maxAttempts: 3 }).chat(
+      [],
+    );
     assert.equal(r.ok, false);
     assert.equal(llm.calls(), 1); // no retry
   });

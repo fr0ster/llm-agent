@@ -175,6 +175,31 @@ export async function vectorizeMcpTools(
       }
     }
 
+    // Bulk fast path: when we have precomputed vectors AND the writer supports
+    // a native bulk upsert, write the whole catalog in one call instead of N.
+    // All-or-nothing, so on failure we fall through to the per-tool loop, which
+    // classifies exactly which record is bad.
+    if (vectors && writer.upsertManyPrecomputedRaw) {
+      const bulk = await writer
+        .upsertManyPrecomputedRaw(
+          tools.map((t, i) => ({
+            id: `tool:${t.name}`,
+            text: texts[i],
+            vector: (vectors as number[][])[i],
+            metadata: {},
+          })),
+        )
+        .catch((err: unknown) => ({
+          ok: false as const,
+          error: err instanceof Error ? err : new Error(String(err)),
+        }));
+      if (bulk.ok) {
+        acc.vectorized += tools.length;
+        continue;
+      }
+      // else: fall through to the per-tool loop below.
+    }
+
     for (let i = 0; i < tools.length; i++) {
       let ok = false;
       try {

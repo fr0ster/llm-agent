@@ -126,6 +126,24 @@ export interface IRagBackendWriter {
     metadata: RagMetadata,
     options?: CallOptions,
   ): Promise<Result<void, RagError>>;
+  /**
+   * Write many precomputed records in one call, backed by the store's native
+   * bulk API where one exists (Qdrant accepts many points per request).
+   *
+   * Optional and additive: a writer that does not implement it forces the
+   * caller onto the per-record path. All-or-nothing — a single `Result` for the
+   * whole batch, so a caller that needs to know which record failed must retry
+   * per-record on error.
+   */
+  upsertManyPrecomputedRaw?(
+    items: ReadonlyArray<{
+      id: string;
+      text: string;
+      vector: number[];
+      metadata: RagMetadata;
+    }>,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>>;
 }
 
 export type RagCollectionScope = 'session' | 'user' | 'global';

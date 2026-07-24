@@ -431,6 +431,45 @@ export class QdrantRag implements IRag {
           options,
         );
       },
+      upsertManyPrecomputedRaw: async (items, options) => {
+        if (items.length === 0) return { ok: true, value: undefined };
+        try {
+          await this._ensureCollection(items[0].vector.length, options?.signal);
+          const points = await Promise.all(
+            items.map(async ({ id, text, vector, metadata }) => ({
+              id: await deterministicUUID(id),
+              vector,
+              payload: { text, ...metadata, id },
+            })),
+          );
+          // One PUT for the whole batch — Qdrant accepts many points per
+          // request, replacing N round trips with 1. Atomic: a single bad
+          // vector rejects the batch, and the caller retries per-record to
+          // find it.
+          const res = await this._fetch(
+            `/collections/${this.collectionName}/points`,
+            { method: 'PUT', body: JSON.stringify({ points }) },
+            options?.signal,
+          );
+          if (!res.ok) {
+            const body = await res.text();
+            return {
+              ok: false,
+              error: new RagError(
+                `Qdrant bulk upsert failed: ${body}`,
+                'UPSERT_ERROR',
+              ),
+            };
+          }
+          return { ok: true, value: undefined };
+        } catch (err) {
+          if (err instanceof RagError) return { ok: false, error: err };
+          return {
+            ok: false,
+            error: new RagError(String(err), 'UPSERT_ERROR'),
+          };
+        }
+      },
     };
   }
 }

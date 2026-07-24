@@ -70,12 +70,22 @@ function makeClient(tools: LlmTool[]): IMcpClient {
 function makeWriter(opts?: {
   failUpsert?: boolean;
   hasBatchRaw?: boolean;
-}): IRagBackendWriter & { upsertCalls: string[]; precomputedCalls: string[] } {
+  hasBulk?: boolean;
+  failBulk?: boolean;
+}): IRagBackendWriter & {
+  upsertCalls: string[];
+  precomputedCalls: string[];
+  bulkCalls: number;
+  bulkSizes: number[];
+} {
   const upsertCalls: string[] = [];
   const precomputedCalls: string[] = [];
+  const bulkSizes: number[] = [];
   return {
     upsertCalls,
     precomputedCalls,
+    bulkCalls: 0,
+    bulkSizes,
     async upsertRaw(id: string, _text: string, _meta: object) {
       upsertCalls.push(id);
       if (opts?.failUpsert)
@@ -97,9 +107,25 @@ function makeWriter(opts?: {
           },
         }
       : {}),
+    ...(opts?.hasBulk
+      ? {
+          async upsertManyPrecomputedRaw(
+            this: { bulkCalls: number },
+            items: ReadonlyArray<{ id: string }>,
+          ) {
+            this.bulkCalls++;
+            bulkSizes.push(items.length);
+            if (opts?.failBulk)
+              return { ok: false as const, error: new Error('bulk error') };
+            return { ok: true as const, value: undefined };
+          },
+        }
+      : {}),
   } as unknown as IRagBackendWriter & {
     upsertCalls: string[];
     precomputedCalls: string[];
+    bulkCalls: number;
+    bulkSizes: number[];
   };
 }
 
@@ -373,5 +399,49 @@ describe('vectorizeMcpTools summary', () => {
     // The capability check throws BEFORE CircuitBreakerEmbedder's try block, so
     // recordFailure() is never reached and the breaker stays closed.
     assert.equal(breaker.state, 'closed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bulk upsert path (#238)
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools bulk upsert', () => {
+  it('uses one bulk call instead of one write per tool', async () => {
+    const writer = makeWriter({ hasBatchRaw: true, hasBulk: true });
+    const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);
+    const tools = ['a', 'b', 'c'].map(makeTool);
+    const summary = await vectorizeMcpTools(
+      [makeClient(tools)],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.equal(writer.bulkCalls, 1);
+    assert.deepEqual(writer.bulkSizes, [3]);
+    // Per-record precomputed writer must NOT also run on the bulk path.
+    assert.equal(writer.precomputedCalls.length, 0);
+    assert.equal(summary?.vectorized, 3);
+    assert.equal(summary?.complete, true);
+  });
+
+  it('falls back to per-tool writes when the bulk call fails', async () => {
+    const writer = makeWriter({
+      hasBatchRaw: true,
+      hasBulk: true,
+      failBulk: true,
+    });
+    const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);
+    const tools = ['a', 'b'].map(makeTool);
+    const summary = await vectorizeMcpTools(
+      [makeClient(tools)],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.equal(writer.bulkCalls, 1); // tried once
+    assert.equal(writer.precomputedCalls.length, 2); // then per-tool
+    assert.equal(summary?.vectorized, 2);
+    assert.equal(summary?.complete, true);
   });
 });
