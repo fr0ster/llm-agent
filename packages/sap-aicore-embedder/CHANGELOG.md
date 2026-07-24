@@ -1,5 +1,15 @@
 # @mcp-abap-adt/sap-aicore-embedder
 
+## 20.9.0
+
+Bundles every change merged since v20.8.0: the controller no-response safety-net
+(#243), a retry-classification fix (#239), and the v20.8.0 embedder follow-ups
+(#238 bulk upsert, #240 tool-record-key namespacing storage-level, #241
+`withCircuitBreaker` factory). No breaking changes — the new surfaces
+(`IRagBackendWriter.upsertManyPrecomputedRaw`, `withCircuitBreaker`,
+`IToolRecordKey` / `SmartAgentBuilder.withToolRecordKey`, `ControlFailure.note`)
+are all additive.
+
 ## 20.8.0
 
 MCP tool vectorization no longer exceeds a provider's batch cap (#236). Chunking

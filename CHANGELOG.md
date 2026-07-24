@@ -9,6 +9,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [20.9.0] — 2026-07-24
+
+Bundles every change merged since v20.8.0: the controller no-response safety-net
+(#243), a retry-classification fix (#239), and the v20.8.0 embedder follow-ups
+(#238 bulk upsert, #240 tool-record-key namespacing storage-level, #241
+`withCircuitBreaker` factory). No breaking changes — the new surfaces
+(`IRagBackendWriter.upsertManyPrecomputedRaw`, `withCircuitBreaker`,
+`IToolRecordKey` / `SmartAgentBuilder.withToolRecordKey`, `ControlFailure.note`)
+are all additive.
+
 ### Fixed
 
 - **Controller never terminates a run with `(no response)` (#243).** A tool-level
