@@ -209,6 +209,9 @@ export interface SmartServerAgentConfig {
   /** Opt out of per-session MCP client isolation (default: per-session).
    *  `true` → reuse one shared MCP client across all sessions (pre-#213 behavior). */
   mcpSharedClient?: boolean;
+  /** SSE keep-alive / tool-loop heartbeat interval (ms). Default 5000; `<= 0` or
+   *  invalid disables. Already populated from yaml by resolveAgentSection. */
+  heartbeatIntervalMs?: number;
 }
 
 export interface SmartServerPromptsConfig {
