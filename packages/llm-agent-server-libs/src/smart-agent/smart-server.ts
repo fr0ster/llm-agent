@@ -2634,6 +2634,7 @@ export class SmartServer {
               graph.agent ?? rc.smartAgent,
               anthropicAdapter,
               { sessionId, traceId, graph },
+              this.cfg.agent?.heartbeatIntervalMs,
             );
           },
         );

@@ -7,6 +7,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraph, SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import { jsonError, readBody } from './response-helpers.js';
+import { attachSseKeepAlive } from './sse-heartbeat.js';
 
 /**
  * POST /v1/messages handler (Anthropic adapter route), extracted verbatim from
@@ -17,7 +18,10 @@ export async function handleAdapterRequest(
   res: ServerResponse,
   agent: SmartAgent,
   adapter: ILlmApiAdapter,
-  session?: { sessionId: string; traceId: string; graph: SessionGraph },
+  session:
+    | { sessionId: string; traceId: string; graph: SessionGraph }
+    | undefined,
+  heartbeatIntervalMs: number | undefined,
 ): Promise<void> {
   const raw = await readBody(req);
   let body: unknown;
@@ -69,12 +73,18 @@ export async function handleAdapterRequest(
       Connection: 'keep-alive',
     });
 
-    for await (const event of adapter.transformStream(
-      agent.streamProcess(sanitizedMessages, augmentedOptions),
-      normalized.context,
-    )) {
-      const eventLine = event.event ? `event: ${event.event}\n` : '';
-      res.write(`${eventLine}data: ${event.data}\n\n`);
+    const keepAlive = attachSseKeepAlive(res, heartbeatIntervalMs);
+    try {
+      for await (const event of adapter.transformStream(
+        agent.streamProcess(sanitizedMessages, augmentedOptions),
+        normalized.context,
+      )) {
+        keepAlive.reset();
+        const eventLine = event.event ? `event: ${event.event}\n` : '';
+        res.write(`${eventLine}data: ${event.data}\n\n`);
+      }
+    } finally {
+      keepAlive.stop();
     }
     res.end();
     return;
