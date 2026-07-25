@@ -575,6 +575,13 @@ Configured via `SmartAgentConfig.streamMode`:
 - `full` (default): all chunks streamed immediately, including intermediate tool loop iterations.
 - `final`: intermediate iterations are buffered and discarded; only the final response is streamed. External tool calls and heartbeats are always streamed regardless of mode. Useful for clients (Cline, Goose) that accumulate chunks in their context window.
 
+Both SSE surfaces (`/v1/chat/completions`, `/v1/messages`) run an idle keep-alive
+watchdog: if no chunk is written for `agent.heartbeatIntervalMs` (default 5000ms;
+`<= 0`/invalid disables), a `: keep-alive` comment is emitted so intermediaries do
+not close an idle connection during a long tool-execution phase. This is
+pipeline-agnostic; the flat pipeline additionally emits richer per-tool
+`: heartbeat tool=…` comments from the tool-loop.
+
 ### Resilience decorators
 
 The `ILlm` chain supports two optional decorators, composed by the builder:

@@ -14,7 +14,7 @@
  * |--------------------|--------|-------------|---------------------------------|
  * | `maxIterations`    | number | from ctx    | Max tool-loop iterations        |
  * | `maxToolCalls`     | number | from ctx    | Max total tool calls per request|
- * | `heartbeatIntervalMs` | number | 5000     | SSE heartbeat interval (ms)     |
+ * | `heartbeatIntervalMs` | number | 5000     | SSE heartbeat interval (ms); `<= 0` or non-finite disables it |
  *
  * ## Includes
  *
