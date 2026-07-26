@@ -467,7 +467,8 @@ export function assertClientDescriptors(
 }
 ```
 
-Test the three failure modes (length mismatch, duplicate slotIndex, `configuredSlotCount <= max`) + the absent-descriptors no-op.
+**Files:** also create `packages/llm-agent/src/interfaces/assert-client-descriptors.ts`
+and `.test.ts`; re-export from `packages/llm-agent/src/index.ts`.
 
 - [ ] **Step 1: Add the types (compiles clean — all additive optional)**
 
@@ -494,15 +495,62 @@ export interface McpConnectionResult {
 
 Add `name?: string;` to `McpConnectionConfig` (same file), `MCPClientConfig` (client.ts), `BuilderMcpConfig` (builder-types.ts), `SmartServerMcpConfig` (smart-server.ts), each with a one-line doc: `/** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */`.
 
-- [ ] **Step 2: Build (clean — optional fields break nothing)**
+- [ ] **Step 2: Build (types compile clean — optional fields break nothing)**
 
 Run: `npm run build 2>&1 | tail -3` → clean.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Write the failing `assertClientDescriptors` test**
+
+Create `assert-client-descriptors.test.ts` covering the three failure modes and the
+no-op:
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { IMcpClient } from './mcp-client.js';
+import { assertClientDescriptors } from './assert-client-descriptors.js';
+
+const c = () => ({}) as IMcpClient;
+describe('assertClientDescriptors', () => {
+  it('no-op when descriptors absent', () => {
+    assert.doesNotThrow(() => assertClientDescriptors([c(), c()], undefined));
+  });
+  it('ok for aligned, unique, in-bounds descriptors', () => {
+    assert.doesNotThrow(() =>
+      assertClientDescriptors([c(), c()], [{ slotIndex: 0 }, { slotIndex: 2 }], 3));
+  });
+  it('throws on length mismatch', () => {
+    assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: 0 }, { slotIndex: 1 }]), /length/);
+  });
+  it('throws on duplicate slotIndex', () => {
+    assert.throws(() => assertClientDescriptors([c(), c()], [{ slotIndex: 1 }, { slotIndex: 1 }]), /duplicate/);
+  });
+  it('throws when configuredSlotCount <= max slotIndex', () => {
+    assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: 2 }], 2), /configuredSlotCount/);
+  });
+});
+```
+
+Run: `npx tsx --test packages/llm-agent/src/interfaces/assert-client-descriptors.test.ts` → FAIL (module missing).
+
+- [ ] **Step 4: Implement `assertClientDescriptors` + re-export**
+
+Create `assert-client-descriptors.ts` with the function shown in this task's opening
+block. Add to `packages/llm-agent/src/index.ts`:
+
+```ts
+export { assertClientDescriptors } from './interfaces/assert-client-descriptors.js';
+export type { McpClientDescriptor } from './interfaces/mcp-connection-strategy.js';
+```
+
+Run the test → PASS.
+
+- [ ] **Step 5: Build + lint, commit (all files)**
 
 ```bash
-git add packages/llm-agent/src/interfaces/mcp-connection-strategy.ts packages/llm-agent-mcp/src/client.ts packages/llm-agent-libs/src/builder-types.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts
-git commit -m "feat: add mcp[].name + McpConnectionResult.clientDescriptors types (#244)"
+npm run build && npm run lint:check
+git add packages/llm-agent/src/interfaces/mcp-connection-strategy.ts packages/llm-agent-mcp/src/client.ts packages/llm-agent-libs/src/builder-types.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent/src/interfaces/assert-client-descriptors.ts packages/llm-agent/src/interfaces/assert-client-descriptors.test.ts packages/llm-agent/src/index.ts
+git commit -m "feat: mcp[].name + McpConnectionResult descriptors + assertClientDescriptors (#244)"
 ```
 
 ---
@@ -639,12 +687,15 @@ git commit -m "feat(agent): registry resolve() namespaces colliding tools + keep
 
 - [ ] **Step 3: Implement**
 
-- `context.ts`: add `mcpClientDescriptors?: readonly McpClientDescriptor[];` beside `mcpClients`.
+- `context.ts`: add TWO fields beside `mcpClients` —
+  `mcpClientDescriptors?: readonly McpClientDescriptor[];` and
+  `toolNamespace?: IToolNamespace;` (the strategy; Task 10 populates it from the builder,
+  but the FIELD must exist now so the handlers below type-check).
 - `tool-select.ts:43-52`: replace the `for (const t …) if (!has) { push; set }` loop with: collect `perClient = [{ slotIndex, label, client, tools }]` from the settled `listTools` results zipped with `ctx.mcpClientDescriptors` (fallback `{slotIndex:i}`), then `const { tools, toolClientMap } = buildNamespacedTools(perClient, ctx.toolNamespace ?? defaultToolNamespace)`; push `tools` into `ctx.mcpTools` and copy entries into `ctx.toolClientMap`.
 - `tool-loop.ts:203-221`: same, after `ctx.toolClientMap.clear()`.
 - Populate `ctx.mcpClientDescriptors` where `ctx.mcpClients` is set (grep to find it).
 
-> If `ctx.toolNamespace` is not a context field, thread it from the agent/builder in Task 10; for now default to `defaultToolNamespace` and leave a `// TODO(Task 10): use ctx.toolNamespace`.
+> `ctx.toolNamespace` is added to `PipelineContext` in THIS task (so `ctx.toolNamespace ?? defaultToolNamespace` type-checks) but is left unset until Task 10 wires the builder's override — the `?? defaultToolNamespace` fallback covers the interim.
 
 - [ ] **Step 4: Run GREEN + full libs suite.**
 
@@ -666,11 +717,13 @@ git commit -m "feat(agent): tool-select/tool-loop refresh namespace via shared b
 
 **Produces:** each stored `metadata.name` is the exposed name; the record **id** uses the STABLE `slotIndex` + `configuredSlotCount` (not the runtime active index/count), so ids don't re-map or flip to bare when a peer drops.
 
-- [ ] **Step 1: Write the failing test** — vectorize over two clients both exposing `Search` (+ descriptors `[{slotIndex:0},{slotIndex:1}]`, `configuredSlotCount:2`) → the two records carry `metadata.name` `s0__Search`/`s1__Search` AND record ids `tool:0:Search`/`tool:1:Search`. Then vectorize with only the slot-2 client active (`descriptors [{slotIndex:2}]`, `configuredSlotCount:2`) → `metadata.name` bare `Search` (no collision) BUT record id stays `tool:2:Search` (stable slotIndex, configured count keeps the multi-server form — NOT `tool:0:Search` nor bare `tool:Search`). Assert record IDs, not only names.
+- [ ] **Step 1: Write the failing test** — vectorize over two clients both exposing `Search` (descriptors `[{slotIndex:0},{slotIndex:1}]`, **`configuredSlotCount:3`** — 3 slots configured, one down at boot elsewhere) → the two records carry `metadata.name` `s0__Search`/`s1__Search` AND record ids `tool:0:Search`/`tool:1:Search`. Then vectorize with only the slot-2 client active (`descriptors [{slotIndex:2}]`, **`configuredSlotCount:3`**) → `metadata.name` bare `Search` (no collision) BUT record id stays `tool:2:Search` (stable slotIndex; configured count 3 keeps the multi-server form — NOT `tool:0:Search` nor bare `tool:Search`). Assert record IDs, not only names.
+
+> `configuredSlotCount` must be `> max(slotIndex)` (else `assertClientDescriptors` rejects it): for slots 0/1/2 it is `3`, never `2`.
 
 - [ ] **Step 2: Run RED** (current code passes runtime `clientIndex`/`clientCount = clients.length` → wrong ids under filtering).
 
-- [ ] **Step 3: Implement** — add `descriptors?: readonly McpClientDescriptor[]` and `configuredSlotCount?: number` parameters. (a) run the per-client tool lists through `buildNamespacedTools(perClient, ns)` and use the returned `tools` (exposed names) for `text`/`metadata.name`; (b) build the `ToolKeyContext` with the STABLE values — replace `clientIndex` (the loop position, `:134`) with `descriptors[i]?.slotIndex ?? i`, and `clientCount = clients.length` (`:132`) with `configuredSlotCount ?? clients.length`. Pass both new params from the caller (sourced from the connection result).
+- [ ] **Step 3: Implement** — add `descriptors?: readonly McpClientDescriptor[]` and `configuredSlotCount?: number` parameters. **Two-phase (mandatory):** the current code loops over clients and stores each as it goes (`:134`), which CANNOT see cross-client collisions. Restructure to (phase 1) gather ALL clients' `listTools` results into `perClient = [{ slotIndex, label, client, tools }]` FIRST, then (phase 2) `const { tools } = buildNamespacedTools(perClient, ns)` over the full set and store the exposed names. Then: (a) use the returned `tools` (exposed names) for `text`/`metadata.name`; (b) build each `ToolKeyContext` with the STABLE values — `clientIndex = descriptors[i]?.slotIndex ?? i` (not the loop position), `clientCount = configuredSlotCount ?? clients.length` (not `clients.length`). Pass both new params from the caller (sourced from the connection result). Call `assertClientDescriptors(clients, descriptors, configuredSlotCount)` at entry.
 
 - [ ] **Step 4: Run GREEN + full libs suite.**
 
