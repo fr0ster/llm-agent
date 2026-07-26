@@ -20,7 +20,8 @@
 - Biome gate: `npm run lint:check` (a **check**, not `format`) clean of NEW errors.
 - Build gate: `npm run build` clean before each commit.
 - Test: single file `npx tsx --test <path>`; package `npm test --workspace <pkg>`.
-- **Additive public API only.** New: `IToolNamespace`, `ToolNamespaceContext`, `defaultToolNamespace`, `bindToolCallName`, `buildNamespacedTools`, `mergeOfferedTools`, `McpConnectionResult.clientDescriptors?`, `McpConnectionConfig.name?`, `MCPClientConfig.name?`, `BuilderMcpConfig.name?`, `SmartServerMcpConfig.name?`, `PipelineContext.mcpClientDescriptors?`. **UNCHANGED:** `IToolRecordKey`, the `Map<string, IMcpClient>` value type of `toolClientMap`, and single-server behaviour.
+- **Additive public API only.** New: `IToolNamespace`, `ToolNamespaceContext`, `defaultToolNamespace`, `bindToolCallName`, `buildNamespacedTools`, `mergeOfferedTools`, `McpConnectionResult.clientDescriptors?` + `configuredSlotCount?`, `McpConnectionConfig.name?`, `MCPClientConfig.name?`, `BuilderMcpConfig.name?`, `SmartServerMcpConfig.name?`, `PipelineContext.mcpClientDescriptors?`. **UNCHANGED:** the `IToolRecordKey` INTERFACE (its `ToolKeyContext` inputs are stabilized to `slotIndex`/`configuredSlotCount`, a value change that fixes a latent #240 bug but does not alter single-server ids), the `Map<string, IMcpClient>` value type of `toolClientMap`, and single-server behaviour.
+- **`toolsChanged` becomes bidirectional** (fire on active-slot gain OR loss) — required for the peer-outage re-vectorize.
 - **Separator `__`; exposed names must match `^[a-zA-Z0-9_-]+$`, non-empty, ≤ 64 chars.**
 - Namespace ONLY on a real collision (a name exposed by ≥2 currently-active clients). A unique name stays bare (`exposed === original`, value === real client).
 
@@ -448,6 +449,9 @@ export interface McpConnectionResult {
   /** Per-client stable identity, aligned by index with `clients`. Optional:
    *  strategies that never filter may omit it (array index === config index). */
   clientDescriptors?: readonly McpClientDescriptor[];
+  /** Total configured servers (not the active count) — stabilizes the record-key
+   *  form under a filtered active set. Optional; defaults to clients.length. */
+  configuredSlotCount?: number;
 }
 ```
 
@@ -473,17 +477,19 @@ git commit -m "feat: add mcp[].name + McpConnectionResult.clientDescriptors type
 - Modify: `packages/llm-agent-mcp/src/strategies/periodic-connection-strategy.ts` (~`:67-71` return)
 - Test: `packages/llm-agent-mcp/src/strategies/__tests__/lazy-connection-strategy.test.ts` (append, or create if none — verify path first)
 
-**Consumes:** `McpClientDescriptor` (Task 4). **Produces:** a `McpConnectionResult` whose `clientDescriptors[i]` = `{ slotIndex: <config index of clients[i]>, label: <that slot's config.name> }`.
+**Consumes:** `McpClientDescriptor` (Task 4). **Produces:** a `McpConnectionResult` with (a) `clientDescriptors[i]` = `{ slotIndex: <config index of clients[i]>, label: <slot config.name> }`, (b) `configuredSlotCount` = total configured slots, and (c) a **bidirectional** `toolsChanged` (fires on a slot gained OR lost).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Model on the existing lazy-connection-strategy test harness (read it first for the exact `Slot`/config stub shape). Assert: with slots for 3 configured servers where slot 1 is unhealthy, `resolve()` returns 2 clients AND `clientDescriptors` = `[{slotIndex:0,label:<cfg0.name>},{slotIndex:2,label:<cfg2.name>}]` — i.e. the descriptor's `slotIndex` is the ORIGINAL config index (0 and 2), NOT the filtered array position (0 and 1).
+Model on the existing lazy-connection-strategy test harness (read it first for the exact `Slot`/config stub shape). Assert:
+1. **Descriptors + stable slotIndex:** 3 configured servers, slot 1 unhealthy → `resolve()` returns 2 clients, `clientDescriptors = [{slotIndex:0,label:cfg0.name},{slotIndex:2,label:cfg2.name}]` (original config indices 0 and 2, NOT 0/1), and `configuredSlotCount === 3`.
+2. **Bidirectional `toolsChanged`:** from two healthy slots, a resolve where one goes unhealthy sets `toolsChanged === true` (a DROP, not just a gain); a later resolve where it returns healthy sets `toolsChanged === true` again; a resolve with no set change sets `false`.
 
-- [ ] **Step 2: Run RED** — `clientDescriptors` is undefined.
+- [ ] **Step 2: Run RED** — `clientDescriptors`/`configuredSlotCount` undefined; `toolsChanged` stays `false` on a drop (current `anyNewlyHealthy` only).
 
 - [ ] **Step 3: Implement**
 
-The `Slot` already carries its config and is built 1:1 with configs, so its array index in `this._slots` IS the config index. At the return (`:123-125`), build descriptors from the SAME surviving slots, preserving each slot's index:
+The `Slot` is built 1:1 with configs, so its index in `this._slots` IS the config index. At the return (`:123-127`):
 
 ```ts
 const surviving = this._slots
@@ -494,12 +500,19 @@ const clientDescriptors = surviving.map(({ s, slotIndex }) => ({
   slotIndex,
   ...(s.config?.name ? { label: s.config.name } : {}),
 }));
-// return { clients, toolsChanged, clientDescriptors }
+const configuredSlotCount = this._slots.length;
+
+// Bidirectional change detection: compare the healthy-slot set to the previous.
+const healthySet = surviving.map(({ slotIndex }) => slotIndex).join(',');
+const setChanged = healthySet !== (this._prevHealthySet ?? '<init>');
+this._prevHealthySet = healthySet;
+const toolsChanged = (anyNewlyHealthy || setChanged) && !this._skipRevectorize;
+// return { clients, toolsChanged, clientDescriptors, configuredSlotCount }
 ```
 
-> Adjust `s.config?.name` to the exact field name the `Slot` uses for its config (read the Slot type). Add `clientDescriptors` to the returned `McpConnectionResult`.
-
-In `periodic-connection-strategy.ts`, pass through `clientDescriptors` from the wrapped lazy result (it already forwards `clients`/`toolsChanged`).
+Add `private _prevHealthySet?: string;`. Adjust `s.config?.name` to the exact `Slot`
+config field (read the `Slot` type). `PeriodicConnectionStrategy` forwards
+`clientDescriptors` + `configuredSlotCount` (it already forwards `clients`/`toolsChanged`).
 
 - [ ] **Step 4: Run GREEN.**
 
@@ -604,13 +617,13 @@ git commit -m "feat(agent): tool-select/tool-loop refresh namespace via shared b
 - Modify: its caller(s) (grep `vectorizeMcpTools(`) to pass `descriptors`.
 - Test: `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts` (append)
 
-**Produces:** each stored `metadata.name` is the exposed (namespaced) name, agreeing with exposure; `toolNameFromRecord` round-trips it.
+**Produces:** each stored `metadata.name` is the exposed name; the record **id** uses the STABLE `slotIndex` + `configuredSlotCount` (not the runtime active index/count), so ids don't re-map or flip to bare when a peer drops.
 
-- [ ] **Step 1: Write the failing test** — vectorize over two clients both exposing `Search` (+ descriptors) → the two stored records carry `metadata.name` `s0__Search` / `s1__Search` (not two bare `Search`).
+- [ ] **Step 1: Write the failing test** — vectorize over two clients both exposing `Search` (+ descriptors `[{slotIndex:0},{slotIndex:1}]`, `configuredSlotCount:2`) → the two records carry `metadata.name` `s0__Search`/`s1__Search` AND record ids `tool:0:Search`/`tool:1:Search`. Then vectorize with only the slot-2 client active (`descriptors [{slotIndex:2}]`, `configuredSlotCount:2`) → `metadata.name` bare `Search` (no collision) BUT record id stays `tool:2:Search` (stable slotIndex, configured count keeps the multi-server form — NOT `tool:0:Search` nor bare `tool:Search`). Assert record IDs, not only names.
 
-- [ ] **Step 2: Run RED.**
+- [ ] **Step 2: Run RED** (current code passes runtime `clientIndex`/`clientCount = clients.length` → wrong ids under filtering).
 
-- [ ] **Step 3: Implement** — add a `descriptors?: readonly McpClientDescriptor[]` parameter; before building the `tools`/`ids`/`texts`, run the per-client tool lists through `buildNamespacedTools(perClient, ns)` and use the returned `tools` (exposed names) for `text`/`metadata.name`. Keep the `IToolRecordKey` record id as-is (Task unchanged). Pass `descriptors` from the caller.
+- [ ] **Step 3: Implement** — add `descriptors?: readonly McpClientDescriptor[]` and `configuredSlotCount?: number` parameters. (a) run the per-client tool lists through `buildNamespacedTools(perClient, ns)` and use the returned `tools` (exposed names) for `text`/`metadata.name`; (b) build the `ToolKeyContext` with the STABLE values — replace `clientIndex` (the loop position, `:134`) with `descriptors[i]?.slotIndex ?? i`, and `clientCount = clients.length` (`:132`) with `configuredSlotCount ?? clients.length`. Pass both new params from the caller (sourced from the connection result).
 
 - [ ] **Step 4: Run GREEN + full libs suite.**
 

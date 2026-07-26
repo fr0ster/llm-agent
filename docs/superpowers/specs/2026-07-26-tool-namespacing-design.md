@@ -112,16 +112,26 @@ silently shifts `s1__` → `s0__`. The label is likewise unrecoverable at runtim
 
 `McpToolRegistry` stores `activeClientDescriptors` beside `activeClients`
 (`resolveActiveClients`, `:50-56`) and passes `{ client, slotIndex, label }` per active
-client into `buildNamespacedTools`. Prefix = `label ?? \`s${slotIndex}\``.
+client into `buildNamespacedTools`. Prefix = `label ?? \`s${slotIndex}\``. The result
+also carries **`configuredSlotCount`** (total configured servers, e.g.
+`LazyConnectionStrategy._slots.length`) — needed by Component 8 so the record-key form
+does not flip when peers drop.
 
-**Scope of "stable":** the PREFIX is stable — because `slotIndex`/`label` come from the
-config-stable slot, a colliding tool's prefix stays `s0`/`primary` regardless of which
-OTHER slots are currently healthy (it never shifts to the runtime array position).
-Whether a tool is namespaced at all, however, follows the CURRENT active collision set
-(next section's edge case): if the only other server exposing `Search` goes down, the
-survivor's `Search` is no longer colliding and reverts to bare. Re-vectorization on the
-connection result's `toolsChanged` keeps the RAG store and the exposed set consistent
-through such a transition.
+**`toolsChanged` must be bidirectional.** Today `LazyConnectionStrategy` sets
+`toolsChanged = anyNewlyHealthy` (`:127`) — it fires only when a client is GAINED, never
+when one is LOST. But a peer DROP changes the exposed/collision set (a colliding tool
+reverts to bare) and the record keys, so it must re-vectorize too. Redefine `toolsChanged`
+as *the active healthy-slot set changed in EITHER direction*: the strategy remembers the
+previous set of healthy slot indices and compares — gain OR loss (OR a re-mapping) sets
+`toolsChanged`. `PeriodicConnectionStrategy` forwards it. Without this, a drop leaves the
+RAG store stale (`s0__Search`/`s1__Search`) while the exposed set has reverted to bare
+`Search` — the exact inconsistency the "peer-outage" edge case must avoid.
+
+**Scope of "stable":** the PREFIX is stable — `slotIndex`/`label` come from the
+config-stable slot, so a colliding tool's prefix stays `s0`/`primary` regardless of which
+OTHER slots are healthy. Whether a tool is namespaced at all follows the CURRENT active
+collision set (edge case below); a drop→bare (and return→`sN__`) transition is kept
+consistent between RAG and exposure by the bidirectional `toolsChanged` re-vectorize.
 
 ### 3. `buildNamespacedTools` — the single shared builder (exposure, both refreshes, RAG)
 
@@ -223,8 +233,10 @@ The wrapper factory (e.g. `bindToolCallName(client, originalName): IMcpClient`) 
 `vectorizeMcpTools` presents the SAME exposed names before storing
 `metadata: { name: t.name }` (`vectorize-mcp-tools.ts:227`): it already iterates all
 clients' tools, so it runs them through `buildNamespacedTools` (same `IToolNamespace` +
-labels) and stores each exposed name. `toolNameFromRecord` returns a non-empty
-`meta.name` verbatim, so selection → LLM → executor all agree.
+labels + descriptors) and stores each exposed name. `toolNameFromRecord` returns a
+non-empty `meta.name` verbatim, so selection → LLM → executor all agree. The record **id**
+is computed from the STABLE `slotIndex` + `configuredSlotCount` (Component 8), not the
+runtime active index/count.
 
 ### 7. Internal↔external tool-name collision — a checked merge (the FINAL LLM list must be unique)
 
@@ -247,10 +259,22 @@ It closes the collision for a bare internal name AND a generated namespace equal
 centralizes the rule the way `buildNamespacedTools` centralizes exposure. (`injectToolPriority`'s
 "prefer internal" prompt hint is advisory only and does not prevent the collision.)
 
-### 8. `IToolRecordKey` — unchanged
+### 8. `IToolRecordKey` — interface unchanged, but fed STABLE inputs
 
-Record id stays `tool:${clientIndex}:${name}` (original name + index); the exposed name
-lives in `metadata.name`. Independent concerns.
+The `IToolRecordKey` interface is not changed, but the CONTEXT it receives must be made
+stable — otherwise the record id is unstable under a filtered active set (a latent #240
+gap). `vectorizeMcpTools` today builds `ToolKeyContext` from the RUNTIME active loop:
+`clientIndex = <position in the active array>`, `clientCount = clients.length`
+(`vectorize-mcp-tools.ts:132-138`). So configured slots 0/1/2 → active 0/2 gives the
+client from slot 2 a `clientIndex` of `1` (overwriting slot 1's `tool:1:Search` record),
+and a single active client flips `clientCount` to 1 → the default key drops to bare
+`tool:Search`.
+
+Fix the INPUTS (no interface change): pass `clientIndex = descriptor.slotIndex` (stable)
+and `clientCount = configuredSlotCount` (total configured, not active). Then the default
+key is a stable `tool:${slotIndex}:${name}` that neither re-maps nor flips to bare when a
+peer drops. This also hardens #240's record key. The exposed `metadata.name` (Component 6)
+and the record id now both derive from the same stable `slotIndex`.
 
 ## Data flow
 
@@ -327,10 +351,16 @@ Pathological: a real bare tool literally named "s0__Search" alongside a generate
   descriptors `slotIndex 0` and `2`. Their exposed prefixes are `s0`/`s2` (or labels) —
   NOT `s0`/`s1` — asserted for `resolve()`, a `tool-select` first-load, a `tool-loop`
   refresh, AND `vectorizeMcpTools` (the descriptors reach all four).
-- **Peer-outage collision flip + RAG consistency:** two clients both expose `Search`
-  (exposed `s0__Search`/`s1__Search`); client 1 drops → the survivor reverts to bare
-  `Search`, `toolsChanged` triggers a re-vectorize storing bare `metadata.name`, so
-  exposure and RAG agree; client 1 returns → both are `sN__Search` again.
+- **`toolsChanged` is bidirectional (Lazy AND Periodic):** starting from two healthy
+  slots, dropping one sets `toolsChanged` (not just gaining one); the returning slot sets
+  it again. Assert for both strategies — a drop MUST trigger re-vectorize.
+- **Peer-outage collision flip + RAG consistency (metadata.name AND record id):** two
+  clients both expose `Search` (exposed `s0__Search`/`s1__Search`, records
+  `tool:0:Search`/`tool:1:Search`); client 1 drops → the survivor reverts to bare
+  `Search`, the drop's `toolsChanged` re-vectorizes so `metadata.name` becomes bare AND
+  the record id stays `tool:0:Search` (stable `slotIndex`+`configuredSlotCount`, NOT
+  re-mapped to `tool:0`/flipped to bare `tool:Search`); client 1 returns → both are
+  `sN__Search` / `tool:N:Search` again. Assert record IDs, not only `metadata.name`.
 - **Internal↔external collision fail-fast:** `mergeOfferedTools` throws when an external
   tool is named (a) the same as a bare internal MCP tool, and (b) the same as a generated
   namespace (`s0__Search`) — both with a clear diagnostic.
@@ -359,19 +389,24 @@ One PR:
 - `@mcp-abap-adt/llm-agent` — `IToolNamespace` + `defaultToolNamespace` +
   `ToolNamespaceContext`; `bindToolCallName` wrapper factory; the pure
   `buildNamespacedTools` (per-name validity + global-uniqueness guards);
-  `mergeOfferedTools`; `name?` on `McpConnectionConfig`; `clientDescriptors?` on
-  `McpConnectionResult`.
+  `mergeOfferedTools`; `name?` on `McpConnectionConfig`; `clientDescriptors?` +
+  `configuredSlotCount?` on `McpConnectionResult`.
 - `@mcp-abap-adt/llm-agent-mcp` — `name?` on `MCPClientConfig`; `LazyConnectionStrategy`
-  populates `clientDescriptors` from its `Slot[]` (config-stable `slotIndex` + `label`);
-  `PeriodicConnectionStrategy` forwards it.
+  populates `clientDescriptors` (config-stable `slotIndex` + `label`) +
+  `configuredSlotCount`, and makes `toolsChanged` **bidirectional** (fire on a slot
+  becoming healthy OR unhealthy, by diffing the previous healthy-slot set);
+  `PeriodicConnectionStrategy` forwards both.
 - `@mcp-abap-adt/llm-agent-libs` — `name?` on `BuilderMcpConfig`; `mcpClientDescriptors?`
-  on `PipelineContext`; retain `resolved.clientDescriptors` from the strategy;
-  `McpToolRegistry` stores `activeClientDescriptors`; populate `ctx.mcpClientDescriptors`
-  alongside `ctx.mcpClients`; add a `descriptors` param to `vectorizeMcpTools`. All FOUR
-  build paths (`resolve()`, `tool-select`, `tool-loop` refresh, `vectorizeMcpTools`) call
-  `buildNamespacedTools` with `{ client, slotIndex, label }`; all ~6 internal+external
-  concat sites use `mergeOfferedTools`; `SmartAgentBuilder.withToolNamespace`. **No
-  call-site or `toolClientMap` type change** — the strip is in the binding.
+  on `PipelineContext`; retain `resolved.clientDescriptors`/`configuredSlotCount` from the
+  strategy; `McpToolRegistry` stores `activeClientDescriptors`; populate
+  `ctx.mcpClientDescriptors` alongside `ctx.mcpClients`; `vectorizeMcpTools` gains a
+  `descriptors` param, runs tools through `buildNamespacedTools`, AND passes
+  `ToolKeyContext { clientIndex: slotIndex, clientCount: configuredSlotCount }` (stable) to
+  `IToolRecordKey`. All FOUR build paths call `buildNamespacedTools` with
+  `{ client, slotIndex, label }`; all ~6 internal+external concat sites use
+  `mergeOfferedTools`; `SmartAgentBuilder.withToolNamespace`. **No call-site,
+  `toolClientMap`-type, or `IToolRecordKey`-interface change** — the strip is in the
+  binding and the record key gets stable inputs.
 - `@mcp-abap-adt/llm-agent-server-libs` — `name?` on `SmartServerMcpConfig` + parse +
   label charset/uniqueness validation; thread the label into the connection config.
 - Tests (unit + registry + refresh + all-executor strip + stable-identity +
