@@ -43,6 +43,12 @@ export {
 } from './interfaces/api-adapter.js';
 // Client adapters
 export type { IClientAdapter } from './interfaces/client-adapter.js';
+export {
+  bindToolCallName,
+  defaultToolNamespace,
+  type IToolNamespace,
+  type ToolNamespaceContext,
+} from './interfaces/tool-namespace.js';
 // Logger
 export type { ILogger, LogEvent } from './logger/types.js';
 export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js';
