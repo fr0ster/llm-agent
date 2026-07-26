@@ -56,4 +56,35 @@ describe('bindToolCallName', () => {
     await bindToolCallName(real, 'X').listTools();
     assert.equal(listed, true);
   });
+  it('includes healthCheck when the wrapped client has it, delegating to the real healthCheck', async () => {
+    let healthCheckCalled = false;
+    const real = {
+      async listTools() {
+        return { ok: true, value: [] as McpTool[] };
+      },
+      async callTool() {
+        return { ok: true, value: { content: '' } };
+      },
+      async healthCheck() {
+        healthCheckCalled = true;
+        return { ok: true, value: { status: 'ready' } };
+      },
+    } as unknown as IMcpClient;
+    const bound = bindToolCallName(real, 'X');
+    assert.equal('healthCheck' in bound, true);
+    await bound.healthCheck?.();
+    assert.equal(healthCheckCalled, true);
+  });
+  it('does not include healthCheck when the wrapped client lacks it', async () => {
+    const real = {
+      async listTools() {
+        return { ok: true, value: [] as McpTool[] };
+      },
+      async callTool() {
+        return { ok: true, value: { content: '' } };
+      },
+    } as unknown as IMcpClient;
+    const bound = bindToolCallName(real, 'X');
+    assert.equal('healthCheck' in bound, false);
+  });
 });
