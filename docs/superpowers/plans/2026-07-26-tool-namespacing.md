@@ -742,7 +742,7 @@ git commit -m "feat(agent): pair mcpClientDescriptors with clients + refresh pat
 
 - [ ] **Step 2: Run RED** (current code passes runtime `clientIndex`/`clientCount = clients.length` → wrong ids under filtering).
 
-- [ ] **Step 3: Implement** — add `descriptors?: readonly McpClientDescriptor[]` and `configuredSlotCount?: number` parameters; `assertClientDescriptors(clients, descriptors, configuredSlotCount)` at entry. **Two-phase (mandatory):** the current code loops over clients and stores each as it goes (`:134`), which CANNOT see cross-client collisions. Restructure to (phase 1) gather ALL clients' `listTools` into `perClient = [{ slotIndex, label, client, tools }]` FIRST, then (phase 2) `const { tools, provenance } = buildNamespacedTools(perClient, ns)` over the full set. Then iterate the FLAT `tools` (exposed names) — for each exposed tool `t`:
+- [ ] **Step 3: Implement** — add three params: `descriptors?: readonly McpClientDescriptor[]`, `configuredSlotCount?: number`, and `toolNamespace: IToolNamespace = defaultToolNamespace` (used as `ns`; Task 10 wires the custom one at `builder.ts:979`, existing callers get the default). `assertClientDescriptors(clients, descriptors, configuredSlotCount)` at entry. **Two-phase (mandatory):** the current code loops over clients and stores each as it goes (`:134`), which CANNOT see cross-client collisions. Restructure to (phase 1) gather ALL clients' `listTools` into `perClient = [{ slotIndex, label, client, tools }]` FIRST, then (phase 2) `const { tools, provenance } = buildNamespacedTools(perClient, toolNamespace)` over the full set. Then iterate the FLAT `tools` (exposed names) — for each exposed tool `t`:
   - `text`/`metadata.name` = `t.name` (exposed);
   - record id = `toolRecordKey.key({ toolName: p.originalName, clientIndex: p.slotIndex, clientCount: configuredSlotCount ?? clients.length })` where `const p = provenance.get(t.name)!` — the record key uses the ORIGINAL name + STABLE slotIndex from **provenance**, NOT a flat-tools index into `descriptors` (which would mis-map once a client exposes multiple tools).
 
@@ -789,27 +789,49 @@ git commit -m "feat(agent): fail-fast on internal/external tool-name collision a
 
 ### Task 10: `SmartAgentBuilder.withToolNamespace` + wire the strategy through; server config parse
 
+The builder's `_toolNamespace` (from `withToolNamespace`) is the single origin; it flows
+to THREE distinct consumers by three different routes — get all three right:
+
 **Files:**
-- Modify: `packages/llm-agent-libs/src/builder.ts` (mirror `withToolRecordKey` at `:186/:479/:984/:1213`): `_toolNamespace?`, `withToolNamespace(s): this`, and pass it into the `SmartAgentDeps` the builder assembles (mirror how `toolRecordKey` flows, `:1213`).
-- Modify: `packages/llm-agent-libs/src/agent.ts` — **the registry is created HERE, not in the builder** (`:300` `new McpToolRegistry(...)`). Add `toolNamespace?: IToolNamespace` to `SmartAgentDeps` (`:110-138`, beside `toolRecordKey`) and pass `toolNamespace: deps.toolNamespace` to the registry constructor (mirror `toolRecordKey: deps.toolRecordKey`, `:307`). Also thread `deps.toolNamespace` into `ctx.toolNamespace` and the `vectorizeMcpTools` call (`agent.ts:979` / wherever the pipeline ctx + vectorize are built inside the agent).
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts` (or the mcp-config parse) — read `mcp[].name`, validate charset `^[a-zA-Z0-9_-]+$` + uniqueness among servers, thread into the connection config.
-- Test: `packages/llm-agent-libs/src/__tests__/` — a test that constructs a real `SmartAgent` via the builder with `withToolNamespace(custom)` and asserts the SmartAgent's INTERNAL registry `resolve()` uses it; + a server-libs config-parse test.
+- Modify: `packages/llm-agent-libs/src/builder.ts` — mirror `withToolRecordKey`
+  (`:186/:479/:984/:1213`): `_toolNamespace?`, `withToolNamespace(s): this`. Then
+  distribute: (a) into the assembled `SmartAgentDeps.toolNamespace` (→ the registry, via
+  agent.ts); (b) as an argument to the `vectorizeMcpTools(...)` call at `builder.ts:979`;
+  (c) into `pipeline.initialize({ … })` at `builder.ts:1136` as `PipelineDeps.toolNamespace`.
+- Modify: `packages/llm-agent-libs/src/agent.ts` — the registry is created HERE
+  (`:300` `new McpToolRegistry(...)`). Add `toolNamespace?: IToolNamespace` to
+  `SmartAgentDeps` (`:110-138`, beside `toolRecordKey`) and pass
+  `toolNamespace: deps.toolNamespace` to the registry constructor (mirror
+  `toolRecordKey: deps.toolRecordKey`, `:307`). **agent.ts does NOT build ctx or call
+  vectorize** — those are the pipeline/builder routes above.
+- Modify: `packages/llm-agent-libs/src/interfaces/pipeline.ts` (or wherever `PipelineDeps`
+  lives) — add `toolNamespace?: IToolNamespace`.
+- Modify: `packages/llm-agent-libs/src/pipeline/default-pipeline.ts` — where it builds the
+  `PipelineContext` (`:464` area, from `this.deps`), set `toolNamespace: this.deps.toolNamespace`.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts` (or
+  the mcp-config parse) — read `mcp[].name`, validate charset `^[a-zA-Z0-9_-]+$` +
+  uniqueness among servers, thread into the connection config.
+- Test: `packages/llm-agent-libs/src/__tests__/` — a real `SmartAgent` built via the
+  builder with `withToolNamespace(custom)` whose internal registry `resolve()` uses it; +
+  a server-libs config-parse test.
 
-**Produces:** a consumer can swap the namespace strategy and it reaches the registry created inside `SmartAgent`; a labeled multi-server config yields `label__tool`; an invalid/duplicate label is rejected at parse.
+**Produces:** the custom strategy reaches all three consumers (registry, vectorize,
+pipeline ctx); a labeled multi-server config yields `label__tool`; an invalid/duplicate
+label is rejected at parse.
 
-- [ ] **Step 1: Write the failing tests** — (a) build a `SmartAgent` through the builder with `withToolNamespace(custom)` where `custom.expose` uppercases the prefix; drive its internal registry `resolve()` (two embedded clients, same tool) and assert the exposed name reflects the CUSTOM strategy (proves it reached `agent.ts`'s registry, not just the builder). (b) server-libs: `mcp: [{name: 'a b'}]` (space) and two servers both `name: 'x'` each throw a clear config error; a valid `mcp[].name` threads to the connection config.
+- [ ] **Step 1: Write the failing tests** — (a) build a `SmartAgent` through the builder with `withToolNamespace(custom)` where `custom.expose` uppercases the prefix; drive its internal registry `resolve()` (two embedded clients, same tool) and assert the exposed name reflects the CUSTOM strategy (proves it reached `agent.ts`'s registry). (b) server-libs: `mcp: [{name: 'a b'}]` (space) and two servers both `name: 'x'` each throw a clear config error; a valid `mcp[].name` threads to the connection config.
 
 - [ ] **Step 2: Run RED** (custom strategy ignored — registry still uses `defaultToolNamespace`).
 
-- [ ] **Step 3: Implement** — `builder.ts`: `_toolNamespace?`, `withToolNamespace(s): this`, include it in the assembled `SmartAgentDeps`. `agent.ts`: `SmartAgentDeps.toolNamespace?: IToolNamespace`; pass `toolNamespace: deps.toolNamespace` to `new McpToolRegistry(...)`; set `ctx.toolNamespace = deps.toolNamespace` and pass it to `vectorizeMcpTools`. server-libs: parse/validate `mcp[].name` onto the connection config. Default everywhere = `defaultToolNamespace`.
+- [ ] **Step 3: Implement** — the three routes above, default everywhere = `defaultToolNamespace` (so omitting `withToolNamespace` is unchanged). `vectorizeMcpTools` takes a `toolNamespace: IToolNamespace = defaultToolNamespace` param (used as its `ns`); the tool-loop/tool-select handlers read `ctx.toolNamespace ?? defaultToolNamespace` (Task 7 added the field). server-libs: parse/validate `mcp[].name` onto the connection config.
 
 - [ ] **Step 4: Run GREEN + both suites.**
 
 - [ ] **Step 5: Build + lint, commit**
 
 ```bash
-git add packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/agent.ts packages/llm-agent-server-libs/src/smart-agent/ packages/llm-agent-libs/src/__tests__/
-git commit -m "feat: withToolNamespace threaded to the SmartAgent registry + mcp[].name parse (#244)"
+git add packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/interfaces/pipeline.ts packages/llm-agent-libs/src/pipeline/default-pipeline.ts packages/llm-agent-server-libs/src/smart-agent/ packages/llm-agent-libs/src/__tests__/
+git commit -m "feat: withToolNamespace threaded to registry + vectorize + pipeline ctx + mcp[].name parse (#244)"
 ```
 
 ---
