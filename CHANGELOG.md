@@ -38,6 +38,18 @@ are all additive.
   into a multi-second stall. Both retry decorators (LLM and embedder) now share
   one `isRetryableStatus`: a structured status wins, the message is a
   word-boundary last resort.
+- **SSE keep-alive during long tool execution under every pipeline (#246).** Only
+  the flat pipeline streamed heartbeats; `linear` / `dag` / `controller` /
+  `stepper` / `cyclic` ran tool execution below the `ctx.yield` boundary, so a
+  long MCP call left the SSE connection silent until the phase ended (~22s → the
+  intermediary closed it, `No response`). A transport-level idle keep-alive at
+  both streaming surfaces (`/v1/chat/completions`, `/v1/messages`) now writes a
+  keep-alive comment when the stream is idle past `agent.heartbeatIntervalMs`. A
+  single `heartbeatIntervalMs` normalization (`<= 0` / `NaN` / `±Infinity`
+  disables, never a busy loop) is applied to both the keep-alive and the flat
+  tool-loop's own heartbeat — fixing a pre-existing busy loop on `0`/`NaN`. Under
+  `withDagCoordinator` the finalizer remains the sole client-facing *content*
+  source: a notice-only custom finalizer must re-emit `interpreterOutput`.
 
 ### Added
 

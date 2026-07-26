@@ -3,6 +3,7 @@
  * Internal module — not re-exported by the package barrel.
  */
 
+import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartServerAgentConfig,
   SmartServerConfig,
@@ -251,11 +252,15 @@ export function resolveAgentSection(
         }
       : {}),
     ...(get(yaml, 'agent', 'heartbeatIntervalMs') !== undefined
-      ? {
-          heartbeatIntervalMs: Number(
-            get(yaml, 'agent', 'heartbeatIntervalMs'),
-          ),
-        }
+      ? (() => {
+          const n = Number(get(yaml, 'agent', 'heartbeatIntervalMs'));
+          if (normalizeHeartbeatMs(n) === null) {
+            console.warn(
+              `[config] agent.heartbeatIntervalMs=${get(yaml, 'agent', 'heartbeatIntervalMs')} is invalid or <= 0 — SSE keep-alive and tool-loop heartbeat are DISABLED.`,
+            );
+          }
+          return { heartbeatIntervalMs: n };
+        })()
       : {}),
     ...(get(yaml, 'agent', 'healthTimeoutMs') !== undefined
       ? {

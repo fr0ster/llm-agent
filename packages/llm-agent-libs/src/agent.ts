@@ -75,6 +75,7 @@ import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { LegacyAccumulateContextStrategy } from './pipeline/context/tool-loop-context/index.js';
+import { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
   buildBlockedToolMessages,
@@ -1343,7 +1344,7 @@ export class SmartAgent {
         return;
       }
       const batch = internalCalls.slice(0, remaining);
-      const heartbeatMs = this.config.heartbeatIntervalMs ?? 5000;
+      const heartbeatMs = normalizeHeartbeatMs(this.config.heartbeatIntervalMs);
 
       // Yield all progress messages before execution
       for (const tc of batch) {

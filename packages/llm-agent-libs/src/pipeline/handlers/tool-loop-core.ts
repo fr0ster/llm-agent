@@ -223,7 +223,7 @@ export interface IExecuteToolBatchArgs {
   currentTools: LlmTool[];
   toolCallCount: number;
   timingLog: TimingEntry[]; // pushed into (per-tool timing)
-  heartbeatMs: number;
+  heartbeatMs: number | null;
   options: CallOptions | undefined;
   onToolExecuted?: (r: ToolExecResult) => void; // B: logToolCall; A: omitted
   mcpFailureClassifier?: IMcpFailureClassifier;
@@ -308,25 +308,31 @@ export async function* executeToolBatchWithHeartbeat(
     p.then(() => pendingTools.delete(batch[i].name));
   }
 
-  while (!settled) {
-    const winner = await Promise.race([
-      allDone.then((r) => ({ tag: 'done' as const, results: r })),
-      new Promise<{ tag: 'tick' }>((resolve) =>
-        setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
-      ),
-    ]);
-    if (winner.tag === 'done') {
-      results = winner.results;
-      settled = true;
-    } else {
-      for (const tool of pendingTools) {
-        yield {
-          ok: true,
-          value: {
-            content: '',
-            heartbeat: { tool, elapsed: Date.now() - toolStartTime },
-          },
-        };
+  if (heartbeatMs === null) {
+    // #246: keep-alive disabled → no heartbeat timer, just await completion.
+    // Prevents a 0/NaN interval from busy-looping the tick race.
+    results = await allDone;
+  } else {
+    while (!settled) {
+      const winner = await Promise.race([
+        allDone.then((r) => ({ tag: 'done' as const, results: r })),
+        new Promise<{ tag: 'tick' }>((resolve) =>
+          setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
+        ),
+      ]);
+      if (winner.tag === 'done') {
+        results = winner.results;
+        settled = true;
+      } else {
+        for (const tool of pendingTools) {
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              heartbeat: { tool, elapsed: Date.now() - toolStartTime },
+            },
+          };
+        }
       }
     }
   }

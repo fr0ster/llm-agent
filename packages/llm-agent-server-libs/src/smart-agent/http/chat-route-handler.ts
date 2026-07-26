@@ -24,6 +24,7 @@ import {
   mapStopReason,
   readBody,
 } from './response-helpers.js';
+import { attachSseKeepAlive } from './sse-heartbeat.js';
 
 /**
  * POST /v1/chat/completions handler (OpenAI-compatible), extracted verbatim
@@ -273,6 +274,7 @@ export async function handleChat(
       ...opts,
       externalResults,
     });
+    const keepAlive = attachSseKeepAlive(res, cfg.agent?.heartbeatIntervalMs);
     let firstChunk = true;
     let finishReasonSent = false;
     let lastUsage: {
@@ -281,116 +283,121 @@ export async function handleChat(
       total_tokens: number;
     } | null = null;
 
-    for await (const chunk of stream) {
-      if (!chunk.ok) {
-        const errorChunk = {
+    try {
+      for await (const chunk of stream) {
+        keepAlive.reset();
+        if (!chunk.ok) {
+          const errorChunk = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: responseModel,
+            choices: [
+              {
+                index: 0,
+                delta: { content: `[Error] ${chunk.error.message}` },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+          res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
+          finishReasonSent = true;
+          break;
+        }
+        // SSE heartbeat comment — keeps connection alive, ignored by clients
+        if (chunk.value.heartbeat) {
+          const hb = chunk.value.heartbeat;
+          res.write(`: heartbeat tool=${hb.tool} elapsed=${hb.elapsed}ms\n\n`);
+          continue;
+        }
+        // SSE timing breakdown comment — sent with the final chunk
+        if (chunk.value.timing) {
+          const parts = chunk.value.timing.map(
+            (t: { phase: string; duration: number }) =>
+              `${t.phase}=${t.duration}ms`,
+          );
+          res.write(`: timing ${parts.join(' ')}\n\n`);
+        }
+        if (chunk.value.usage) {
+          lastUsage = {
+            prompt_tokens: chunk.value.usage.promptTokens,
+            completion_tokens: chunk.value.usage.completionTokens,
+            total_tokens: chunk.value.usage.totalTokens,
+          };
+        }
+        const baseResponse = {
           id,
           object: 'chat.completion.chunk',
           created,
           model: responseModel,
-          choices: [
-            {
-              index: 0,
-              delta: { content: `[Error] ${chunk.error.message}` },
-              finish_reason: 'stop',
-            },
-          ],
+          usage: null,
         };
-        res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
-        finishReasonSent = true;
-        break;
-      }
-      // SSE heartbeat comment — keeps connection alive, ignored by clients
-      if (chunk.value.heartbeat) {
-        const hb = chunk.value.heartbeat;
-        res.write(`: heartbeat tool=${hb.tool} elapsed=${hb.elapsed}ms\n\n`);
-        continue;
-      }
-      // SSE timing breakdown comment — sent with the final chunk
-      if (chunk.value.timing) {
-        const parts = chunk.value.timing.map(
-          (t: { phase: string; duration: number }) =>
-            `${t.phase}=${t.duration}ms`,
-        );
-        res.write(`: timing ${parts.join(' ')}\n\n`);
-      }
-      if (chunk.value.usage) {
-        lastUsage = {
-          prompt_tokens: chunk.value.usage.promptTokens,
-          completion_tokens: chunk.value.usage.completionTokens,
-          total_tokens: chunk.value.usage.totalTokens,
-        };
-      }
-      const baseResponse = {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: responseModel,
-        usage: null,
-      };
 
-      if (firstChunk) {
-        res.write(
-          `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: { role: 'assistant', content: chunk.value.content || '' }, finish_reason: null }] })}\n\n`,
-        );
-        firstChunk = false;
-        if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
-      }
+        if (firstChunk) {
+          res.write(
+            `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: { role: 'assistant', content: chunk.value.content || '' }, finish_reason: null }] })}\n\n`,
+          );
+          firstChunk = false;
+          if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
+        }
 
-      if (chunk.value.content || chunk.value.toolCalls) {
-        const delta: Record<string, unknown> = {};
-        if (chunk.value.content) delta.content = chunk.value.content;
-        if (chunk.value.toolCalls) {
-          delta.tool_calls = chunk.value.toolCalls.map(
-            (call: StreamToolCall, index: number) => {
-              const tc = toToolCallDelta(call, index);
-              return {
-                index: tc.index,
-                id: tc.id,
-                type: 'function',
-                function: {
-                  name: tc.name,
-                  arguments: tc.arguments || '',
-                },
-              };
-            },
+        if (chunk.value.content || chunk.value.toolCalls) {
+          const delta: Record<string, unknown> = {};
+          if (chunk.value.content) delta.content = chunk.value.content;
+          if (chunk.value.toolCalls) {
+            delta.tool_calls = chunk.value.toolCalls.map(
+              (call: StreamToolCall, index: number) => {
+                const tc = toToolCallDelta(call, index);
+                return {
+                  index: tc.index,
+                  id: tc.id,
+                  type: 'function',
+                  function: {
+                    name: tc.name,
+                    arguments: tc.arguments || '',
+                  },
+                };
+              },
+            );
+          }
+          res.write(
+            `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
           );
         }
+
+        if (chunk.value.finishReason) {
+          res.write(
+            `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: mapStopReason(chunk.value.finishReason as StopReason) }] })}\n\n`,
+          );
+          finishReasonSent = true;
+        }
+      }
+
+      if (!finishReasonSent) {
+        const baseResponse = {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: responseModel,
+          usage: null,
+        };
         res.write(
-          `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
+          `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
         );
       }
 
-      if (chunk.value.finishReason) {
+      if (
+        (cfg.reportUsage !== false || body.stream_options?.include_usage) &&
+        lastUsage
+      ) {
         res.write(
-          `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: mapStopReason(chunk.value.finishReason as StopReason) }] })}\n\n`,
+          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
         );
-        finishReasonSent = true;
       }
+      res.write('data: [DONE]\n\n');
+    } finally {
+      keepAlive.stop();
     }
-
-    if (!finishReasonSent) {
-      const baseResponse = {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: responseModel,
-        usage: null,
-      };
-      res.write(
-        `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
-      );
-    }
-
-    if (
-      (cfg.reportUsage !== false || body.stream_options?.include_usage) &&
-      lastUsage
-    ) {
-      res.write(
-        `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
-      );
-    }
-    res.write('data: [DONE]\n\n');
     res.end();
     log({
       event: 'request_done',

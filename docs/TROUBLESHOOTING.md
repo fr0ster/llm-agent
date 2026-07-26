@@ -298,6 +298,26 @@ The default classifier (`IMcpFailureClassifier`) is defined in `packages/llm-age
 
 ---
 
+### `controller`/`dag`/`linear`/`stepper` SSE closes (`No response`) on a long MCP tool call
+
+**Cause (before #246):** only the flat pipeline surfaced heartbeats. The other
+pipelines execute tools below the `ctx.yield` boundary, so during a long MCP call
+nothing reached the wire and an idle intermediary (CF gorouter, browser) closed
+the SSE connection after ~22s.
+
+**Fix:** upgrade to the release containing #246. Both streaming surfaces
+(`/v1/chat/completions`, `/v1/messages`) emit an SSE `: keep-alive` comment when
+idle past `agent.heartbeatIntervalMs` (default 5000). Set `heartbeatIntervalMs`
+to a smaller value for stricter intermediaries; `<= 0` disables keep-alive (and
+the flat tool-loop heartbeat) entirely — an invalid value (`NaN`) also disables,
+never busy-loops.
+
+**DAG note:** under `withDagCoordinator` the finalizer is the sole content
+source. A custom notice-only finalizer that does not re-emit `interpreterOutput`
+yields an empty answer — re-emit it as content.
+
+---
+
 ## Coordinator / multi-agent orchestration
 
 ### Response body is "(no response)" and usage tokens are all zero
