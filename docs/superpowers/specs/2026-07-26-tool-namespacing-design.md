@@ -38,7 +38,8 @@ executor and more than one place that builds the tool→client map (mapped below
   bare — the single-server case is byte-for-byte unchanged.
 - **Prefix = a config server label**, falling back to the client index. A new optional
   `name?` on the MCP config gives a durable, readable prefix (`primary__Search`); when
-  unset, `s${clientIndex}` (`s0__Search`), so the bug is fixed regardless of config.
+  unset, `s${slotIndex}` (`s0__Search`) — the STABLE configured slot, not the runtime
+  array position (Component 2) — so the bug is fixed regardless of config.
 - **Separator `__`** — within the LLM tool-name charset.
 - **Consumer-owned strategy** (`IToolNamespace`), mirroring `IToolRecordKey`.
 - `IToolRecordKey` (#240, released) is **unchanged**.
@@ -67,7 +68,7 @@ New in `@mcp-abap-adt/llm-agent` (beside `IToolRecordKey`):
 ```ts
 export interface ToolNamespaceContext {
   toolName: string;      // original name the server exposes
-  prefix: string;        // server config `name`, else `s${clientIndex}`
+  prefix: string;        // resolved by the builder: config `name`, else `s${slotIndex}`
   colliding: boolean;    // name exposed by >1 active client
 }
 export interface IToolNamespace {
@@ -82,14 +83,38 @@ export const defaultToolNamespace: IToolNamespace = {
 
 Swappable via `SmartAgentBuilder.withToolNamespace`, like `withToolRecordKey`.
 
-### 2. Config `name?` — the durable prefix source
+### 2. Config `name?` + a STABLE runtime client identity (the prefix source)
 
-Add `name?: string` to `SmartServerMcpConfig` (`smart-server.ts`) and the lower
-`MCPClientConfig` (`llm-agent-mcp`). Prefix = `config.name ?? \`s${clientIndex}\``.
-**Config-parse validation:** each `name`, if set, must match `^[a-zA-Z0-9_-]+$` (a space
-or `:` would yield an illegal tool name) and must be **unique** among the configured MCP
-servers (two equal labels would produce equal prefixes → a re-collision). Reject with a
-clear error otherwise. The index fallback is inherently charset-safe and unique.
+**The prefix must derive from a stable identity, not the runtime array position.** The
+connection strategy returns a bare `IMcpClient[]` (`McpConnectionResult.clients`), and
+`LazyConnectionStrategy` FILTERS OUT unhealthy slots
+(`lazy-connection-strategy.ts:123-125`), so a client's array index ≠ its configured
+position — if server 0 is down, server 1 becomes index 0 and an index-based prefix
+silently shifts `s1__` → `s0__`. The label is likewise unrecoverable at runtime: no
+`name` exists on any config layer and no client carries a config back-reference. So an
+`s${arrayIndex}` prefix is NOT stable. Two coordinated changes fix this:
+
+- **`name?: string` on every config layer** it must flow through:
+  `SmartServerMcpConfig` (`smart-server.ts`) → `BuilderMcpConfig`
+  (`builder-types.ts`) / `McpConnectionConfig` (`mcp-connection-strategy.ts`) →
+  `MCPClientConfig` (`llm-agent-mcp`). Parse-time validation: each `name`, if set, must
+  match `^[a-zA-Z0-9_-]+$` and be **unique** among the configured MCP servers (equal
+  labels → equal prefixes → re-collision). The index fallback is charset-safe and unique.
+- **A stable per-client descriptor on `McpConnectionResult`.** Add (additive)
+  `clientDescriptors?: readonly { slotIndex: number; label?: string }[]`, aligned by
+  index with `clients`. `slotIndex` is the client's ORIGINAL configured-array position
+  (stable across reconnect and independent of which slots are currently healthy);
+  `label` is that slot's config `name`. `LazyConnectionStrategy` already keeps a
+  `Slot[]` 1:1 with configs (`:40-44`) — it populates a descriptor from each surviving
+  slot's index + config. `PeriodicConnectionStrategy` forwards it. Strategies that never
+  filter (Eager/Noop/Embedded — array position already equals config position) may omit
+  it; consumers then fall back to the array index.
+
+`McpToolRegistry` stores `activeClientDescriptors` beside `activeClients`
+(`resolveActiveClients`, `:50-56`) and passes `{ client, slotIndex, label }` per active
+client into `buildNamespacedTools`. Prefix = `label ?? \`s${slotIndex}\``. Because
+`slotIndex`/`label` come from the config-stable slot, the prefix is stable across
+reconnect and across a peer server going down.
 
 ### 3. `buildNamespacedTools` — the single shared builder (used by ALL three map paths)
 
@@ -98,7 +123,7 @@ RAG never drift:
 
 ```ts
 export function buildNamespacedTools(
-  perClient: Array<{ clientIndex: number; label?: string; client: IMcpClient; tools: McpTool[] }>,
+  perClient: Array<{ slotIndex: number; label?: string; client: IMcpClient; tools: McpTool[] }>,
   ns: IToolNamespace,
 ): {
   tools: McpTool[];                        // each with `name` = the exposed name
@@ -107,6 +132,7 @@ export function buildNamespacedTools(
 ```
 
 Behaviour:
+- `prefix = label ?? \`s${slotIndex}\`` (the stable identity from Component 2).
 - collision = a tool name present in ≥2 clients' `tools`.
 - for each (client, tool): `exposed = ns.expose({ toolName, prefix, colliding })`;
   push `{ ...tool, name: exposed }`; set `toolClientMap[exposed]` to a client bound to the
@@ -169,7 +195,28 @@ clients' tools, so it runs them through `buildNamespacedTools` (same `IToolNames
 labels) and stores each exposed name. `toolNameFromRecord` returns a non-empty
 `meta.name` verbatim, so selection → LLM → executor all agree.
 
-### 7. `IToolRecordKey` — unchanged
+### 7. Internal↔external tool-name collision — a checked merge (the FINAL LLM list must be unique)
+
+`buildNamespacedTools` guarantees the internal MCP set is unique, but the list offered
+to the LLM is `[...internalTools, ...externalTools]` (client-provided per-request tools),
+concatenated with NO de-dup at ~6 sites (`tool-select.ts:119`, `tool-loop.ts:222/339`,
+`agent.ts:873/981`, `rag-orchestrator.ts:236`, subagent/cyclic executors). An external
+tool can be named `Search`, `primary__Search`, or `s0__Search` — colliding with a bare
+OR a generated internal name. `classifyToolCalls` (`tool-loop-core.ts:44-65`) then
+partitions by INDEPENDENT membership (`toolClientMap.has` vs `externalToolNames.has`), so
+a both-member name is dispatched as internal AND surfaced as external in the same turn.
+No reserved-name check exists today.
+
+A shared helper `mergeOfferedTools(internalTools, externalTools)` replaces the bare
+concat at every merge site: it concatenates and, on any name present in BOTH sets,
+**fail-fasts with a clear diagnostic** (`tool "<name>" is both an internal MCP tool
+(exposed name) and a client-provided external tool — rename the external tool`). This
+guarantees the offered list is unique, so `classifyToolCalls` can never double-classify.
+It closes the collision for a bare internal name AND a generated namespace equally, and
+centralizes the rule the way `buildNamespacedTools` centralizes exposure. (`injectToolPriority`'s
+"prefer internal" prompt hint is advisory only and does not prevent the collision.)
+
+### 8. `IToolRecordKey` — unchanged
 
 Record id stays `tool:${clientIndex}:${name}` (original name + index); the exposed name
 lives in `metadata.name`. Independent concerns.
@@ -202,9 +249,13 @@ Pathological: a real bare tool literally named "s0__Search" alongside a generate
   → `buildNamespacedTools` fail-fast with a diagnostic (Component 3). The strip is never
   by parsing the separator, so a real tool named `Foo__Bar` is fine unless it actually
   produces a duplicate exposed name (then it fails fast like any collision).
-- **External (client-provided) tools** → not in `toolClientMap`, never namespaced.
-- **Reconnect / re-vectorize** → every rebuild path uses the same builder, so exposed
-  names + bindings are consistent.
+- **External (client-provided) tool collides with a bare or generated internal name**
+  → `mergeOfferedTools` fail-fasts (Component 7); the final LLM list is always unique and
+  `classifyToolCalls` never double-classifies.
+- **A peer server is down / reconnect** → the prefix comes from the stable `slotIndex`
+  (config position) + `label`, NOT the filtered array position, so a colliding tool's
+  exposed name does not shift when another server drops (Component 2). Every rebuild path
+  uses the same builder over the same stable descriptors.
 - **Three-way collision** → each client gets its own prefix; all survive; uniqueness
   guard still applies.
 
@@ -228,6 +279,13 @@ Pathological: a real bare tool literally named "s0__Search" alongside a generate
   (mixed/external-resume), and (c) the coordinator `buildCallTool`/self-dispatch path.
   Assert the ORIGINAL name is sent and the CORRECT client is used; the other client is
   not called.
+- **Stable identity across a dropped peer:** clients 0/1/2 all expose `Search`; client 1
+  is unhealthy so the strategy returns clients 0 and 2. Their exposed prefixes stay
+  `s0`/`s2` (or their labels) — NOT `s0`/`s1` — proving the prefix follows `slotIndex`,
+  not the filtered array position.
+- **Internal↔external collision fail-fast:** `mergeOfferedTools` throws when an external
+  tool is named (a) the same as a bare internal MCP tool, and (b) the same as a generated
+  namespace (`s0__Search`) — both with a clear diagnostic.
 - **End-to-end (issue acceptance):** two embedded MCP servers, same tool name, distinct
   behaviours; a RAG hit for server 1's tool drives a call that reaches **client 1**.
 - **RAG agreement:** `vectorizeMcpTools` stores exposed `metadata.name`;
@@ -251,16 +309,25 @@ Pathological: a real bare tool literally named "s0__Search" alongside a generate
 One PR:
 
 - `@mcp-abap-adt/llm-agent` — `IToolNamespace` + `defaultToolNamespace` +
-  `ToolNamespaceContext`; the `bindToolCallName` wrapper factory; the pure
-  `buildNamespacedTools` (with the global-uniqueness guard).
-- `@mcp-abap-adt/llm-agent-mcp` — `name?` on `MCPClientConfig`.
-- `@mcp-abap-adt/llm-agent-libs` — `resolve()`, `tool-select`, `tool-loop` refresh, and
-  `vectorizeMcpTools` use `buildNamespacedTools`; `SmartAgentBuilder.withToolNamespace`.
-  **No call-site or `toolClientMap` type change** — the strip is in the binding.
-- `@mcp-abap-adt/llm-agent-server-libs` — `name?` on `SmartServerMcpConfig` + parse +
-  label charset/uniqueness validation; wire labels into registry/vectorize.
-- Tests (unit + registry + refresh + all-executor strip + end-to-end) and docs.
+  `ToolNamespaceContext`; `bindToolCallName` wrapper factory; the pure
+  `buildNamespacedTools` (global-uniqueness guard); `mergeOfferedTools`; `name?` on
+  `McpConnectionConfig`; `clientDescriptors?` on `McpConnectionResult`.
+- `@mcp-abap-adt/llm-agent-mcp` — `name?` on `MCPClientConfig`; `LazyConnectionStrategy`
+  populates `clientDescriptors` from its `Slot[]` (config-stable `slotIndex` + `label`);
+  `PeriodicConnectionStrategy` forwards it.
+- `@mcp-abap-adt/llm-agent-libs` — `McpToolRegistry` stores `activeClientDescriptors` and
+  passes `{ client, slotIndex, label }` to `buildNamespacedTools`; `resolve()`,
+  `tool-select`, `tool-loop` refresh, and `vectorizeMcpTools` use `buildNamespacedTools`;
+  all ~6 internal+external concat sites use `mergeOfferedTools`;
+  `SmartAgentBuilder.withToolNamespace`. **No call-site or `toolClientMap` type change** —
+  the strip is in the binding.
+- `@mcp-abap-adt/llm-agent-server-libs` — `name?` on `SmartServerMcpConfig` +
+  `BuilderMcpConfig` + parse + label charset/uniqueness validation; thread the label into
+  the connection config.
+- Tests (unit + registry + refresh + all-executor strip + stable-identity +
+  internal↔external + end-to-end) and docs.
 
 Additive to the public API (`IToolNamespace`, `bindToolCallName`, `buildNamespacedTools`,
-`mcp[].name`); `IToolRecordKey`, `PipelineContext.toolClientMap`'s type, and
-single-server behaviour are all unchanged.
+`mergeOfferedTools`, `McpConnectionResult.clientDescriptors`, `mcp[].name`);
+`IToolRecordKey`, `PipelineContext.toolClientMap`'s type, and single-server behaviour are
+all unchanged.
