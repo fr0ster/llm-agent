@@ -286,7 +286,14 @@ export interface NamespaceClientInput {
 export function buildNamespacedTools(
   perClient: NamespaceClientInput[],
   ns: IToolNamespace,
-): { tools: McpTool[]; toolClientMap: Map<string, IMcpClient> } {
+): {
+  tools: McpTool[];
+  toolClientMap: Map<string, IMcpClient>;
+  /** Per exposed name → its source, so a vectorizer can build the record key from
+   *  the ORIGINAL name + stable slotIndex (a flat tools[] index would not identify
+   *  the owning client once a client has multiple tools). */
+  provenance: Map<string, { slotIndex: number; originalName: string }>;
+} {
   // Defence in depth against a buggy custom connection strategy: slotIndex must be unique.
   const slots = new Set<number>();
   for (const pc of perClient) {
@@ -301,7 +308,7 @@ export function buildNamespacedTools(
 
   const tools: McpTool[] = [];
   const toolClientMap = new Map<string, IMcpClient>();
-  const owner = new Map<string, { slotIndex: number; toolName: string }>(); // exposed → source
+  const provenance = new Map<string, { slotIndex: number; originalName: string }>(); // exposed → source
 
   for (const pc of perClient) {
     const prefix = pc.label ?? `s${pc.slotIndex}`;
@@ -317,22 +324,24 @@ export function buildNamespacedTools(
             `must be non-empty, /^[a-zA-Z0-9_-]+$/, <= 64 chars.`,
         );
       // Global-uniqueness guard — the final exposed set (renamed AND bare) must be unique.
-      const prev = owner.get(exposed);
+      const prev = provenance.get(exposed);
       if (prev)
         throw new Error(
           `Tool name collision: "${exposed}" is produced by both ` +
             `slot ${prev.slotIndex} tool "${prev.toolName}" and slot ${pc.slotIndex} tool "${t.name}". ` +
             `Set distinct mcp[].name labels.`,
         );
-      owner.set(exposed, { slotIndex: pc.slotIndex, toolName: t.name });
+      provenance.set(exposed, { slotIndex: pc.slotIndex, originalName: t.name });
 
       tools.push({ ...t, name: exposed });
       toolClientMap.set(exposed, exposed === t.name ? pc.client : bindToolCallName(pc.client, t.name));
     }
   }
-  return { tools, toolClientMap };
+  return { tools, toolClientMap, provenance };
 }
 ```
+
+> Consumers that ignore `provenance` (registry/refresh — they only need `tools`+`toolClientMap`) simply destructure the two they use; the vectorizer (Task 8) uses `provenance` for the record key.
 
 - [ ] **Step 4: Run GREEN** — all cases pass.
 
@@ -560,7 +569,7 @@ git commit -m "feat: mcp[].name + McpConnectionResult descriptors + assertClient
 **Files:**
 - Modify: `packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts` (~`:40-44` Slot, `:123-125` filter/return)
 - Modify: `packages/llm-agent-mcp/src/strategies/periodic-connection-strategy.ts` (~`:67-71` return)
-- Test: `packages/llm-agent-mcp/src/strategies/__tests__/lazy-connection-strategy.test.ts` (append, or create if none — verify path first)
+- Test: `packages/llm-agent-mcp/src/__tests__/lazy-connection-strategy.test.ts` AND `packages/llm-agent-mcp/src/__tests__/periodic-connection-strategy.test.ts` (both exist; append) — Periodic changes too, so it needs its own forwarding assertion.
 
 **Consumes:** `McpClientDescriptor` (Task 4). **Produces:** a `McpConnectionResult` with (a) `clientDescriptors[i]` = `{ slotIndex: <config index of clients[i]>, label: <slot config.name> }`, (b) `configuredSlotCount` = total configured slots, and (c) a **bidirectional** `toolsChanged` (fires on a slot gained OR lost).
 
@@ -569,6 +578,7 @@ git commit -m "feat: mcp[].name + McpConnectionResult descriptors + assertClient
 Model on the existing lazy-connection-strategy test harness (read it first for the exact `Slot`/config stub shape). Assert:
 1. **Descriptors + stable slotIndex:** 3 configured servers, slot 1 unhealthy → `resolve()` returns 2 clients, `clientDescriptors = [{slotIndex:0,label:cfg0.name},{slotIndex:2,label:cfg2.name}]` (original config indices 0 and 2, NOT 0/1), and `configuredSlotCount === 3`.
 2. **`toolsChanged` on gain / loss / same-slot reconnect:** from two healthy slots — (a) one goes unhealthy → `toolsChanged === true` (a DROP); (b) it returns healthy → `true`; (c) a slot whose client is found unhealthy then RECONNECTS with a new client (different tools) in the SAME resolve → `true` even though the healthy-slot-index set is unchanged; (d) no client change → `false`.
+3. **`PeriodicConnectionStrategy` forwards both** (its own test in `periodic-connection-strategy.test.ts`): its `resolve()` result carries the wrapped Lazy's `clientDescriptors` + `configuredSlotCount`, and its `toolsChanged` reflects the same gain/loss/reconnect signal.
 
 - [ ] **Step 2: Run RED** — `clientDescriptors`/`configuredSlotCount` undefined; `toolsChanged` stays `false` on a drop (current `anyNewlyHealthy` only) and on a same-slot reconnect (set-diff misses it).
 
@@ -613,7 +623,7 @@ signature changes, so gains are still covered).
 ```bash
 npm run build && npm run lint:check
 npm test --workspace @mcp-abap-adt/llm-agent-mcp 2>&1 | grep -E "^ℹ (tests|pass|fail)"
-git add packages/llm-agent-mcp/src/strategies/
+git add packages/llm-agent-mcp/src/strategies/ packages/llm-agent-mcp/src/__tests__/
 git commit -m "feat(mcp): LazyConnectionStrategy emits stable clientDescriptors (slotIndex+label) (#244)"
 ```
 
@@ -673,10 +683,11 @@ git commit -m "feat(agent): registry resolve() namespaces colliding tools + keep
 ### Task 7: `PipelineContext.mcpClientDescriptors` + `tool-select` / `tool-loop` refresh use the builder
 
 **Files:**
-- Modify: `packages/llm-agent-libs/src/pipeline/context.ts` (`:128` area — add field)
+- Modify: `packages/llm-agent-libs/src/pipeline/context.ts` (add `mcpClientDescriptors?` + `toolNamespace?` beside `mcpClients`, `:94`)
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-select.ts` (`:43-52`)
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` (`:203-221`)
-- Modify: the pipeline setup that populates `ctx.mcpClients` (grep `mcpClients:` assignment; likely `default-pipeline.ts`) to also set `mcpClientDescriptors` from the connection result.
+- Modify: `packages/llm-agent-libs/src/pipeline/default-pipeline.ts` (`:464` — set `ctx.mcpClientDescriptors` from deps beside `mcpClients`) + the pipeline deps type it reads (`PipelineDeps`/`interfaces/pipeline.ts`) to carry `mcpClientDescriptors`.
+- Modify: `packages/llm-agent-libs/src/builder.ts` (`:~950` — capture `resolved.clientDescriptors` into `deps.mcpClientDescriptors` from the same `connectionStrategy.resolve()`).
 - Test: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-stream.test.ts` (append) or the tool-select test.
 
 **Consumes:** `buildNamespacedTools`, `McpClientDescriptor`. **Produces:** both refresh paths namespace collisions using the stable descriptors; the second colliding tool is never dropped on refresh.
@@ -693,7 +704,15 @@ git commit -m "feat(agent): registry resolve() namespaces colliding tools + keep
   but the FIELD must exist now so the handlers below type-check).
 - `tool-select.ts:43-52`: replace the `for (const t …) if (!has) { push; set }` loop with: collect `perClient = [{ slotIndex, label, client, tools }]` from the settled `listTools` results zipped with `ctx.mcpClientDescriptors` (fallback `{slotIndex:i}`), then `const { tools, toolClientMap } = buildNamespacedTools(perClient, ctx.toolNamespace ?? defaultToolNamespace)`; push `tools` into `ctx.mcpTools` and copy entries into `ctx.toolClientMap`.
 - `tool-loop.ts:203-221`: same, after `ctx.toolClientMap.clear()`.
-- Populate `ctx.mcpClientDescriptors` where `ctx.mcpClients` is set (grep to find it).
+- **Pair `mcpClientDescriptors` with `mcpClients` from ONE snapshot.** `ctx.mcpClients`
+  is sourced from `this.deps.mcpClients` (`default-pipeline.ts:464`), which the builder
+  produces from `connectionStrategy.resolve()` (`builder.ts:~950`). At that SAME resolve,
+  the builder must capture `resolved.clientDescriptors` into a new `deps.mcpClientDescriptors`
+  (thread it through the pipeline deps type / `PipelineDeps`), and `default-pipeline.ts:464`
+  sets `ctx.mcpClientDescriptors: this.deps.mcpClientDescriptors` beside `mcpClients`.
+  Because both come from one connection result, they never drift relative to each other
+  across a reconnect. (The registry keeps its own `activeClientDescriptors` for its own
+  `resolve()` — that is internal and separate from the ctx path.)
 
 > `ctx.toolNamespace` is added to `PipelineContext` in THIS task (so `ctx.toolNamespace ?? defaultToolNamespace` type-checks) but is left unset until Task 10 wires the builder's override — the `?? defaultToolNamespace` fallback covers the interim.
 
@@ -702,8 +721,8 @@ git commit -m "feat(agent): registry resolve() namespaces colliding tools + keep
 - [ ] **Step 5: Build + lint, commit**
 
 ```bash
-git add packages/llm-agent-libs/src/pipeline/
-git commit -m "feat(agent): tool-select/tool-loop refresh namespace via shared builder + descriptors (#244)"
+git add packages/llm-agent-libs/src/pipeline/ packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/interfaces/pipeline.ts
+git commit -m "feat(agent): pair mcpClientDescriptors with clients + refresh paths namespace (#244)"
 ```
 
 ---
@@ -711,8 +730,8 @@ git commit -m "feat(agent): tool-select/tool-loop refresh namespace via shared b
 ### Task 8: `vectorizeMcpTools` stores the exposed name (same builder + descriptors)
 
 **Files:**
-- Modify: `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (signature + the tool list it stores; `:227` `metadata: { name }`)
-- Modify: its caller(s) (grep `vectorizeMcpTools(`) to pass `descriptors`.
+- Modify: `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (signature + two-phase + record key from `provenance`; `:132-138`/`:227`)
+- Modify: BOTH callers — `packages/llm-agent-libs/src/mcp/tool-registry.ts:73` and `packages/llm-agent-libs/src/builder.ts:979` — to pass `descriptors` + `configuredSlotCount`.
 - Test: `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts` (append)
 
 **Produces:** each stored `metadata.name` is the exposed name; the record **id** uses the STABLE `slotIndex` + `configuredSlotCount` (not the runtime active index/count), so ids don't re-map or flip to bare when a peer drops.
@@ -723,15 +742,19 @@ git commit -m "feat(agent): tool-select/tool-loop refresh namespace via shared b
 
 - [ ] **Step 2: Run RED** (current code passes runtime `clientIndex`/`clientCount = clients.length` → wrong ids under filtering).
 
-- [ ] **Step 3: Implement** — add `descriptors?: readonly McpClientDescriptor[]` and `configuredSlotCount?: number` parameters. **Two-phase (mandatory):** the current code loops over clients and stores each as it goes (`:134`), which CANNOT see cross-client collisions. Restructure to (phase 1) gather ALL clients' `listTools` results into `perClient = [{ slotIndex, label, client, tools }]` FIRST, then (phase 2) `const { tools } = buildNamespacedTools(perClient, ns)` over the full set and store the exposed names. Then: (a) use the returned `tools` (exposed names) for `text`/`metadata.name`; (b) build each `ToolKeyContext` with the STABLE values — `clientIndex = descriptors[i]?.slotIndex ?? i` (not the loop position), `clientCount = configuredSlotCount ?? clients.length` (not `clients.length`). Pass both new params from the caller (sourced from the connection result). Call `assertClientDescriptors(clients, descriptors, configuredSlotCount)` at entry.
+- [ ] **Step 3: Implement** — add `descriptors?: readonly McpClientDescriptor[]` and `configuredSlotCount?: number` parameters; `assertClientDescriptors(clients, descriptors, configuredSlotCount)` at entry. **Two-phase (mandatory):** the current code loops over clients and stores each as it goes (`:134`), which CANNOT see cross-client collisions. Restructure to (phase 1) gather ALL clients' `listTools` into `perClient = [{ slotIndex, label, client, tools }]` FIRST, then (phase 2) `const { tools, provenance } = buildNamespacedTools(perClient, ns)` over the full set. Then iterate the FLAT `tools` (exposed names) — for each exposed tool `t`:
+  - `text`/`metadata.name` = `t.name` (exposed);
+  - record id = `toolRecordKey.key({ toolName: p.originalName, clientIndex: p.slotIndex, clientCount: configuredSlotCount ?? clients.length })` where `const p = provenance.get(t.name)!` — the record key uses the ORIGINAL name + STABLE slotIndex from **provenance**, NOT a flat-tools index into `descriptors` (which would mis-map once a client exposes multiple tools).
+
+Pass `descriptors` + `configuredSlotCount` from BOTH callers (`tool-registry.ts:73`, `builder.ts:979`), sourced from the connection result.
 
 - [ ] **Step 4: Run GREEN + full libs suite.**
 
 - [ ] **Step 5: Build + lint, commit**
 
 ```bash
-git add packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts
-git commit -m "feat(agent): vectorizeMcpTools stores exposed (namespaced) tool names (#244)"
+git add packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts packages/llm-agent-libs/src/mcp/tool-registry.ts packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts
+git commit -m "feat(agent): vectorizeMcpTools stores exposed names + stable record keys (#244)"
 ```
 
 ---
