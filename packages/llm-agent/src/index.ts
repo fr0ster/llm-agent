@@ -41,6 +41,10 @@ export {
   type ILlmApiAdapter,
   type NormalizedRequest,
 } from './interfaces/api-adapter.js';
+export {
+  buildNamespacedTools,
+  type NamespaceClientInput,
+} from './interfaces/build-namespaced-tools.js';
 // Client adapters
 export type { IClientAdapter } from './interfaces/client-adapter.js';
 export {
