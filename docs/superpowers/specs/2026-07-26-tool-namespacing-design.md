@@ -360,20 +360,20 @@ One PR:
   `ToolNamespaceContext`; `bindToolCallName` wrapper factory; the pure
   `buildNamespacedTools` (per-name validity + global-uniqueness guards);
   `mergeOfferedTools`; `name?` on `McpConnectionConfig`; `clientDescriptors?` on
-  `McpConnectionResult`; `mcpClientDescriptors?` on `PipelineContext`.
+  `McpConnectionResult`.
 - `@mcp-abap-adt/llm-agent-mcp` — `name?` on `MCPClientConfig`; `LazyConnectionStrategy`
   populates `clientDescriptors` from its `Slot[]` (config-stable `slotIndex` + `label`);
   `PeriodicConnectionStrategy` forwards it.
-- `@mcp-abap-adt/llm-agent-libs` — retain `resolved.clientDescriptors` from the strategy;
+- `@mcp-abap-adt/llm-agent-libs` — `name?` on `BuilderMcpConfig`; `mcpClientDescriptors?`
+  on `PipelineContext`; retain `resolved.clientDescriptors` from the strategy;
   `McpToolRegistry` stores `activeClientDescriptors`; populate `ctx.mcpClientDescriptors`
   alongside `ctx.mcpClients`; add a `descriptors` param to `vectorizeMcpTools`. All FOUR
   build paths (`resolve()`, `tool-select`, `tool-loop` refresh, `vectorizeMcpTools`) call
   `buildNamespacedTools` with `{ client, slotIndex, label }`; all ~6 internal+external
   concat sites use `mergeOfferedTools`; `SmartAgentBuilder.withToolNamespace`. **No
   call-site or `toolClientMap` type change** — the strip is in the binding.
-- `@mcp-abap-adt/llm-agent-server-libs` — `name?` on `SmartServerMcpConfig` +
-  `BuilderMcpConfig` + parse + label charset/uniqueness validation; thread the label into
-  the connection config.
+- `@mcp-abap-adt/llm-agent-server-libs` — `name?` on `SmartServerMcpConfig` + parse +
+  label charset/uniqueness validation; thread the label into the connection config.
 - Tests (unit + registry + refresh + all-executor strip + stable-identity +
   internal↔external + end-to-end) and docs.
 
