@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { buildNamespacedTools } from './build-namespaced-tools.js';
-import type { IMcpClient, McpTool } from './mcp-client.js';
+import type { IMcpClient } from './mcp-client.js';
 import { defaultToolNamespace } from './tool-namespace.js';
+import type { McpTool } from './types.js';
 
 const tool = (name: string): McpTool =>
   ({ name, description: '', inputSchema: {} }) as McpTool;
@@ -124,6 +125,20 @@ describe('buildNamespacedTools', () => {
           bad,
         ),
       /invalid|empty/i,
+    );
+  });
+
+  it('fail-fast: duplicate slotIndex in perClient entries', () => {
+    assert.throws(
+      () =>
+        buildNamespacedTools(
+          [
+            { slotIndex: 0, client: fakeClient('a'), tools: [tool('Search')] },
+            { slotIndex: 0, client: fakeClient('b'), tools: [tool('Find')] },
+          ],
+          defaultToolNamespace,
+        ),
+      /duplicate slotIndex/i,
     );
   });
 });
