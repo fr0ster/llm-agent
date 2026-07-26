@@ -807,7 +807,7 @@ to THREE distinct consumers by three different routes — get all three right:
 - Modify: `packages/llm-agent-libs/src/builder.ts` — mirror `withToolRecordKey`
   (`:186/:479/:984/:1213`): `_toolNamespace?`, `withToolNamespace(s): this`. Then
   distribute: (a) into the assembled `SmartAgentDeps.toolNamespace` (→ the registry, via
-  agent.ts); (b) as an argument to the `vectorizeMcpTools(...)` call at `builder.ts:979`;
+  agent.ts); (b) inside the `ns` object passed as the 7th arg to `vectorizeMcpTools(...)` at `builder.ts:979` — `{ descriptors, configuredSlotCount, toolNamespace: this._toolNamespace ?? defaultToolNamespace }` (Task 8 already defined that param; Task 10 does NOT change the signature);
   (c) into `pipeline.initialize({ … })` at `builder.ts:1136` as `PipelineDeps.toolNamespace`.
 - Modify: `packages/llm-agent-libs/src/agent.ts` — the registry is created HERE
   (`:300` `new McpToolRegistry(...)`). Add `toolNamespace?: IToolNamespace` to
@@ -834,7 +834,7 @@ label is rejected at parse.
 
 - [ ] **Step 2: Run RED** (custom strategy ignored — registry still uses `defaultToolNamespace`).
 
-- [ ] **Step 3: Implement** — the three routes above, default everywhere = `defaultToolNamespace` (so omitting `withToolNamespace` is unchanged). `vectorizeMcpTools` takes a `toolNamespace: IToolNamespace = defaultToolNamespace` param (used as its `ns`); the tool-loop/tool-select handlers read `ctx.toolNamespace ?? defaultToolNamespace` (Task 7 added the field). server-libs: parse/validate `mcp[].name` onto the connection config.
+- [ ] **Step 3: Implement** — the three routes above, default everywhere = `defaultToolNamespace` (so omitting `withToolNamespace` is unchanged). Task 10 does NOT change the `vectorizeMcpTools` signature (Task 8 already added the trailing `ns` object param) — the builder just passes `toolNamespace` inside that `ns` object at `builder.ts:979`. The tool-loop/tool-select handlers read `ctx.toolNamespace ?? defaultToolNamespace` (Task 7 added the field; this task wires the value via `PipelineDeps`→`default-pipeline`). server-libs: parse/validate `mcp[].name` onto the connection config.
 
 - [ ] **Step 4: Run GREEN + both suites.**
 
