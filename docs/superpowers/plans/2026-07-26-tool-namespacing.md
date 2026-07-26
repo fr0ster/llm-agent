@@ -736,17 +736,28 @@ git commit -m "feat(agent): pair mcpClientDescriptors with clients + refresh pat
 
 **Produces:** each stored `metadata.name` is the exposed name; the record **id** uses the STABLE `slotIndex` + `configuredSlotCount` (not the runtime active index/count), so ids don't re-map or flip to bare when a peer drops.
 
-- [ ] **Step 1: Write the failing test** — vectorize over two clients both exposing `Search` (descriptors `[{slotIndex:0},{slotIndex:1}]`, **`configuredSlotCount:3`** — 3 slots configured, one down at boot elsewhere) → the two records carry `metadata.name` `s0__Search`/`s1__Search` AND record ids `tool:0:Search`/`tool:1:Search`. Then vectorize with only the slot-2 client active (`descriptors [{slotIndex:2}]`, **`configuredSlotCount:3`**) → `metadata.name` bare `Search` (no collision) BUT record id stays `tool:2:Search` (stable slotIndex; configured count 3 keeps the multi-server form — NOT `tool:0:Search` nor bare `tool:Search`). Assert record IDs, not only names.
+- [ ] **Step 1: Write the failing test** — call `vectorizeMcpTools(clients, rag, …, options, ns)` with `ns = { descriptors: [{slotIndex:0},{slotIndex:1}], configuredSlotCount: 3 }` (3 slots configured, one down at boot elsewhere) for two clients both exposing `Search` → the two records carry `metadata.name` `s0__Search`/`s1__Search` AND record ids `tool:0:Search`/`tool:1:Search`. Then with only the slot-2 client active and `ns = { descriptors: [{slotIndex:2}], configuredSlotCount: 3 }` → `metadata.name` bare `Search` (no collision) BUT record id stays `tool:2:Search` (stable slotIndex; configured count 3 keeps the multi-server form — NOT `tool:0:Search` nor bare `tool:Search`). Assert record IDs, not only names.
 
 > `configuredSlotCount` must be `> max(slotIndex)` (else `assertClientDescriptors` rejects it): for slots 0/1/2 it is `3`, never `2`.
 
 - [ ] **Step 2: Run RED** (current code passes runtime `clientIndex`/`clientCount = clients.length` → wrong ids under filtering).
 
-- [ ] **Step 3: Implement** — add three params: `descriptors?: readonly McpClientDescriptor[]`, `configuredSlotCount?: number`, and `toolNamespace: IToolNamespace = defaultToolNamespace` (used as `ns`; Task 10 wires the custom one at `builder.ts:979`, existing callers get the default). `assertClientDescriptors(clients, descriptors, configuredSlotCount)` at entry. **Two-phase (mandatory):** the current code loops over clients and stores each as it goes (`:134`), which CANNOT see cross-client collisions. Restructure to (phase 1) gather ALL clients' `listTools` into `perClient = [{ slotIndex, label, client, tools }]` FIRST, then (phase 2) `const { tools, provenance } = buildNamespacedTools(perClient, toolNamespace)` over the full set. Then iterate the FLAT `tools` (exposed names) — for each exposed tool `t`:
-  - `text`/`metadata.name` = `t.name` (exposed);
-  - record id = `toolRecordKey.key({ toolName: p.originalName, clientIndex: p.slotIndex, clientCount: configuredSlotCount ?? clients.length })` where `const p = provenance.get(t.name)!` — the record key uses the ORIGINAL name + STABLE slotIndex from **provenance**, NOT a flat-tools index into `descriptors` (which would mis-map once a client exposes multiple tools).
+- [ ] **Step 3: Implement** — the current signature ends with `options?: CallOptions` (the 6th param; `vectorize-mcp-tools.ts:107-113`). Add the new inputs as ONE optional object param appended AFTER `options` (NEVER before it — inserting before would silently shift every existing caller's positional args):
 
-Pass `descriptors` + `configuredSlotCount` from BOTH callers (`tool-registry.ts:73`, `builder.ts:979`), sourced from the connection result.
+```ts
+export async function vectorizeMcpTools(
+  clients, toolsRag, requestLogger, logger,
+  toolRecordKey = defaultToolRecordKey,
+  options?: CallOptions,
+  ns?: { descriptors?: readonly McpClientDescriptor[]; configuredSlotCount?: number; toolNamespace?: IToolNamespace },
+): Promise<…>
+```
+
+Inside, `const toolNamespace = ns?.toolNamespace ?? defaultToolNamespace;` (used for `buildNamespacedTools`), and `assertClientDescriptors(clients, ns?.descriptors, ns?.configuredSlotCount)` at entry. Existing callers that omit `ns` get bare, unchanged behaviour. **Two-phase (mandatory):** the current code loops over clients and stores each as it goes (`:134`), which CANNOT see cross-client collisions. Restructure to (phase 1) gather ALL clients' `listTools` into `perClient = [{ slotIndex, label, client, tools }]` FIRST, then (phase 2) `const { tools, provenance } = buildNamespacedTools(perClient, toolNamespace)` over the full set. Then iterate the FLAT `tools` (exposed names) — for each exposed tool `t`:
+  - `text`/`metadata.name` = `t.name` (exposed);
+  - record id = `toolRecordKey.key({ toolName: p.originalName, clientIndex: p.slotIndex, clientCount: ns?.configuredSlotCount ?? clients.length })` where `const p = provenance.get(t.name)!` — the record key uses the ORIGINAL name + STABLE slotIndex from **provenance**, NOT a flat-tools index into `descriptors` (which would mis-map once a client exposes multiple tools).
+
+Pass the `ns` object (`{ descriptors, configuredSlotCount, toolNamespace }`) from BOTH callers (`tool-registry.ts:73`, `builder.ts:979`), sourced from the connection result + the builder's strategy.
 
 - [ ] **Step 4: Run GREEN + full libs suite.**
 
@@ -819,7 +830,7 @@ to THREE distinct consumers by three different routes — get all three right:
 pipeline ctx); a labeled multi-server config yields `label__tool`; an invalid/duplicate
 label is rejected at parse.
 
-- [ ] **Step 1: Write the failing tests** — (a) build a `SmartAgent` through the builder with `withToolNamespace(custom)` where `custom.expose` uppercases the prefix; drive its internal registry `resolve()` (two embedded clients, same tool) and assert the exposed name reflects the CUSTOM strategy (proves it reached `agent.ts`'s registry). (b) server-libs: `mcp: [{name: 'a b'}]` (space) and two servers both `name: 'x'` each throw a clear config error; a valid `mcp[].name` threads to the connection config.
+- [ ] **Step 1: Write the failing tests** — (a) build a `SmartAgent` through the builder with `withToolNamespace(custom)` where `custom.expose` produces a DISTINCTIVE prefix (e.g. uppercases → `PRIMARY__Search`), with two embedded clients exposing the same tool. Assert the custom strategy reached **all three** routes: (1) the internal registry `resolve()` exposed name; (2) the stored `metadata.name` from startup vectorization (route through `builder.ts:979`); (3) a pipeline refresh — after a `tool-loop`/`tool-select` rebuild, `ctx.mcpTools` carries the custom-prefixed name (route through `PipelineDeps`→`default-pipeline`→`ctx.toolNamespace`). A registry-only assertion would leave 2/3 of the wiring unverified. (b) server-libs: `mcp: [{name: 'a b'}]` (space) and two servers both `name: 'x'` each throw a clear config error; a valid `mcp[].name` threads to the connection config.
 
 - [ ] **Step 2: Run RED** (custom strategy ignored — registry still uses `defaultToolNamespace`).
 
