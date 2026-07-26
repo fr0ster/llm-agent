@@ -483,9 +483,9 @@ git commit -m "feat: add mcp[].name + McpConnectionResult.clientDescriptors type
 
 Model on the existing lazy-connection-strategy test harness (read it first for the exact `Slot`/config stub shape). Assert:
 1. **Descriptors + stable slotIndex:** 3 configured servers, slot 1 unhealthy → `resolve()` returns 2 clients, `clientDescriptors = [{slotIndex:0,label:cfg0.name},{slotIndex:2,label:cfg2.name}]` (original config indices 0 and 2, NOT 0/1), and `configuredSlotCount === 3`.
-2. **Bidirectional `toolsChanged`:** from two healthy slots, a resolve where one goes unhealthy sets `toolsChanged === true` (a DROP, not just a gain); a later resolve where it returns healthy sets `toolsChanged === true` again; a resolve with no set change sets `false`.
+2. **`toolsChanged` on gain / loss / same-slot reconnect:** from two healthy slots — (a) one goes unhealthy → `toolsChanged === true` (a DROP); (b) it returns healthy → `true`; (c) a slot whose client is found unhealthy then RECONNECTS with a new client (different tools) in the SAME resolve → `true` even though the healthy-slot-index set is unchanged; (d) no client change → `false`.
 
-- [ ] **Step 2: Run RED** — `clientDescriptors`/`configuredSlotCount` undefined; `toolsChanged` stays `false` on a drop (current `anyNewlyHealthy` only).
+- [ ] **Step 2: Run RED** — `clientDescriptors`/`configuredSlotCount` undefined; `toolsChanged` stays `false` on a drop (current `anyNewlyHealthy` only) and on a same-slot reconnect (set-diff misses it).
 
 - [ ] **Step 3: Implement**
 
@@ -502,17 +502,24 @@ const clientDescriptors = surviving.map(({ s, slotIndex }) => ({
 }));
 const configuredSlotCount = this._slots.length;
 
-// Bidirectional change detection: compare the healthy-slot set to the previous.
-const healthySet = surviving.map(({ slotIndex }) => slotIndex).join(',');
-const setChanged = healthySet !== (this._prevHealthySet ?? '<init>');
-this._prevHealthySet = healthySet;
-const toolsChanged = (anyNewlyHealthy || setChanged) && !this._skipRevectorize;
+// Change detection over (slotIndex → client generation). A NEW client for a slot
+// bumps its generation, so gain, loss, AND same-slot reconnect (client replaced,
+// possibly different tools) all change the signature — a set-only diff would miss
+// the reconnect.
+const sig = surviving.map(({ s, slotIndex }) => `${slotIndex}:${s.generation ?? 0}`).join(',');
+const changed = sig !== (this._prevSig ?? '<init>');
+this._prevSig = sig;
+const toolsChanged = changed && !this._skipRevectorize;
 // return { clients, toolsChanged, clientDescriptors, configuredSlotCount }
 ```
 
-Add `private _prevHealthySet?: string;`. Adjust `s.config?.name` to the exact `Slot`
-config field (read the `Slot` type). `PeriodicConnectionStrategy` forwards
+Add `private _prevSig?: string;` and a `generation: number` field on `Slot` (init 0),
+incremented at EVERY site that assigns a new client to a slot (the connect AND the
+reconnect branches — grep the file for `slot.client =` / `.client =`). Adjust
+`s.config?.name` to the exact `Slot` config field. `PeriodicConnectionStrategy` forwards
 `clientDescriptors` + `configuredSlotCount` (it already forwards `clients`/`toolsChanged`).
+This replaces the old `anyNewlyHealthy`-only signal (a new client bumps generation → the
+signature changes, so gains are still covered).
 
 - [ ] **Step 4: Run GREEN.**
 

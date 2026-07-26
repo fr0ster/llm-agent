@@ -117,15 +117,19 @@ also carries **`configuredSlotCount`** (total configured servers, e.g.
 `LazyConnectionStrategy._slots.length`) — needed by Component 8 so the record-key form
 does not flip when peers drop.
 
-**`toolsChanged` must be bidirectional.** Today `LazyConnectionStrategy` sets
-`toolsChanged = anyNewlyHealthy` (`:127`) — it fires only when a client is GAINED, never
-when one is LOST. But a peer DROP changes the exposed/collision set (a colliding tool
-reverts to bare) and the record keys, so it must re-vectorize too. Redefine `toolsChanged`
-as *the active healthy-slot set changed in EITHER direction*: the strategy remembers the
-previous set of healthy slot indices and compares — gain OR loss (OR a re-mapping) sets
-`toolsChanged`. `PeriodicConnectionStrategy` forwards it. Without this, a drop leaves the
-RAG store stale (`s0__Search`/`s1__Search`) while the exposed set has reverted to bare
-`Search` — the exact inconsistency the "peer-outage" edge case must avoid.
+**`toolsChanged` must fire on any active-catalog change — gain, loss, OR same-slot
+client replacement.** Today `LazyConnectionStrategy` sets `toolsChanged = anyNewlyHealthy`
+(`:127`) — only on a GAIN. A peer DROP (a colliding tool reverts to bare, record keys
+shift) must re-vectorize too. And a slot whose client is found unhealthy, closed, and
+successfully RECONNECTED within the same `resolve()` keeps the same healthy-slot-index
+set yet may have a different client instance and a different tool catalog — a set-only
+diff misses it. So the signal is a signature over **(healthy `slotIndex` → client
+generation)**, where each slot bumps a `generation` counter whenever a NEW client
+instance is created for it. `toolsChanged` = this signature differs from the previous
+resolve's. This catches gain, loss, AND same-slot reconnect (new tools) — a set diff
+alone does not. `PeriodicConnectionStrategy` forwards it. Without this, a drop or a
+silent reconnect leaves the RAG store stale (`s0__Search`/`s1__Search`) while the exposed
+set has changed — the inconsistency the "peer-outage" edge case must avoid.
 
 **Scope of "stable":** the PREFIX is stable — `slotIndex`/`label` come from the
 config-stable slot, so a colliding tool's prefix stays `s0`/`primary` regardless of which
@@ -351,9 +355,12 @@ Pathological: a real bare tool literally named "s0__Search" alongside a generate
   descriptors `slotIndex 0` and `2`. Their exposed prefixes are `s0`/`s2` (or labels) —
   NOT `s0`/`s1` — asserted for `resolve()`, a `tool-select` first-load, a `tool-loop`
   refresh, AND `vectorizeMcpTools` (the descriptors reach all four).
-- **`toolsChanged` is bidirectional (Lazy AND Periodic):** starting from two healthy
-  slots, dropping one sets `toolsChanged` (not just gaining one); the returning slot sets
-  it again. Assert for both strategies — a drop MUST trigger re-vectorize.
+- **`toolsChanged` fires on gain, loss, AND same-slot reconnect (Lazy AND Periodic):**
+  from two healthy slots — dropping one sets it (not just gaining one); the returning slot
+  sets it; and a slot whose client goes unhealthy then RECONNECTS in the same `resolve()`
+  with a DIFFERENT tool set sets it even though the healthy-slot-index set is unchanged
+  (proves the generation signature, not a set-only diff). A resolve with no client change
+  sets `false`.
 - **Peer-outage collision flip + RAG consistency (metadata.name AND record id):** two
   clients both expose `Search` (exposed `s0__Search`/`s1__Search`, records
   `tool:0:Search`/`tool:1:Search`); client 1 drops → the survivor reverts to bare
@@ -393,9 +400,9 @@ One PR:
   `configuredSlotCount?` on `McpConnectionResult`.
 - `@mcp-abap-adt/llm-agent-mcp` — `name?` on `MCPClientConfig`; `LazyConnectionStrategy`
   populates `clientDescriptors` (config-stable `slotIndex` + `label`) +
-  `configuredSlotCount`, and makes `toolsChanged` **bidirectional** (fire on a slot
-  becoming healthy OR unhealthy, by diffing the previous healthy-slot set);
-  `PeriodicConnectionStrategy` forwards both.
+  `configuredSlotCount`, and makes `toolsChanged` fire on gain / loss / same-slot
+  reconnect (diff a signature over healthy `slotIndex` → per-slot client `generation`,
+  bumped on each new client); `PeriodicConnectionStrategy` forwards both.
 - `@mcp-abap-adt/llm-agent-libs` — `name?` on `BuilderMcpConfig`; `mcpClientDescriptors?`
   on `PipelineContext`; retain `resolved.clientDescriptors`/`configuredSlotCount` from the
   strategy; `McpToolRegistry` stores `activeClientDescriptors`; populate
