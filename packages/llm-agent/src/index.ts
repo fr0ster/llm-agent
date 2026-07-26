@@ -9,6 +9,7 @@ export {
 export { ClarifySignal, NeedInfoSignal } from './coordinator-signals.js';
 export * from './errors/index.js';
 export * from './external-results.js';
+export { assertClientDescriptors } from './interfaces/assert-client-descriptors.js';
 export * from './interfaces/index.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';

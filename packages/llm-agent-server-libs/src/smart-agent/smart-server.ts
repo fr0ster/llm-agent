@@ -183,6 +183,8 @@ export interface SmartServerMcpConfig {
   /** Per-tool MCP request-timeout overrides in ms, keyed by tool name.
    *  Takes precedence over timeout. */
   toolTimeouts?: Record<string, number>;
+  /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */
+  name?: string;
 }
 
 export interface SmartServerAgentConfig {

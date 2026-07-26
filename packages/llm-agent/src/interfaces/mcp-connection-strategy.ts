@@ -1,9 +1,22 @@
 import type { CallOptions, ILogger, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import type { IMcpRequestHeadersStrategy } from './mcp-request-headers-strategy.js';
 
+export interface McpClientDescriptor {
+  /** Original configured-array position — stable across reconnect / peer outage. */
+  slotIndex: number;
+  /** The server's config `name`, if set. */
+  label?: string;
+}
+
 export interface McpConnectionResult {
   clients: IMcpClient[];
   toolsChanged: boolean;
+  /** Per-client stable identity, aligned by index with `clients`. Optional:
+   *  strategies that never filter may omit it (array index === config index). */
+  clientDescriptors?: readonly McpClientDescriptor[];
+  /** Total configured servers (not the active count) — stabilizes the record-key
+   *  form under a filtered active set. Optional; defaults to clients.length. */
+  configuredSlotCount?: number;
 }
 
 export interface IMcpConnectionStrategy {
@@ -20,6 +33,8 @@ export interface McpConnectionConfig {
   url?: string;
   command?: string;
   args?: string[];
+  /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */
+  name?: string;
   /** HTTP transport headers (e.g. `Accept`, reverse-proxy routing like
    *  `x-sap-destination`). Additive — strategies that ignore it are unaffected. */
   headers?: Record<string, string>;

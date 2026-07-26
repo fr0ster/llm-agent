@@ -28,6 +28,8 @@ export interface BuilderMcpConfig {
   args?: string[];
   /** HTTP headers (e.g. x-sap-destination for reverse proxy routing) */
   headers?: Record<string, string>;
+  /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */
+  name?: string;
 }
 
 export interface BuilderPromptsConfig {

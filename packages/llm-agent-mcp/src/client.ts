@@ -58,6 +58,9 @@ export type TransportType =
   | 'embedded';
 
 export interface MCPClientConfig {
+  /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */
+  name?: string;
+
   /**
    * Transport type:
    * - 'stdio': Standard input/output (for local processes)
