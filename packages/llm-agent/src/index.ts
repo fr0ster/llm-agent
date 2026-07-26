@@ -47,6 +47,7 @@ export {
 } from './interfaces/build-namespaced-tools.js';
 // Client adapters
 export type { IClientAdapter } from './interfaces/client-adapter.js';
+export { mergeOfferedTools } from './interfaces/merge-offered-tools.js';
 export {
   bindToolCallName,
   defaultToolNamespace,
