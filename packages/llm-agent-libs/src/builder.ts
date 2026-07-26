@@ -990,6 +990,11 @@ export class SmartAgentBuilder {
         requestLogger,
         log,
         this._toolRecordKey,
+        undefined,
+        {
+          descriptors: mcpClientDescriptors,
+          configuredSlotCount: resolved.configuredSlotCount,
+        },
       );
       // Published only when defined: a skipped run must leave the holder empty
       // rather than storing a zeroed summary.

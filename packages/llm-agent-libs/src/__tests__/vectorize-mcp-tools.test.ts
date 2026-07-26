@@ -516,13 +516,14 @@ describe('vectorizeMcpTools tool record key', () => {
 // ---------------------------------------------------------------------------
 
 describe('vectorizeMcpTools record round-trip', () => {
-  it('same-named tools from two servers are stored as two records (recall), both named Search', async () => {
+  it('same-named tools from two servers are stored as two records (recall), each decoding to its namespaced name', async () => {
     // STORAGE-LEVEL scope of #240: the two records no longer overwrite each
-    // other, so RAG retrieval sees both instead of one. Both still decode to
-    // "Search" — that is correct here: retrieval must map a hit back to the
-    // tool name. Making a *specific* colliding tool callable (call-path
-    // disambiguation) needs tool-name namespacing and is tracked separately;
-    // this test deliberately does not claim it.
+    // other, so RAG retrieval sees both instead of one. #244 (this file,
+    // Task 8) closes the follow-up noted here previously: the vectorizer now
+    // runs the SAME namespacing builder as the call path (buildNamespacedTools
+    // with defaultToolNamespace), so a colliding tool decodes to its
+    // *namespaced* name (`s0__Search`/`s1__Search`) — the same name the
+    // executor uses to disambiguate the call — not the shared bare name.
     const captured: Array<{ id: string; name?: unknown }> = [];
     const writer = {
       upsertCalls: [] as string[],
@@ -538,20 +539,96 @@ describe('vectorizeMcpTools record round-trip', () => {
       new CapturingRequestLogger(),
       undefined,
     );
-    // Two distinct records survive (recall), each decoding to the tool name.
+    // Two distinct records survive (recall); ids are unchanged from #240.
     assert.deepEqual(
       captured.map((r) => r.id),
       ['tool:0:Search', 'tool:1:Search'],
     );
-    for (const r of captured) {
-      assert.equal(toolNameFromRecord(r), 'Search');
-    }
+    // Each decodes to its own namespaced, callable name — not the shared bare
+    // "Search" (that would still collide at the call path).
+    assert.deepEqual(
+      captured.map((r) => toolNameFromRecord(r)),
+      ['s0__Search', 's1__Search'],
+    );
   });
 });
 
 // ---------------------------------------------------------------------------
 // Cancellation during the sequential pacing pause (#240 P2)
 // ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools stable record keys under filtered descriptors (#244)', () => {
+  function capturingIdNameWriter(): IRagBackendWriter & {
+    captured: Array<{ id: string; name?: unknown }>;
+  } {
+    const captured: Array<{ id: string; name?: unknown }> = [];
+    return {
+      captured,
+      async upsertRaw(id: string, _t: string, meta: { name?: unknown }) {
+        captured.push({ id, name: meta.name });
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagBackendWriter & {
+      captured: Array<{ id: string; name?: unknown }>;
+    };
+  }
+
+  it('two active clients colliding on "Search" get namespaced names + slot-stable ids (3 configured slots)', async () => {
+    // 3 slots configured, one down at boot elsewhere — slots 0 and 1 active.
+    const writer = capturingIdNameWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')]), makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        descriptors: [{ slotIndex: 0 }, { slotIndex: 1 }],
+        configuredSlotCount: 3,
+      },
+    );
+
+    const byId = new Map(writer.captured.map((r) => [r.id, r.name]));
+    assert.deepEqual([...byId.keys()].sort(), [
+      'tool:0:Search',
+      'tool:1:Search',
+    ]);
+    // Namespaced (not bare) because both slots expose the same tool name.
+    assert.equal(byId.get('tool:0:Search'), 's0__Search');
+    assert.equal(byId.get('tool:1:Search'), 's1__Search');
+  });
+
+  it('only the slot-2 client active (of 3 configured) keeps the bare name but the stable slot-2 record id', async () => {
+    // Only the slot-2 server is up; slots 0/1 are down. No collision (one
+    // active tool named Search) so the exposed name stays bare — but the
+    // record id must still use the STABLE slotIndex (2), and the multi-slot
+    // id FORM (configuredSlotCount 3), not collapse to slot 0 or to bare
+    // `tool:Search`. Otherwise the record silently re-maps when slot 2 is the
+    // only one up vs. when all three are up.
+    const writer = capturingIdNameWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+
+    await vectorizeMcpTools(
+      [makeClient([makeTool('Search')])],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        descriptors: [{ slotIndex: 2 }],
+        configuredSlotCount: 3,
+      },
+    );
+
+    assert.deepEqual(writer.captured, [
+      { id: 'tool:2:Search', name: 'Search' },
+    ]);
+  });
+});
 
 describe('vectorizeMcpTools pacing cancellation', () => {
   it('does not sit through the pause when abort lands mid-write', async () => {

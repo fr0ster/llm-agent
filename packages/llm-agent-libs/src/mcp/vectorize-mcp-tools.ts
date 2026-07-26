@@ -19,13 +19,19 @@ import type {
   IRagBackendWriter,
   IRequestLogger,
   ISkillManager,
+  IToolNamespace,
   IToolRecordKey,
   LlmTool,
+  McpClientDescriptor,
+  NamespaceClientInput,
   RagMetadata,
   ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  assertClientDescriptors,
+  buildNamespacedTools,
   DefaultWaitStrategy,
+  defaultToolNamespace,
   defaultToolRecordKey,
   isBatchEmbedder,
 } from '@mcp-abap-adt/llm-agent';
@@ -111,12 +117,21 @@ export async function vectorizeMcpTools(
   logger: ILogger | undefined,
   toolRecordKey: IToolRecordKey = defaultToolRecordKey,
   options?: CallOptions,
+  ns?: {
+    descriptors?: readonly McpClientDescriptor[];
+    configuredSlotCount?: number;
+    toolNamespace?: IToolNamespace;
+  },
 ): Promise<ToolVectorizationSummary | undefined> {
   const writer = toolsRag?.writer?.();
   // No store, or a deliberately read-only one: nothing is attempted, and the
   // status stays unknown rather than reporting a permanently incomplete
   // catalog for a configuration that never intended to write.
   if (!toolsRag || !writer) return undefined;
+  // Fail-fast on a malformed connection result (a buggy custom strategy)
+  // before any listing/writing starts. A no-op when descriptors are absent.
+  assertClientDescriptors(clients, ns?.descriptors, ns?.configuredSlotCount);
+  const toolNamespace = ns?.toolNamespace ?? defaultToolNamespace;
   // Cancellable: reconnect revectorization carries a request signal, so an
   // aborted request must stop listing, embedding and writing rather than run to
   // completion in the background.
@@ -129,24 +144,16 @@ export async function vectorizeMcpTools(
   let batchFailure: string | undefined;
   // biome-ignore lint/suspicious/noExplicitAny: reading the store's private embedder for batch optimisation
   const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
-  const clientCount = clients.length;
 
+  // ---- Phase 1: list every client BEFORE any namespacing/collision decision.
+  // Collision detection needs the FULL cross-client tool set — deciding
+  // per-client (the previous single-pass loop) could never see a name used
+  // by a client listed later, so it could not namespace at all.
+  const perClient: NamespaceClientInput[] = [];
   for (let clientIndex = 0; clientIndex < clients.length; clientIndex++) {
     if (options?.signal?.aborted) break;
     const adapter = clients[clientIndex];
-    const keyFor = (toolName: string): string => {
-      const id = toolRecordKey.key({ toolName, clientIndex, clientCount });
-      // Enforce the IToolRecordKey contract at write time: a key without the
-      // `tool:` prefix would be written and counted as vectorized, but every
-      // retrieval path (toolNameFromRecord) would ignore it — a silent
-      // unretrievable record. Fail fast instead.
-      if (!id.startsWith('tool:')) {
-        throw new Error(
-          `IToolRecordKey produced "${id}" for tool "${toolName}"; a tool record id must start with "tool:" so retrieval can tell it apart from skills.`,
-        );
-      }
-      return id;
-    };
+    const descriptor = ns?.descriptors?.[clientIndex];
     // Only listing is guarded at client level. A write that throws must NOT be
     // charged to the client, must not abort the remaining tools, and must land
     // in `failed` — see the per-tool try/catch below.
@@ -164,82 +171,129 @@ export async function vectorizeMcpTools(
     }
 
     acc.total += tools.length;
-    const texts = tools.map((t) => toolText(t.name, t.description));
-    // Computed once, outside any per-tool try/catch, so an invalid key strategy
-    // fails the boot fast rather than landing every tool in `failed`.
-    const ids = tools.map((t) => keyFor(t.name));
+    perClient.push({
+      // Stable slotIndex from the connection result, not this loop's own
+      // index — a filtered active set must not re-map ids (#244).
+      slotIndex: descriptor?.slotIndex ?? clientIndex,
+      label: descriptor?.label,
+      client: adapter,
+      tools,
+    });
+  }
 
-    let vectors: number[][] | undefined;
-    if (
-      storeEmbedder &&
-      isBatchEmbedder(storeEmbedder) &&
-      writer.upsertPrecomputedRaw !== undefined
-    ) {
-      const start = Date.now();
-      try {
-        const results = await storeEmbedder.embedBatch(texts, options);
-        vectors = results.map((r) => r.vector);
-        const real = results.reduce<{ p: number; t: number } | null>(
-          (a, r) =>
-            r.usage
-              ? {
-                  p: (a?.p ?? 0) + r.usage.promptTokens,
-                  t: (a?.t ?? 0) + r.usage.totalTokens,
-                }
-              : a,
-          null,
-        );
-        const est = texts.reduce((s, t) => s + Math.ceil(t.length / 4), 0);
-        // The ONLY usage record for the batch path; writeOne stays silent when
-        // it receives a precomputed vector.
-        requestLogger.logLlmCall({
-          component: 'embedding',
-          model: 'embedder',
-          promptTokens: real?.p ?? est,
-          completionTokens: 0,
-          totalTokens: real?.t ?? est,
-          durationMs: Date.now() - start,
-          estimated: real === null,
-          scope: 'initialization',
-          detail: 'tools',
-        });
-      } catch (err) {
-        // Falls through to the sequential path below. Chunking and retry
-        // already ran inside the embedder, so reaching here means the
-        // provider is genuinely unusable for batch work.
-        vectors = undefined;
-        batchFailure ??= err instanceof Error ? err.message : String(err);
-      }
+  // ---- Phase 2: namespace the FULL exposed set, then embed/write it flat.
+  // `provenance` carries each exposed name's ORIGINAL name + stable slotIndex,
+  // which the record key needs (a flat index into `tools` would mis-map once
+  // a client exposes more than one tool).
+  const { tools, provenance } = buildNamespacedTools(perClient, toolNamespace);
+  const configuredCount = ns?.configuredSlotCount ?? clients.length;
+
+  const keyFor = (originalName: string, slotIndex: number): string => {
+    const id = toolRecordKey.key({
+      toolName: originalName,
+      clientIndex: slotIndex,
+      clientCount: configuredCount,
+    });
+    // Enforce the IToolRecordKey contract at write time: a key without the
+    // `tool:` prefix would be written and counted as vectorized, but every
+    // retrieval path (toolNameFromRecord) would ignore it — a silent
+    // unretrievable record. Fail fast instead.
+    if (!id.startsWith('tool:')) {
+      throw new Error(
+        `IToolRecordKey produced "${id}" for tool "${originalName}"; a tool record id must start with "tool:" so retrieval can tell it apart from skills.`,
+      );
     }
+    return id;
+  };
 
-    // Bulk fast path: when we have precomputed vectors AND the writer supports
-    // a native bulk upsert, write the whole catalog in one call instead of N.
-    // All-or-nothing, so on failure we fall through to the per-tool loop, which
-    // classifies exactly which record is bad.
-    if (vectors && writer.upsertManyPrecomputedRaw) {
-      const bulk = await writer
-        .upsertManyPrecomputedRaw(
-          tools.map((t, i) => ({
-            id: ids[i],
-            text: texts[i],
-            vector: (vectors as number[][])[i],
-            // Store the name so retrieval recovers it via toolNameFromRecord,
-            // independent of the key scheme (default or a custom one).
-            metadata: { name: t.name },
-          })),
-          options,
-        )
-        .catch((err: unknown) => ({
-          ok: false as const,
-          error: err instanceof Error ? err : new Error(String(err)),
-        }));
-      if (bulk.ok) {
-        acc.vectorized += tools.length;
-        continue;
-      }
-      // else: fall through to the per-tool loop below.
+  // Text and metadata.name use the EXPOSED name (`t.name`, already renamed by
+  // buildNamespacedTools above); the record id uses the ORIGINAL name +
+  // stable slotIndex from provenance.
+  const texts = tools.map((t) => toolText(t.name, t.description));
+  // Computed once, outside any per-tool try/catch, so an invalid key strategy
+  // fails the boot fast rather than landing every tool in `failed`.
+  const ids = tools.map((t) => {
+    const p = provenance.get(t.name);
+    if (!p)
+      throw new Error(
+        `vectorizeMcpTools: no provenance entry for exposed tool "${t.name}"`,
+      );
+    return keyFor(p.originalName, p.slotIndex);
+  });
+
+  let vectors: number[][] | undefined;
+  if (
+    storeEmbedder &&
+    isBatchEmbedder(storeEmbedder) &&
+    writer.upsertPrecomputedRaw !== undefined
+  ) {
+    const start = Date.now();
+    try {
+      const results = await storeEmbedder.embedBatch(texts, options);
+      vectors = results.map((r) => r.vector);
+      const real = results.reduce<{ p: number; t: number } | null>(
+        (a, r) =>
+          r.usage
+            ? {
+                p: (a?.p ?? 0) + r.usage.promptTokens,
+                t: (a?.t ?? 0) + r.usage.totalTokens,
+              }
+            : a,
+        null,
+      );
+      const est = texts.reduce((s, t) => s + Math.ceil(t.length / 4), 0);
+      // The ONLY usage record for the batch path; writeOne stays silent when
+      // it receives a precomputed vector.
+      requestLogger.logLlmCall({
+        component: 'embedding',
+        model: 'embedder',
+        promptTokens: real?.p ?? est,
+        completionTokens: 0,
+        totalTokens: real?.t ?? est,
+        durationMs: Date.now() - start,
+        estimated: real === null,
+        scope: 'initialization',
+        detail: 'tools',
+      });
+    } catch (err) {
+      // Falls through to the sequential path below. Chunking and retry
+      // already ran inside the embedder, so reaching here means the
+      // provider is genuinely unusable for batch work.
+      vectors = undefined;
+      batchFailure ??= err instanceof Error ? err.message : String(err);
     }
+  }
 
+  // Bulk fast path: when we have precomputed vectors AND the writer supports
+  // a native bulk upsert, write the whole catalog in one call instead of N.
+  // All-or-nothing, so on failure we fall through to the per-tool loop, which
+  // classifies exactly which record is bad.
+  let bulkWritten = false;
+  if (vectors && writer.upsertManyPrecomputedRaw) {
+    const bulk = await writer
+      .upsertManyPrecomputedRaw(
+        tools.map((t, i) => ({
+          id: ids[i],
+          text: texts[i],
+          vector: (vectors as number[][])[i],
+          // Store the EXPOSED name so retrieval recovers it via
+          // toolNameFromRecord, independent of the key scheme.
+          metadata: { name: t.name },
+        })),
+        options,
+      )
+      .catch((err: unknown) => ({
+        ok: false as const,
+        error: err instanceof Error ? err : new Error(String(err)),
+      }));
+    if (bulk.ok) {
+      acc.vectorized += tools.length;
+      bulkWritten = true;
+    }
+    // else: fall through to the per-tool loop below.
+  }
+
+  if (!bulkWritten) {
     for (let i = 0; i < tools.length; i++) {
       if (options?.signal?.aborted) break;
       let ok = false;

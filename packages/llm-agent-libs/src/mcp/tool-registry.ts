@@ -106,6 +106,11 @@ export class McpToolRegistry implements IMcpToolRegistry {
       this.logger,
       this.toolRecordKey,
       opts,
+      {
+        descriptors: this.activeClientDescriptors,
+        configuredSlotCount: this.configuredSlotCount,
+        toolNamespace: this.toolNamespace,
+      },
     );
   }
 
