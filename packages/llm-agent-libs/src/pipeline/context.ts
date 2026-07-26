@@ -36,6 +36,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  IToolNamespace,
   IToolSelectionStrategy,
   LlmStreamChunk,
   LlmTool,
@@ -56,6 +57,7 @@ import type {
   SmartAgentConfig,
   SmartAgentRagStores,
 } from '../agent.js';
+import type { McpClientDescriptor } from '../interfaces/mcp-connection-strategy.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
@@ -92,6 +94,20 @@ export interface PipelineContext {
   readonly ragRegistry: IRagRegistry | undefined;
   readonly ragProviderRegistry: IRagProviderRegistry | undefined;
   readonly mcpClients: IMcpClient[];
+  /**
+   * Per-client stable identity (slotIndex+label), aligned with `mcpClients`
+   * from the SAME `connectionStrategy.resolve()` snapshot — never drifts
+   * relative to `mcpClients` across a reconnect. Falls back to
+   * `{slotIndex:i}` at point-of-use when absent (e.g. caller-provided
+   * clients with no connection strategy).
+   */
+  readonly mcpClientDescriptors?: readonly McpClientDescriptor[];
+  /**
+   * Strategy that names colliding MCP tools when two+ clients expose the
+   * same bare tool name. Unset until the builder wires an override (Task
+   * 10); handlers fall back to `defaultToolNamespace` at point-of-use.
+   */
+  readonly toolNamespace?: IToolNamespace;
   readonly reranker: IReranker;
   readonly queryExpander: IQueryExpander;
   readonly toolCache: IToolCache;

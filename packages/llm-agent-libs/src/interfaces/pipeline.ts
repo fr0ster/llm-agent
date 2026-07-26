@@ -32,6 +32,7 @@ import type {
   IToolSelectionStrategy,
   LlmStreamChunk,
   LlmTool,
+  McpClientDescriptor,
   Message,
   Result,
   TimingEntry,
@@ -66,6 +67,13 @@ export interface PipelineDeps {
   assembler?: IContextAssembler;
   /** Connected MCP clients. */
   mcpClients: IMcpClient[];
+  /**
+   * Per-client stable identity (slotIndex+label), captured from the SAME
+   * `connectionStrategy.resolve()` call that produced `mcpClients` — so the
+   * two never drift relative to each other across a reconnect. Absent when
+   * clients were supplied directly (no connection strategy).
+   */
+  mcpClientDescriptors?: readonly McpClientDescriptor[];
   /** Reranker applied to RAG results. */
   reranker?: IReranker;
   /** Query expander for multi-query RAG retrieval. */

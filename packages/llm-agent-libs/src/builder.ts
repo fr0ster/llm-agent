@@ -85,7 +85,10 @@ import {
 } from './coordinator/index.js';
 import { HistoryMemory } from './history/history-memory.js';
 import { HistorySummarizer } from './history/history-summarizer.js';
-import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
+import type {
+  IMcpConnectionStrategy,
+  McpClientDescriptor,
+} from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import { ToolCatalogStatusHolder } from './mcp/tool-catalog-status.js';
@@ -948,6 +951,7 @@ export class SmartAgentBuilder {
     // skipped (no tools store, or a read-only one), which reads as "unknown".
     const toolCatalogStatus = new ToolCatalogStatusHolder();
     let mcpClients: IMcpClient[];
+    let mcpClientDescriptors: readonly McpClientDescriptor[] | undefined;
     const closeFns: Array<() => Promise<void>> = [];
     let connectionStrategy = this._connectionStrategy;
 
@@ -976,6 +980,10 @@ export class SmartAgentBuilder {
         ? await connectionStrategy.resolve([])
         : { clients: [] as IMcpClient[], toolsChanged: false };
       mcpClients = resolved.clients;
+      // Same snapshot as `mcpClients` above — paired so the pipeline context's
+      // `mcpClientDescriptors` never drifts relative to `mcpClients` across a
+      // reconnect (both refresh paths zip them by index at point-of-use).
+      mcpClientDescriptors = resolved.clientDescriptors;
       const toolSummary = await vectorizeMcpTools(
         mcpClients,
         toolsRag,
@@ -1140,6 +1148,7 @@ export class SmartAgentBuilder {
       classifier,
       assembler,
       mcpClients,
+      mcpClientDescriptors,
       toolsRag,
       historyRag,
       ragStores,

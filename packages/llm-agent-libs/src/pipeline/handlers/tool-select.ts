@@ -15,6 +15,8 @@
 
 import type { LlmTool } from '@mcp-abap-adt/llm-agent';
 import {
+  buildNamespacedTools,
+  defaultToolNamespace,
   QueryEmbedding,
   TextOnlyEmbedding,
   toolNameFromRecord,
@@ -40,15 +42,25 @@ export class ToolSelectHandler implements IStageHandler {
           result: await client.listTools(ctx.options),
         })),
       );
-      for (const entry of settled) {
-        if (entry.status === 'fulfilled' && entry.value.result.ok) {
-          for (const t of entry.value.result.value) {
-            if (!ctx.toolClientMap.has(t.name)) {
-              ctx.mcpTools.push(t);
-              ctx.toolClientMap.set(t.name, entry.value.client);
-            }
-          }
-        }
+      const perClient = settled.flatMap((entry, i) =>
+        entry.status === 'fulfilled' && entry.value.result.ok
+          ? [
+              {
+                slotIndex: ctx.mcpClientDescriptors?.[i]?.slotIndex ?? i,
+                label: ctx.mcpClientDescriptors?.[i]?.label,
+                client: entry.value.client,
+                tools: entry.value.result.value,
+              },
+            ]
+          : [],
+      );
+      const { tools, toolClientMap } = buildNamespacedTools(
+        perClient,
+        ctx.toolNamespace ?? defaultToolNamespace,
+      );
+      ctx.mcpTools.push(...tools);
+      for (const [name, client] of toolClientMap) {
+        ctx.toolClientMap.set(name, client);
       }
     }
 
