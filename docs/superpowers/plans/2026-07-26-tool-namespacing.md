@@ -287,6 +287,13 @@ export function buildNamespacedTools(
   perClient: NamespaceClientInput[],
   ns: IToolNamespace,
 ): { tools: McpTool[]; toolClientMap: Map<string, IMcpClient> } {
+  // Defence in depth against a buggy custom connection strategy: slotIndex must be unique.
+  const slots = new Set<number>();
+  for (const pc of perClient) {
+    if (slots.has(pc.slotIndex))
+      throw new Error(`buildNamespacedTools: duplicate slotIndex ${pc.slotIndex} in input`);
+    slots.add(pc.slotIndex);
+  }
   // Collision = a tool name present in >= 2 clients.
   const counts = new Map<string, number>();
   for (const pc of perClient)
@@ -430,7 +437,37 @@ git commit -m "feat(agent): mergeOfferedTools — internal/external name-collisi
 - Modify: `packages/llm-agent-libs/src/builder-types.ts` (`BuilderMcpConfig.name?`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerMcpConfig.name?`)
 
-**Produces:** `interface McpClientDescriptor { slotIndex: number; label?: string }` and `McpConnectionResult.clientDescriptors?: readonly McpClientDescriptor[]`; `name?: string` on the four config interfaces.
+**Produces:** `interface McpClientDescriptor { slotIndex: number; label?: string }`; `McpConnectionResult.clientDescriptors?` + `configuredSlotCount?`; `name?: string` on the four config interfaces; a pure `assertClientDescriptors(clients, descriptors, configuredSlotCount?)` guard.
+
+Also create `packages/llm-agent/src/interfaces/assert-client-descriptors.ts` (+ test, + re-export):
+
+```ts
+import type { IMcpClient } from './mcp-client.js';
+import type { McpClientDescriptor } from './mcp-connection-strategy.js';
+
+/** Fail-fast on a malformed connection result (a buggy custom strategy). No-op
+ *  when descriptors are absent (a non-filtering strategy may omit them). */
+export function assertClientDescriptors(
+  clients: readonly IMcpClient[],
+  descriptors: readonly McpClientDescriptor[] | undefined,
+  configuredSlotCount?: number,
+): void {
+  if (!descriptors) return;
+  if (descriptors.length !== clients.length)
+    throw new Error(`clientDescriptors length ${descriptors.length} !== clients length ${clients.length}`);
+  const seen = new Set<number>();
+  let max = -1;
+  for (const d of descriptors) {
+    if (seen.has(d.slotIndex)) throw new Error(`duplicate slotIndex ${d.slotIndex} in clientDescriptors`);
+    seen.add(d.slotIndex);
+    if (d.slotIndex > max) max = d.slotIndex;
+  }
+  if (configuredSlotCount !== undefined && configuredSlotCount <= max)
+    throw new Error(`configuredSlotCount ${configuredSlotCount} must be > max slotIndex ${max}`);
+}
+```
+
+Test the three failure modes (length mismatch, duplicate slotIndex, `configuredSlotCount <= max`) + the absent-descriptors no-op.
 
 - [ ] **Step 1: Add the types (compiles clean — all additive optional)**
 
@@ -549,9 +586,12 @@ git commit -m "feat(mcp): LazyConnectionStrategy emits stable clientDescriptors 
 - [ ] **Step 3: Implement**
 
 - Add field `private activeClientDescriptors: readonly McpClientDescriptor[] = [];`.
-- In `resolveActiveClients` (`:50-56`), after `this.activeClients = result.clients;` add
+- In `resolveActiveClients` (`:50-56`), after `this.activeClients = result.clients;` first
+  `assertClientDescriptors(result.clients, result.clientDescriptors, result.configuredSlotCount)`
+  (fail-fast on a malformed custom strategy), then
   `this.activeClientDescriptors = result.clientDescriptors ?? this.activeClients.map((_, i) => ({ slotIndex: i }));`
-  (fallback: array index when the strategy omits descriptors).
+  (fallback: array index when the strategy omits descriptors). Store
+  `this.configuredSlotCount = result.configuredSlotCount ?? this.activeClients.length`.
 - Rewrite `resolve()` (`:83-104`): after `await this.resolveActiveClients(opts)`, fan out `listTools` per active client (as today), then:
 
 ```ts

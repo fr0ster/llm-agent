@@ -117,6 +117,13 @@ also carries **`configuredSlotCount`** (total configured servers, e.g.
 `LazyConnectionStrategy._slots.length`) — needed by Component 8 so the record-key form
 does not flip when peers drop.
 
+**Descriptor validity (guard against a buggy custom strategy).** When a result provides
+`clientDescriptors`, the consumer fail-fasts unless `clientDescriptors.length ===
+clients.length`, every `slotIndex` is unique, and `configuredSlotCount` (if given) is
+`> max(slotIndex)`. A shared `assertClientDescriptors(...)` in `@mcp-abap-adt/llm-agent`
+runs this once at the descriptor-consumption boundary; `buildNamespacedTools` also
+rejects duplicate `slotIndex` in its input (defence in depth).
+
 **`toolsChanged` must fire on any active-catalog change — gain, loss, OR same-slot
 client replacement.** Today `LazyConnectionStrategy` sets `toolsChanged = anyNewlyHealthy`
 (`:127`) — only on a GAIN. A peer DROP (a colliding tool reverts to bare, record keys
