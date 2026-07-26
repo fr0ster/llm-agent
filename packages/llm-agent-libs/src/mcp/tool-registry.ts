@@ -14,6 +14,7 @@ import type {
   IMcpConnectionStrategy,
   McpClientDescriptor,
 } from '../interfaces/mcp-connection-strategy.js';
+import { isDebugArea } from '../logger/debug-areas.js';
 import type { ILogger } from '../logger/index.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { vectorizeMcpTools } from './vectorize-mcp-tools.js';
@@ -27,8 +28,6 @@ export interface IMcpToolRegistry {
   resolve(opts?: CallOptions): Promise<ToolRegistryResult>;
   resolveActiveClients(opts?: CallOptions): Promise<void>;
   getActiveClients(): IMcpClient[];
-  getActiveClientDescriptors(): readonly McpClientDescriptor[];
-  getConfiguredSlotCount(): number;
 }
 
 export class McpToolRegistry implements IMcpToolRegistry {
@@ -62,18 +61,6 @@ export class McpToolRegistry implements IMcpToolRegistry {
     return this.activeClients;
   }
 
-  /** Stable per-client identity (slotIndex + optional label), aligned by index
-   *  with `getActiveClients()`. Consumed by the vectorizer to build namespace-stable
-   *  record keys across a reconnect (a filtered active set must not remap ids). */
-  getActiveClientDescriptors(): readonly McpClientDescriptor[] {
-    return this.activeClientDescriptors;
-  }
-
-  /** Total configured servers (not the active count) — see `McpConnectionResult.configuredSlotCount`. */
-  getConfiguredSlotCount(): number {
-    return this.configuredSlotCount;
-  }
-
   async resolveActiveClients(opts?: CallOptions): Promise<void> {
     if (!this.connectionStrategy) return;
     const result = await this.connectionStrategy.resolve(
@@ -91,6 +78,11 @@ export class McpToolRegistry implements IMcpToolRegistry {
       this.activeClients.map((_, i) => ({ slotIndex: i }));
     this.configuredSlotCount =
       result.configuredSlotCount ?? this.activeClients.length;
+    if (isDebugArea('mcp')) {
+      console.error(
+        `[mcp] tool-registry: resolved ${this.activeClients.length} active of ${this.configuredSlotCount} configured slot(s)`,
+      );
+    }
     if (result.toolsChanged) {
       await this.revectorizeTools(result.clients, opts);
     }
