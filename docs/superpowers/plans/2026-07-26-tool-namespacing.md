@@ -462,17 +462,24 @@ export function assertClientDescriptors(
   configuredSlotCount?: number,
 ): void {
   if (!descriptors) return;
+  const nonNegInt = (n: number): boolean => Number.isInteger(n) && n >= 0;
   if (descriptors.length !== clients.length)
     throw new Error(`clientDescriptors length ${descriptors.length} !== clients length ${clients.length}`);
   const seen = new Set<number>();
   let max = -1;
   for (const d of descriptors) {
+    if (!nonNegInt(d.slotIndex))
+      throw new Error(`slotIndex must be a non-negative integer, got ${d.slotIndex}`);
     if (seen.has(d.slotIndex)) throw new Error(`duplicate slotIndex ${d.slotIndex} in clientDescriptors`);
     seen.add(d.slotIndex);
     if (d.slotIndex > max) max = d.slotIndex;
   }
-  if (configuredSlotCount !== undefined && configuredSlotCount <= max)
-    throw new Error(`configuredSlotCount ${configuredSlotCount} must be > max slotIndex ${max}`);
+  if (configuredSlotCount !== undefined) {
+    if (!nonNegInt(configuredSlotCount))
+      throw new Error(`configuredSlotCount must be a non-negative integer, got ${configuredSlotCount}`);
+    if (configuredSlotCount <= max)
+      throw new Error(`configuredSlotCount ${configuredSlotCount} must be > max slotIndex ${max}`);
+  }
 }
 ```
 
@@ -536,6 +543,13 @@ describe('assertClientDescriptors', () => {
   });
   it('throws when configuredSlotCount <= max slotIndex', () => {
     assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: 2 }], 2), /configuredSlotCount/);
+  });
+  it('rejects negative, fractional, or NaN slotIndex / configuredSlotCount', () => {
+    assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: -1 }]), /non-negative integer/);
+    assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: 1.5 }]), /non-negative integer/);
+    assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: Number.NaN }]), /non-negative integer/);
+    assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: 0 }], -1), /non-negative integer/);
+    assert.throws(() => assertClientDescriptors([c()], [{ slotIndex: 0 }], Number.NaN), /non-negative integer/);
   });
 });
 ```
