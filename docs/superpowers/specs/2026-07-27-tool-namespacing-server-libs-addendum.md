@@ -1,193 +1,234 @@
 # #244 Addendum — Server-libs seams must be namespace-aware
 
-**Status:** design, pending review. Extends the approved spec
-`2026-07-26-tool-namespacing-design.md` (do not restate it — this only covers the
-`llm-agent-server-libs` gap the original spec's call-site inventory omitted).
+**Status:** design, pending review (review round 2 — revised after the per-session-isolation
+and two-snapshot findings). Extends the approved spec `2026-07-26-tool-namespacing-design.md`
+(do not restate it — this only covers the `llm-agent-server-libs` gap the original spec's
+call-site inventory omitted).
 
-**Goal:** the colliding-tool namespacing #244 delivers in `llm-agent-libs` must also
-work on every `llm-agent-server-libs` pipeline (flat / linear / dag / stepper /
-controller) — because SmartServer *is* the example. Today it regresses there.
+**Goal:** the colliding-tool namespacing #244 delivers in `llm-agent-libs` must also work on
+every `llm-agent-server-libs` pipeline — because SmartServer *is* the example — **without
+weakening the per-session MCP isolation (#213/#226) those pipelines rely on.**
 
 ## 1. The gap (why the original spec was incomplete)
 
 The original spec enumerated the four `toolClientMap` build paths + `coordinator.ts` and
-encapsulated the name-strip in the `toolClientMap` value (`bindToolCallName`). But the
-server pipelines do **not** route through `toolClientMap`. They use two bare-name seams:
+encapsulated the name-strip in the `toolClientMap` value (`bindToolCallName`). But several
+server routes do **not** go through that `toolClientMap`. Two are bare-name seams:
 
-- **`buildMcpBridge`** (`smart-server.ts:614-659`): finds the owning client with
-  `owns = listed.value.some(t => t.name === name)` then `client.callTool(name, …)`.
-  The LLM calls `s0__Search`; every client's `listTools()` reports bare `Search`
-  (`bindToolCallName` passes `listTools()` through unchanged, `tool-namespace.ts:35`) →
-  no client "owns" it → `Tool not found: s0__Search`.
-- **`makeToolsRagHandle`** (`tools-rag-handle.ts:19-88`): catalog keyed by **bare**
-  `t.name`, deduped first-seen; `query()` maps the RAG record's now-**namespaced** name
-  (`toolNameFromRecord(record.metadata)` = `s0__Search`) → `catalog.get('s0__Search')` →
-  miss → the colliding hit is dropped (or an arbitrary bare slice is returned).
+- **`buildMcpBridge`** (`smart-server.ts:614-659`): `owns = listed.value.some(t => t.name === name)`
+  then `client.callTool(name, …)`. The LLM calls `s0__Search`; `listTools()` reports bare
+  `Search` (`bindToolCallName` passes `listTools()` through unchanged, `tool-namespace.ts:35`)
+  → no client owns it → `Tool not found: s0__Search`.
+- **`makeToolsRagHandle`** (`tools-rag-handle.ts:19-88`): catalog keyed by **bare** `t.name`,
+  deduped; `query()` maps the RAG record's now-**namespaced** name → `catalog.get('s0__Search')`
+  → miss → the colliding hit is dropped.
 
-Because the shared builder now vectorizes **namespaced** `metadata.name` into `toolsRag`
-(`builder.ts:1000-1013`) while `_sharedMcpClients` + both seams speak **bare**, the RAG
-catalog and the routing disagree. **This is a strict regression**: pre-#244 the first
-server's `Search` was selectable *and* callable; post-#244 neither colliding tool is, on
-every server pipeline.
+Because the builder vectorizes **namespaced** `metadata.name` into the shared `toolsRag`
+(`builder.ts:1000-1013`) while `_sharedMcpClients` + both seams speak **bare**, selection and
+routing disagree. **Strict regression:** pre-#244 the first server's `Search` was selectable
+*and* callable; post-#244 neither colliding tool is, on the server pipelines that use these
+seams.
 
-## 2. Design — one namespaced view, consumed by both seams
+**Which pipelines are affected (verified, `smart-server.ts` / `pipelines/*`):**
+- `flat` / `dag` route MCP through the **per-session agent's own internal `McpToolRegistry`**
+  (already namespaced by the libs work, over session-local clients) — **not affected, no
+  change needed.**
+- `controller` builds its **own** `buildMcpBridge(ctx.mcpClients, …)` (`controller.ts:161`)
+  over **session-local** `ctx.mcpClients`, and selects via `ctx.toolsRag` (the shared
+  `_toolsRagHandle`) — **affected** (routing + selection).
+- `linear` / `stepper` route via `ctx.callMcp` → `SmartServer.callMcp` over the **global**
+  `_sharedMcpClients` (`smart-server.ts:1899-1909`) — **affected** (routing); they select via
+  the shared `_toolsRagHandle` — **affected** (selection).
 
-Build the **same** namespaced view the libs paths use — once, at infra-build time — over
-`_sharedMcpClients`, and route both server seams through it:
+## 2. The two isolation scopes (the crux the first draft got wrong)
 
-```
-perClient = clients.map((client, i) => ({
-  slotIndex: descriptors[i]?.slotIndex ?? i,
-  label:     descriptors[i]?.label,
-  client,
-  tools:     <await client.listTools()>,   // eager, once
-}))
-const { tools, toolClientMap } = buildNamespacedTools(perClient, toolNamespace)
-```
+`buildServerCtx` is **per-session** (called from `buildPipelineInstance` per session, and once
+for the `'embedded'` pseudo-session). It sets `mcpClients: scope.parts.mcpClients`
+(`smart-server.ts:2152`) — under #213 YAML isolation, a **fresh per-session client array**
+(`buildSessionMcpClients(cfg.mcp)`), distinct in object identity from the global
+`_sharedMcpClients`. But `SmartServer.callMcp` closes over the **global** `_sharedMcpClients`.
 
-- `tools` (exposed names, `s0__Search` on collision, bare when unique) → the tools-RAG
-  handle **catalog is keyed by exposed name**, so `toolNameFromRecord(record.metadata)`
-  (namespaced) maps back. `lookup(name)` and `query()` both use this map.
-- `toolClientMap` → **routing is a `toolClientMap.get(name)` lookup**, not a `listTools()`
-  rescan. The value is the `bindToolCallName` wrapper (or the real client when unique), so
-  `.callTool(exposedName, …)` reaches the right server with the **original** name for free.
-  This is the same reuse as the registry/pipeline paths — no bespoke server logic.
+So there are two client targets today, and each affected seam has its own:
+- the **controller** targets **session-local** `ctx.mcpClients`;
+- **`callMcp`** (linear/stepper) targets **global** `_sharedMcpClients`.
 
-`buildNamespacedTools`, `bindToolCallName`, `McpClientDescriptor`, `defaultToolNamespace`
-are the existing `@mcp-abap-adt/llm-agent` exports; no new pure logic is invented — the
-server merely *consumes* the library builder (Architecture Principle 1 & 2).
+**A single global `toolClientMap` threaded into every ctx would drag the controller off its
+session-local clients onto the global startup clients — silently bypassing #213 isolation.**
+Therefore the routing map is **not** global: **each seam builds its namespaced routing map
+over the client list it already targets**, preserving that seam's existing isolation scope. We
+change *bare-name matching → namespaced-map routing*, and change **nothing** about which
+clients a seam targets.
 
-**Single-server / no-collision is unchanged:** `buildNamespacedTools` returns bare names
-and the real client as the map value; the catalog and routing behave exactly as today.
+## 3. Design
 
-**Live tool-list change tolerance:** `buildMcpBridge` today re-lists per call, tolerating a
-mid-session tool-list change. The namespaced view is a snapshot — but so is what it sits
-beside: `makeToolsRagHandle`'s `catalogCache` (`tools-rag-handle.ts:26-42`) is already a
-**startup snapshot that never refreshes**, and the server's shared `_sharedMcpClients` are
-never re-vectorized after boot (`smart-server.ts:1741,1799` — the shared clients are
-explicitly *not* re-vectorized; the only `toolsChanged` re-vectorize lives in the
-per-session **internal** registry `llm-agent-libs/mcp/tool-registry.ts:86-87`, which never
-touches `_sharedMcpClients` or `_toolsRagHandle`). So the namespaced view and the catalog
-are **both frozen at build time and stay mutually consistent by construction** — the only
-property lost versus the lazy `buildMcpBridge` is tolerance of a mid-session tool-list
-change, which the server-side RAG catalog never had anyway. A no-namespace / single-client
-deployment keeps the current lazy path (see §5 fallback), so nothing regresses for the
-common case. **Plan task (verify, not assume):** confirm no per-session registry
-live-re-vectorizes the *shared* server `toolsRag` underneath the frozen catalog; if a live
-refresh is ever genuinely wanted, it must be a *built* rebuild hook, not assumed here.
+Two independent artifacts, on purpose:
 
-## 3. Surfacing the stable descriptors (two producer paths, one consumer)
+### 3a. Selection — a GLOBAL exposed-name catalog (fixes `makeToolsRagHandle`)
 
-The consumer code (§2) needs `{ clients, clientDescriptors, configuredSlotCount }` +
-`toolNamespace`. The two ways `_sharedMcpClients` is produced each supply that triple
-differently; both then converge on the same consumption code.
+The tools-RAG handle's catalog must be keyed by the **exposed** name so a namespaced RAG
+record maps back. Names are config-stable (a tool's exposed name depends on its config
+`slotIndex` + `label` + collision status + `toolNamespace`, not on a client *instance*), so
+this catalog is legitimately **global** — the reviewer's own guidance ("exposed catalog може
+бути глобальним").
 
-### 3a. Yaml-builder path (`_sharedMcpClients = agentHandle.mcpClients`)
+**Consistency with the RAG store (fixes the two-snapshot divergence):** the catalog must use
+the *same* exposed names the builder wrote into `toolsRag`. Rather than have the server do a
+SECOND `listTools()` pass (which could see a different tool set / availability than the
+builder's vectorize pass — the divergence the reviewer flagged), **surface the builder's
+namespaced snapshot** from `build()`:
 
-The builder computes `resolved.clientDescriptors`/`configuredSlotCount` but drops them.
-**Extend `SmartAgentHandle<T>`** (`packages/llm-agent/src/interfaces/builder.ts:56`) with
-additive optional fields:
+- Extend `SmartAgentHandle<T>` (`packages/llm-agent/src/interfaces/builder.ts:56`) additively
+  with `namespacedTools?: readonly LlmTool[]` (exposed-named tool schemas) and
+  `toolProvenance?: ReadonlyMap<string, { slotIndex: number; originalName: string }>` — the
+  exact `tools`/`provenance` the builder's `vectorizeMcpTools`→`buildNamespacedTools` already
+  computed at vectorize time. (`vectorizeMcpTools` currently returns only a
+  `ToolVectorizationSummary`; it must also return, or the builder must capture, the `tools` +
+  `provenance` from its internal `buildNamespacedTools` call — an additive return/capture, no
+  behavior change.)
+- On the yaml-builder path the handle's `namespacedTools` **is** the catalog (same snapshot as
+  the RAG → consistent by construction, no second `listTools`).
+- On the **seam path** there is **no** `vectorizeMcpTools` and **no** RAG store
+  (`buildSharedPipelineInfra` only builds the flat catalog; `toolsRag.query` falls back to the
+  catalog slice) — so the catalog is the sole source and cannot diverge from a RAG. There the
+  catalog is built from ONE `listTools()` pass over the seam clients via `buildNamespacedTools`
+  with config-derived descriptors (§3c). No two-snapshot problem exists on this path.
 
-```ts
-mcpClientDescriptors?: readonly McpClientDescriptor[];
-configuredSlotCount?: number;
-toolNamespace?: IToolNamespace;
-```
+`makeToolsRagHandle` gains an optional pre-built `{ namespacedTools, provenance }` input; when
+present it keys the catalog by exposed name from it; when absent it keeps today's bare
+behavior (back-compat).
 
-Populate them in `builder.ts`'s `return { … }` (`:1289`). The `resolved` local is scoped
-inside the connect `else` branch (`:975-1017`) and must be **hoisted to function scope** so
-`configuredSlotCount` survives to the return (`mcpClientDescriptors` is already
-function-scoped). Note: on the caller-provided-`mcpClients` branch `resolved` is undefined,
-so `configuredSlotCount` is legitimately absent there — populate via optional chaining
-(`resolved?.configuredSlotCount`) and treat its absence as "unknown slot count" (the
-consumer falls back to `clients.length`). Additive, backward-compatible (Principle 7).
+### 3b. Routing — a PER-SEAM namespaced map (fixes both bridges), isolation-preserving
 
-**Cross-package ordering:** this `SmartAgentHandle` change (in `llm-agent`) must land before
-`llm-agent-server-libs` can consume the descriptors — so the interface additions are the
-first plan task (order: `llm-agent` → `llm-agent-libs` → `llm-agent-server-libs`).
+Replace each bare `buildMcpBridge` with a namespaced-map lookup, built over **that seam's own
+clients**:
 
-### 3b. DI/seam path (`connectMcpClientsFromConfig` / custom `deps.connectMcp`) — **full fix**
+- **Controller** (`controller.ts:161`): consume a **per-session** routing map. Add
+  `IPipelineContext.toolClientMap?: Map<string, IMcpClient>`
+  (`packages/llm-agent/src/interfaces/pipeline-plugin.ts`), additive, beside `mcpClients`.
+  `buildServerCtx` (`smart-server.ts:2149-2152`) builds it from **`scope.parts.mcpClients`**
+  (session-local) via `buildNamespacedTools` with config descriptors (§3c) + the server
+  `toolNamespace`, and populates `ctx.toolClientMap`. The controller routes via
+  `ctx.toolClientMap.get(name)` instead of building its own bare bridge → session isolation
+  preserved (it was already session-local; we only fix the name matching).
+- **`SmartServer.callMcp`** (linear/stepper): build its namespaced map over its existing
+  **global** `_sharedMcpClients` target and route via `map.get(name)`. Its client target is
+  unchanged (global, exactly as today) — we only fix bare→namespaced. (`callMcp` deliberately
+  does **not** adopt the session map; changing its target would be an unrelated isolation
+  change out of scope here.)
 
-`connectMcpClientsFromConfig` (`smart-server.ts:583-611`) never reads `cfg.name` and returns
-bare `IMcpClient[]`. Per the chosen full-fix scope, `mcp[].name` labels must work here too.
+The map value is the `bindToolCallName` wrapper (or the real client when the name is unique),
+so `.callTool(exposedName, …)` reaches the right server with the **original** name — the same
+`toolClientMap` mechanism the libs paths use. No bespoke server namespacing logic
+(Architecture Principles 1 & 2).
 
-- **Default connector:** rewrite `connectMcpClientsFromConfig` to build, alongside the
-  clients, `clientDescriptors[i] = { slotIndex: i, label: cfg[i].name }` and
-  `configuredSlotCount = cfg.length`, returned as an `McpConnectionResult`-shaped value.
-- **Custom connectors — additive, non-breaking:** the existing
-  `BuildAgentDeps.connectMcp: (…) => Promise<IMcpClient[]>` seam is **kept as-is** (no
-  breaking signature change). Add an optional parallel seam
-  `connectMcpWithDescriptors?: (mcp) => Promise<McpConnectionResult>`. Resolution order at
-  the call site: `connectMcpWithDescriptors` if provided → else `connectMcp` (bare) with an
-  **array-index fallback** (`{slotIndex:i}`, no label). So a consumer who injects only the
-  bare seam still gets callable colliding tools (slot-index prefixes), and can opt into
-  labels via the new seam. The default path (most deployments) gets labels outright.
+### 3c. Descriptors — where each path gets `{ slotIndex, label }` (Fork 2: full fix)
 
-### 3c. The `toolNamespace` source
+Exposed names + record keys need stable `slotIndex` (config index) + `label`
+(`cfg.mcp[].name`). Sources:
 
-Today nothing calls `.withToolNamespace(...)` in the server. Add an optional DI knob
-`BuildAgentDeps.toolNamespace?: IToolNamespace` (default `defaultToolNamespace`). The server
-(a) passes it into the builder via `.withToolNamespace(ns)` in `buildBaseBuilder`
-(`smart-server.ts:2206-2226`) so the yaml path uses it, and (b) uses the same instance when
-building the namespaced view on the seam path. A YAML strategy-name knob is **out of scope**
-— `mcp[].name` labels cover the config-driven need; a custom `IToolNamespace` is a
-programmatic/DI concern (consistent with `IToolRecordKey`/`IMcpFailureClassifier`).
+- **Yaml-builder path (global catalog + callMcp map):** the builder already has descriptors
+  from `IMcpConnectionStrategy.resolve()`. Extend `SmartAgentHandle` additively with
+  `mcpClientDescriptors?: readonly McpClientDescriptor[]` and `configuredSlotCount?: number`,
+  populated in `builder.ts`'s `return { … }` (`:1289`) — hoist the `resolved` local (scoped in
+  the connect `else`, `:975-1017`) to function scope. On the caller-provided-`mcpClients`
+  branch `resolved` is undefined, so `configuredSlotCount` is legitimately absent (consumer
+  falls back to `clients.length`). The server pairs these with `_sharedMcpClients` for its
+  `callMcp` map.
+- **Session-local + seam path (per-session map + seam catalog):** `buildSessionMcpClients`
+  (`build-session-mcp-clients.ts`) and the default `connectMcpClientsFromConfig`
+  (`smart-server.ts:583`) both build clients from `cfg.mcp` in config order via a hand-rolled
+  loop and today ignore `cfg.mcp[].name`. Per the full-fix scope, have each **return
+  descriptors alongside the clients** (`slotIndex = config index`, `label = cfg.mcp[i].name`,
+  `configuredSlotCount = cfg.mcp.length`) — an `McpConnectionResult`-shaped result. Custom
+  consumer connectors: the existing `BuildAgentDeps.connectMcp: () => Promise<IMcpClient[]>`
+  seam stays **unchanged** (non-breaking); add an optional parallel
+  `connectMcpWithDescriptors?: () => Promise<McpConnectionResult>`. Resolution:
+  `connectMcpWithDescriptors` if provided → else `connectMcp` with an **array-index fallback**
+  (`{slotIndex:i}`, no label). So a bare custom connector still gets callable colliding tools
+  (slot prefixes); the default/config path gets labels.
 
-## 4. The controller's second bridge (Fork 1 — `toolClientMap` via `IPipelineContext`)
+### 3d. The `toolNamespace` source
 
-`ControllerFactory.build` (`pipelines/controller.ts:161`) builds its **own**
-`buildMcpBridge(ctx.mcpClients, …)`, bypassing `SmartServer.callMcp`. Chosen resolution:
+Nothing calls `.withToolNamespace(...)` in the server today. Add an optional DI knob
+`BuildAgentDeps.toolNamespace?: IToolNamespace` (default `defaultToolNamespace`): the server
+(a) passes it to the builder via `.withToolNamespace(ns)` in `buildBaseBuilder`
+(`smart-server.ts:2206-2226`) so the yaml catalog uses it, and (b) uses the same instance when
+building the per-seam maps. A YAML strategy-name knob is **out of scope** — `mcp[].name`
+labels cover the config need; a custom `IToolNamespace` is a DI concern (like
+`IToolRecordKey`/`IMcpFailureClassifier`).
 
-- **Add `IPipelineContext.toolClientMap?: Map<string, IMcpClient>`**
-  (`packages/llm-agent/src/interfaces/pipeline-plugin.ts`), additive/optional, beside
-  `mcpClients`.
-- `buildServerCtx` (`smart-server.ts:2149-2151`) populates it from the server's namespaced
-  view, alongside the existing `callMcp`/`mcpClients`.
-- Both bridge builders route via `toolClientMap.get(name)` when present, falling back to the
-  current `listTools()` scan when absent (no map = no namespacing = today's behavior, e.g. a
-  host that doesn't build the view). `ControllerFactory` consumes `ctx.toolClientMap`
-  instead of constructing a bare bridge from `ctx.mcpClients`.
+## 4. Fallback + partial-failure algorithm (P2 — make it explicit)
 
-One shared routing seam, additive, ISP-clean; the controller stops special-casing.
+There is exactly **one eager build** per artifact (the catalog at handle-build, each routing
+map at its seam-build), no lazy-vs-eager ambiguity:
 
-## 5. Fallback / backward-compat guarantees
+1. Build `perClient` = one `listTools()` per client (skip a client whose `listTools()` FAILS —
+   consistent with today's `vectorizeMcpTools`/`makeToolsRagHandle`, neither aborts the whole
+   build; **adopt `vectorizeMcpTools`'s `clientFailures` logging**, not `makeToolsRagHandle`'s
+   silent drop, so a dropped client is observable). A client that fails to list is simply
+   absent from that build — its tools are unroutable/unselectable until the next rebuild, same
+   as today.
+2. `const { tools, toolClientMap } = buildNamespacedTools(perClient, toolNamespace)`.
+3. **Routing:** always route via `toolClientMap.get(name)`. When no collision occurred every
+   exposed name is bare and its map value is the **real client**, so this is behaviourally
+   identical to the old scan for the common single-name case — no separate "lazy vs snapshot"
+   branch is needed. The old lazy `listTools()`-scan bridge is retained **only** as the
+   fallback when a host provides **no** `toolClientMap`/namespaced view at all (e.g. a pipeline
+   or embedding context that never built one) — see §5.
+4. **Catalog:** keyed by exposed `tools[i].name`; `lookup`/`query` resolve exposed→schema. A
+   RAG record whose exposed name is absent from the catalog (e.g. a rare boot-vs-now
+   availability flip) is skipped, exactly as an unknown record is skipped today — graceful
+   degradation, never a crash. (A stricter per-session re-vectorize to eliminate that flip
+   window is a noted follow-up, §7, not required here.)
 
-- No descriptors + no toolNamespace + no collision → bare names, real-client map values,
-  `listTools()`-scan bridge fallback: **byte-for-byte today's behavior**.
+## 5. Backward-compat guarantees
+
+- No descriptors + no `toolNamespace` + no collision → bare names, real-client map values,
+  and (where no map is supplied) the `listTools()`-scan bridge fallback: **byte-for-byte
+  today's behavior**.
 - A single configured server never collides → all names bare (unchanged).
-- `IToolsRagHandle`, `IPipelineContext`, `SmartAgentHandle`, `BuildAgentDeps` all change
-  **only additively** (new optional fields / a new optional parallel seam). The existing
-  `connectMcp` signature is untouched. `toolClientMap` value type stays
-  `Map<string, IMcpClient>`.
+- **Per-session isolation (#213/#226) is preserved:** the controller keeps routing to
+  `scope.parts.mcpClients`; `callMcp` keeps routing to `_sharedMcpClients`. No seam's client
+  target changes.
+- `SmartAgentHandle`, `IPipelineContext`, `IToolsRagHandle`, `BuildAgentDeps` change **only
+  additively** (new optional fields / one new optional parallel seam). The `connectMcp`
+  signature and the `Map<string, IMcpClient>` `toolClientMap` value type are untouched.
 
-## 6. Testing strategy (the plan will TDD each)
+## 6. Testing strategy (the plan TDDs each)
 
-- **Server e2e (the real gap):** two embedded MCP servers each exposing `Search`, driven
-  through an actual SmartServer pipeline (controller AND one flat/stepper) — a RAG hit for
-  server-1's `Search` selects `s0__Search`/label, `callMcp`/`ctx.toolClientMap` routes to
-  client 1 with the **original** `Search`, client 0 not called. This is the assertion the
-  current `llm-agent-libs` e2e could not make (it never exercises `buildMcpBridge` /
-  `makeToolsRagHandle`).
-- **`mcp[].name` labels on BOTH producer paths:** yaml-builder and the default
-  `connectMcpClientsFromConfig` seam each yield `label__Search`; a bare custom `connectMcp`
-  yields `s0__Search` (slot fallback) and is still callable.
-- **Tools-RAG handle:** a namespaced RAG record maps back to a catalog entry (no miss);
-  single-server catalog is bare/unchanged.
-- **Regression floor:** the pre-existing disjoint-name server tests stay green.
+- **Per-session isolation (the headline risk):** two sessions on the YAML-isolated path, each
+  with its own client instances; a namespaced call in session A reaches session A's client
+  instance, NOT the global `_sharedMcpClients` nor session B's — asserted by distinct spies
+  per session. This is the test that would have caught the first-draft regression.
+- **Server e2e per pipeline:** two embedded MCP servers each exposing `Search`, driven through
+  the **controller** (session-local map) AND **linear/stepper** (global `callMcp` map) — a RAG
+  hit for server-1's `Search` selects `s0__Search`/label and routes to client 1 with the
+  **original** `Search`; client 0 not called.
+- **Catalog↔RAG consistency:** a namespaced RAG record maps back to the (builder-surfaced)
+  catalog (no miss); single-server catalog bare/unchanged.
+- **`mcp[].name` labels on both producer paths:** yaml-builder and the default
+  session/seam connector each yield `label__Search`; a bare custom `connectMcp` yields
+  `s0__Search` (fallback) and is still callable.
+- **Partial `listTools()` failure:** one server failing to list drops only its tools (logged),
+  the other remains selectable + callable.
+- **Regression floor:** pre-existing disjoint-name server tests stay green.
 
 ## 7. Out of scope (follow-ups)
 
 - A YAML `toolNamespace:` strategy-name knob (custom strategy via config string).
-- Any change to the `connectMcp` **bare** seam signature (kept stable; labels for custom
-  bare connectors come via the optional `connectMcpWithDescriptors` seam).
+- Any change to the bare `connectMcp` seam signature (labels for bare custom connectors come
+  via the optional `connectMcpWithDescriptors` seam).
+- Per-session re-vectorization of the shared `toolsRag` to close the boot-vs-now
+  availability-flip window (the frozen-snapshot catalog degrades gracefully without it).
 
 ## 8. Architecture-principles check
 
 1. **Build ON components:** reuses `buildNamespacedTools`/`bindToolCallName`; no bespoke
    server-side namespacing. ✓
-2. **App is the example:** the fix makes SmartServer actually demonstrate the feature. ✓
+2. **App is the example:** SmartServer actually demonstrates the feature, on every pipeline. ✓
 3. **Interfaces:** consumers still depend on `IToolsRagHandle`/`IPipelineContext`. ✓
 4. **ISP:** new focused optional fields + one parallel seam; nothing widened into a god
    interface. ✓
 5. **Strategies:** `IToolNamespace` reaches the server via DI, swappable. ✓
-6/7. **File size / additive:** no god-file growth; all changes additive/backward-compatible. ✓
+6/7. **File size / additive:** no god-file growth; all changes additive/backward-compatible;
+   **and it does not regress #213 isolation.** ✓
