@@ -1765,6 +1765,71 @@ class OptimisticClassifier implements IMcpFailureClassifier {
 
 ---
 
+## IToolNamespace
+
+**File:** `packages/llm-agent/src/interfaces/tool-namespace.ts` (v20.9.0+, #244)
+
+When two or more currently-active MCP clients expose a tool with the same name (e.g. two servers each expose `Search`), a plain name-keyed catalog can only keep one of them reachable — the second is either overwritten in the tools RAG store or unreachable at call time. `IToolNamespace` decides the LLM/RAG-visible ("exposed") name for each tool, so a genuine collision is renamed instead of dropped:
+
+```ts
+interface ToolNamespaceContext {
+  /** Original tool name the server exposes. */
+  toolName: string;
+  /** Prefix source resolved by the builder: the server's config `name`, else `s${slotIndex}`. */
+  prefix: string;
+  /** True when this tool name is exposed by more than one currently-active client. */
+  colliding: boolean;
+}
+
+interface IToolNamespace {
+  /** Name the LLM sees / RAG stores. Must be non-empty, `^[a-zA-Z0-9_-]+$`, <= 64 chars.
+   *  The builder validates this output — an invalid name fails fast. */
+  expose(ctx: ToolNamespaceContext): string;
+}
+```
+
+### Default behavior
+
+`defaultToolNamespace` keeps the bare name when it is unique and renames only on a collision, joining prefix and tool name with a `__` separator:
+
+```ts
+const defaultToolNamespace: IToolNamespace = {
+  expose: ({ toolName, prefix, colliding }): string =>
+    colliding ? `${prefix}__${toolName}` : toolName,
+};
+```
+
+`prefix` comes from the server's config `name` (`mcp[].name` in YAML / `McpConnectionConfig.name` programmatically) when set, else `s${slotIndex}` (the server's stable configured-array position). `mcp[].name` must be non-empty, match `^[a-zA-Z0-9_-]+$`, and be unique across all configured servers — an invalid or duplicate label fails config parsing before any connection is attempted. Two servers with `mcp: [{ ..., name: primary }, { ..., name: secondary }]` both exposing `Search` yield `primary__Search` / `secondary__Search`; without `name`, the same collision yields `s0__Search` / `s1__Search`.
+
+**UX note:** the model only ever sees a namespaced name on a genuine collision. A uniquely-named tool from a single server, or from several servers with no overlapping names, is always exposed bare — this mechanism is invisible until a collision actually happens.
+
+`buildNamespacedTools` (in `@mcp-abap-adt/llm-agent`) is the single call site every consumer of this strategy shares: the internal tool registry (`McpToolRegistry.resolve()`), startup vectorization (`vectorizeMcpTools`), and the pipeline's per-request tool handlers (`ToolSelectHandler` first load, `ToolLoopHandler` per-iteration refresh) all namespace through it, so a custom strategy set via `withToolNamespace` below is honored everywhere a tool name can be exposed. It also wraps the owning client with `bindToolCallName` for every renamed tool, so `toolClientMap.get(exposedName).callTool(exposedName, ...)` transparently calls the underlying server with the tool's ORIGINAL bare name — no executor call site (the tool-loop, `fireInternalToolsAsync`, or the coordinator's `callTool`) needs to know namespacing happened.
+
+Fail-fast guards inside `buildNamespacedTools`: a `slotIndex` reused across two input entries throws (a buggy custom `IMcpConnectionStrategy`); an `expose()` output that is empty, over 64 chars, or does not match `^[a-zA-Z0-9_-]+$` throws; and if the final exposed name set still collides (e.g. a custom strategy that returns the same name for two different tools) the builder throws asking for distinct `mcp[].name` labels.
+
+Separately, `mergeOfferedTools` (also in `@mcp-abap-adt/llm-agent`) fails fast when a client-provided **external** tool's name matches an **internal** (already-namespaced) MCP tool name — the offered tool list must stay unique so `classifyToolCalls` never double-classifies a call; rename the external tool instead.
+
+### Custom namespace example
+
+```ts
+import type { IToolNamespace } from '@mcp-abap-adt/llm-agent';
+
+// Uppercase the prefix on a collision — otherwise identical to the default.
+const shoutingNamespace: IToolNamespace = {
+  expose: ({ toolName, prefix, colliding }) =>
+    colliding ? `${prefix.toUpperCase()}__${toolName}` : toolName,
+};
+
+// Reaches the internal registry, startup vectorization, and the pipeline's
+// per-request tool refresh — all three read the SAME strategy instance.
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .withToolNamespace(shoutingNamespace)
+  .build();
+```
+
+---
+
 ## IReadinessReporter — readiness gate (v20.x+)
 
 **File:** `packages/llm-agent/src/interfaces/readiness-reporter.ts`
