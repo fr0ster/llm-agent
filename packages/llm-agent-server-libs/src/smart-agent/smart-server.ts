@@ -1510,6 +1510,13 @@ export class SmartServer {
       maxSessions: sessionCfg.maxSessions ?? 1000,
       cookieName: sessionCfg.cookieName ?? 'sid',
       mcpClients: globalMcpClients,
+      // Shared/global-set provenance (#244) — forwarded so the lifecycle's
+      // isolation-OFF branch (no `buildPerSessionMcpClients`, or
+      // `mcpSharedClient: true`) still pairs `SessionAgentParts.mcpClients`
+      // with the ORIGINAL slotIndex-keyed descriptors, even when the shared
+      // set is a FILTERED subset (e.g. LazyConnectionStrategy dropped a slot).
+      mcpClientDescriptors: this._sharedMcpClientDescriptors,
+      configuredSlotCount: this._configuredSlotCount,
       // Per-session MCP isolation (#213): only for the YAML `mcp:` path (the one
       // the server itself connects). Ready-client sources (deps/cfg/plugin) are
       // consumer/plugin-owned and stay shared. `agent.mcpSharedClient: true`
@@ -1691,7 +1698,11 @@ export class SmartServer {
    * path).
    * Mirrors EXACTLY what the session lifecycle passes to `buildSessionAgent`:
    * the global mcpClients + the global ragRegistry + the global tools store,
-   * with a fresh per-(embedded-)session request logger.
+   * with a fresh per-(embedded-)session request logger. Also threads
+   * `_sharedMcpClientDescriptors`/`_configuredSlotCount` (#244) — the shared
+   * set's per-slot provenance, captured by whichever descriptor-producing
+   * seam won — so the embedded path carries the same descriptor pairing the
+   * per-session lifecycle now does.
    */
   private _embeddedSessionParts(
     mcpClients: IMcpClient[] | undefined,
@@ -1700,6 +1711,8 @@ export class SmartServer {
     return {
       sessionId: 'embedded',
       mcpClients: mcpClients ?? this._sharedMcpClients ?? [],
+      mcpClientDescriptors: this._sharedMcpClientDescriptors,
+      configuredSlotCount: this._configuredSlotCount,
       toolsRag: this._toolsRag,
       ragRegistry,
       logger: new SessionRequestLogger(),

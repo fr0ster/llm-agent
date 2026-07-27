@@ -205,3 +205,79 @@ test('onDispose: only the closed session close() is called; other sessions not a
   await lc.disposeAll();
   void g2;
 });
+
+test('isolated session: buildPerSessionMcpClients descriptors reach parts.mcpClientDescriptors, built.close still registered (#244)', async () => {
+  const ragRegistry = makeRagRegistry();
+  let capturedParts: SessionAgentParts | undefined;
+  let closeCalled = false;
+
+  const lc = buildSessionLifecycle({
+    ...baseOpts,
+    ragRegistry,
+    buildPerSessionMcpClients: () => ({
+      clients: [fakeClient(), fakeClient()] as never[],
+      clientDescriptors: [
+        { slotIndex: 0, label: 'a' },
+        { slotIndex: 1, label: 'b' },
+      ],
+      configuredSlotCount: 2,
+      close: async () => {
+        closeCalled = true;
+      },
+    }),
+    buildAgent: async (parts: SessionAgentParts) => {
+      capturedParts = parts;
+      return undefined;
+    },
+  });
+
+  await lc.acquire('s1');
+
+  assert.deepEqual(capturedParts?.mcpClientDescriptors, [
+    { slotIndex: 0, label: 'a' },
+    { slotIndex: 1, label: 'b' },
+  ]);
+  assert.equal(capturedParts?.configuredSlotCount, 2);
+
+  lc.release('s1');
+  await lc.disposeAll();
+  assert.equal(closeCalled, true, 'built.close is still invoked on disposal');
+});
+
+test('filtered-global (isolation OFF, P1 case): shared clients are a filtered subset (active slots [0,2]) → parts carry slotIndex 0 and 2, NOT 0,1 (#244)', async () => {
+  const ragRegistry = makeRagRegistry();
+  let capturedParts: SessionAgentParts | undefined;
+  // Simulate LazyConnectionStrategy having dropped slot 1 (unhealthy): only
+  // slots 0 and 2 connected, so the shared array has length 2 but the
+  // descriptors' slotIndex values are [0, 2] — NOT contiguous [0, 1].
+  const filteredClients = [fakeClient(), fakeClient()];
+  const filteredDescriptors = [
+    { slotIndex: 0, label: 's0' },
+    { slotIndex: 2, label: 's2' },
+  ];
+
+  const lc = buildSessionLifecycle({
+    ...baseOpts,
+    mcpClients: filteredClients as never[],
+    mcpClientDescriptors: filteredDescriptors,
+    configuredSlotCount: 3,
+    ragRegistry,
+    // isolation OFF: no buildPerSessionMcpClients → shared/global branch.
+    buildAgent: async (parts: SessionAgentParts) => {
+      capturedParts = parts;
+      return undefined;
+    },
+  });
+
+  await lc.acquire('s1');
+
+  assert.deepEqual(
+    capturedParts?.mcpClientDescriptors?.map((d) => d.slotIndex),
+    [0, 2],
+    'descriptors carry the ORIGINAL slotIndex values, not re-derived array indices',
+  );
+  assert.equal(capturedParts?.configuredSlotCount, 3);
+
+  lc.release('s1');
+  await lc.disposeAll();
+});

@@ -8,7 +8,10 @@ import {
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
-import { SessionGraphFactory } from '../session-graph-factory.js';
+import {
+  type SessionAgentParts,
+  SessionGraphFactory,
+} from '../session-graph-factory.js';
 
 function makeRagRegistry() {
   const providers = new SimpleRagProviderRegistry();
@@ -107,4 +110,57 @@ test('dispose() of a graph closes session collections on the shared registry onl
     undefined,
     'session collection removed on dispose',
   );
+});
+
+test('build() prefers mcpClientFactoryWithDescriptors and threads mcpClientDescriptors/configuredSlotCount into the assembled parts (#244)', async () => {
+  const ragRegistry = makeRagRegistry();
+  let capturedParts: SessionAgentParts | undefined;
+  const descriptors = [
+    { slotIndex: 0, label: 'alpha' },
+    { slotIndex: 2, label: 'gamma' },
+  ];
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: () => {
+      throw new Error(
+        'legacy mcpClientFactory must NOT be called when mcpClientFactoryWithDescriptors is set',
+      );
+    },
+    mcpClientFactoryWithDescriptors: () => ({
+      clients: [],
+      clientDescriptors: descriptors,
+      configuredSlotCount: 3,
+    }),
+    toolsRag: undefined,
+    ragRegistry,
+    buildAgent: async (parts) => {
+      capturedParts = parts;
+      return undefined;
+    },
+  });
+
+  const g = await factory.build({ sessionId: 's-desc' });
+  await g.dispose();
+
+  assert.deepEqual(capturedParts?.mcpClientDescriptors, descriptors);
+  assert.equal(capturedParts?.configuredSlotCount, 3);
+});
+
+test('build() with only the legacy mcpClientFactory leaves mcpClientDescriptors/configuredSlotCount undefined (back-compat)', async () => {
+  const ragRegistry = makeRagRegistry();
+  let capturedParts: SessionAgentParts | undefined;
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: () => [],
+    toolsRag: undefined,
+    ragRegistry,
+    buildAgent: async (parts) => {
+      capturedParts = parts;
+      return undefined;
+    },
+  });
+
+  const g = await factory.build({ sessionId: 's-legacy' });
+  await g.dispose();
+
+  assert.equal(capturedParts?.mcpClientDescriptors, undefined);
+  assert.equal(capturedParts?.configuredSlotCount, undefined);
 });
