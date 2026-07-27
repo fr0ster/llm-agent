@@ -85,6 +85,11 @@ otherwise get no snapshot and silently fall back to bare, losing collisions agai
   the **same** view → catalog and RAG are the same snapshot by construction (no second
   `listTools`). (`vectorizeMcpTools` today returns only a `ToolVectorizationSummary`; the
   builder captures the `tools`/`provenance` from its `buildNamespacedTools` call — additive.)
+  **Plan caveat — avoid a double `listTools` at boot:** the builder must build the view ONCE
+  and have `vectorizeMcpTools` consume that pre-built view (refactor `vectorizeMcpTools` to
+  accept an already-namespaced `{tools, provenance}` instead of listing + namespacing
+  internally), rather than the builder and the vectorizer each listing. The plan pins this so
+  the yaml path does exactly one `listTools` pass.
 - **Server-side fallback (defensive + seam path):** when the handle carries no
   `toolProvenance` (a consumer builder, or the seam path where no builder runs), the server
   performs **one** `buildNamespacedTools` pass over `_sharedMcpClients` with config descriptors
@@ -120,8 +125,11 @@ untouched:
   **`scope.parts.mcpClients`** (session-local) by `slotIndex` and populates `ctx.toolClientMap`.
   The controller routes via `ctx.toolClientMap.get(name)` instead of its own bare bridge.
 - **`SmartServer.callMcp`** (linear/stepper): its clients (`_sharedMcpClients`) *are* the
-  snapshot's clients, so it uses the authoritative snapshot's `toolClientMap` directly. Its
-  target stays global exactly as today.
+  snapshot's clients. The handle surfaces `toolProvenance` + `mcpClientDescriptors` (not a
+  ready map), so the server **rebinds** that provenance onto `_sharedMcpClients` — pairing
+  `mcpClients` ↔ `mcpClientDescriptors` by array position, the *same* rebind mechanism as the
+  session map — to synthesize the `callMcp` routing map once. Its client target stays global
+  exactly as today.
 
 Rebinding needs `slotIndex → client instance`. Session/seam clients are produced from `cfg.mcp`
 in config order and (per Fork 2, below) **paired with their descriptors**, so each carries its
@@ -213,6 +221,12 @@ scope; `mcp[].name` labels cover the config need.
   the optional `connectMcpWithDescriptors` seam).
 - Per-session re-vectorization of the shared `toolsRag` (the frozen catalog + skip-on-miss
   degrades gracefully without it).
+- **Accepted consequence — frozen snapshot on the fixed paths:** the authoritative snapshot is
+  built once (at boot / infra-build), so a tool that first *appears* after a post-boot MCP
+  reconnect is not routable on the controller/linear/stepper seams until the process restarts —
+  the deliberate name-stability tradeoff the collision-fix rests on (today's `buildMcpBridge`
+  re-listed per call, `smart-server.ts:632`, and tolerated it). `flat`/`dag` are unaffected —
+  their per-session internal `McpToolRegistry` still refreshes on `toolsChanged`.
 - **Cost note:** rebinding the provenance per session is a cheap map walk (no `listTools`
   round-trip — the authoritative snapshot is built once); memoizing per distinct client-set is a
   later optimization if ever needed.
