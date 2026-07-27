@@ -93,7 +93,8 @@ git commit -m "feat: SmartAgentHandle namespace snapshot fields + IPipelineConte
 **Files:**
 - Modify: `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (accept a pre-built namespaced view instead of building internally)
 - Modify: `packages/llm-agent-libs/src/builder.ts` (build the view ONCE unconditionally; surface on the handle)
-- Test: `packages/llm-agent-libs/src/mcp/__tests__/vectorize-mcp-tools.test.ts` (append) + `packages/llm-agent-libs/src/__tests__/builder-namespace-snapshot.test.ts` (create)
+- Test: `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts` (append — VERIFIED this is the
+  actual path, NOT `src/mcp/__tests__/`) + `packages/llm-agent-libs/src/__tests__/builder-namespace-snapshot.test.ts` (create)
 
 **Consumes:** `buildNamespacedTools`, `McpClientDescriptor`. **Produces:** the builder always computes
 `{ tools, provenance }` when it has MCP clients (independent of RAG writability), surfaces
@@ -105,11 +106,15 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
     namespaced) and stores the given exposed `metadata.name` — WITHOUT re-running `buildNamespacedTools`
     internally (assert by passing a view whose exposed names differ from what a fresh namespacing would
     produce, and checking the stored names match the passed view).
-  - **Health-status preserved (the regression trap):** the prebuilt-view path must still report a
-    partial-catalog failure. Assert that when the builder's single `listTools` pass had a client failure, the
-    resulting `ToolVectorizationSummary` has `complete === false` (and `clientFailures > 0`) — i.e. the listing
-    outcome is threaded into the summary, NOT hardcoded `complete: true`. (Today Phase-1 listing computes this;
-    the refactor must not lose it — it feeds `/health components.toolCatalog: degraded`, v20.8.0.)
+  - **Health-status preserved WHEN vectorization runs (the regression trap):** with a **writable** tools RAG,
+    assert that a client failure in the builder's single `listTools` pass yields a `ToolVectorizationSummary`
+    with `complete === false` (and `clientFailures > 0`) — the listing outcome is threaded into the summary, NOT
+    hardcoded `complete: true` (it feeds `/health components.toolCatalog: degraded`, v20.8.0).
+  - **No-writable-store contract UNCHANGED:** with `toolsRag` absent/read-only, `vectorizeMcpTools` still
+    returns `undefined` and the `ToolCatalogStatusHolder` stays **empty/unknown** — assert the builder does NOT
+    publish a status in that case (the existing `if (toolSummary) …publish` guard at `builder.ts:1015` and its
+    "skipped run leaves the holder empty" contract are preserved). The authoritative snapshot is still built
+    (previous bullet), but building the snapshot must NOT trigger a status publish.
   - builder: build a `SmartAgent` via the builder with two embedded clients exposing `Search` AND **no
     writable tools RAG** (omit/readonly store); assert `handle.namespacedTools` contains `s0__Search`/`s1__Search`
     and `handle.toolProvenance.get('s1__Search')` = `{ slotIndex: 1, originalName: 'Search' }` (snapshot exists
@@ -132,10 +137,12 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
     do the single `listTools()` pass over `mcpClients`, tracking a `clientFailures` count and `total`; build the
     view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`
     where `perClient` zips the successfully-listed `mcpClients` + `resolved.clientDescriptors` + listed tools.
-    Pass `{ ...ns, prebuiltView: { tools, provenance, clientFailures, total } }` to `vectorizeMcpTools`.
-    **Catalog status:** `vectorizeMcpTools` returns `undefined` when there's no writable RAG, so the builder
-    must publish the catalog status (`ToolCatalogStatusHolder`, VERIFY at `:1016`) from ITS listing outcome in
-    that case — the health signal must not depend on a writable store. Surface on the `return {…}` (`:1289`):
+    Pass `{ ...ns, prebuiltView: { tools, provenance, clientFailures, total } }` to `vectorizeMcpTools`. Those
+    `clientFailures`/`total` make `summary.complete` accurate **only on the path where vectorization runs** (a
+    writable store); the summary is still published solely through the existing `if (toolSummary) …publish`
+    guard (`builder.ts:1015`). **Do NOT publish a status when there is no writable store** — leave the holder
+    empty/unknown exactly as today (the snapshot is built regardless, but building it must not publish status).
+    Surface on the `return {…}` (`:1289`):
     `namespacedTools: tools`, `toolProvenance: provenance`, `mcpClientDescriptors: resolved?.clientDescriptors`,
     `configuredSlotCount: resolved?.configuredSlotCount` (all conditionally spread; absent on the
     caller-provided-`mcpClients` branch where `resolved` is undefined).
@@ -145,7 +152,7 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
 - [ ] **Step 5: Build + lint, commit**
 
 ```bash
-git add packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/mcp/__tests__/vectorize-mcp-tools.test.ts packages/llm-agent-libs/src/__tests__/builder-namespace-snapshot.test.ts
+git add packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts packages/llm-agent-libs/src/__tests__/builder-namespace-snapshot.test.ts
 git commit -m "feat(agent): builder surfaces authoritative namespaced snapshot; vectorize consumes pre-built view (#244)"
 ```
 
@@ -222,11 +229,14 @@ git commit -m "feat(server): McpClientsWithDescriptors + rebindProvenanceToClien
     config-order loop; return `{ clients, clientDescriptors, configuredSlotCount: list.length, close }`.
   - `smart-server.ts`: add `connectMcpClientsWithDescriptorsFromConfig` (the real impl reading `cfg.name`);
     rewrite `connectMcpClientsFromConfig` to `return (await connectMcpClientsWithDescriptorsFromConfig(mcpCfg)).clients`;
-    add `connectMcpWithDescriptors?: () => Promise<McpClientsWithDescriptors>` to `BuildAgentDeps` (~:355);
+    add `connectMcpWithDescriptors?: (mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null)
+    => Promise<McpClientsWithDescriptors>` to `BuildAgentDeps` (~:355) — **mirroring the existing
+    `connectMcp(mcpCfg)` argument shape** (VERIFIED `connectMcp` at `:355-357` takes exactly this `mcpCfg`), so
+    the connector knows what to connect; the provisioning sites pass `this.cfg.mcp`.
     `_mcpSeamInjected` (~:808) → `deps.mcpClients !== undefined || deps.connectMcp !== undefined || deps.connectMcpWithDescriptors !== undefined`;
-    at the provisioning sites (~:1224, ~:1950) resolve `deps.connectMcpWithDescriptors` first (capture its
-    descriptors), else `deps.connectMcp` (bare → array-index `{slotIndex:i}` fallback), else the default
-    `connectMcpClientsWithDescriptorsFromConfig`. Store the resulting descriptors + `configuredSlotCount` on
+    at the provisioning sites (~:1224, ~:1950) resolve `deps.connectMcpWithDescriptors(this.cfg.mcp)` first
+    (capture its descriptors), else `deps.connectMcp(this.cfg.mcp)` (bare → array-index `{slotIndex:i}` fallback),
+    else the default `connectMcpClientsWithDescriptorsFromConfig(this.cfg.mcp)`. Store the resulting descriptors + `configuredSlotCount` on
     `SmartServer` fields (e.g. `_sharedMcpClientDescriptors`, `_configuredSlotCount`) beside `_sharedMcpClients`
     for Task 6/7.
 - [ ] **Step 4: Run GREEN + full server-libs suite.**
@@ -310,28 +320,75 @@ git commit -m "feat(server): authoritative snapshot resolution (handle or server
 
 ---
 
-### Task 7: Wire routing — `ctx.toolClientMap` (per-session), `callMcp`, and the controller through the shared bridge
+### Task 7: Thread `mcpClientDescriptors` / `configuredSlotCount` through `SessionAgentParts`
+
+**Why:** rebinding provenance by `slotIndex` (Task 8) needs each session's clients paired with their STABLE
+`slotIndex`. Array-index pairing breaks for a **filtered** client set — e.g. the isolation-OFF/global path where
+`scope.parts.mcpClients == globalMcpClients` and `LazyConnectionStrategy` dropped an unhealthy slot: active slots
+`[0,2]` become array indices `[0,1]`, so provenance `slotIndex 2` finds no client. `SessionAgentParts` must carry
+the descriptors that go with its `mcpClients`.
+
+**Files:**
+- Modify: the `SessionAgentParts` type (VERIFY location — declared in the `smart-agent` types; imported at
+  `smart-server.ts:47`) — add `mcpClientDescriptors?: readonly McpClientDescriptor[];` + `configuredSlotCount?: number;`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — populate the new fields at EVERY
+  `SessionAgentParts` assembly site: `_embeddedSessionParts` (~:1555-1565, from the server's
+  `_sharedMcpClientDescriptors`/`_configuredSlotCount`), and the per-session lifecycle/graph-factory path
+  (`buildSessionLifecycle` `buildPerSessionMcpClients` ~:1377 — capture the descriptors from the
+  `buildSessionMcpClients` result, Task 4, into the parts it assembles). Trace `buildSessionMcpClients` result →
+  `SessionAgentParts` and thread `clientDescriptors`/`configuredSlotCount` alongside `mcpClients`.
+- Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts` (create)
+
+**Produces:** `SessionAgentParts` carries descriptors paired with its `mcpClients` on every path (embedded,
+per-session isolated, isolation-OFF/global).
+
+- [ ] **Step 1: Write the failing tests**
+  - Embedded parts: `_embeddedSessionParts` result has `mcpClientDescriptors` matching the shared set.
+  - Per-session isolated: a session built via the lifecycle carries `clientDescriptors [{slotIndex:0,label},{slotIndex:1,label}]` from `buildSessionMcpClients`.
+  - **Filtered global (the P1 case):** when the shared/global clients are a filtered subset (active slots `[0,2]`),
+    `parts.mcpClientDescriptors` carries `slotIndex 0` and `slotIndex 2` (NOT `0,1`), so a later slotIndex lookup
+    is unambiguous.
+- [ ] **Step 2: Run RED** (parts type has no descriptor fields).
+- [ ] **Step 3: Implement** — add the two optional fields to `SessionAgentParts`; populate at each assembly site
+  from the matching descriptor source (`_sharedMcpClientDescriptors` for shared/global, the
+  `buildSessionMcpClients` result for isolated). Additive (existing parts consumers unaffected).
+- [ ] **Step 4: Run GREEN + full server-libs suite.**
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts <SessionAgentParts type file>
+git commit -m "feat(server): thread mcpClientDescriptors/configuredSlotCount through SessionAgentParts (#244)"
+```
+
+---
+
+### Task 8: Wire routing — `ctx.toolClientMap` (per-session), `callMcp`, and the controller through the shared bridge
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`buildServerCtx` populates
-  `ctx.toolClientMap` from `scope.parts.mcpClients`; `callMcp` rebinds over `_sharedMcpClients` + shared bridge)
+  `ctx.toolClientMap` from `scope.parts.mcpClients` + `scope.parts.mcpClientDescriptors`; `callMcp` rebinds over
+  `_sharedMcpClients` + `_sharedMcpClientDescriptors` + shared bridge)
 - Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts` (~:161 — consume `ctx.toolClientMap` via the shared bridge instead of `buildMcpBridge(ctx.mcpClients,…)`)
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-routing-namespace.test.ts` (create)
 
-**Produces:** namespaced calls route to the correct server with the original name on ALL affected pipelines,
-with isolation + fail-loud preserved.
+**Consumes:** Task 3 (`rebindProvenanceToClients`, `buildNamespacedMcpBridge`), Task 6 (authoritative snapshot
+provenance), Task 7 (`scope.parts.mcpClientDescriptors`). **Produces:** namespaced calls route to the correct
+server with the original name on ALL affected pipelines, with isolation + fail-loud preserved.
 
 - [ ] **Step 1: Write the failing tests**
-  - **Controller session-local:** build the server; a controller run where the LLM calls `s1__Search` reaches
-    the SESSION's client-1 instance (not the global `_sharedMcpClients`), with original `Search`.
+  - **Controller session-local:** a controller run where the LLM calls `s1__Search` reaches the SESSION's
+    client-1 instance (not the global `_sharedMcpClients`), with original `Search`.
   - **`callMcp` (linear/stepper):** `ctx.callMcp('s1__Search', …)` reaches server 1 with `Search`.
+  - **Filtered-global routing (the P1 regression guard):** with a global set of active slots `[0,2]`,
+    `s2__Search` routes to the slot-2 client (proving rebind uses `slotIndex` from `parts.mcpClientDescriptors`,
+    NOT array index — array index would send it to the wrong client or miss).
   - **Down-server fail-loud:** in a session where server 1's client is present but its server is unavailable, a
     `s1__Search` call THROWS (classifier availability) — not `isError`, not "Tool not found".
 - [ ] **Step 2: Run RED** (routing still bare / controller builds its own bare bridge).
 - [ ] **Step 3: Implement**
-  - `buildServerCtx` (`~:2149-2152`): `toolClientMap: rebindProvenanceToClients(this._toolProvenance ?? <resolve>,
-    scope.parts.mcpClients, <session descriptors>)` (session descriptors = config-derived; the session build is
-    dense/config-order so array index == slotIndex). Populate `ctx.toolClientMap`.
+  - `buildServerCtx` (`~:2149-2152`): `toolClientMap: rebindProvenanceToClients(snapshot.provenance,
+    scope.parts.mcpClients, scope.parts.mcpClientDescriptors)` (rebind by `slotIndex` from the parts descriptors —
+    NOT array index). Populate `ctx.toolClientMap`.
   - `callMcp` (`~:1899-1909`): build (memoized) `rebindProvenanceToClients(snapshot.provenance, this._sharedMcpClients,
     this._sharedMcpClientDescriptors)` and serve via `buildNamespacedMcpBridge(map, this._mcpFailureClassifier)`.
   - `controller.ts` (`~:161`): if `ctx.toolClientMap` is present, `const mcpBridge = buildNamespacedMcpBridge(ctx.toolClientMap, ctx.mcpFailureClassifier)`;
@@ -341,12 +398,12 @@ with isolation + fail-loud preserved.
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/pipelines/controller.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/server-routing-namespace.test.ts
-git commit -m "feat(server): per-session ctx.toolClientMap + callMcp + controller route via shared namespaced bridge (#244)"
+git commit -m "feat(server): per-session ctx.toolClientMap (rebind by slotIndex) + callMcp + controller via shared bridge (#244)"
 ```
 
 ---
 
-### Task 8: End-to-end acceptance + docs
+### Task 9: End-to-end acceptance + docs
 
 **Files:**
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-namespacing-e2e.test.ts` (create)
@@ -389,9 +446,14 @@ git commit -m "test+docs: #244 server-libs namespacing e2e + documentation (#244
 
 ## Self-review notes (spec coverage)
 
-- §2 authoritative snapshot → Tasks 2 (build/surface) + 6 (server obtains/fallback).
-- §3a decouple-from-RAG-writability → Task 2. §3b exposed-name catalog + stale skip → Task 5.
-- §3c shared bridge + rebind + per-seam maps → Tasks 3 (bridge/rebind) + 7 (wire). §3d descriptors/types/seam
-  detection/compat wrapper → Tasks 1 (types) + 4. §3e toolNamespace DI → Task 6.
-- §4 partial-failure + routing/selection semantics → Tasks 3/5/7. §6 tests → distributed per task + Task 8 e2e.
-- Down-vs-unknown (§2) → Tasks 3 (bridge miss) + 7 (fail-loud) + 8 (e2e). Isolation (#213) → Tasks 6/7 + 8.
+- §2 authoritative snapshot → Tasks 2 (build/surface) + 6 (server obtains/fallback); per-seam rebind by stable
+  slotIndex → Tasks 7 (thread descriptors through `SessionAgentParts`) + 8 (rebind wiring).
+- §3a decouple-from-RAG-writability (snapshot always built; status published only when vectorization runs) → Task 2.
+  §3b exposed-name catalog + stale skip → Task 5.
+- §3c shared bridge + rebind + per-seam maps → Tasks 3 (bridge/rebind) + 7 (parts descriptors) + 8 (wire). §3d
+  descriptors/types/seam detection/compat wrapper/`connectMcpWithDescriptors(mcpCfg)` → Tasks 1 (types) + 4.
+  §3e toolNamespace DI → Task 6.
+- §4 partial-failure + routing/selection semantics → Tasks 2 (catalog-status on the vectorize path) / 3 / 5 / 8.
+  §6 tests → distributed per task + Task 9 e2e.
+- Down-vs-unknown (§2) → Tasks 3 (bridge miss) + 8 (fail-loud) + 9 (e2e). Isolation (#213) incl. filtered-global
+  slotIndex → Tasks 7 (parts descriptors) + 8 (rebind) + 9 (e2e).
