@@ -34,6 +34,7 @@ import type {
   ISubAgent,
   ISubpromptClassifier,
   IToolCache,
+  IToolNamespace,
   IToolRecordKey,
   IToolSelectionStrategy,
   McpConnectionConfig,
@@ -45,6 +46,7 @@ import {
   CircuitBreaker,
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
+  defaultToolNamespace,
   FallbackRag,
   type IEmbedder,
   InMemoryRag,
@@ -187,6 +189,7 @@ export class SmartAgentBuilder {
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
   private _mcpFailureClassifier?: IMcpFailureClassifier;
   private _toolRecordKey?: IToolRecordKey;
+  private _toolNamespace?: IToolNamespace;
   private _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
@@ -481,6 +484,17 @@ export class SmartAgentBuilder {
    *  retrieval still tells tools apart from skills. */
   withToolRecordKey(strategy: IToolRecordKey): this {
     this._toolRecordKey = strategy;
+    return this;
+  }
+
+  /** Inject a custom tool-namespace strategy — how a colliding MCP tool name
+   *  is renamed for LLM/RAG exposure. Default: {@link defaultToolNamespace}
+   *  (bare when unique, `${prefix}__${toolName}` on a collision, prefix =
+   *  the server's config `name` else `s${slotIndex}`). Reaches the internal
+   *  tool registry, startup vectorization, and the pipeline's per-request
+   *  tool refresh — all three read the SAME strategy instance. */
+  withToolNamespace(strategy: IToolNamespace): this {
+    this._toolNamespace = strategy;
     return this;
   }
 
@@ -994,6 +1008,7 @@ export class SmartAgentBuilder {
         {
           descriptors: mcpClientDescriptors,
           configuredSlotCount: resolved.configuredSlotCount,
+          toolNamespace: this._toolNamespace ?? defaultToolNamespace,
         },
       );
       // Published only when defined: a skipped run must leave the holder empty
@@ -1154,6 +1169,7 @@ export class SmartAgentBuilder {
       assembler,
       mcpClients,
       mcpClientDescriptors,
+      toolNamespace: this._toolNamespace,
       toolsRag,
       historyRag,
       ragStores,
@@ -1225,6 +1241,7 @@ export class SmartAgentBuilder {
         ...(connectionStrategy ? { connectionStrategy } : {}),
         toolCatalogStatus,
         ...(this._toolRecordKey ? { toolRecordKey: this._toolRecordKey } : {}),
+        ...(this._toolNamespace ? { toolNamespace: this._toolNamespace } : {}),
         ...(historyMemory ? { historyMemory } : {}),
         ...(historySummarizer ? { historySummarizer } : {}),
         ...(this._llmCallStrategy

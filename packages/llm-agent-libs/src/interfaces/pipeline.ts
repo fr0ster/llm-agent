@@ -29,6 +29,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  IToolNamespace,
   IToolSelectionStrategy,
   LlmStreamChunk,
   LlmTool,
@@ -74,6 +75,11 @@ export interface PipelineDeps {
    * clients were supplied directly (no connection strategy).
    */
   mcpClientDescriptors?: readonly McpClientDescriptor[];
+  /** Custom tool-namespace strategy for the pipeline's per-request tool
+   *  refresh (tool-select first load, tool-loop reselect). Same instance the
+   *  builder threads into the registry and startup vectorization. Default:
+   *  {@link defaultToolNamespace} at point-of-use when absent. */
+  toolNamespace?: IToolNamespace;
   /** Reranker applied to RAG results. */
   reranker?: IReranker;
   /** Query expander for multi-query RAG retrieval. */

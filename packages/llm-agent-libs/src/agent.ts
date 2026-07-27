@@ -19,6 +19,7 @@ import type {
   IToolCache,
   IToolCatalogReporter,
   IToolLoopContextStrategy,
+  IToolNamespace,
   IToolRecordKey,
   LlmFinishReason,
   LlmStreamChunk,
@@ -137,6 +138,9 @@ export interface SmartAgentDeps {
   toolCatalogStatus?: IToolCatalogReporter;
   /** Tool-record-key strategy, reused on reconnect revectorization. */
   toolRecordKey?: IToolRecordKey;
+  /** Tool-namespace strategy for the internal registry (resolve() +
+   *  reconnect revectorization). Default: {@link defaultToolNamespace}. */
+  toolNamespace?: IToolNamespace;
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
@@ -306,6 +310,7 @@ export class SmartAgent {
         requestLogger: this.requestLogger,
         logger: deps.logger,
         toolRecordKey: deps.toolRecordKey,
+        toolNamespace: deps.toolNamespace,
       },
     );
     this._mainLlm = deps.mainLlm;

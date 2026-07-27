@@ -463,6 +463,7 @@ export class DefaultPipeline implements IPipeline {
       ragProviderRegistry: this.deps.ragProviderRegistry,
       mcpClients: this.deps.mcpClients,
       mcpClientDescriptors: this.deps.mcpClientDescriptors,
+      toolNamespace: this.deps.toolNamespace,
       reranker: this.resolvedReranker,
       queryExpander: this.resolvedQueryExpander,
       toolCache: this.resolvedToolCache,
