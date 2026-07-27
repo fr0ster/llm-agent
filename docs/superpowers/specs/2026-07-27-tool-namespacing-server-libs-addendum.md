@@ -61,11 +61,20 @@ server merely *consumes* the library builder (Architecture Principle 1 & 2).
 and the real client as the map value; the catalog and routing behave exactly as today.
 
 **Live tool-list change tolerance:** `buildMcpBridge` today re-lists per call, tolerating a
-mid-session tool-list change. The namespaced view is a snapshot. The server already rebuilds
-its shared infra on the descriptor-changing events #244 added (`toolsChanged` bidirectional
-re-vectorize); the namespaced view is rebuilt on the same signal, so the snapshot stays
-consistent with the RAG. A no-namespace / single-client deployment keeps the current lazy
-path (see §5 fallback), so nothing regresses for the common case.
+mid-session tool-list change. The namespaced view is a snapshot — but so is what it sits
+beside: `makeToolsRagHandle`'s `catalogCache` (`tools-rag-handle.ts:26-42`) is already a
+**startup snapshot that never refreshes**, and the server's shared `_sharedMcpClients` are
+never re-vectorized after boot (`smart-server.ts:1741,1799` — the shared clients are
+explicitly *not* re-vectorized; the only `toolsChanged` re-vectorize lives in the
+per-session **internal** registry `llm-agent-libs/mcp/tool-registry.ts:86-87`, which never
+touches `_sharedMcpClients` or `_toolsRagHandle`). So the namespaced view and the catalog
+are **both frozen at build time and stay mutually consistent by construction** — the only
+property lost versus the lazy `buildMcpBridge` is tolerance of a mid-session tool-list
+change, which the server-side RAG catalog never had anyway. A no-namespace / single-client
+deployment keeps the current lazy path (see §5 fallback), so nothing regresses for the
+common case. **Plan task (verify, not assume):** confirm no per-session registry
+live-re-vectorizes the *shared* server `toolsRag` underneath the frozen catalog; if a live
+refresh is ever genuinely wanted, it must be a *built* rebuild hook, not assumed here.
 
 ## 3. Surfacing the stable descriptors (two producer paths, one consumer)
 
@@ -87,7 +96,15 @@ toolNamespace?: IToolNamespace;
 
 Populate them in `builder.ts`'s `return { … }` (`:1289`). The `resolved` local is scoped
 inside the connect `else` branch (`:975-1017`) and must be **hoisted to function scope** so
-`configuredSlotCount` survives to the return. Additive, backward-compatible (Principle 7).
+`configuredSlotCount` survives to the return (`mcpClientDescriptors` is already
+function-scoped). Note: on the caller-provided-`mcpClients` branch `resolved` is undefined,
+so `configuredSlotCount` is legitimately absent there — populate via optional chaining
+(`resolved?.configuredSlotCount`) and treat its absence as "unknown slot count" (the
+consumer falls back to `clients.length`). Additive, backward-compatible (Principle 7).
+
+**Cross-package ordering:** this `SmartAgentHandle` change (in `llm-agent`) must land before
+`llm-agent-server-libs` can consume the descriptors — so the interface additions are the
+first plan task (order: `llm-agent` → `llm-agent-libs` → `llm-agent-server-libs`).
 
 ### 3b. DI/seam path (`connectMcpClientsFromConfig` / custom `deps.connectMcp`) — **full fix**
 
