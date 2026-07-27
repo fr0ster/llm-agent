@@ -37,6 +37,7 @@ import {
   defaultToolNamespace,
   externalToolCallId,
   getStreamToolCallName,
+  mergeOfferedTools,
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -231,7 +232,10 @@ export class ToolLoopHandler implements IStageHandler {
         for (const [name, client] of toolClientMap) {
           ctx.toolClientMap.set(name, client);
         }
-        currentTools = [...(ctx.mcpTools as LlmTool[]), ...externalTools];
+        currentTools = mergeOfferedTools(
+          ctx.mcpTools as LlmTool[],
+          externalTools,
+        );
         ctx.options?.sessionLogger?.logStep('tools_refreshed', {
           iteration: iteration + 1,
           previous: prevNames,
@@ -346,10 +350,10 @@ export class ToolLoopHandler implements IStageHandler {
                 const newMcpTools = ctx.mcpTools.filter((t) =>
                   newToolNames.has(t.name),
                 );
-                currentTools = [
-                  ...(newMcpTools as LlmTool[]),
-                  ...externalTools,
-                ];
+                currentTools = mergeOfferedTools(
+                  newMcpTools as LlmTool[],
+                  externalTools,
+                );
 
                 ctx.options?.sessionLogger?.logStep('tools_reselected', {
                   iteration: iteration + 1,

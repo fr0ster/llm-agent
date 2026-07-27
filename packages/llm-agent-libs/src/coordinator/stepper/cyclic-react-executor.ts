@@ -7,6 +7,7 @@ import {
   type LlmTool,
   type LlmUsage,
   type Message,
+  mergeOfferedTools,
   renderTaskSpec,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -206,11 +207,13 @@ export class CyclicReActExecutor implements IExecutor {
     // Issue #167: MERGE client-provided external tools (consumer-executed, e.g.
     // create_file / rag_add) with the seeded MCP tools — AFTER seeding, so they
     // never suppress the MCP seed (which only runs when `tools.length === 0`).
-    // De-dup by name so a tool present in both sets is offered once.
+    // #244: fail-fast via mergeOfferedTools instead of silently de-duping — a
+    // name shared by an internal (seeded) tool and an external tool must be
+    // caught here, not let through to double-classify at call time.
     if (input.externalTools && input.externalTools.length > 0) {
-      const have = new Set(tools.map((t) => t.name));
-      for (const t of input.externalTools)
-        if (!have.has(t.name)) tools.push(t as LlmTool);
+      const merged = mergeOfferedTools(tools, input.externalTools);
+      tools.length = 0;
+      tools.push(...merged);
     }
 
     // Guard 2b — explicit "no capability" error, never a silent hallucination.

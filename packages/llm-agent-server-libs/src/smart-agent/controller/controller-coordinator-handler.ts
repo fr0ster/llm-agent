@@ -17,6 +17,7 @@ import {
   McpError,
   type Message,
   type ModelUsageEntry,
+  mergeOfferedTools,
   type StepRoundState,
   type ToolLoopContextStrategyFactory,
   type ToolRound,
@@ -1294,10 +1295,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         TOOL_SELECT_K,
         ctx.options,
       );
-      const offeredTools: LlmTool[] = [
-        ...relevant,
-        ...(ctx.externalTools ?? []),
-      ];
+      const offeredTools: LlmTool[] = mergeOfferedTools(
+        relevant,
+        ctx.externalTools ?? [],
+      );
       // The executor may ONLY call a tool that was offered to it: an internal tool
       // selected for this step, or a per-request external tool. Any other name
       // (hallucinated / stale / not in the top-K) is rejected — never executed —

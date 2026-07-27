@@ -40,6 +40,7 @@ import {
   getStreamToolCallName,
   type IQueryExpander,
   isReadinessReporter,
+  mergeOfferedTools,
   NoopQueryExpander,
   NoopToolCache,
   normalizeExternalTools,
@@ -870,7 +871,10 @@ export class SmartAgent {
         for (const [name, client] of refreshed.toolClientMap) {
           toolClientMap.set(name, client);
         }
-        currentTools = [...(refreshed.tools as LlmTool[]), ...externalTools];
+        currentTools = mergeOfferedTools(
+          refreshed.tools as LlmTool[],
+          externalTools,
+        );
         opts?.sessionLogger?.logStep('tools_refreshed', {
           iteration: iteration + 1,
           previous: prevNames,
@@ -976,10 +980,10 @@ export class SmartAgent {
                 const newMcpTools = refreshed.tools.filter((t) =>
                   newToolNames.has(t.name),
                 );
-                currentTools = [
-                  ...(newMcpTools as LlmTool[]),
-                  ...externalTools,
-                ];
+                currentTools = mergeOfferedTools(
+                  newMcpTools as LlmTool[],
+                  externalTools,
+                );
 
                 opts?.sessionLogger?.logStep('tools_reselected', {
                   iteration: iteration + 1,

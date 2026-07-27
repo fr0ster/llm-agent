@@ -17,6 +17,7 @@ import type { LlmTool } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedTools,
   defaultToolNamespace,
+  mergeOfferedTools,
   QueryEmbedding,
   TextOnlyEmbedding,
   toolNameFromRecord,
@@ -128,7 +129,7 @@ export class ToolSelectHandler implements IStageHandler {
     ctx.selectedTools =
       mode === 'hard'
         ? (selectedMcpTools as LlmTool[])
-        : [...(selectedMcpTools as LlmTool[]), ...ctx.externalTools];
+        : mergeOfferedTools(selectedMcpTools as LlmTool[], ctx.externalTools);
 
     // Apply availability filtering
     const filtered = ctx.toolAvailabilityRegistry.filterTools(
