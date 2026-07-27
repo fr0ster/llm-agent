@@ -113,6 +113,37 @@ additive.
   client-provided external tool's name matches an internal (already-
   namespaced) MCP tool name, instead of silently letting `classifyToolCalls`
   double-classify the call.
+- **`llm-agent-server-libs` pipelines route colliding tools too (#244
+  addendum).** The original #244 fix covered `llm-agent-libs`'s own
+  `McpToolRegistry` (the `flat`/`dag` pipelines' internal registry, already
+  namespaced); the `controller`, `linear`, and `stepper` server pipelines had
+  their own bare seams (`SmartServer.buildMcpBridge`, `makeToolsRagHandle`
+  keyed by bare name) that stayed unreachable. The server now computes the
+  exposed-name/collision snapshot exactly ONCE (`buildNamespacedTools` over
+  the boot client set, or a one-time server-side fallback build when the
+  startup builder never connects itself) and every consumer — the global
+  tools-RAG catalog, the controller's per-session `ctx.toolClientMap`, and
+  `SmartServer.callMcp` (the `linear`/`stepper` `ctx.callMcp` bridge) —
+  *rebinds* that same snapshot's provenance onto its own client set via the
+  shared `buildNamespacedMcpBridge`, instead of re-deriving names per seam.
+  **Isolation-preserving (#213):** the controller still dispatches to the
+  SESSION's own `scope.parts.mcpClients`; `callMcp` still dispatches to the
+  GLOBAL `_sharedMcpClients` — rebinding only changes which exposed name maps
+  to which client, never which client set a pipeline targets. A session-local
+  server that is unavailable stays a call-time classifier throw, never a
+  fallback to a stale bare name. **Fail-loud-preserving:** the shared bridge
+  keeps the exact classify/throw-vs-`isError` split `buildMcpBridge` already
+  had — an availability failure throws, a tool-level failure returns
+  `{ isError: true }`. `mcp[].name` labels now also reach the exposed name on
+  the session/seam producer paths (`buildSessionMcpClients`,
+  `connectMcpClientsWithDescriptorsFromConfig`), not just the yaml-builder
+  path. Two additive `BuildAgentDeps` DI seams: `connectMcpWithDescriptors`
+  (a `connectMcp` sibling that also reports per-slot `{slotIndex, label}`
+  descriptors, for a consumer's own MCP connection logic) and `toolNamespace`
+  (the same `IToolNamespace` reaching both the startup builder's snapshot and
+  the server's own fallback build). No writable tools-RAG store still yields
+  namespaced, selectable, callable tools — the snapshot build never depended
+  on RAG write capability.
 
 ## [20.8.0] — 2026-07-23
 

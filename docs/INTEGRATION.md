@@ -1828,6 +1828,61 @@ const handle = await new SmartAgentBuilder()
   .build();
 ```
 
+### On the server (`llm-agent-server-libs`, #244 addendum)
+
+The library-level mechanism above covers `flat`/`dag` (they route MCP through the per-session agent's own internal `McpToolRegistry`, already namespaced). `SmartServer`'s other pipelines — `controller`, `linear`, `stepper` — have their own seams (`SmartServer.buildMcpBridge`/`callMcp`, the controller's own bridge, `makeToolsRagHandle`'s catalog) that route independently of the builder. `SmartServer` computes the SAME authoritative `{ tools, provenance }` snapshot exactly once — either harvested from the startup builder when it owns the MCP connection itself (the plain YAML `mcp:` path, no DI seam, no ready clients), or built once server-side via `buildNamespacedTools` over `_sharedMcpClients` when a consumer/seam supplies ready clients — and every seam **rebinds** that snapshot's `provenance` onto its OWN client set (`rebindProvenanceToClients`, pairing by `slotIndex` from the client descriptors, never by array index) through one shared `buildNamespacedMcpBridge(toolClientMap, classifier)`. No seam re-lists or re-derives names.
+
+Two additive `BuildAgentDeps` fields (`packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`):
+
+```ts
+interface BuildAgentDeps {
+  // ... existing fields (makeLlm, connectMcp, mcpClients, ...)
+
+  /** The SAME IToolNamespace instance the library-level withToolNamespace()
+   *  seam consumes. Reaches BOTH the startup builder's own snapshot (yaml
+   *  path) and SmartServer's own server-side fallback build (seam path), so
+   *  whichever source is authoritative honors the custom naming rule.
+   *  Default: defaultToolNamespace. */
+  toolNamespace?: IToolNamespace;
+
+  /** A connectMcp sibling that ALSO reports per-slot descriptors, so a
+   *  consumer's own MCP connection logic can participate in namespacing +
+   *  mcp[].name-style labels. Takes precedence over a bare connectMcp when
+   *  both are injected; a bare connectMcp still works — its clients get
+   *  synthesized array-index descriptors (slotIndex only, no label). */
+  connectMcpWithDescriptors?: (
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ) => Promise<{
+    clients: IMcpClient[];
+    clientDescriptors?: readonly { slotIndex: number; label?: string }[];
+    configuredSlotCount?: number;
+  }>;
+}
+```
+
+```ts
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server-libs';
+
+const server = new SmartServer(
+  { mcp: [{ type: 'http', url: 'https://a', name: 'primary' }, { type: 'http', url: 'https://b', name: 'secondary' }] },
+  {
+    toolNamespace: shoutingNamespace, // same strategy shape as above
+    connectMcpWithDescriptors: async (mcpCfg) => {
+      // ... a consumer's own connection logic, returning
+      // { clients, clientDescriptors: [{slotIndex, label}, ...], configuredSlotCount }
+    },
+  },
+);
+```
+
+**Isolation-preserving (#213):** rebinding only changes which exposed name maps to which client — it never changes WHICH client set a seam targets. The controller still dispatches to the SESSION's own `scope.parts.mcpClients` (fresh per-session instances); `SmartServer.callMcp` (the `linear`/`stepper` `ctx.callMcp` bridge) still dispatches to the GLOBAL `_sharedMcpClients`. A session-local server that is unavailable is a call-time classifier THROW (fail-loud, same `IMcpFailureClassifier` split as `buildMcpBridge` always had) — never a silent fallback to a stale bare name, and never conflated with a genuinely-unknown tool name (`{ isError: true, text: "Tool not found: <name>" }`, reserved for a name absent from the map entirely).
+
+**Frozen-snapshot accepted consequence:** the authoritative snapshot is built once (at boot / infra-build), so a tool that first *appears* after a post-boot MCP reconnect is not routable on the controller/linear/stepper seams until the process restarts — the deliberate name-stability tradeoff the collision fix rests on (`buildMcpBridge` used to re-list per call and tolerated it). `flat`/`dag` are unaffected — their per-session internal `McpToolRegistry` still refreshes on `toolsChanged`.
+
+**No-writable-RAG deployments:** the snapshot build never depends on a writable tools-RAG store — a deployment with `rag:` absent (or a read-only store) still gets a namespaced, selectable, callable catalog. A persisted namespaced RAG record whose exposed name is not in the CURRENT authoritative catalog (stale/foreign — e.g. from a since-removed server) is skipped by the catalog lookup, never surfaced and never called.
+
+See [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the symptom this fixes on the server pipelines.
+
 ---
 
 ## IReadinessReporter — readiness gate (v20.x+)

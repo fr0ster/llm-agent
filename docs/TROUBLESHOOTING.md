@@ -297,6 +297,32 @@ mcp:
 
 ---
 
+### Two MCP servers expose the same tool name — still uncallable on `controller`/`linear`/`stepper`, even after upgrading to #244
+
+**Symptom.** The `flat`/`dag` pipelines correctly namespace and route a colliding tool name (per the entry above), but a `pipeline: { name: controller }` (or `controller-weak`/`linear`/`stepper`) deployment still resolves `s0__Search`/`s1__Search` (or `primary__Search`/`secondary__Search`) to `Tool not found`, or always calls the same server regardless of which exposed name the model chose.
+
+**Cause.** The `flat`/`dag` fix routes through `llm-agent-libs`'s own internal `McpToolRegistry`. The server's OTHER pipelines had their own separate seams — `SmartServer.buildMcpBridge`/`callMcp` (the `linear`/`stepper` `ctx.callMcp` bridge) and the controller's own bridge — that still compared tool names *bare* (`listTools()` ownership scan), and `makeToolsRagHandle`'s catalog was still keyed by bare name while the shared `toolsRag` held the *namespaced* records. This gap is closed by the #244 addendum (folds into the same release as #244 itself — check your release notes for the addendum coverage, not just the base #244 entry).
+
+**Fix.** Upgrade to a release containing the #244 addendum. No config change is required — the server now builds ONE authoritative namespaced snapshot and every pipeline (controller session map, the global `callMcp` map `linear`/`stepper` share) rebinds it onto its own MCP clients through the same shared bridge. As with the `flat`/`dag` case, set `mcp[].name` for a readable prefix instead of the default `s0`/`s1`:
+
+```yaml
+pipeline:
+  name: controller # or controller-weak / linear / stepper
+mcp:
+  - type: http
+    url: https://server-a.example.com/mcp
+    name: primary
+  - type: http
+    url: https://server-b.example.com/mcp
+    name: secondary
+```
+
+...exposes `primary__Search` / `secondary__Search`, selectable and callable on EVERY pipeline, not just `flat`/`dag`. See [docs/INTEGRATION.md#itoolnamespace](INTEGRATION.md#itoolnamespace) ("On the server" subsection) for the `BuildAgentDeps.toolNamespace` / `connectMcpWithDescriptors` DI seams a consumer builder can use instead of the YAML `mcp[].name` label.
+
+**Note (accepted tradeoff):** the snapshot is built once at boot; a tool that only appears after a post-boot MCP reconnect stays unroutable on these three pipelines until the process restarts. `flat`/`dag` are unaffected (their internal registry refreshes on `toolsChanged`).
+
+---
+
 ### MCP server goes offline mid-run and the agent returns `(no response)`
 
 **Symptom.** An MCP-tool-using request returns `(no response)` with zero tokens after the MCP server drops mid-run.
