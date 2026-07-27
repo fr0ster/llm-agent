@@ -110,6 +110,9 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
     assert that a client failure in the builder's single `listTools` pass yields a `ToolVectorizationSummary`
     with `complete === false` (and `clientFailures > 0`) — the listing outcome is threaded into the summary, NOT
     hardcoded `complete: true` (it feeds `/health components.toolCatalog: degraded`, v20.8.0).
+  - **Original-index preserved on partial failure:** THREE clients, the MIDDLE one's `listTools()` fails → the
+    surviving third client's tool has provenance `slotIndex 2` (NOT `1`), and its record id/exposed prefix
+    reflect slot 2 — proving `perClient` is built index-preservingly, not via `filter().map()`.
   - **No-writable-store contract UNCHANGED:** with `toolsRag` absent/read-only, `vectorizeMcpTools` still
     returns `undefined` and the `ToolCatalogStatusHolder` stays **empty/unknown** — assert the builder does NOT
     publish a status in that case (the existing `if (toolSummary) …publish` guard at `builder.ts:1015` and its
@@ -134,9 +137,14 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
     does NOT publish any catalog status when writing was skipped).
   - In `builder.ts` (VERIFY at `:975-1017`): hoist `resolved` to function scope (it is now **optional** — on the
     caller-provided-`mcpClients` branch it is `undefined`; NEVER access it non-optionally). When
-    `mcpClients.length`, do the single `listTools()` pass over `mcpClients`, tracking a `clientFailures` count and
-    `total`; build the view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`
-    where `perClient` zips the successfully-listed `mcpClients` + `(resolved?.clientDescriptors ?? mcpClients.map((_, i) => ({ slotIndex: i })))` + listed tools, and `configuredSlotCount = resolved?.configuredSlotCount ?? mcpClients.length`.
+    `mcpClients.length`, do the single `listTools()` pass over `mcpClients` (settle per client), tracking a
+    `clientFailures` count and `total`; build the view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`.
+    **`perClient` MUST preserve the ORIGINAL client index** — a middle-client `listTools()` failure must NOT shift
+    later slots (slots `[0,1,2]`, slot 1 fails → slot 2's tools must keep `slotIndex 2`, not collapse to `1`).
+    Build it index-preservingly, NOT by `filter().map()`:
+    `const descs = resolved?.clientDescriptors ?? mcpClients.map((_, i) => ({ slotIndex: i }));`
+    `const perClient = settled.flatMap((entry, i) => entry.ok ? [{ slotIndex: descs[i]?.slotIndex ?? i, label: descs[i]?.label, client: mcpClients[i], tools: entry.value }] : []);`
+    `configuredSlotCount = resolved?.configuredSlotCount ?? mcpClients.length`.
     Pass `{ ...ns, prebuiltView: { tools, provenance, clientFailures, total } }` to `vectorizeMcpTools`. Those
     `clientFailures`/`total` make `summary.complete` accurate **only on the path where vectorization runs** (a
     writable store); the summary is still published solely through the existing `if (toolSummary) …publish`
@@ -316,8 +324,11 @@ git commit -m "feat(server): tools-RAG handle catalog keyed by exposed name + st
   - Destructure `namespacedTools`/`toolProvenance`/`mcpClientDescriptors`/`configuredSlotCount` from
     `agentHandle` (`~:1303-1313`); store on server fields (`_namespacedTools`, `_toolProvenance`, and reuse the
     descriptor fields from Task 4).
-  - Add a private `resolveAuthoritativeSnapshot()`: if the handle carried `toolProvenance`, use it; else
-    `buildNamespacedTools(perClient over _sharedMcpClients + descriptors, this._toolNamespace)` ONCE, memoized.
+  - Add a private `resolveAuthoritativeSnapshot()`: if the handle carried `toolProvenance`, use it; else build
+    ONCE (memoized) via `buildNamespacedTools` over `_sharedMcpClients` + `_sharedMcpClientDescriptors`,
+    constructing `perClient` with the SAME index-preserving `settled.flatMap((entry, i) => … descriptors[i] …)`
+    rule as Task 2 (a middle-client `listTools()` failure must keep later slots' `slotIndex` — never `filter().map()`).
+    Add a test: three shared clients, middle listing fails → the surviving third tool's provenance is `slotIndex 2`.
   - `BuildAgentDeps.toolNamespace?: IToolNamespace` (default `defaultToolNamespace`); `buildBaseBuilder`
     (`~:2206-2226`) calls `.withToolNamespace(this._toolNamespace)`; the same instance feeds the server-side
     fallback build.
