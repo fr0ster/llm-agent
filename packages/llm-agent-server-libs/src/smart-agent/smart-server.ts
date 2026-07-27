@@ -29,6 +29,7 @@ import type {
   IToolsRagHandle,
   LoadedPlugins,
   McpCallResult,
+  McpClientDescriptor,
   PluginExports,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -356,6 +357,19 @@ export interface BuildAgentDeps {
     mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
   ) => Promise<IMcpClient[]>;
   /**
+   * Descriptor-producing sibling of `connectMcp` (#244) — same `mcpCfg`
+   * argument shape, but returns the connected clients PAIRED with stable
+   * per-slot descriptors (`clientDescriptors` + `configuredSlotCount`), which
+   * the namespacing layer needs to label colliding tools. When present it
+   * takes precedence over a bare `connectMcp` (see provisioning precedence at
+   * the seam call sites). NOT defaulted — stays `undefined` unless the
+   * consumer injects it, so the injected-seam vs YAML-builder distinction is
+   * preserved.
+   */
+  connectMcpWithDescriptors?: (
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ) => Promise<McpClientsWithDescriptors>;
+  /**
    * Ready-to-use MCP clients — parallel to `skillHost` (NOT an
    * `IMcpConnectionStrategy`). When present they are used DIRECTLY and take
    * precedence over `cfg.mcpClients`, plugin clients, and the YAML `mcp:` block:
@@ -461,6 +475,7 @@ import {
   serverOwnsMcpConnection,
   shouldIsolateMcpPerSession,
 } from './mcp/build-session-mcp-clients.js';
+import type { McpClientsWithDescriptors } from './mcp/mcp-clients-with-descriptors.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
@@ -569,7 +584,9 @@ export {
  * Exported for testability — tests can call this with a fake IMcpClient list.
  */
 /**
- * Connect MCP clients from a YAML `mcp:` config block (single or array).
+ * Connect MCP clients from a YAML `mcp:` config block (single or array),
+ * pairing each connected client with a stable per-slot descriptor
+ * (`{ slotIndex: i, label: cfg[i].name }`, #244).
  *
  * Mirrors the builder's connection logic (builder.ts ~lines 897-920) so the
  * Stepper path gets the same clients that the builder would have connected
@@ -579,14 +596,16 @@ export {
  *   `pipeline.mcp` or `this.cfg.mcp`). Accepts the union so callers can pass
  *   either directly without pre-normalising.
  */
-
-export async function connectMcpClientsFromConfig(
+export async function connectMcpClientsWithDescriptorsFromConfig(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
-): Promise<IMcpClient[]> {
-  if (!mcpCfg) return [];
+): Promise<McpClientsWithDescriptors> {
+  if (!mcpCfg)
+    return { clients: [], clientDescriptors: [], configuredSlotCount: 0 };
   const list = Array.isArray(mcpCfg) ? mcpCfg : [mcpCfg];
   const connected: IMcpClient[] = [];
-  for (const cfg of list) {
+  const clientDescriptors: McpClientDescriptor[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const cfg = list[i];
     let wrapper: MCPClientWrapper;
     if (cfg.type === 'stdio') {
       wrapper = new MCPClientWrapper({
@@ -607,8 +626,25 @@ export async function connectMcpClientsFromConfig(
     }
     await wrapper.connect();
     connected.push(new McpClientAdapter(wrapper));
+    clientDescriptors.push({ slotIndex: i, label: cfg.name });
   }
-  return connected;
+  return {
+    clients: connected,
+    clientDescriptors,
+    configuredSlotCount: list.length,
+  };
+}
+
+/**
+ * Compat wrapper preserving the original bare-array export: delegates to
+ * `connectMcpClientsWithDescriptorsFromConfig` and returns only `.clients`.
+ * Kept so existing callers/tests that depend on `Promise<IMcpClient[]>` are
+ * unaffected by the #244 descriptor-producing seam.
+ */
+export async function connectMcpClientsFromConfig(
+  mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+): Promise<IMcpClient[]> {
+  return (await connectMcpClientsWithDescriptorsFromConfig(mcpCfg)).clients;
 }
 
 export function buildMcpBridge(
@@ -740,12 +776,32 @@ export class SmartServer {
    */
   private readonly _mcpSeamInjected: boolean;
   /**
+   * True when the consumer injected a BARE `connectMcp` (as opposed to it
+   * being defaulted to `connectMcpClientsFromConfig` in the constructor).
+   * Lets the provisioning precedence distinguish "consumer gave us a
+   * connector with no descriptors" (array-index descriptors synthesized)
+   * from "nothing was injected, use the descriptor-producing default" (#244).
+   */
+  private readonly _connectMcpInjected: boolean;
+  /**
    * The MCP clients the pipeline `callMcp` bridge dispatches over — resolved
    * UNCONDITIONALLY in `start()` as DI/plugin clients (`mcpClients`) ?? the
    * YAML-connected `_stepperMcpClients`. Held so every pipeline (not just the
    * stepper) gets a working `ctx.callMcp` without opening a second connection.
    */
   private _sharedMcpClients?: IMcpClient[];
+  /**
+   * Per-slot descriptors paired with `_sharedMcpClients` (#244), captured
+   * from whichever provisioning path won (injected `connectMcpWithDescriptors`
+   * > injected bare `connectMcp` (array-index descriptors) > the descriptor-
+   * producing default). Consumed by Tasks 6/7 (namespacing + toolsChanged).
+   */
+  private _sharedMcpClientDescriptors?: readonly McpClientDescriptor[];
+  /**
+   * Total configured `mcp[]` slots (independent of how many actually
+   * connected), captured alongside `_sharedMcpClientDescriptors` (#244).
+   */
+  private _configuredSlotCount?: number;
   /**
    * The ONE shared knowledge backend for the Stepper path (set during build).
    * Held so DELETE /v1/sessions/:id can evict a session's entries from it —
@@ -801,12 +857,18 @@ export class SmartServer {
       | 'connectMcp'
     >
   > &
-    Pick<BuildAgentDeps, 'skillHost' | 'embedder' | 'mcpClients'>;
+    Pick<
+      BuildAgentDeps,
+      'skillHost' | 'embedder' | 'mcpClients' | 'connectMcpWithDescriptors'
+    >;
 
   constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
     this.cfg = config;
     this._mcpSeamInjected =
-      deps.mcpClients !== undefined || deps.connectMcp !== undefined;
+      deps.mcpClients !== undefined ||
+      deps.connectMcp !== undefined ||
+      deps.connectMcpWithDescriptors !== undefined;
+    this._connectMcpInjected = deps.connectMcp !== undefined;
     this._mcpFailureClassifier =
       deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
     // The DI seam carries the CONSUMER-injected factory ONLY (undefined when not
@@ -832,6 +894,9 @@ export class SmartServer {
       ...(deps.skillHost ? { skillHost: deps.skillHost } : {}),
       ...(deps.embedder ? { embedder: deps.embedder } : {}),
       ...(deps.mcpClients ? { mcpClients: deps.mcpClients } : {}),
+      ...(deps.connectMcpWithDescriptors
+        ? { connectMcpWithDescriptors: deps.connectMcpWithDescriptors }
+        : {}),
     };
   }
 
@@ -1220,8 +1285,12 @@ export class SmartServer {
       // Injected seam + YAML `mcp:` → the seam is the SINGLE provisioning point
       // (the embeddable path must never force a real connect). Stash on
       // `_stepperMcpClients` so the idempotent guard inside
-      // buildSharedPipelineInfra does not connect a second time.
-      this._stepperMcpClients = await this._deps.connectMcp(this.cfg.mcp);
+      // buildSharedPipelineInfra does not connect a second time. Precedence
+      // among seams (connectMcpWithDescriptors > bare connectMcp > default) —
+      // and recording `_sharedMcpClientDescriptors`/`_configuredSlotCount` — is
+      // handled by `_resolveMcpWithDescriptors` (#244).
+      const resolvedMcp = await this._resolveMcpWithDescriptors(this.cfg.mcp);
+      this._stepperMcpClients = resolvedMcp.clients;
       mcpClients = this._stepperMcpClients;
     } else {
       // No MCP, or the YAML-builder-connect path (mcpClients stays undefined so
@@ -1932,6 +2001,50 @@ export class SmartServer {
    *     fallback otherwise). Undefined toolsRag/embedder still yields a usable
    *     catalog-backed handle.
    */
+  /**
+   * Resolve MCP clients paired with per-slot descriptors (#244) for the YAML
+   * `mcp:` path, honoring provisioning precedence:
+   *   1. An injected `connectMcpWithDescriptors` seam wins outright — it
+   *      already reports its own descriptors/configuredSlotCount.
+   *   2. Else an injected bare `connectMcp` wins next — its clients get
+   *      synthesized array-index descriptors (a bare connector cannot report
+   *      labels), `configuredSlotCount` = the connected count.
+   *   3. Else (neither seam injected) fall back to the descriptor-producing
+   *      default, `connectMcpClientsWithDescriptorsFromConfig`, which DOES
+   *      read `cfg.name` labels.
+   * Used at both seam call sites so `_sharedMcpClientDescriptors` /
+   * `_configuredSlotCount` are populated consistently regardless of which
+   * path provisioned the clients (Tasks 6/7 consume these fields).
+   */
+  private async _resolveMcpWithDescriptors(
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ): Promise<McpClientsWithDescriptors> {
+    let resolved: McpClientsWithDescriptors;
+    if (this._deps.connectMcpWithDescriptors) {
+      resolved = await this._deps.connectMcpWithDescriptors(mcpCfg);
+    } else if (this._connectMcpInjected) {
+      const clients = await this._deps.connectMcp(mcpCfg);
+      resolved = {
+        clients,
+        clientDescriptors: clients.map((_, slotIndex) => ({ slotIndex })),
+        configuredSlotCount: clients.length,
+      };
+    } else {
+      resolved = await connectMcpClientsWithDescriptorsFromConfig(mcpCfg);
+    }
+    // Recorded as a side effect (not just returned) so `_sharedMcpClientDescriptors`
+    // / `_configuredSlotCount` are populated at BOTH seam call sites through this
+    // single funnel — kept in sync with `_sharedMcpClients` for Tasks 6/7.
+    this._sharedMcpClientDescriptors = resolved.clientDescriptors;
+    this._configuredSlotCount = resolved.configuredSlotCount;
+    this.cfg.log?.({
+      event: 'mcp_descriptors_resolved',
+      configuredSlotCount: this._configuredSlotCount,
+      clientDescriptorCount: this._sharedMcpClientDescriptors?.length,
+    });
+    return resolved;
+  }
+
   private async buildSharedPipelineInfra(input: {
     toolsRag: IRag | undefined;
     resolvedEmbedder: IEmbedder | undefined;
@@ -1946,9 +2059,13 @@ export class SmartServer {
 
     // MCP clients for the callMcp bridge. DI/plugin clients win; otherwise
     // connect the YAML `mcp:` block ONCE (connect is not safe to invoke twice
-    // on the same wrapper — guard via the cache field).
+    // on the same wrapper — guard via the cache field). Seam precedence
+    // (connectMcpWithDescriptors > bare connectMcp > default) — and recording
+    // `_sharedMcpClientDescriptors`/`_configuredSlotCount` — is handled by
+    // `_resolveMcpWithDescriptors` (#244).
     if (!mcpClients && !this._stepperMcpClients) {
-      this._stepperMcpClients = await this._deps.connectMcp(this.cfg.mcp);
+      const resolvedMcp = await this._resolveMcpWithDescriptors(this.cfg.mcp);
+      this._stepperMcpClients = resolvedMcp.clients;
     }
     this._sharedMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
 
