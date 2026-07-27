@@ -105,6 +105,11 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
     namespaced) and stores the given exposed `metadata.name` — WITHOUT re-running `buildNamespacedTools`
     internally (assert by passing a view whose exposed names differ from what a fresh namespacing would
     produce, and checking the stored names match the passed view).
+  - **Health-status preserved (the regression trap):** the prebuilt-view path must still report a
+    partial-catalog failure. Assert that when the builder's single `listTools` pass had a client failure, the
+    resulting `ToolVectorizationSummary` has `complete === false` (and `clientFailures > 0`) — i.e. the listing
+    outcome is threaded into the summary, NOT hardcoded `complete: true`. (Today Phase-1 listing computes this;
+    the refactor must not lose it — it feeds `/health components.toolCatalog: degraded`, v20.8.0.)
   - builder: build a `SmartAgent` via the builder with two embedded clients exposing `Search` AND **no
     writable tools RAG** (omit/readonly store); assert `handle.namespacedTools` contains `s0__Search`/`s1__Search`
     and `handle.toolProvenance.get('s1__Search')` = `{ slotIndex: 1, originalName: 'Search' }` (snapshot exists
@@ -112,19 +117,28 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
 - [ ] **Step 2: Run RED** — vectorize has no such param; handle has no `namespacedTools`.
 - [ ] **Step 3: Implement**
   - Refactor `vectorizeMcpTools` (VERIFY current signature at `vectorize-mcp-tools.ts:~113-140`): keep the
-    trailing `ns?` object but split responsibilities — the caller passes the already-built
-    `{ tools, provenance }` (the builder builds it once). Concretely, add to `ns` an optional
-    `prebuiltView?: { tools: readonly LlmTool[]; provenance: ReadonlyMap<string, {slotIndex; originalName}> }`;
-    when present, skip the internal `buildNamespacedTools` and iterate the given `tools`, keying records via
-    `provenance`. When absent, keep today's internal build (back-compat for other callers). The RAG-write
-    early-return (`:126` `if (!toolsRag || !writer) return undefined;`) stays — it only skips WRITING.
+    trailing `ns?` object but split responsibilities — the caller passes the already-built view AND the
+    listing outcome (the builder does the single `listTools` pass, so it — not vectorize — knows the failures).
+    Add to `ns` an optional
+    `prebuiltView?: { tools: readonly LlmTool[]; provenance: ReadonlyMap<string, {slotIndex; originalName}>; clientFailures: number; total: number }`;
+    when present, skip the internal Phase-1 listing + `buildNamespacedTools`, iterate the given `tools`, key
+    records via `provenance`, AND seed `acc.clientFailures`/`acc.total` from the passed values so
+    `summary.complete` still reflects a partial-catalog failure (do NOT hardcode `complete: true`). When absent,
+    keep today's internal listing+build+failure-accounting (back-compat). The RAG-write early-return (`:126`
+    `if (!toolsRag || !writer) return undefined;`) stays — it only skips WRITING. **Note:** when the builder
+    surfaces the snapshot but there is no writable RAG, the builder must still publish the catalog status from
+    its own listing outcome (it can't rely on vectorize's early-returned `undefined`) — see the builder step.
   - In `builder.ts` (VERIFY at `:975-1017`): hoist `resolved` to function scope; when `mcpClients.length`,
-    build the view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`
-    where `perClient` zips `mcpClients` + `resolved.clientDescriptors` + each client's `listTools()` (the single
-    listTools pass). Pass `{ ...ns, prebuiltView: { tools, provenance } }` to `vectorizeMcpTools`. Surface on the
-    `return {…}` (`:1289`): `namespacedTools: tools`, `toolProvenance: provenance`,
-    `mcpClientDescriptors: resolved?.clientDescriptors`, `configuredSlotCount: resolved?.configuredSlotCount`
-    (all conditionally spread; absent on the caller-provided-`mcpClients` branch where `resolved` is undefined).
+    do the single `listTools()` pass over `mcpClients`, tracking a `clientFailures` count and `total`; build the
+    view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`
+    where `perClient` zips the successfully-listed `mcpClients` + `resolved.clientDescriptors` + listed tools.
+    Pass `{ ...ns, prebuiltView: { tools, provenance, clientFailures, total } }` to `vectorizeMcpTools`.
+    **Catalog status:** `vectorizeMcpTools` returns `undefined` when there's no writable RAG, so the builder
+    must publish the catalog status (`ToolCatalogStatusHolder`, VERIFY at `:1016`) from ITS listing outcome in
+    that case — the health signal must not depend on a writable store. Surface on the `return {…}` (`:1289`):
+    `namespacedTools: tools`, `toolProvenance: provenance`, `mcpClientDescriptors: resolved?.clientDescriptors`,
+    `configuredSlotCount: resolved?.configuredSlotCount` (all conditionally spread; absent on the
+    caller-provided-`mcpClients` branch where `resolved` is undefined).
 - [ ] **Step 4: Run GREEN + full libs suite** (`npm test --workspace @mcp-abap-adt/llm-agent-libs`; baseline was
   911/911 at branch HEAD — confirm no pre-existing test regressed; a test that encoded the old double-list
   behaviour may need an evidence-backed update).
@@ -148,9 +162,13 @@ git commit -m "feat(agent): builder surfaces authoritative namespaced snapshot; 
 - `interface McpClientsWithDescriptors { clients: IMcpClient[]; clientDescriptors?: readonly McpClientDescriptor[]; configuredSlotCount?: number }`
 - `rebindProvenanceToClients(provenance, clients, descriptors): Map<string, IMcpClient>` — for each
   `[exposedName, { slotIndex, originalName }]`, find the client whose descriptor `slotIndex` matches (or, when
-  descriptors absent, the client at array index `slotIndex`); set `map[exposedName] = originalName === <client's
-  bare name for that tool> ? client : bindToolCallName(client, originalName)`. (Follow the libs `buildNamespacedTools`
-  convention: wrapper only when the exposed name is namespaced; when bare, the real client.)
+  descriptors absent, the client at array index `slotIndex`); set
+  `map[exposedName] = exposedName === originalName ? client : bindToolCallName(client, originalName)`
+  — i.e. the real client when the name was NOT namespaced (bare), the wrapper when it WAS, matching
+  `build-namespaced-tools.ts:80` (`exposed === t.name`). Do NOT re-`listTools` to discover a "bare name" — the
+  discriminator is purely `exposedName === originalName`. **When no client matches a `slotIndex`** (fewer session
+  clients than provenance slots, e.g. a slot that never constructed): **skip that entry** (no map key) → a later
+  `map.get` miss yields "Tool not found" per §2; never throw.
 - `buildNamespacedMcpBridge(toolClientMap, classifier): (name, args, signal) => Promise<McpCallResult>` — the
   shared bridge from addendum §3c: `map.get(name)` miss → `{ text: 'Tool not found: '+name, isError: true }`;
   else `client.callTool(name, ...)`, classify errors with a healthCheck probe (availability → throw; tool-level →
