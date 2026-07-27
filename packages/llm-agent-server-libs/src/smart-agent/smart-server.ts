@@ -767,8 +767,9 @@ export class SmartServer {
    */
   private _stepperMcpClients?: IMcpClient[];
   /**
-   * True when the consumer injected an MCP seam (`BuildAgentDeps.mcpClients` or
-   * `connectMcp`). In that case MCP is provisioned ONLY through the seam (the
+   * True when the consumer injected an MCP seam (`BuildAgentDeps.mcpClients`,
+   * `connectMcp`, or `connectMcpWithDescriptors`). In that case MCP is provisioned
+   * ONLY through the seam (the
    * embeddable path must never force a real connect / builder self-connect). When
    * false (default), the YAML `mcp:` path keeps the builder-owned connect so the
    * builder VECTORIZES the tools into `toolsRag` (the ToolSelect ranking contract;
