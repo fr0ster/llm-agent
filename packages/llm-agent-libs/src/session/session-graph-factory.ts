@@ -3,6 +3,7 @@ import type {
   IMcpClient,
   IRag,
   IRagRegistry,
+  McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
@@ -24,6 +25,15 @@ export interface SessionGraphIdentity {
 export interface SessionAgentParts {
   readonly sessionId: string;
   readonly mcpClients: IMcpClient[];
+  /**
+   * Per-slot descriptors paired with `mcpClients` (#244), when the session's
+   * client set was resolved via `mcpClientFactoryWithDescriptors`. `undefined`
+   * when only the legacy `mcpClientFactory` was used — array-index pairing is
+   * then the caller's own responsibility (back-compat).
+   */
+  readonly mcpClientDescriptors?: readonly McpClientDescriptor[];
+  /** Total configured `mcp[]` slots, paired with `mcpClientDescriptors` (#244). */
+  readonly configuredSlotCount?: number;
   readonly toolsRag: IRag | undefined;
   readonly ragRegistry: IRagRegistry;
   readonly logger: SessionRequestLogger;
@@ -37,6 +47,22 @@ export interface SessionGraphFactoryOptions {
    * Either way the tools-catalog RAG is never re-vectorized.
    */
   readonly mcpClientFactory: (identity: SessionGraphIdentity) => IMcpClient[];
+  /**
+   * ADDITIVE descriptor-aware seam (#244): when set, takes precedence over
+   * `mcpClientFactory` and pairs the resolved clients with the STABLE
+   * `slotIndex`-keyed descriptors they came from (needed to rebind provenance
+   * across a FILTERED client set, where array-index pairing breaks — e.g.
+   * active slots `[0,2]` collapse to array indices `[0,1]`). `mcpClientFactory`
+   * stays required for back-compat; this field is optional and, when absent,
+   * `build()` falls back to `mcpClientFactory` (descriptors stay `undefined`).
+   */
+  readonly mcpClientFactoryWithDescriptors?: (
+    identity: SessionGraphIdentity,
+  ) => {
+    clients: IMcpClient[];
+    clientDescriptors?: readonly McpClientDescriptor[];
+    configuredSlotCount?: number;
+  };
   /** GLOBAL vectorized tools-catalog RAG — injected by reference, never re-vectorized. */
   readonly toolsRag: IRag | undefined;
   /** GLOBAL RAG provider/registry — shared; the per-call scope filter isolates. */
@@ -88,10 +114,22 @@ export class SessionGraphFactory {
     const toolAvailability = new ToolAvailabilityRegistry();
     const pendingToolResults = new PendingToolResultsRegistry();
 
-    const mcpClients = this.opts.mcpClientFactory(identity);
+    let mcpClients: IMcpClient[];
+    let mcpClientDescriptors: readonly McpClientDescriptor[] | undefined;
+    let configuredSlotCount: number | undefined;
+    if (this.opts.mcpClientFactoryWithDescriptors) {
+      const built = this.opts.mcpClientFactoryWithDescriptors(identity);
+      mcpClients = built.clients;
+      mcpClientDescriptors = built.clientDescriptors;
+      configuredSlotCount = built.configuredSlotCount;
+    } else {
+      mcpClients = this.opts.mcpClientFactory(identity);
+    }
     const agent = await this.opts.buildAgent({
       sessionId: identity.sessionId,
       mcpClients,
+      mcpClientDescriptors,
+      configuredSlotCount,
       toolsRag: this.opts.toolsRag,
       ragRegistry: this.opts.ragRegistry,
       logger,

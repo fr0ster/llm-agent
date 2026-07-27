@@ -74,6 +74,7 @@ export type { IMcpClient } from './mcp-client.js';
 export type {
   ConnectionStrategyOptions,
   IMcpConnectionStrategy,
+  McpClientDescriptor,
   McpClientFactory,
   McpClientFactoryResult,
   McpConnectionConfig,

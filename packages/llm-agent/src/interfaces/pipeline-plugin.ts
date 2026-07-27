@@ -58,6 +58,10 @@ export interface IPipelineContext {
     signal?: AbortSignal,
   ): Promise<McpCallResult>;
   mcpClients?: IMcpClient[];
+  /** Namespaced-tool-name → owning MCP client, for dispatching a namespaced
+   *  tool call to its originating client. Undefined when namespacing is not
+   *  in use for this pipeline. */
+  toolClientMap?: Map<string, IMcpClient>;
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   mintStepperId(): string;
   mintTurnId(): string;

@@ -9,6 +9,7 @@ export {
 export { ClarifySignal, NeedInfoSignal } from './coordinator-signals.js';
 export * from './errors/index.js';
 export * from './external-results.js';
+export { assertClientDescriptors } from './interfaces/assert-client-descriptors.js';
 export * from './interfaces/index.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';
@@ -41,8 +42,19 @@ export {
   type ILlmApiAdapter,
   type NormalizedRequest,
 } from './interfaces/api-adapter.js';
+export {
+  buildNamespacedTools,
+  type NamespaceClientInput,
+} from './interfaces/build-namespaced-tools.js';
 // Client adapters
 export type { IClientAdapter } from './interfaces/client-adapter.js';
+export { mergeOfferedTools } from './interfaces/merge-offered-tools.js';
+export {
+  bindToolCallName,
+  defaultToolNamespace,
+  type IToolNamespace,
+  type ToolNamespaceContext,
+} from './interfaces/tool-namespace.js';
 // Logger
 export type { ILogger, LogEvent } from './logger/types.js';
 export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js';

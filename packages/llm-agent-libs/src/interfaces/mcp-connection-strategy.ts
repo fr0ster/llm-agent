@@ -1,6 +1,7 @@
 export type {
   ConnectionStrategyOptions,
   IMcpConnectionStrategy,
+  McpClientDescriptor,
   McpClientFactory,
   McpClientFactoryResult,
   McpConnectionConfig,

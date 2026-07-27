@@ -66,9 +66,16 @@ export class PeriodicConnectionStrategy
       return {
         clients: this._cachedResult.clients,
         toolsChanged: this._cachedResult.toolsChanged,
+        clientDescriptors: this._cachedResult.clientDescriptors,
+        configuredSlotCount: this._cachedResult.configuredSlotCount,
       };
     }
-    return { clients: this._cachedResult.clients, toolsChanged: false };
+    return {
+      clients: this._cachedResult.clients,
+      toolsChanged: false,
+      clientDescriptors: this._cachedResult.clientDescriptors,
+      configuredSlotCount: this._cachedResult.configuredSlotCount,
+    };
   }
 
   async dispose(): Promise<void> {

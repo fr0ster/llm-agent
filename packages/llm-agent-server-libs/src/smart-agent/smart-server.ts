@@ -26,13 +26,19 @@ import type {
   ISkillManager,
   ISkillPluginHost,
   ISmartAgent,
+  IToolNamespace,
   IToolsRagHandle,
+  LlmTool,
   LoadedPlugins,
   McpCallResult,
+  McpClientDescriptor,
+  NamespaceClientInput,
   PluginExports,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  buildNamespacedTools,
+  defaultToolNamespace,
   type IAuxiliaryMcpTools,
   type IMcpFailureClassifier,
   type IRag,
@@ -183,6 +189,8 @@ export interface SmartServerMcpConfig {
   /** Per-tool MCP request-timeout overrides in ms, keyed by tool name.
    *  Takes precedence over timeout. */
   toolTimeouts?: Record<string, number>;
+  /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */
+  name?: string;
 }
 
 export interface SmartServerAgentConfig {
@@ -354,6 +362,19 @@ export interface BuildAgentDeps {
     mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
   ) => Promise<IMcpClient[]>;
   /**
+   * Descriptor-producing sibling of `connectMcp` (#244) — same `mcpCfg`
+   * argument shape, but returns the connected clients PAIRED with stable
+   * per-slot descriptors (`clientDescriptors` + `configuredSlotCount`), which
+   * the namespacing layer needs to label colliding tools. When present it
+   * takes precedence over a bare `connectMcp` (see provisioning precedence at
+   * the seam call sites). NOT defaulted — stays `undefined` unless the
+   * consumer injects it, so the injected-seam vs YAML-builder distinction is
+   * preserved.
+   */
+  connectMcpWithDescriptors?: (
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ) => Promise<McpClientsWithDescriptors>;
+  /**
    * Ready-to-use MCP clients — parallel to `skillHost` (NOT an
    * `IMcpConnectionStrategy`). When present they are used DIRECTLY and take
    * precedence over `cfg.mcpClients`, plugin clients, and the YAML `mcp:` block:
@@ -386,6 +407,16 @@ export interface BuildAgentDeps {
    *  Threaded onto `IPipelineContext.waitStrategy`; the controller pipeline
    *  falls back to `DefaultWaitStrategy` when absent. */
   waitStrategy?: IWaitStrategy;
+  /**
+   * Consumer-swappable tool-namespacing strategy (#244) — decides how a
+   * colliding MCP tool name is renamed for LLM/RAG exposure. Threaded onto
+   * the startup builder (`withToolNamespace`) so the YAML-builder-connect
+   * path's own namespaced snapshot honors it, AND reused by the server's own
+   * `resolveAuthoritativeSnapshot()` fallback build (seam / consumer-builder
+   * path) so both snapshot sources agree on the SAME naming rule. Default:
+   * {@link defaultToolNamespace}.
+   */
+  toolNamespace?: IToolNamespace;
 }
 
 /**
@@ -459,6 +490,11 @@ import {
   serverOwnsMcpConnection,
   shouldIsolateMcpPerSession,
 } from './mcp/build-session-mcp-clients.js';
+import type { McpClientsWithDescriptors } from './mcp/mcp-clients-with-descriptors.js';
+import {
+  buildNamespacedMcpBridge,
+  rebindProvenanceToClients,
+} from './mcp/namespaced-bridge.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
@@ -567,7 +603,9 @@ export {
  * Exported for testability — tests can call this with a fake IMcpClient list.
  */
 /**
- * Connect MCP clients from a YAML `mcp:` config block (single or array).
+ * Connect MCP clients from a YAML `mcp:` config block (single or array),
+ * pairing each connected client with a stable per-slot descriptor
+ * (`{ slotIndex: i, label: cfg[i].name }`, #244).
  *
  * Mirrors the builder's connection logic (builder.ts ~lines 897-920) so the
  * Stepper path gets the same clients that the builder would have connected
@@ -577,14 +615,16 @@ export {
  *   `pipeline.mcp` or `this.cfg.mcp`). Accepts the union so callers can pass
  *   either directly without pre-normalising.
  */
-
-export async function connectMcpClientsFromConfig(
+export async function connectMcpClientsWithDescriptorsFromConfig(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
-): Promise<IMcpClient[]> {
-  if (!mcpCfg) return [];
+): Promise<McpClientsWithDescriptors> {
+  if (!mcpCfg)
+    return { clients: [], clientDescriptors: [], configuredSlotCount: 0 };
   const list = Array.isArray(mcpCfg) ? mcpCfg : [mcpCfg];
   const connected: IMcpClient[] = [];
-  for (const cfg of list) {
+  const clientDescriptors: McpClientDescriptor[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const cfg = list[i];
     let wrapper: MCPClientWrapper;
     if (cfg.type === 'stdio') {
       wrapper = new MCPClientWrapper({
@@ -605,8 +645,25 @@ export async function connectMcpClientsFromConfig(
     }
     await wrapper.connect();
     connected.push(new McpClientAdapter(wrapper));
+    clientDescriptors.push({ slotIndex: i, label: cfg.name });
   }
-  return connected;
+  return {
+    clients: connected,
+    clientDescriptors,
+    configuredSlotCount: list.length,
+  };
+}
+
+/**
+ * Compat wrapper preserving the original bare-array export: delegates to
+ * `connectMcpClientsWithDescriptorsFromConfig` and returns only `.clients`.
+ * Kept so existing callers/tests that depend on `Promise<IMcpClient[]>` are
+ * unaffected by the #244 descriptor-producing seam.
+ */
+export async function connectMcpClientsFromConfig(
+  mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+): Promise<IMcpClient[]> {
+  return (await connectMcpClientsWithDescriptorsFromConfig(mcpCfg)).clients;
 }
 
 export function buildMcpBridge(
@@ -729,8 +786,9 @@ export class SmartServer {
    */
   private _stepperMcpClients?: IMcpClient[];
   /**
-   * True when the consumer injected an MCP seam (`BuildAgentDeps.mcpClients` or
-   * `connectMcp`). In that case MCP is provisioned ONLY through the seam (the
+   * True when the consumer injected an MCP seam (`BuildAgentDeps.mcpClients`,
+   * `connectMcp`, or `connectMcpWithDescriptors`). In that case MCP is provisioned
+   * ONLY through the seam (the
    * embeddable path must never force a real connect / builder self-connect). When
    * false (default), the YAML `mcp:` path keeps the builder-owned connect so the
    * builder VECTORIZES the tools into `toolsRag` (the ToolSelect ranking contract;
@@ -738,12 +796,56 @@ export class SmartServer {
    */
   private readonly _mcpSeamInjected: boolean;
   /**
+   * True when the consumer injected a BARE `connectMcp` (as opposed to it
+   * being defaulted to `connectMcpClientsFromConfig` in the constructor).
+   * Lets the provisioning precedence distinguish "consumer gave us a
+   * connector with no descriptors" (array-index descriptors synthesized)
+   * from "nothing was injected, use the descriptor-producing default" (#244).
+   */
+  private readonly _connectMcpInjected: boolean;
+  /**
    * The MCP clients the pipeline `callMcp` bridge dispatches over — resolved
    * UNCONDITIONALLY in `start()` as DI/plugin clients (`mcpClients`) ?? the
    * YAML-connected `_stepperMcpClients`. Held so every pipeline (not just the
    * stepper) gets a working `ctx.callMcp` without opening a second connection.
    */
   private _sharedMcpClients?: IMcpClient[];
+  /**
+   * Per-slot descriptors paired with `_sharedMcpClients` (#244), captured
+   * from whichever provisioning path won (injected `connectMcpWithDescriptors`
+   * > injected bare `connectMcp` (array-index descriptors) > the descriptor-
+   * producing default). Consumed by Tasks 6/7 (namespacing + toolsChanged).
+   */
+  private _sharedMcpClientDescriptors?: readonly McpClientDescriptor[];
+  /**
+   * Total configured `mcp[]` slots (independent of how many actually
+   * connected), captured alongside `_sharedMcpClientDescriptors` (#244).
+   */
+  private _configuredSlotCount?: number;
+  /**
+   * The ONE authoritative namespaced tool catalog snapshot (#244 Task 6),
+   * fed to the tools-RAG handle (`makeToolsRagHandle`'s `namespaced` param).
+   * Populated from either source:
+   *   - yaml-builder path: harvested from `agentHandle.namespacedTools` (the
+   *     startup builder computed it while auto-connecting `cfg.mcp`).
+   *   - seam / consumer-builder path: built ONCE by
+   *     `resolveAuthoritativeSnapshot()` over `_sharedMcpClients` +
+   *     `_sharedMcpClientDescriptors` (the builder never connected itself, so
+   *     its handle carries no snapshot).
+   * Undefined only when neither source produced one (e.g. no MCP clients).
+   */
+  private _namespacedTools?: readonly LlmTool[];
+  /**
+   * Provenance for `_namespacedTools` — exposed (namespaced) name → its
+   * originating slot + original tool name. Doubles as the memoization guard
+   * for `resolveAuthoritativeSnapshot()`: once set (from either source above)
+   * a later call is a no-op. See `_namespacedTools` field doc for the two
+   * sources.
+   */
+  private _toolProvenance?: ReadonlyMap<
+    string,
+    { slotIndex: number; originalName: string }
+  >;
   /**
    * The ONE shared knowledge backend for the Stepper path (set during build).
    * Held so DELETE /v1/sessions/:id can evict a session's entries from it —
@@ -783,6 +885,15 @@ export class SmartServer {
   private readonly _runExecutionControl?: IRunExecutionControl;
   private readonly _auxiliaryMcpTools?: IAuxiliaryMcpTools;
   private readonly _waitStrategy?: IWaitStrategy;
+  /**
+   * Tool-namespacing strategy (#244) — DI'd via `BuildAgentDeps.toolNamespace`,
+   * default `defaultToolNamespace`. Threaded onto the startup builder
+   * (`buildBaseBuilder` → `.withToolNamespace`) so its own namespaced snapshot
+   * (yaml-builder path) honors it, and reused verbatim by
+   * `resolveAuthoritativeSnapshot()`'s fallback build (seam path) so both
+   * snapshot sources agree on the same naming rule.
+   */
+  private readonly _toolNamespace: IToolNamespace;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -799,12 +910,18 @@ export class SmartServer {
       | 'connectMcp'
     >
   > &
-    Pick<BuildAgentDeps, 'skillHost' | 'embedder' | 'mcpClients'>;
+    Pick<
+      BuildAgentDeps,
+      'skillHost' | 'embedder' | 'mcpClients' | 'connectMcpWithDescriptors'
+    >;
 
   constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
     this.cfg = config;
     this._mcpSeamInjected =
-      deps.mcpClients !== undefined || deps.connectMcp !== undefined;
+      deps.mcpClients !== undefined ||
+      deps.connectMcp !== undefined ||
+      deps.connectMcpWithDescriptors !== undefined;
+    this._connectMcpInjected = deps.connectMcp !== undefined;
     this._mcpFailureClassifier =
       deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
     // The DI seam carries the CONSUMER-injected factory ONLY (undefined when not
@@ -820,6 +937,7 @@ export class SmartServer {
     this._runExecutionControl = deps.runExecutionControl;
     this._auxiliaryMcpTools = deps.auxiliaryMcpTools;
     this._waitStrategy = deps.waitStrategy;
+    this._toolNamespace = deps.toolNamespace ?? defaultToolNamespace;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -830,6 +948,9 @@ export class SmartServer {
       ...(deps.skillHost ? { skillHost: deps.skillHost } : {}),
       ...(deps.embedder ? { embedder: deps.embedder } : {}),
       ...(deps.mcpClients ? { mcpClients: deps.mcpClients } : {}),
+      ...(deps.connectMcpWithDescriptors
+        ? { connectMcpWithDescriptors: deps.connectMcpWithDescriptors }
+        : {}),
     };
   }
 
@@ -1218,8 +1339,12 @@ export class SmartServer {
       // Injected seam + YAML `mcp:` → the seam is the SINGLE provisioning point
       // (the embeddable path must never force a real connect). Stash on
       // `_stepperMcpClients` so the idempotent guard inside
-      // buildSharedPipelineInfra does not connect a second time.
-      this._stepperMcpClients = await this._deps.connectMcp(this.cfg.mcp);
+      // buildSharedPipelineInfra does not connect a second time. Precedence
+      // among seams (connectMcpWithDescriptors > bare connectMcp > default) —
+      // and recording `_sharedMcpClientDescriptors`/`_configuredSlotCount` — is
+      // handled by `_resolveMcpWithDescriptors` (#244).
+      const resolvedMcp = await this._resolveMcpWithDescriptors(this.cfg.mcp);
+      this._stepperMcpClients = resolvedMcp.clients;
       mcpClients = this._stepperMcpClients;
     } else {
       // No MCP, or the YAML-builder-connect path (mcpClients stays undefined so
@@ -1310,6 +1435,29 @@ export class SmartServer {
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
 
+    // ---- Authoritative namespaced snapshot — yaml-builder path (#244) --------
+    // The startup builder computes `namespacedTools`/`toolProvenance` (+ the
+    // descriptors backing them) ONLY when it owns the connection itself (the
+    // `yamlBuilderConnect` path — no ready clients, no injected seam); on every
+    // other path the handle's fields stay undefined (the builder skipped its
+    // own connect via `withMcpClients`) and `resolveAuthoritativeSnapshot()`
+    // builds the fallback later instead. Guard on presence so an undefined
+    // handle field never clobbers a fallback snapshot built earlier in
+    // `buildSharedPipelineInfra` (the seam / consumer-builder path runs BEFORE
+    // `builder.build()`).
+    if (agentHandle.namespacedTools !== undefined) {
+      this._namespacedTools = agentHandle.namespacedTools;
+    }
+    if (agentHandle.toolProvenance !== undefined) {
+      this._toolProvenance = agentHandle.toolProvenance;
+    }
+    if (agentHandle.mcpClientDescriptors !== undefined) {
+      this._sharedMcpClientDescriptors = agentHandle.mcpClientDescriptors;
+    }
+    if (agentHandle.configuredSlotCount !== undefined) {
+      this._configuredSlotCount = agentHandle.configuredSlotCount;
+    }
+
     // ---- YAML-builder-connect MCP harvest (single-connect + vectorization) ----
     // Only on the `yamlBuilderConnect` path (YAML `mcp:`, no ready clients, no
     // injected seam) did the startup builder OWN the connection AND vectorize the
@@ -1366,6 +1514,13 @@ export class SmartServer {
       maxSessions: sessionCfg.maxSessions ?? 1000,
       cookieName: sessionCfg.cookieName ?? 'sid',
       mcpClients: globalMcpClients,
+      // Shared/global-set provenance (#244) — forwarded so the lifecycle's
+      // isolation-OFF branch (no `buildPerSessionMcpClients`, or
+      // `mcpSharedClient: true`) still pairs `SessionAgentParts.mcpClients`
+      // with the ORIGINAL slotIndex-keyed descriptors, even when the shared
+      // set is a FILTERED subset (e.g. LazyConnectionStrategy dropped a slot).
+      mcpClientDescriptors: this._sharedMcpClientDescriptors,
+      configuredSlotCount: this._configuredSlotCount,
       // Per-session MCP isolation (#213): only for the YAML `mcp:` path (the one
       // the server itself connects). Ready-client sources (deps/cfg/plugin) are
       // consumer/plugin-owned and stay shared. `agent.mcpSharedClient: true`
@@ -1547,7 +1702,11 @@ export class SmartServer {
    * path).
    * Mirrors EXACTLY what the session lifecycle passes to `buildSessionAgent`:
    * the global mcpClients + the global ragRegistry + the global tools store,
-   * with a fresh per-(embedded-)session request logger.
+   * with a fresh per-(embedded-)session request logger. Also threads
+   * `_sharedMcpClientDescriptors`/`_configuredSlotCount` (#244) — the shared
+   * set's per-slot provenance, captured by whichever descriptor-producing
+   * seam won — so the embedded path carries the same descriptor pairing the
+   * per-session lifecycle now does.
    */
   private _embeddedSessionParts(
     mcpClients: IMcpClient[] | undefined,
@@ -1556,6 +1715,8 @@ export class SmartServer {
     return {
       sessionId: 'embedded',
       mcpClients: mcpClients ?? this._sharedMcpClients ?? [],
+      mcpClientDescriptors: this._sharedMcpClientDescriptors,
+      configuredSlotCount: this._configuredSlotCount,
       toolsRag: this._toolsRag,
       ragRegistry,
       logger: new SessionRequestLogger(),
@@ -1894,12 +2055,45 @@ export class SmartServer {
     return kr;
   }
 
+  /**
+   * Memoized namespaced bridge over the GLOBAL `_sharedMcpClients` (#244
+   * Task 8). Built once, lazily, from the authoritative snapshot's provenance
+   * rebound onto `_sharedMcpClients` + `_sharedMcpClientDescriptors` — the
+   * dispatch TARGET stays the server-wide shared clients (never retargeted to
+   * a session's clients here); only `buildServerCtx`'s per-session
+   * `ctx.toolClientMap` uses the session-scoped clients.
+   */
+  private _namespacedCallMcpBridge?: (
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ) => Promise<McpCallResult>;
+
   /** callMcp bridge over the shared connected MCP clients (empty when none). */
   private callMcp(
     name: string,
     args: unknown,
     signal?: AbortSignal,
   ): Promise<McpCallResult> {
+    // Namespaced routing (#244 Task 8): when the authoritative snapshot has
+    // provenance (collision path took effect), dispatch namespaced exposed
+    // names to their owning client via the shared bridge — memoized so the
+    // rebind only runs once. No provenance (no MCP / no collisions) falls
+    // back to today's plain `buildMcpBridge` scan, unchanged.
+    if (this._toolProvenance) {
+      if (!this._namespacedCallMcpBridge) {
+        const toolClientMap = rebindProvenanceToClients(
+          this._toolProvenance,
+          this._sharedMcpClients ?? [],
+          this._sharedMcpClientDescriptors,
+        );
+        this._namespacedCallMcpBridge = buildNamespacedMcpBridge(
+          toolClientMap,
+          this._mcpFailureClassifier,
+        );
+      }
+      return this._namespacedCallMcpBridge(name, args, signal);
+    }
     return buildMcpBridge(
       this._sharedMcpClients ?? [],
       this._mcpFailureClassifier,
@@ -1930,6 +2124,50 @@ export class SmartServer {
    *     fallback otherwise). Undefined toolsRag/embedder still yields a usable
    *     catalog-backed handle.
    */
+  /**
+   * Resolve MCP clients paired with per-slot descriptors (#244) for the YAML
+   * `mcp:` path, honoring provisioning precedence:
+   *   1. An injected `connectMcpWithDescriptors` seam wins outright — it
+   *      already reports its own descriptors/configuredSlotCount.
+   *   2. Else an injected bare `connectMcp` wins next — its clients get
+   *      synthesized array-index descriptors (a bare connector cannot report
+   *      labels), `configuredSlotCount` = the connected count.
+   *   3. Else (neither seam injected) fall back to the descriptor-producing
+   *      default, `connectMcpClientsWithDescriptorsFromConfig`, which DOES
+   *      read `cfg.name` labels.
+   * Used at both seam call sites so `_sharedMcpClientDescriptors` /
+   * `_configuredSlotCount` are populated consistently regardless of which
+   * path provisioned the clients (Tasks 6/7 consume these fields).
+   */
+  private async _resolveMcpWithDescriptors(
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ): Promise<McpClientsWithDescriptors> {
+    let resolved: McpClientsWithDescriptors;
+    if (this._deps.connectMcpWithDescriptors) {
+      resolved = await this._deps.connectMcpWithDescriptors(mcpCfg);
+    } else if (this._connectMcpInjected) {
+      const clients = await this._deps.connectMcp(mcpCfg);
+      resolved = {
+        clients,
+        clientDescriptors: clients.map((_, slotIndex) => ({ slotIndex })),
+        configuredSlotCount: clients.length,
+      };
+    } else {
+      resolved = await connectMcpClientsWithDescriptorsFromConfig(mcpCfg);
+    }
+    // Recorded as a side effect (not just returned) so `_sharedMcpClientDescriptors`
+    // / `_configuredSlotCount` are populated at BOTH seam call sites through this
+    // single funnel — kept in sync with `_sharedMcpClients` for Tasks 6/7.
+    this._sharedMcpClientDescriptors = resolved.clientDescriptors;
+    this._configuredSlotCount = resolved.configuredSlotCount;
+    this.cfg.log?.({
+      event: 'mcp_descriptors_resolved',
+      configuredSlotCount: this._configuredSlotCount,
+      clientDescriptorCount: this._sharedMcpClientDescriptors?.length,
+    });
+    return resolved;
+  }
+
   private async buildSharedPipelineInfra(input: {
     toolsRag: IRag | undefined;
     resolvedEmbedder: IEmbedder | undefined;
@@ -1944,9 +2182,13 @@ export class SmartServer {
 
     // MCP clients for the callMcp bridge. DI/plugin clients win; otherwise
     // connect the YAML `mcp:` block ONCE (connect is not safe to invoke twice
-    // on the same wrapper — guard via the cache field).
+    // on the same wrapper — guard via the cache field). Seam precedence
+    // (connectMcpWithDescriptors > bare connectMcp > default) — and recording
+    // `_sharedMcpClientDescriptors`/`_configuredSlotCount` — is handled by
+    // `_resolveMcpWithDescriptors` (#244).
     if (!mcpClients && !this._stepperMcpClients) {
-      this._stepperMcpClients = await this._deps.connectMcp(this.cfg.mcp);
+      const resolvedMcp = await this._resolveMcpWithDescriptors(this.cfg.mcp);
+      this._stepperMcpClients = resolvedMcp.clients;
     }
     this._sharedMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
 
@@ -1969,6 +2211,78 @@ export class SmartServer {
   }
 
   /**
+   * Resolve the ONE authoritative namespaced tool snapshot (#244 Task 6) —
+   * `this._namespacedTools` / `this._toolProvenance` — from whichever source
+   * applies:
+   *   - yaml-builder path: the startup builder already computed it, harvested
+   *     onto these SAME fields right after `builder.build()` (see the
+   *     `agentHandle.namespacedTools`/`toolProvenance` destructure above). This
+   *     method is then a no-op (memoized on `_toolProvenance`).
+   *   - seam / consumer-builder path (ready clients, or an injected MCP seam):
+   *     the handle carries no snapshot (the builder skipped its own connect via
+   *     `withMcpClients`), so build ONE here via `buildNamespacedTools` over
+   *     `_sharedMcpClients` + `_sharedMcpClientDescriptors` + the server's
+   *     `_toolNamespace` — the SAME strategy instance threaded onto the
+   *     startup builder, so both snapshot sources agree on the naming rule.
+   *
+   * Preserves the ORIGINAL client index on a partial `listTools()` failure:
+   * the per-client input is built index-preservingly via `settled.flatMap`
+   * aligned by position (mirroring the builder's own snapshot build), NEVER
+   * `filter().map()` — a middle-client failure must not shift later slots'
+   * `slotIndex`.
+   */
+  private async resolveAuthoritativeSnapshot(): Promise<void> {
+    // Memoized: a handle-carried snapshot (yaml path) or a prior fallback
+    // build (seam path) both set `_toolProvenance` — either way, done.
+    if (this._toolProvenance) return;
+    const clients = this._sharedMcpClients ?? [];
+    if (clients.length === 0) return;
+    const descs: readonly McpClientDescriptor[] =
+      this._sharedMcpClientDescriptors ??
+      clients.map((_, i) => ({ slotIndex: i }));
+    const settled = await Promise.all(
+      clients.map(async (client) => {
+        try {
+          const result = await client.listTools();
+          return result.ok
+            ? { ok: true as const, value: result.value }
+            : { ok: false as const };
+        } catch {
+          return { ok: false as const };
+        }
+      }),
+    );
+    const perClient: NamespaceClientInput[] = settled.flatMap((entry, i) => {
+      if (!entry.ok) return [];
+      return [
+        {
+          slotIndex: descs[i]?.slotIndex ?? i,
+          label: descs[i]?.label,
+          client: clients[i],
+          tools: entry.value,
+        },
+      ];
+    });
+    const built = buildNamespacedTools(perClient, this._toolNamespace);
+    this._namespacedTools = built.tools;
+    this._toolProvenance = built.provenance;
+
+    // Spec §4: a partial listTools() failure must be LOGGED (aligned with
+    // vectorizeMcpTools's `clientFailures` reporting), never a silent drop —
+    // this snapshot is the ONLY source when there is no writable tools RAG,
+    // in which case vectorizeMcpTools never runs and never logs either.
+    const clientFailures = settled.filter((entry) => !entry.ok).length;
+    if (clientFailures > 0) {
+      this.cfg.log?.({
+        event: 'authoritative_snapshot_client_failures',
+        message: `resolveAuthoritativeSnapshot: ${clientFailures} client(s) failed to list tools`,
+        clientFailures,
+        clientCount: clients.length,
+      });
+    }
+  }
+
+  /**
    * Build `_toolsRagHandle` — a real IToolsRagHandle over the tools RAG store +
    * MCP catalog, dispatching over the ALREADY-RESOLVED `this._sharedMcpClients`.
    *
@@ -1977,17 +2291,27 @@ export class SmartServer {
    * connection there, and `_sharedMcpClients` is harvested from its handle). For
    * the DI/plugin path it still runs early via `buildSharedPipelineInfra`.
    * Requires `this._sharedMcpClients` to be set by the caller.
+   *
+   * Also resolves the authoritative namespaced snapshot (#244 Task 6) via
+   * `resolveAuthoritativeSnapshot()` — a no-op when the yaml-builder path
+   * already harvested one from the handle — and passes it into
+   * `makeToolsRagHandle` so the catalog is keyed by the EXPOSED (namespaced)
+   * name.
    */
   private async buildToolsRagHandle(input: {
     toolsRag: IRag | undefined;
     resolvedEmbedder: IEmbedder | undefined;
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder } = input;
+    await this.resolveAuthoritativeSnapshot();
     this._toolsRagHandle = await makeToolsRagHandle(
       this._sharedMcpClients ?? [],
       toolsRag,
       resolvedEmbedder,
       this.cfg.log,
+      this._namespacedTools
+        ? { namespacedTools: this._namespacedTools }
+        : undefined,
     );
   }
 
@@ -2107,6 +2431,21 @@ export class SmartServer {
     // (buildKnowledgeBackend); guard idempotently so the ctx field is always
     // populated even if buildServerCtx is ever reached before start() finishes.
     this.buildKnowledgeBackend();
+    // Per-session namespaced tool-client map (#244 Task 8): rebind the
+    // authoritative snapshot's provenance (`_toolProvenance`, resolved once at
+    // startup via `resolveAuthoritativeSnapshot()`) onto THIS session's own
+    // MCP clients, pairing by `slotIndex` from `scope.parts.mcpClientDescriptors`
+    // — never by array index (a filtered/reordered per-session client set would
+    // otherwise rebind to the wrong client). No provenance (no MCP / no
+    // collisions) leaves `toolClientMap` undefined so the pipeline's own
+    // fallback bridge (`buildMcpBridge(ctx.mcpClients, …)`) applies unchanged.
+    const toolClientMap = this._toolProvenance
+      ? rebindProvenanceToClients(
+          this._toolProvenance,
+          scope.parts.mcpClients,
+          scope.parts.mcpClientDescriptors,
+        )
+      : undefined;
     return createServerPipelineContext({
       resolveLlm: (role) => this.resolveRoleLlm(role),
       knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),
@@ -2148,6 +2487,7 @@ export class SmartServer {
       ragRegistry: scope.parts.ragRegistry,
       callMcp: (n, a, s) => this.callMcp(n, a, s),
       mcpClients: scope.parts.mcpClients,
+      ...(toolClientMap ? { toolClientMap } : {}),
       mcpFailureClassifier: this._mcpFailureClassifier,
       ...(this._toolLoopContextStrategyFactory
         ? {
@@ -2337,6 +2677,11 @@ export class SmartServer {
 
     // Thread the instance-level MCP failure classifier (DI/programmatic only).
     builder = builder.withMcpFailureClassifier(this._mcpFailureClassifier);
+
+    // Thread the tool-namespacing strategy (#244) so the startup builder's OWN
+    // namespaced snapshot (yaml-builder-connect path) honors the same rule as
+    // `resolveAuthoritativeSnapshot()`'s server-side fallback build below.
+    builder = builder.withToolNamespace(this._toolNamespace);
 
     // Tool-loop context strategy for the NON-controller pipelines (default / flat /
     // linear / dag / direct SmartAgent). Honor a consumer-injected factory; else

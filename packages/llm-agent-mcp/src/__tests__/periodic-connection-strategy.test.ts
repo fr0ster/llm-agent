@@ -174,4 +174,132 @@ describe('PeriodicConnectionStrategy', () => {
     );
     assert.ok(factory.closeCalls >= 1, 'close handles should have been called');
   });
+
+  it('forwards clientDescriptors and configuredSlotCount from the wrapped Lazy strategy', async () => {
+    const namedConfig: McpConnectionConfig = {
+      type: 'http',
+      url: 'http://host-a/mcp',
+      name: 'Alpha',
+    };
+    const factory = makeSuccessFactory();
+    const strategy = new PeriodicConnectionStrategy(
+      [namedConfig],
+      200,
+      undefined,
+      factory,
+    );
+
+    try {
+      await wait(80);
+
+      const result = await strategy.resolve([]);
+
+      assert.deepEqual(result.clientDescriptors, [
+        { slotIndex: 0, label: 'Alpha' },
+      ]);
+      assert.equal(result.configuredSlotCount, 1);
+    } finally {
+      await strategy.dispose();
+    }
+  });
+
+  it('toolsChanged is bidirectional across probes — reflects drop, gain, and same-slot reconnect', async () => {
+    function makeToggleClient(): IMcpClient & { healthy: boolean } {
+      let healthy = true;
+      return {
+        get healthy() {
+          return healthy;
+        },
+        set healthy(value: boolean) {
+          healthy = value;
+        },
+        async listTools(): Promise<Result<McpTool[], McpError>> {
+          return { ok: true, value: [] };
+        },
+        async callTool(): Promise<Result<McpToolResult, McpError>> {
+          return { ok: true, value: { content: 'ok' } };
+        },
+        async healthCheck(): Promise<Result<boolean, McpError>> {
+          return healthy
+            ? { ok: true, value: true }
+            : { ok: false, error: { message: 'down' } as McpError };
+        },
+      };
+    }
+
+    let reconnectable = true;
+    let current = makeToggleClient();
+    const factory: McpClientFactory = async () => {
+      if (!reconnectable) {
+        throw new Error('unreachable');
+      }
+      current = makeToggleClient();
+      return { client: current };
+    };
+
+    // Large interval — the automatic timer must not fire during the test; each
+    // probe is triggered manually via the private `_probe()` for determinism.
+    const strategy = new PeriodicConnectionStrategy(
+      [httpConfig],
+      10_000_000,
+      undefined,
+      factory,
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: test white-box access to force a deterministic probe cycle
+    const probe = () => (strategy as any)._probe() as Promise<void>;
+
+    // try/finally: the interval is set to a huge delay (never fires on its
+    // own) so a thrown assertion MUST still reach dispose(), or the dangling
+    // timer keeps the process — and the test run — alive.
+    try {
+      // Baseline: the constructor's initial probe connects the slot.
+      const baseline = await strategy.resolve([]);
+      assert.equal(baseline.clients.length, 1);
+
+      // (a) drop — health fails, reconnect also fails.
+      current.healthy = false;
+      reconnectable = false;
+      await probe();
+      const dropped = await strategy.resolve([]);
+      assert.equal(dropped.clients.length, 0);
+      assert.equal(dropped.toolsChanged, true, 'drop must flip toolsChanged');
+
+      // (b) gain — reconnect succeeds.
+      reconnectable = true;
+      await probe();
+      const gained = await strategy.resolve([]);
+      assert.equal(gained.clients.length, 1);
+      assert.equal(gained.toolsChanged, true, 'gain must flip toolsChanged');
+
+      // (c) same-slot reconnect within one probe — healthy before and after,
+      // but the client instance is replaced.
+      const priorClient = current;
+      current.healthy = false;
+      await probe();
+      const reconnected = await strategy.resolve([]);
+      assert.equal(reconnected.clients.length, 1);
+      assert.notEqual(
+        current,
+        priorClient,
+        'sanity check: new client instance',
+      );
+      assert.equal(
+        reconnected.toolsChanged,
+        true,
+        'same-slot reconnect must flip toolsChanged',
+      );
+
+      // (d) no change.
+      await probe();
+      const stable = await strategy.resolve([]);
+      assert.equal(stable.clients.length, 1);
+      assert.equal(
+        stable.toolsChanged,
+        false,
+        'no change must NOT flip toolsChanged',
+      );
+    } finally {
+      await strategy.dispose();
+    }
+  });
 });

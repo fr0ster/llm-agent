@@ -16,6 +16,10 @@ interface Slot {
   closeHandle?: () => Promise<void> | void;
   lastAttempt: number;
   healthy: boolean;
+  /** Bumped every time a NEW client is assigned to this slot (initial connect or
+   *  reconnect). Used to detect an in-place client replacement even when the
+   *  slot's healthy/unhealthy state is unchanged across a resolve() call. */
+  generation: number;
 }
 
 export class LazyConnectionStrategy
@@ -27,6 +31,12 @@ export class LazyConnectionStrategy
   private readonly _factory: McpClientFactory;
   private readonly _logger?: ILogger;
   private _resolving: Promise<McpConnectionResult> | null = null;
+  /** Signature of the last-returned `(slotIndex → generation)` set, used to
+   *  detect gain / loss / in-place reconnect across resolve() calls. Baseline
+   *  is `''` (matches the all-slots-down signature) so a config with zero
+   *  configured or zero currently-connectable slots does not spuriously report
+   *  a change on the very first resolve(). */
+  private _prevSig = '';
 
   constructor(
     configs: McpConnectionConfig[],
@@ -41,6 +51,7 @@ export class LazyConnectionStrategy
       config,
       lastAttempt: 0,
       healthy: false,
+      generation: 0,
     }));
   }
 
@@ -64,8 +75,6 @@ export class LazyConnectionStrategy
   }
 
   private async _doResolve(): Promise<McpConnectionResult> {
-    let anyNewlyHealthy = false;
-
     for (const slot of this._slots) {
       if (slot.client !== undefined) {
         const healthy = await this._checkHealth(slot.client);
@@ -98,9 +107,9 @@ export class LazyConnectionStrategy
         try {
           const result = await this._factory(slot.config);
           slot.client = result.client;
+          slot.generation += 1;
           slot.closeHandle = result.close;
           slot.healthy = true;
-          anyNewlyHealthy = true;
         } catch (err) {
           slot.healthy = false;
           // Surface WHY a target is down — otherwise operators chase "agent has no
@@ -120,13 +129,29 @@ export class LazyConnectionStrategy
       }
     }
 
-    const clients = this._slots
-      .filter((s) => s.healthy && s.client !== undefined)
-      .map((s) => s.client as IMcpClient);
+    const surviving = this._slots
+      .map((s, slotIndex) => ({ s, slotIndex }))
+      .filter(({ s }) => s.healthy && s.client !== undefined);
+    const clients = surviving.map(({ s }) => s.client as IMcpClient);
+    const clientDescriptors = surviving.map(({ s, slotIndex }) => ({
+      slotIndex,
+      ...(s.config.name ? { label: s.config.name } : {}),
+    }));
+    const configuredSlotCount = this._slots.length;
 
-    const toolsChanged = anyNewlyHealthy && !this._skipRevectorize;
+    // Change detection over (slotIndex → client generation). A new client for a
+    // slot bumps its generation, so a slot gained, lost, OR reconnected in place
+    // (client replaced, possibly with different tools) all change the
+    // signature — a set-only diff over healthy slot indices would miss the
+    // in-place reconnect (same index healthy before and after, different client).
+    const sig = surviving
+      .map(({ s, slotIndex }) => `${slotIndex}:${s.generation}`)
+      .join(',');
+    const changed = sig !== this._prevSig;
+    this._prevSig = sig;
+    const toolsChanged = changed && !this._skipRevectorize;
 
-    return { clients, toolsChanged };
+    return { clients, toolsChanged, clientDescriptors, configuredSlotCount };
   }
 
   private async _checkHealth(client: IMcpClient): Promise<boolean> {

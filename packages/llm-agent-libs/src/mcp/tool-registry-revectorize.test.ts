@@ -59,10 +59,12 @@ describe('McpToolRegistry reconnect revectorization', () => {
       'tool:0:Search',
       'tool:1:Search',
     ]);
-    // Name is in metadata, so retrieval recovers it regardless of the id.
-    for (const w of writes) {
-      assert.equal(toolNameFromRecord(w), 'Search');
-    }
+    // Reconnect revectorization runs the same namespacing builder as the
+    // call path (#244 Task 8), so each record decodes to its namespaced,
+    // callable name — not the shared bare "Search" that would still collide.
+    const byId = new Map(writes.map((w) => [w.id, toolNameFromRecord(w)]));
+    assert.equal(byId.get('tool:0:Search'), 's0__Search');
+    assert.equal(byId.get('tool:1:Search'), 's1__Search');
   });
 
   it('stops reconnect revectorization when the request signal is aborted', async () => {

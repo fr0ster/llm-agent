@@ -103,12 +103,43 @@ export function resolveRagSection(
     : undefined;
 }
 
+/** Namespace-prefix label charset — mirrors IToolNamespace's exposed-name
+ *  validation so a bad label fails at config parse, not at tool-listing time. */
+const MCP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * Validate `mcp[].name`: non-empty charset `^[a-zA-Z0-9_-]+$`, unique across
+ * all configured servers. Servers without a `name` are left alone — the
+ * namespace strategy falls back to `s${slotIndex}` for them.
+ */
+function validateMcpNames(entries: SmartServerMcpConfig[]): void {
+  const seen = new Set<string>();
+  entries.forEach((entry, index) => {
+    const name = entry.name;
+    if (name === undefined) return;
+    if (typeof name !== 'string' || !MCP_NAME_PATTERN.test(name)) {
+      throw new Error(
+        `Invalid mcp[${index}].name: ${JSON.stringify(name)} — must be non-empty and match ^[a-zA-Z0-9_-]+$`,
+      );
+    }
+    if (seen.has(name)) {
+      throw new Error(
+        `Duplicate mcp[].name: "${name}" is used by more than one server — labels must be unique.`,
+      );
+    }
+    seen.add(name);
+  });
+}
+
 export function resolveMcpSection(
   yaml: YamlConfig,
   args: Record<string, unknown>,
 ): SmartServerConfig['mcp'] {
   const rawMcp = yaml.mcp;
   const mcpIsArray = Array.isArray(rawMcp);
+  if (mcpIsArray) {
+    validateMcpNames(rawMcp as SmartServerMcpConfig[]);
+  }
   const mcpUrl = get(yaml, 'mcp', 'url') as string | undefined;
   const mcpCommand = get(yaml, 'mcp', 'command') as string | undefined;
   const mcpTypeRaw = mcpIsArray

@@ -19,6 +19,7 @@ import type {
   IToolCache,
   IToolCatalogReporter,
   IToolLoopContextStrategy,
+  IToolNamespace,
   IToolRecordKey,
   LlmFinishReason,
   LlmStreamChunk,
@@ -40,6 +41,7 @@ import {
   getStreamToolCallName,
   type IQueryExpander,
   isReadinessReporter,
+  mergeOfferedTools,
   NoopQueryExpander,
   NoopToolCache,
   normalizeExternalTools,
@@ -136,6 +138,9 @@ export interface SmartAgentDeps {
   toolCatalogStatus?: IToolCatalogReporter;
   /** Tool-record-key strategy, reused on reconnect revectorization. */
   toolRecordKey?: IToolRecordKey;
+  /** Tool-namespace strategy for the internal registry (resolve() +
+   *  reconnect revectorization). Default: {@link defaultToolNamespace}. */
+  toolNamespace?: IToolNamespace;
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
@@ -305,6 +310,7 @@ export class SmartAgent {
         requestLogger: this.requestLogger,
         logger: deps.logger,
         toolRecordKey: deps.toolRecordKey,
+        toolNamespace: deps.toolNamespace,
       },
     );
     this._mainLlm = deps.mainLlm;
@@ -870,7 +876,10 @@ export class SmartAgent {
         for (const [name, client] of refreshed.toolClientMap) {
           toolClientMap.set(name, client);
         }
-        currentTools = [...(refreshed.tools as LlmTool[]), ...externalTools];
+        currentTools = mergeOfferedTools(
+          refreshed.tools as LlmTool[],
+          externalTools,
+        );
         opts?.sessionLogger?.logStep('tools_refreshed', {
           iteration: iteration + 1,
           previous: prevNames,
@@ -976,10 +985,10 @@ export class SmartAgent {
                 const newMcpTools = refreshed.tools.filter((t) =>
                   newToolNames.has(t.name),
                 );
-                currentTools = [
-                  ...(newMcpTools as LlmTool[]),
-                  ...externalTools,
-                ];
+                currentTools = mergeOfferedTools(
+                  newMcpTools as LlmTool[],
+                  externalTools,
+                );
 
                 opts?.sessionLogger?.logStep('tools_reselected', {
                   iteration: iteration + 1,

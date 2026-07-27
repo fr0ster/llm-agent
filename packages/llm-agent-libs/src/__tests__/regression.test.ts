@@ -146,8 +146,12 @@ describe('Regression — fragmented stream tool arguments are accumulated by ind
   });
 });
 
-describe('Regression — duplicate tool name from two clients: first wins', () => {
-  it('second client toolA never called', async () => {
+describe('Regression — duplicate tool name from two clients: both reachable via namespacing', () => {
+  // Superseded by issue #244: colliding tool names used to silently dedupe to
+  // "first wins" (the second client's tool was never reachable). McpToolRegistry
+  // now exposes both under namespaced names (`s${slotIndex}__toolA`), each
+  // routing to its own client with the original name restored on callTool.
+  it('second client toolA is reachable via its namespaced name', async () => {
     const client1 = makeMcpClient(
       [{ name: 'toolA', description: 'A from client1', inputSchema: {} }],
       new Map([['toolA', { content: 'client1 result' }]]),
@@ -162,7 +166,7 @@ describe('Regression — duplicate tool name from two clients: first wins', () =
         {
           content: 'calling',
           finishReason: 'tool_calls',
-          toolCalls: [{ id: 'c1', name: 'toolA', arguments: {} }],
+          toolCalls: [{ id: 'c1', name: 's1__toolA', arguments: {} }],
         },
         { content: 'done', finishReason: 'stop' },
       ],
@@ -170,8 +174,8 @@ describe('Regression — duplicate tool name from two clients: first wins', () =
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
     const r = await agent.process('test');
     assert.ok(r.ok);
-    assert.equal(client1.callCount, 1, 'client1 should be called');
-    assert.equal(client2.callCount, 0, 'client2 should not be called');
+    assert.equal(client1.callCount, 0, 'client1 should not be called');
+    assert.equal(client2.callCount, 1, 'client2 should be called');
   });
 });
 

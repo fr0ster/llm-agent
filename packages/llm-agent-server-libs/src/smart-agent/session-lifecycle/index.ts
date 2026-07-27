@@ -13,6 +13,7 @@ import type {
   IMcpClient,
   IRag,
   IRagRegistry,
+  McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type SessionAgentParts,
@@ -51,6 +52,17 @@ export interface SessionLifecycleOptions {
   maxSessions: number;
   cookieName: string;
   mcpClients: IMcpClient[];
+  /**
+   * Per-slot descriptors paired with `mcpClients` (#244) — the shared/global
+   * set's provenance. Forwarded into `SessionAgentParts` on the shared
+   * (isolation-OFF or no-per-session-builder) branch so a FILTERED global
+   * client set (e.g. `LazyConnectionStrategy` dropped an unhealthy slot,
+   * active slots `[0,2]`) still carries the ORIGINAL `slotIndex` values
+   * instead of losing them to array-index re-derivation.
+   */
+  mcpClientDescriptors?: readonly McpClientDescriptor[];
+  /** Total configured `mcp[]` slots, paired with `mcpClientDescriptors` (#244). */
+  configuredSlotCount?: number;
   toolsRag: IRag | undefined;
   ragRegistry: IRagRegistry;
   buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
@@ -64,13 +76,17 @@ export interface SessionLifecycleOptions {
   onDispose?: (sessionId: string) => Promise<void>;
   /**
    * When present AND `!mcpSharedClient`, called once per session to build a
-   * fresh per-session MCP client set (`{ clients, close }`). The returned
-   * `close` is tracked by `sessionId` and invoked during session disposal
-   * (before `onDispose`). When absent, or when `mcpSharedClient` is `true`,
-   * the shared `mcpClients` array is used for every session.
+   * fresh per-session MCP client set (`{ clients, close }`, optionally
+   * `clientDescriptors`/`configuredSlotCount` — #244, e.g. the
+   * `buildSessionMcpClients` result). The returned `close` is tracked by
+   * `sessionId` and invoked during session disposal (before `onDispose`).
+   * When absent, or when `mcpSharedClient` is `true`, the shared `mcpClients`
+   * (+ `mcpClientDescriptors`) array is used for every session.
    */
   buildPerSessionMcpClients?: () => {
     clients: IMcpClient[];
+    clientDescriptors?: readonly McpClientDescriptor[];
+    configuredSlotCount?: number;
     close: () => Promise<void>;
   };
   /**
@@ -113,6 +129,26 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
       const built = opts.buildPerSessionMcpClients();
       closeBySession.set(identity.sessionId, built.close);
       return built.clients;
+    },
+    // Descriptor-aware seam (#244): mirrors `mcpClientFactory` above but also
+    // threads `clientDescriptors`/`configuredSlotCount` through, so downstream
+    // `SessionAgentParts` carry the STABLE slotIndex pairing on every branch —
+    // isolated per-session AND shared/global (including a FILTERED global set).
+    mcpClientFactoryWithDescriptors: (identity) => {
+      if (!usePerSession || !opts.buildPerSessionMcpClients) {
+        return {
+          clients: opts.mcpClients,
+          clientDescriptors: opts.mcpClientDescriptors,
+          configuredSlotCount: opts.configuredSlotCount,
+        };
+      }
+      const built = opts.buildPerSessionMcpClients();
+      closeBySession.set(identity.sessionId, built.close);
+      return {
+        clients: built.clients,
+        clientDescriptors: built.clientDescriptors,
+        configuredSlotCount: built.configuredSlotCount,
+      };
     },
     toolsRag: opts.toolsRag,
     ragRegistry: opts.ragRegistry,

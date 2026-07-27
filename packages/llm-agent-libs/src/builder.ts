@@ -34,17 +34,22 @@ import type {
   ISubAgent,
   ISubpromptClassifier,
   IToolCache,
+  IToolNamespace,
   IToolRecordKey,
   IToolSelectionStrategy,
+  LlmTool,
   McpConnectionConfig,
+  NamespaceClientInput,
   SmartAgentRagStores,
   SubAgentRegistry,
   ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  buildNamespacedTools,
   CircuitBreaker,
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
+  defaultToolNamespace,
   FallbackRag,
   type IEmbedder,
   InMemoryRag,
@@ -85,7 +90,11 @@ import {
 } from './coordinator/index.js';
 import { HistoryMemory } from './history/history-memory.js';
 import { HistorySummarizer } from './history/history-summarizer.js';
-import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
+import type {
+  IMcpConnectionStrategy,
+  McpClientDescriptor,
+  McpConnectionResult,
+} from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import { ToolCatalogStatusHolder } from './mcp/tool-catalog-status.js';
@@ -184,6 +193,7 @@ export class SmartAgentBuilder {
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
   private _mcpFailureClassifier?: IMcpFailureClassifier;
   private _toolRecordKey?: IToolRecordKey;
+  private _toolNamespace?: IToolNamespace;
   private _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
@@ -478,6 +488,17 @@ export class SmartAgentBuilder {
    *  retrieval still tells tools apart from skills. */
   withToolRecordKey(strategy: IToolRecordKey): this {
     this._toolRecordKey = strategy;
+    return this;
+  }
+
+  /** Inject a custom tool-namespace strategy — how a colliding MCP tool name
+   *  is renamed for LLM/RAG exposure. Default: {@link defaultToolNamespace}
+   *  (bare when unique, `${prefix}__${toolName}` on a collision, prefix =
+   *  the server's config `name` else `s${slotIndex}`). Reaches the internal
+   *  tool registry, startup vectorization, and the pipeline's per-request
+   *  tool refresh — all three read the SAME strategy instance. */
+  withToolNamespace(strategy: IToolNamespace): this {
+    this._toolNamespace = strategy;
     return this;
   }
 
@@ -948,8 +969,21 @@ export class SmartAgentBuilder {
     // skipped (no tools store, or a read-only one), which reads as "unknown".
     const toolCatalogStatus = new ToolCatalogStatusHolder();
     let mcpClients: IMcpClient[];
+    let mcpClientDescriptors: readonly McpClientDescriptor[] | undefined;
     const closeFns: Array<() => Promise<void>> = [];
     let connectionStrategy = this._connectionStrategy;
+    // Optional — ONLY populated on the auto-connect (YAML `mcp:`) branch below.
+    // Never access non-optionally: on the caller-provided-`mcpClients` branch
+    // (`withMcpClients()`) auto-connect + vectorization are skipped entirely,
+    // so no connection result — and no namespaced snapshot — exists.
+    let resolved: McpConnectionResult | undefined;
+    // The authoritative namespaced snapshot, built ONCE from a single
+    // `listTools()` pass — independent of RAG writability (#244 addendum).
+    // `vectorizeMcpTools` below consumes this SAME view rather than relisting.
+    let namespacedTools: readonly LlmTool[] | undefined;
+    let toolProvenance:
+      | ReadonlyMap<string, { slotIndex: number; originalName: string }>
+      | undefined;
 
     if (this._mcpClients) {
       // Caller-provided clients: skip auto-connect and vectorization
@@ -972,19 +1006,83 @@ export class SmartAgentBuilder {
           log ? { logger: log } : undefined,
         );
       }
-      const resolved = connectionStrategy
+      resolved = connectionStrategy
         ? await connectionStrategy.resolve([])
         : { clients: [] as IMcpClient[], toolsChanged: false };
       mcpClients = resolved.clients;
+      // Same snapshot as `mcpClients` above — paired so the pipeline context's
+      // `mcpClientDescriptors` never drifts relative to `mcpClients` across a
+      // reconnect (both refresh paths zip them by index at point-of-use).
+      mcpClientDescriptors = resolved.clientDescriptors;
+
+      // ---- Single listTools() pass, settled per client -------------------
+      // Preserve the ORIGINAL client index on a partial failure: build the
+      // per-client input index-preservingly (flatMap over the settled array
+      // aligned by position), NOT via filter().map() — a middle-client
+      // failure must not shift later slots' slotIndex.
+      const descs: readonly McpClientDescriptor[] =
+        resolved.clientDescriptors ??
+        mcpClients.map((_, i) => ({ slotIndex: i }));
+      const settled = await Promise.all(
+        mcpClients.map(async (client) => {
+          try {
+            const result = await client.listTools();
+            return result.ok
+              ? { ok: true as const, value: result.value }
+              : { ok: false as const };
+          } catch {
+            return { ok: false as const };
+          }
+        }),
+      );
+      let clientFailures = 0;
+      let total = 0;
+      const perClient: NamespaceClientInput[] = settled.flatMap((entry, i) => {
+        if (!entry.ok) {
+          clientFailures++;
+          return [];
+        }
+        total += entry.value.length;
+        return [
+          {
+            slotIndex: descs[i]?.slotIndex ?? i,
+            label: descs[i]?.label,
+            client: mcpClients[i],
+            tools: entry.value,
+          },
+        ];
+      });
+      const built = buildNamespacedTools(
+        perClient,
+        this._toolNamespace ?? defaultToolNamespace,
+      );
+      namespacedTools = built.tools;
+      toolProvenance = built.provenance;
+
       const toolSummary = await vectorizeMcpTools(
         mcpClients,
         toolsRag,
         requestLogger,
         log,
         this._toolRecordKey,
+        undefined,
+        {
+          descriptors: mcpClientDescriptors,
+          configuredSlotCount: resolved.configuredSlotCount,
+          toolNamespace: this._toolNamespace ?? defaultToolNamespace,
+          prebuiltView: {
+            tools: namespacedTools,
+            provenance: toolProvenance,
+            clientFailures,
+            total,
+          },
+        },
       );
       // Published only when defined: a skipped run must leave the holder empty
-      // rather than storing a zeroed summary.
+      // rather than storing a zeroed summary. Computing the snapshot above is
+      // unconditional; publishing a catalog status is NOT — it still happens
+      // ONLY through this guard, exactly as before (no writable store → no
+      // publish, even though the snapshot now always exists).
       if (toolSummary) toolCatalogStatus.publish(toolSummary);
     }
 
@@ -1140,6 +1238,8 @@ export class SmartAgentBuilder {
       classifier,
       assembler,
       mcpClients,
+      mcpClientDescriptors,
+      toolNamespace: this._toolNamespace,
       toolsRag,
       historyRag,
       ragStores,
@@ -1211,6 +1311,7 @@ export class SmartAgentBuilder {
         ...(connectionStrategy ? { connectionStrategy } : {}),
         toolCatalogStatus,
         ...(this._toolRecordKey ? { toolRecordKey: this._toolRecordKey } : {}),
+        ...(this._toolNamespace ? { toolNamespace: this._toolNamespace } : {}),
         ...(historyMemory ? { historyMemory } : {}),
         ...(historySummarizer ? { historySummarizer } : {}),
         ...(this._llmCallStrategy
@@ -1273,6 +1374,17 @@ export class SmartAgentBuilder {
       modelProvider,
       getApiAdapter: (name: string) => apiAdapters.get(name),
       listApiAdapters: () => [...apiAdapters.keys()],
+      // Absent (not just undefined-valued) on the caller-provided-`mcpClients`
+      // branch, where `resolved` is undefined and namespacing was never
+      // computed — matches the SmartAgentHandle field docs.
+      ...(resolved
+        ? {
+            namespacedTools,
+            toolProvenance,
+            mcpClientDescriptors: resolved.clientDescriptors,
+            configuredSlotCount: resolved.configuredSlotCount,
+          }
+        : {}),
     };
   }
 }

@@ -12,12 +12,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [20.9.0] — 2026-07-24
 
 Bundles every change merged since v20.8.0: the controller no-response safety-net
-(#243), a retry-classification fix (#239), and the v20.8.0 embedder follow-ups
+(#243), a retry-classification fix (#239), the v20.8.0 embedder follow-ups
 (#238 bulk upsert, #240 tool-record-key namespacing storage-level, #241
-`withCircuitBreaker` factory). No breaking changes — the new surfaces
+`withCircuitBreaker` factory), an SSE keep-alive watchdog (#246), and MCP tool
+call-path namespacing (#244), which closes the "known limitation" noted under
+#240 below. No breaking changes — the new surfaces
 (`IRagBackendWriter.upsertManyPrecomputedRaw`, `withCircuitBreaker`,
-`IToolRecordKey` / `SmartAgentBuilder.withToolRecordKey`, `ControlFailure.note`)
-are all additive.
+`IToolRecordKey` / `SmartAgentBuilder.withToolRecordKey`, `ControlFailure.note`,
+`IToolNamespace` / `SmartAgentBuilder.withToolNamespace`, `mcp[].name`) are all
+additive.
 
 ### Fixed
 
@@ -50,6 +53,22 @@ are all additive.
   tool-loop's own heartbeat — fixing a pre-existing busy loop on `0`/`NaN`. Under
   `withDagCoordinator` the finalizer remains the sole client-facing *content*
   source: a notice-only custom finalizer must re-emit `interpreterOutput`.
+- **Colliding MCP tool names are now individually callable, not unreachable
+  (#244).** Closes the "Known limitation" noted under #240 below. Tool
+  *selection* used to deduplicate by name — LLM tool-calling requires unique
+  names — so when two servers exposed the same tool name (e.g. both expose
+  `Search`), the second one's tool was silently unreachable regardless of the
+  #240 storage-level fix. `buildNamespacedTools` now renames only the
+  *colliding* exposed name (`${prefix}__${toolName}`, prefix = the server's
+  `mcp[].name` label else `s${slotIndex}`) and wraps the owning client
+  (`bindToolCallName`) so every executor's call — the flat tool-loop
+  (`ToolLoopHandler`/`executeToolBatchWithHeartbeat`), the mixed
+  internal/external async path (`fireInternalToolsAsync`), and the
+  coordinator's `SelfDispatch` tool-loop (`ICoordinatorContext.callTool`) — is
+  transparently unwrapped back to the tool's ORIGINAL bare name on the wire.
+  Both `ToolSelectHandler` (first load) and `ToolLoopHandler` (per-iteration
+  refresh) namespace through the same call, so a mid-run reconnect stays
+  consistent.
 
 ### Added
 
@@ -76,6 +95,55 @@ are all additive.
   tool names), so when two servers expose the same name the executor resolves it
   to the first client. Making a specific colliding tool callable needs tool-name
   namespacing across exposure/calling/executor (#244).
+- **`IToolNamespace` swappable naming strategy + `mcp[].name` durable prefix
+  (#244).** New `IToolNamespace.expose(ctx)` (`packages/llm-agent/src/interfaces/tool-namespace.ts`)
+  decides the LLM/RAG-visible name for an MCP tool; `ToolNamespaceContext`
+  carries `toolName`/`prefix`/`colliding`. Default `defaultToolNamespace` keeps
+  the bare name when unique and renames to `${prefix}__${toolName}` on a
+  collision, where `prefix` is the server's config `name` (new optional
+  `mcp[].name`, validated non-empty `^[a-zA-Z0-9_-]+$` and unique across
+  configured servers) or else `s${slotIndex}`. Inject a custom strategy via
+  `SmartAgentBuilder.withToolNamespace` — it reaches the internal tool
+  registry, startup vectorization, and the pipeline's per-request tool
+  refresh, all reading the SAME strategy instance. Additive and
+  backward-compatible: with no collision and no `mcp[].name`, every tool
+  keeps its bare name exactly as before.
+- **Internal↔external tool-name collision fails fast (#244).**
+  `mergeOfferedTools` (`@mcp-abap-adt/llm-agent`) throws when a
+  client-provided external tool's name matches an internal (already-
+  namespaced) MCP tool name, instead of silently letting `classifyToolCalls`
+  double-classify the call.
+- **`llm-agent-server-libs` pipelines route colliding tools too (#244
+  addendum).** The original #244 fix covered `llm-agent-libs`'s own
+  `McpToolRegistry` (the `flat`/`dag` pipelines' internal registry, already
+  namespaced); the `controller`, `linear`, and `stepper` server pipelines had
+  their own bare seams (`SmartServer.buildMcpBridge`, `makeToolsRagHandle`
+  keyed by bare name) that stayed unreachable. The server now computes the
+  exposed-name/collision snapshot exactly ONCE (`buildNamespacedTools` over
+  the boot client set, or a one-time server-side fallback build when the
+  startup builder never connects itself) and every consumer — the global
+  tools-RAG catalog, the controller's per-session `ctx.toolClientMap`, and
+  `SmartServer.callMcp` (the `linear`/`stepper` `ctx.callMcp` bridge) —
+  *rebinds* that same snapshot's provenance onto its own client set via the
+  shared `buildNamespacedMcpBridge`, instead of re-deriving names per seam.
+  **Isolation-preserving (#213):** the controller still dispatches to the
+  SESSION's own `scope.parts.mcpClients`; `callMcp` still dispatches to the
+  GLOBAL `_sharedMcpClients` — rebinding only changes which exposed name maps
+  to which client, never which client set a pipeline targets. A session-local
+  server that is unavailable stays a call-time classifier throw, never a
+  fallback to a stale bare name. **Fail-loud-preserving:** the shared bridge
+  keeps the exact classify/throw-vs-`isError` split `buildMcpBridge` already
+  had — an availability failure throws, a tool-level failure returns
+  `{ isError: true }`. `mcp[].name` labels now also reach the exposed name on
+  the session/seam producer paths (`buildSessionMcpClients`,
+  `connectMcpClientsWithDescriptorsFromConfig`), not just the yaml-builder
+  path. Two additive `BuildAgentDeps` DI seams: `connectMcpWithDescriptors`
+  (a `connectMcp` sibling that also reports per-slot `{slotIndex, label}`
+  descriptors, for a consumer's own MCP connection logic) and `toolNamespace`
+  (the same `IToolNamespace` reaching both the startup builder's snapshot and
+  the server's own fallback build). No writable tools-RAG store still yields
+  namespaced, selectable, callable tools — the snapshot build never depended
+  on RAG write capability.
 
 ## [20.8.0] — 2026-07-23
 

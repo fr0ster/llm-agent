@@ -1765,6 +1765,126 @@ class OptimisticClassifier implements IMcpFailureClassifier {
 
 ---
 
+## IToolNamespace
+
+**File:** `packages/llm-agent/src/interfaces/tool-namespace.ts` (v20.9.0+, #244)
+
+When two or more currently-active MCP clients expose a tool with the same name (e.g. two servers each expose `Search`), a plain name-keyed catalog can only keep one of them reachable — the second is either overwritten in the tools RAG store or unreachable at call time. `IToolNamespace` decides the LLM/RAG-visible ("exposed") name for each tool, so a genuine collision is renamed instead of dropped:
+
+```ts
+interface ToolNamespaceContext {
+  /** Original tool name the server exposes. */
+  toolName: string;
+  /** Prefix source resolved by the builder: the server's config `name`, else `s${slotIndex}`. */
+  prefix: string;
+  /** True when this tool name is exposed by more than one currently-active client. */
+  colliding: boolean;
+}
+
+interface IToolNamespace {
+  /** Name the LLM sees / RAG stores. Must be non-empty, `^[a-zA-Z0-9_-]+$`, <= 64 chars.
+   *  The builder validates this output — an invalid name fails fast. */
+  expose(ctx: ToolNamespaceContext): string;
+}
+```
+
+### Default behavior
+
+`defaultToolNamespace` keeps the bare name when it is unique and renames only on a collision, joining prefix and tool name with a `__` separator:
+
+```ts
+const defaultToolNamespace: IToolNamespace = {
+  expose: ({ toolName, prefix, colliding }): string =>
+    colliding ? `${prefix}__${toolName}` : toolName,
+};
+```
+
+`prefix` comes from the server's config `name` (`mcp[].name` in YAML / `McpConnectionConfig.name` programmatically) when set, else `s${slotIndex}` (the server's stable configured-array position). `mcp[].name` must be non-empty, match `^[a-zA-Z0-9_-]+$`, and be unique across all configured servers — an invalid or duplicate label fails config parsing before any connection is attempted. Two servers with `mcp: [{ ..., name: primary }, { ..., name: secondary }]` both exposing `Search` yield `primary__Search` / `secondary__Search`; without `name`, the same collision yields `s0__Search` / `s1__Search`.
+
+**UX note:** the model only ever sees a namespaced name on a genuine collision. A uniquely-named tool from a single server, or from several servers with no overlapping names, is always exposed bare — this mechanism is invisible until a collision actually happens.
+
+`buildNamespacedTools` (in `@mcp-abap-adt/llm-agent`) is the single call site every consumer of this strategy shares: the internal tool registry (`McpToolRegistry.resolve()`), startup vectorization (`vectorizeMcpTools`), and the pipeline's per-request tool handlers (`ToolSelectHandler` first load, `ToolLoopHandler` per-iteration refresh) all namespace through it, so a custom strategy set via `withToolNamespace` below is honored everywhere a tool name can be exposed. It also wraps the owning client with `bindToolCallName` for every renamed tool, so `toolClientMap.get(exposedName).callTool(exposedName, ...)` transparently calls the underlying server with the tool's ORIGINAL bare name — no executor call site (the tool-loop, `fireInternalToolsAsync`, or the coordinator's `callTool`) needs to know namespacing happened.
+
+Fail-fast guards inside `buildNamespacedTools`: a `slotIndex` reused across two input entries throws (a buggy custom `IMcpConnectionStrategy`); an `expose()` output that is empty, over 64 chars, or does not match `^[a-zA-Z0-9_-]+$` throws; and if the final exposed name set still collides (e.g. a custom strategy that returns the same name for two different tools) the builder throws asking for distinct `mcp[].name` labels.
+
+Separately, `mergeOfferedTools` (also in `@mcp-abap-adt/llm-agent`) fails fast when a client-provided **external** tool's name matches an **internal** (already-namespaced) MCP tool name — the offered tool list must stay unique so `classifyToolCalls` never double-classifies a call; rename the external tool instead.
+
+### Custom namespace example
+
+```ts
+import type { IToolNamespace } from '@mcp-abap-adt/llm-agent';
+
+// Uppercase the prefix on a collision — otherwise identical to the default.
+const shoutingNamespace: IToolNamespace = {
+  expose: ({ toolName, prefix, colliding }) =>
+    colliding ? `${prefix.toUpperCase()}__${toolName}` : toolName,
+};
+
+// Reaches the internal registry, startup vectorization, and the pipeline's
+// per-request tool refresh — all three read the SAME strategy instance.
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .withToolNamespace(shoutingNamespace)
+  .build();
+```
+
+### On the server (`llm-agent-server-libs`, #244 addendum)
+
+The library-level mechanism above covers `flat`/`dag` (they route MCP through the per-session agent's own internal `McpToolRegistry`, already namespaced). `SmartServer`'s other pipelines — `controller`, `linear`, `stepper` — have their own seams (`SmartServer.buildMcpBridge`/`callMcp`, the controller's own bridge, `makeToolsRagHandle`'s catalog) that route independently of the builder. `SmartServer` computes the SAME authoritative `{ tools, provenance }` snapshot exactly once — either harvested from the startup builder when it owns the MCP connection itself (the plain YAML `mcp:` path, no DI seam, no ready clients), or built once server-side via `buildNamespacedTools` over `_sharedMcpClients` when a consumer/seam supplies ready clients — and every seam **rebinds** that snapshot's `provenance` onto its OWN client set (`rebindProvenanceToClients`, pairing by `slotIndex` from the client descriptors, never by array index) through one shared `buildNamespacedMcpBridge(toolClientMap, classifier)`. No seam re-lists or re-derives names.
+
+Two additive `BuildAgentDeps` fields (`packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`):
+
+```ts
+interface BuildAgentDeps {
+  // ... existing fields (makeLlm, connectMcp, mcpClients, ...)
+
+  /** The SAME IToolNamespace instance the library-level withToolNamespace()
+   *  seam consumes. Reaches BOTH the startup builder's own snapshot (yaml
+   *  path) and SmartServer's own server-side fallback build (seam path), so
+   *  whichever source is authoritative honors the custom naming rule.
+   *  Default: defaultToolNamespace. */
+  toolNamespace?: IToolNamespace;
+
+  /** A connectMcp sibling that ALSO reports per-slot descriptors, so a
+   *  consumer's own MCP connection logic can participate in namespacing +
+   *  mcp[].name-style labels. Takes precedence over a bare connectMcp when
+   *  both are injected; a bare connectMcp still works — its clients get
+   *  synthesized array-index descriptors (slotIndex only, no label). */
+  connectMcpWithDescriptors?: (
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ) => Promise<{
+    clients: IMcpClient[];
+    clientDescriptors?: readonly { slotIndex: number; label?: string }[];
+    configuredSlotCount?: number;
+  }>;
+}
+```
+
+```ts
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server-libs';
+
+const server = new SmartServer(
+  { mcp: [{ type: 'http', url: 'https://a', name: 'primary' }, { type: 'http', url: 'https://b', name: 'secondary' }] },
+  {
+    toolNamespace: shoutingNamespace, // same strategy shape as above
+    connectMcpWithDescriptors: async (mcpCfg) => {
+      // ... a consumer's own connection logic, returning
+      // { clients, clientDescriptors: [{slotIndex, label}, ...], configuredSlotCount }
+    },
+  },
+);
+```
+
+**Isolation-preserving (#213):** rebinding only changes which exposed name maps to which client — it never changes WHICH client set a seam targets. The controller still dispatches to the SESSION's own `scope.parts.mcpClients` (fresh per-session instances); `SmartServer.callMcp` (the `linear`/`stepper` `ctx.callMcp` bridge) still dispatches to the GLOBAL `_sharedMcpClients`. A session-local server that is unavailable is a call-time classifier THROW (fail-loud, same `IMcpFailureClassifier` split as `buildMcpBridge` always had) — never a silent fallback to a stale bare name, and never conflated with a genuinely-unknown tool name (`{ isError: true, text: "Tool not found: <name>" }`, reserved for a name absent from the map entirely).
+
+**Frozen-snapshot accepted consequence:** the authoritative snapshot is built once (at boot / infra-build), so a tool that first *appears* after a post-boot MCP reconnect is not routable on the controller/linear/stepper seams until the process restarts — the deliberate name-stability tradeoff the collision fix rests on (`buildMcpBridge` used to re-list per call and tolerated it). `flat`/`dag` are unaffected — their per-session internal `McpToolRegistry` still refreshes on `toolsChanged`.
+
+**No-writable-RAG deployments:** the snapshot build never depends on a writable tools-RAG store — a deployment with `rag:` absent (or a read-only store) still gets a namespaced, selectable, callable catalog. A persisted namespaced RAG record whose exposed name is not in the CURRENT authoritative catalog (stale/foreign — e.g. from a since-removed server) is skipped by the catalog lookup, never surfaced and never called.
+
+See [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the symptom this fixes on the server pipelines.
+
+---
+
 ## IReadinessReporter — readiness gate (v20.x+)
 
 **File:** `packages/llm-agent/src/interfaces/readiness-reporter.ts`

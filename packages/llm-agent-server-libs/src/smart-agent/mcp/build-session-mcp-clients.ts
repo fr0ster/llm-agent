@@ -1,9 +1,10 @@
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import type { IMcpClient, McpClientDescriptor } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import type { SmartServerMcpConfig } from '../smart-server.js';
+import type { McpClientsWithDescriptors } from './mcp-clients-with-descriptors.js';
 
 /**
  * Decide whether MCP clients should be isolated per session (#213). Per-session
@@ -44,18 +45,29 @@ export function serverOwnsMcpConnection(o: {
  * `callTool`/`listTools`) and does NOT vectorize (the caller reuses the shared
  * global tool catalog via the builder's provided-clients path).
  *
- * Returns `{ clients, close }`: `close()` disconnects the wrappers this helper
- * created — the only place that owns them. `IMcpClient`/`McpClientAdapter` do
- * not expose `disconnect`; the wrapper does.
+ * Returns `{ clients, clientDescriptors, configuredSlotCount, close }`:
+ * `clientDescriptors[i]` (`{ slotIndex: i, label: cfg[i].name }`) describes
+ * `clients[i]` — stable per-slot identity for the namespacing layer (#244).
+ * `close()` disconnects the wrappers this helper created — the only place
+ * that owns them. `IMcpClient`/`McpClientAdapter` do not expose `disconnect`;
+ * the wrapper does.
  */
 export function buildSessionMcpClients(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
-): { clients: IMcpClient[]; close: () => Promise<void> } {
-  if (!mcpCfg) return { clients: [], close: async () => {} };
+): McpClientsWithDescriptors & { close: () => Promise<void> } {
+  if (!mcpCfg) {
+    return {
+      clients: [],
+      clientDescriptors: [],
+      configuredSlotCount: 0,
+      close: async () => {},
+    };
+  }
   const list = Array.isArray(mcpCfg) ? mcpCfg : [mcpCfg];
   const wrappers: MCPClientWrapper[] = [];
   const clients: IMcpClient[] = [];
-  for (const cfg of list) {
+  const clientDescriptors: McpClientDescriptor[] = [];
+  list.forEach((cfg, i) => {
     const wrapper =
       cfg.type === 'stdio'
         ? new MCPClientWrapper({
@@ -74,9 +86,12 @@ export function buildSessionMcpClients(
           });
     wrappers.push(wrapper);
     clients.push(new McpClientAdapter(wrapper));
-  }
+    clientDescriptors.push({ slotIndex: i, label: cfg.name });
+  });
   return {
     clients,
+    clientDescriptors,
+    configuredSlotCount: list.length,
     close: async () => {
       for (const w of wrappers) {
         try {

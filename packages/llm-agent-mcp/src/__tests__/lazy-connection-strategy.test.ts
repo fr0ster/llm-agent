@@ -376,6 +376,153 @@ describe('LazyConnectionStrategy.isReady()', () => {
   });
 });
 
+describe('LazyConnectionStrategy — clientDescriptors / configuredSlotCount', () => {
+  it('reports stable slotIndex (config position), not the filtered active-array position', async () => {
+    const cfg0: McpConnectionConfig = {
+      type: 'http',
+      url: 'http://host-0',
+      name: 'Alpha',
+    };
+    const cfg1: McpConnectionConfig = {
+      type: 'http',
+      url: 'http://host-1',
+      name: 'Beta',
+    };
+    const cfg2: McpConnectionConfig = {
+      type: 'http',
+      url: 'http://host-2',
+      name: 'Gamma',
+    };
+
+    const factory: McpClientFactory = async (config) => {
+      if (config.url === cfg1.url) {
+        throw new Error('host-1 unreachable');
+      }
+      return { client: makeHealthyClient() };
+    };
+
+    const strategy = new LazyConnectionStrategy(
+      [cfg0, cfg1, cfg2],
+      { cooldownMs: 0 },
+      factory,
+    );
+
+    const result = await strategy.resolve([]);
+
+    assert.equal(result.clients.length, 2);
+    assert.deepEqual(result.clientDescriptors, [
+      { slotIndex: 0, label: 'Alpha' },
+      { slotIndex: 2, label: 'Gamma' },
+    ]);
+    assert.equal(result.configuredSlotCount, 3);
+  });
+
+  it('omits label when config.name is not set', async () => {
+    const strategy = new LazyConnectionStrategy(
+      [httpConfig],
+      { cooldownMs: 0 },
+      makeSuccessFactory(),
+    );
+
+    const result = await strategy.resolve([]);
+
+    assert.deepEqual(result.clientDescriptors, [{ slotIndex: 0 }]);
+  });
+});
+
+describe('LazyConnectionStrategy — bidirectional toolsChanged', () => {
+  function makeToggleClient(): IMcpClient & { healthy: boolean } {
+    let healthy = true;
+    return {
+      get healthy() {
+        return healthy;
+      },
+      set healthy(value: boolean) {
+        healthy = value;
+      },
+      async listTools(): Promise<Result<McpTool[], McpError>> {
+        return { ok: true, value: [] };
+      },
+      async callTool(): Promise<Result<McpToolResult, McpError>> {
+        return { ok: true, value: { content: 'ok' } };
+      },
+      async healthCheck(): Promise<Result<boolean, McpError>> {
+        return healthy
+          ? { ok: true, value: true }
+          : { ok: false, error: { message: 'down' } as McpError };
+      },
+    };
+  }
+
+  it('fires on a slot drop, a slot gain, and a same-slot reconnect; stays false when nothing changes', async () => {
+    const clientA = makeToggleClient();
+
+    let bReconnectable = true;
+    let bClient = makeToggleClient();
+    const factory: McpClientFactory = async (config) => {
+      if (config.url === httpConfig.url) {
+        return { client: clientA };
+      }
+      // http2Config (slot B)
+      if (!bReconnectable) {
+        throw new Error('host-b unreachable');
+      }
+      bClient = makeToggleClient();
+      return { client: bClient };
+    };
+
+    const strategy = new LazyConnectionStrategy(
+      [httpConfig, http2Config],
+      { cooldownMs: 0 },
+      factory,
+    );
+
+    // Baseline: both slots connect.
+    const baseline = await strategy.resolve([]);
+    assert.equal(baseline.clients.length, 2);
+
+    // (a) slot B drops (health fails, reconnect also fails) — a pure loss.
+    bClient.healthy = false;
+    bReconnectable = false;
+    const dropped = await strategy.resolve([]);
+    assert.equal(dropped.clients.length, 1);
+    assert.equal(dropped.toolsChanged, true, 'drop must flip toolsChanged');
+
+    // (b) slot B comes back — a pure gain.
+    bReconnectable = true;
+    const gained = await strategy.resolve([]);
+    assert.equal(gained.clients.length, 2);
+    assert.equal(gained.toolsChanged, true, 'gain must flip toolsChanged');
+
+    // (c) slot B's client is found unhealthy and reconnects to a NEW client
+    // within the SAME resolve() call — the healthy-slot-index set (0,1) is
+    // unchanged across the call, but the client instance is replaced.
+    const priorBClient = bClient;
+    bClient.healthy = false;
+    const reconnected = await strategy.resolve([]);
+    assert.equal(reconnected.clients.length, 2);
+    assert.notEqual(
+      bClient,
+      priorBClient,
+      'sanity check: slot B got a genuinely new client instance',
+    );
+    assert.equal(
+      reconnected.toolsChanged,
+      true,
+      'same-slot reconnect must flip toolsChanged even though the healthy set is unchanged',
+    );
+
+    // (d) nothing changes — no drop, no gain, no reconnect.
+    const stable = await strategy.resolve([]);
+    assert.equal(stable.clients.length, 2);
+    assert.equal(
+      stable.toolsChanged,
+      false,
+      'no change must NOT flip toolsChanged',
+    );
+  });
+});
+
 describe('LazyConnectionStrategy — closes stale transport on unhealthy reconnect', () => {
   it('calls the old close handle before clearing/reconnecting an unhealthy client', async () => {
     let healthy = true;

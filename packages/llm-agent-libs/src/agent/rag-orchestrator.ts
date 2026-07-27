@@ -9,6 +9,7 @@ import type {
   Subprompt,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  mergeOfferedTools,
   OrchestratorError,
   QueryEmbedding,
   TextOnlyEmbedding,
@@ -233,7 +234,10 @@ export class RagOrchestrator implements IRagOrchestrator {
       };
       // D4: external (client) tools are always offered regardless of mode;
       // mode governs only the worker's INTERNAL execution posture.
-      finalTools = [...(selectedMcpTools as LlmTool[]), ...externalTools];
+      finalTools = mergeOfferedTools(
+        selectedMcpTools as LlmTool[],
+        externalTools,
+      );
       opts?.sessionLogger?.logStep('external_tools_merge', {
         mode,
         mcpCount: selectedMcpTools.length,

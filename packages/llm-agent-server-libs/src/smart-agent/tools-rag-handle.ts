@@ -21,22 +21,33 @@ export async function makeToolsRagHandle(
   toolsRag: IRag | undefined,
   resolvedEmbedder: IEmbedder | undefined,
   log?: (event: Record<string, unknown>) => void,
+  namespaced?: { namespacedTools: readonly LlmTool[] },
 ): Promise<IToolsRagHandle> {
   const stepperMcpClients = clients ?? [];
   let catalogCache: Map<string, LlmTool> | undefined;
   const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
     if (catalogCache) return catalogCache;
     const catalog = new Map<string, LlmTool>();
-    await Promise.allSettled(
-      stepperMcpClients.map(async (client) => {
-        const result = await client.listTools();
-        if (result.ok) {
-          for (const t of result.value) {
-            if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
+    if (namespaced) {
+      // A pre-built snapshot is authoritative: key the catalog by the EXPOSED
+      // (namespaced) name so a namespaced RAG record maps back to it. Do NOT
+      // also list clients bare here — that would reintroduce bare/exposed
+      // name collisions this snapshot was built to resolve.
+      for (const t of namespaced.namespacedTools) {
+        if (!catalog.has(t.name)) catalog.set(t.name, t);
+      }
+    } else {
+      await Promise.allSettled(
+        stepperMcpClients.map(async (client) => {
+          const result = await client.listTools();
+          if (result.ok) {
+            for (const t of result.value) {
+              if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
+            }
           }
-        }
-      }),
-    );
+        }),
+      );
+    }
     catalogCache = catalog;
     return catalog;
   };

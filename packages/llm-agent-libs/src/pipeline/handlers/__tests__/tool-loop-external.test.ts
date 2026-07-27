@@ -16,12 +16,14 @@ import { test } from 'node:test';
 import type {
   CallOptions,
   ILlm,
+  IMcpClient,
   IRequestLogger,
   LlmCallEntry,
   LlmError,
   LlmResponse,
   LlmStreamChunk,
   LlmTool,
+  McpTool,
   Message,
   OnPartial,
   RagQueryEntry,
@@ -427,4 +429,199 @@ test('hit: matched pair injected, loop continues, no external chunk leaked', asy
     );
   });
   assert.equal(leaked.length, 0, 'resumed external call must NOT be surfaced');
+});
+
+// ---------------------------------------------------------------------------
+// Task 9 (#244) — mergeOfferedTools fail-fast at the tool-loop refresh merge.
+//
+// The per-iteration "refresh MCP tools" path (`ToolLoopHandler`, iteration > 0)
+// re-lists every mcpClient and merges the (possibly namespaced) internal tools
+// with `ctx.externalTools`. Before Task 9 this was a bare
+// `[...internal, ...external]` concat: a client-provided external tool sharing
+// a name with an internal (exposed) tool silently produced a duplicate-named
+// entry in the offered tools array, which lets `classifyToolCalls` treat a
+// call to that name as BOTH internal and external non-deterministically.
+// `mergeOfferedTools` must fail fast instead.
+//
+// Both cases drive the loop through exactly two iterations: iteration 0 calls
+// a pre-seeded bare `Search` tool (executed via a pre-populated
+// `toolClientMap`, so no refresh is needed yet); iteration 1 is `iteration >
+// 0`, so the refresh block runs FIRST — re-listing `ctx.mcpClients` and
+// merging the result with `ctx.externalTools` — before any second LLM call
+// happens.
+// ---------------------------------------------------------------------------
+
+function makeSearchMcpClient(): IMcpClient {
+  return {
+    async listTools() {
+      return {
+        ok: true as const,
+        value: [
+          { name: 'Search', description: 'search', inputSchema: {} },
+        ] as McpTool[],
+      };
+    },
+    async callTool() {
+      return { ok: true, value: { content: 'found' } };
+    },
+  } as IMcpClient;
+}
+
+/**
+ * Drives `ToolLoopHandler` through exactly two iterations, seeding
+ * `ctx.mcpClients` with `clientCount` clients that all expose a bare `Search`
+ * tool (so `clientCount >= 2` produces the namespaced `s0__Search` /
+ * `s1__Search` pair per `buildNamespacedTools`'s collision rule, while
+ * `clientCount === 1` keeps the bare `Search` name), and offering
+ * `externalTools` alongside them.
+ *
+ * Iteration 0 calls a DIFFERENT pre-seeded internal tool (`Other`, unrelated
+ * to `externalTools`) purely to advance the loop to iteration 1 without
+ * itself hitting the classification the refresh merge is meant to guard —
+ * the refresh at iteration 1 is what produces the (possibly namespaced)
+ * `Search` name(s) that collide with `externalTools`.
+ */
+function makeRefreshCollisionCtx(
+  clientCount: number,
+  externalTools: LlmTool[],
+): PipelineContext {
+  const clients = Array.from({ length: clientCount }, () =>
+    makeSearchMcpClient(),
+  );
+
+  const streams: Array<() => AsyncIterable<Result<LlmStreamChunk, LlmError>>> =
+    [
+      async function* () {
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: [
+              { index: 0, id: 'tc_1', name: 'Other', arguments: '{}' },
+            ],
+            finishReason: 'tool_calls',
+          },
+        } as Result<LlmStreamChunk, LlmError>;
+      },
+      async function* () {
+        yield {
+          ok: true,
+          value: { content: 'done', finishReason: 'stop' },
+        } as Result<LlmStreamChunk, LlmError>;
+      },
+    ];
+  let callIdx = 0;
+
+  const otherTool: LlmTool = {
+    name: 'Other',
+    description: 'other',
+    inputSchema: {},
+  } as unknown as LlmTool;
+
+  return {
+    config: {
+      maxIterations: 5,
+      maxToolCalls: 5,
+      heartbeatIntervalMs: 5000,
+      mode: 'smart',
+      // refreshToolsPerIteration defaults on (undefined !== false)
+    } as PipelineContext['config'],
+    options: {} as CallOptions,
+    sessionId: 'loop-namespace-collision',
+    mcpClients: clients,
+    mainLlm: {
+      model: 'stub',
+      async chat(): Promise<Result<LlmResponse, LlmError>> {
+        return { ok: true, value: { content: '', finishReason: 'stop' } };
+      },
+      async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+        yield {
+          ok: true,
+          value: { content: 'stub', finishReason: 'stop' },
+        } as Result<LlmStreamChunk, LlmError>;
+      },
+    } as ILlm,
+    inputText: 'search',
+    history: [] as Message[],
+    assembledMessages: [
+      { role: 'user' as const, content: 'search' },
+    ] as Message[],
+    // Seeded (pre-refresh) state: only the unrelated `Other` tool, bound to
+    // client 0 — kept disjoint from `externalTools` on purpose (see doc above).
+    activeTools: [otherTool],
+    externalTools,
+    selectedTools: [] as LlmTool[],
+    mcpTools: [] as McpTool[],
+    toolClientMap: new Map<string, IMcpClient>([['Other', clients[0]]]),
+    toolCache: new NoopToolCache(),
+    ragStores: {},
+    timing: [],
+    pendingToolResults: new PendingToolResultsRegistry(),
+    toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
+    requestLogger: new NoopLogger(),
+    metrics: {
+      llmCallCount: { add() {} },
+      llmCallLatency: { record() {} },
+      toolCallCount: { add() {} },
+      toolCacheHitCount: { add() {} },
+    } as unknown as PipelineContext['metrics'],
+    tracer: {
+      startSpan: () => makeSpan(),
+    } as unknown as PipelineContext['tracer'],
+    sessionManager: {
+      addTokens() {},
+      isOverBudget: () => false,
+      reset() {},
+      totalTokens: 0,
+    } as unknown as PipelineContext['sessionManager'],
+    outputValidator: {
+      async validate() {
+        return { ok: true as const, value: { valid: true } };
+      },
+    } as unknown as PipelineContext['outputValidator'],
+    llmCallStrategy: {
+      call(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+        const fn = streams[callIdx] ?? streams[streams.length - 1];
+        callIdx += 1;
+        return fn();
+      },
+    } as unknown as PipelineContext['llmCallStrategy'],
+    yield() {},
+  } as unknown as PipelineContext;
+}
+
+test('collision: external tool named the same as a bare internal tool throws the mergeOfferedTools diagnostic', async () => {
+  // A single mcpClient exposing `Search` → buildNamespacedTools keeps the bare
+  // name (no collision across clients). The external tool is ALSO named
+  // `Search` — an internal/external name collision at the refresh merge.
+  const ctx = makeRefreshCollisionCtx(1, [
+    {
+      name: 'Search',
+      description: '[client-provided] external search',
+      inputSchema: { type: 'object', properties: {} },
+    } as unknown as LlmTool,
+  ]);
+
+  await assert.rejects(
+    () => new ToolLoopHandler().execute(ctx, {}, makeSpan()),
+    /tool "Search" is both an internal MCP tool.*and a client-provided external tool/,
+  );
+});
+
+test('collision: external tool named the same as a generated s0__Search throws the mergeOfferedTools diagnostic', async () => {
+  // TWO mcpClients both exposing `Search` → buildNamespacedTools namespaces the
+  // collision into `s0__Search` / `s1__Search`. The external tool is named
+  // exactly `s0__Search` — colliding with the GENERATED internal name.
+  const ctx = makeRefreshCollisionCtx(2, [
+    {
+      name: 's0__Search',
+      description: '[client-provided] external search',
+      inputSchema: { type: 'object', properties: {} },
+    } as unknown as LlmTool,
+  ]);
+
+  await assert.rejects(
+    () => new ToolLoopHandler().execute(ctx, {}, makeSpan()),
+    /tool "s0__Search" is both an internal MCP tool.*and a client-provided external tool/,
+  );
 });
