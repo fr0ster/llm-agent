@@ -329,3 +329,44 @@ test('fallback build: middle-client listTools() failure keeps the surviving thir
   assert.ok(server._toolsRagHandle?.lookup('B'));
   assert.ok(server._toolsRagHandle?.lookup('A'));
 });
+
+// ---------------------------------------------------------------------------
+// 5. Spec §4 observability — a partial listTools() failure in the server-side
+//    fallback build must be LOGGED (aligned with vectorizeMcpTools's
+//    `clientFailures` reporting), never a silent drop.
+// ---------------------------------------------------------------------------
+
+test('fallback build: a middle-client listTools() failure emits ONE aggregated clientFailures log event, snapshot still index-preserving', async () => {
+  const c0 = fakeMcpClient(['A']);
+  const c1 = fakeMcpClient(['Broken'], { fail: true });
+  const c2 = fakeMcpClient(['B']);
+  const events: Record<string, unknown>[] = [];
+  const server = new SmartServer({
+    log: (e) => events.push(e),
+  }) as unknown as Internals;
+
+  await server.buildSharedPipelineInfra({
+    toolsRag: undefined,
+    resolvedEmbedder: undefined,
+    mcpClients: [c0, c1, c2],
+  });
+
+  const failureEvents = events.filter(
+    (e) =>
+      typeof e.clientFailures === 'number' && (e.clientFailures as number) > 0,
+  );
+  assert.equal(
+    failureEvents.length,
+    1,
+    `expected exactly one aggregated client-failure log event, got: ${JSON.stringify(events)}`,
+  );
+  assert.equal(failureEvents[0]?.clientFailures, 1);
+  assert.equal(failureEvents[0]?.clientCount, 3);
+
+  // The snapshot itself must be unaffected by the added log call — surviving
+  // clients keep their original index (no shift on a middle-client failure).
+  assert.equal(server._toolProvenance?.get('A')?.slotIndex, 0);
+  assert.equal(server._toolProvenance?.get('B')?.slotIndex, 2);
+  assert.ok(server._toolsRagHandle?.lookup('A'));
+  assert.ok(server._toolsRagHandle?.lookup('B'));
+});

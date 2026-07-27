@@ -2266,6 +2266,20 @@ export class SmartServer {
     const built = buildNamespacedTools(perClient, this._toolNamespace);
     this._namespacedTools = built.tools;
     this._toolProvenance = built.provenance;
+
+    // Spec §4: a partial listTools() failure must be LOGGED (aligned with
+    // vectorizeMcpTools's `clientFailures` reporting), never a silent drop —
+    // this snapshot is the ONLY source when there is no writable tools RAG,
+    // in which case vectorizeMcpTools never runs and never logs either.
+    const clientFailures = settled.filter((entry) => !entry.ok).length;
+    if (clientFailures > 0) {
+      this.cfg.log?.({
+        event: 'authoritative_snapshot_client_failures',
+        message: `resolveAuthoritativeSnapshot: ${clientFailures} client(s) failed to list tools`,
+        clientFailures,
+        clientCount: clients.length,
+      });
+    }
   }
 
   /**
