@@ -26,14 +26,19 @@ import type {
   ISkillManager,
   ISkillPluginHost,
   ISmartAgent,
+  IToolNamespace,
   IToolsRagHandle,
+  LlmTool,
   LoadedPlugins,
   McpCallResult,
   McpClientDescriptor,
+  NamespaceClientInput,
   PluginExports,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  buildNamespacedTools,
+  defaultToolNamespace,
   type IAuxiliaryMcpTools,
   type IMcpFailureClassifier,
   type IRag,
@@ -402,6 +407,16 @@ export interface BuildAgentDeps {
    *  Threaded onto `IPipelineContext.waitStrategy`; the controller pipeline
    *  falls back to `DefaultWaitStrategy` when absent. */
   waitStrategy?: IWaitStrategy;
+  /**
+   * Consumer-swappable tool-namespacing strategy (#244) — decides how a
+   * colliding MCP tool name is renamed for LLM/RAG exposure. Threaded onto
+   * the startup builder (`withToolNamespace`) so the YAML-builder-connect
+   * path's own namespaced snapshot honors it, AND reused by the server's own
+   * `resolveAuthoritativeSnapshot()` fallback build (seam / consumer-builder
+   * path) so both snapshot sources agree on the SAME naming rule. Default:
+   * {@link defaultToolNamespace}.
+   */
+  toolNamespace?: IToolNamespace;
 }
 
 /**
@@ -804,6 +819,30 @@ export class SmartServer {
    */
   private _configuredSlotCount?: number;
   /**
+   * The ONE authoritative namespaced tool catalog snapshot (#244 Task 6),
+   * fed to the tools-RAG handle (`makeToolsRagHandle`'s `namespaced` param).
+   * Populated from either source:
+   *   - yaml-builder path: harvested from `agentHandle.namespacedTools` (the
+   *     startup builder computed it while auto-connecting `cfg.mcp`).
+   *   - seam / consumer-builder path: built ONCE by
+   *     `resolveAuthoritativeSnapshot()` over `_sharedMcpClients` +
+   *     `_sharedMcpClientDescriptors` (the builder never connected itself, so
+   *     its handle carries no snapshot).
+   * Undefined only when neither source produced one (e.g. no MCP clients).
+   */
+  private _namespacedTools?: readonly LlmTool[];
+  /**
+   * Provenance for `_namespacedTools` — exposed (namespaced) name → its
+   * originating slot + original tool name. Doubles as the memoization guard
+   * for `resolveAuthoritativeSnapshot()`: once set (from either source above)
+   * a later call is a no-op. See `_namespacedTools` field doc for the two
+   * sources.
+   */
+  private _toolProvenance?: ReadonlyMap<
+    string,
+    { slotIndex: number; originalName: string }
+  >;
+  /**
    * The ONE shared knowledge backend for the Stepper path (set during build).
    * Held so DELETE /v1/sessions/:id can evict a session's entries from it —
    * critical for the long-lived in-memory backend, which would otherwise retain
@@ -842,6 +881,15 @@ export class SmartServer {
   private readonly _runExecutionControl?: IRunExecutionControl;
   private readonly _auxiliaryMcpTools?: IAuxiliaryMcpTools;
   private readonly _waitStrategy?: IWaitStrategy;
+  /**
+   * Tool-namespacing strategy (#244) — DI'd via `BuildAgentDeps.toolNamespace`,
+   * default `defaultToolNamespace`. Threaded onto the startup builder
+   * (`buildBaseBuilder` → `.withToolNamespace`) so its own namespaced snapshot
+   * (yaml-builder path) honors it, and reused verbatim by
+   * `resolveAuthoritativeSnapshot()`'s fallback build (seam path) so both
+   * snapshot sources agree on the same naming rule.
+   */
+  private readonly _toolNamespace: IToolNamespace;
 
   /**
    * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
@@ -885,6 +933,7 @@ export class SmartServer {
     this._runExecutionControl = deps.runExecutionControl;
     this._auxiliaryMcpTools = deps.auxiliaryMcpTools;
     this._waitStrategy = deps.waitStrategy;
+    this._toolNamespace = deps.toolNamespace ?? defaultToolNamespace;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -1381,6 +1430,29 @@ export class SmartServer {
     } = agentHandle;
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
+
+    // ---- Authoritative namespaced snapshot — yaml-builder path (#244) --------
+    // The startup builder computes `namespacedTools`/`toolProvenance` (+ the
+    // descriptors backing them) ONLY when it owns the connection itself (the
+    // `yamlBuilderConnect` path — no ready clients, no injected seam); on every
+    // other path the handle's fields stay undefined (the builder skipped its
+    // own connect via `withMcpClients`) and `resolveAuthoritativeSnapshot()`
+    // builds the fallback later instead. Guard on presence so an undefined
+    // handle field never clobbers a fallback snapshot built earlier in
+    // `buildSharedPipelineInfra` (the seam / consumer-builder path runs BEFORE
+    // `builder.build()`).
+    if (agentHandle.namespacedTools !== undefined) {
+      this._namespacedTools = agentHandle.namespacedTools;
+    }
+    if (agentHandle.toolProvenance !== undefined) {
+      this._toolProvenance = agentHandle.toolProvenance;
+    }
+    if (agentHandle.mcpClientDescriptors !== undefined) {
+      this._sharedMcpClientDescriptors = agentHandle.mcpClientDescriptors;
+    }
+    if (agentHandle.configuredSlotCount !== undefined) {
+      this._configuredSlotCount = agentHandle.configuredSlotCount;
+    }
 
     // ---- YAML-builder-connect MCP harvest (single-connect + vectorization) ----
     // Only on the `yamlBuilderConnect` path (YAML `mcp:`, no ready clients, no
@@ -2089,6 +2161,64 @@ export class SmartServer {
   }
 
   /**
+   * Resolve the ONE authoritative namespaced tool snapshot (#244 Task 6) —
+   * `this._namespacedTools` / `this._toolProvenance` — from whichever source
+   * applies:
+   *   - yaml-builder path: the startup builder already computed it, harvested
+   *     onto these SAME fields right after `builder.build()` (see the
+   *     `agentHandle.namespacedTools`/`toolProvenance` destructure above). This
+   *     method is then a no-op (memoized on `_toolProvenance`).
+   *   - seam / consumer-builder path (ready clients, or an injected MCP seam):
+   *     the handle carries no snapshot (the builder skipped its own connect via
+   *     `withMcpClients`), so build ONE here via `buildNamespacedTools` over
+   *     `_sharedMcpClients` + `_sharedMcpClientDescriptors` + the server's
+   *     `_toolNamespace` — the SAME strategy instance threaded onto the
+   *     startup builder, so both snapshot sources agree on the naming rule.
+   *
+   * Preserves the ORIGINAL client index on a partial `listTools()` failure:
+   * the per-client input is built index-preservingly via `settled.flatMap`
+   * aligned by position (mirroring the builder's own snapshot build), NEVER
+   * `filter().map()` — a middle-client failure must not shift later slots'
+   * `slotIndex`.
+   */
+  private async resolveAuthoritativeSnapshot(): Promise<void> {
+    // Memoized: a handle-carried snapshot (yaml path) or a prior fallback
+    // build (seam path) both set `_toolProvenance` — either way, done.
+    if (this._toolProvenance) return;
+    const clients = this._sharedMcpClients ?? [];
+    if (clients.length === 0) return;
+    const descs: readonly McpClientDescriptor[] =
+      this._sharedMcpClientDescriptors ??
+      clients.map((_, i) => ({ slotIndex: i }));
+    const settled = await Promise.all(
+      clients.map(async (client) => {
+        try {
+          const result = await client.listTools();
+          return result.ok
+            ? { ok: true as const, value: result.value }
+            : { ok: false as const };
+        } catch {
+          return { ok: false as const };
+        }
+      }),
+    );
+    const perClient: NamespaceClientInput[] = settled.flatMap((entry, i) => {
+      if (!entry.ok) return [];
+      return [
+        {
+          slotIndex: descs[i]?.slotIndex ?? i,
+          label: descs[i]?.label,
+          client: clients[i],
+          tools: entry.value,
+        },
+      ];
+    });
+    const built = buildNamespacedTools(perClient, this._toolNamespace);
+    this._namespacedTools = built.tools;
+    this._toolProvenance = built.provenance;
+  }
+
+  /**
    * Build `_toolsRagHandle` — a real IToolsRagHandle over the tools RAG store +
    * MCP catalog, dispatching over the ALREADY-RESOLVED `this._sharedMcpClients`.
    *
@@ -2097,17 +2227,27 @@ export class SmartServer {
    * connection there, and `_sharedMcpClients` is harvested from its handle). For
    * the DI/plugin path it still runs early via `buildSharedPipelineInfra`.
    * Requires `this._sharedMcpClients` to be set by the caller.
+   *
+   * Also resolves the authoritative namespaced snapshot (#244 Task 6) via
+   * `resolveAuthoritativeSnapshot()` — a no-op when the yaml-builder path
+   * already harvested one from the handle — and passes it into
+   * `makeToolsRagHandle` so the catalog is keyed by the EXPOSED (namespaced)
+   * name.
    */
   private async buildToolsRagHandle(input: {
     toolsRag: IRag | undefined;
     resolvedEmbedder: IEmbedder | undefined;
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder } = input;
+    await this.resolveAuthoritativeSnapshot();
     this._toolsRagHandle = await makeToolsRagHandle(
       this._sharedMcpClients ?? [],
       toolsRag,
       resolvedEmbedder,
       this.cfg.log,
+      this._namespacedTools
+        ? { namespacedTools: this._namespacedTools }
+        : undefined,
     );
   }
 
@@ -2457,6 +2597,11 @@ export class SmartServer {
 
     // Thread the instance-level MCP failure classifier (DI/programmatic only).
     builder = builder.withMcpFailureClassifier(this._mcpFailureClassifier);
+
+    // Thread the tool-namespacing strategy (#244) so the startup builder's OWN
+    // namespaced snapshot (yaml-builder-connect path) honors the same rule as
+    // `resolveAuthoritativeSnapshot()`'s server-side fallback build below.
+    builder = builder.withToolNamespace(this._toolNamespace);
 
     // Tool-loop context strategy for the NON-controller pipelines (default / flat /
     // linear / dag / direct SmartAgent). Honor a consumer-injected factory; else
