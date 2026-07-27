@@ -130,9 +130,8 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
     records via `provenance`, AND seed `acc.clientFailures`/`acc.total` from the passed values so
     `summary.complete` still reflects a partial-catalog failure (do NOT hardcode `complete: true`). When absent,
     keep today's internal listing+build+failure-accounting (back-compat). The RAG-write early-return (`:126`
-    `if (!toolsRag || !writer) return undefined;`) stays — it only skips WRITING. **Note:** when the builder
-    surfaces the snapshot but there is no writable RAG, the builder must still publish the catalog status from
-    its own listing outcome (it can't rely on vectorize's early-returned `undefined`) — see the builder step.
+    `if (!toolsRag || !writer) return undefined;`) stays — it only skips WRITING (and, per below, the builder
+    does NOT publish any catalog status when writing was skipped).
   - In `builder.ts` (VERIFY at `:975-1017`): hoist `resolved` to function scope; when `mcpClients.length`,
     do the single `listTools()` pass over `mcpClients`, tracking a `clientFailures` count and `total`; build the
     view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`
@@ -206,7 +205,9 @@ git commit -m "feat(server): McpClientsWithDescriptors + rebindProvenanceToClien
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/mcp/build-session-mcp-clients.ts` (add optional descriptor fields to the return; keep `close`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (new `connectMcpClientsWithDescriptorsFromConfig`; `connectMcpClientsFromConfig` → compat wrapper; `BuildAgentDeps.connectMcpWithDescriptors?`; `_mcpSeamInjected` at ~:808-809; provisioning precedence at the seam call sites ~:1224/:1950; default `_deps` at ~:831)
-- Test: `packages/llm-agent-server-libs/src/smart-agent/mcp/__tests__/descriptor-producers.test.ts` (create) + a seam-detection test (append to an existing smart-server test or create)
+- Test: `packages/llm-agent-server-libs/src/smart-agent/mcp/__tests__/descriptor-producers.test.ts` (create) —
+  put BOTH the descriptor-producer tests AND the seam-detection/precedence tests in THIS file (one staged file,
+  no separate location) so the commit covers detection too.
 
 **Produces:** `buildSessionMcpClients` returns `McpClientsWithDescriptors & { close }`;
 `connectMcpClientsWithDescriptorsFromConfig(): Promise<McpClientsWithDescriptors>`;
@@ -328,36 +329,54 @@ git commit -m "feat(server): authoritative snapshot resolution (handle or server
 `[0,2]` become array indices `[0,1]`, so provenance `slotIndex 2` finds no client. `SessionAgentParts` must carry
 the descriptors that go with its `mcpClients`.
 
+**The real lifecycle contract (VERIFIED):** `SessionAgentParts` and `SessionGraphFactoryOptions` are declared in
+`packages/llm-agent-libs/src/session/session-graph-factory.ts` (`:24` / `:38`). `mcpClientFactory:
+(identity) => IMcpClient[]` (`:39`) returns ONLY clients, and `SessionGraphFactory` uses it at `:91`
+(`const mcpClients = this.opts.mcpClientFactory(identity)`). The server's lifecycle wiring
+`session-lifecycle/index.ts` (`:110-115`) calls `opts.buildPerSessionMcpClients()` and returns only
+`built.clients` — **descriptors are discarded here even if `buildSessionMcpClients` produced them.** So the
+factory contract itself must carry descriptors; adding a field to `SessionAgentParts` alone is insufficient.
+
 **Files:**
-- Modify: the `SessionAgentParts` type (VERIFY location — declared in the `smart-agent` types; imported at
-  `smart-server.ts:47`) — add `mcpClientDescriptors?: readonly McpClientDescriptor[];` + `configuredSlotCount?: number;`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — populate the new fields at EVERY
-  `SessionAgentParts` assembly site: `_embeddedSessionParts` (~:1555-1565, from the server's
-  `_sharedMcpClientDescriptors`/`_configuredSlotCount`), and the per-session lifecycle/graph-factory path
-  (`buildSessionLifecycle` `buildPerSessionMcpClients` ~:1377 — capture the descriptors from the
-  `buildSessionMcpClients` result, Task 4, into the parts it assembles). Trace `buildSessionMcpClients` result →
-  `SessionAgentParts` and thread `clientDescriptors`/`configuredSlotCount` alongside `mcpClients`.
-- Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts` (create)
+- Modify: `packages/llm-agent-libs/src/session/session-graph-factory.ts`
+  - `SessionAgentParts` (`:24`): add `readonly mcpClientDescriptors?: readonly McpClientDescriptor[];` +
+    `readonly configuredSlotCount?: number;` (import `McpClientDescriptor` from `@mcp-abap-adt/llm-agent`).
+  - `SessionGraphFactoryOptions` (`:38`): add an ADDITIVE parallel optional factory
+    `readonly mcpClientFactoryWithDescriptors?: (identity: SessionGraphIdentity) => { clients: IMcpClient[]; clientDescriptors?: readonly McpClientDescriptor[]; configuredSlotCount?: number };`
+    (keep the existing `mcpClientFactory` unchanged for back-compat).
+  - `SessionGraphFactory` (`:91`): if `mcpClientFactoryWithDescriptors` is set, call it and put
+    `clientDescriptors`/`configuredSlotCount` into the assembled `SessionAgentParts` alongside `mcpClients`; else
+    fall back to `mcpClientFactory(identity)` (clients only, descriptors undefined).
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts` (`:109-116`) — provide
+  `mcpClientFactoryWithDescriptors` that returns `{ clients: built.clients, clientDescriptors: built.clientDescriptors, configuredSlotCount: built.configuredSlotCount }` from the `buildSessionMcpClients` result (Task 4), still
+  registering `built.close`; the shared/non-isolated branch returns the server's shared clients + shared descriptors.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — `_embeddedSessionParts` (`:1555-1565`)
+  populates `mcpClientDescriptors`/`configuredSlotCount` from `_sharedMcpClientDescriptors`/`_configuredSlotCount`
+  (Task 4); pass the shared descriptors into `buildSessionLifecycle` opts (`~:1363-1380`) so its non-isolated
+  branch can forward them.
+- Test: `packages/llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts` (append — VERIFY exact
+  existing path) + `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/__tests__/session-lifecycle.test.ts`
+  (append — VERIFY exact existing path) + `packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts` (create, for `_embeddedSessionParts`).
 
 **Produces:** `SessionAgentParts` carries descriptors paired with its `mcpClients` on every path (embedded,
-per-session isolated, isolation-OFF/global).
+per-session isolated, isolation-OFF/global), via the new `mcpClientFactoryWithDescriptors` seam.
 
 - [ ] **Step 1: Write the failing tests**
-  - Embedded parts: `_embeddedSessionParts` result has `mcpClientDescriptors` matching the shared set.
-  - Per-session isolated: a session built via the lifecycle carries `clientDescriptors [{slotIndex:0,label},{slotIndex:1,label}]` from `buildSessionMcpClients`.
-  - **Filtered global (the P1 case):** when the shared/global clients are a filtered subset (active slots `[0,2]`),
-    `parts.mcpClientDescriptors` carries `slotIndex 0` and `slotIndex 2` (NOT `0,1`), so a later slotIndex lookup
-    is unambiguous.
-- [ ] **Step 2: Run RED** (parts type has no descriptor fields).
-- [ ] **Step 3: Implement** — add the two optional fields to `SessionAgentParts`; populate at each assembly site
-  from the matching descriptor source (`_sharedMcpClientDescriptors` for shared/global, the
-  `buildSessionMcpClients` result for isolated). Additive (existing parts consumers unaffected).
-- [ ] **Step 4: Run GREEN + full server-libs suite.**
+  - `SessionGraphFactory`: with `mcpClientFactoryWithDescriptors` set, the assembled `parts` carry
+    `mcpClientDescriptors`/`configuredSlotCount`; with only the legacy `mcpClientFactory`, they're `undefined` (back-compat).
+  - `session-lifecycle`: an isolated session's parts carry `clientDescriptors [{slotIndex:0,label},{slotIndex:1,label}]` from `buildSessionMcpClients`, and `built.close` is still registered.
+  - **Filtered global (the P1 case):** shared/global clients = a filtered subset (active slots `[0,2]`) → parts
+    carry `slotIndex 0` and `slotIndex 2` (NOT `0,1`).
+  - `_embeddedSessionParts`: result has `mcpClientDescriptors` matching the shared set.
+- [ ] **Step 2: Run RED** (factory returns clients only; parts lack descriptor fields).
+- [ ] **Step 3: Implement** the four modifications above. Additive: existing `mcpClientFactory`-only consumers
+  keep working (descriptors just `undefined`).
+- [ ] **Step 4: Run GREEN + both suites** (`npm test --workspace @mcp-abap-adt/llm-agent-libs` AND `…-server-libs`).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts <SessionAgentParts type file>
-git commit -m "feat(server): thread mcpClientDescriptors/configuredSlotCount through SessionAgentParts (#244)"
+git add packages/llm-agent-libs/src/session/session-graph-factory.ts packages/llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/__tests__/session-lifecycle.test.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts
+git commit -m "feat: descriptor-aware SessionGraphFactory seam threads mcpClientDescriptors into SessionAgentParts (#244)"
 ```
 
 ---
