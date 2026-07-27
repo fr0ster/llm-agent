@@ -132,10 +132,11 @@ vectorizes (when a writable store exists) from that SAME view — one `listTools
     keep today's internal listing+build+failure-accounting (back-compat). The RAG-write early-return (`:126`
     `if (!toolsRag || !writer) return undefined;`) stays — it only skips WRITING (and, per below, the builder
     does NOT publish any catalog status when writing was skipped).
-  - In `builder.ts` (VERIFY at `:975-1017`): hoist `resolved` to function scope; when `mcpClients.length`,
-    do the single `listTools()` pass over `mcpClients`, tracking a `clientFailures` count and `total`; build the
-    view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`
-    where `perClient` zips the successfully-listed `mcpClients` + `resolved.clientDescriptors` + listed tools.
+  - In `builder.ts` (VERIFY at `:975-1017`): hoist `resolved` to function scope (it is now **optional** — on the
+    caller-provided-`mcpClients` branch it is `undefined`; NEVER access it non-optionally). When
+    `mcpClients.length`, do the single `listTools()` pass over `mcpClients`, tracking a `clientFailures` count and
+    `total`; build the view ONCE: `const { tools, provenance } = buildNamespacedTools(perClient, this._toolNamespace ?? defaultToolNamespace)`
+    where `perClient` zips the successfully-listed `mcpClients` + `(resolved?.clientDescriptors ?? mcpClients.map((_, i) => ({ slotIndex: i })))` + listed tools, and `configuredSlotCount = resolved?.configuredSlotCount ?? mcpClients.length`.
     Pass `{ ...ns, prebuiltView: { tools, provenance, clientFailures, total } }` to `vectorizeMcpTools`. Those
     `clientFailures`/`total` make `summary.complete` accurate **only on the path where vectorization runs** (a
     writable store); the summary is still published solely through the existing `if (toolSummary) …publish`
@@ -233,11 +234,21 @@ git commit -m "feat(server): McpClientsWithDescriptors + rebindProvenanceToClien
     add `connectMcpWithDescriptors?: (mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null)
     => Promise<McpClientsWithDescriptors>` to `BuildAgentDeps` (~:355) — **mirroring the existing
     `connectMcp(mcpCfg)` argument shape** (VERIFIED `connectMcp` at `:355-357` takes exactly this `mcpCfg`), so
-    the connector knows what to connect; the provisioning sites pass `this.cfg.mcp`.
-    `_mcpSeamInjected` (~:808) → `deps.mcpClients !== undefined || deps.connectMcp !== undefined || deps.connectMcpWithDescriptors !== undefined`;
-    at the provisioning sites (~:1224, ~:1950) resolve `deps.connectMcpWithDescriptors(this.cfg.mcp)` first
-    (capture its descriptors), else `deps.connectMcp(this.cfg.mcp)` (bare → array-index `{slotIndex:i}` fallback),
-    else the default `connectMcpClientsWithDescriptorsFromConfig(this.cfg.mcp)`. Store the resulting descriptors + `configuredSlotCount` on
+    the connector knows what to connect.
+    - **Store it on the instance (the seam is read AFTER the constructor, from `this._deps`).** Add
+      `'connectMcpWithDescriptors'` to the **optional** `Pick<BuildAgentDeps, …>` half of the `_deps` type
+      (`:794-805`, the `skillHost`/`embedder`/`mcpClients` group — NOT the `Required<…>` group), and in the
+      constructor `_deps` literal (`:829-834`) spread it CONDITIONALLY:
+      `...(deps.connectMcpWithDescriptors ? { connectMcpWithDescriptors: deps.connectMcpWithDescriptors } : {})`.
+      **Do NOT default it to a real connector** — it must stay `undefined` unless the consumer injects it, else the
+      injected-seam vs YAML-builder distinction is lost. Also capture `this._connectMcpInjected = deps.connectMcp !== undefined`
+      (a boolean field) so precedence can tell a consumer-injected bare `connectMcp` from the defaulted one.
+    - `_mcpSeamInjected` (`:808-809`) → `deps.mcpClients !== undefined || deps.connectMcp !== undefined || deps.connectMcpWithDescriptors !== undefined`.
+    - Provisioning precedence at the seam call sites (`~:1224`, `~:1950`):
+      `this._deps.connectMcpWithDescriptors?.(this.cfg.mcp)` first (capture its descriptors); else if
+      `this._connectMcpInjected` → `{ clients: await this._deps.connectMcp(this.cfg.mcp), + array-index {slotIndex:i} descriptors }`;
+      else (neither seam injected) → `connectMcpClientsWithDescriptorsFromConfig(this.cfg.mcp)` (default, WITH
+      labels). Store the resulting descriptors + `configuredSlotCount` on
     `SmartServer` fields (e.g. `_sharedMcpClientDescriptors`, `_configuredSlotCount`) beside `_sharedMcpClients`
     for Task 6/7.
 - [ ] **Step 4: Run GREEN + full server-libs suite.**
@@ -355,7 +366,7 @@ factory contract itself must carry descriptors; adding a field to `SessionAgentP
   (Task 4); pass the shared descriptors into `buildSessionLifecycle` opts (`~:1363-1380`) so its non-isolated
   branch can forward them.
 - Test: `packages/llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts` (append — VERIFY exact
-  existing path) + `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/__tests__/session-lifecycle.test.ts`
+  existing path) + `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/__tests__/per-session-mcp.test.ts`
   (append — VERIFY exact existing path) + `packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts` (create, for `_embeddedSessionParts`).
 
 **Produces:** `SessionAgentParts` carries descriptors paired with its `mcpClients` on every path (embedded,
@@ -375,7 +386,7 @@ per-session isolated, isolation-OFF/global), via the new `mcpClientFactoryWithDe
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent-libs/src/session/session-graph-factory.ts packages/llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/__tests__/session-lifecycle.test.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts
+git add packages/llm-agent-libs/src/session/session-graph-factory.ts packages/llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/__tests__/per-session-mcp.test.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/session-parts-descriptors.test.ts
 git commit -m "feat: descriptor-aware SessionGraphFactory seam threads mcpClientDescriptors into SessionAgentParts (#244)"
 ```
 
