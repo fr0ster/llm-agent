@@ -114,22 +114,45 @@ called).
 
 ### 3c. Routing — per-seam rebinding, isolation-preserving
 
-Replace each bare `buildMcpBridge` with a `toolClientMap.get(name)` lookup whose map is the
-snapshot's `provenance` **rebound to that seam's own clients** (§2). Each seam keeps the client
-target it has today — **no seam changes which clients it targets**, so #213 isolation is
-untouched:
+**One shared map-aware bridge — preserves the current fail-loud classification.** The existing
+`buildMcpBridge` (`smart-server.ts:614-659`) does more than find the owner: it runs the
+`IMcpFailureClassifier` (a `healthCheck` probe + `classifier.classify`) so an **availability**
+failure THROWS (fail-loud, #213) while a **tool-level** error returns `{ isError: true }`. A
+naive `map.get(name).callTool(...)` would silently drop that. So define a single shared
+`buildNamespacedMcpBridge(toolClientMap, classifier)`:
+
+```
+(name, args, signal) => {
+  const client = toolClientMap.get(name);
+  if (!client) return { text: `Tool not found: ${name}`, isError: true };  // = today's miss
+  const probe = client.healthCheck ? () => client.healthCheck!(opts).then(r => r.ok ? r.value : false) : undefined;
+  const result = await client.callTool(name, safeArgs, opts);   // wrapper strips → originalName on the wire
+  if (!result.ok) {
+    if (await classifier.classify(result.error, probe) === 'unavailable') throw result.error;  // fail-loud
+    return { text: result.error.message, isError: true };       // tool-level → isError
+  }
+  return { text: <content>, isError: result.value.isError ?? false };
+}
+```
+
+(The per-call `listTools()` ownership scan is gone — the map already knows the owner — but the
+`callTool` classifier + probe are kept verbatim, so fail-loud vs tool-error semantics are
+byte-identical to today.) **Both** `SmartServer.callMcp` and the controller use *this* bridge;
+they differ only in which `toolClientMap` they pass. Each seam keeps the client target it has
+today — **no seam changes which clients it targets**, so #213 isolation is untouched:
 
 - **Controller** (session-local): add `IPipelineContext.toolClientMap?: Map<string, IMcpClient>`
   (`packages/llm-agent/src/interfaces/pipeline-plugin.ts`, additive, beside `mcpClients`).
   `buildServerCtx` (`smart-server.ts:2149-2152`) rebinds the authoritative `provenance` onto
   **`scope.parts.mcpClients`** (session-local) by `slotIndex` and populates `ctx.toolClientMap`.
-  The controller routes via `ctx.toolClientMap.get(name)` instead of its own bare bridge.
+  The controller consumes the shared `buildNamespacedMcpBridge` over `ctx.toolClientMap`
+  instead of building its own bare `buildMcpBridge`.
 - **`SmartServer.callMcp`** (linear/stepper): its clients (`_sharedMcpClients`) *are* the
   snapshot's clients. The handle surfaces `toolProvenance` + `mcpClientDescriptors` (not a
   ready map), so the server **rebinds** that provenance onto `_sharedMcpClients` — pairing
   `mcpClients` ↔ `mcpClientDescriptors` by array position, the *same* rebind mechanism as the
-  session map — to synthesize the `callMcp` routing map once. Its client target stays global
-  exactly as today.
+  session map — to synthesize the `callMcp` routing map once, then serves it through the same
+  shared `buildNamespacedMcpBridge`. Its client target stays global exactly as today.
 
 Rebinding needs `slotIndex → client instance`. Session/seam clients are produced from `cfg.mcp`
 in config order and (per Fork 2, below) **paired with their descriptors**, so each carries its
@@ -149,15 +172,31 @@ today's `buildMcpBridge` miss (`smart-server.ts:158`).
   the default `connectMcpClientsFromConfig` (`smart-server.ts:583`) build clients from `cfg.mcp`
   in config order and today ignore `cfg.mcp[].name`. Have each **return descriptors paired with
   the clients** (`slotIndex = config index`, `label = cfg.mcp[i].name`, `configuredSlotCount =
-  cfg.mcp.length`) — an `McpConnectionResult`-shaped result — so §3c can rebind by `slotIndex`
-  and labels work on these paths. Descriptors are always `cfg.mcp`-derived, independent of
-  producer, so exposed names agree with the builder's snapshot even on the isolation-OFF path
-  (session clients == global clients). Custom consumer connectors: the existing
-  `BuildAgentDeps.connectMcp: () => Promise<IMcpClient[]>` seam stays **unchanged**
-  (non-breaking); add an optional parallel `connectMcpWithDescriptors?: () =>
-  Promise<McpConnectionResult>`. Resolution: `connectMcpWithDescriptors` if provided → else
-  `connectMcp` with an **array-index fallback** (`{slotIndex:i}`, no label) — a bare custom
-  connector still gets callable colliding tools.
+  cfg.mcp.length`) so §3c can rebind by `slotIndex` and labels work on these paths.
+
+  **Precise types (NOT `McpConnectionResult` — it carries `toolsChanged`/no `close`, which
+  neither factory matches):** introduce a small shared descriptor-carrying type and compose
+  from it, preserving each factory's existing lifecycle contract:
+  ```ts
+  interface McpClientsWithDescriptors {
+    clients: IMcpClient[];
+    clientDescriptors?: readonly McpClientDescriptor[];
+    configuredSlotCount?: number;
+  }
+  // buildSessionMcpClients (KEEPS its existing `close`): returns
+  //   McpClientsWithDescriptors & { close: () => Promise<void> }
+  // connectMcpWithDescriptors seam (no lifecycle, mirrors bare connectMcp):
+  //   () => Promise<McpClientsWithDescriptors>
+  ```
+  `buildSessionMcpClients` today returns `{ clients, close }` (`build-session-mcp-clients.ts:51`)
+  — it gains the two optional descriptor fields and keeps `close`. Descriptors are always
+  `cfg.mcp`-derived, independent of producer, so exposed names agree with the builder's snapshot
+  even on the isolation-OFF path (session clients == global clients). Custom consumer connectors:
+  the existing `BuildAgentDeps.connectMcp: () => Promise<IMcpClient[]>` seam stays **unchanged**
+  (non-breaking); add an optional parallel
+  `connectMcpWithDescriptors?: () => Promise<McpClientsWithDescriptors>`. Resolution:
+  `connectMcpWithDescriptors` if provided → else `connectMcp` with an **array-index fallback**
+  (`{slotIndex:i}`, no label) — a bare custom connector still gets callable colliding tools.
 
 ### 3e. The `toolNamespace` source
 
