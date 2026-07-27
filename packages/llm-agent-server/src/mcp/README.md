@@ -136,3 +136,39 @@ try {
   //   - url (will auto-detect transport)
 }
 ```
+
+## Multiple MCP Servers & Tool Namespacing
+
+The server-level `mcp:` config accepts either a single server or a **list**. Each
+entry may carry an optional `name`:
+
+```yaml
+mcp:
+  - name: erp                                   # optional label
+    type: http
+    url: http://localhost:3001/mcp/stream/http
+  - name: crm
+    type: http
+    url: http://localhost:3002/mcp/stream/http
+```
+
+- **`name`** — optional per-server label. Validated at startup: `^[a-zA-Z0-9_-]+$`,
+  non-empty, and **unique** across servers. Used as the tool-name prefix on a
+  collision (see below); has no effect on transport/routing otherwise.
+
+When more than one connected server exposes a tool with the **same name**, the
+runtime exposes **namespaced** names to the model so every colliding tool stays
+individually callable (before, only the first server's copy was reachable):
+
+- Colliding name → `${name}__${tool}` (e.g. `erp__Search` / `crm__Search`). With
+  no `name`, the fallback prefix is the server's slot index: `s0__Search`,
+  `s1__Search`.
+- A **unique** tool name stays **bare** — single-server tool names remain unchanged.
+- The exposed (namespaced) name is what the model selects; the call is dispatched to
+  the owning server with the **original** tool name on the wire.
+
+The naming rule is a swappable strategy (`IToolNamespace`) — inject a custom one via
+`SmartAgentBuilder.withToolNamespace(...)` or `BuildAgentDeps.toolNamespace`. Custom
+connectors that need to carry per-server labels/descriptors implement the additive
+`BuildAgentDeps.connectMcpWithDescriptors` seam (the bare `connectMcp` seam still
+works, with slot-index prefixes).

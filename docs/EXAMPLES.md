@@ -134,6 +134,40 @@ mcp:
 
 You can also convey server-side intent (e.g., "willing to wait longer") by passing a custom `IMcpRequestHeadersStrategy` programmatically via `builder.withMcpRequestHeadersStrategy(...)`.
 
+### MCP Configuration — Multiple Servers & Tool Namespacing
+
+`mcp:` accepts a **list** of servers. Give each an optional `name` for readable,
+durable tool prefixes:
+
+```yaml
+mcp:
+  - name: erp                                   # ^[a-zA-Z0-9_-]+$, unique per server
+    type: http
+    url: http://localhost:3001/mcp/stream/http
+  - name: crm
+    type: http
+    url: http://localhost:3002/mcp/stream/http
+```
+
+When two connected servers expose a tool with the **same name** (e.g. both offer
+`Search`), the runtime keeps both individually callable by exposing **namespaced**
+names to the model:
+
+- Colliding name → `name__tool` (e.g. `erp__Search`, `crm__Search`). Without a
+  `name`, the fallback prefix is the server's slot index: `s0__Search`, `s1__Search`.
+- A **unique** tool name stays **bare** (`Search`) — single-server setups are
+  unchanged.
+- The model sees the namespaced name; the call is routed to the right server with
+  the **original** name (`Search`) on the wire. No tool is silently dropped.
+
+`name` is validated at startup: charset `^[a-zA-Z0-9_-]+$`, non-empty, and unique
+across servers (`:` is rejected — it is illegal in an LLM tool name). To swap the
+naming rule entirely, inject a custom `IToolNamespace` (see
+[INTEGRATION.md → IToolNamespace](INTEGRATION.md#itoolnamespace)).
+
+> The snapshot of exposed names is built once at startup. A tool that first appears
+> after a mid-session MCP reconnect is picked up on the next server start.
+
 ## Programmatic Examples
 
 ### Dynamic RAG stores
