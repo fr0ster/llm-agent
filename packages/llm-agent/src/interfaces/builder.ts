@@ -8,10 +8,11 @@ import type {
 import type { ILlmApiAdapter } from './api-adapter.js';
 import type { ILlm } from './llm.js';
 import type { IMcpClient } from './mcp-client.js';
+import type { McpClientDescriptor } from './mcp-connection-strategy.js';
 import type { IModelProvider } from './model-provider.js';
 import type { IRag, IRagRegistry } from './rag.js';
 import type { IRequestLogger } from './request-logger.js';
-import type { LlmStreamChunk, Result } from './types.js';
+import type { LlmStreamChunk, LlmTool, Result } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Minimal SmartAgent interface
@@ -82,4 +83,19 @@ export interface SmartAgentHandle<T extends ISmartAgent = ISmartAgent> {
   getApiAdapter(name: string): ILlmApiAdapter | undefined;
   /** List all registered API adapter names. */
   listApiAdapters(): string[];
+  /** Namespaced tool catalog snapshot (colliding tool names disambiguated).
+   *  Undefined when namespacing was not computed for this handle. */
+  namespacedTools?: readonly LlmTool[];
+  /** Maps a namespaced tool name back to its originating slot + original name.
+   *  Undefined when namespacing was not computed for this handle. */
+  toolProvenance?: ReadonlyMap<
+    string,
+    { slotIndex: number; originalName: string }
+  >;
+  /** Stable per-slot MCP client descriptors (slotIndex + label) backing the
+   *  namespaced tool catalog. Undefined when namespacing was not computed. */
+  mcpClientDescriptors?: readonly McpClientDescriptor[];
+  /** Number of MCP client slots configured (including not-yet-connected ones).
+   *  Undefined when namespacing was not computed for this handle. */
+  configuredSlotCount?: number;
 }
