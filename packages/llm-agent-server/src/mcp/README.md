@@ -148,7 +148,7 @@ mcp:
     type: http
     url: http://localhost:3001/mcp/stream/http
   - name: crm
-    type: stream-http
+    type: http
     url: http://localhost:3002/mcp/stream/http
 ```
 
@@ -163,8 +163,7 @@ individually callable (before, only the first server's copy was reachable):
 - Colliding name → `${name}__${tool}` (e.g. `erp__Search` / `crm__Search`). With
   no `name`, the fallback prefix is the server's slot index: `s0__Search`,
   `s1__Search`.
-- A **unique** tool name stays **bare** — single-server deployments are byte-for-byte
-  unchanged.
+- A **unique** tool name stays **bare** — single-server tool names remain unchanged.
 - The exposed (namespaced) name is what the model selects; the call is dispatched to
   the owning server with the **original** tool name on the wire.
 
