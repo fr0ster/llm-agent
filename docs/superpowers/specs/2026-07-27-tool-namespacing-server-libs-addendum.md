@@ -250,6 +250,9 @@ scope; `mcp[].name` labels cover the config need.
 - **Server e2e per pipeline:** controller (session map) AND linear/stepper (global `callMcp`
   map) each route server-1's `Search` to client 1 with the **original** name; client 0 not
   called.
+- **Fail-loud preserved through the shared bridge:** a namespaced `callTool` whose error the
+  classifier deems `unavailable` **throws** (not `isError`); a tool-level error returns
+  `{ isError: true }` with the message — same classification as today's `buildMcpBridge`.
 - **`mcp[].name` labels on both producer paths;** partial `listTools()` failure drops only the
   failing server (logged); disjoint-name regression floor stays green.
 
