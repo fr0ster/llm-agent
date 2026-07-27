@@ -491,6 +491,10 @@ import {
   shouldIsolateMcpPerSession,
 } from './mcp/build-session-mcp-clients.js';
 import type { McpClientsWithDescriptors } from './mcp/mcp-clients-with-descriptors.js';
+import {
+  buildNamespacedMcpBridge,
+  rebindProvenanceToClients,
+} from './mcp/namespaced-bridge.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
@@ -2051,12 +2055,45 @@ export class SmartServer {
     return kr;
   }
 
+  /**
+   * Memoized namespaced bridge over the GLOBAL `_sharedMcpClients` (#244
+   * Task 8). Built once, lazily, from the authoritative snapshot's provenance
+   * rebound onto `_sharedMcpClients` + `_sharedMcpClientDescriptors` — the
+   * dispatch TARGET stays the server-wide shared clients (never retargeted to
+   * a session's clients here); only `buildServerCtx`'s per-session
+   * `ctx.toolClientMap` uses the session-scoped clients.
+   */
+  private _namespacedCallMcpBridge?: (
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ) => Promise<McpCallResult>;
+
   /** callMcp bridge over the shared connected MCP clients (empty when none). */
   private callMcp(
     name: string,
     args: unknown,
     signal?: AbortSignal,
   ): Promise<McpCallResult> {
+    // Namespaced routing (#244 Task 8): when the authoritative snapshot has
+    // provenance (collision path took effect), dispatch namespaced exposed
+    // names to their owning client via the shared bridge — memoized so the
+    // rebind only runs once. No provenance (no MCP / no collisions) falls
+    // back to today's plain `buildMcpBridge` scan, unchanged.
+    if (this._toolProvenance) {
+      if (!this._namespacedCallMcpBridge) {
+        const toolClientMap = rebindProvenanceToClients(
+          this._toolProvenance,
+          this._sharedMcpClients ?? [],
+          this._sharedMcpClientDescriptors,
+        );
+        this._namespacedCallMcpBridge = buildNamespacedMcpBridge(
+          toolClientMap,
+          this._mcpFailureClassifier,
+        );
+      }
+      return this._namespacedCallMcpBridge(name, args, signal);
+    }
     return buildMcpBridge(
       this._sharedMcpClients ?? [],
       this._mcpFailureClassifier,
@@ -2380,6 +2417,21 @@ export class SmartServer {
     // (buildKnowledgeBackend); guard idempotently so the ctx field is always
     // populated even if buildServerCtx is ever reached before start() finishes.
     this.buildKnowledgeBackend();
+    // Per-session namespaced tool-client map (#244 Task 8): rebind the
+    // authoritative snapshot's provenance (`_toolProvenance`, resolved once at
+    // startup via `resolveAuthoritativeSnapshot()`) onto THIS session's own
+    // MCP clients, pairing by `slotIndex` from `scope.parts.mcpClientDescriptors`
+    // — never by array index (a filtered/reordered per-session client set would
+    // otherwise rebind to the wrong client). No provenance (no MCP / no
+    // collisions) leaves `toolClientMap` undefined so the pipeline's own
+    // fallback bridge (`buildMcpBridge(ctx.mcpClients, …)`) applies unchanged.
+    const toolClientMap = this._toolProvenance
+      ? rebindProvenanceToClients(
+          this._toolProvenance,
+          scope.parts.mcpClients,
+          scope.parts.mcpClientDescriptors,
+        )
+      : undefined;
     return createServerPipelineContext({
       resolveLlm: (role) => this.resolveRoleLlm(role),
       knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),
@@ -2421,6 +2473,7 @@ export class SmartServer {
       ragRegistry: scope.parts.ragRegistry,
       callMcp: (n, a, s) => this.callMcp(n, a, s),
       mcpClients: scope.parts.mcpClients,
+      ...(toolClientMap ? { toolClientMap } : {}),
       mcpFailureClassifier: this._mcpFailureClassifier,
       ...(this._toolLoopContextStrategyFactory
         ? {

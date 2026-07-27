@@ -34,6 +34,7 @@ import type {
   ControllerConfig,
   PlannerKind,
 } from '../smart-agent/controller/types.js';
+import { buildNamespacedMcpBridge } from '../smart-agent/mcp/namespaced-bridge.js';
 import { buildMcpBridge } from '../smart-agent/smart-server.js';
 import type { IControllerServerPipelineContext } from './server-context.js';
 
@@ -158,7 +159,14 @@ export class ControllerPipelinePlugin
     // path (ctx carries it from SmartServer/builder DI). Without this the bridge would
     // silently fall back to DefaultMcpFailureClassifier and a custom policy (e.g. mapping
     // an otherwise-tool-level code to 'unavailable') would be lost for the controller.
-    const mcpBridge = buildMcpBridge(mcpClients, ctx.mcpFailureClassifier);
+    // Namespaced routing (#244 Task 8): when the host populated
+    // `ctx.toolClientMap` (session-rebound provenance — see
+    // `SmartServer.buildServerCtx`), dispatch namespaced exposed names to
+    // their owning client via the shared bridge. No map (no MCP / no
+    // collisions) falls back to today's plain client-scan bridge, unchanged.
+    const mcpBridge = ctx.toolClientMap
+      ? buildNamespacedMcpBridge(ctx.toolClientMap, ctx.mcpFailureClassifier)
+      : buildMcpBridge(mcpClients, ctx.mcpFailureClassifier);
 
     // Auxiliary/service tools contributed at pipeline creation (default: wait).
     // Consumer overrides the whole provider via ctx.auxiliaryMcpTools.
