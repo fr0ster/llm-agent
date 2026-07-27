@@ -64,8 +64,19 @@ snapshot, and every consumer reuses that mapping verbatim:
 
 So the global catalog, the RAG records, the controller's session map, and the `callMcp` map
 **all speak the identical exposed names by construction**, regardless of which servers a given
-session sees. A slot whose client is down at call time fails at call time with `isError`
-(tool known, server unavailable) — never a silent bare-name divergence.
+session sees.
+
+**Down-server vs unknown-name — the two distinct outcomes (do not conflate):**
+`buildSessionMcpClients` builds a **dense** client — one wrapper per config slot, regardless of
+availability (`build-session-mcp-clients.ts`, lazy-connect). So for every exposed name in the
+snapshot the session map DOES have an entry pointing at the slot's (possibly unconnected)
+client. Therefore:
+- **Server present but unavailable** (e.g. down only in this session): the map entry exists →
+  the call reaches the client → the `IMcpFailureClassifier` **throws** the availability failure
+  (fail-loud, #213) — NOT `isError`, NOT "Tool not found".
+- **Genuinely absent name** (an unknown/hallucinated name, or a slot whose client failed to even
+  construct so it has no provenance/map entry): `map.get` miss → `{ isError, "Tool not found" }`.
+Never a silent bare-name divergence in either case.
 
 ## 3. Design
 
@@ -157,9 +168,12 @@ today — **no seam changes which clients it targets**, so #213 isolation is unt
 Rebinding needs `slotIndex → client instance`. Session/seam clients are produced from `cfg.mcp`
 in config order and (per Fork 2, below) **paired with their descriptors**, so each carries its
 `slotIndex`; rebinding matches `provenance.slotIndex` to the session client with that
-`slotIndex`. A slot absent from a session (its server not built/healthy) simply has no map
-entry → `map.get` miss → `{ text: "Tool not found: <name>", isError: true }`, byte-identical to
-today's `buildMcpBridge` miss (`smart-server.ts:158`).
+`slotIndex`. The session build is **dense** (one client per config slot, health-independent),
+so every snapshot exposed name gets a map entry — an *unavailable* server is therefore a
+**call-time classifier throw** (fail-loud), per §2, NOT a map-miss. `map.get` miss →
+`{ text: "Tool not found: <name>", isError: true }` (byte-identical to today's
+`buildMcpBridge` miss, `smart-server.ts:158`) applies only to a genuinely absent name (unknown
+name, or a slot whose client never constructed).
 
 ### 3d. Descriptors — where each path gets `{ slotIndex, label }` (Fork 2: full fix)
 
@@ -189,14 +203,30 @@ today's `buildMcpBridge` miss (`smart-server.ts:158`).
   //   () => Promise<McpClientsWithDescriptors>
   ```
   `buildSessionMcpClients` today returns `{ clients, close }` (`build-session-mcp-clients.ts:51`)
-  — it gains the two optional descriptor fields and keeps `close`. Descriptors are always
+  — **adding the two OPTIONAL descriptor fields to its returned object is additive** (existing
+  `{ clients, close }` destructurers are unaffected); it keeps `close`. Descriptors are always
   `cfg.mcp`-derived, independent of producer, so exposed names agree with the builder's snapshot
-  even on the isolation-OFF path (session clients == global clients). Custom consumer connectors:
-  the existing `BuildAgentDeps.connectMcp: () => Promise<IMcpClient[]>` seam stays **unchanged**
-  (non-breaking); add an optional parallel
-  `connectMcpWithDescriptors?: () => Promise<McpClientsWithDescriptors>`. Resolution:
-  `connectMcpWithDescriptors` if provided → else `connectMcp` with an **array-index fallback**
-  (`{slotIndex:i}`, no label) — a bare custom connector still gets callable colliding tools.
+  even on the isolation-OFF path (session clients == global clients).
+
+  **The default connector return type change is NOT additive — do not mutate it.**
+  `connectMcpClientsFromConfig` is **exported** and returns `Promise<IMcpClient[]>`
+  (`smart-server.ts:583`); changing its return would break direct callers. Instead: add a new
+  `connectMcpClientsWithDescriptorsFromConfig(): Promise<McpClientsWithDescriptors>` (the real
+  implementation, reading `cfg.mcp[].name`), and **keep `connectMcpClientsFromConfig` as a thin
+  compatibility wrapper** that calls it and returns `.clients` — existing callers and its export
+  signature are untouched.
+
+  **Custom consumer connectors + seam detection.** The existing
+  `BuildAgentDeps.connectMcp: () => Promise<IMcpClient[]>` seam stays **unchanged**; add an
+  optional parallel `connectMcpWithDescriptors?: () => Promise<McpClientsWithDescriptors>`. This
+  new seam MUST participate in seam detection and resolution, else a consumer who injects only
+  it is ignored and the server wrongly takes the YAML-builder path:
+  - `_mcpSeamInjected` (`smart-server.ts:808-809`) becomes `deps.mcpClients !== undefined ||
+    deps.connectMcp !== undefined || deps.connectMcpWithDescriptors !== undefined`.
+  - Provisioning precedence at the seam call site: `deps.connectMcpWithDescriptors` (if provided)
+    → else `deps.connectMcp` (bare) with an **array-index fallback** (`{slotIndex:i}`, no label)
+    → else the default `connectMcpClientsWithDescriptorsFromConfig`. A bare custom connector still
+    gets callable colliding tools (slot prefixes).
 
 ### 3e. The `toolNamespace` source
 
@@ -231,16 +261,20 @@ scope; `mcp[].name` labels cover the config need.
 - **Per-session isolation (#213/#226) preserved:** the controller keeps routing to
   `scope.parts.mcpClients`; `callMcp` keeps routing to `_sharedMcpClients`. No seam retargets.
 - `SmartAgentHandle`, `IPipelineContext`, `IToolsRagHandle`, `BuildAgentDeps` change **only
-  additively**; the `connectMcp` signature and the `Map<string,IMcpClient>` `toolClientMap`
-  value type are untouched.
+  additively**; the `connectMcp` signature, the exported `connectMcpClientsFromConfig` return
+  type (`Promise<IMcpClient[]>`, kept via a compat wrapper over the new descriptor function), and
+  the `Map<string,IMcpClient>` `toolClientMap` value type are all untouched. `buildSessionMcpClients`
+  gains only optional return fields.
 
 ## 6. Testing strategy (the plan TDDs each)
 
 - **Session-availability (the P1 headline):** boot vectorizes `s0__Search`/`s1__Search`; a
   session where server 1 is DOWN must still route `s0__Search` to the healthy server 0 (name
-  from the authoritative snapshot, rebound to the session's server-0 instance), and `s1__Search`
-  → `isError` "Tool not found" — **not** a bare-`Search` collapse. This is the test that pins
-  the collision-not-config-stable fix.
+  from the authoritative snapshot, rebound to the session's server-0 instance), while a call to
+  `s1__Search` (its client exists but the server is unavailable) makes the classifier **throw**
+  (fail-loud availability) — **not** a bare-`Search` collapse, and **not** a "Tool not found"
+  (that outcome is reserved for a genuinely unknown name). This pins the
+  collision-not-config-stable fix AND the down-vs-unknown distinction (§2).
 - **Per-session isolation:** two sessions with distinct client instances; a namespaced call in
   session A reaches A's instance, not the global clients nor B's — distinct spies per session.
 - **No-writable-RAG deployment:** with `toolsRag` absent/read-only, two colliding servers still
