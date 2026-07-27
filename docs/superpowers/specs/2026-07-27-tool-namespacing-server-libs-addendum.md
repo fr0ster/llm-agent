@@ -139,8 +139,13 @@ Exposed names + record keys need stable `slotIndex` (config index) + `label`
   (`smart-server.ts:583`) both build clients from `cfg.mcp` in config order via a hand-rolled
   loop and today ignore `cfg.mcp[].name`. Per the full-fix scope, have each **return
   descriptors alongside the clients** (`slotIndex = config index`, `label = cfg.mcp[i].name`,
-  `configuredSlotCount = cfg.mcp.length`) — an `McpConnectionResult`-shaped result. Custom
-  consumer connectors: the existing `BuildAgentDeps.connectMcp: () => Promise<IMcpClient[]>`
+  `configuredSlotCount = cfg.mcp.length`) — an `McpConnectionResult`-shaped result. **These
+  per-session/seam descriptors are always `cfg.mcp`-derived (config index + `mcp[].name`),
+  independent of which producer built the clients** — so even on the isolation-OFF path (where
+  the session clients *are* the global builder clients) the per-session map's exposed names
+  still agree with the global catalog's builder-derived names (same slotIndex + label +
+  `toolNamespace` inputs). Custom consumer connectors: the existing
+  `BuildAgentDeps.connectMcp: () => Promise<IMcpClient[]>`
   seam stays **unchanged** (non-breaking); add an optional parallel
   `connectMcpWithDescriptors?: () => Promise<McpConnectionResult>`. Resolution:
   `connectMcpWithDescriptors` if provided → else `connectMcp` with an **array-index fallback**
@@ -172,9 +177,12 @@ map at its seam-build), no lazy-vs-eager ambiguity:
 3. **Routing:** always route via `toolClientMap.get(name)`. When no collision occurred every
    exposed name is bare and its map value is the **real client**, so this is behaviourally
    identical to the old scan for the common single-name case — no separate "lazy vs snapshot"
-   branch is needed. The old lazy `listTools()`-scan bridge is retained **only** as the
-   fallback when a host provides **no** `toolClientMap`/namespaced view at all (e.g. a pipeline
-   or embedding context that never built one) — see §5.
+   branch is needed. A `map.get(name)` that returns `undefined` (an unknown name, or the rare
+   boot-vs-session availability-flip window) returns `{ text: "Tool not found: <name>",
+   isError: true }` — **byte-identical to today's `buildMcpBridge` miss**
+   (`smart-server.ts:158`), never a throw. The old lazy `listTools()`-scan bridge is retained
+   **only** as the fallback when a host provides **no** `toolClientMap`/namespaced view at all
+   (e.g. a pipeline or embedding context that never built one) — see §5.
 4. **Catalog:** keyed by exposed `tools[i].name`; `lookup`/`query` resolve exposed→schema. A
    RAG record whose exposed name is absent from the catalog (e.g. a rare boot-vs-now
    availability flip) is skipped, exactly as an unknown record is skipped today — graceful
@@ -220,6 +228,10 @@ map at its seam-build), no lazy-vs-eager ambiguity:
   via the optional `connectMcpWithDescriptors` seam).
 - Per-session re-vectorization of the shared `toolsRag` to close the boot-vs-now
   availability-flip window (the frozen-snapshot catalog degrades gracefully without it).
+- **Cost note (not a blocker):** the per-session routing map adds one `listTools()` round-trip
+  (and, under #213, a lazy-connect) at session creation on the isolated YAML path. This mirrors
+  the per-session cost #213 already introduced; if it ever matters, the map can be memoized per
+  distinct client-set — a later optimization, not needed for correctness.
 
 ## 8. Architecture-principles check
 
