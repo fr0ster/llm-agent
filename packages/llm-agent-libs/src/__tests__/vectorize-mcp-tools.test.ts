@@ -663,3 +663,104 @@ describe('vectorizeMcpTools pacing cancellation', () => {
     assert.equal(writes, 5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// `prebuiltView` — consuming a caller-supplied namespaced snapshot instead of
+// listing + namespacing internally (#244 server-libs addendum, Task 2).
+// ---------------------------------------------------------------------------
+
+describe('vectorizeMcpTools prebuiltView (#244 addendum)', () => {
+  /** Explodes if called — proves the internal Phase-1 listing never runs. */
+  function makeExplodingClient(): IMcpClient {
+    return {
+      listTools: async () => {
+        throw new Error(
+          'listTools must not be called when a prebuiltView is supplied',
+        );
+      },
+      callTool: async () => ({ ok: true as const, value: { content: [] } }),
+    } as unknown as IMcpClient;
+  }
+
+  function capturingIdNameWriter(): IRagBackendWriter & {
+    captured: Array<{ id: string; name?: unknown }>;
+  } {
+    const captured: Array<{ id: string; name?: unknown }> = [];
+    return {
+      captured,
+      async upsertRaw(id: string, _t: string, meta: { name?: unknown }) {
+        captured.push({ id, name: meta.name });
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagBackendWriter & {
+      captured: Array<{ id: string; name?: unknown }>;
+    };
+  }
+
+  it('stores the exposed names from the pre-built view — no internal re-listing or re-namespacing', async () => {
+    const writer = capturingIdNameWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    // A single client would namespace to the BARE name ("Search") if this
+    // function relisted + re-ran buildNamespacedTools internally. The
+    // prebuiltView instead claims a DIFFERENT exposed name — proving the
+    // stored name came from the passed view, not a fresh namespacing pass.
+    const tools: LlmTool[] = [
+      { name: 'CUSTOM__Search', description: 'desc', parameters: {} },
+    ] as unknown as LlmTool[];
+    const provenance = new Map([
+      ['CUSTOM__Search', { slotIndex: 0, originalName: 'Search' }],
+    ]);
+
+    const summary = await vectorizeMcpTools(
+      [makeExplodingClient()],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      undefined,
+      undefined,
+      { prebuiltView: { tools, provenance, clientFailures: 0, total: 1 } },
+    );
+
+    // Record id keys off the ORIGINAL name (single configured slot → bare form).
+    assert.deepEqual(writer.captured, [
+      { id: 'tool:Search', name: 'CUSTOM__Search' },
+    ]);
+    assert.equal(summary?.total, 1);
+    assert.equal(summary?.vectorized, 1);
+    assert.equal(summary?.complete, true);
+  });
+
+  it('health-status regression trap: seeds clientFailures from the prebuiltView so summary.complete reflects a listing failure the caller already observed', async () => {
+    const writer = capturingIdNameWriter();
+    const rag = makeRagWithEmbedder(undefined, writer);
+    const tools: LlmTool[] = [
+      { name: 'tool-a', description: 'desc', parameters: {} },
+    ] as unknown as LlmTool[];
+    const provenance = new Map([
+      ['tool-a', { slotIndex: 0, originalName: 'tool-a' }],
+    ]);
+
+    const summary = await vectorizeMcpTools(
+      [makeExplodingClient()],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+      undefined,
+      undefined,
+      // One OTHER client (not represented in `tools`) failed to list in the
+      // caller's single pass — every tool that DID make it into the view
+      // still writes fine, but the catalog as a whole is not complete.
+      { prebuiltView: { tools, provenance, clientFailures: 1, total: 1 } },
+    );
+
+    assert.equal(summary?.clientFailures, 1);
+    assert.equal(
+      summary?.complete,
+      false,
+      'complete must NOT be hardcoded true — a seeded clientFailure must surface',
+    );
+    // The one tool that DID reach the view still wrote successfully.
+    assert.equal(summary?.vectorized, 1);
+    assert.deepEqual(summary?.failed, []);
+  });
+});

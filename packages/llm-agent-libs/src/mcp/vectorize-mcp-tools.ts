@@ -121,6 +121,25 @@ export async function vectorizeMcpTools(
     descriptors?: readonly McpClientDescriptor[];
     configuredSlotCount?: number;
     toolNamespace?: IToolNamespace;
+    /**
+     * A snapshot already built by the caller (the builder's single
+     * `listTools()` pass, #244 addendum) — when present, this function skips
+     * its own Phase-1 listing + `buildNamespacedTools` call entirely and
+     * iterates this view instead, so the catalog is never listed twice and
+     * never diverges from what the caller (and the pipeline/registry) already
+     * agreed on. `clientFailures`/`total` seed the accounting below so
+     * `summary.complete` still reflects a partial-catalog failure instead of
+     * being hardcoded true.
+     */
+    prebuiltView?: {
+      tools: readonly LlmTool[];
+      provenance: ReadonlyMap<
+        string,
+        { slotIndex: number; originalName: string }
+      >;
+      clientFailures: number;
+      total: number;
+    };
   },
 ): Promise<ToolVectorizationSummary | undefined> {
   const writer = toolsRag?.writer?.();
@@ -137,7 +156,12 @@ export async function vectorizeMcpTools(
   // completion in the background.
   if (options?.signal?.aborted) return undefined;
 
-  const acc: Acc = { total: 0, vectorized: 0, failed: [], clientFailures: 0 };
+  const acc: Acc = {
+    total: ns?.prebuiltView?.total ?? 0,
+    vectorized: 0,
+    failed: [],
+    clientFailures: ns?.prebuiltView?.clientFailures ?? 0,
+  };
   // Why the batch path was abandoned, if it was. Reported once, inside the
   // summary line: swallowing it entirely would hide exactly the provider
   // message that made #236 diagnosable in the first place.
@@ -145,47 +169,63 @@ export async function vectorizeMcpTools(
   // biome-ignore lint/suspicious/noExplicitAny: reading the store's private embedder for batch optimisation
   const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
 
-  // ---- Phase 1: list every client BEFORE any namespacing/collision decision.
-  // Collision detection needs the FULL cross-client tool set — deciding
-  // per-client (the previous single-pass loop) could never see a name used
-  // by a client listed later, so it could not namespace at all.
-  const perClient: NamespaceClientInput[] = [];
-  for (let clientIndex = 0; clientIndex < clients.length; clientIndex++) {
-    if (options?.signal?.aborted) break;
-    const adapter = clients[clientIndex];
-    const descriptor = ns?.descriptors?.[clientIndex];
-    // Only listing is guarded at client level. A write that throws must NOT be
-    // charged to the client, must not abort the remaining tools, and must land
-    // in `failed` — see the per-tool try/catch below.
-    let tools: LlmTool[];
-    try {
-      const toolsResult = await adapter.listTools(options);
-      if (!toolsResult.ok) {
+  let tools: readonly LlmTool[];
+  let provenance: ReadonlyMap<
+    string,
+    { slotIndex: number; originalName: string }
+  >;
+
+  if (ns?.prebuiltView) {
+    // The caller already listed every client and namespaced the full exposed
+    // set (index-preservingly) — reuse it verbatim rather than relisting.
+    tools = ns.prebuiltView.tools;
+    provenance = ns.prebuiltView.provenance;
+  } else {
+    // ---- Phase 1: list every client BEFORE any namespacing/collision decision.
+    // Collision detection needs the FULL cross-client tool set — deciding
+    // per-client (the previous single-pass loop) could never see a name used
+    // by a client listed later, so it could not namespace at all.
+    const perClient: NamespaceClientInput[] = [];
+    for (let clientIndex = 0; clientIndex < clients.length; clientIndex++) {
+      if (options?.signal?.aborted) break;
+      const adapter = clients[clientIndex];
+      const descriptor = ns?.descriptors?.[clientIndex];
+      // Only listing is guarded at client level. A write that throws must NOT be
+      // charged to the client, must not abort the remaining tools, and must land
+      // in `failed` — see the per-tool try/catch below.
+      let clientTools: LlmTool[];
+      try {
+        const toolsResult = await adapter.listTools(options);
+        if (!toolsResult.ok) {
+          acc.clientFailures++;
+          continue;
+        }
+        clientTools = toolsResult.value;
+      } catch {
         acc.clientFailures++;
         continue;
       }
-      tools = toolsResult.value;
-    } catch {
-      acc.clientFailures++;
-      continue;
+
+      acc.total += clientTools.length;
+      perClient.push({
+        // Stable slotIndex from the connection result, not this loop's own
+        // index — a filtered active set must not re-map ids (#244).
+        slotIndex: descriptor?.slotIndex ?? clientIndex,
+        label: descriptor?.label,
+        client: adapter,
+        tools: clientTools,
+      });
     }
 
-    acc.total += tools.length;
-    perClient.push({
-      // Stable slotIndex from the connection result, not this loop's own
-      // index — a filtered active set must not re-map ids (#244).
-      slotIndex: descriptor?.slotIndex ?? clientIndex,
-      label: descriptor?.label,
-      client: adapter,
-      tools,
-    });
+    // ---- Phase 2: namespace the FULL exposed set, then embed/write it flat.
+    // `provenance` carries each exposed name's ORIGINAL name + stable slotIndex,
+    // which the record key needs (a flat index into `tools` would mis-map once
+    // a client exposes more than one tool).
+    const built = buildNamespacedTools(perClient, toolNamespace);
+    tools = built.tools;
+    provenance = built.provenance;
   }
 
-  // ---- Phase 2: namespace the FULL exposed set, then embed/write it flat.
-  // `provenance` carries each exposed name's ORIGINAL name + stable slotIndex,
-  // which the record key needs (a flat index into `tools` would mis-map once
-  // a client exposes more than one tool).
-  const { tools, provenance } = buildNamespacedTools(perClient, toolNamespace);
   const configuredCount = ns?.configuredSlotCount ?? clients.length;
 
   const keyFor = (originalName: string, slotIndex: number): string => {
