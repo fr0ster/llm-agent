@@ -9,7 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-## [20.9.0] — 2026-07-24
+## [20.9.0] — 2026-07-28
 
 Bundles every change merged since v20.8.0: the controller no-response safety-net
 (#243), a retry-classification fix (#239), the v20.8.0 embedder follow-ups
