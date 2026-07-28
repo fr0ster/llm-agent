@@ -258,7 +258,7 @@ curl http://localhost:4004/health
 {
   "status": "healthy",
   "uptime": 3600000,
-  "version": "20.7.0",
+  "version": "20.9.0",
   "timestamp": "2026-07-16T10:00:00.000Z",
   "components": {
     "llm": true,
