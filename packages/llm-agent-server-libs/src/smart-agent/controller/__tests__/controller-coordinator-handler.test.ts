@@ -576,6 +576,41 @@ describe('ControllerCoordinatorHandler', () => {
     );
   });
 
+  it('#252: mergeOfferedTools collision — a selectTools-relevant internal tool name equal to a ctx.externalTools name rejects execute()', async () => {
+    // Same shape as I2 (external routed via per-request ctx.externalTools), but
+    // the semantic selector now surfaces an INTERNAL tool with the SAME name as
+    // the client-provided external tool. mergeOfferedTools must fail fast so
+    // classifyToolCalls can never double-classify the name at call time.
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+      ],
+      executor: [], // unreachable — the merge throws before the executor round
+      selectTools: [{ name: 'ExtTool', description: '', inputSchema: {} }],
+    });
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx } = fakeCtx({
+      externalTools: [{ name: 'ExtTool' }] as never,
+    });
+
+    await assert.rejects(
+      () => handler.execute(ctx, {}, undefined),
+      /both an internal MCP tool/,
+      'mergeOfferedTools must throw on the name collision',
+    );
+    assert.equal(
+      h.mcpCalls.length,
+      0,
+      'no MCP call — the merge throws before any executor round',
+    );
+  });
+
   it('I1: recalled session-memory artifacts are injected into the executor messages', async () => {
     const seenMessages: Message[][] = [];
     const capturingExecutor: ISubagentClient & { calls: number } = {
