@@ -28,8 +28,9 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    god-object.
 7. **Don't break components.** Extend additively and backward-compatibly.
 
-> See also **Current Technical Debt** at the end of this document for known violations
-> (e.g. an over-grown `smart-server.ts`) being worked down toward these principles.
+> See also **Current Technical Debt** at the end of this document for the residual
+> composition-root files (e.g. `smart-server.ts`) left large by design after the
+> monolith-hunt extractions, and the one optional decomposition still open.
 
 ## Scope
 
@@ -1233,13 +1234,19 @@ See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
 
 ## Current Technical Debt (Explicit)
 
-- **`smart-server.ts` is over-grown (~3.9k lines, ~57 methods)** — violates Principle 6
-  (file size) and Principle 2 (the app should consume components, not accrete bespoke
-  glue). It is the composition root that became a kitchen sink (HTTP routing, infra
-  build, MCP wiring, LLM resolution, worker build, session handling). Work it down by
-  **reimplementing on existing components** (e.g. MCP lifecycle/health via
-  `IMcpConnectionStrategy` + `IReadinessReporter`, not bespoke server modules) — NOT by
-  carving it into ad-hoc fragments.
+- **`smart-server.ts` (now ~3.1k lines) — the cleanly-separable concerns are extracted;
+  the residual is the accepted composition root.** DONE (monolith-hunt #208–#210, released
+  v20.1.0): the HTTP route bodies live in `smart-agent/http/*.ts` (adapter / chat / config /
+  health / models route-handlers + `route-table` + `session-cookie` + `response-helpers`),
+  and `knowledge/make-knowledge-backend.ts`, `session-lifecycle/`, `workers/worker-registry.ts`,
+  `llm/role-llm-resolver.ts`, `tools-rag-handle.ts` (the `IToolsRagHandle` factory), and
+  `config-reload-watcher.ts` are their own component-shaped modules. The remaining ~3.1k is the
+  composition root itself — `_buildInfra` + the `build*` worker/pipeline assembly + the
+  `SmartServer*Config` surface + thin per-request dispatch — large **by design** (its job is to
+  wire everything together), NOT to be carved into ad-hoc fragments. The one OPTIONAL further
+  step — decomposing `_buildInfra` into smaller composed-builders — is a separate future
+  brainstorm, not open debt. (The same v20.1.0 campaign also decomposed `config.ts` into
+  per-section parsers and landed the `controller-coordinator-handler.ts` residual.)
 - **`builder.ts` (now ~1.2k) and `agent.ts` (now ~1.3k) — the cleanly-separable blocks
   are extracted.** DONE: the builder's **tool vectorization** now lives in
   `mcp/vectorize-mcp-tools.ts` (the connect logic stays in the builder); the agent's
