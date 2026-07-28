@@ -769,6 +769,34 @@ test('#167: client externalTools are MERGED with seeded MCP tools and offered to
   );
 });
 
+test('#252: mergeOfferedTools collision — a client externalTools name equal to a seeded internal tool name throws (fail-fast)', async () => {
+  // Same shape as the #167 disjoint-name test above, but the client-provided
+  // external tool name now COLLIDES with the internal (toolsRag-seeded) tool
+  // name. mergeOfferedTools must fail fast here so classifyToolCalls can never
+  // double-classify the name at call time.
+  const { rag } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: scriptedLlm([{ content: 'unused' }]) as never,
+    callMcp: mcp({}).call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  await assert.rejects(
+    () =>
+      exec.execute({
+        prompt: 'review and save a file',
+        tools: [], // no dispatcher tools → executor seeds MCP from toolsRag
+        externalTools: [{ name: 'GetProgram' }] as never, // collides with the seeded internal tool
+        knowledgeRag: rag as never,
+        toolsRag: toolsStub({ GetProgram: { name: 'GetProgram' } }) as never,
+        budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+        ...META_BASE,
+      }),
+    /both an internal MCP tool/,
+    'mergeOfferedTools must throw on the name collision',
+  );
+});
+
 test('scenario: a multi-fetch sequence writes a SEPARATE knowledge-RAG artifact per tool result', async () => {
   // Mirrors the real review shape (read object → list parts → read each part)
   // with neutral tool names: every tool RESULT must be persisted as its own
