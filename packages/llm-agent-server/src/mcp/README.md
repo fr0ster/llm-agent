@@ -168,7 +168,24 @@ individually callable (before, only the first server's copy was reachable):
   the owning server with the **original** tool name on the wire.
 
 The naming rule is a swappable strategy (`IToolNamespace`) — inject a custom one via
-`SmartAgentBuilder.withToolNamespace(...)` or `BuildAgentDeps.toolNamespace`. Custom
-connectors that need to carry per-server labels/descriptors implement the additive
-`BuildAgentDeps.connectMcpWithDescriptors` seam (the bare `connectMcp` seam still
-works, with slot-index prefixes).
+`SmartAgentBuilder.withToolNamespace(...)` or `BuildAgentDeps.toolNamespace`.
+
+### Custom connectors and `mcp[].name` labels
+
+The **built-in default config path** — used when neither a `connectMcp` nor a
+`connectMcpWithDescriptors` seam is injected — applies `mcp[].name` labels
+automatically (internally via `connectMcpClientsWithDescriptorsFromConfig`). A
+**fully-custom bare** `BuildAgentDeps.connectMcp` (returns `Promise<IMcpClient[]>`)
+does **not** — its colliding tools get **slot-index** prefixes (`s0__` / `s1__`),
+not the configured labels. (Note: the exported `connectMcpClientsFromConfig` also
+returns a bare `IMcpClient[]`, so injecting *it* as `connectMcp` likewise yields
+slot-index prefixes.)
+
+This is deliberate, not an oversight: a bare `connectMcp` returns an **opaque** client
+list with no guaranteed correspondence to the `mcp[]` config entries — a custom
+connector may connect a different set, order, or count than `cfg.mcp` — so `mcp[].name`
+cannot be attributed to a client by array index safely (it could label the wrong
+server). To get labels with custom connection logic, implement the additive
+`BuildAgentDeps.connectMcpWithDescriptors` seam and report each client's
+`{ slotIndex, label }` yourself (you know your own client↔config mapping). It takes
+precedence over `connectMcp` when both are injected.
