@@ -105,9 +105,7 @@ test('#259: InMemoryKnowledgeBackend.put() survives a semantic upsert failure â€
   const kr = new KnowledgeRag(backend, 'session-1');
 
   // put() must NOT reject even though the semantic upsert throws.
-  await assert.doesNotReject(() =>
-    kr.write({ content: 'A', metadata: META }),
-  );
+  await assert.doesNotReject(() => kr.write({ content: 'A', metadata: META }));
 
   // The entry is still durably retained even though it could not be indexed.
   const durable = await backend.scan('session-1');

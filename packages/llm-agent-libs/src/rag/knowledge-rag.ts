@@ -237,8 +237,18 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
     return a;
   }
   async put(sid: string, entry: KnowledgeEntry, options?: CallOptions) {
+    // A durable append is the success point: an index upsert failure does NOT
+    // rethrow (mirrors JsonlKnowledgeBackend.put()) — the entry is already
+    // retained above, just left unindexed; only the semantic recall misses it.
     this.of(sid).push(entry);
-    await this.semantic?.upsert(sid, entry, options);
+    try {
+      await this.semantic?.upsert(sid, entry, options);
+    } catch (e) {
+      if (process.env.DEBUG_CONTROLLER)
+        console.error(
+          `[knowledge-index] upsert failed (entry retained, unindexed): ${String(e)}`,
+        );
+    }
   }
   async semanticQuery(
     sid: string,
