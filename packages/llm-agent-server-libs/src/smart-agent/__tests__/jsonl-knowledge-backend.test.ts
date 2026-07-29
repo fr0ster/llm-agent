@@ -121,6 +121,54 @@ test('lazy rehydration build() forwards request options into the rebuild upserts
   );
 });
 
+test('build() rebuild survives a per-entry embed failure: other entries stay indexed and the session is not marked built (retries next time)', async () => {
+  await rm(TEST_DIR, { recursive: true, force: true });
+
+  // 1. Persist durable entries, one of which will be rejected by the semantic
+  //    index during the lazy rebuild (simulates a transient/provider-specific
+  //    embed failure on a NON-empty entry — e.g. rate-limit 429).
+  const seed = new JsonlKnowledgeBackend(TEST_DIR);
+  await seed.put('sessF', makeEntry('a', 'alpha'));
+  await seed.put('sessF', makeEntry('bad', 'BOOM'));
+  await seed.put('sessF', makeEntry('b', 'beta'));
+
+  const indexed: string[] = [];
+  let deleteCalls = 0;
+  const semantic = {
+    async upsert(_sid: string, e: KnowledgeEntry, _options?: unknown) {
+      if (e.content === 'BOOM') throw new Error('embed rejected');
+      indexed.push(e.content);
+    },
+    async query() {
+      return [] as readonly KnowledgeEntry[];
+    },
+    deleteSession() {
+      deleteCalls++;
+      indexed.length = 0;
+    },
+  };
+  const backend = new JsonlKnowledgeBackend(TEST_DIR, semantic as never);
+
+  // The rebuild must NOT reject the caller — one bad entry is skipped, not fatal.
+  await backend.semanticQuery('sessF', 'q');
+  assert.deepEqual(
+    indexed,
+    ['alpha', 'beta'],
+    'the two healthy entries were still indexed despite the BOOM entry failing',
+  );
+
+  // Since one entry failed, the session must NOT be marked built — the next
+  // touch retries the rebuild from the durable JSONL (source of truth) rather
+  // than caching a partial index.
+  await backend.semanticQuery('sessF', 'q');
+  assert.equal(
+    deleteCalls,
+    2,
+    'rebuild ran again on the second call (session was not marked built after a failed entry)',
+  );
+  assert.deepEqual(indexed, ['alpha', 'beta']);
+});
+
 test('cleanup temp dir', async () => {
   await rm(TEST_DIR, { recursive: true, force: true });
 });
