@@ -239,6 +239,86 @@ describe('makeKnowledgeSemanticIndex — bounded embed input (large-result guard
   });
 });
 
+describe('makeKnowledgeSemanticIndex — empty/whitespace content skip (#243)', () => {
+  it('empty content is NOT embedded and NOT returned by ranked query', async () => {
+    const embedTexts: string[] = [];
+    const recording = {
+      embed: async (t: string) => {
+        embedTexts.push(t);
+        return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+      },
+    } as never;
+    const idx = makeKnowledgeSemanticIndex(recording);
+    await idx.upsert('s', {
+      content: '',
+      metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+    });
+    assert.equal(
+      embedTexts.length,
+      0,
+      'embedder never called for empty content',
+    );
+    const hits = await idx.query('s', 'alpha', 10, { runId: 'R' });
+    assert.equal(
+      hits.length,
+      0,
+      'empty-content entry not returned by ranked query',
+    );
+  });
+
+  it('whitespace-only content (spaces / newlines / tabs) is NOT embedded and NOT returned by ranked query', async () => {
+    const embedTexts: string[] = [];
+    const recording = {
+      embed: async (t: string) => {
+        embedTexts.push(t);
+        return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+      },
+    } as never;
+    const idx = makeKnowledgeSemanticIndex(recording);
+    await idx.upsert('s', {
+      content: '   ',
+      metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+    });
+    await idx.upsert('s', {
+      content: '\n\t\n',
+      metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+    });
+    assert.equal(
+      embedTexts.length,
+      0,
+      'embedder never called for whitespace-only content',
+    );
+    const hits = await idx.query('s', 'alpha', 10, { runId: 'R' });
+    assert.equal(
+      hits.length,
+      0,
+      'whitespace-only entries not returned by ranked query',
+    );
+  });
+
+  it('non-empty content is still embedded exactly as before (no regression)', async () => {
+    const embedTexts: string[] = [];
+    const recording = {
+      embed: async (t: string) => {
+        embedTexts.push(t);
+        return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+      },
+    } as never;
+    const idx = makeKnowledgeSemanticIndex(recording);
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+    });
+    assert.ok(
+      embedTexts.includes('alpha'),
+      'embedder called with the non-empty text',
+    );
+    const hits = await idx.query('s', 'alpha', 10, { runId: 'R' });
+    assert.equal(hits.length, 1, 'non-empty entry is ranked and returned');
+    assert.equal(hits[0].content, 'alpha');
+  });
+});
+
 describe('JsonlKnowledgeBackend index lifecycle', () => {
   const withDir = async (fn: (dir: string) => Promise<void>) => {
     const dir = await mkdtemp(join(tmpdir(), 'ctrl-idx-'));
