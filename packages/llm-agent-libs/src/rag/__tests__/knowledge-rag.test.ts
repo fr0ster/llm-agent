@@ -91,6 +91,30 @@ test('ToolsRag delegates query and lookup', async () => {
   assert.equal(notFound, undefined);
 });
 
+test('#259: InMemoryKnowledgeBackend.put() survives a semantic upsert failure — entry retained (durable), unindexed, does not reject', async () => {
+  const semantic = {
+    async upsert(_sid: string, _e: KnowledgeEntry, _options?: CallOptions) {
+      throw new Error('embed rejected');
+    },
+    async query(_sid: string, _text: string) {
+      return [] as readonly KnowledgeEntry[];
+    },
+    deleteSession() {},
+  };
+  const backend = new InMemoryKnowledgeBackend(semantic);
+  const kr = new KnowledgeRag(backend, 'session-1');
+
+  // put() must NOT reject even though the semantic upsert throws.
+  await assert.doesNotReject(() =>
+    kr.write({ content: 'A', metadata: META }),
+  );
+
+  // The entry is still durably retained even though it could not be indexed.
+  const durable = await backend.scan('session-1');
+  assert.equal(durable.length, 1);
+  assert.equal(durable[0].content, 'A');
+});
+
 test('#Phase2: hasArtifact + listArtifacts track fetched identities (dedup)', async () => {
   const backend = new InMemoryKnowledgeBackend();
   const kr = new KnowledgeRag(backend, 'session-d');
