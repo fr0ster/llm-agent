@@ -11,7 +11,10 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
-import { KnowledgeRag, SessionRequestLogger } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  KnowledgeRag,
+  SessionRequestLogger,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { makeKnowledgeSemanticIndex } from '../../embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from '../../jsonl-knowledge-backend.js';
 import {
@@ -200,7 +203,10 @@ describe('#243 REOPENED — control-failure write hits a real embedder-backed RA
     );
 
     const body = surfacedContent(captured);
-    assert.ok(body, 'a body must have been surfaced (captured a content chunk)');
+    assert.ok(
+      body,
+      'a body must have been surfaced (captured a content chunk)',
+    );
     assert.notEqual(
       body.trim(),
       '',
