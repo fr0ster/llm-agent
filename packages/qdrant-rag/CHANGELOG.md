@@ -1,5 +1,24 @@
 # @mcp-abap-adt/qdrant-rag
 
+## 20.9.1
+
+Patch release — the reopened controller `(no response)` fix (#243), plus documentation and test hardening. No breaking changes, no new runtime API.
+
+### Fixed
+
+- **Controller `(no response)` on the control-failure path — the real, live-only root cause (#243, reopened; #260).** The v20.9.0 empty-success terminal guard (#245) was correct but was never *reached* on a live deployment: the control-failure step-result was persisted with an empty `content: ''`, which a real embedder (SAP AI Core, and any strict embedder) rejects with HTTP 400 ("The text content is empty"); the write error was swallowed (`[jsonl-index] will rebuild lazily`) and the run dead-ended before reaching any terminal writer, returning `(no response)` with zero tokens. The in-memory RAG in the v20.9.0 tests never embeds, so it passed CI. Fixed at the root: `writeControlFailure` now embeds the failure **reason** (never empty), and the embed chokepoint (`makeKnowledgeSemanticIndex.upsert`) skips empty/whitespace content so no caller can hand a real embedder empty text. Live-verified against a real SAP AI Core embedder + MCP: a genuine not-found tool error now surfaces the captured message with `finish_reason: stop` and non-zero usage — never `(no response)`.
+
+### Documentation & tests
+
+- User-facing docs for the `(no response)` control-failure path refreshed to describe both the empty-finalizer guard and the empty-content-embed root cause (TROUBLESHOOTING).
+- Why a bare custom `connectMcp` gets slot-index prefixes instead of `mcp[].name` labels — rationale added (#253).
+- `/health` sample version refreshed to the current release (#257); ARCHITECTURE "Current Technical Debt" updated for the completed smart-server decomposition, and the implemented monolith-audit design docs removed (#258).
+- Dedicated collision-throws tests for both `mergeOfferedTools` call sites (#252); a live-mirroring empty-rejecting-embedder regression test for the #243 control-failure write.
+
+### Known follow-up
+
+- #259 — `JsonlKnowledgeBackend.build()`'s per-entry re-embed has no per-entry `try/catch`, so any *other* embed failure (rate-limit / transient) on non-empty content can still crash the run; and the failed-step path should reach the terminal guard even when a RAG write fails. Moot for the empty-content trigger fixed here; tracked for a follow-up.
+
 ## 20.9.0
 
 Bundles every change merged since v20.8.0: the controller no-response safety-net
