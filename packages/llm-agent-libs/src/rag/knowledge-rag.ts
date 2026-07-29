@@ -7,6 +7,7 @@ import type {
   KnowledgeFilter,
   LlmTool,
 } from '@mcp-abap-adt/llm-agent';
+import { isDebugArea } from '../logger/debug-areas.js';
 
 /**
  * Persistence + retrieval port for the knowledge blackboard. The server
@@ -240,11 +241,15 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
     // A durable append is the success point: an index upsert failure does NOT
     // rethrow (mirrors JsonlKnowledgeBackend.put()) — the entry is already
     // retained above, just left unindexed; only the semantic recall misses it.
+    // NB: unlike the jsonl backend (which unsets `built` and re-embeds every
+    // durable entry on the next touch), this in-memory backend has no rebuild,
+    // so a failed entry stays retained-but-unindexed for the process lifetime —
+    // a recall-quality degradation, never a crash.
     this.of(sid).push(entry);
     try {
       await this.semantic?.upsert(sid, entry, options);
     } catch (e) {
-      if (process.env.DEBUG_CONTROLLER)
+      if (isDebugArea('rag'))
         console.error(
           `[knowledge-index] upsert failed (entry retained, unindexed): ${String(e)}`,
         );
