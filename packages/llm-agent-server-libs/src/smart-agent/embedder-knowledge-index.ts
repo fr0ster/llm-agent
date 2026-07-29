@@ -64,6 +64,13 @@ export function makeKnowledgeSemanticIndex(
     ): Promise<void> {
       // Skip infrastructure artifact types — never embed, never index.
       if (skipArtifactTypes.includes(e.metadata.artifactType)) return;
+      // Skip empty/whitespace content — a real embedder (e.g. SAP AI Core)
+      // rejects empty text with an HTTP 400, which would poison the index (the
+      // in-memory upsert throws, and a later lazy JsonlKnowledgeBackend rebuild
+      // re-throws it out of an unrelated call). The entry is still durably
+      // persisted by the backend's own append/scan; it simply never ranks in
+      // semantic recall, which is correct — there is no text to rank on. #243.
+      if (e.content.trim().length === 0) return;
       const { vector } = await embedder.embed(embedInput(e.content), options);
       const arr = bySession.get(sid);
       if (arr) arr.push({ entry: e, vector });

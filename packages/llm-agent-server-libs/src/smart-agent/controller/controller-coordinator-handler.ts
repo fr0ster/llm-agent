@@ -1329,7 +1329,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             stepId: step.stepId,
             digest: reason.slice(0, cfg.maxDigestChars ?? 500),
             writeOrdinal: bundle.writeOrdinal,
-            content: '',
+            // NEVER empty: an empty `content` is handed to the RAG's embedder,
+            // and a real embedder (e.g. SAP AI Core) rejects empty text with an
+            // HTTP 400 — poisoning the store and dead-ending the run (#243). The
+            // failure `reason` is itself a meaningful, always non-empty string
+            // (see the `noteFor`/literal-reason callers above) and improves
+            // recall over an empty record.
+            content: reason,
           },
           ctx.options,
         );
