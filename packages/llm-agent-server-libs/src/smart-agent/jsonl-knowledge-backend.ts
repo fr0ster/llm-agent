@@ -59,13 +59,27 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
   /** Lazy rehydration of the in-process index from the durable JSONL. `options`
    *  is forwarded into every re-index `upsert` so the embedder receives the
    *  triggering request's requestLogger — the lazy rebuild's embedding cost is
-   *  metered against the request that triggered it (not silently dropped). */
+   *  metered against the request that triggered it (not silently dropped).
+   *  Each entry's upsert is individually guarded: a single rejected embed
+   *  (rate-limit, transient network, provider-specific rejection) must skip
+   *  that entry and continue, never abort the rebuild or crash the caller —
+   *  the durable JSONL (scan()) remains the source of truth regardless. */
   private async build(sid: string, options?: CallOptions): Promise<void> {
     if (!this.semantic || this.built.has(sid)) return;
     this.semantic.deleteSession(sid); // clear any partial state → idempotent
-    for (const e of await this.scan(sid))
-      await this.semantic.upsert(sid, e, options);
-    this.built.add(sid); // mark built ONLY on success
+    let failed = false;
+    for (const e of await this.scan(sid)) {
+      try {
+        await this.semantic.upsert(sid, e, options);
+      } catch (err) {
+        failed = true;
+        if (process.env.DEBUG_CONTROLLER)
+          console.error(
+            `[jsonl-index] rebuild upsert failed (entry skipped): ${String(err)}`,
+          );
+      }
+    }
+    if (!failed) this.built.add(sid); // mark built ONLY when every entry indexed
   }
   private async append(sid: string, entry: KnowledgeEntry): Promise<void> {
     const f = this.file(sid);
