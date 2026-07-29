@@ -9,6 +9,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [20.9.2] — 2026-07-29
+
+Patch release — knowledge-write resilience follow-up to the v20.9.1 `(no response)` fix (#259). No breaking changes, no new runtime API.
+
+### Fixed
+
+- **A knowledge-write embed failure no longer crashes the controller run (#259).** Follow-up to #243/#260: v20.9.1 stopped handing the embedder *empty* content, but any *other* embed failure on a knowledge write — a rate-limit (429), a transient network error, or a provider rejection on non-empty content — could still propagate an unhandled rejection out of the controller's `execute()`, the same crash / `(no response)` shape via a different trigger. Both knowledge backends are now resilient:
+  - `JsonlKnowledgeBackend.build()`'s lazy-rebuild loop wraps each entry's `upsert` in a `try/catch` — one failing embed is skipped + logged and the rebuild continues; the session is marked "built" only on full success, so a failed entry is retried on the next touch.
+  - `InMemoryKnowledgeBackend.put()` now tolerates an `upsert` failure the same way — the entry is already retained in the durable store, so it is kept and simply left unindexed (a recall-quality degradation, never a crash).
+
+  This makes the control-failure → terminal path independent of a RAG write succeeding: an embed failure degrades to a logged skip and a surfaced answer, never a silent `(no response)`. (An in-memory-only deployment does not re-index a failed entry for the process lifetime; a persistent `logDir` deployment rebuilds it on the next touch.)
+
 ## [20.9.1] — 2026-07-29
 
 Patch release — the reopened controller `(no response)` fix (#243), plus documentation and test hardening. No breaking changes, no new runtime API.
