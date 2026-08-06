@@ -1,5 +1,25 @@
 # @mcp-abap-adt/ollama-embedder
 
+## 20.9.3
+
+### Fixed
+
+- **Controller `(no response)` on an all-failed run with a real LLM finalizer (#264, PR #265).**
+  The #243 dead-end guard (`commitTerminalSuccess` → `capturedFailureText`) fired
+  only when the finalizer returned an **empty** body — which is what the unit suite
+  scripted. A real LLM finalizer handed an **empty approved-set** (every step failed
+  → `collectApproved()` returns `[]`) does not return `''`; it composes a confident,
+  **non-empty** *"no SAP connection / no error message available"* answer, so the
+  guard never fired, the hallucination was written as a success terminal, and the
+  captured tool error (`Class … not found`, a `maxToolCalls` / step-timeout note)
+  was silently dropped even though the user asked for it. Now, when a finalizer is
+  configured but its approved-set is empty **and** a control-failure was captured,
+  the run surfaces `capturedFailureText` via the error terminal **before** invoking
+  the finalizer, so a non-empty hallucination can no longer slip past the guard.
+  Partial progress (a non-empty approved-set) still composes normally. Observed live
+  on 20.9.2 against a real SAP AI Core embedder; the in-memory suite never modelled a
+  non-empty finalizer answer, so it stayed green.
+
 ## 20.9.2
 
 Patch release — knowledge-write resilience follow-up to the v20.9.1 `(no response)` fix (#259). No breaking changes, no new runtime API.
