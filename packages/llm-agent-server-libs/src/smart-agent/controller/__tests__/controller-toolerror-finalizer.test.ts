@@ -217,6 +217,31 @@ describe('#264 — tool-error failure drops the captured error when the finalize
         `The finalizer was handed this approved-set (empty ⇒ it never saw the error): ` +
         `${JSON.stringify(finalizer.approvedSeen)}`,
     );
+
+    // Hardening: the captured error is surfaced DIRECTLY — the finalizer, which
+    // would compose from nothing and fabricate a "no error" answer, is never
+    // invoked (no evidence to compose from ⇒ short-circuit before it runs).
+    assert.equal(
+      finalizer.approvedSeen.length,
+      0,
+      'the finalizer must not be invoked when the captured error is surfaced directly',
+    );
+
+    // The run ends on a durable ERROR terminal carrying the captured text (so a
+    // resume/replay returns the same real error, never a success hallucination).
+    const bundle = await hydrateBundle(backend, 'sess-1');
+    const term = await readTerminal(
+      backend,
+      'sess-1',
+      // biome-ignore lint/style/noNonNullAssertion: runId set after execute
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(term?.kind, 'error');
+    assert.match(
+      (term as { error?: string } | undefined)?.error ?? '',
+      /Class ZZ_QX9B7 not found/,
+    );
   });
 
   it('CONTRAST (passes today): the ONLY reason the existing Symptom A test is green is the finalizer returning empty — the same run with a non-empty answer is the gap above', async () => {
