@@ -468,6 +468,7 @@ function resolveSkillManager(
 // SmartServer
 // ---------------------------------------------------------------------------
 
+import { mcpContentToText } from '../mcp/mcp-content.js';
 import { ControllerPipelinePlugin } from '../pipelines/controller.js';
 import { DagPipelinePlugin } from '../pipelines/dag.js';
 import { FlatPipelinePlugin } from '../pipelines/flat.js';
@@ -491,7 +492,6 @@ import {
   shouldIsolateMcpPerSession,
 } from './mcp/build-session-mcp-clients.js';
 import type { McpClientsWithDescriptors } from './mcp/mcp-clients-with-descriptors.js';
-import { mcpContentToText } from './mcp/mcp-content.js';
 import {
   buildNamespacedMcpBridge,
   rebindProvenanceToClients,

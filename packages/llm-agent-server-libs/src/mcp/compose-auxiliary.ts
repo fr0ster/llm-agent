@@ -9,6 +9,7 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { mcpContentToText } from './mcp-content.js';
 
 type CallMcp = (
   name: string,
@@ -87,8 +88,10 @@ export function composeAuxiliarySelect(
 /**
  * Wrap the domain `callMcp` bridge so auxiliary tools are dispatched FIRST
  * (aux-first; collisions were rejected at build). Auxiliary results are mapped
- * to the `McpCallResult` bridge contract: ok → content text / JSON with the
- * result's own `isError`; !ok → error.message with `isError:true` (a tool-level
+ * to the `McpCallResult` bridge contract: ok → content text (the canonical MCP
+ * text-block envelope is unwrapped via mcpContentToText, structured payloads are
+ * stringified, #267) with the result's own `isError`; !ok → error.message with
+ * `isError:true` (a tool-level
  * failure the caller MUST see). An abort rejection from `auxCallTool` propagates
  * unchanged (see the controller's abort handling).
  */
@@ -112,7 +115,7 @@ export function composeAuxiliaryBridge(
     if (!result.ok) return { text: result.error.message, isError: true };
     const { content, isError } = result.value;
     return {
-      text: typeof content === 'string' ? content : JSON.stringify(content),
+      text: mcpContentToText(content),
       isError: isError ?? false,
     };
   };
