@@ -490,6 +490,7 @@ import {
   serverOwnsMcpConnection,
   shouldIsolateMcpPerSession,
 } from './mcp/build-session-mcp-clients.js';
+import { mcpContentToText } from './mcp/mcp-content.js';
 import type { McpClientsWithDescriptors } from './mcp/mcp-clients-with-descriptors.js';
 import {
   buildNamespacedMcpBridge,
@@ -595,7 +596,8 @@ export {
  *
  * Dispatch strategy (mirrors the 17.0 tool-loop):
  * - Iterate the clients; the first client whose `listTools()` contains `name` wins.
- * - On success: return the textual content (stringify structured payloads).
+ * - On success: return the text (unwrap the canonical MCP text-block envelope
+ *   via mcpContentToText; stringify genuinely structured payloads). See #267.
  * - On error: return the error message as a string so the LLM executor can
  *   feed the failure back to the model as a tool result (no throw).
  * - If no client owns the tool: return an informative "Tool not found" string.
@@ -705,7 +707,7 @@ export function buildMcpBridge(
       }
       const { content, isError } = result.value;
       return {
-        text: typeof content === 'string' ? content : JSON.stringify(content),
+        text: mcpContentToText(content),
         isError: isError ?? false,
       };
     }
