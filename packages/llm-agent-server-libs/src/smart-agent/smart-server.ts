@@ -490,8 +490,8 @@ import {
   serverOwnsMcpConnection,
   shouldIsolateMcpPerSession,
 } from './mcp/build-session-mcp-clients.js';
-import { mcpContentToText } from './mcp/mcp-content.js';
 import type { McpClientsWithDescriptors } from './mcp/mcp-clients-with-descriptors.js';
+import { mcpContentToText } from './mcp/mcp-content.js';
 import {
   buildNamespacedMcpBridge,
   rebindProvenanceToClients,
