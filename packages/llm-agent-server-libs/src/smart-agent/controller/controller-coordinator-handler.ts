@@ -1962,6 +1962,33 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         ? await collectApproved(rag, bundle.runId)
         : [];
 
+    // #264: a configured finalizer with an EMPTY approved-set and a captured
+    // control-failure must surface the REAL failure, not compose from nothing.
+    // collectApproved returns [] when every step failed; a live LLM finalizer
+    // handed no evidence does not return '' (which would trip the #243 empty-body
+    // guard) — it fills the void with a confident "no connection / no error"
+    // answer that is non-empty, so commitTerminalSuccess writes THAT and the
+    // captured tool error (`Class … not found`, a maxToolCalls/step-timeout note)
+    // is silently dropped. Surface it here, BEFORE the finalizer runs — the same
+    // capturedFailureText the #243 guard uses, moved ahead of the compose so a
+    // non-empty hallucination cannot slip past it. Partial progress (approved
+    // non-empty) still composes normally.
+    if (deps.finalizer && bundle.runId && approved.length === 0) {
+      const captured = capturedFailureText(bundle);
+      if (captured !== undefined) {
+        await this.abortTerminal(
+          ctx,
+          sessionId,
+          bundle,
+          captured,
+          now,
+          terminalTtlMs,
+          usageNow(),
+        );
+        return true;
+      }
+    }
+
     // Shared exhaustion handler (pre-call AND in-catch): apply onFinalizeExhausted.
     const onExhausted = async (reason: string): Promise<string | null> => {
       if ((deps.config.onFinalizeExhausted ?? 'error') === 'best-effort') {
