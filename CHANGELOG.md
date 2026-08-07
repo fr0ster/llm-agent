@@ -9,6 +9,35 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [20.9.4] — 2026-08-07
+
+### Fixed
+
+- **MCP text-content envelope is now unwrapped in every bridge (#267, PR #268).**
+  All three MCP bridges — `buildMcpBridge`, `buildNamespacedMcpBridge`, and
+  `composeAuxiliaryBridge` — built `McpCallResult.text` with
+  `typeof content === 'string' ? content : JSON.stringify(content)`. A standard
+  MCP `CallToolResult.content` is an array of content blocks
+  (`[{ type: 'text', text }, …]`), never a bare string, so the canonical text
+  envelope fell through to `JSON.stringify`: the executor (on every text tool
+  result) and any surfaced tool error (the #264 control-failure text) received
+  raw `[{"type":"text","text":"…"}]` instead of the text. A surfaced error read
+  `Error: [{"type":"text","text":"MCP error … Class … not found"}]`.
+
+  A new shared `mcpContentToText()` (`llm-agent-server-libs`, `src/mcp/mcp-content.ts`)
+  unwraps a **pure** text-block array (joins the parts with `\n`) and leaves a bare
+  string, a structured object, or a mixed array (text + image/resource) stringified,
+  unchanged — no information loss for non-text payloads. Wired into all three bridges.
+
+### Changed
+
+- **`McpToolResult.content` now models the canonical MCP shape.** A new public
+  `McpContentBlock` type is exported, and `McpToolResult.content` is widened from
+  `string | Record<string, unknown>` to
+  `string | Record<string, unknown> | McpContentBlock[]`, so the content-block
+  array is part of the contract (it previously required an unsafe cast). Additive
+  and backward-compatible.
+
 ## [20.9.3] — 2026-08-06
 
 ### Fixed
