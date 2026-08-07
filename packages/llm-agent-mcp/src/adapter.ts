@@ -5,6 +5,7 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  type McpContentBlock,
   McpError,
   type McpTool,
   type McpToolResult,
@@ -129,7 +130,8 @@ export class McpClientAdapter implements IMcpClient {
             typeof (result.error ?? result.result) === 'object'
               ? ((result.error ?? result.result) as
                   | string
-                  | Record<string, unknown>)
+                  | Record<string, unknown>
+                  | McpContentBlock[])
               : String(result.error ?? result.result),
           // A tool-level failure is signalled EITHER by a returned `error`
           // field OR by the MCP CallToolResult's own `isError` (a tool that ran

@@ -114,7 +114,7 @@ test('composeAuxiliaryBridge: aux ok text-block content is unwrapped, not raw JS
     ok: true,
     value: {
       content: [{ type: 'text', text: 'Waited 1s' }],
-    } as unknown as McpToolResult,
+    },
   });
   const bridge = composeAuxiliaryBridge([waitDef], auxCall, async () => ({
     text: 'D',

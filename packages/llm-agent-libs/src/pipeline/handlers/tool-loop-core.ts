@@ -12,6 +12,7 @@ import type {
   IToolCache,
   LlmStreamChunk,
   LlmTool,
+  McpToolResult,
   Message,
   Result,
   TimingEntry,
@@ -190,10 +191,7 @@ export function buildHallucinatedToolMessages(
 export type ToolExecResult = {
   tc: ParsedToolCall;
   text: string;
-  res: Result<
-    { content: string | Record<string, unknown>; isError?: boolean },
-    { message: string }
-  > | null;
+  res: Result<McpToolResult, { message: string }> | null;
   duration: number;
   cached: boolean;
 };
