@@ -6,6 +6,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { bindToolCallName } from '@mcp-abap-adt/llm-agent';
 import { DefaultMcpFailureClassifier } from '@mcp-abap-adt/llm-agent-mcp';
+import { mcpContentToText } from '../../mcp/mcp-content.js';
 
 /**
  * Resolve the client that currently owns a given provenance `slotIndex`: the
@@ -109,7 +110,7 @@ export function buildNamespacedMcpBridge(
     }
     const { content, isError } = result.value;
     return {
-      text: typeof content === 'string' ? content : JSON.stringify(content),
+      text: mcpContentToText(content),
       isError: isError ?? false,
     };
   };

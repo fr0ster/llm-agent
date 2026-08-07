@@ -107,6 +107,22 @@ test('composeAuxiliaryBridge: aux ok object content is JSON-stringified', async 
   assert.equal((await bridge('wait', {})).text, JSON.stringify({ a: 1 }));
 });
 
+test('composeAuxiliaryBridge: aux ok text-block content is unwrapped, not raw JSON (#267)', async () => {
+  // A standard MCP tool result content is an array of blocks; the canonical
+  // text envelope must reach the LLM as text, not `[{"type":"text",…}]`.
+  const auxCall = async (): Promise<Result<McpToolResult, McpError>> => ({
+    ok: true,
+    value: {
+      content: [{ type: 'text', text: 'Waited 1s' }],
+    },
+  });
+  const bridge = composeAuxiliaryBridge([waitDef], auxCall, async () => ({
+    text: 'D',
+    isError: false,
+  }));
+  assert.equal((await bridge('wait', {})).text, 'Waited 1s');
+});
+
 test('composeAuxiliaryBridge: aux !ok maps to error.message (no throw, no domain)', async () => {
   const auxCall = async (): Promise<Result<McpToolResult, McpError>> => ({
     ok: false,

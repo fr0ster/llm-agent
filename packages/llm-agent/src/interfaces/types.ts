@@ -254,8 +254,29 @@ export interface McpTool {
   inputSchema: Record<string, unknown>;
 }
 
+/**
+ * A single MCP tool-result content block. The MCP spec models a tool result's
+ * `content` as an ARRAY of these (`[{ type:'text', text }, …]`). The text block
+ * is the one this codebase unwraps for the LLM (mcpContentToText, #267); other
+ * block kinds (image/resource/…) are carried structurally via the index
+ * signature and stringified unchanged.
+ */
+export interface McpContentBlock {
+  type: string;
+  /** Present on `type: 'text'` blocks — the kind unwrapped for the LLM. */
+  text?: string;
+  [key: string]: unknown;
+}
+
 export interface McpToolResult {
-  content: string | Record<string, unknown>;
+  /**
+   * The tool's output. Per the MCP spec this is an array of content blocks
+   * (`[{ type:'text', text }, …]`); a bare string or a structured object is also
+   * accepted (embedded / legacy handlers). Flattened for the LLM by
+   * mcpContentToText (#267): the canonical text envelope → its text, anything
+   * else → JSON.stringify.
+   */
+  content: string | Record<string, unknown> | McpContentBlock[];
   isError?: boolean;
 }
 

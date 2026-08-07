@@ -284,6 +284,7 @@ export type {
   LlmToolCallDelta,
   LlmUsage,
   McpCallResult,
+  McpContentBlock,
   McpTool,
   McpToolResult,
   ModelUsageEntry,
