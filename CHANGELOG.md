@@ -15,7 +15,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **All Dependabot advisories cleared — `npm audit` reports 0 vulnerabilities (PR #270).**
   The 23 raw GitHub alerts deduped to 8 real advisories against the installed tree
-  (4 high / 3 moderate / 1 low), all with a non-major fix. Transitive advisories
+  (4 high / 3 moderate / 1 low), all resolved with no breaking direct-dependency upgrade (one SDK-internal transitive major update, `@hono/node-server` 1.19.14 -> 2.1.0). Transitive advisories
   were resolved in the lockfile (`fast-uri` 3.1.5, `ip-address` 10.4.0,
   `brace-expansion` 5.0.9, `hono` 4.13.1, `@hono/node-server` 2.1.0,
   `body-parser` 2.3.0 — all arriving via the MCP SDK / hono, none imported by our
