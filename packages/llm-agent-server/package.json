@@ -47,7 +47,7 @@
     "@mcp-abap-adt/qdrant-rag": "^20.9.4",
     "@mcp-abap-adt/sap-aicore-embedder": "^20.9.4",
     "@mcp-abap-adt/sap-aicore-llm": "^20.9.4",
-    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^17.3.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
