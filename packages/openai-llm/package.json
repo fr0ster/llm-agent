@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@mcp-abap-adt/llm-agent": "^20.9.4",
-    "axios": "^1.17.0"
+    "axios": "^1.19.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.2"
