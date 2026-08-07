@@ -1,5 +1,23 @@
 # @mcp-abap-adt/sap-aicore-embedder
 
+## 20.9.5
+
+### Security
+
+- **All Dependabot advisories cleared — `npm audit` reports 0 vulnerabilities (PR #270).**
+  The 23 raw GitHub alerts deduped to 8 real advisories against the installed tree
+  (4 high / 3 moderate / 1 low), all with a non-major fix. Transitive advisories
+  were resolved in the lockfile (`fast-uri` 3.1.5, `ip-address` 10.4.0,
+  `brace-expansion` 5.0.9, `hono` 4.13.1, `@hono/node-server` 2.1.0,
+  `body-parser` 2.3.0 — all arriving via the MCP SDK / hono, none imported by our
+  source). The two **direct** dependencies also had their manifest floors raised to
+  the patched versions so fresh downstream installs are protected, not only this
+  repo's lockfile:
+  - `axios` `^1.17.0` → `^1.19.0` (`anthropic-llm`, `openai-llm`).
+  - `@modelcontextprotocol/sdk` `^1.28.0` → `^1.30.0` (`llm-agent-mcp`, `llm-agent-server`).
+
+  No source changes; full monorepo build clean; lint unchanged.
+
 ## 20.9.4
 
 ### Fixed

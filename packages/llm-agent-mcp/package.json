@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-mcp",
-  "version": "20.9.4",
+  "version": "20.9.5",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,7 +21,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^20.9.4",
+    "@mcp-abap-adt/llm-agent": "^20.9.5",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "publishConfig": {
