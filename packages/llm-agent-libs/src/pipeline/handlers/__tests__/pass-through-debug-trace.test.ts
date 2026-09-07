@@ -97,10 +97,8 @@ test('runPassThrough emits tagged llm_request_pass and llm_response_pass records
   );
   assert.ok(requestStep, 'expected an llm_request_pass step to be logged');
   assert.equal(requestStep?.area, 'llm');
-  assert.deepEqual(
-    (requestStep?.data as { messages: Message[] }).messages,
-    messages,
-  );
+  const requestData = requestStep?.data as { messages: Message[] } | undefined;
+  assert.deepEqual(requestData?.messages, messages);
 
   const responseStep = spySession.steps.find(
     (s) => s.name === 'llm_response_pass',

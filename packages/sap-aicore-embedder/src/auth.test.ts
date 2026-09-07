@@ -42,8 +42,11 @@ test('TokenProvider fetches and returns access_token', async () => {
   assert.equal(token, 'tok-1');
   assert.equal(fetchCalls.length, 1);
   assert.equal(fetchCalls[0].url, 'https://auth.example.com/oauth/token');
+  const headers = fetchCalls[0].init?.headers as
+    | Record<string, string>
+    | undefined;
   assert.equal(
-    (fetchCalls[0].init?.headers as Record<string, string>).Authorization,
+    headers?.Authorization,
     `Basic ${Buffer.from('cid:csec').toString('base64')}`,
   );
 });

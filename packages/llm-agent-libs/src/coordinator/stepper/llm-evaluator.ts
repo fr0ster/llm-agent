@@ -108,10 +108,9 @@ export function parseVerdict(raw: string): EvaluatorVerdict {
     json && typeof json.route === 'string' && ROUTES.has(json.route)
       ? (json.route as EvaluatorRoute)
       : 'needs-work';
-  const missing = Array.isArray(json?.missing)
-    ? (json?.missing as unknown[]).filter(
-        (m): m is string => typeof m === 'string',
-      )
+  const rawMissing = json?.missing;
+  const missing = Array.isArray(rawMissing)
+    ? rawMissing.filter((m): m is string => typeof m === 'string')
     : [];
   const reason =
     json && typeof json.reason === 'string' ? json.reason : undefined;

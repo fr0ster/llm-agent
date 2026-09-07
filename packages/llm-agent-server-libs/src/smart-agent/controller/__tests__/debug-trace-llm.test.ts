@@ -39,10 +39,10 @@ test('send emits llm_request + llm_response tagged "llm" with content', async ()
   const res = steps.find((s) => s.name.includes('llm_response'));
   assert.ok(req && req.area === 'llm', 'request record tagged llm');
   assert.ok(res && res.area === 'llm', 'response record tagged llm');
-  assert.deepEqual((req?.data as { messages: unknown[] }).messages, [
+  assert.deepEqual((req.data as { messages: unknown[] }).messages, [
     { role: 'user', content: 'hi' },
   ]);
-  assert.equal((res?.data as { content: string }).content, 'hello');
+  assert.equal((res.data as { content: string }).content, 'hello');
 });
 
 test('no sessionLogger → send still works, no throw', async () => {

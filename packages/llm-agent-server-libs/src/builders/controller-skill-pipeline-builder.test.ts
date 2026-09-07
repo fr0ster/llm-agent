@@ -30,13 +30,14 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
     .withBudgets({ maxToolCalls: 30 })
     .toConfig();
 
-  assert.equal(cfg.pipeline?.name, 'controller');
-  const sub = (cfg.pipeline?.config as any).subagents;
+  assert.ok(cfg.pipeline, 'a pipeline must be configured');
+  assert.equal(cfg.pipeline.name, 'controller');
+  const sub = (cfg.pipeline.config as any).subagents;
   assert.equal(sub.evaluator.provider, 'sap-ai-sdk');
   assert.equal(sub.executor.provider, 'sap-ai-sdk');
   assert.equal(sub.planner.provider, 'openai');
   assert.equal(sub.planner.apiKey, 'k');
-  assert.equal((cfg.pipeline?.config as any).budgets.maxToolCalls, 30);
+  assert.equal((cfg.pipeline.config as any).budgets.maxToolCalls, 30);
   assert.deepEqual(cfg.mcp, [
     { type: 'http', url: 'http://localhost:3001/mcp/stream/http' },
   ]);
