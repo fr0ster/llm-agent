@@ -145,7 +145,7 @@ test('withToolNamespace() reaches all THREE consumers: registry, startup vectori
   assert.equal(res.ok, true, 'process() must complete successfully');
   const toolsSelected = steps.find((s) => s.name === 'tools_selected');
   assert.ok(toolsSelected, 'tools_selected step must be logged');
-  const selectedNames = (toolsSelected?.data as { selectedNames: string[] })
+  const selectedNames = (toolsSelected.data as { selectedNames: string[] })
     .selectedNames;
   assert.deepEqual(
     [...selectedNames].sort(),

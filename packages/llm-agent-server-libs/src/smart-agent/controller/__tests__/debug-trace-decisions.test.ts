@@ -185,7 +185,7 @@ describe('debug-trace controller decision / MCP / RAG capture (Task 5, #213)', (
       d,
       `expected a controller_decision record, got: ${JSON.stringify(steps.map((s) => s.name))}`,
     );
-    assert.ok((d?.data as { reason?: string }).reason, 'it carries a reason');
+    assert.ok((d.data as { reason?: string }).reason, 'it carries a reason');
   });
 
   it('the target-state establishment emits a controller_decision_target-state record', async () => {
@@ -203,7 +203,7 @@ describe('debug-trace controller decision / MCP / RAG capture (Task 5, #213)', (
         s.area === 'controller',
     );
     assert.ok(d, 'expected a target-state decision record');
-    assert.ok((d?.data as { reason?: string }).reason, 'it carries a reason');
+    assert.ok((d.data as { reason?: string }).reason, 'it carries a reason');
   });
 
   it('the controller MCP bridge emits an mcp_tool_call record (area mcp)', async () => {
@@ -221,7 +221,7 @@ describe('debug-trace controller decision / MCP / RAG capture (Task 5, #213)', (
       m,
       `expected an mcp_tool_call record, got: ${JSON.stringify(steps.map((s) => s.name))}`,
     );
-    assert.equal((m?.data as { name?: string }).name, 'GetTable');
+    assert.equal((m.data as { name?: string }).name, 'GetTable');
   });
 
   it('the controller step recall emits a rag_recall record (area rag)', async () => {
@@ -239,7 +239,7 @@ describe('debug-trace controller decision / MCP / RAG capture (Task 5, #213)', (
       `expected a rag_recall record, got: ${JSON.stringify(steps.map((s) => s.name))}`,
     );
     assert.ok(
-      (r?.data as { query?: string }).query,
+      (r.data as { query?: string }).query,
       'it carries the recall query',
     );
   });

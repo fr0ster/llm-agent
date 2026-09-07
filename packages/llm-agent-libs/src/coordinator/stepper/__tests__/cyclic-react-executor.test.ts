@@ -1315,7 +1315,7 @@ test('Guard 1: tools offered but final answer made with no tool calls/facts → 
   const flag = steps.find((s) => s.name === 'hallucination_suspected');
   assert.ok(flag, 'emits hallucination_suspected');
   assert.equal(
-    (flag?.data as { finalPromptTokens: number }).finalPromptTokens,
+    (flag.data as { finalPromptTokens: number }).finalPromptTokens,
     42,
     'records the answer-producing call prompt tokens as evidence',
   );

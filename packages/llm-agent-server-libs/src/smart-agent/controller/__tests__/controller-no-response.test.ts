@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  type IKnowledgeRagHandle,
-  type KnowledgeEntry,
-  type LlmStreamChunk,
-  type LlmTool,
-  type Result,
+import type {
+  IKnowledgeRagHandle,
+  KnowledgeEntry,
+  LlmStreamChunk,
+  LlmTool,
+  Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
 import {
