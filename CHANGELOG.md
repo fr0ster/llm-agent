@@ -9,6 +9,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [21.0.0] — 2026-09-07
+
+> **Major for the licence, not for the code.** There is no API break in this
+> release — no removed export, no changed signature, no config migration. The
+> major is reserved for the relicensing, which is the change consumers must
+> actually make a decision about. Upgrading from 20.9.5 is a drop-in code
+> change; whether you *may* upgrade is a licensing question, answered below.
+
 ### Changed
 
 - **BREAKING (licence): the whole monorepo moves from MIT to `LGPL-3.0-only`.**
@@ -33,6 +41,32 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     users can substitute their own build. Domain skills loaded at runtime via
     `skillPlugins:` remain your content under your licence — the engine never
     vendors them.
+
+### Documentation
+
+- **README rewritten around what the project actually is.** It opened with a
+  one-line "RAG-orchestrated LLM agent and OpenAI-compatible server" and went
+  straight to a package table, which undersold the runtime by a generation: the
+  shape of a run has been configuration rather than code since v19. The intro
+  now covers pipelines-as-plugins (all six built-ins, `controller` marked as the
+  maintained interpreter, `dag`/`stepper` marked legacy per their `@deprecated`
+  markers), context management (history window/summarization, the swappable
+  tool-loop context strategy, per-step controller budgets, token metering),
+  RAG as a composition (four stores x three built-in embedders plus custom
+  factories, hybrid retrieval, BM25 with no embedder, the runtime skills-RAG),
+  MCP (five transports, multi-server namespacing, per-step tool selection,
+  typed loud failure), the plugin seam surface, and the HTTP endpoint list.
+- **Accuracy fixes found while auditing:**
+  - `docs/PIPELINES.md` said "five built-in pipelines" while listing six; the
+    registry in `smart-server.ts` registers six. Two code comments carried the
+    same stale count.
+  - `CLAUDE.md` claimed "There is no unit test framework" — every package runs
+    `node:test` via tsx (2557 tests) and root `npm test` fans out across them.
+  - The README documentation index was missing `PIPELINES.md`, `EXAMPLES.md`
+    and `TROUBLESHOOTING.md`, and its only upgrade pointer was v10 -> v11 while
+    the break consumers actually hit is the v19 `coordinator:` removal.
+  - `docs/DEPLOYMENT.md` sample `/health` output refreshed to the current
+    version.
 
 ## [20.9.5] — 2026-08-07
 
