@@ -1,5 +1,14 @@
 # @mcp-abap-adt/deepseek-llm
 
+## 22.1.0
+
+Dependency release — minor rather than patch because the declared floors of the
+runtime dependencies move up, so consumers resolve new minimums. No API change,
+no behaviour change.
+
+See [CHANGELOG](https://github.com/fr0ster/llm-agent/blob/main/CHANGELOG.md) for
+the full table.
+
 ## 22.0.1
 
 Housekeeping release — **this package is content-identical to 22.0.0**.
