@@ -11,9 +11,13 @@ npm run lint           # Lint & auto-fix with Biome
 npm run lint:check     # Check lint without fixing
 npm run format         # Format with Biome
 npm run clean          # Remove dist/
+npm test               # Unit tests in every workspace (node:test via tsx)
 ```
 
-There is no unit test framework. `npm run test` is just `build + start` (smoke test).
+Tests are the Node built-in runner: each package runs
+`node --import tsx/esm --test 'src/**/*.test.ts'`, and root `npm test` fans out
+across all workspaces. Integration suites under `test/integration/` are gated on
+env vars and are not part of `npm test`.
 
 ## Architecture
 

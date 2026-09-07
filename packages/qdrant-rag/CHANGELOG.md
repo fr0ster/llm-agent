@@ -1,5 +1,27 @@
 # @mcp-abap-adt/qdrant-rag
 
+## 21.0.0
+
+**BREAKING (licence): relicensed from MIT to `LGPL-3.0-only`.**
+
+Major for the licence, not for the code — there is no API break in this
+release: no removed export, no changed signature, no config migration.
+Upgrading from 20.9.5 is a drop-in code change; whether you *may* upgrade is
+a licensing question.
+
+- Both required texts now ship with this package: `LICENSE` (LGPLv3) and
+  `COPYING` (GPLv3). Both are needed — the LGPL is a set of additional
+  permissions layered on the GPL and cannot be read alone.
+- **Not retroactive.** Everything published up to and including v20.9.5 was
+  released under MIT and stays MIT under those terms.
+- **Consumer impact is limited.** Importing this package, or talking to
+  `llm-agent` over HTTP, does not place your program under the LGPL. The
+  licence asks that modifications *to these libraries* stay free and that your
+  users can substitute their own build.
+
+See the root CHANGELOG for the full release notes, including the README and
+documentation rewrite that ships alongside.
+
 ## 20.9.5
 
 ### Security

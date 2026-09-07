@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/openai-llm",
-  "version": "20.9.5",
+  "version": "21.0.0",
   "description": "OpenAI LLM provider (ILlm) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -15,7 +15,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "COPYING"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -23,13 +24,13 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^20.9.5",
+    "@mcp-abap-adt/llm-agent": "^21.0.0",
     "axios": "^1.19.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.2"
   },
-  "license": "MIT",
+  "license": "LGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fr0ster/llm-agent.git"

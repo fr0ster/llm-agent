@@ -35,6 +35,14 @@ Both chat endpoints route through the same SmartAgent pipeline. See [CLIENT_SETU
 
 ## Docker
 
+> **Redistribution note.** An image that installs these packages redistributes
+> them, so ship the LGPL notices with it: state that the product uses these
+> libraries under the LGPL, and include `LICENSE` and `COPYING` — both already
+> sit inside each package under `node_modules/@mcp-abap-adt/<pkg>/`, so a normal
+> `npm ci` image already carries them; just don't strip them. You do **not** owe
+> anyone your own source for merely installing and running the packages
+> unmodified. See [LICENSING.md](LICENSING.md).
+
 ### Dockerfile (multi-stage)
 
 ```dockerfile
@@ -258,7 +266,7 @@ curl http://localhost:4004/health
 {
   "status": "healthy",
   "uptime": 3600000,
-  "version": "20.9.0",
+  "version": "21.0.0",
   "timestamp": "2026-07-16T10:00:00.000Z",
   "components": {
     "llm": true,

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-mcp",
-  "version": "20.9.5",
+  "version": "21.0.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,7 +13,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "COPYING"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -21,10 +23,11 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^20.9.5",
+    "@mcp-abap-adt/llm-agent": "^21.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "license": "LGPL-3.0-only"
 }

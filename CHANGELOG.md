@@ -9,6 +9,93 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [21.0.0] — 2026-09-07
+
+### Added
+
+- **Repo-level licensing invariants are now enforced by tests**
+  (`test/repo/licensing.test.ts`, wired into root `npm test`): every published
+  package declares `LGPL-3.0-only`; both `LICENSE` and `COPYING` are listed in
+  `files` **and** present on disk; the shipped texts really are the LGPL and the
+  standalone GPL rather than placeholders or two copies of the same file; and
+  all packages share one lockstep version. This guards the exact defect class
+  that shipped before this release — `LICENSE` declared in `files` with no such
+  file on disk, so the tarball carried no licence text.
+
+> **Major for the licence, not for the code.** There is no API break in this
+> release — no removed export, no changed signature, no config migration. The
+> major is reserved for the relicensing, which is the change consumers must
+> actually make a decision about. Upgrading from 20.9.5 is a drop-in code
+> change; whether you *may* upgrade is a licensing question, answered below.
+
+### Changed
+
+- **BREAKING (licence): the whole monorepo moves from MIT to `LGPL-3.0-only`.**
+  Every published package — the six runtime packages and all eleven
+  provider/embedder/RAG packages — now declares
+  `"license": "LGPL-3.0-only"`, matching the `mcp-abap-adt-*` library family.
+  - Both required texts now ship at the repository root **and inside every
+    package tarball**: `LICENSE` (LGPLv3) and `COPYING` (GPLv3). Both are
+    needed — the LGPL is a set of additional permissions layered on the GPL and
+    cannot be read alone. Each package's `files` array was extended accordingly.
+  - Three packages (`llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`) had
+    **no `license` field at all** and were therefore published to npm with no
+    declared licence; they are now covered like the rest.
+  - Most packages listed `LICENSE` in `files` but had no such file on disk, so
+    their tarballs shipped no licence text. Fixed by the per-package copies.
+  - **Not retroactive.** Everything published up to and including **v20.9.5**
+    was released under MIT and stays MIT under those terms; the change applies
+    to releases made from this commit onward.
+  - **Consumer impact is limited.** Importing these packages, or talking to
+    `llm-agent` over HTTP, does not place your program under the LGPL. The
+    licence asks that modifications *to these libraries* stay free and that your
+    users can substitute their own build. Domain skills loaded at runtime via
+    `skillPlugins:` remain your content under your licence — the engine never
+    vendors them.
+
+### Documentation
+
+- **README rewritten around what the project actually is.** It opened with a
+  one-line "RAG-orchestrated LLM agent and OpenAI-compatible server" and went
+  straight to a package table, which undersold the runtime by a generation: the
+  shape of a run has been configuration rather than code since v19. The intro
+  now covers pipelines-as-plugins (all six built-ins, `controller` marked as the
+  maintained interpreter, `dag`/`stepper` marked legacy per their `@deprecated`
+  markers), context management (history window/summarization, the swappable
+  tool-loop context strategy, per-step controller budgets, token metering),
+  RAG as a composition (four stores x three built-in embedders plus custom
+  factories, hybrid retrieval, BM25 with no embedder, the runtime skills-RAG),
+  MCP (five transports, multi-server namespacing, per-step tool selection,
+  typed loud failure), the plugin seam surface, and the HTTP endpoint list.
+- **New [`docs/LICENSING.md`](docs/LICENSING.md)** — the consumer-facing
+  licensing page: a case-by-case table of what does and does not trigger
+  copyleft (importing, running over HTTP, shipping a Docker image, modifying the
+  libraries, loading runtime skills), why both licence texts must travel
+  together, and — as the breaking release requires — **explicit migration steps
+  for consumers on the MIT releases**, including the option of pinning to
+  `20.9.5`, which stays MIT permanently.
+- **All 17 package READMEs gained a `## License` section.** Sixteen had none at
+  all, and each of these READMEs is a package's npm landing page, so the licence
+  was invisible exactly where consumers look first.
+- **`docs/DEPLOYMENT.md` gained a redistribution note** on the Docker section:
+  an image that installs these packages redistributes them, so the notices must
+  ship with it — verified that a real `npm install` of the tarball lands both
+  `LICENSE` and `COPYING` under `node_modules/@mcp-abap-adt/<pkg>/`.
+- **Accuracy fixes found while auditing:**
+  - `docs/PIPELINES.md` said "five built-in pipelines" while listing six; the
+    registry in `smart-server.ts` registers six. Two code comments carried the
+    same stale count.
+  - `CLAUDE.md` claimed "There is no unit test framework" — every package runs
+    `node:test` via tsx (2557 tests) and root `npm test` fans out across them.
+  - The README documentation index was missing `PIPELINES.md`, `EXAMPLES.md`
+    and `TROUBLESHOOTING.md`, and its only upgrade pointer was v10 -> v11 while
+    the break consumers actually hit is the v19 `coordinator:` removal.
+  - `docs/DEPLOYMENT.md` sample `/health` output refreshed to the current
+    version.
+  - `packages/llm-agent-server/README.md` pointed readers at
+    `docs/MIGRATION-v10.md`, which does not exist; replaced with live links to
+    the architecture, pipelines and deployment docs.
+
 ## [20.9.5] — 2026-08-07
 
 ### Security

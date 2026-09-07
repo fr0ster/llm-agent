@@ -863,10 +863,10 @@ export class SmartServer {
   private readonly _sessionMetaStore: ISessionMetaStore =
     new InMemorySessionMetaStore();
   /**
-   * Pipeline-plugin registry, populated in `start()` after plugins load: the 4
-   * built-ins (flat/linear/dag/stepper) plus any `plugins.pipelinePlugins`,
-   * fail-fast on name collision. `buildPipelineInstance` selects by
-   * `cfg.pipeline.name` (default 'flat').
+   * Pipeline-plugin registry, populated in `start()` after plugins load: the 6
+   * built-ins (flat/linear/dag/stepper/controller/controller-weak) plus any
+   * `plugins.pipelinePlugins`, fail-fast on name collision.
+   * `buildPipelineInstance` selects by `cfg.pipeline.name` (default 'flat').
    */
   private _pipelineRegistry!: Map<string, IPipelinePlugin>;
   /**
@@ -1110,7 +1110,7 @@ export class SmartServer {
     }
 
     // ---- Pipeline-plugin registry (sub-goal C) ---------------------------
-    // The 4 built-ins are STATIC; plugin-supplied pipelines are merged on top.
+    // The 6 built-ins are STATIC; plugin-supplied pipelines are merged on top.
     // Fail-fast on a name collision so a plugin cannot silently shadow a
     // built-in (or another plugin). `buildPipelineInstance` selects by
     // `cfg.pipeline.name` (default 'flat') at session-build time.
