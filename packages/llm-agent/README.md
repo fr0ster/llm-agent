@@ -31,3 +31,18 @@ Symbols that briefly appeared only in `@mcp-abap-adt/llm-agent-server@12.0.0` ar
 | Interfaces: `IMetrics`, `ITracer`, `ISessionManager`, `IPluginLoader`, `IReranker`, `IOutputValidator`, `IModelResolver`, `IMcpConnectionStrategy`, `IPipeline`, pipeline DSL types, health DTOs | `@mcp-abap-adt/llm-agent-server` | `@mcp-abap-adt/llm-agent` |
 
 `makeLlm`, `makeDefaultLlm`, and `makeRag` are now **async** (`Promise<ILlm>` / `Promise<IRag>`). Direct callers add one `await`. `makeRag` auto-prefetches the backends it needs — no manual warm-up required. `resolveEmbedder(cfg, options)` remains synchronous and is intended for hot-path callers that need sync resolution — call `prefetchEmbedderFactories([...])` once at startup before using this sync resolver. Consumers that build SmartAgent only via `SmartAgentBuilder` are unaffected (the builder's `build()` is already async).
+
+## License
+
+**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see
+[`LICENSE`](LICENSE) (LGPL) and [`COPYING`](COPYING) (the GPL it layers
+permissions onto; both are required, the LGPL is not standalone).
+
+Copyright © 2025–2026 Oleksii Kyslytsia
+
+Importing this package, or running it behind an HTTP endpoint, does not place
+your program under the LGPL — the licence asks that modifications *to this
+library* stay free and that your users can substitute their own build.
+Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
+retroactive. Full detail, including what to do if you redistribute:
+[docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).

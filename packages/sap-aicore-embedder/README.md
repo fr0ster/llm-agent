@@ -84,8 +84,15 @@ For the `foundation-models` scenario, authentication uses the `AICORE_SERVICE_KE
 
 ## License
 
-**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`). Earlier
-published versions were MIT and stay MIT — a licence change is not retroactive.
-See [`LICENSE`](LICENSE) (LGPL) and [`COPYING`](COPYING) (the GPL it is written
-on top of); both are needed, since the LGPL is a set of additional permissions
-over the GPL and cannot be read alone.
+**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see
+[`LICENSE`](LICENSE) (LGPL) and [`COPYING`](COPYING) (the GPL it layers
+permissions onto; both are required, the LGPL is not standalone).
+
+Copyright © 2025–2026 Oleksii Kyslytsia
+
+Importing this package, or running it behind an HTTP endpoint, does not place
+your program under the LGPL — the licence asks that modifications *to this
+library* stay free and that your users can substitute their own build.
+Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
+retroactive. Full detail, including what to do if you redistribute:
+[docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).

@@ -195,6 +195,7 @@ a config using them fails loud at startup with a migration message; see
 - [CLIENT_SETUP.md](docs/CLIENT_SETUP.md) — connection instructions for Claude CLI, Cline, and Goose
 - [SAP_AI_CORE.md](docs/SAP_AI_CORE.md) — SAP AI Core operational guidance and troubleshooting
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — production deployment patterns (Docker, systemd, serverless)
+- [LICENSING.md](docs/LICENSING.md) — what `LGPL-3.0-only` means for consumers, and migrating from the MIT releases
 
 ## Development
 
@@ -251,3 +252,7 @@ libraries* stay free, and that your users can replace them with their own build.
 Domain skills you load at runtime through `skillPlugins:` are your content under
 your licence: the engine never vendors them, so they are not a derivative work of
 it.
+
+**Upgrading from an MIT release, or redistributing these packages?**
+[docs/LICENSING.md](docs/LICENSING.md) has the case-by-case breakdown and the
+migration steps.

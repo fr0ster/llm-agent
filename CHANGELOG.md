@@ -67,6 +67,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   factories, hybrid retrieval, BM25 with no embedder, the runtime skills-RAG),
   MCP (five transports, multi-server namespacing, per-step tool selection,
   typed loud failure), the plugin seam surface, and the HTTP endpoint list.
+- **New [`docs/LICENSING.md`](docs/LICENSING.md)** — the consumer-facing
+  licensing page: a case-by-case table of what does and does not trigger
+  copyleft (importing, running over HTTP, shipping a Docker image, modifying the
+  libraries, loading runtime skills), why both licence texts must travel
+  together, and — as the breaking release requires — **explicit migration steps
+  for consumers on the MIT releases**, including the option of pinning to
+  `20.9.5`, which stays MIT permanently.
+- **All 17 package READMEs gained a `## License` section.** Sixteen had none at
+  all, and each of these READMEs is a package's npm landing page, so the licence
+  was invisible exactly where consumers look first.
+- **`docs/DEPLOYMENT.md` gained a redistribution note** on the Docker section:
+  an image that installs these packages redistributes them, so the notices must
+  ship with it — verified that a real `npm install` of the tarball lands both
+  `LICENSE` and `COPYING` under `node_modules/@mcp-abap-adt/<pkg>/`.
 - **Accuracy fixes found while auditing:**
   - `docs/PIPELINES.md` said "five built-in pipelines" while listing six; the
     registry in `smart-server.ts` registers six. Two code comments carried the
@@ -78,6 +92,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     the break consumers actually hit is the v19 `coordinator:` removal.
   - `docs/DEPLOYMENT.md` sample `/health` output refreshed to the current
     version.
+  - `packages/llm-agent-server/README.md` pointed readers at
+    `docs/MIGRATION-v10.md`, which does not exist; replaced with live links to
+    the architecture, pipelines and deployment docs.
 
 ## [20.9.5] — 2026-08-07
 
