@@ -1,5 +1,17 @@
 # @mcp-abap-adt/llm-agent
 
+## 22.0.1
+
+Housekeeping release — **this package is content-identical to 22.0.0**.
+
+Two transitive advisories (`fast-uri` HIGH, `qs` MODERATE, both under
+`@modelcontextprotocol/sdk`) were cleared in the monorepo's lockfile, which is
+not published, so nothing here changed. A clean install of 22.0.0 from the
+registry already resolved to the patched versions and audited clean. Upgrading
+is optional.
+
+See [CHANGELOG](https://github.com/fr0ster/llm-agent/blob/main/CHANGELOG.md).
+
 ## 22.0.0
 
 The GPL base text that ships with this package is renamed `COPYING` →

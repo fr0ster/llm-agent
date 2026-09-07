@@ -9,6 +9,43 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [22.0.1] — 2026-09-07
+
+Housekeeping release. **No change reaches the published packages** — the tarballs
+are content-identical to 22.0.0, verified across all 17. Upgrading is optional.
+
+### Security
+
+- **`npm audit` back to 0.** Two advisories had appeared since 22.0.0, both in
+  transitive dependencies of `@modelcontextprotocol/sdk`:
+  - `fast-uri` 3.1.5 → **HIGH**, four advisories (SSRF via malformed IPv6
+    normalization and via repeated hostname percent-decoding; host confusion via
+    percent-encoded scheme normalization and via skipped IDN canonicalization).
+    Fixed in `>=3.1.6`, reached through `ajv`.
+  - `qs` 6.15.2 → **MODERATE**, two advisories (DoS via attacker-controlled
+    `isBuffer`; array-limit bypass via bracket-key comma parsing). Fixed in
+    `>=6.16.0`, reached through `express`.
+
+  Nothing in our source is involved and no declared dependency changed — the fix
+  is `package-lock.json` only.
+
+  **Consumers of 22.0.0 were never exposed.** The intermediate ranges already
+  admit the patched versions (`ajv` wants `fast-uri: ^3.0.1`, `express` wants
+  `qs: ^6.14.0`) and these packages publish no lockfile, so npm resolves fresh:
+  a clean install of 22.0.0 from the registry pulls `fast-uri` 3.1.7 and `qs`
+  6.16.0 and audits clean. The vulnerable resolution existed only in this
+  repository's committed lockfile — that is, in development and CI.
+
+### Added
+
+- **`.github/dependabot.yml`**, and automated security fixes enabled on the
+  repository. Both were absent, which is why the advisory backlog had to be
+  found by hand twice — once for v20.9.5 and again here. Updates are grouped
+  deliberately: with 17 workspaces an ungrouped config opens a pull request per
+  package per bump. Security updates form their own group so a fix is never
+  queued behind a routine version bump, and majors are ignored — in a lockstep
+  monorepo those are a reviewed decision rather than a bot's.
+
 ## [22.0.0] — 2026-09-07
 
 > **Major for the licence, not for the code.** No removed export, no changed
