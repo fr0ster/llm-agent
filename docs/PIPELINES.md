@@ -1,7 +1,7 @@
 # Pipelines
 
 A **pipeline** decides which agent the server builds. It is selected by name in
-YAML and resolved from a plugin registry. The server ships five built-in
+YAML and resolved from a plugin registry. The server ships six built-in
 pipelines; deployments can add their own as plugins.
 
 ```yaml
