@@ -25,8 +25,8 @@
   },
   "dependencies": {
     "@mcp-abap-adt/llm-agent": "^22.0.1",
-    "@sap-ai-sdk/ai-api": "^2.11.0",
-    "@sap-ai-sdk/orchestration": "^2.11.0"
+    "@sap-ai-sdk/ai-api": "^2.15.0",
+    "@sap-ai-sdk/orchestration": "^2.15.0"
   },
   "license": "LGPL-3.0-only",
   "repository": {

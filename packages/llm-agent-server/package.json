@@ -50,7 +50,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^17.3.1",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@mcp-abap-adt/anthropic-llm": "^22.0.1",
@@ -64,8 +64,8 @@
     "@mcp-abap-adt/sap-aicore-embedder": "^22.0.1",
     "@mcp-abap-adt/sap-aicore-llm": "^22.0.1",
     "@opentelemetry/api": "^1.9.1",
-    "@sap-ai-sdk/ai-api": "^2.11.0",
-    "@sap-ai-sdk/orchestration": "^2.11.0",
+    "@sap-ai-sdk/ai-api": "^2.15.0",
+    "@sap-ai-sdk/orchestration": "^2.15.0",
     "@types/node": "^25.9.2"
   },
   "license": "GPL-3.0-only",
