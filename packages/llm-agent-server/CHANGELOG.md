@@ -1,5 +1,29 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 22.0.0
+
+**BREAKING (licence): this package moves from `LGPL-3.0-only` to
+`GPL-3.0-only`.** It is the only package in the monorepo that moved; the
+libraries stay LGPL.
+
+This package exposes no library API — it ships the `llm-agent`,
+`llm-agent-check` and `claude-via-agent` executables. Nothing can link against
+it, so the LGPL's distinguishing permission had nothing to apply to.
+
+- **Running the server is unaffected.** The GPL has no network trigger, and
+  running a program is not distributing it.
+- **Embedding is unaffected.** The whole SmartServer composition runtime is in
+  `@mcp-abap-adt/llm-agent-server-libs`, which stays `LGPL-3.0-only`.
+- The narrow obligation added: distributing a **modified** build of this server
+  means releasing the corresponding source under the GPL.
+- **Not retroactive.** `21.0.0` was published under `LGPL-3.0-only` and keeps
+  those terms permanently.
+
+`LICENSE` now holds the GPLv3 text; the layered base text is gone, as the GPL is
+standalone. No API change.
+
+See [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
 ## 21.0.0
 
 **BREAKING (licence): relicensed from MIT to `LGPL-3.0-only`.**

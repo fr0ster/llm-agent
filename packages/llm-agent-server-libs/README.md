@@ -45,7 +45,7 @@ Depends on `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-libs`, `@mcp-abap
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see
-[`LICENSE`](LICENSE) (LGPL) and [`COPYING`](COPYING) (the GPL it layers
+[`LICENSE`](LICENSE) (LGPL) and [`GPL-3.0.txt`](GPL-3.0.txt) (the GPL it layers
 permissions onto; both are required, the LGPL is not standalone).
 
 Copyright © 2025–2026 Oleksii Kyslytsia

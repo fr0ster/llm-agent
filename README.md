@@ -1,7 +1,8 @@
 # SmartAgent — a composable framework for LLM pipelines
 
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
-[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+[![License: LGPL v3](https://img.shields.io/badge/libraries-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+[![License: GPL v3](https://img.shields.io/badge/llm--agent--server-GPL_v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 **Build an LLM pipeline of any shape — from a single ReAct tool-loop to a
 plan-first controller with durable, resumable state — by composing interfaces
@@ -195,7 +196,7 @@ a config using them fails loud at startup with a migration message; see
 - [CLIENT_SETUP.md](docs/CLIENT_SETUP.md) — connection instructions for Claude CLI, Cline, and Goose
 - [SAP_AI_CORE.md](docs/SAP_AI_CORE.md) — SAP AI Core operational guidance and troubleshooting
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — production deployment patterns (Docker, systemd, serverless)
-- [LICENSING.md](docs/LICENSING.md) — what `LGPL-3.0-only` means for consumers, and migrating from the MIT releases
+- [LICENSING.md](docs/LICENSING.md) — which package is under which licence, what it means for consumers, and the migration steps
 
 ## Development
 
@@ -225,34 +226,45 @@ npm run dev:sap-ai-core   # examples/docker-sap-ai-core
 
 ## License
 
-**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — every package
-in this monorepo. Earlier published versions (≤ v20.9.5) were MIT and stay MIT;
-a licence change is not retroactive.
+**The libraries are `LGPL-3.0-only`. The `llm-agent-server` binary is
+`GPL-3.0-only`.** Earlier published versions (≤ v20.9.5) were MIT, and v21.0.0
+published everything under the LGPL; a licence change is not retroactive, so
+those releases keep the terms they shipped under.
 
 Copyright © 2025–2026 Oleksii Kyslytsia
 
+| | Licence |
+|---|---|
+| The 16 library packages — everything you import, including the whole SmartServer composition runtime in `llm-agent-server-libs` | `LGPL-3.0-only` |
+| `@mcp-abap-adt/llm-agent-server` — the CLI and HTTP server, no library exports | `GPL-3.0-only` |
+
 This software is free software: you can redistribute it and/or modify it under
-the terms of the GNU Lesser General Public License as published by the Free
-Software Foundation, version 3.
+the terms of the GNU Lesser General Public License (the libraries) or the GNU
+General Public License (the server binary) as published by the Free Software
+Foundation, version 3.
 
 It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
 without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
-PURPOSE. See the GNU Lesser General Public License for more details.
+PURPOSE. See the licences for more details.
 
-Both texts ship with every package and both are needed: [`LICENSE`](LICENSE) is
-the LGPL, [`COPYING`](COPYING) is the GPL it is written on top of, since the LGPL
-is a set of additional permissions over the GPL and cannot be read alone.
+Every library package ships two texts and both are needed:
+[`LICENSE`](LICENSE) is the LGPL, [`GPL-3.0.txt`](GPL-3.0.txt) is the GPL it is
+written on top of, since the LGPL is a set of additional permissions over the
+GPL and cannot be read alone. The server package ships the GPL as its `LICENSE`,
+which is standalone.
 
-**What this means if you depend on these packages.** Linking them into your own
-program — importing them, as every consumer of an npm package does, or running
-`llm-agent` as a server your own code talks to over HTTP — does not put your
-program under the LGPL. What the licence asks is that changes *to these
-libraries* stay free, and that your users can replace them with their own build.
+**What this means if you depend on these packages.** Linking the libraries into
+your own program — importing them, as every consumer of an npm package does —
+does not put your program under the LGPL. Neither does running `llm-agent` as a
+server your own code talks to over HTTP: the GPL has no network trigger, and
+running a program is not distributing it. What the licences ask is that changes
+*to this code* stay free — for the libraries, that your users can also replace
+them with their own build.
 
 Domain skills you load at runtime through `skillPlugins:` are your content under
 your licence: the engine never vendors them, so they are not a derivative work of
 it.
 
-**Upgrading from an MIT release, or redistributing these packages?**
+**Upgrading from v21, from an MIT release, or redistributing these packages?**
 [docs/LICENSING.md](docs/LICENSING.md) has the case-by-case breakdown and the
 migration steps.

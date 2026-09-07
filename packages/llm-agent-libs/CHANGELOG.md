@@ -1,5 +1,15 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 22.0.0
+
+The GPL base text that ships with this package is renamed `COPYING` →
+`GPL-3.0.txt`. Same text, same requirement — only the filename changed, so that
+GitHub stops reporting the repository as GPL-3.0 when it finds two
+licensee-scanned files. This package remains **`LGPL-3.0-only`**, and still
+ships both texts: `LICENSE` (LGPLv3) and `GPL-3.0.txt` (GPLv3).
+
+No API change. See [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
 ## 21.0.0
 
 **BREAKING (licence): relicensed from MIT to `LGPL-3.0-only`.**

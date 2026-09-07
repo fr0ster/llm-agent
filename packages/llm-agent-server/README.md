@@ -24,15 +24,20 @@ See the repo docs for architecture, pipeline configuration and deployment:
 
 ## License
 
-**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see
-[`LICENSE`](LICENSE) (LGPL) and [`COPYING`](COPYING) (the GPL it layers
-permissions onto; both are required, the LGPL is not standalone).
+**GNU General Public License v3.0 only** (`GPL-3.0-only`) — see
+[`LICENSE`](LICENSE). This is the only package in the monorepo that is not
+LGPL: it ships no library exports, so it is the ready-to-run product rather
+than something you embed, and it carries the full GPL.
 
 Copyright © 2025–2026 Oleksii Kyslytsia
 
-Importing this package, or running it behind an HTTP endpoint, does not place
-your program under the LGPL — the licence asks that modifications *to this
-library* stay free and that your users can substitute their own build.
-Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
-retroactive. Full detail, including what to do if you redistribute:
+**Running this server and talking to it over HTTP places no obligation on you
+or on your client code** — the GPL has no network trigger. The libraries it
+composes stay `LGPL-3.0-only`, so you can still embed those in a closed-source
+program. What the GPL asks is that if you distribute a *modified* build of this
+server, the corresponding source goes out under the GPL too.
+
+Versions up to and including v20.9.5 were MIT and v21.0.0 was `LGPL-3.0-only`;
+a licence change is not retroactive, so those releases keep the terms they
+shipped under. Full detail:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).

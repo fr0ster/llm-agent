@@ -9,6 +9,67 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [22.0.0] — 2026-09-07
+
+> **Major for the licence, not for the code.** No removed export, no changed
+> signature, no config migration. As in 21.0.0, the major is reserved for the
+> part consumers must make a decision about.
+
+### Changed
+
+- **BREAKING (licence): `@mcp-abap-adt/llm-agent-server` moves from
+  `LGPL-3.0-only` to `GPL-3.0-only`.** It is the only package affected; the
+  other sixteen stay `LGPL-3.0-only`.
+  - The package exposes no library API — its `exports` carries only
+    `./package.json`, and it ships `bin/` and `dist/` for the `llm-agent`,
+    `llm-agent-check` and `claude-via-agent` executables. Nothing can link
+    against it, so the LGPL's distinguishing permission (link and keep your own
+    code closed) had nothing to apply to. The full GPL costs embedders nothing
+    and asks forks of the ready-to-run product to stay open.
+  - **Running the server is unaffected.** The GPL has no network trigger, and
+    running a program is not distributing it. Talking to `llm-agent` over HTTP
+    places no obligation on your client code, your prompts or your data.
+  - **Embedding is unaffected.** The entire SmartServer composition runtime
+    lives in `@mcp-abap-adt/llm-agent-server-libs`, which stays LGPL — build
+    your own binary on it if the GPL does not suit you.
+  - The obligation added is narrow: if you **distribute a modified build** of
+    `llm-agent-server`, the corresponding source goes out under the GPL.
+  - **Not retroactive.** `llm-agent-server@21.0.0` was published under
+    `LGPL-3.0-only` and keeps those terms permanently; pin to it if needed.
+  - Its `LICENSE` now holds the GPLv3 text, and the layered base text is gone —
+    the GPL is standalone, so there is nothing to layer it onto.
+
+- **The GPL base text shipped with every LGPL package is renamed
+  `COPYING` → `GPL-3.0.txt`.** Same text, same requirement, same tarballs; only
+  the filename changed, and each package's `files` array with it.
+  - GitHub's licence detector scans `LICENSE*` and `COPYING*` alike and, on
+    finding both, reports the repository under the stricter of the two — real
+    LGPL projects using the FSF-canonical `COPYING` + `COPYING.LESSER` layout
+    are misreported as GPL-3.0 for exactly this reason. Moving the base text out
+    of that filename namespace makes GitHub resolve this repository as
+    LGPL-3.0, which is what the libraries actually are.
+  - The licence prescribes no filename; it requires only that the GPL text
+    accompany the work, which it still does in every tarball. Note that npm
+    packs `LICENSE` automatically but **not** `GPL-3.0.txt`, so the `files`
+    entry is what carries it — asserted by the tests.
+
+### Added
+
+- `test/repo/licensing.test.ts` now enforces the split rather than one uniform
+  licence: each package declares the licence it is supposed to; the GPL package
+  is exactly one and must never grow a library export; LGPL packages ship both
+  texts and the GPL package ships only its own; and the repository root exposes
+  exactly one licensee-scanned licence file, so the GitHub detection this
+  release fixes cannot silently regress.
+
+### Documentation
+
+- `docs/LICENSING.md` rewritten around the split: a per-package licence table,
+  why the binary is GPL and why that costs embedders nothing, why the base text
+  is not named `COPYING`, and a v21 → v22 migration section.
+- `README.md`, `docs/DEPLOYMENT.md` and all 17 package READMEs updated for the
+  new licence layout and file names.
+
 ## [21.0.0] — 2026-09-07
 
 ### Added
