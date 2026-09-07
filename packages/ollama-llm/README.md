@@ -1,5 +1,8 @@
 # @mcp-abap-adt/ollama-llm
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
 Ollama LLM provider for `@mcp-abap-adt/llm-agent`. Thin wrapper over
 `@mcp-abap-adt/openai-llm` targeting Ollama's OpenAI-compatible `/v1` endpoint
 (default `http://localhost:11434/v1`). No API key required.

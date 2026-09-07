@@ -1,5 +1,8 @@
 # @mcp-abap-adt/llm-agent
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
 Core interfaces, types, and lightweight default implementations for LLM agent orchestration.
 
 This package is the abstraction layer consumed by `@mcp-abap-adt/llm-agent-libs` (and transitively by `@mcp-abap-adt/llm-agent-server`) and by downstream applications that want to build their own agent on our interfaces. It ships:

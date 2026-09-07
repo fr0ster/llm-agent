@@ -1,5 +1,8 @@
 # @mcp-abap-adt/llm-agent-server
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: GPL v3](https://img.shields.io/badge/License-GPL_v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
 Runnable distribution of SmartAgent (CLI + HTTP server). **Binary-only.**
 
 ## Library imports are not supported
