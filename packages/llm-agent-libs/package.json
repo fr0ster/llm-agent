@@ -39,7 +39,7 @@
     "@opentelemetry/api": "^1.9.1",
     "dotenv": "^17.3.1",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "peerDependencies": {
     "@mcp-abap-adt/anthropic-llm": "^22.0.1",

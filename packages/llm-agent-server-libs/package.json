@@ -62,7 +62,7 @@
     "@mcp-abap-adt/llm-agent-libs": "^22.0.1",
     "@mcp-abap-adt/llm-agent-mcp": "^22.0.1",
     "@mcp-abap-adt/llm-agent-rag": "^22.0.1",
-    "pg": "^8.21.0",
+    "pg": "^8.23.0",
     "yaml": "^2.9.0"
   },
   "peerDependencies": {
@@ -75,7 +75,7 @@
   },
   "devDependencies": {
     "@mcp-abap-adt/sap-aicore-llm": "^22.0.1",
-    "@types/pg": "^8.11.0"
+    "@types/pg": "^8.23.1"
   },
   "publishConfig": {
     "access": "public"
