@@ -1,0 +1,57 @@
+# Dependabot configuration.
+#
+# History this guards: security advisories piled up unnoticed twice — once
+# cleared by hand in v20.9.5 (npm audit 8 -> 0), and again right after v22.0.0
+# (fast-uri, qs) — because the repository had no configuration here and
+# automated security fixes were switched off, so Dependabot never opened a PR.
+#
+# Everything is grouped on purpose: this monorepo has 17 workspaces, and
+# ungrouped updates mean a pull request per package per bump.
+version: 2
+
+updates:
+  # npm resolves the whole workspace tree from the root lockfile, so one entry
+  # covers every package under packages/.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    groups:
+      # Patch and minor bumps of runtime dependencies travel together; a single
+      # PR is reviewable, seventeen are not.
+      production-minor-patch:
+        applies-to: version-updates
+        dependency-type: production
+        update-types: [minor, patch]
+      development:
+        applies-to: version-updates
+        dependency-type: development
+        update-types: [minor, patch]
+      # Security fixes are grouped separately so they are never queued behind a
+      # routine version bump.
+      security:
+        applies-to: security-updates
+        patterns: ['*']
+    ignore:
+      # Majors are a deliberate, reviewed decision in a lockstep monorepo —
+      # Dependabot should not open them unprompted.
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
