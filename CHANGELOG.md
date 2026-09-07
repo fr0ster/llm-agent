@@ -11,6 +11,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [21.0.0] — 2026-09-07
 
+### Added
+
+- **Repo-level licensing invariants are now enforced by tests**
+  (`test/repo/licensing.test.ts`, wired into root `npm test`): every published
+  package declares `LGPL-3.0-only`; both `LICENSE` and `COPYING` are listed in
+  `files` **and** present on disk; the shipped texts really are the LGPL and the
+  standalone GPL rather than placeholders or two copies of the same file; and
+  all packages share one lockstep version. This guards the exact defect class
+  that shipped before this release — `LICENSE` declared in `files` with no such
+  file on disk, so the tarball carried no licence text.
+
 > **Major for the licence, not for the code.** There is no API break in this
 > release — no removed export, no changed signature, no config migration. The
 > major is reserved for the relicensing, which is the change consumers must
