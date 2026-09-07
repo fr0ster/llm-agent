@@ -28,7 +28,7 @@
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
   },
-  "license": "MIT",
+  "license": "LGPL-3.0-only",
   "author": "Oleksii Kyslytsia <oleksij.kyslytsja@gmail.com>",
   "repository": {
     "type": "git",

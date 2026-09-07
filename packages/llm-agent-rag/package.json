@@ -13,7 +13,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "COPYING"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -61,5 +63,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "license": "LGPL-3.0-only"
 }

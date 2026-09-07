@@ -47,7 +47,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "COPYING"
   ],
   "scripts": {
     "prebuild": "node scripts/generate-version.js",
@@ -78,7 +80,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "LGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fr0ster/llm-agent.git"

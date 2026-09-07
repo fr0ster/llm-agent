@@ -107,4 +107,30 @@ npm run dev:sap-ai-core   # examples/docker-sap-ai-core
 
 ## License
 
-MIT
+**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — every package
+in this monorepo. Earlier published versions (≤ v20.9.5) were MIT and stay MIT;
+a licence change is not retroactive.
+
+Copyright © 2025–2026 Oleksii Kyslytsia
+
+This software is free software: you can redistribute it and/or modify it under
+the terms of the GNU Lesser General Public License as published by the Free
+Software Foundation, version 3.
+
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See the GNU Lesser General Public License for more details.
+
+Both texts ship with every package and both are needed: [`LICENSE`](LICENSE) is
+the LGPL, [`COPYING`](COPYING) is the GPL it is written on top of, since the LGPL
+is a set of additional permissions over the GPL and cannot be read alone.
+
+**What this means if you depend on these packages.** Linking them into your own
+program — importing them, as every consumer of an npm package does, or running
+`llm-agent` as a server your own code talks to over HTTP — does not put your
+program under the LGPL. What the licence asks is that changes *to these
+libraries* stay free, and that your users can replace them with their own build.
+
+Domain skills you load at runtime through `skillPlugins:` are your content under
+your licence: the engine never vendors them, so they are not a derivative work of
+it.

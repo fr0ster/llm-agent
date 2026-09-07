@@ -16,7 +16,8 @@
     "bin",
     "tools",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "COPYING"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -68,7 +69,7 @@
     "@sap-ai-sdk/orchestration": "^2.11.0",
     "@types/node": "^25.9.2"
   },
-  "license": "MIT",
+  "license": "LGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fr0ster/llm-agent.git"

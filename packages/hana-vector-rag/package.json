@@ -15,7 +15,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "COPYING"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -26,7 +27,7 @@
     "@mcp-abap-adt/llm-agent": "^20.9.5",
     "@sap/hana-client": "^2.28.21"
   },
-  "license": "MIT",
+  "license": "LGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fr0ster/llm-agent.git"

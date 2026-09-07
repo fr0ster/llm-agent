@@ -502,8 +502,11 @@ A **second, distinct** skills channel, separate from the SKILL.md skill-manager
 above. The skill plugin-host (`@mcp-abap-adt/llm-agent-libs/skills/plugin-host`,
 `ISkillPluginHost`) is a **domain-agnostic** host that materializes
 **consumer-supplied** skills into a grouped, durable **skills-RAG** and serves
-recall — so the engine (MIT) bundles no domain knowledge, yet any model is
-gnosticized at runtime.
+recall — so the engine bundles no domain knowledge, yet any model is
+gnosticized at runtime. This matters for licensing too: the engine ships under
+`LGPL-3.0-only` and stays free of consumer-supplied (possibly differently
+licensed) domain content, because that content is loaded at runtime and never
+vendored into the repo.
 
 - **Composition.** An injected acquisition+materialization **strategy** (owns
   collection placement — the host imposes no grouping rule) over a **store

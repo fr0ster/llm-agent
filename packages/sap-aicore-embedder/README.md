@@ -84,4 +84,8 @@ For the `foundation-models` scenario, authentication uses the `AICORE_SERVICE_KE
 
 ## License
 
-MIT
+**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`). Earlier
+published versions were MIT and stay MIT — a licence change is not retroactive.
+See [`LICENSE`](LICENSE) (LGPL) and [`COPYING`](COPYING) (the GPL it is written
+on top of); both are needed, since the LGPL is a set of additional permissions
+over the GPL and cannot be read alone.

@@ -32,4 +32,5 @@ ALWAYS tears the stack down (`docker compose down -v`) — even on failure.
 The five cases are ONE ordered scenario (awaited subtests sharing one catalog
 row, collection, host and clock) — not independently runnable, by design.
 
-No GPL `sap-skills` content — synthetic MIT-clean fixtures only.
+No third-party `sap-skills` content — synthetic, self-authored fixtures only, so
+the repository stays cleanly `LGPL-3.0-only`.

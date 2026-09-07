@@ -9,6 +9,31 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (licence): the whole monorepo moves from MIT to `LGPL-3.0-only`.**
+  Every published package — the six runtime packages and all eleven
+  provider/embedder/RAG packages — now declares
+  `"license": "LGPL-3.0-only"`, matching the `mcp-abap-adt-*` library family.
+  - Both required texts now ship at the repository root **and inside every
+    package tarball**: `LICENSE` (LGPLv3) and `COPYING` (GPLv3). Both are
+    needed — the LGPL is a set of additional permissions layered on the GPL and
+    cannot be read alone. Each package's `files` array was extended accordingly.
+  - Three packages (`llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`) had
+    **no `license` field at all** and were therefore published to npm with no
+    declared licence; they are now covered like the rest.
+  - Most packages listed `LICENSE` in `files` but had no such file on disk, so
+    their tarballs shipped no licence text. Fixed by the per-package copies.
+  - **Not retroactive.** Everything published up to and including **v20.9.5**
+    was released under MIT and stays MIT under those terms; the change applies
+    to releases made from this commit onward.
+  - **Consumer impact is limited.** Importing these packages, or talking to
+    `llm-agent` over HTTP, does not place your program under the LGPL. The
+    licence asks that modifications *to these libraries* stay free and that your
+    users can substitute their own build. Domain skills loaded at runtime via
+    `skillPlugins:` remain your content under your licence — the engine never
+    vendors them.
+
 ## [20.9.5] — 2026-08-07
 
 ### Security
