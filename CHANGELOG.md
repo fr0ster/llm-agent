@@ -9,6 +9,49 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [22.1.0] — 2026-09-07
+
+Dependency release. **Minor, not patch:** the declared floors of six runtime
+dependencies move up, so consumers resolve new minimums. No API changed and no
+behaviour changed.
+
+### Changed
+
+- **Runtime dependency floors raised** (all minor/patch upstream, no majors):
+
+  | dependency | from | to | packages |
+  |---|---|---|---|
+  | `axios` | ^1.19.0 | ^1.20.0 | `anthropic-llm`, `openai-llm` |
+  | `pg` | ^8.21.0 | ^8.23.0 | `pg-vector-rag`, `llm-agent-server-libs` |
+  | `@sap-ai-sdk/ai-api`, `@sap-ai-sdk/orchestration` | ^2.11.0 | ^2.15.0 | `sap-aicore-llm`, `llm-agent-server` |
+  | `@sap/hana-client` | ^2.28.21 | ^2.29.27 | `hana-vector-rag` |
+  | `zod` | ^4.4.3 | ^4.5.4 | `llm-agent`, `llm-agent-libs`, `llm-agent-server` |
+  | `@types/pg` | ^8.11.0 | ^8.23.1 | `pg-vector-rag` |
+
+  These arrived as the first grouped Dependabot pull request, the automation
+  added in 22.0.1 doing its job — one reviewable PR instead of one per package.
+
+- **`parseVerdict` in `llm-evaluator.ts`** binds `json?.missing` to a local
+  before the `Array.isArray` guard instead of re-reading it through an optional
+  chain and a cast. Behaviour is identical — the guard and the filter are
+  unchanged; the rewrite exists because Biome 2.5 correctly flags
+  `(x?.y as T).z`, where a nullish `x` makes the member access throw
+  `TypeError` rather than being protected by the `?.`.
+
+### Internal
+
+- Dev toolchain: `@biomejs/biome` 2.4.16 → 2.5.12, `tsx` 4.22.4 → 4.23.13,
+  `@types/node` 25.9.2 → 25.9.5. The Biome bump promoted
+  `correctness/noUnsafeOptionalChaining` to an error and surfaced 13 of them —
+  each fixed at the site rather than by disabling the rule, and the rewritten
+  assertions checked against vacuity by mutating production code and confirming
+  the tests still fail.
+- CI actions: `actions/checkout` 5 → 7, `actions/setup-node` 5 → 7,
+  `softprops/action-gh-release` 2 → 3. The last is a major whose only breaking
+  change is the action runtime moving from Node 20 to Node 24, which
+  GitHub-hosted runners provide; it is exercised only on a tag, so it was
+  reviewed rather than inferred from a green CI run.
+
 ## [22.0.1] — 2026-09-07
 
 Housekeeping release. **No change reaches the published packages** — the tarballs
