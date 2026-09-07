@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "21.0.0",
+  "version": "22.0.0",
   "description": "Core interfaces, types, and lightweight default implementations for LLM agent orchestration.",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,7 @@
     "dist",
     "README.md",
     "LICENSE",
-    "COPYING"
+    "GPL-3.0.txt"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

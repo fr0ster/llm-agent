@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-server-libs",
-  "version": "21.0.0",
+  "version": "22.0.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -49,7 +49,7 @@
   "files": [
     "dist",
     "LICENSE",
-    "COPYING"
+    "GPL-3.0.txt"
   ],
   "scripts": {
     "prebuild": "node scripts/generate-version.js",
@@ -58,15 +58,15 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^21.0.0",
-    "@mcp-abap-adt/llm-agent-libs": "^21.0.0",
-    "@mcp-abap-adt/llm-agent-mcp": "^21.0.0",
-    "@mcp-abap-adt/llm-agent-rag": "^21.0.0",
+    "@mcp-abap-adt/llm-agent": "^22.0.0",
+    "@mcp-abap-adt/llm-agent-libs": "^22.0.0",
+    "@mcp-abap-adt/llm-agent-mcp": "^22.0.0",
+    "@mcp-abap-adt/llm-agent-rag": "^22.0.0",
     "pg": "^8.21.0",
     "yaml": "^2.9.0"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/sap-aicore-llm": "^21.0.0"
+    "@mcp-abap-adt/sap-aicore-llm": "^22.0.0"
   },
   "peerDependenciesMeta": {
     "@mcp-abap-adt/sap-aicore-llm": {
@@ -74,7 +74,7 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/sap-aicore-llm": "^21.0.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^22.0.0",
     "@types/pg": "^8.11.0"
   },
   "publishConfig": {
