@@ -1,5 +1,8 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
 The SmartServer composition runtime as an **importable library**. It sits between the binary `@mcp-abap-adt/llm-agent-server` and the core `@mcp-abap-adt/llm-agent-libs`, so the SmartServer/coordinator composition can be reused in other projects without depending on the CLI/HTTP binary.
 
 ## Top-level exports

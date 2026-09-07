@@ -1,5 +1,8 @@
 # @mcp-abap-adt/llm-agent-rag
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
 RAG and embedder composition for the SmartAgent runtime.
 
 ## Exports

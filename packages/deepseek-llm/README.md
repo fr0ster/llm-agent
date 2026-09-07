@@ -1,5 +1,8 @@
 # @mcp-abap-adt/deepseek-llm
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
 DeepSeek LLM provider for @mcp-abap-adt/llm-agent / @mcp-abap-adt/llm-agent-libs.
 
 Extends `OpenAIProvider` from `@mcp-abap-adt/openai-llm`. Calls DeepSeek /v1/chat/completions API (OpenAI-compatible).
