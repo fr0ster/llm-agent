@@ -1,5 +1,19 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 22.2.0
+
+Rate-limit handling for every LLM provider (#282, #283).
+
+HTTP 429 is now answered where the response is still intact — inside the
+provider — following what SAP AI Core documents under Rate Limit Management:
+no immediate retry, exponential backoff with full jitter, `Retry-After` honoured
+when the server sends one, and a cap on both retries and total waiting
+(5 attempts or 60 seconds by default).
+
+The pause is held per quota, not per request: one caller's 429 pauses every
+other caller on the same account, endpoint and model, so a limit that should
+last one window does not last several.
+
 ## 22.1.0
 
 Dependency release — minor rather than patch because the declared floors of the

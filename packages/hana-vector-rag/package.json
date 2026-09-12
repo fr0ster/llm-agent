@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/hana-vector-rag",
-  "version": "22.1.0",
+  "version": "22.2.0",
   "description": "HanaVectorRag vector store (SAP HANA Cloud Vector Engine) and HanaVectorRagProvider for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -24,7 +24,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^22.1.0",
+    "@mcp-abap-adt/llm-agent": "^22.2.0",
     "@sap/hana-client": "^2.29.27"
   },
   "license": "LGPL-3.0-only",
