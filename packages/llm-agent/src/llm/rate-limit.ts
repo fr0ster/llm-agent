@@ -179,32 +179,40 @@ export async function runWithRateLimitRetry<T>(
 
       attempt += 1;
       const retryAfter = opts.retryAfterSeconds?.(error);
+      const served = retryAfter !== undefined && Number.isFinite(retryAfter);
 
       // The server's own number wins. A computed guess is for when it stays
       // silent — it is an estimate of something the server already knows.
-      const delay =
-        retryAfter !== undefined && Number.isFinite(retryAfter)
-          ? retryAfter * 1000 + Math.random() * 250
-          : jittered(
-              policy.baseDelayMs * 2 ** (attempt - 1),
-              policy.maxDelayMs,
-            );
+      const wait = served
+        ? (retryAfter as number) * 1000
+        : jittered(policy.baseDelayMs * 2 ** (attempt - 1), policy.maxDelayMs);
+
+      // A few hundred milliseconds of per-caller spread, so the callers this
+      // penalty released do not all wake in the same millisecond. It is added
+      // to the sleep but NOT charged to the budget: charging it made a plain
+      // `Retry-After: 60` cost 60_000..60_250ms against a 60_000ms budget, so
+      // the most ordinary answer SAP AI Core gives was refused on the spot.
+      const spread = served ? Math.random() * 250 : 0;
+
+      // Hold everyone else too, and hold them whether or not THIS caller has
+      // budget left to retry. The pause describes the quota, not one request:
+      // giving up with the gate open sends every other caller straight back
+      // into a limit the server just said was closed.
+      gate.penalise(wait + spread);
 
       const outOfAttempts = attempt >= policy.maxAttempts;
-      const outOfTime = waited + delay > policy.maxTotalWaitMs;
+      const outOfTime = waited + wait > policy.maxTotalWaitMs;
       if (outOfAttempts || outOfTime) {
         throw annotate(error, attempt, retryAfter);
       }
 
-      // Hold everyone else too, not just this caller.
-      gate.penalise(retryAfter !== undefined ? retryAfter * 1000 : delay);
       opts.onRetry?.({
         attempt,
-        delayMs: delay,
+        delayMs: wait + spread,
         retryAfterSeconds: retryAfter,
       });
-      await sleep(delay, opts.signal);
-      waited += delay;
+      await sleep(wait + spread, opts.signal);
+      waited += wait;
     }
   }
 }

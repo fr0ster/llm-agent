@@ -50,8 +50,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const systemMessage = messages.find((m) => m.role === 'system');
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
+      const model = options?.model ?? this.model;
       const requestBody: Record<string, unknown> = {
-        model: options?.model ?? this.model,
+        model,
         messages: this.formatMessages(conversationMessages),
         max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
         temperature: options?.temperature ?? this.config.temperature ?? 0.7,
@@ -67,8 +68,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         requestBody.tools = tools;
       }
 
-      const response = await this.withRateLimitRetry(() =>
-        this.client.post('/messages', requestBody),
+      const response = await this.withRateLimitRetry(
+        () => this.client.post('/messages', requestBody),
+        { model },
       );
 
       // Handle multi-block response (text + tool_use)
@@ -119,8 +121,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const systemMessage = messages.find((m) => m.role === 'system');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
+    const model = options?.model ?? this.model;
     const requestBody: Record<string, unknown> = {
-      model: options?.model ?? this.model,
+      model,
       messages: this.formatMessages(conversationMessages),
       max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
       temperature: options?.temperature ?? this.config.temperature ?? 0.7,
@@ -139,30 +142,33 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
     type OpenStream = Response & { body: ReadableStream<Uint8Array> };
-    const response = await this.withRateLimitRetry<OpenStream>(async () => {
-      const res = await fetch(`${baseURL}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.config.apiKey ?? '',
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify(requestBody),
-      });
+    const response = await this.withRateLimitRetry<OpenStream>(
+      async () => {
+        const res = await fetch(`${baseURL}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this.config.apiKey ?? '',
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify(requestBody),
+        });
 
-      if (!res.ok || !res.body) {
-        const text = await res.text().catch(() => '');
-        const error = new Error(
-          `Anthropic streaming error: HTTP ${res.status} — ${text}`,
-        ) as Error & { response?: { status: number; headers: Headers } };
-        // This is the one path on fetch rather than axios. The shared policy
-        // reads the status and Retry-After off the axios shape, so give it one;
-        // Headers already answers to the same case-insensitive get().
-        error.response = { status: res.status, headers: res.headers };
-        throw error;
-      }
-      return res as OpenStream;
-    });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => '');
+          const error = new Error(
+            `Anthropic streaming error: HTTP ${res.status} — ${text}`,
+          ) as Error & { response?: { status: number; headers: Headers } };
+          // This is the one path on fetch rather than axios. The shared policy
+          // reads the status and Retry-After off the axios shape, so give it one;
+          // Headers already answers to the same case-insensitive get().
+          error.response = { status: res.status, headers: res.headers };
+          throw error;
+        }
+        return res as OpenStream;
+      },
+      { model },
+    );
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();

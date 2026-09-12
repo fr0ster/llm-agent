@@ -84,11 +84,15 @@ export abstract class BaseLLMProvider<
   // sap-aicore gets one through @sap-ai-sdk, and deepseek and ollama build on
   // the openai provider. A provider on another transport overrides them.
 
-  /** Which quota this call spends. Limits are per model, so the model is in the key. */
-  protected rateLimitKey(): string {
-    return `${this.constructor.name}:${String(
-      (this.config as { model?: unknown }).model ?? 'default',
-    )}`;
+  /**
+   * Which quota this call spends. Limits are per model, so the model is in the
+   * key — and it must be the model the CALL uses, not the configured default.
+   * A per-request override spends a different quota: keyed by the default, one
+   * model's 429 would pause another's, and two overrides would share a gate
+   * neither of them belongs to.
+   */
+  protected rateLimitKey(model?: string): string {
+    return `${this.constructor.name}:${model ?? this.config.model ?? 'default'}`;
   }
 
   /** Is this "too many requests" rather than a real failure? */
@@ -129,16 +133,19 @@ export abstract class BaseLLMProvider<
   protected withRateLimitRetry<T>(
     fn: () => Promise<T>,
     extra?: {
+      /** The model this call actually uses, when it overrides the configured one. */
+      model?: string;
       signal?: AbortSignal;
       onRetry?: RateLimitRetryOptions['onRetry'];
     },
   ): Promise<T> {
     return runWithRateLimitRetry(fn, {
-      key: this.rateLimitKey(),
+      key: this.rateLimitKey(extra?.model),
       policy: this.config.rateLimit,
       isRateLimited: (e: unknown) => this.isRateLimited(e),
       retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
-      ...extra,
+      signal: extra?.signal,
+      onRetry: extra?.onRetry,
     });
   }
 }

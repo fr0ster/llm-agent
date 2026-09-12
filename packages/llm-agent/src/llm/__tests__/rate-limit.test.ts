@@ -141,6 +141,52 @@ describe('runWithRateLimitRetry', () => {
     assert.deepEqual(seen, [0.01]);
   });
 
+  it('accepts a Retry-After equal to the whole budget', async () => {
+    // The anti-herd spread must not be charged to the budget: adding it made a
+    // plain `Retry-After: 60` cost 60_000..60_250ms against a 60_000ms budget,
+    // so the most ordinary answer a server gives was refused on the spot.
+    let calls = 0;
+    const out = await runWithRateLimitRetry(
+      async () => {
+        calls += 1;
+        if (calls < 2) throw tooManyRequests('0.06');
+        return 'ok';
+      },
+      {
+        key: 'k',
+        policy: { ...FAST, maxTotalWaitMs: 60 },
+        isRateLimited,
+        retryAfterSeconds,
+      },
+    );
+    assert.equal(out, 'ok');
+    assert.equal(calls, 2);
+  });
+
+  it('leaves the gate shut when it gives up, not open', async () => {
+    // Giving up says the quota is closed, not that it reopened. An open gate
+    // here sends every other caller straight back into the limit the server
+    // just described.
+    await assert.rejects(
+      runWithRateLimitRetry(
+        async () => {
+          throw tooManyRequests('0.5');
+        },
+        {
+          key: 'exhausted',
+          policy: { ...FAST, maxAttempts: 1 },
+          isRateLimited,
+          retryAfterSeconds,
+        },
+      ),
+      (e: unknown) => isRateLimitedError(e),
+    );
+    assert.ok(
+      gateFor('exhausted').remaining() > 100,
+      'the pause the server asked for outlives the caller that gave up',
+    );
+  });
+
   it('holds every caller on the same quota, not just the one that hit it', async () => {
     await runWithRateLimitRetry(
       (() => {
@@ -241,8 +287,8 @@ class ProbeProvider extends BaseLLMProvider {
   readsRetryAfter(e: unknown) {
     return this.retryAfterSeconds(e);
   }
-  quotaKey() {
-    return this.rateLimitKey();
+  quotaKey(model?: string) {
+    return this.rateLimitKey(model);
   }
 }
 
@@ -287,5 +333,10 @@ describe('BaseLLMProvider rate-limit hooks', () => {
 
   it('keys the quota by model, since that is how limits are metered', () => {
     assert.match(provider.quotaKey(), /some-model/);
+  });
+
+  it('keys a per-request override by the model the call actually uses', () => {
+    assert.match(provider.quotaKey('other-model'), /other-model/);
+    assert.notEqual(provider.quotaKey('other-model'), provider.quotaKey());
   });
 });

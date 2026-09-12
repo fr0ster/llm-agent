@@ -504,9 +504,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
    * AI Core meters per model, and resource groups are isolated from one another
    * — two groups on the same model do not share a limit, so both belong here.
    */
-  protected override rateLimitKey(): string {
+  protected override rateLimitKey(model?: string): string {
     return `sap-ai-core:${this.resourceGroup ?? 'default'}:${
-      this.modelOverride ?? this.model
+      model ?? this.modelOverride ?? this.model
     }`;
   }
 

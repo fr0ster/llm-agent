@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  gateFor,
   isRateLimitedError,
   type Message,
   resetRateLimitGates,
@@ -605,5 +606,37 @@ describe('OpenAIProvider — rate limiting', () => {
     };
     await assert.rejects(provider.chat([{ role: 'user', content: 'hi' }]));
     assert.equal(calls, 1);
+  });
+});
+
+describe('OpenAIProvider — the quota a per-request model spends', () => {
+  it('gates an override model apart from the configured one', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 2 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('5');
+    };
+    await assert.rejects(
+      provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+        model: 'gpt-5',
+      }),
+    );
+    const keyOf = (m: string) =>
+      // @ts-expect-error — protected hook, read for test
+      provider.rateLimitKey(m) as string;
+    assert.ok(
+      gateFor(keyOf('gpt-5')).remaining() > 0,
+      'the throttled model is held',
+    );
+    assert.equal(
+      gateFor(keyOf('gpt-4o')).remaining(),
+      0,
+      'a model that was never called must not be held',
+    );
   });
 });
