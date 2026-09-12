@@ -9,6 +9,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **`makeLlm` now forwards `rateLimit` to the provider it builds** (#285). The
+  policy shipped in 22.2.0 and could not be configured through the composition
+  root — `MakeLlmConfig` had no such field, so every consumer on that path
+  silently ran the defaults. Patch, not minor: nothing new is offered, the
+  capability 22.2.0 announced is simply reachable.
+
+- **The dynamic provider loaders type their constructor from
+  `LLMProviderConfig`** instead of re-declaring the same five fields by hand.
+  That hand-written copy is why the new field was dropped in the first place;
+  typed from the real config, the next field added upstream cannot be silently
+  lost here.
+
 ## [22.2.0] — 2026-09-12
 
 Rate-limit handling for every LLM provider (#282, #283).

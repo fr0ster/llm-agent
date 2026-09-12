@@ -2258,6 +2258,24 @@ new OpenAIProvider({
 });
 ```
 
+Through the composition root it is the same field:
+
+```ts
+const llm = await makeLlm(
+  {
+    provider: 'sap-ai-sdk',
+    model: 'anthropic--claude-4.5-sonnet',
+    rateLimit: { maxTotalWaitMs: 20_000 },
+  },
+  0.1,
+);
+```
+
+A service answering inside an HTTP request usually wants `maxTotalWaitMs` below
+its own client's timeout. Waiting longer than the client will wait leaves the
+caller with a cut connection instead of the "retry in N seconds" answer the
+policy is able to give.
+
 When that policy gives up it marks the error, and `RetryLlm` passes a marked
 error through untouched rather than multiplying attempts against a closed quota.
 Consumers read the fact instead of matching digits in a message:

@@ -8,7 +8,12 @@
  * MissingProviderError is thrown when a required peer is not installed.
  */
 
-import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
+import type {
+  ILlm,
+  IModelResolver,
+  LLMProviderConfig,
+  RateLimitPolicy,
+} from '@mcp-abap-adt/llm-agent';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 import { LlmAdapter } from './adapters/llm-adapter.js';
@@ -29,6 +34,14 @@ export interface MakeLlmConfig {
   maxTokens?: number;
   resourceGroup?: string;
   credentials?: SapAICoreCredentials;
+  /**
+   * How the provider answers HTTP 429. Omit for the documented defaults — back
+   * off with jitter, honour `Retry-After`, give up after 5 attempts or 60
+   * seconds of waiting. A service answering inside an HTTP request usually
+   * wants `maxTotalWaitMs` below its own client's timeout, so the caller gets
+   * the "retry in N seconds" answer instead of a cut connection.
+   */
+  rateLimit?: Partial<RateLimitPolicy>;
   /** When false, streamChat() is replaced with chat() yielding a single chunk. Default: true. */
   streaming?: boolean;
 }
@@ -53,13 +66,9 @@ async function loadOpenAI() {
   const pkg = '@mcp-abap-adt/openai-llm';
   try {
     const mod = await import(pkg);
-    return mod.OpenAIProvider as new (opts: {
-      apiKey?: string;
-      baseURL?: string;
-      model?: string;
-      temperature?: number;
-      maxTokens?: number;
-    }) => {
+    return mod.OpenAIProvider as new (
+      opts: LLMProviderConfig,
+    ) => {
       model: string;
       getModels?: () => Promise<string[]>;
       getEmbeddingModels?: () => Promise<string[]>;
@@ -75,13 +84,9 @@ async function loadDeepSeek() {
   const pkg = '@mcp-abap-adt/deepseek-llm';
   try {
     const mod = await import(pkg);
-    return mod.DeepSeekProvider as new (opts: {
-      apiKey?: string;
-      baseURL?: string;
-      model?: string;
-      temperature?: number;
-      maxTokens?: number;
-    }) => {
+    return mod.DeepSeekProvider as new (
+      opts: LLMProviderConfig,
+    ) => {
       model: string;
       getModels?: () => Promise<string[]>;
       getEmbeddingModels?: () => Promise<string[]>;
@@ -97,13 +102,9 @@ async function loadOllama() {
   const pkg = '@mcp-abap-adt/ollama-llm';
   try {
     const mod = await import(pkg);
-    return mod.OllamaProvider as new (opts: {
-      apiKey?: string;
-      baseURL?: string;
-      model?: string;
-      temperature?: number;
-      maxTokens?: number;
-    }) => {
+    return mod.OllamaProvider as new (
+      opts: LLMProviderConfig,
+    ) => {
       model: string;
       getModels?: () => Promise<string[]>;
       getEmbeddingModels?: () => Promise<string[]>;
@@ -119,13 +120,9 @@ async function loadAnthropic() {
   const pkg = '@mcp-abap-adt/anthropic-llm';
   try {
     const mod = await import(pkg);
-    return mod.AnthropicProvider as new (opts: {
-      apiKey?: string;
-      baseURL?: string;
-      model?: string;
-      temperature?: number;
-      maxTokens?: number;
-    }) => {
+    return mod.AnthropicProvider as new (
+      opts: LLMProviderConfig,
+    ) => {
       model: string;
       getModels?: () => Promise<string[]>;
       getEmbeddingModels?: () => Promise<string[]>;
@@ -141,18 +138,16 @@ async function loadSapAiCore() {
   const pkg = '@mcp-abap-adt/sap-aicore-llm';
   try {
     const mod = await import(pkg);
-    return mod.SapCoreAIProvider as new (opts: {
-      apiKey?: string;
-      model?: string;
-      temperature?: number;
-      maxTokens?: number;
-      resourceGroup?: string;
-      credentials?: SapAICoreCredentials;
-      log?: {
-        debug: (msg: string, meta?: Record<string, unknown>) => void;
-        error: (msg: string, meta?: Record<string, unknown>) => void;
-      };
-    }) => {
+    return mod.SapCoreAIProvider as new (
+      opts: LLMProviderConfig & {
+        resourceGroup?: string;
+        credentials?: SapAICoreCredentials;
+        log?: {
+          debug: (msg: string, meta?: Record<string, unknown>) => void;
+          error: (msg: string, meta?: Record<string, unknown>) => void;
+        };
+      },
+    ) => {
       model: string;
       getModels?: () => Promise<string[]>;
       getEmbeddingModels?: () => Promise<string[]>;
@@ -191,6 +186,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
+        rateLimit: cfg.rateLimit,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -208,6 +204,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
+        rateLimit: cfg.rateLimit,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -225,6 +222,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
+        rateLimit: cfg.rateLimit,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -242,6 +240,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
+        rateLimit: cfg.rateLimit,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -258,6 +257,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
+        rateLimit: cfg.rateLimit,
         resourceGroup: cfg.resourceGroup,
         credentials: cfg.credentials,
         log: {
