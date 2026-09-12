@@ -2,8 +2,8 @@
  * Core types for LLM Proxy
  */
 
+import type { ThrottlePolicy } from './interfaces/throttle-strategy.js';
 import type { LlmUsage } from './interfaces/types.js';
-import type { ThrottlePolicy } from './llm/throttle.js';
 
 export interface Message {
   /**

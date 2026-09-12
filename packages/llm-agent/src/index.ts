@@ -13,11 +13,8 @@ export { assertClientDescriptors } from './interfaces/assert-client-descriptors.
 export * from './interfaces/index.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export {
-  DEFAULT_THROTTLE_POLICY,
-  DefaultThrottleStrategy,
   findThrottled,
   gateFor,
-  type IThrottleStrategy,
   isThrottledError,
   preserveThrottled,
   pruneQuotaGates,
@@ -25,10 +22,7 @@ export {
   quotaGateCount,
   resetQuotaGates,
   runWithThrottleRetry,
-  type ThrottleContext,
-  type ThrottleDecision,
   type ThrottledError,
-  type ThrottlePolicy,
   type ThrottleRetryOptions,
 } from './llm/throttle.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';
