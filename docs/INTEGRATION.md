@@ -2246,7 +2246,7 @@ a digest of the credential (never the credential), the provider's own account
 fields such as organization or resource group, and the model the call actually
 uses. Two tenants in one process do not pause each other. Defaults are 5 attempts
 or 60 seconds of total waiting, whichever comes first — the caps SAP AI Core
-documents. Tune or disable it per provider through `whenThrottled` on the provider
+documents. Tune it per provider through `whenThrottled` on the provider
 config:
 
 ```ts
