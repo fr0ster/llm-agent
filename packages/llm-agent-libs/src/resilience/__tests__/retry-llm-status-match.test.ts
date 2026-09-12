@@ -65,9 +65,9 @@ describe('RetryLlm — status classification', () => {
 // ---------------------------------------------------------------------------
 
 describe('RetryLlm — a spent provider rate-limit policy', () => {
-  const rateLimited = () =>
+  const throttled = () =>
     Object.assign(new Error('429 Too Many Requests'), {
-      rateLimited: true as const,
+      throttled: true as const,
       attempts: 5,
       retryAfterSeconds: 30,
     });
@@ -78,7 +78,7 @@ describe('RetryLlm — a spent provider rate-limit policy', () => {
       chat: async () => {
         calls += 1;
         const error = new LlmError('OpenAI API error: 429 Too Many Requests');
-        error.cause = rateLimited();
+        error.cause = throttled();
         return { ok: false as const, error };
       },
       streamChat: async function* () {

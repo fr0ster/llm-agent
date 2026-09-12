@@ -3,7 +3,7 @@
  */
 
 import type { LlmUsage } from './interfaces/types.js';
-import type { RateLimitPolicy } from './llm/rate-limit.js';
+import type { ThrottlePolicy } from './llm/throttle.js';
 
 export interface Message {
   /**
@@ -88,7 +88,7 @@ export interface LLMProviderConfig {
    * of waiting. Set `{ enabled: false }` to pass every 429 straight to the
    * caller.
    */
-  rateLimit?: Partial<RateLimitPolicy>;
+  whenThrottled?: Partial<ThrottlePolicy>;
 }
 
 export interface LLMCallOptions {

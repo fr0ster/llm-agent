@@ -13,19 +13,19 @@ export { assertClientDescriptors } from './interfaces/assert-client-descriptors.
 export * from './interfaces/index.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export {
-  DEFAULT_RATE_LIMIT_POLICY,
-  findRateLimit,
+  DEFAULT_THROTTLE_POLICY,
+  findThrottled,
   gateFor,
-  isRateLimitedError,
-  preserveRateLimit,
-  type RateLimitedError,
-  RateLimitGate,
-  type RateLimitPolicy,
-  type RateLimitRetryOptions,
-  rateLimitGateCount,
-  resetRateLimitGates,
-  runWithRateLimitRetry,
-} from './llm/rate-limit.js';
+  isThrottledError,
+  preserveThrottled,
+  QuotaGate,
+  quotaGateCount,
+  resetQuotaGates,
+  runWithThrottleRetry,
+  type ThrottledError,
+  type ThrottlePolicy,
+  type ThrottleRetryOptions,
+} from './llm/throttle.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';
 export * from './rag/index.js';
 export * from './types.js';

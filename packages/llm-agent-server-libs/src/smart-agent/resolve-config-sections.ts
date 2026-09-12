@@ -3,7 +3,7 @@
  * Internal module — not re-exported by the package barrel.
  */
 
-import type { RateLimitPolicy } from '@mcp-abap-adt/llm-agent';
+import type { ThrottlePolicy } from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartServerAgentConfig,
@@ -40,7 +40,7 @@ export function resolveLlmSection(
           // comment on positiveIntOption warns about: the key is accepted in
           // YAML, read by nobody, and the default applies in silence.
           ...positiveIntOption(get(yaml, 'llm', 'maxTokens'), 'llm.maxTokens'),
-          ...rateLimitOption(get(yaml, 'llm', 'rateLimit')),
+          ...whenThrottledOption(get(yaml, 'llm', 'whenThrottled')),
         }
       : (get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
     : undefined;
@@ -69,34 +69,29 @@ function positiveIntOption(
 }
 
 /**
- * Read the optional `llm.rateLimit` block, failing fast on a bad value.
+ * Read the optional `llm.whenThrottled` block, failing fast on a bad value.
+ *
+ * Numbers only: there is no key here for turning throttle handling off, because
+ * there is no correct alternative to waiting out a quota the server has closed.
+ * Different mechanics are a strategy, supplied in code, not a YAML switch.
  *
  * Only the policy's own keys are accepted, and each is checked: a budget
  * silently parsed as NaN would disable the cap it was written to impose, which
  * is worse than being told the value is wrong.
  */
-function rateLimitOption(value: unknown): {
-  rateLimit?: Partial<RateLimitPolicy>;
+function whenThrottledOption(value: unknown): {
+  whenThrottled?: Partial<ThrottlePolicy>;
 } {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(
-      `Invalid llm.rateLimit: expected a mapping, got ${JSON.stringify(value)}`,
+      `Invalid llm.whenThrottled: expected a mapping, got ${JSON.stringify(value)}`,
     );
   }
   const raw = value as Record<string, unknown>;
-  const policy: Partial<RateLimitPolicy> = {};
+  const policy: Partial<ThrottlePolicy> = {};
   for (const [key, v] of Object.entries(raw)) {
     if (v === undefined || v === null) continue;
-    if (key === 'enabled') {
-      if (typeof v !== 'boolean') {
-        throw new Error(
-          `Invalid llm.rateLimit.enabled: expected true or false, got ${JSON.stringify(v)}`,
-        );
-      }
-      policy.enabled = v;
-      continue;
-    }
     if (
       key === 'maxAttempts' ||
       key === 'maxTotalWaitMs' ||
@@ -106,17 +101,17 @@ function rateLimitOption(value: unknown): {
       const n = Number(v);
       if (!Number.isFinite(n) || n < 0) {
         throw new Error(
-          `Invalid llm.rateLimit.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
+          `Invalid llm.whenThrottled.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
         );
       }
       policy[key] = n;
       continue;
     }
     throw new Error(
-      `Unknown llm.rateLimit key '${key}'. Known keys: enabled, maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
+      `Unknown llm.whenThrottled key '${key}'. Known keys: maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
     );
   }
-  return Object.keys(policy).length > 0 ? { rateLimit: policy } : {};
+  return Object.keys(policy).length > 0 ? { whenThrottled: policy } : {};
 }
 
 export function resolveRagSection(

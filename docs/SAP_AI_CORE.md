@@ -84,7 +84,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 | `resourceGroup` | `string` | — | SAP AI Core resource group |
 | `credentials` | `SapAICoreCredentials` | — | Programmatic OAuth2 credentials (bypasses env var) |
 | `apiKey` | `string` | — | Not used by SAP provider (auth handled by SDK) |
-| `rateLimit` | `object` | — | Overrides for the 429 policy (see [Rate limits](#rate-limits-429)). Omit for the documented defaults |
+| `whenThrottled` | `object` | — | Overrides for the 429 policy (see [Rate limits](#rate-limits-429)). Omit for the documented defaults |
 | `log` | `object` | — | Optional logger with `debug()`, `error()` and an optional `warn()` (a rate-limit backoff is reported through `warn` when present, `error` otherwise) |
 
 ### Environment Variables
@@ -221,17 +221,35 @@ when the server sends one, and a cap on both retries and total waiting.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | `false` passes every 429 straight to the caller |
 | `maxAttempts` | `5` | Total attempts including the first |
 | `maxTotalWaitMs` | `60000` | Give up once the accumulated waiting would exceed this. Waiting behind another caller's pause counts too, so a call cannot be held past the budget it declared |
 | `baseDelayMs` | `1000` | First backoff step when the server names no time |
 | `maxDelayMs` | `20000` | Ceiling for one computed step, before jitter |
+| `strategy` | the default | How those numbers become a decision. See below |
+
+There is no switch for turning this off. Sending another request into a quota
+the server has just closed is never the better answer, so it is not a
+preference — it is correctness, and it is always on, for every provider. A
+consumer who needs different mechanics supplies a strategy:
+
+```ts
+const giveUpAtOnce: IThrottleStrategy = {
+  name: 'no-wait',
+  // `waitMs` is taken by the SHARED pause either way: opting out of waiting is
+  // this caller's business, opting out of marking the quota closed is not.
+  decide: ({ retryAfterSeconds }) => ({
+    waitMs: (retryAfterSeconds ?? 0) * 1000,
+    retry: false,
+    reason: 'attempts',
+  }),
+};
+```
 
 ```ts
 new SapCoreAIProvider({
   model: 'anthropic--claude-4.5-sonnet',
   resourceGroup: 'default',
-  rateLimit: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
+  whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
 });
 ```
 
@@ -248,15 +266,15 @@ request:
   secret. Two tenants in one process therefore do not pause each other, and two
   providers pointing at the same instance do share the pause, which is the point.
 - **Nothing above retries it again.** Once the policy is spent the error carries
-  `rateLimited`, and `RetryLlm` leaves a marked error alone.
+  `throttled`, and `RetryLlm` leaves a marked error alone.
 
 Read the outcome as a fact, not as a substring of a message:
 
 ```ts
-import { findRateLimit } from '@mcp-abap-adt/llm-agent';
+import { findThrottled } from '@mcp-abap-adt/llm-agent';
 
-const limit = findRateLimit(error);   // undefined when it was not a rate limit
-if (limit) console.warn(limit.attempts, limit.retryAfterSeconds);
+const limit = findThrottled(error);   // undefined when it was not throttling
+if (limit) console.warn(limit.attempts, limit.retryAfterSeconds, limit.reason);
 ```
 
 If 429s persist after this, the quota itself is too small for the traffic:
@@ -341,7 +359,7 @@ Use this endpoint to dynamically discover which embedding model names are valid 
 | `Model not found` | Model not deployed | Deploy the model in SAP AI Core Launchpad |
 | `Resource group not found` | Wrong resource group | Check `SAP_AI_RESOURCE_GROUP` value |
 | `OAuth2 token error` | Wrong `tokenServiceUrl` | Verify the URL from service key `uaa.url` |
-| `429 Too Many Requests` surviving the retries | Sustained throttling — the per-minute quota for that model is smaller than the traffic | The error carries `rateLimited` and `retryAfterSeconds`; see [Rate limits](#rate-limits-429). Spread load across resource groups or raise the model's limit |
+| `429 Too Many Requests` surviving the retries | Sustained throttling — the per-minute quota for that model is smaller than the traffic | The error carries `throttled` and `retryAfterSeconds`; see [Rate limits](#rate-limits-429). Spread load across resource groups or raise the model's limit |
 | `400 "Either a prompt template or messages must be defined"` | SDK requires `prompt.template` | Fixed in v2.9.0 — upgrade the package |
 | `400 "Unused parameters"` | Using `messagesHistory` instead of `messages` | Fixed in v2.9.0 — upgrade the package |
 | `Stream finished with token length exceeded` | `maxTokens` too low for tool-calling models | Set `maxTokens: 32768` or higher in config |

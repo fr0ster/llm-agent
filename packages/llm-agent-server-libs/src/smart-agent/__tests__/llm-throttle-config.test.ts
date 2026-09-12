@@ -30,24 +30,34 @@ const llmOf = (yaml: Record<string, unknown>) =>
     | Record<string, unknown>
     | undefined;
 
-describe('llm.rateLimit from YAML', () => {
+describe('llm.whenThrottled from YAML', () => {
   it('reaches the resolved config', () => {
     const llm = llmOf(
-      yamlWith({ rateLimit: { maxAttempts: 3, maxTotalWaitMs: 20000 } }),
+      yamlWith({ whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 20000 } }),
     );
-    assert.deepEqual(llm?.rateLimit, {
+    assert.deepEqual(llm?.whenThrottled, {
       maxAttempts: 3,
       maxTotalWaitMs: 20000,
     });
   });
 
-  it('carries enabled: false, the opt-out', () => {
-    const llm = llmOf(yamlWith({ rateLimit: { enabled: false } }));
-    assert.deepEqual(llm?.rateLimit, { enabled: false });
+  it('rejects an on/off switch, which this is not', () => {
+    // There is no correct alternative to waiting out a closed quota, so there
+    // is no YAML key for skipping it. Different mechanics are a strategy,
+    // supplied in code.
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          yamlWith({ whenThrottled: { enabled: false } }),
+          {},
+        ),
+      /Unknown llm\.whenThrottled key 'enabled'/,
+    );
   });
 
   it('stays undefined when omitted, so the documented defaults apply', () => {
-    assert.equal(llmOf(yamlWith({}))?.rateLimit, undefined);
+    assert.equal(llmOf(yamlWith({}))?.whenThrottled, undefined);
   });
 
   it('fails fast on a budget that is not a number', () => {
@@ -55,10 +65,10 @@ describe('llm.rateLimit from YAML', () => {
       () =>
         resolveSmartServerConfig(
           {},
-          yamlWith({ rateLimit: { maxTotalWaitMs: 'soon' } }),
+          yamlWith({ whenThrottled: { maxTotalWaitMs: 'soon' } }),
           {},
         ),
-      /llm\.rateLimit\.maxTotalWaitMs/,
+      /llm\.whenThrottled\.maxTotalWaitMs/,
     );
   });
 
@@ -67,17 +77,17 @@ describe('llm.rateLimit from YAML', () => {
       () =>
         resolveSmartServerConfig(
           {},
-          yamlWith({ rateLimit: { maxAttempt: 3 } }),
+          yamlWith({ whenThrottled: { maxAttempt: 3 } }),
           {},
         ),
-      /Unknown llm\.rateLimit key 'maxAttempt'/,
+      /Unknown llm\.whenThrottled key 'maxAttempt'/,
     );
   });
 
   it('fails fast when it is not a mapping', () => {
     assert.throws(
-      () => resolveSmartServerConfig({}, yamlWith({ rateLimit: 3 }), {}),
-      /Invalid llm\.rateLimit/,
+      () => resolveSmartServerConfig({}, yamlWith({ whenThrottled: 3 }), {}),
+      /Invalid llm\.whenThrottled/,
     );
   });
 });
@@ -115,12 +125,12 @@ describe('makeDefaultRoleLlm', () => {
         apiKey: 'sk-test',
         model: 'gpt-4o',
         maxTokens: 8192,
-        rateLimit: { maxAttempts: 3, maxTotalWaitMs: 20_000 },
+        whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 20_000 },
       },
       0.1,
     );
     const config = configOf(llm);
-    assert.deepEqual(config?.rateLimit, {
+    assert.deepEqual(config?.whenThrottled, {
       maxAttempts: 3,
       maxTotalWaitMs: 20_000,
     });
@@ -132,6 +142,6 @@ describe('makeDefaultRoleLlm', () => {
       { provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o' },
       0.1,
     );
-    assert.equal(configOf(llm)?.rateLimit, undefined);
+    assert.equal(configOf(llm)?.whenThrottled, undefined);
   });
 });

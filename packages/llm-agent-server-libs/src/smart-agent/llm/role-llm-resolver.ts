@@ -15,10 +15,10 @@ export function makeDefaultRoleLlm(
       baseURL: lc.url,
       model: lc.model,
       // Hand-copied field lists are how a config stops arriving: maxTokens was
-      // declared on SmartServerLlmConfig and never passed on, and rateLimit
+      // declared on SmartServerLlmConfig and never passed on, and whenThrottled
       // would have gone the same way. Anything added to that type belongs here.
       maxTokens: lc.maxTokens,
-      rateLimit: lc.rateLimit,
+      whenThrottled: lc.whenThrottled,
     },
     Number(lc.temperature ?? mainTemp ?? 0.7),
   );

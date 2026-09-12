@@ -61,9 +61,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
    * again. The base scope covers the endpoint and the credential; these two
    * split one credential's traffic the way OpenAI bills it.
    */
-  protected override rateLimitScope(): string {
+  protected override quotaScope(): string {
     return [
-      super.rateLimitScope(),
+      super.quotaScope(),
       this.config.organization ?? '',
       this.config.project ?? '',
     ].join('|');
@@ -89,7 +89,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         options?.temperature ?? this.config.temperature ?? 0.7;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
-      const response = await this.withRateLimitRetry(
+      const response = await this.withThrottleRetry(
         () =>
           this.client.post('/chat/completions', {
             model,
@@ -127,7 +127,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw this.preserveRateLimit(
+      throw this.preserveThrottled(
         error,
         new Error(`${this.providerName} API error: ${message}`),
       );
@@ -145,7 +145,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         options?.temperature ?? this.config.temperature ?? 0.7;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
-      const response = await this.withRateLimitRetry(
+      const response = await this.withThrottleRetry(
         () =>
           this.client.post(
             '/chat/completions',
@@ -237,7 +237,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw this.preserveRateLimit(
+      throw this.preserveThrottled(
         error,
         new Error(`${this.providerName} Streaming error: ${message}`),
       );

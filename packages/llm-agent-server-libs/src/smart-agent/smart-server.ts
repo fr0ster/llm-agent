@@ -34,8 +34,8 @@ import type {
   McpClientDescriptor,
   NamespaceClientInput,
   PluginExports,
-  RateLimitPolicy,
   SubAgentRegistry,
+  ThrottlePolicy,
 } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedTools,
@@ -143,7 +143,7 @@ export interface SmartServerLlmConfig {
    * `maxTotalWaitMs` below its own client's timeout, so the caller gets the
    * "retry in N seconds" answer rather than a cut connection.
    */
-  rateLimit?: Partial<RateLimitPolicy>;
+  whenThrottled?: Partial<ThrottlePolicy>;
 }
 
 export interface SmartServerRagConfig {

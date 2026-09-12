@@ -11,10 +11,10 @@ import type {
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  preserveRateLimit,
-  type RateLimitRetryOptions,
-  runWithRateLimitRetry,
-} from './rate-limit.js';
+  preserveThrottled,
+  runWithThrottleRetry,
+  type ThrottleRetryOptions,
+} from './throttle.js';
 
 export interface LLMProvider {
   /**
@@ -98,7 +98,7 @@ export abstract class BaseLLMProvider<
    * the account's secret. Override to add a provider's own account fields
    * (organization, project, resource group) — never the raw secret.
    */
-  protected rateLimitScope(): string {
+  protected quotaScope(): string {
     return [
       this.canonicalEndpoint(this.quotaEndpoint()),
       this.credentialFingerprint(this.config.apiKey),
@@ -153,14 +153,14 @@ export abstract class BaseLLMProvider<
    * model's 429 would pause another's, and two overrides would share a gate
    * neither of them belongs to.
    */
-  protected rateLimitKey(model?: string): string {
-    return `${this.constructor.name}:${this.rateLimitScope()}:${
+  protected quotaKey(model?: string): string {
+    return `${this.constructor.name}:${this.quotaScope()}:${
       model ?? this.config.model ?? 'default'
     }`;
   }
 
   /** Is this "too many requests" rather than a real failure? */
-  protected isRateLimited(error: unknown): boolean {
+  protected isThrottled(error: unknown): boolean {
     return httpStatusOf(error) === 429;
   }
 
@@ -186,27 +186,27 @@ export abstract class BaseLLMProvider<
    * Providers rethrow their transport error as a readable one. Call this on the
    * way out so the consumer still reads a fact, not a substring.
    */
-  protected preserveRateLimit<E extends Error>(
+  protected preserveThrottled<E extends Error>(
     original: unknown,
     wrapped: E,
   ): E {
-    return preserveRateLimit(original, wrapped);
+    return preserveThrottled(original, wrapped);
   }
 
   /** Wrap one provider call in the shared policy. */
-  protected withRateLimitRetry<T>(
+  protected withThrottleRetry<T>(
     fn: () => Promise<T>,
     extra?: {
       /** The model this call actually uses, when it overrides the configured one. */
       model?: string;
       signal?: AbortSignal;
-      onRetry?: RateLimitRetryOptions['onRetry'];
+      onRetry?: ThrottleRetryOptions['onRetry'];
     },
   ): Promise<T> {
-    return runWithRateLimitRetry(fn, {
-      key: this.rateLimitKey(extra?.model),
-      policy: this.config.rateLimit,
-      isRateLimited: (e: unknown) => this.isRateLimited(e),
+    return runWithThrottleRetry(fn, {
+      key: this.quotaKey(extra?.model),
+      policy: this.config.whenThrottled,
+      isThrottled: (e: unknown) => this.isThrottled(e),
       retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
       signal: extra?.signal,
       onRetry: extra?.onRetry,

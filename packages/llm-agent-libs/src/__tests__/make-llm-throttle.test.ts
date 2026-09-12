@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { RateLimitPolicy } from '@mcp-abap-adt/llm-agent';
+import type { ThrottlePolicy } from '@mcp-abap-adt/llm-agent';
 import { type MakeLlmConfig, makeLlm } from '../providers.js';
 
 /**
  * 22.2.0 shipped a per-provider rate-limit policy and no way to set it through
- * the composition root (#285): `MakeLlmConfig` had no `rateLimit`, so every
+ * the composition root (#285): `MakeLlmConfig` had no `whenThrottled`, so every
  * consumer on this path silently ran the defaults. These tests assert the field
  * actually arrives at the provider, which is the part that was missing.
  *
@@ -13,14 +13,14 @@ import { type MakeLlmConfig, makeLlm } from '../providers.js';
  * `private` is compile-time only, and the alternative — asserting on timing
  * through a stubbed transport — would test the policy rather than the wiring.
  */
-function policyOf(llm: unknown): Partial<RateLimitPolicy> | undefined {
+function policyOf(llm: unknown): Partial<ThrottlePolicy> | undefined {
   const bridge = (llm as { agent?: unknown }).agent as
-    | { provider?: { config?: { rateLimit?: Partial<RateLimitPolicy> } } }
+    | { provider?: { config?: { whenThrottled?: Partial<ThrottlePolicy> } } }
     | undefined;
-  return bridge?.provider?.config?.rateLimit;
+  return bridge?.provider?.config?.whenThrottled;
 }
 
-const POLICY: Partial<RateLimitPolicy> = {
+const POLICY: Partial<ThrottlePolicy> = {
   maxAttempts: 2,
   maxTotalWaitMs: 15_000,
 };
@@ -55,7 +55,7 @@ const CASES: Array<{ name: string; cfg: MakeLlmConfig }> = [
 describe('makeLlm — the rate-limit policy reaches the provider', () => {
   for (const { name, cfg } of CASES) {
     it(`forwards it for ${name}`, async () => {
-      const llm = await makeLlm({ ...cfg, rateLimit: POLICY }, 0.1);
+      const llm = await makeLlm({ ...cfg, whenThrottled: POLICY }, 0.1);
       assert.deepEqual(
         policyOf(llm),
         POLICY,

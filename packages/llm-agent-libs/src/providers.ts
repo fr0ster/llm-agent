@@ -12,7 +12,7 @@ import type {
   ILlm,
   IModelResolver,
   LLMProviderConfig,
-  RateLimitPolicy,
+  ThrottlePolicy,
 } from '@mcp-abap-adt/llm-agent';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
@@ -41,7 +41,7 @@ export interface MakeLlmConfig {
    * wants `maxTotalWaitMs` below its own client's timeout, so the caller gets
    * the "retry in N seconds" answer instead of a cut connection.
    */
-  rateLimit?: Partial<RateLimitPolicy>;
+  whenThrottled?: Partial<ThrottlePolicy>;
   /** When false, streamChat() is replaced with chat() yielding a single chunk. Default: true. */
   streaming?: boolean;
 }
@@ -186,7 +186,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
-        rateLimit: cfg.rateLimit,
+        whenThrottled: cfg.whenThrottled,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -204,7 +204,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
-        rateLimit: cfg.rateLimit,
+        whenThrottled: cfg.whenThrottled,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -222,7 +222,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
-        rateLimit: cfg.rateLimit,
+        whenThrottled: cfg.whenThrottled,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -240,7 +240,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
-        rateLimit: cfg.rateLimit,
+        whenThrottled: cfg.whenThrottled,
       });
       llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
@@ -257,7 +257,7 @@ export async function makeLlm(
         model: cfg.model,
         temperature,
         maxTokens,
-        rateLimit: cfg.rateLimit,
+        whenThrottled: cfg.whenThrottled,
         resourceGroup: cfg.resourceGroup,
         credentials: cfg.credentials,
         log: {

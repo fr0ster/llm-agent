@@ -2246,15 +2246,16 @@ a digest of the credential (never the credential), the provider's own account
 fields such as organization or resource group, and the model the call actually
 uses. Two tenants in one process do not pause each other. Defaults are 5 attempts
 or 60 seconds of total waiting, whichever comes first — the caps SAP AI Core
-documents. Tune or disable it per provider through `rateLimit` on the provider
+documents. Tune or disable it per provider through `whenThrottled` on the provider
 config:
 
 ```ts
 new OpenAIProvider({
   apiKey,
   model: 'gpt-4o',
-  rateLimit: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
-  // rateLimit: { enabled: false } — pass every 429 straight to the caller
+  whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
+  // There is no on/off switch: waiting out a closed quota is correctness, not
+  // preference. Different mechanics go through `whenThrottled.strategy`.
 });
 ```
 
@@ -2265,19 +2266,19 @@ const llm = await makeLlm(
   {
     provider: 'sap-ai-sdk',
     model: 'anthropic--claude-4.5-sonnet',
-    rateLimit: { maxTotalWaitMs: 20_000 },
+    whenThrottled: { maxTotalWaitMs: 20_000 },
   },
   0.1,
 );
 ```
 
-From a server's YAML it is the `llm.rateLimit` block:
+From a server's YAML it is the `llm.whenThrottled` block:
 
 ```yaml
 llm:
   provider: sap-ai-sdk
   model: anthropic--claude-4.5-sonnet
-  rateLimit:
+  whenThrottled:
     maxTotalWaitMs: 20000
     maxAttempts: 3
 ```
@@ -2295,9 +2296,9 @@ error through untouched rather than multiplying attempts against a closed quota.
 Consumers read the fact instead of matching digits in a message:
 
 ```ts
-import { findRateLimit } from '@mcp-abap-adt/llm-agent';
+import { findThrottled } from '@mcp-abap-adt/llm-agent';
 
-const limit = findRateLimit(error);
+const limit = findThrottled(error);
 if (limit) console.warn(`throttled after ${limit.attempts} attempts`, limit.retryAfterSeconds);
 ```
 

@@ -25,10 +25,8 @@
 
 import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
 
-export interface RateLimitPolicy {
-  /** Set false to pass every error straight through. */
-  enabled: boolean;
-  /** Total attempts INCLUDING the first. 1 disables retrying without disabling the gate. */
+export interface ThrottlePolicy {
+  /** Total attempts INCLUDING the first. 1 waits out no throttling of its own. */
   maxAttempts: number;
   /** Give up once the accumulated waiting would exceed this. */
   maxTotalWaitMs: number;
@@ -36,30 +34,113 @@ export interface RateLimitPolicy {
   baseDelayMs: number;
   /** Ceiling for one computed step, before jitter. */
   maxDelayMs: number;
+  /**
+   * How the numbers above turn into a decision. Omit for the default.
+   *
+   * There is no switch to turn throttle handling off, because there is no case
+   * where sending another request into a quota the server has just closed is
+   * the better answer — that is correctness, not preference. A consumer who
+   * wants different mechanics supplies them here, and the shared pause, which
+   * is the part other callers depend on, is kept either way.
+   */
+  strategy?: IThrottleStrategy;
 }
 
-export const DEFAULT_RATE_LIMIT_POLICY: RateLimitPolicy = {
-  enabled: true,
+/** What the strategy is told about the 429 that just came back. */
+export interface ThrottleContext {
+  /** 1-based: the attempt that was just refused. */
+  attempt: number;
+  /** What the server asked us to wait, in seconds, if it said. */
+  retryAfterSeconds?: number;
+  /** Waiting already spent on this call, the shared pause included. */
+  waitedMs: number;
+  /** The numbers in force, so a strategy need not close over them. */
+  policy: ThrottlePolicy;
+}
+
+export interface ThrottleDecision {
+  /**
+   * How long this quota is closed.
+   *
+   * Taken by the shared pause whether or not THIS caller retries: the quota is
+   * shut regardless of who has budget left, and a caller that gives up with the
+   * gate open sends everyone else straight back into the limit.
+   */
+  waitMs: number;
+  /** Whether this caller waits it out and tries again. */
+  retry: boolean;
+  /** When not retrying, which cap ended it. */
+  reason?: 'attempts' | 'budget';
+}
+
+export interface IThrottleStrategy {
+  readonly name: string;
+  decide(ctx: ThrottleContext): ThrottleDecision;
+}
+
+export const DEFAULT_THROTTLE_POLICY: Omit<ThrottlePolicy, 'strategy'> = {
   maxAttempts: 5,
   maxTotalWaitMs: 60_000,
   baseDelayMs: 1_000,
   maxDelayMs: 20_000,
 };
 
+/**
+ * What SAP AI Core documents: the server's own `Retry-After` when it sends one,
+ * otherwise exponential backoff with full jitter, capped by attempts and by
+ * total waiting.
+ */
+export class DefaultThrottleStrategy implements IThrottleStrategy {
+  readonly name = 'default-throttle';
+
+  decide({
+    attempt,
+    retryAfterSeconds,
+    waitedMs,
+    policy,
+  }: ThrottleContext): ThrottleDecision {
+    const served =
+      retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds);
+
+    // The server's own number wins. A computed guess is for when it stays
+    // silent — it is an estimate of something the server already knows.
+    const waitMs = served
+      ? (retryAfterSeconds as number) * 1000
+      : jittered(policy.baseDelayMs * 2 ** (attempt - 1), policy.maxDelayMs);
+
+    if (attempt >= policy.maxAttempts) {
+      return { waitMs, retry: false, reason: 'attempts' };
+    }
+    if (waitedMs + waitMs > policy.maxTotalWaitMs) {
+      return { waitMs, retry: false, reason: 'budget' };
+    }
+    return { waitMs, retry: true };
+  }
+}
+
+const defaultStrategy = new DefaultThrottleStrategy();
+
 /** An error annotated by this module, so consumers read a fact instead of prose. */
-export interface RateLimitedError extends Error {
-  rateLimited: true;
+export interface ThrottledError extends Error {
+  throttled: true;
   /** What the server asked for, when it asked. */
   retryAfterSeconds?: number;
   /** How many attempts were spent before giving up. */
   attempts: number;
+  /**
+   * Which cap ended it, when it ended here. `attempts` and `budget` are fixed
+   * by opposite settings, so a consumer that cannot tell them apart cannot act
+   * on either. `gate` means the pause was already longer than the budget and no
+   * request was sent at all.
+   */
+  reason?: 'attempts' | 'budget' | 'gate';
 }
 
-export function isRateLimitedError(e: unknown): e is RateLimitedError {
+export function isThrottledError(e: unknown): e is ThrottledError {
   return (
     typeof e === 'object' &&
     e !== null &&
-    (e as { rateLimited?: unknown }).rateLimited === true
+    (e as { throttled?: unknown }).throttled === true
   );
 }
 
@@ -103,7 +184,7 @@ const WAKE_SPREAD_MS = 250;
  * Keyed because limits are per model: one model being throttled says nothing
  * about another.
  */
-export class RateLimitGate {
+export class QuotaGate {
   private notBefore = 0;
 
   /** Hold every caller until the named time. Never shortens an existing hold. */
@@ -155,7 +236,7 @@ export class RateLimitGate {
 }
 
 interface GateEntry {
-  gate: RateLimitGate;
+  gate: QuotaGate;
   lastUsed: number;
   /** How many calls are holding this gate right now. Never evict above zero. */
   leases: number;
@@ -180,7 +261,7 @@ export const GATE_IDLE_TTL_MS = 10 * 60_000;
 export const GATE_LIMIT = 500;
 
 /** The gate for one quota. Shared across every provider instance in the process. */
-export function gateFor(key: string): RateLimitGate {
+export function gateFor(key: string): QuotaGate {
   const now = Date.now();
   const existing = gates.get(key);
   if (existing) {
@@ -189,7 +270,7 @@ export function gateFor(key: string): RateLimitGate {
   }
   if (gates.size >= GATE_LIMIT) reclaimGates(now);
   const entry: GateEntry = {
-    gate: new RateLimitGate(),
+    gate: new QuotaGate(),
     lastUsed: now,
     leases: 0,
   };
@@ -210,12 +291,12 @@ export function gateFor(key: string): RateLimitGate {
  *
  * Release in a `finally`. Releasing twice is harmless.
  */
-export function leaseRateLimitGate(key: string): {
-  gate: RateLimitGate;
+export function leaseQuotaGate(key: string): {
+  gate: QuotaGate;
   release: () => void;
 } {
   const gate = gateFor(key);
-  // By identity, not by key: `resetRateLimitGates` may have replaced the entry
+  // By identity, not by key: `resetQuotaGates` may have replaced the entry
   // by the time this is released, and that entry's count is not ours to touch.
   const entry = gates.get(key);
   if (entry) entry.leases += 1;
@@ -237,7 +318,7 @@ export function leaseRateLimitGate(key: string): {
  * waiting ten minutes. It frees only what is certainly stale; the size bound is
  * enforced separately, by `reclaimGates`.
  */
-export function pruneRateLimitGates(now: number = Date.now()): void {
+export function pruneQuotaGates(now: number = Date.now()): void {
   for (const [key, entry] of gates) {
     if (isEvictable(entry, now) && now - entry.lastUsed > GATE_IDLE_TTL_MS) {
       gates.delete(key);
@@ -268,7 +349,7 @@ function isEvictable(entry: GateEntry, now: number): boolean {
  * not one a call is still holding, which may be about to become a pause.
  */
 function reclaimGates(now: number): void {
-  pruneRateLimitGates(now);
+  pruneQuotaGates(now);
   if (gates.size < GATE_LIMIT) return;
 
   const evictable = [...gates]
@@ -282,21 +363,21 @@ function reclaimGates(now: number): void {
 }
 
 /** How many quotas are currently tracked. Diagnostics and tests. */
-export function rateLimitGateCount(): number {
+export function quotaGateCount(): number {
   return gates.size;
 }
 
 /** Test seam — drops every gate. */
-export function resetRateLimitGates(): void {
+export function resetQuotaGates(): void {
   gates.clear();
 }
 
-export interface RateLimitRetryOptions {
+export interface ThrottleRetryOptions {
   /** Identifies the quota being spent. Limits are per model, so include it. */
   key: string;
-  policy?: Partial<RateLimitPolicy>;
+  policy?: Partial<ThrottlePolicy>;
   /** Does this error mean "too many requests"? */
-  isRateLimited: (error: unknown) => boolean;
+  isThrottled: (error: unknown) => boolean;
   /** What the server asked us to wait, in seconds, if it said. */
   retryAfterSeconds?: (error: unknown) => number | undefined;
   signal?: AbortSignal;
@@ -314,14 +395,12 @@ export interface RateLimitRetryOptions {
  * this is not a general-purpose retry, and turning a genuine failure into four
  * more of them would be worse than the failure.
  */
-export async function runWithRateLimitRetry<T>(
+export async function runWithThrottleRetry<T>(
   fn: () => Promise<T>,
-  opts: RateLimitRetryOptions,
+  opts: ThrottleRetryOptions,
 ): Promise<T> {
-  const policy = { ...DEFAULT_RATE_LIMIT_POLICY, ...opts.policy };
-  if (!policy.enabled) return fn();
-
-  const { gate, release } = leaseRateLimitGate(opts.key);
+  const policy: ThrottlePolicy = { ...DEFAULT_THROTTLE_POLICY, ...opts.policy };
+  const { gate, release } = leaseQuotaGate(opts.key);
   try {
     return await attemptWithGate(fn, opts, policy, gate);
   } finally {
@@ -331,9 +410,9 @@ export async function runWithRateLimitRetry<T>(
 
 async function attemptWithGate<T>(
   fn: () => Promise<T>,
-  opts: RateLimitRetryOptions,
-  policy: RateLimitPolicy,
-  gate: RateLimitGate,
+  opts: ThrottleRetryOptions,
+  policy: ThrottlePolicy,
+  gate: QuotaGate,
 ): Promise<T> {
   let attempt = 0;
   let waited = 0;
@@ -362,22 +441,22 @@ async function attemptWithGate<T>(
     try {
       return await fn();
     } catch (error) {
-      if (!opts.isRateLimited(error)) throw error;
+      if (!opts.isThrottled(error)) throw error;
 
       attempt += 1;
       const retryAfter = opts.retryAfterSeconds?.(error);
-      const served = retryAfter !== undefined && Number.isFinite(retryAfter);
+      const decision = (policy.strategy ?? defaultStrategy).decide({
+        attempt,
+        retryAfterSeconds: retryAfter,
+        waitedMs: waited,
+        policy,
+      });
 
-      // The server's own number wins. A computed guess is for when it stays
-      // silent — it is an estimate of something the server already knows.
-      const wait = served
-        ? (retryAfter as number) * 1000
-        : jittered(policy.baseDelayMs * 2 ** (attempt - 1), policy.maxDelayMs);
-
-      // Hold everyone else too, and hold them whether or not THIS caller has
-      // budget left to retry. The pause describes the quota, not one request:
-      // giving up with the gate open sends every other caller straight back
-      // into a limit the server just said was closed.
+      // Hold everyone else too, and hold them whether or not THIS caller is
+      // going on. The pause describes the quota, not one request: giving up
+      // with the gate open sends every other caller straight back into a limit
+      // the server just said was closed. That is why the decision carries a
+      // wait in both cases, rather than being retry-or-nothing.
       //
       // The gate is given the interval alone. This caller then serves its own
       // backoff there, on the next turn of the loop, rather than sleeping
@@ -385,17 +464,15 @@ async function attemptWithGate<T>(
       // the leftover milliseconds between them decide outcomes at the margin.
       // The per-caller spread that keeps the released callers from waking
       // together lives in `waitUntilOpen`, where the waiting is done.
-      gate.penalise(wait);
+      gate.penalise(decision.waitMs);
 
-      const outOfAttempts = attempt >= policy.maxAttempts;
-      const outOfTime = waited + wait > policy.maxTotalWaitMs;
-      if (outOfAttempts || outOfTime) {
-        throw annotate(error, attempt, retryAfter);
+      if (!decision.retry) {
+        throw annotate(error, attempt, retryAfter, decision.reason);
       }
 
       opts.onRetry?.({
         attempt,
-        delayMs: wait,
+        delayMs: decision.waitMs,
         retryAfterSeconds: retryAfter,
       });
     }
@@ -422,14 +499,14 @@ const MAX_CAUSE_DEPTH = 5;
  * object by the time a retry decorator inspects it. Bounded by depth and a
  * visited set, like `extractStatusCode`, so a cyclic chain cannot hang.
  */
-export function findRateLimit(err: unknown): RateLimitedError | undefined {
+export function findThrottled(err: unknown): ThrottledError | undefined {
   const visited = new Set<unknown>();
   let cur: unknown = err;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
     if (typeof cur !== 'object' || cur === null || visited.has(cur))
       return undefined;
     visited.add(cur);
-    if (isRateLimitedError(cur)) return cur;
+    if (isThrottledError(cur)) return cur;
     cur = (cur as { cause?: unknown }).cause;
   }
   return undefined;
@@ -442,13 +519,13 @@ export function findRateLimit(err: unknown): RateLimitedError | undefined {
  * That is fine for a message and fatal for a fact: the 429 would be lost at the
  * exact boundary where the consumer needs it. This moves the facts across.
  */
-export function preserveRateLimit<E extends Error>(
+export function preserveThrottled<E extends Error>(
   original: unknown,
   wrapped: E,
 ): E {
-  if (!isRateLimitedError(original)) return wrapped;
-  const w = wrapped as E & Partial<RateLimitedError>;
-  w.rateLimited = true;
+  if (!isThrottledError(original)) return wrapped;
+  const w = wrapped as E & Partial<ThrottledError>;
+  w.throttled = true;
   w.attempts = original.attempts;
   if (original.retryAfterSeconds !== undefined) {
     w.retryAfterSeconds = original.retryAfterSeconds;
@@ -467,13 +544,14 @@ export function preserveRateLimit<E extends Error>(
 function outOfBudgetAtGate(
   remainingMs: number,
   attempts: number,
-): RateLimitedError {
+): ThrottledError {
   const e = new Error(
     'rate limited: the pause on this quota outlasts the configured wait budget',
-  ) as RateLimitedError;
-  e.rateLimited = true;
+  ) as ThrottledError;
+  e.throttled = true;
   e.attempts = attempts;
   e.retryAfterSeconds = remainingMs / 1000;
+  e.reason = 'gate';
   return e;
 }
 
@@ -481,12 +559,14 @@ function annotate(
   error: unknown,
   attempts: number,
   retryAfterSeconds?: number,
-): RateLimitedError {
+  reason?: ThrottledError['reason'],
+): ThrottledError {
   const e = (
     error instanceof Error ? error : new Error(String(error))
-  ) as RateLimitedError;
-  e.rateLimited = true;
+  ) as ThrottledError;
+  e.throttled = true;
   e.attempts = attempts;
   if (retryAfterSeconds !== undefined) e.retryAfterSeconds = retryAfterSeconds;
+  if (reason !== undefined) e.reason = reason;
   return e;
 }

@@ -9,9 +9,38 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`rateLimit` is now `whenThrottled`.** The old name read as a limit we
+  impose. It is the opposite: the rules for what we do when a *server* limits
+  *us*. `whenThrottled: { maxAttempts: 3 }` says what it means — when we are
+  throttled, at most three attempts. Renamed throughout, including the module
+  (`llm/rate-limit.ts` → `llm/throttle.ts`), the marker on the error
+  (`rateLimited` → `throttled`), and the lookup consumers use
+  (`findRateLimit` → `findThrottled`).
+
+- **`enabled` is gone, replaced by `strategy`.** There is no case where sending
+  another request into a quota the server has just closed is the better answer,
+  so it was a switch for nothing — and worse than nothing: a caller that set
+  `enabled: false` also stopped marking the quota closed and stopped observing
+  everyone else's pause, quietly dropping a guarantee that was never its own to
+  drop. Different mechanics are now an `IThrottleStrategy`, matching the
+  `IWaitStrategy` seam already in this repository. The shared pause stays with
+  the policy, because it is an invariant rather than a preference.
+
+- **Throttle handling is unconditionally on for every provider**, which is what
+  22.2.0 meant to ship.
+
+### Added
+
+- **The error says which cap ended it** — `reason` is `attempts`, `budget`, or
+  `gate` (the pause was already longer than the budget, so no request was
+  sent). The two are fixed by opposite settings, and a consumer that cannot
+  tell them apart cannot act on either.
+
 ### Fixed
 
-- **`makeLlm` now forwards `rateLimit` to the provider it builds** (#285). The
+- **`makeLlm` now forwards `whenThrottled` to the provider it builds** (#285). The
   policy shipped in 22.2.0 and could not be configured through the composition
   root — `MakeLlmConfig` had no such field, so every consumer on that path
   silently ran the defaults. Patch, not minor: nothing new is offered, the
@@ -23,7 +52,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   typed from the real config, the next field added upstream cannot be silently
   lost here.
 
-- **`llm.rateLimit` is configurable on the server too** (#285). The policy
+- **`llm.whenThrottled` is configurable on the server too** (#285). The policy
   crossed two more hand-written field lists on the way from YAML to a provider:
   the flat `llm:` allow-list in `resolveLlmSection`, and the object
   `makeDefaultRoleLlm` builds for `makeLlm`. Both now carry it, and both
