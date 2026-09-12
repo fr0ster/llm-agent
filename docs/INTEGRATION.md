@@ -2271,6 +2271,20 @@ const llm = await makeLlm(
 );
 ```
 
+From a server's YAML it is the `llm.rateLimit` block:
+
+```yaml
+llm:
+  provider: sap-ai-sdk
+  model: anthropic--claude-4.5-sonnet
+  rateLimit:
+    maxTotalWaitMs: 20000
+    maxAttempts: 3
+```
+
+Keys are checked at startup: a misspelled one or an unparseable budget fails
+there rather than silently leaving the default in place.
+
 A service answering inside an HTTP request usually wants `maxTotalWaitMs` below
 its own client's timeout. Waiting longer than the client will wait leaves the
 caller with a cut connection instead of the "retry in N seconds" answer the

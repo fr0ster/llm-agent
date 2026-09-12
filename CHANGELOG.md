@@ -23,6 +23,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   typed from the real config, the next field added upstream cannot be silently
   lost here.
 
+- **`llm.rateLimit` is configurable on the server too** (#285). The policy
+  crossed two more hand-written field lists on the way from YAML to a provider:
+  the flat `llm:` allow-list in `resolveLlmSection`, and the object
+  `makeDefaultRoleLlm` builds for `makeLlm`. Both now carry it, and both
+  validate it — a misspelled key or an unparseable budget fails at startup
+  instead of disappearing into the default.
+
+- **`llm.maxTokens` reaches the provider.** Declared on `SmartServerLlmConfig`
+  and read by neither of those two lists, so the documented YAML key had no
+  effect at all. Same defect, already in flight before this one.
+
 ## [22.2.0] — 2026-09-12
 
 Rate-limit handling for every LLM provider (#282, #283).

@@ -3,6 +3,7 @@
  * Internal module — not re-exported by the package barrel.
  */
 
+import type { RateLimitPolicy } from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartServerAgentConfig,
@@ -34,6 +35,12 @@ export function resolveLlmSection(
           classifierTemperature: Number(
             get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
           ),
+          // Both of these are declared on SmartServerLlmConfig and were missing
+          // from this allow-list, which is exactly the disappearing act the
+          // comment on positiveIntOption warns about: the key is accepted in
+          // YAML, read by nobody, and the default applies in silence.
+          ...positiveIntOption(get(yaml, 'llm', 'maxTokens'), 'llm.maxTokens'),
+          ...rateLimitOption(get(yaml, 'llm', 'rateLimit')),
         }
       : (get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
     : undefined;
@@ -59,6 +66,57 @@ function positiveIntOption(
     );
   }
   return { [key.split('.').pop() as string]: n };
+}
+
+/**
+ * Read the optional `llm.rateLimit` block, failing fast on a bad value.
+ *
+ * Only the policy's own keys are accepted, and each is checked: a budget
+ * silently parsed as NaN would disable the cap it was written to impose, which
+ * is worse than being told the value is wrong.
+ */
+function rateLimitOption(value: unknown): {
+  rateLimit?: Partial<RateLimitPolicy>;
+} {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(
+      `Invalid llm.rateLimit: expected a mapping, got ${JSON.stringify(value)}`,
+    );
+  }
+  const raw = value as Record<string, unknown>;
+  const policy: Partial<RateLimitPolicy> = {};
+  for (const [key, v] of Object.entries(raw)) {
+    if (v === undefined || v === null) continue;
+    if (key === 'enabled') {
+      if (typeof v !== 'boolean') {
+        throw new Error(
+          `Invalid llm.rateLimit.enabled: expected true or false, got ${JSON.stringify(v)}`,
+        );
+      }
+      policy.enabled = v;
+      continue;
+    }
+    if (
+      key === 'maxAttempts' ||
+      key === 'maxTotalWaitMs' ||
+      key === 'baseDelayMs' ||
+      key === 'maxDelayMs'
+    ) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(
+          `Invalid llm.rateLimit.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
+        );
+      }
+      policy[key] = n;
+      continue;
+    }
+    throw new Error(
+      `Unknown llm.rateLimit key '${key}'. Known keys: enabled, maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
+    );
+  }
+  return Object.keys(policy).length > 0 ? { rateLimit: policy } : {};
 }
 
 export function resolveRagSection(
