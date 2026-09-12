@@ -530,6 +530,10 @@ export function preserveThrottled<E extends Error>(
   if (original.retryAfterSeconds !== undefined) {
     w.retryAfterSeconds = original.retryAfterSeconds;
   }
+  // Every fact, not a chosen few. Every provider wraps its transport error, so
+  // a fact left behind here is a fact no consumer ever sees — which is how the
+  // reason for giving up was lost the moment it was added.
+  if (original.reason !== undefined) w.reason = original.reason;
   return w;
 }
 

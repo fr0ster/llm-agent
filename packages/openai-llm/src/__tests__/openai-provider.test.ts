@@ -568,6 +568,48 @@ describe('OpenAIProvider — rate limiting', () => {
     }
   });
 
+  it('keeps the reason for giving up through the provider wrapping', async () => {
+    // Every provider rewraps its transport error. A fact left behind at that
+    // boundary is a fact no consumer ever sees.
+    resetQuotaGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      whenThrottled: { ...fast, maxAttempts: 1 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('1');
+    };
+    try {
+      await provider.chat([{ role: 'user', content: 'hi' }]);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(isThrottledError(e));
+      assert.equal(e.reason, 'attempts');
+    }
+  });
+
+  it('reports a budget give-up as a budget give-up', async () => {
+    resetQuotaGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      whenThrottled: { ...fast, maxAttempts: 10, maxTotalWaitMs: 10 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('30');
+    };
+    try {
+      await provider.chat([{ role: 'user', content: 'hi' }]);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(isThrottledError(e));
+      assert.equal(e.reason, 'budget');
+    }
+  });
+
   it('does not retry an ordinary failure', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({

@@ -42,8 +42,34 @@ export function resolveLlmSection(
           ...positiveIntOption(get(yaml, 'llm', 'maxTokens'), 'llm.maxTokens'),
           ...whenThrottledOption(get(yaml, 'llm', 'whenThrottled')),
         }
-      : (get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
+      : validateLlmMap(get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
     : undefined;
+}
+
+/**
+ * The named-map form (`llm.main`, `llm.helper`, …) reaches the config by a cast,
+ * so nothing in it was ever checked. A misspelled key under one role's
+ * `whenThrottled` therefore failed exactly where a config error is least
+ * visible: nowhere, with the default quietly in force.
+ *
+ * Only the blocks this module understands are validated. The rest of each entry
+ * is passed through as before — this closes the gap the flat branch already
+ * covers, it does not turn the map into a schema.
+ */
+function validateLlmMap(
+  map: Record<string, SmartServerLlmConfig>,
+): Record<string, SmartServerLlmConfig> {
+  for (const [role, entry] of Object.entries(map ?? {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    const raw = entry as unknown as Record<string, unknown>;
+    if (raw.whenThrottled !== undefined) {
+      whenThrottledOption(raw.whenThrottled, `llm.${role}.whenThrottled`);
+    }
+    if (raw.maxTokens !== undefined) {
+      positiveIntOption(raw.maxTokens, `llm.${role}.maxTokens`);
+    }
+  }
+  return map;
 }
 
 /**
@@ -79,13 +105,14 @@ function positiveIntOption(
  * silently parsed as NaN would disable the cap it was written to impose, which
  * is worse than being told the value is wrong.
  */
-function whenThrottledOption(value: unknown): {
-  whenThrottled?: Partial<ThrottlePolicy>;
-} {
+function whenThrottledOption(
+  value: unknown,
+  path = 'llm.whenThrottled',
+): { whenThrottled?: Partial<ThrottlePolicy> } {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(
-      `Invalid llm.whenThrottled: expected a mapping, got ${JSON.stringify(value)}`,
+      `Invalid ${path}: expected a mapping, got ${JSON.stringify(value)}`,
     );
   }
   const raw = value as Record<string, unknown>;
@@ -101,14 +128,14 @@ function whenThrottledOption(value: unknown): {
       const n = Number(v);
       if (!Number.isFinite(n) || n < 0) {
         throw new Error(
-          `Invalid llm.whenThrottled.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
+          `Invalid ${path}.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
         );
       }
       policy[key] = n;
       continue;
     }
     throw new Error(
-      `Unknown llm.whenThrottled key '${key}'. Known keys: maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
+      `Unknown ${path} key '${key}'. Known keys: maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
     );
   }
   return Object.keys(policy).length > 0 ? { whenThrottled: policy } : {};

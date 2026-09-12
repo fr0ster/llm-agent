@@ -92,6 +92,56 @@ describe('llm.whenThrottled from YAML', () => {
   });
 });
 
+describe('the named-map form (llm.main, llm.helper, …)', () => {
+  // This branch reaches the config by a cast, so nothing in it used to be
+  // checked: a misspelling failed where a config error is least visible.
+  const mapYaml = (main: Record<string, unknown>) => ({
+    llm: {
+      main: { provider: 'ollama', model: 'qwen2.5', apiKey: '', ...main },
+    },
+  });
+
+  it('carries a valid policy through', () => {
+    const llm = resolveSmartServerConfig(
+      {},
+      mapYaml({ whenThrottled: { maxAttempts: 2 } }),
+      {},
+    ).llm as Record<string, { whenThrottled?: unknown }>;
+    assert.deepEqual(llm.main?.whenThrottled, { maxAttempts: 2 });
+  });
+
+  it('fails fast on a misspelled key under a role', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          mapYaml({ whenThrottled: { maxAttempt: 2 } }),
+          {},
+        ),
+      /Unknown llm\.main\.whenThrottled key 'maxAttempt'/,
+    );
+  });
+
+  it('fails fast on a bad budget under a role', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          mapYaml({ whenThrottled: { maxTotalWaitMs: 'soon' } }),
+          {},
+        ),
+      /Invalid llm\.main\.whenThrottled\.maxTotalWaitMs/,
+    );
+  });
+
+  it('fails fast on a bad maxTokens under a role', () => {
+    assert.throws(
+      () => resolveSmartServerConfig({}, mapYaml({ maxTokens: 0 }), {}),
+      /llm\.main\.maxTokens/,
+    );
+  });
+});
+
 describe('llm.maxTokens from YAML', () => {
   it('reaches the resolved config', () => {
     assert.equal(llmOf(yamlWith({ maxTokens: 8192 }))?.maxTokens, 8192);
