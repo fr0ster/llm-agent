@@ -223,6 +223,68 @@ describe('runWithRateLimitRetry', () => {
     assert.equal(calls, 1);
   });
 
+  it('counts waiting at the shared gate against the budget', async () => {
+    // The reported failure: a caller with a 10ms budget sat out 464ms of
+    // someone else's pause and then went on as if it had waited for nothing.
+    resetRateLimitGates();
+    gateFor('busy').penalise(500);
+    let called = false;
+    const started = Date.now();
+    await assert.rejects(
+      runWithRateLimitRetry(
+        async () => {
+          called = true;
+          return 'ok';
+        },
+        { key: 'busy', policy: { ...FAST, maxTotalWaitMs: 10 }, isRateLimited },
+      ),
+      (e: unknown) => isRateLimitedError(e) && (e.retryAfterSeconds ?? 0) > 0,
+    );
+    assert.equal(
+      called,
+      false,
+      'the request is never sent into a closed quota',
+    );
+    assert.ok(Date.now() - started < 400, 'and the caller is not held past it');
+  });
+
+  it('waits out a pause that does fit the budget', async () => {
+    resetRateLimitGates();
+    gateFor('short').penalise(30);
+    const out = await runWithRateLimitRetry(async () => 'ok', {
+      key: 'short',
+      policy: { ...FAST, maxTotalWaitMs: 5_000 },
+      isRateLimited,
+    });
+    assert.equal(out, 'ok');
+  });
+
+  it('spends one budget on the gate and the backoff together', async () => {
+    resetRateLimitGates();
+    gateFor('shared-budget').penalise(40);
+    let calls = 0;
+    await assert.rejects(
+      runWithRateLimitRetry(
+        async () => {
+          calls += 1;
+          throw tooManyRequests('0.05');
+        },
+        {
+          key: 'shared-budget',
+          policy: { ...FAST, maxAttempts: 10, maxTotalWaitMs: 60 },
+          isRateLimited,
+          retryAfterSeconds,
+        },
+      ),
+      (e: unknown) => isRateLimitedError(e),
+    );
+    assert.equal(
+      calls,
+      1,
+      '40ms at the gate leaves no room for a 50ms backoff in a 60ms budget',
+    );
+  });
+
   it('ships defaults matching what SAP documents', () => {
     assert.equal(DEFAULT_RATE_LIMIT_POLICY.maxAttempts, 5);
     assert.equal(DEFAULT_RATE_LIMIT_POLICY.maxTotalWaitMs, 60_000);

@@ -46,7 +46,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `ollama-llm`) and `anthropic-llm`, on both the chat and the streaming path.
 
 - **`rateLimit` on `LLMProviderConfig`** — per-provider overrides for the above,
-  `{ enabled: false }` to opt out entirely.
+  `{ enabled: false }` to opt out entirely. `maxTotalWaitMs` bounds all the
+  waiting a call does, the time spent behind another caller's pause included: a
+  pause longer than what is left of the budget is refused outright, with a
+  `rateLimited` error carrying what remains of it, rather than holding a call
+  far past the wait it asked for.
 
 - **`findRateLimit(error)`**, exported from `@mcp-abap-adt/llm-agent`, returns
   the `{ rateLimited, attempts, retryAfterSeconds }` facts from an error or

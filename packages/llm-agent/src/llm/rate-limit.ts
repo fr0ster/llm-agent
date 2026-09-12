@@ -310,7 +310,21 @@ async function attemptWithGate<T>(
   let waited = 0;
 
   for (;;) {
-    await gate.waitUntilOpen(opts.signal);
+    // Waiting at the gate is waiting. Uncounted it was free, so a caller with a
+    // ten-millisecond budget could sit out a minute-long pause another caller
+    // had earned, its declared budget saying nothing about the time it spent.
+    // Decided before the wait, never during it: a hold longer than what is left
+    // of the budget is refused outright rather than half-served.
+    const hold = gate.remaining();
+    if (hold > 0) {
+      if (waited + hold > policy.maxTotalWaitMs) {
+        throw outOfBudgetAtGate(hold, attempt);
+      }
+      const before = Date.now();
+      await gate.waitUntilOpen(opts.signal);
+      waited += Date.now() - before;
+    }
+
     try {
       return await fn();
     } catch (error) {
@@ -326,18 +340,18 @@ async function attemptWithGate<T>(
         ? (retryAfter as number) * 1000
         : jittered(policy.baseDelayMs * 2 ** (attempt - 1), policy.maxDelayMs);
 
-      // A few hundred milliseconds of per-caller spread, so the callers this
-      // penalty released do not all wake in the same millisecond. It is added
-      // to the sleep but NOT charged to the budget: charging it made a plain
-      // `Retry-After: 60` cost 60_000..60_250ms against a 60_000ms budget, so
-      // the most ordinary answer SAP AI Core gives was refused on the spot.
-      const spread = served ? Math.random() * 250 : 0;
-
       // Hold everyone else too, and hold them whether or not THIS caller has
       // budget left to retry. The pause describes the quota, not one request:
       // giving up with the gate open sends every other caller straight back
       // into a limit the server just said was closed.
-      gate.penalise(wait + spread);
+      //
+      // The gate is given the interval alone. This caller then serves its own
+      // backoff there, on the next turn of the loop, rather than sleeping
+      // beside it: two mechanisms waiting out one pause double-count it, and
+      // the leftover milliseconds between them decide outcomes at the margin.
+      // The per-caller spread that keeps the released callers from waking
+      // together lives in `waitUntilOpen`, where the waiting is done.
+      gate.penalise(wait);
 
       const outOfAttempts = attempt >= policy.maxAttempts;
       const outOfTime = waited + wait > policy.maxTotalWaitMs;
@@ -347,11 +361,9 @@ async function attemptWithGate<T>(
 
       opts.onRetry?.({
         attempt,
-        delayMs: wait + spread,
+        delayMs: wait,
         retryAfterSeconds: retryAfter,
       });
-      await sleep(wait + spread, opts.signal);
-      waited += wait;
     }
   }
 }
@@ -408,6 +420,27 @@ export function preserveRateLimit<E extends Error>(
     w.retryAfterSeconds = original.retryAfterSeconds;
   }
   return w;
+}
+
+/**
+ * The shared pause outlasts what this caller said it would wait.
+ *
+ * There is no server error to annotate here — the request was never sent,
+ * because sending it into a quota known to be closed is the one thing the gate
+ * exists to prevent. It is still a rate limit, and says so, carrying what is
+ * left of the pause so the consumer can decide.
+ */
+function outOfBudgetAtGate(
+  remainingMs: number,
+  attempts: number,
+): RateLimitedError {
+  const e = new Error(
+    'rate limited: the pause on this quota outlasts the configured wait budget',
+  ) as RateLimitedError;
+  e.rateLimited = true;
+  e.attempts = attempts;
+  e.retryAfterSeconds = remainingMs / 1000;
+  return e;
 }
 
 function annotate(

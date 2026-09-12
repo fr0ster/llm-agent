@@ -223,7 +223,7 @@ when the server sends one, and a cap on both retries and total waiting.
 |---|---|---|
 | `enabled` | `true` | `false` passes every 429 straight to the caller |
 | `maxAttempts` | `5` | Total attempts including the first |
-| `maxTotalWaitMs` | `60000` | Give up once the accumulated waiting would exceed this |
+| `maxTotalWaitMs` | `60000` | Give up once the accumulated waiting would exceed this. Waiting behind another caller's pause counts too, so a call cannot be held past the budget it declared |
 | `baseDelayMs` | `1000` | First backoff step when the server names no time |
 | `maxDelayMs` | `20000` | Ceiling for one computed step, before jitter |
 
