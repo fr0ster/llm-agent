@@ -3,6 +3,7 @@
  * Internal module — not re-exported by the package barrel.
  */
 
+import type { ThrottlePolicy } from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartServerAgentConfig,
@@ -34,9 +35,54 @@ export function resolveLlmSection(
           classifierTemperature: Number(
             get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
           ),
+          // Both of these are declared on SmartServerLlmConfig and were missing
+          // from this allow-list, which is exactly the disappearing act the
+          // comment on positiveIntOption warns about: the key is accepted in
+          // YAML, read by nobody, and the default applies in silence.
+          ...positiveIntOption(get(yaml, 'llm', 'maxTokens'), 'llm.maxTokens'),
+          ...whenThrottledOption(get(yaml, 'llm', 'whenThrottled')),
         }
-      : (get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
+      : validateLlmMap(get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
     : undefined;
+}
+
+/**
+ * The named-map form (`llm.main`, `llm.helper`, …) reaches the config by a cast,
+ * so nothing in it was ever checked. A misspelled key under one role's
+ * `whenThrottled` therefore failed exactly where a config error is least
+ * visible: nowhere, with the default quietly in force.
+ *
+ * Only the blocks this module understands are validated. The rest of each entry
+ * is passed through as before — this closes the gap the flat branch already
+ * covers, it does not turn the map into a schema.
+ */
+function validateLlmMap(
+  map: Record<string, SmartServerLlmConfig>,
+): Record<string, SmartServerLlmConfig> {
+  const out: Record<string, SmartServerLlmConfig> = {};
+  for (const [role, entry] of Object.entries(map ?? {})) {
+    if (!entry || typeof entry !== 'object') {
+      out[role] = entry;
+      continue;
+    }
+    const raw = entry as unknown as Record<string, unknown>;
+    // The normalised values are written back, not merely checked. `${ENV_VAR}`
+    // substitution leaves numbers as strings, and the resolved config is typed
+    // as though they were numbers: the built-in strategy happens to coerce them
+    // in arithmetic, a custom one would be handed a string and told it was a
+    // number. Validating without keeping the result is checking the door and
+    // then walking through the window.
+    out[role] = {
+      ...(entry as SmartServerLlmConfig),
+      ...(raw.whenThrottled !== undefined
+        ? whenThrottledOption(raw.whenThrottled, `llm.${role}.whenThrottled`)
+        : {}),
+      ...(raw.maxTokens !== undefined
+        ? positiveIntOption(raw.maxTokens, `llm.${role}.maxTokens`)
+        : {}),
+    };
+  }
+  return out;
 }
 
 /**
@@ -59,6 +105,66 @@ function positiveIntOption(
     );
   }
   return { [key.split('.').pop() as string]: n };
+}
+
+/**
+ * Read the optional `llm.whenThrottled` block, failing fast on a bad value.
+ *
+ * Numbers only: there is no key here for turning throttle handling off, because
+ * there is no correct alternative to waiting out a quota the server has closed.
+ * Different mechanics are a strategy, supplied in code, not a YAML switch.
+ *
+ * Only the policy's own keys are accepted, and each is checked: a budget
+ * silently parsed as NaN would disable the cap it was written to impose, which
+ * is worse than being told the value is wrong.
+ */
+function whenThrottledOption(
+  value: unknown,
+  path = 'llm.whenThrottled',
+): { whenThrottled?: Partial<ThrottlePolicy> } {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(
+      `Invalid ${path}: expected a mapping, got ${JSON.stringify(value)}`,
+    );
+  }
+  const raw = value as Record<string, unknown>;
+  const policy: Partial<ThrottlePolicy> = {};
+  for (const [key, v] of Object.entries(raw)) {
+    if (v === undefined || v === null) continue;
+    // A count, not a duration: fractional attempts do not exist, and zero of
+    // them is not "none" — the first attempt is included in the total, so 0
+    // behaves as 1 and 1.5 as 2. Silently meaning something other than what it
+    // says is the whole failure mode this block exists to prevent.
+    if (key === 'maxAttempts') {
+      const n = Number(v);
+      if (!Number.isSafeInteger(n) || n < 1) {
+        throw new Error(
+          `Invalid ${path}.maxAttempts: expected a positive integer, got ${JSON.stringify(v)}`,
+        );
+      }
+      policy.maxAttempts = n;
+      continue;
+    }
+    if (
+      key === 'maxTotalWaitMs' ||
+      key === 'baseDelayMs' ||
+      key === 'maxDelayMs'
+    ) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(
+          `Invalid ${path}.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
+        );
+      }
+      policy[key] = n;
+      continue;
+    }
+    throw new Error(
+      `Unknown ${path} key '${key}'. Known keys: maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
+    );
+  }
+  return Object.keys(policy).length > 0 ? { whenThrottled: policy } : {};
 }
 
 export function resolveRagSection(

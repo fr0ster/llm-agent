@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type Message, resetRateLimitGates } from '@mcp-abap-adt/llm-agent';
+import { type Message, resetQuotaGates } from '@mcp-abap-adt/llm-agent';
 import { AnthropicProvider } from '../anthropic-provider.js';
 
 // ---------------------------------------------------------------------------
@@ -316,11 +316,11 @@ describe('AnthropicProvider — rate limiting', () => {
   const fast = { baseDelayMs: 1, maxDelayMs: 2 };
 
   it('retries a 429 on chat() and returns the eventual answer', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     const provider = new AnthropicProvider({
       apiKey: 'sk-test',
       model: 'claude-3-5-sonnet-20241022',
-      rateLimit: fast,
+      whenThrottled: fast,
     });
     let calls = 0;
     // @ts-expect-error — stub axios for test
@@ -345,11 +345,11 @@ describe('AnthropicProvider — rate limiting', () => {
   });
 
   it('retries a 429 on the streaming path, which runs on fetch', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     const provider = new AnthropicProvider({
       apiKey: 'sk-test',
       model: 'claude-3-5-sonnet-20241022',
-      rateLimit: fast,
+      whenThrottled: fast,
     });
     const originalFetch = globalThis.fetch;
     let calls = 0;
@@ -386,7 +386,7 @@ describe('AnthropicProvider — rate limiting', () => {
 
 describe('AnthropicProvider — one quota per account and endpoint', () => {
   // @ts-expect-error — protected hook, read for test
-  const keyOf = (p: AnthropicProvider) => p.rateLimitKey() as string;
+  const keyOf = (p: AnthropicProvider) => p.quotaKey() as string;
   const model = 'claude-3-5-sonnet-20241022';
 
   it('treats an omitted endpoint and the explicit default as one quota', () => {

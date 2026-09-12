@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   gateFor,
-  isRateLimitedError,
+  isThrottledError,
   type Message,
-  resetRateLimitGates,
+  resetQuotaGates,
 } from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '../openai-provider.js';
 
@@ -524,11 +524,11 @@ describe('OpenAIProvider — rate limiting', () => {
   const fast = { baseDelayMs: 1, maxDelayMs: 2 };
 
   it('retries a 429 and returns the eventual answer', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      rateLimit: fast,
+      whenThrottled: fast,
     });
     let calls = 0;
     // @ts-expect-error — stub axios for test
@@ -547,11 +547,11 @@ describe('OpenAIProvider — rate limiting', () => {
   });
 
   it('keeps the 429 readable as a fact once it gives up', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      rateLimit: { ...fast, maxAttempts: 2 },
+      whenThrottled: { ...fast, maxAttempts: 2 },
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
@@ -561,19 +561,61 @@ describe('OpenAIProvider — rate limiting', () => {
       await provider.chat([{ role: 'user', content: 'hi' }]);
       assert.fail('should have thrown');
     } catch (e) {
-      assert.ok(isRateLimitedError(e));
+      assert.ok(isThrottledError(e));
       assert.equal(e.attempts, 2);
       assert.equal(e.retryAfterSeconds, 3);
       assert.match((e as Error).message, /OpenAI API error/);
     }
   });
 
-  it('does not retry an ordinary failure', async () => {
-    resetRateLimitGates();
+  it('keeps the reason for giving up through the provider wrapping', async () => {
+    // Every provider rewraps its transport error. A fact left behind at that
+    // boundary is a fact no consumer ever sees.
+    resetQuotaGates();
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      rateLimit: fast,
+      whenThrottled: { ...fast, maxAttempts: 1 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('1');
+    };
+    try {
+      await provider.chat([{ role: 'user', content: 'hi' }]);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(isThrottledError(e));
+      assert.equal(e.reason, 'attempts');
+    }
+  });
+
+  it('reports a budget give-up as a budget give-up', async () => {
+    resetQuotaGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      whenThrottled: { ...fast, maxAttempts: 10, maxTotalWaitMs: 10 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('30');
+    };
+    try {
+      await provider.chat([{ role: 'user', content: 'hi' }]);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(isThrottledError(e));
+      assert.equal(e.reason, 'budget');
+    }
+  });
+
+  it('does not retry an ordinary failure', async () => {
+    resetQuotaGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      whenThrottled: fast,
     });
     let calls = 0;
     // @ts-expect-error — stub axios for test
@@ -591,12 +633,17 @@ describe('OpenAIProvider — rate limiting', () => {
     assert.equal(calls, 1);
   });
 
-  it('passes a 429 straight through when the policy is disabled', async () => {
-    resetRateLimitGates();
+  it('takes a strategy that refuses to wait', async () => {
+    resetQuotaGates();
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      rateLimit: { enabled: false },
+      whenThrottled: {
+        strategy: {
+          name: 'never-wait',
+          decide: () => ({ waitMs: 0, retry: false, reason: 'attempts' }),
+        },
+      },
     });
     let calls = 0;
     // @ts-expect-error — stub axios for test
@@ -611,11 +658,11 @@ describe('OpenAIProvider — rate limiting', () => {
 
 describe('OpenAIProvider — the quota a per-request model spends', () => {
   it('gates an override model apart from the configured one', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      rateLimit: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 2 },
+      whenThrottled: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 2 },
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
@@ -628,7 +675,7 @@ describe('OpenAIProvider — the quota a per-request model spends', () => {
     );
     const keyOf = (m: string) =>
       // @ts-expect-error — protected hook, read for test
-      provider.rateLimitKey(m) as string;
+      provider.quotaKey(m) as string;
     assert.ok(
       gateFor(keyOf('gpt-5')).remaining() > 0,
       'the throttled model is held',
@@ -643,7 +690,7 @@ describe('OpenAIProvider — the quota a per-request model spends', () => {
 
 describe('OpenAIProvider — one quota per account and endpoint', () => {
   // @ts-expect-error — protected hook, read for test
-  const keyOf = (p: OpenAIProvider) => p.rateLimitKey() as string;
+  const keyOf = (p: OpenAIProvider) => p.quotaKey() as string;
 
   it('separates two API keys on the same endpoint', () => {
     const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });

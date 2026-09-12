@@ -73,7 +73,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         requestBody.tools = tools;
       }
 
-      const response = await this.withRateLimitRetry(
+      const response = await this.withThrottleRetry(
         () => this.client.post('/messages', requestBody),
         { model },
       );
@@ -111,7 +111,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw this.preserveRateLimit(
+      throw this.preserveThrottled(
         error,
         new Error(`Anthropic API error: ${message}`),
       );
@@ -147,7 +147,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
     type OpenStream = Response & { body: ReadableStream<Uint8Array> };
-    const response = await this.withRateLimitRetry<OpenStream>(
+    const response = await this.withThrottleRetry<OpenStream>(
       async () => {
         const res = await fetch(`${baseURL}/messages`, {
           method: 'POST',

@@ -3,7 +3,7 @@
  */
 
 import type { LlmUsage } from './interfaces/types.js';
-import type { RateLimitPolicy } from './llm/rate-limit.js';
+import type { ThrottlePolicy } from './llm/throttle.js';
 
 export interface Message {
   /**
@@ -83,12 +83,15 @@ export interface LLMProviderConfig {
   temperature?: number;
   maxTokens?: number;
   /**
-   * How this provider answers HTTP 429. Omit for the shared default: back off
-   * with jitter, honour `Retry-After`, give up after 5 attempts or 60 seconds
-   * of waiting. Set `{ enabled: false }` to pass every 429 straight to the
-   * caller.
+   * What this provider does when the server throttles it. Omit for the shared
+   * default: back off with jitter, honour `Retry-After`, give up after 5
+   * attempts or 60 seconds of waiting.
+   *
+   * There is no switch for turning it off — sending another request into a
+   * quota the server has just closed is never the better answer. Different
+   * mechanics go through `strategy`.
    */
-  rateLimit?: Partial<RateLimitPolicy>;
+  whenThrottled?: Partial<ThrottlePolicy>;
 }
 
 export interface LLMCallOptions {

@@ -8,19 +8,20 @@ import type {
 } from '../../interfaces/index.js';
 import { BaseLLMProvider } from '../base-llm-provider.js';
 import {
-  DEFAULT_RATE_LIMIT_POLICY,
+  DEFAULT_THROTTLE_POLICY,
   GATE_IDLE_TTL_MS,
   GATE_LIMIT,
   gateFor,
-  isRateLimitedError,
-  leaseRateLimitGate,
-  preserveRateLimit,
-  pruneRateLimitGates,
-  RateLimitGate,
-  rateLimitGateCount,
-  resetRateLimitGates,
-  runWithRateLimitRetry,
-} from '../rate-limit.js';
+  type IThrottleStrategy,
+  isThrottledError,
+  leaseQuotaGate,
+  preserveThrottled,
+  pruneQuotaGates,
+  QuotaGate,
+  quotaGateCount,
+  resetQuotaGates,
+  runWithThrottleRetry,
+} from '../throttle.js';
 
 /** Keep the suite fast: the policy is about ordering, not about real seconds. */
 const FAST = { baseDelayMs: 1, maxDelayMs: 2, maxTotalWaitMs: 5_000 };
@@ -32,7 +33,7 @@ const tooManyRequests = (retryAfter?: string) => ({
   },
 });
 
-const isRateLimited = (e: unknown) =>
+const isThrottled = (e: unknown) =>
   (e as { response?: { status?: number } })?.response?.status === 429;
 
 const retryAfterSeconds = (e: unknown) => {
@@ -41,17 +42,17 @@ const retryAfterSeconds = (e: unknown) => {
   return raw === undefined ? undefined : Number(raw);
 };
 
-beforeEach(() => resetRateLimitGates());
+beforeEach(() => resetQuotaGates());
 
-describe('runWithRateLimitRetry', () => {
+describe('runWithThrottleRetry', () => {
   it('passes a successful call straight through', async () => {
     let calls = 0;
-    const out = await runWithRateLimitRetry(
+    const out = await runWithThrottleRetry(
       async () => {
         calls += 1;
         return 'ok';
       },
-      { key: 'k', policy: FAST, isRateLimited },
+      { key: 'k', policy: FAST, isThrottled },
     );
     assert.equal(out, 'ok');
     assert.equal(calls, 1);
@@ -60,12 +61,12 @@ describe('runWithRateLimitRetry', () => {
   it('rethrows a non-rate-limit error immediately, without retrying', async () => {
     let calls = 0;
     await assert.rejects(
-      runWithRateLimitRetry(
+      runWithThrottleRetry(
         async () => {
           calls += 1;
           throw new Error('boom');
         },
-        { key: 'k', policy: FAST, isRateLimited },
+        { key: 'k', policy: FAST, isThrottled },
       ),
       /boom/,
     );
@@ -74,13 +75,13 @@ describe('runWithRateLimitRetry', () => {
 
   it('retries a 429 and returns the eventual success', async () => {
     let calls = 0;
-    const out = await runWithRateLimitRetry(
+    const out = await runWithThrottleRetry(
       async () => {
         calls += 1;
         if (calls < 3) throw tooManyRequests();
         return 'ok';
       },
-      { key: 'k', policy: FAST, isRateLimited },
+      { key: 'k', policy: FAST, isThrottled },
     );
     assert.equal(out, 'ok');
     assert.equal(calls, 3);
@@ -89,19 +90,16 @@ describe('runWithRateLimitRetry', () => {
   it('gives up after maxAttempts and annotates the error', async () => {
     let calls = 0;
     try {
-      await runWithRateLimitRetry(
+      await runWithThrottleRetry(
         async () => {
           calls += 1;
           throw tooManyRequests();
         },
-        { key: 'k', policy: { ...FAST, maxAttempts: 3 }, isRateLimited },
+        { key: 'k', policy: { ...FAST, maxAttempts: 3 }, isThrottled },
       );
       assert.fail('should have thrown');
     } catch (e) {
-      assert.ok(
-        isRateLimitedError(e),
-        'consumers read a fact, not a substring',
-      );
+      assert.ok(isThrottledError(e), 'consumers read a fact, not a substring');
       assert.equal(e.attempts, 3);
     }
     assert.equal(calls, 3);
@@ -110,7 +108,7 @@ describe('runWithRateLimitRetry', () => {
   it('stops once the accumulated wait would exceed maxTotalWaitMs', async () => {
     let calls = 0;
     await assert.rejects(
-      runWithRateLimitRetry(
+      runWithThrottleRetry(
         async () => {
           calls += 1;
           throw tooManyRequests('30');
@@ -118,11 +116,11 @@ describe('runWithRateLimitRetry', () => {
         {
           key: 'k',
           policy: { ...FAST, maxAttempts: 10, maxTotalWaitMs: 10 },
-          isRateLimited,
+          isThrottled,
           retryAfterSeconds,
         },
       ),
-      (e: unknown) => isRateLimitedError(e),
+      (e: unknown) => isThrottledError(e),
     );
     assert.equal(calls, 1, '30s asked for, 10ms budget — no second attempt');
   });
@@ -130,7 +128,7 @@ describe('runWithRateLimitRetry', () => {
   it("uses the server's Retry-After rather than its own guess", async () => {
     let calls = 0;
     const seen: Array<number | undefined> = [];
-    await runWithRateLimitRetry(
+    await runWithThrottleRetry(
       async () => {
         calls += 1;
         if (calls < 2) throw tooManyRequests('0.01');
@@ -139,7 +137,7 @@ describe('runWithRateLimitRetry', () => {
       {
         key: 'k',
         policy: FAST,
-        isRateLimited,
+        isThrottled,
         retryAfterSeconds,
         onRetry: ({ retryAfterSeconds }) => seen.push(retryAfterSeconds),
       },
@@ -152,7 +150,7 @@ describe('runWithRateLimitRetry', () => {
     // plain `Retry-After: 60` cost 60_000..60_250ms against a 60_000ms budget,
     // so the most ordinary answer a server gives was refused on the spot.
     let calls = 0;
-    const out = await runWithRateLimitRetry(
+    const out = await runWithThrottleRetry(
       async () => {
         calls += 1;
         if (calls < 2) throw tooManyRequests('0.06');
@@ -161,7 +159,7 @@ describe('runWithRateLimitRetry', () => {
       {
         key: 'k',
         policy: { ...FAST, maxTotalWaitMs: 60 },
-        isRateLimited,
+        isThrottled,
         retryAfterSeconds,
       },
     );
@@ -174,18 +172,18 @@ describe('runWithRateLimitRetry', () => {
     // here sends every other caller straight back into the limit the server
     // just described.
     await assert.rejects(
-      runWithRateLimitRetry(
+      runWithThrottleRetry(
         async () => {
           throw tooManyRequests('0.5');
         },
         {
           key: 'exhausted',
           policy: { ...FAST, maxAttempts: 1 },
-          isRateLimited,
+          isThrottled,
           retryAfterSeconds,
         },
       ),
-      (e: unknown) => isRateLimitedError(e),
+      (e: unknown) => isThrottledError(e),
     );
     assert.ok(
       gateFor('exhausted').remaining() > 100,
@@ -194,7 +192,7 @@ describe('runWithRateLimitRetry', () => {
   });
 
   it('holds every caller on the same quota, not just the one that hit it', async () => {
-    await runWithRateLimitRetry(
+    await runWithThrottleRetry(
       (() => {
         let calls = 0;
         return async () => {
@@ -203,43 +201,93 @@ describe('runWithRateLimitRetry', () => {
           return 'ok';
         };
       })(),
-      { key: 'shared', policy: FAST, isRateLimited },
+      { key: 'shared', policy: FAST, isThrottled },
     );
     // The penalty outlives the call that earned it.
     const gate = gateFor('shared');
     assert.ok(gate.remaining() >= 0);
   });
 
-  it('passes everything through when disabled', async () => {
+  it('lets a strategy refuse to wait, and still shuts the gate', async () => {
+    // What `enabled: false` used to be for, minus its defect: opting out no
+    // longer means opting out of the SHARED pause, which was never this
+    // caller's to drop. It stops waiting; everyone else is still held.
+    resetQuotaGates();
     let calls = 0;
+    const neverWait: IThrottleStrategy = {
+      name: 'never-wait',
+      decide: ({ retryAfterSeconds }) => ({
+        waitMs: (retryAfterSeconds ?? 0) * 1000,
+        retry: false,
+        reason: 'attempts',
+      }),
+    };
     await assert.rejects(
-      runWithRateLimitRetry(
+      runWithThrottleRetry(
         async () => {
           calls += 1;
+          throw tooManyRequests('0.5');
+        },
+        {
+          key: 'opted-out',
+          policy: { ...FAST, strategy: neverWait },
+          isThrottled,
+          retryAfterSeconds,
+        },
+      ),
+      (e: unknown) => isThrottledError(e) && e.reason === 'attempts',
+    );
+    assert.equal(calls, 1, 'it does not wait');
+    assert.ok(
+      gateFor('opted-out').remaining() > 100,
+      'but the quota is still marked closed for everyone else',
+    );
+  });
+
+  it('names which cap ended it', async () => {
+    resetQuotaGates();
+    await assert.rejects(
+      runWithThrottleRetry(
+        async () => {
           throw tooManyRequests();
         },
-        { key: 'k', policy: { enabled: false }, isRateLimited },
+        { key: 'a', policy: { ...FAST, maxAttempts: 1 }, isThrottled },
       ),
+      (e: unknown) => isThrottledError(e) && e.reason === 'attempts',
     );
-    assert.equal(calls, 1);
+    resetQuotaGates();
+    await assert.rejects(
+      runWithThrottleRetry(
+        async () => {
+          throw tooManyRequests('30');
+        },
+        {
+          key: 'b',
+          policy: { ...FAST, maxAttempts: 10, maxTotalWaitMs: 10 },
+          isThrottled,
+          retryAfterSeconds,
+        },
+      ),
+      (e: unknown) => isThrottledError(e) && e.reason === 'budget',
+    );
   });
 
   it('counts waiting at the shared gate against the budget', async () => {
     // The reported failure: a caller with a 10ms budget sat out 464ms of
     // someone else's pause and then went on as if it had waited for nothing.
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('busy').penalise(500);
     let called = false;
     const started = Date.now();
     await assert.rejects(
-      runWithRateLimitRetry(
+      runWithThrottleRetry(
         async () => {
           called = true;
           return 'ok';
         },
-        { key: 'busy', policy: { ...FAST, maxTotalWaitMs: 10 }, isRateLimited },
+        { key: 'busy', policy: { ...FAST, maxTotalWaitMs: 10 }, isThrottled },
       ),
-      (e: unknown) => isRateLimitedError(e) && (e.retryAfterSeconds ?? 0) > 0,
+      (e: unknown) => isThrottledError(e) && (e.retryAfterSeconds ?? 0) > 0,
     );
     assert.equal(
       called,
@@ -253,13 +301,13 @@ describe('runWithRateLimitRetry', () => {
     // The wake spread is added to a wait, never to a budget. Padded, a hold
     // equal to the budget slept the budget PLUS the jitter — the one thing a
     // hard bound must not do.
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('exact').penalise(200);
     const started = Date.now();
-    const out = await runWithRateLimitRetry(async () => 'ok', {
+    const out = await runWithThrottleRetry(async () => 'ok', {
       key: 'exact',
       policy: { ...FAST, maxTotalWaitMs: 200 },
-      isRateLimited,
+      isThrottled,
     });
     const elapsed = Date.now() - started;
     assert.equal(
@@ -273,17 +321,17 @@ describe('runWithRateLimitRetry', () => {
   it('gives up when another caller extends the pause past the budget', async () => {
     // The pause fits when the wait starts; a 429 elsewhere lengthens it while
     // this caller is already asleep. The budget still holds.
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('extended').penalise(20);
     setTimeout(() => gateFor('extended').penalise(5_000), 10);
     const started = Date.now();
     await assert.rejects(
-      runWithRateLimitRetry(async () => 'ok', {
+      runWithThrottleRetry(async () => 'ok', {
         key: 'extended',
         policy: { ...FAST, maxTotalWaitMs: 40 },
-        isRateLimited,
+        isThrottled,
       }),
-      (e: unknown) => isRateLimitedError(e),
+      (e: unknown) => isThrottledError(e),
     );
     assert.ok(Date.now() - started < 2_000, 'not held for the whole extension');
   });
@@ -291,11 +339,11 @@ describe('runWithRateLimitRetry', () => {
   it('leaves no abort listeners behind', async () => {
     // A request- or session-scoped signal outlives one call, so a listener per
     // backoff would accumulate until Node warns about the leak.
-    resetRateLimitGates();
+    resetQuotaGates();
     const ac = new AbortController();
     let calls = 0;
     await assert.rejects(
-      runWithRateLimitRetry(
+      runWithThrottleRetry(
         async () => {
           calls += 1;
           throw tooManyRequests();
@@ -303,26 +351,26 @@ describe('runWithRateLimitRetry', () => {
         {
           key: 'listeners',
           policy: { ...FAST, maxAttempts: 4 },
-          isRateLimited,
+          isThrottled,
           signal: ac.signal,
         },
       ),
-      (e: unknown) => isRateLimitedError(e),
+      (e: unknown) => isThrottledError(e),
     );
     assert.equal(calls, 4);
     assert.equal(getEventListeners(ac.signal, 'abort').length, 0);
   });
 
   it('stops waiting when the caller aborts', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('aborting').penalise(10_000);
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 10);
     await assert.rejects(
-      runWithRateLimitRetry(async () => 'ok', {
+      runWithThrottleRetry(async () => 'ok', {
         key: 'aborting',
         policy: { ...FAST, maxTotalWaitMs: 60_000 },
-        isRateLimited,
+        isThrottled,
         signal: ac.signal,
       }),
     );
@@ -330,22 +378,22 @@ describe('runWithRateLimitRetry', () => {
   });
 
   it('waits out a pause that does fit the budget', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('short').penalise(30);
-    const out = await runWithRateLimitRetry(async () => 'ok', {
+    const out = await runWithThrottleRetry(async () => 'ok', {
       key: 'short',
       policy: { ...FAST, maxTotalWaitMs: 5_000 },
-      isRateLimited,
+      isThrottled,
     });
     assert.equal(out, 'ok');
   });
 
   it('spends one budget on the gate and the backoff together', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('shared-budget').penalise(40);
     let calls = 0;
     await assert.rejects(
-      runWithRateLimitRetry(
+      runWithThrottleRetry(
         async () => {
           calls += 1;
           throw tooManyRequests('0.05');
@@ -353,11 +401,11 @@ describe('runWithRateLimitRetry', () => {
         {
           key: 'shared-budget',
           policy: { ...FAST, maxAttempts: 10, maxTotalWaitMs: 60 },
-          isRateLimited,
+          isThrottled,
           retryAfterSeconds,
         },
       ),
-      (e: unknown) => isRateLimitedError(e),
+      (e: unknown) => isThrottledError(e),
     );
     assert.equal(
       calls,
@@ -367,14 +415,14 @@ describe('runWithRateLimitRetry', () => {
   });
 
   it('ships defaults matching what SAP documents', () => {
-    assert.equal(DEFAULT_RATE_LIMIT_POLICY.maxAttempts, 5);
-    assert.equal(DEFAULT_RATE_LIMIT_POLICY.maxTotalWaitMs, 60_000);
+    assert.equal(DEFAULT_THROTTLE_POLICY.maxAttempts, 5);
+    assert.equal(DEFAULT_THROTTLE_POLICY.maxTotalWaitMs, 60_000);
   });
 });
 
-describe('RateLimitGate', () => {
+describe('QuotaGate', () => {
   it('keeps waiting when another caller extends the hold mid-sleep', async () => {
-    const gate = new RateLimitGate();
+    const gate = new QuotaGate();
     gate.penalise(40);
     const started = Date.now();
     const waiting = gate.waitUntilOpen();
@@ -388,7 +436,7 @@ describe('RateLimitGate', () => {
   });
 
   it('never shortens an existing hold', () => {
-    const gate = new RateLimitGate();
+    const gate = new QuotaGate();
     const now = 1_000;
     gate.penalise(500, now);
     gate.penalise(100, now);
@@ -396,7 +444,7 @@ describe('RateLimitGate', () => {
   });
 
   it('reports nothing to wait once the hold has passed', () => {
-    const gate = new RateLimitGate();
+    const gate = new QuotaGate();
     gate.penalise(500, 1_000);
     assert.equal(gate.remaining(2_000), 0);
   });
@@ -409,43 +457,43 @@ describe('RateLimitGate', () => {
 
 describe('the gate registry', () => {
   it('keeps a gate that is still holding a pause, however long it idles', () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('held').penalise(GATE_IDLE_TTL_MS * 2);
-    pruneRateLimitGates(Date.now() + GATE_IDLE_TTL_MS + 1);
+    pruneQuotaGates(Date.now() + GATE_IDLE_TTL_MS + 1);
     assert.ok(gateFor('held').remaining() > 0);
   });
 
   it('keeps a gate that was used recently, open or not', () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('fresh');
-    pruneRateLimitGates();
-    assert.equal(rateLimitGateCount(), 1);
+    pruneQuotaGates();
+    assert.equal(quotaGateCount(), 1);
   });
 
   it('stays bounded through a burst faster than the idle rule retires', () => {
     // The reported failure: 1500 keys inside the TTL left 1500 gates behind.
-    resetRateLimitGates();
+    resetQuotaGates();
     for (let i = 0; i < GATE_LIMIT * 3; i += 1) gateFor(`burst-${i}`);
     assert.ok(
-      rateLimitGateCount() <= GATE_LIMIT,
-      `bounded by the limit, saw ${rateLimitGateCount()}`,
+      quotaGateCount() <= GATE_LIMIT,
+      `bounded by the limit, saw ${quotaGateCount()}`,
     );
   });
 
   it('evicts the least recently used first, and never a held gate', () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     gateFor('held').penalise(GATE_IDLE_TTL_MS * 2);
     gateFor('oldest');
     for (let i = 0; i < GATE_LIMIT * 2; i += 1) gateFor(`burst-${i}`);
     assert.ok(gateFor('held').remaining() > 0, 'a live pause survives a burst');
-    assert.ok(rateLimitGateCount() <= GATE_LIMIT + 1);
+    assert.ok(quotaGateCount() <= GATE_LIMIT + 1);
   });
 
   it('never evicts a gate a call is still holding', () => {
     // Open is not the same as unused: a request is in flight until the server
     // answers, and it has no pause on it until then.
-    resetRateLimitGates();
-    const held = leaseRateLimitGate('in-flight');
+    resetQuotaGates();
+    const held = leaseQuotaGate('in-flight');
     for (let i = 0; i < GATE_LIMIT * 3; i += 1) gateFor(`burst-${i}`);
     // The in-flight call now gets its 429 and penalises the gate it holds.
     held.gate.penalise(10_000);
@@ -457,18 +505,18 @@ describe('the gate registry', () => {
   });
 
   it('lets a released gate be evicted again', () => {
-    resetRateLimitGates();
-    leaseRateLimitGate('done').release();
-    pruneRateLimitGates(Date.now() + GATE_IDLE_TTL_MS + 1);
-    assert.equal(rateLimitGateCount(), 0);
+    resetQuotaGates();
+    leaseQuotaGate('done').release();
+    pruneQuotaGates(Date.now() + GATE_IDLE_TTL_MS + 1);
+    assert.equal(quotaGateCount(), 0);
   });
 
   it('survives a double release', () => {
-    resetRateLimitGates();
-    const lease = leaseRateLimitGate('twice');
+    resetQuotaGates();
+    const lease = leaseQuotaGate('twice');
     lease.release();
     lease.release();
-    const other = leaseRateLimitGate('twice');
+    const other = leaseQuotaGate('twice');
     for (let i = 0; i < GATE_LIMIT * 3; i += 1) gateFor(`burst-${i}`);
     other.gate.penalise(10_000);
     assert.ok(
@@ -479,9 +527,9 @@ describe('the gate registry', () => {
   });
 
   it('keeps the pause reachable for a real in-flight retry under a burst', async () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     let calls = 0;
-    const running = runWithRateLimitRetry(
+    const running = runWithThrottleRetry(
       async () => {
         calls += 1;
         if (calls === 1) {
@@ -491,41 +539,41 @@ describe('the gate registry', () => {
         }
         return 'ok';
       },
-      { key: 'busy', policy: FAST, isRateLimited, retryAfterSeconds },
+      { key: 'busy', policy: FAST, isThrottled, retryAfterSeconds },
     );
     await running;
     assert.equal(calls, 2);
   });
 
   it('reclaims idle gates on demand as well', () => {
-    resetRateLimitGates();
+    resetQuotaGates();
     for (let i = 0; i < GATE_LIMIT; i += 1) gateFor(`model-${i}`);
     gateFor('held').penalise(GATE_IDLE_TTL_MS * 2);
     // Ten minutes later, none of those one-off models has been used again.
-    pruneRateLimitGates(Date.now() + GATE_IDLE_TTL_MS + 1);
+    pruneQuotaGates(Date.now() + GATE_IDLE_TTL_MS + 1);
     assert.equal(
-      rateLimitGateCount(),
+      quotaGateCount(),
       1,
       'only the gate still holding a pause survives',
     );
   });
 });
 
-describe('preserveRateLimit', () => {
+describe('preserveThrottled', () => {
   it('leaves an ordinary error alone', () => {
     const wrapped = new Error('wrapped');
-    assert.equal(preserveRateLimit(new Error('plain'), wrapped), wrapped);
-    assert.equal(isRateLimitedError(wrapped), false);
+    assert.equal(preserveThrottled(new Error('plain'), wrapped), wrapped);
+    assert.equal(isThrottledError(wrapped), false);
   });
 
   it('carries the facts onto the provider error', () => {
     const original = Object.assign(new Error('429'), {
-      rateLimited: true as const,
+      throttled: true as const,
       attempts: 4,
       retryAfterSeconds: 12,
     });
-    const wrapped = preserveRateLimit(original, new Error('Provider error'));
-    assert.ok(isRateLimitedError(wrapped));
+    const wrapped = preserveThrottled(original, new Error('Provider error'));
+    assert.ok(isThrottledError(wrapped));
     assert.equal(wrapped.attempts, 4);
     assert.equal(wrapped.retryAfterSeconds, 12);
     assert.equal(wrapped.message, 'Provider error');
@@ -548,13 +596,13 @@ class ProbeProvider extends BaseLLMProvider {
     yield { content: '' };
   }
   saysRateLimited(e: unknown) {
-    return this.isRateLimited(e);
+    return this.isThrottled(e);
   }
   readsRetryAfter(e: unknown) {
     return this.retryAfterSeconds(e);
   }
-  quotaKey(model?: string) {
-    return this.rateLimitKey(model);
+  keyFor(model?: string) {
+    return this.quotaKey(model);
   }
 }
 
@@ -598,11 +646,11 @@ describe('BaseLLMProvider rate-limit hooks', () => {
   });
 
   it('keys the quota by model, since that is how limits are metered', () => {
-    assert.match(provider.quotaKey(), /some-model/);
+    assert.match(provider.keyFor(), /some-model/);
   });
 
   it('keys a per-request override by the model the call actually uses', () => {
-    assert.match(provider.quotaKey('other-model'), /other-model/);
-    assert.notEqual(provider.quotaKey('other-model'), provider.quotaKey());
+    assert.match(provider.keyFor('other-model'), /other-model/);
+    assert.notEqual(provider.keyFor('other-model'), provider.keyFor());
   });
 });

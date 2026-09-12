@@ -9,6 +9,68 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`rateLimit` is now `whenThrottled`.** The old name read as a limit we
+  impose. It is the opposite: the rules for what we do when a *server* limits
+  *us*. `whenThrottled: { maxAttempts: 3 }` says what it means — when we are
+  throttled, at most three attempts. Renamed throughout, including the module
+  (`llm/rate-limit.ts` → `llm/throttle.ts`), the marker on the error
+  (`rateLimited` → `throttled`), and the lookup consumers use
+  (`findRateLimit` → `findThrottled`).
+
+- **`enabled` is gone, replaced by `strategy`.** There is no case where sending
+  another request into a quota the server has just closed is the better answer,
+  so it was a switch for nothing — and worse than nothing: a caller that set
+  `enabled: false` also stopped marking the quota closed and stopped observing
+  everyone else's pause, quietly dropping a guarantee that was never its own to
+  drop. Different mechanics are now an `IThrottleStrategy`, matching the
+  `IWaitStrategy` seam already in this repository. The shared pause stays with
+  the policy, because it is an invariant rather than a preference.
+
+- **Throttle handling is unconditionally on for every provider**, which is what
+  22.2.0 meant to ship.
+
+### Added
+
+- **`maxAttempts` is checked as a count, not a duration.** It includes the first
+  attempt, so `0` behaved as `1` and `1.5` as `2` — each meaning something other
+  than what it said. A positive integer is now required. The three durations
+  beside it still accept zero, where that is a real choice.
+
+- **The error says which cap ended it** — `reason` is `attempts`, `budget`, or
+  `gate` (the pause was already longer than the budget, so no request was
+  sent). The two are fixed by opposite settings, and a consumer that cannot
+  tell them apart cannot act on either.
+
+### Fixed
+
+- **`makeLlm` now forwards `whenThrottled` to the provider it builds** (#285). The
+  policy shipped in 22.2.0 and could not be configured through the composition
+  root — `MakeLlmConfig` had no such field, so every consumer on that path
+  silently ran the defaults. Patch, not minor: nothing new is offered, the
+  capability 22.2.0 announced is simply reachable.
+
+- **The dynamic provider loaders type their constructor from
+  `LLMProviderConfig`** instead of re-declaring the same five fields by hand.
+  That hand-written copy is why the new field was dropped in the first place;
+  typed from the real config, the next field added upstream cannot be silently
+  lost here.
+
+- **`llm.whenThrottled` is configurable on the server too** (#285), in the
+  named-map form as well, where values are normalised and not merely checked —
+  `${ENV_VAR}` substitution leaves numbers as strings, and a custom strategy
+  would be handed one while the type promised a number. The policy
+  crossed two more hand-written field lists on the way from YAML to a provider:
+  the flat `llm:` allow-list in `resolveLlmSection`, and the object
+  `makeDefaultRoleLlm` builds for `makeLlm`. Both now carry it, and both
+  validate it — a misspelled key or an unparseable budget fails at startup
+  instead of disappearing into the default.
+
+- **`llm.maxTokens` reaches the provider.** Declared on `SmartServerLlmConfig`
+  and read by neither of those two lists, so the documented YAML key had no
+  effect at all. Same defect, already in flight before this one.
+
 ## [22.2.0] — 2026-09-12
 
 Rate-limit handling for every LLM provider (#282, #283).

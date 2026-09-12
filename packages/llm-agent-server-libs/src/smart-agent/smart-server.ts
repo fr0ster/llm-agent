@@ -35,6 +35,7 @@ import type {
   NamespaceClientInput,
   PluginExports,
   SubAgentRegistry,
+  ThrottlePolicy,
 } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedTools,
@@ -135,6 +136,14 @@ export interface SmartServerLlmConfig {
   temperature?: number;
   maxTokens?: number;
   classifierTemperature?: number;
+  /**
+   * How the provider answers HTTP 429. Omit for the documented defaults — back
+   * off with jitter, honour `Retry-After`, give up after 5 attempts or 60
+   * seconds of waiting. A server answering inside an HTTP request usually wants
+   * `maxTotalWaitMs` below its own client's timeout, so the caller gets the
+   * "retry in N seconds" answer rather than a cut connection.
+   */
+  whenThrottled?: Partial<ThrottlePolicy>;
 }
 
 export interface SmartServerRagConfig {

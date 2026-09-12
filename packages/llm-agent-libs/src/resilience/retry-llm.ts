@@ -9,7 +9,7 @@
 import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
-  findRateLimit,
+  findThrottled,
   isRetryableStatus,
   LlmError,
   type LlmResponse,
@@ -140,7 +140,7 @@ export class RetryLlm implements ILlm {
     // policy is spent — it has already backed off, honoured Retry-After and
     // given up. Retrying it here would multiply the attempts against a quota
     // that is demonstrably closed, so the marker ends the matter.
-    if (findRateLimit(error)) return false;
+    if (findThrottled(error)) return false;
     // Shared with RetryEmbedder: structured status wins, message match is a
     // word-boundary last resort. Replaces a bare includes() that fired on any
     // message merely containing the digits (e.g. "4290").

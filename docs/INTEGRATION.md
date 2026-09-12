@@ -2246,26 +2246,59 @@ a digest of the credential (never the credential), the provider's own account
 fields such as organization or resource group, and the model the call actually
 uses. Two tenants in one process do not pause each other. Defaults are 5 attempts
 or 60 seconds of total waiting, whichever comes first — the caps SAP AI Core
-documents. Tune or disable it per provider through `rateLimit` on the provider
+documents. Tune it per provider through `whenThrottled` on the provider
 config:
 
 ```ts
 new OpenAIProvider({
   apiKey,
   model: 'gpt-4o',
-  rateLimit: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
-  // rateLimit: { enabled: false } — pass every 429 straight to the caller
+  whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
+  // There is no on/off switch: waiting out a closed quota is correctness, not
+  // preference. Different mechanics go through `whenThrottled.strategy`.
 });
 ```
+
+Through the composition root it is the same field:
+
+```ts
+const llm = await makeLlm(
+  {
+    provider: 'sap-ai-sdk',
+    model: 'anthropic--claude-4.5-sonnet',
+    whenThrottled: { maxTotalWaitMs: 20_000 },
+  },
+  0.1,
+);
+```
+
+From a server's YAML it is the `llm.whenThrottled` block:
+
+```yaml
+llm:
+  provider: sap-ai-sdk
+  model: anthropic--claude-4.5-sonnet
+  whenThrottled:
+    maxTotalWaitMs: 20000
+    maxAttempts: 3
+```
+
+Keys are checked at startup: a misspelled one or an unparseable budget fails
+there rather than silently leaving the default in place.
+
+A service answering inside an HTTP request usually wants `maxTotalWaitMs` below
+its own client's timeout. Waiting longer than the client will wait leaves the
+caller with a cut connection instead of the "retry in N seconds" answer the
+policy is able to give.
 
 When that policy gives up it marks the error, and `RetryLlm` passes a marked
 error through untouched rather than multiplying attempts against a closed quota.
 Consumers read the fact instead of matching digits in a message:
 
 ```ts
-import { findRateLimit } from '@mcp-abap-adt/llm-agent';
+import { findThrottled } from '@mcp-abap-adt/llm-agent';
 
-const limit = findRateLimit(error);
+const limit = findThrottled(error);
 if (limit) console.warn(`throttled after ${limit.attempts} attempts`, limit.retryAfterSeconds);
 ```
 

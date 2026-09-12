@@ -248,11 +248,11 @@ that quota, not only the one that hit it. Defaults: 5 attempts or 60 seconds of
 waiting. Tune per provider:
 
 ```ts
-new SapCoreAIProvider({ model, rateLimit: { maxAttempts: 3, maxTotalWaitMs: 30_000 } });
+new SapCoreAIProvider({ model, whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 30_000 } });
 ```
 
 If 429s still surface, the quota is genuinely too small: the surfaced error
-carries `rateLimited` and `retryAfterSeconds` (read them with `findRateLimit`),
+carries `throttled` and `retryAfterSeconds` (read them with `findThrottled`),
 so the number to compare against your traffic is right there. Spread callers
 across resource groups, or raise the model's limit.
 

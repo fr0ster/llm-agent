@@ -189,7 +189,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // multiplexing. A shared keepAlive agent can cause SAP AI Core to route a
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
-      const response = await this.withRateLimitRetry(() => {
+      const response = await this.withThrottleRetry(() => {
         const callAgent = new https.Agent({
           keepAlive: false,
           timeout: 60_000,
@@ -252,7 +252,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               : JSON.stringify(axiosErr.response.data),
         });
       }
-      throw this.preserveRateLimit(
+      throw this.preserveThrottled(
         error,
         new Error(`SAP AI SDK API error: ${detail}`),
       );
@@ -303,7 +303,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         keepAlive: false,
         timeoutMs: 120_000,
       });
-      const streamResponse = await this.withRateLimitRetry(
+      const streamResponse = await this.withThrottleRetry(
         () => {
           const streamAgent = new https.Agent({
             keepAlive: false,
@@ -425,7 +425,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         ...SapCoreAIProvider.summarizeStreamingError(error),
       });
       const detail = SapCoreAIProvider.extractErrorDetail(error);
-      throw this.preserveRateLimit(
+      throw this.preserveThrottled(
         error,
         new Error(`SAP AI SDK streaming error: ${detail}`),
       );
@@ -504,8 +504,8 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
    * AI Core meters per model, and resource groups are isolated from one another
    * — two groups on the same model do not share a limit, so both belong here.
    */
-  protected override rateLimitKey(model?: string): string {
-    return `sap-ai-core:${this.rateLimitScope()}:${
+  protected override quotaKey(model?: string): string {
+    return `sap-ai-core:${this.quotaScope()}:${
       this.resourceGroup ?? 'default'
     }:${model ?? this.modelOverride ?? this.model}`;
   }
@@ -516,7 +516,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
    * back to `AICORE_SERVICE_KEY` when no credentials are passed, and that is
    * one instance for the whole process, so it is one scope.
    */
-  protected override rateLimitScope(): string {
+  protected override quotaScope(): string {
     const creds = this.config.credentials;
     if (!creds) return 'aicore-service-key';
     return `${this.canonicalEndpoint(creds.servicUrl)}|${this.credentialFingerprint(
