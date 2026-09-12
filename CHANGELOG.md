@@ -35,8 +35,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and one handed that same default explicitly still share a pause. Two tenants
   sharing a process do not pause each other. The registry is bounded: gates that
   are open and ten minutes idle are reclaimed, and past `GATE_LIMIT` the least
-  recently used open ones are evicted too, so a burst of per-request models
-  cannot grow it. A gate still holding a pause is never evicted.
+  recently used idle ones are evicted too, so a burst of per-request models
+  cannot grow it. Never evicted: a gate holding a pause, or one a call is still
+  holding — a request is in flight until the server answers, and has no pause on
+  it until then.
 
   Wired into `sap-aicore-llm`, `openai-llm` (and therefore `deepseek-llm` and
   `ollama-llm`) and `anthropic-llm`, on both the chat and the streaming path.

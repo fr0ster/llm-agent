@@ -12,6 +12,7 @@ import {
   GATE_LIMIT,
   gateFor,
   isRateLimitedError,
+  leaseRateLimitGate,
   preserveRateLimit,
   pruneRateLimitGates,
   RateLimitGate,
@@ -295,6 +296,62 @@ describe('the gate registry', () => {
     for (let i = 0; i < GATE_LIMIT * 2; i += 1) gateFor(`burst-${i}`);
     assert.ok(gateFor('held').remaining() > 0, 'a live pause survives a burst');
     assert.ok(rateLimitGateCount() <= GATE_LIMIT + 1);
+  });
+
+  it('never evicts a gate a call is still holding', () => {
+    // Open is not the same as unused: a request is in flight until the server
+    // answers, and it has no pause on it until then.
+    resetRateLimitGates();
+    const held = leaseRateLimitGate('in-flight');
+    for (let i = 0; i < GATE_LIMIT * 3; i += 1) gateFor(`burst-${i}`);
+    // The in-flight call now gets its 429 and penalises the gate it holds.
+    held.gate.penalise(10_000);
+    assert.ok(
+      gateFor('in-flight').remaining() > 0,
+      'the registry must hand the next caller that same pause, not a fresh gate',
+    );
+    held.release();
+  });
+
+  it('lets a released gate be evicted again', () => {
+    resetRateLimitGates();
+    leaseRateLimitGate('done').release();
+    pruneRateLimitGates(Date.now() + GATE_IDLE_TTL_MS + 1);
+    assert.equal(rateLimitGateCount(), 0);
+  });
+
+  it('survives a double release', () => {
+    resetRateLimitGates();
+    const lease = leaseRateLimitGate('twice');
+    lease.release();
+    lease.release();
+    const other = leaseRateLimitGate('twice');
+    for (let i = 0; i < GATE_LIMIT * 3; i += 1) gateFor(`burst-${i}`);
+    other.gate.penalise(10_000);
+    assert.ok(
+      gateFor('twice').remaining() > 0,
+      'a double release must not drop the count below the real holders',
+    );
+    other.release();
+  });
+
+  it('keeps the pause reachable for a real in-flight retry under a burst', async () => {
+    resetRateLimitGates();
+    let calls = 0;
+    const running = runWithRateLimitRetry(
+      async () => {
+        calls += 1;
+        if (calls === 1) {
+          // A burst of other quotas arrives while this call is in flight.
+          for (let i = 0; i < GATE_LIMIT * 3; i += 1) gateFor(`burst-${i}`);
+          throw tooManyRequests('0.05');
+        }
+        return 'ok';
+      },
+      { key: 'busy', policy: FAST, isRateLimited, retryAfterSeconds },
+    );
+    await running;
+    assert.equal(calls, 2);
   });
 
   it('reclaims idle gates on demand as well', () => {

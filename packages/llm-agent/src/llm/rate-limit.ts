@@ -128,6 +128,8 @@ export class RateLimitGate {
 interface GateEntry {
   gate: RateLimitGate;
   lastUsed: number;
+  /** How many calls are holding this gate right now. Never evict above zero. */
+  leases: number;
 }
 
 const gates = new Map<string, GateEntry>();
@@ -140,10 +142,11 @@ const gates = new Map<string, GateEntry>();
  */
 export const GATE_IDLE_TTL_MS = 10 * 60_000;
 /**
- * How many quotas the registry keeps. Enforced by evicting OPEN gates, so a
- * process holding more than this many live pauses at once can exceed it — a
- * held gate is a real pause and is never dropped. Evicting an open one costs
- * nothing: it carries no deadline, and the next call mints an equivalent.
+ * How many quotas the registry keeps. Enforced by evicting gates that are both
+ * open and unheld, so a process with more than this many pauses or in-flight
+ * calls at once can exceed it — those gates are load-bearing. Evicting an idle
+ * one costs nothing: it carries no deadline, and the next call mints an
+ * equivalent.
  */
 export const GATE_LIMIT = 500;
 
@@ -156,9 +159,47 @@ export function gateFor(key: string): RateLimitGate {
     return existing.gate;
   }
   if (gates.size >= GATE_LIMIT) reclaimGates(now);
-  const entry: GateEntry = { gate: new RateLimitGate(), lastUsed: now };
+  const entry: GateEntry = {
+    gate: new RateLimitGate(),
+    lastUsed: now,
+    leases: 0,
+  };
   gates.set(key, entry);
   return entry.gate;
+}
+
+/**
+ * Hold a gate for the length of one call, and keep it in the registry meanwhile.
+ *
+ * Being open is not the same as being unused. A request is in flight for as
+ * long as it takes the server to answer, and until that answer arrives the gate
+ * it belongs to has no pause on it. Evicted in that window, the call would go on
+ * to penalise an object the registry no longer knows: the pause would be real
+ * and invisible, and the next caller would be handed a fresh open gate and sent
+ * straight into a quota that had just closed. Worse than no gate at all, since
+ * the penalty is paid and nothing is bought with it.
+ *
+ * Release in a `finally`. Releasing twice is harmless.
+ */
+export function leaseRateLimitGate(key: string): {
+  gate: RateLimitGate;
+  release: () => void;
+} {
+  const gate = gateFor(key);
+  // By identity, not by key: `resetRateLimitGates` may have replaced the entry
+  // by the time this is released, and that entry's count is not ours to touch.
+  const entry = gates.get(key);
+  if (entry) entry.leases += 1;
+  let released = false;
+  return {
+    gate,
+    release: () => {
+      if (released || !entry) return;
+      released = true;
+      entry.leases -= 1;
+      entry.lastUsed = Date.now();
+    },
+  };
 }
 
 /**
@@ -169,13 +210,20 @@ export function gateFor(key: string): RateLimitGate {
  */
 export function pruneRateLimitGates(now: number = Date.now()): void {
   for (const [key, entry] of gates) {
-    if (
-      entry.gate.remaining(now) === 0 &&
-      now - entry.lastUsed > GATE_IDLE_TTL_MS
-    ) {
+    if (isEvictable(entry, now) && now - entry.lastUsed > GATE_IDLE_TTL_MS) {
       gates.delete(key);
     }
   }
+}
+
+/**
+ * Safe to forget: nobody is waiting behind it, and no call is holding it.
+ *
+ * An open, unleased gate carries no state at all — the next call mints an
+ * equivalent one and loses nothing.
+ */
+function isEvictable(entry: GateEntry, now: number): boolean {
+  return entry.leases === 0 && entry.gate.remaining(now) === 0;
 }
 
 /**
@@ -187,20 +235,18 @@ export function pruneRateLimitGates(now: number = Date.now()): void {
  * recently used OPEN gates go too, oldest first, until the registry is back
  * under the limit.
  *
- * Only open gates are evicted. One still holding a pause is the pause, and
- * dropping it would release every caller it was holding. An open gate holds
- * nothing — a caller that kept a reference and penalises it afterwards loses
- * coordination for that one window, and nothing more.
+ * Only idle gates are evicted: not one holding a pause, which IS the pause, and
+ * not one a call is still holding, which may be about to become a pause.
  */
 function reclaimGates(now: number): void {
   pruneRateLimitGates(now);
   if (gates.size < GATE_LIMIT) return;
 
-  const open = [...gates]
-    .filter(([, entry]) => entry.gate.remaining(now) === 0)
+  const evictable = [...gates]
+    .filter(([, entry]) => isEvictable(entry, now))
     .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
 
-  for (const [key] of open) {
+  for (const [key] of evictable) {
     if (gates.size < GATE_LIMIT) return;
     gates.delete(key);
   }
@@ -244,10 +290,22 @@ export async function runWithRateLimitRetry<T>(
   opts: RateLimitRetryOptions,
 ): Promise<T> {
   const policy = { ...DEFAULT_RATE_LIMIT_POLICY, ...opts.policy };
-  const gate = gateFor(opts.key);
-
   if (!policy.enabled) return fn();
 
+  const { gate, release } = leaseRateLimitGate(opts.key);
+  try {
+    return await attemptWithGate(fn, opts, policy, gate);
+  } finally {
+    release();
+  }
+}
+
+async function attemptWithGate<T>(
+  fn: () => Promise<T>,
+  opts: RateLimitRetryOptions,
+  policy: RateLimitPolicy,
+  gate: RateLimitGate,
+): Promise<T> {
   let attempt = 0;
   let waited = 0;
 
