@@ -23,6 +23,8 @@
  * enters this path.
  */
 
+import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
+
 export interface RateLimitPolicy {
   /** Set false to pass every error straight through. */
   enabled: boolean;
@@ -61,19 +63,31 @@ export function isRateLimitedError(e: unknown): e is RateLimitedError {
   );
 }
 
-const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
-  new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason ?? new Error('Aborted'));
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(t);
-        reject(signal.reason ?? new Error('Aborted'));
-      },
-      { once: true },
-    );
-  });
+const waiter = new DefaultWaitStrategy();
+
+/**
+ * Sleep, or throw if the signal aborts.
+ *
+ * Delegated to the shared wait strategy rather than hand-rolled: the listener
+ * bookkeeping is where a sleep like this goes wrong. One added per backoff and
+ * never removed accumulates on a request- or session-scoped signal until Node
+ * warns about the leak — a defect this repository has already fixed once, in
+ * the retry decorators. Fixed in one place, it stays fixed for every waiter.
+ */
+const sleep = async (ms: number, signal?: AbortSignal): Promise<void> => {
+  const aborted = (): Error =>
+    (signal?.reason as Error | undefined) ?? new Error('Aborted');
+  if (signal?.aborted) throw aborted();
+  if ((await waiter.wait(ms, signal)) === 'aborted') throw aborted();
+};
+
+/**
+ * Per-caller spread on waking, so everyone released by one penalty does not
+ * wake in the same millisecond and rebuild the herd the penalty broke up. It
+ * doubles as the slack on a capped wait: without it, jitter truncated to an
+ * exact budget could return a hair early and read as a refusal.
+ */
+const WAKE_SPREAD_MS = 250;
 
 /**
  * One shared pause per quota.
@@ -116,11 +130,22 @@ export class RateLimitGate {
    * penalty wakes in the same millisecond and rebuilds the herd the penalty was
    * meant to break up.
    */
-  async waitUntilOpen(signal?: AbortSignal): Promise<void> {
+  async waitUntilOpen(
+    signal?: AbortSignal,
+    maxWaitMs = Number.POSITIVE_INFINITY,
+  ): Promise<void> {
+    const deadline = Date.now() + maxWaitMs;
     for (;;) {
       const left = this.remaining();
       if (left <= 0) return;
-      await sleep(left + Math.random() * 250, signal);
+      const budget = deadline - Date.now();
+      // Out of the caller's budget with the gate still shut. It is told, not
+      // held: `remaining()` still reports the hold, and the caller decides.
+      if (budget <= 0) return;
+      await sleep(
+        Math.min(left + Math.random() * WAKE_SPREAD_MS, budget),
+        signal,
+      );
     }
   }
 }
@@ -317,12 +342,15 @@ async function attemptWithGate<T>(
     // of the budget is refused outright rather than half-served.
     const hold = gate.remaining();
     if (hold > 0) {
-      if (waited + hold > policy.maxTotalWaitMs) {
-        throw outOfBudgetAtGate(hold, attempt);
-      }
+      const budgetLeft = policy.maxTotalWaitMs - waited;
+      if (hold > budgetLeft) throw outOfBudgetAtGate(hold, attempt);
       const before = Date.now();
-      await gate.waitUntilOpen(opts.signal);
+      // Capped as well as pre-checked: a pause that fits when the wait starts
+      // can be extended past the budget by someone else's 429 while it runs.
+      await gate.waitUntilOpen(opts.signal, budgetLeft + WAKE_SPREAD_MS);
       waited += Date.now() - before;
+      const stillShut = gate.remaining();
+      if (stillShut > 0) throw outOfBudgetAtGate(stillShut, attempt);
     }
 
     try {

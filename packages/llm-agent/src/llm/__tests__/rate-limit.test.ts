@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { beforeEach, describe, it } from 'node:test';
 import type {
   LLMCallOptions,
@@ -246,6 +247,65 @@ describe('runWithRateLimitRetry', () => {
       'the request is never sent into a closed quota',
     );
     assert.ok(Date.now() - started < 400, 'and the caller is not held past it');
+  });
+
+  it('gives up when another caller extends the pause past the budget', async () => {
+    // The pause fits when the wait starts; a 429 elsewhere lengthens it while
+    // this caller is already asleep. The budget still holds.
+    resetRateLimitGates();
+    gateFor('extended').penalise(20);
+    setTimeout(() => gateFor('extended').penalise(5_000), 10);
+    const started = Date.now();
+    await assert.rejects(
+      runWithRateLimitRetry(async () => 'ok', {
+        key: 'extended',
+        policy: { ...FAST, maxTotalWaitMs: 40 },
+        isRateLimited,
+      }),
+      (e: unknown) => isRateLimitedError(e),
+    );
+    assert.ok(Date.now() - started < 2_000, 'not held for the whole extension');
+  });
+
+  it('leaves no abort listeners behind', async () => {
+    // A request- or session-scoped signal outlives one call, so a listener per
+    // backoff would accumulate until Node warns about the leak.
+    resetRateLimitGates();
+    const ac = new AbortController();
+    let calls = 0;
+    await assert.rejects(
+      runWithRateLimitRetry(
+        async () => {
+          calls += 1;
+          throw tooManyRequests();
+        },
+        {
+          key: 'listeners',
+          policy: { ...FAST, maxAttempts: 4 },
+          isRateLimited,
+          signal: ac.signal,
+        },
+      ),
+      (e: unknown) => isRateLimitedError(e),
+    );
+    assert.equal(calls, 4);
+    assert.equal(getEventListeners(ac.signal, 'abort').length, 0);
+  });
+
+  it('stops waiting when the caller aborts', async () => {
+    resetRateLimitGates();
+    gateFor('aborting').penalise(10_000);
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 10);
+    await assert.rejects(
+      runWithRateLimitRetry(async () => 'ok', {
+        key: 'aborting',
+        policy: { ...FAST, maxTotalWaitMs: 60_000 },
+        isRateLimited,
+        signal: ac.signal,
+      }),
+    );
+    assert.equal(getEventListeners(ac.signal, 'abort').length, 0);
   });
 
   it('waits out a pause that does fit the budget', async () => {
