@@ -9,6 +9,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [22.2.0] — 2026-09-12
+
+Rate-limit handling for every LLM provider (#282, #283).
+
+HTTP 429 is now answered where the response is still intact — inside the
+provider — following what SAP AI Core documents under Rate Limit Management:
+no immediate retry, exponential backoff with full jitter, `Retry-After` honoured
+when the server sends one, and a cap on both retries and total waiting
+(5 attempts or 60 seconds by default).
+
+The pause is held per quota, not per request: one caller's 429 pauses every
+other caller on the same account, endpoint and model, so a limit that should
+last one window does not last several.
+
+**Minor, not patch:** every addition is optional and no signature changed, but a
+429 that used to surface at once is now waited out, so behaviour under
+throttling differs by design. Set `rateLimit: { enabled: false }` on a provider
+config to keep the old timing.
+
 ### Added
 
 - **Every LLM provider now answers HTTP 429** (#282). Until now no provider
