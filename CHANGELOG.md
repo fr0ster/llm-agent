@@ -9,6 +9,54 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [23.0.0] — 2026-09-13
+
+Throttle handling, named for what it does and always on (#285, #286).
+
+`rateLimit` is now `whenThrottled`. The old name read as a limit we impose; it
+is the opposite — the rules for what we do when a server limits us. The `enabled`
+switch is gone, because sending another request into a quota the server has just
+closed is never the better answer. A consumer needing different mechanics
+supplies an `IThrottleStrategy`.
+
+The policy 22.2.0 announced is also, finally, reachable: `makeLlm` and the
+server config forward it, in the named-map form as well.
+
+### Migrating from 22.2.0
+
+Only consumers who adopted `rateLimit` in the hours 22.2.0 existed are affected.
+
+| 22.2.0 | 23.0.0 |
+|---|---|
+| `rateLimit: { … }` on a provider config | `whenThrottled: { … }` |
+| `rateLimit:` in `llm:` YAML | `whenThrottled:` |
+| `rateLimit: { enabled: false }` | supply `whenThrottled.strategy` — see below |
+| `findRateLimit(error)` | `findThrottled(error)` |
+| `error.rateLimited` | `error.throttled` |
+| `RateLimitPolicy`, `RateLimitedError` | `ThrottlePolicy`, `ThrottledError` |
+| any deep import of `llm/rate-limit.js` | `@mcp-abap-adt/llm-agent` — the package exports only `"."`, and the contract has moved to `interfaces/throttle-strategy.ts` |
+
+There is no replacement for `enabled: false`, because turning the handling off
+also stopped marking the quota closed for every other caller in the process —
+a guarantee that was never one caller's to drop. To stop *this* caller waiting
+while keeping that guarantee:
+
+```ts
+import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
+
+const giveUpAtOnce: IThrottleStrategy = {
+  name: 'no-wait',
+  decide: ({ retryAfterSeconds }) => ({
+    waitMs: (retryAfterSeconds ?? 0) * 1000, // the shared pause still takes it
+    retry: false,
+    reason: 'attempts',
+  }),
+};
+```
+
+Consumers who never set the field need change nothing: the defaults are
+unchanged, and the handling was already on.
+
 ### Changed — BREAKING
 
 - **`rateLimit` is now `whenThrottled`.** The old name read as a limit we
