@@ -395,6 +395,18 @@ describe('SapCoreAIProvider — one quota per service instance', () => {
     assert.notEqual(keyOf(a), keyOf(b));
   });
 
+  it('reads one service URL written several ways as one instance', () => {
+    const a = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore/v2/', 'sb-one'),
+    });
+    const b = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://API.One.aicore/v2', 'sb-one'),
+    });
+    assert.equal(keyOf(a), keyOf(b));
+  });
+
   it('treats the env service key as one instance for the process', () => {
     const a = new SapCoreAIProvider({ model: 'gpt-4o' });
     const b = new SapCoreAIProvider({ model: 'gpt-4o' });

@@ -100,9 +100,34 @@ export abstract class BaseLLMProvider<
    */
   protected rateLimitScope(): string {
     return [
-      this.quotaEndpoint(),
+      this.canonicalEndpoint(this.quotaEndpoint()),
       this.credentialFingerprint(this.config.apiKey),
     ].join('|');
+  }
+
+  /**
+   * Reduce spellings of one endpoint to one key.
+   *
+   * Two callers that reach the same server must land on the same gate, and a
+   * URL has more than one way of naming it: a trailing slash, an upper-case
+   * host, a port that was already the default. Written differently they would
+   * be metered as two quotas and stop coordinating — the same defect as reading
+   * the configured URL instead of the resolved one, one level down.
+   *
+   * The query string is kept verbatim: some endpoints carry a deployment or an
+   * API version there, and merging those would be worse than splitting them.
+   */
+  protected canonicalEndpoint(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed) return 'default';
+    try {
+      // `origin` already lower-cases the host and drops a default port.
+      const url = new URL(trimmed);
+      return `${url.origin}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+    } catch {
+      // Not absolute (a path, a host:port). Normalise what is safe to.
+      return trimmed.replace(/\/+$/, '');
+    }
   }
 
   /**

@@ -519,7 +519,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   protected override rateLimitScope(): string {
     const creds = this.config.credentials;
     if (!creds) return 'aicore-service-key';
-    return `${creds.servicUrl}|${this.credentialFingerprint(creds.clientId)}`;
+    return `${this.canonicalEndpoint(creds.servicUrl)}|${this.credentialFingerprint(
+      creds.clientId,
+    )}`;
   }
 
   private static extractErrorDetail(error: unknown): string {

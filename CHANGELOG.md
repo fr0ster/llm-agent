@@ -31,8 +31,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   digest of the credential (never the credential itself), the provider's own
   account fields — OpenAI organization and project, AI Core service instance and
   resource group — and the model the call actually uses, per-request override
-  included. The endpoint is the resolved one, so a provider left to its default
-  and one handed that same default explicitly still share a pause. Two tenants
+  included. The endpoint is the resolved one, canonicalised, so a provider left to
+  its default and one handed that same default explicitly still share a pause —
+  as do two spellings of one URL that differ only by a trailing slash, host
+  casing or an explicit default port. Two tenants
   sharing a process do not pause each other. The registry is bounded: gates that
   are open and ten minutes idle are reclaimed, and past `GATE_LIMIT` the least
   recently used idle ones are evicted too, so a burst of per-request models

@@ -692,6 +692,35 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
     );
   });
 
+  it('reads one endpoint written several ways as one quota', () => {
+    const spellings = [
+      'https://api.openai.com/v1',
+      'https://api.openai.com/v1/',
+      'https://API.OpenAI.com/v1',
+      'https://api.openai.com:443/v1',
+    ].map((baseURL) =>
+      keyOf(new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o', baseURL })),
+    );
+    assert.equal(new Set(spellings).size, 1, spellings.join('\n'));
+  });
+
+  it('still separates endpoints that differ in more than spelling', () => {
+    const key = (baseURL: string) =>
+      keyOf(new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o', baseURL }));
+    assert.notEqual(
+      key('https://api.openai.com/v1'),
+      key('https://api.openai.com/v2'),
+    );
+    assert.notEqual(
+      key('https://api.openai.com/v1'),
+      key('https://api.openai.com:8443/v1'),
+    );
+    assert.notEqual(
+      key('https://gw.internal/v1?deployment=a'),
+      key('https://gw.internal/v1?deployment=b'),
+    );
+  });
+
   it('gives the same account the same key, so the pause is actually shared', () => {
     const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
     const b = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
