@@ -107,27 +107,74 @@ export class RateLimitGate {
   /**
    * Wait out any active hold.
    *
+   * Re-checked after every wake, because the hold is not fixed at the moment
+   * this caller started waiting: another caller's 429 extends it, and a sleeper
+   * timed against the old deadline would wake early and spend a request on a
+   * quota the server has since said is still closed.
+   *
    * The wait is jittered per caller: without that, everyone released by one
    * penalty wakes in the same millisecond and rebuilds the herd the penalty was
    * meant to break up.
    */
   async waitUntilOpen(signal?: AbortSignal): Promise<void> {
-    const left = this.remaining();
-    if (left <= 0) return;
-    await sleep(left + Math.random() * 250, signal);
+    for (;;) {
+      const left = this.remaining();
+      if (left <= 0) return;
+      await sleep(left + Math.random() * 250, signal);
+    }
   }
 }
 
-const gates = new Map<string, RateLimitGate>();
+interface GateEntry {
+  gate: RateLimitGate;
+  lastUsed: number;
+}
+
+const gates = new Map<string, GateEntry>();
+
+/**
+ * Keys are open-ended — a per-request model override mints a new one — so the
+ * registry is pruned rather than left to grow for the life of the process.
+ * Only entries that are both open and long idle are dropped: a held gate is
+ * doing its job, and a recently used one may still be someone's in-flight call.
+ */
+export const GATE_IDLE_TTL_MS = 10 * 60_000;
+export const GATE_SOFT_LIMIT = 500;
 
 /** The gate for one quota. Shared across every provider instance in the process. */
 export function gateFor(key: string): RateLimitGate {
-  let g = gates.get(key);
-  if (!g) {
-    g = new RateLimitGate();
-    gates.set(key, g);
+  const now = Date.now();
+  const existing = gates.get(key);
+  if (existing) {
+    existing.lastUsed = now;
+    return existing.gate;
   }
-  return g;
+  if (gates.size >= GATE_SOFT_LIMIT) pruneRateLimitGates(now);
+  const entry: GateEntry = { gate: new RateLimitGate(), lastUsed: now };
+  gates.set(key, entry);
+  return entry.gate;
+}
+
+/**
+ * Reclaim gates that are open and long idle. Runs on its own when the registry
+ * passes the soft limit; exported so a long-lived host can run it on a timer,
+ * and so the reclaim can be tested at a chosen `now` without waiting ten
+ * minutes.
+ */
+export function pruneRateLimitGates(now: number = Date.now()): void {
+  for (const [key, entry] of gates) {
+    if (
+      entry.gate.remaining(now) === 0 &&
+      now - entry.lastUsed > GATE_IDLE_TTL_MS
+    ) {
+      gates.delete(key);
+    }
+  }
+}
+
+/** How many quotas are currently tracked. Diagnostics and tests. */
+export function rateLimitGateCount(): number {
+  return gates.size;
 }
 
 /** Test seam — drops every gate. */

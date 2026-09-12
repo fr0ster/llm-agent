@@ -360,3 +360,52 @@ describe('SapCoreAIProvider — rate limiting', () => {
     assert.match(one.rateLimitKey(), /gpt-4o/);
   });
 });
+
+describe('SapCoreAIProvider — one quota per service instance', () => {
+  const creds = (servicUrl: string, clientId: string) => ({
+    servicUrl,
+    clientId,
+    clientSecret: 'secret',
+    tokenServiceUrl: 'https://uaa.example/oauth/token',
+  });
+  // @ts-expect-error — protected hook, read for test
+  const keyOf = (p: SapCoreAIProvider) => p.rateLimitKey() as string;
+
+  it('separates two service instances', () => {
+    const a = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-one'),
+    });
+    const b = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.two.aicore', 'sb-two'),
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('separates two tenants on one AI Core endpoint', () => {
+    const a = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-tenant-a'),
+    });
+    const b = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-tenant-b'),
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('treats the env service key as one instance for the process', () => {
+    const a = new SapCoreAIProvider({ model: 'gpt-4o' });
+    const b = new SapCoreAIProvider({ model: 'gpt-4o' });
+    assert.equal(keyOf(a), keyOf(b));
+  });
+
+  it('never puts the client secret in the key', () => {
+    const p = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-one'),
+    });
+    assert.ok(!keyOf(p).includes('secret'));
+  });
+});

@@ -2,6 +2,7 @@
  * Base interface for LLM providers
  */
 
+import { createHash } from 'node:crypto';
 import type {
   IModelInfo,
   LLMCallOptions,
@@ -85,6 +86,31 @@ export abstract class BaseLLMProvider<
   // the openai provider. A provider on another transport overrides them.
 
   /**
+   * Which account and endpoint this call bills to.
+   *
+   * A quota belongs to an account at an endpoint, so two providers that differ
+   * in either one do not share a limit. In a multi-tenant process a key built
+   * from the class and the model alone would let one tenant's 429 pause
+   * another's for a minute, on a quota that tenant never touched.
+   *
+   * The credential is reduced to a short digest: the key is an in-memory map
+   * key and may reach a log line, so it must identify an account without being
+   * the account's secret. Override to add a provider's own account fields
+   * (organization, project, resource group) — never the raw secret.
+   */
+  protected rateLimitScope(): string {
+    return [
+      this.config.baseURL ?? 'default',
+      this.credentialFingerprint(this.config.apiKey),
+    ].join('|');
+  }
+
+  /** Available to subclasses building their own scope out of other fields. */
+  protected credentialFingerprint(secret: string | undefined): string {
+    return fingerprint(secret);
+  }
+
+  /**
    * Which quota this call spends. Limits are per model, so the model is in the
    * key — and it must be the model the CALL uses, not the configured default.
    * A per-request override spends a different quota: keyed by the default, one
@@ -92,7 +118,9 @@ export abstract class BaseLLMProvider<
    * neither of them belongs to.
    */
   protected rateLimitKey(model?: string): string {
-    return `${this.constructor.name}:${model ?? this.config.model ?? 'default'}`;
+    return `${this.constructor.name}:${this.rateLimitScope()}:${
+      model ?? this.config.model ?? 'default'
+    }`;
   }
 
   /** Is this "too many requests" rather than a real failure? */
@@ -148,6 +176,18 @@ export abstract class BaseLLMProvider<
       onRetry: extra?.onRetry,
     });
   }
+}
+
+/**
+ * A short, stable, non-reversible stand-in for a credential.
+ *
+ * Enough to tell two accounts apart in a map key; not enough to be the secret
+ * if that key is ever printed. An absent credential is its own scope — several
+ * providers configured without one are, as far as we can tell, the same one.
+ */
+function fingerprint(secret: string | undefined): string {
+  if (!secret) return 'anonymous';
+  return createHash('sha256').update(secret).digest('hex').slice(0, 12);
 }
 
 /** Status of an axios-shaped error, or undefined when it is shaped otherwise. */

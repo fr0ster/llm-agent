@@ -2239,8 +2239,12 @@ The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → Ret
 
 **429 is handled below this chain.** Every provider built on `BaseLLMProvider`
 answers a rate limit itself, where the HTTP response is still intact: it honours
-`Retry-After`, backs off with full jitter, and holds one shared gate per model so
-concurrent callers do not each rediscover the same limit. Defaults are 5 attempts
+`Retry-After`, backs off with full jitter, and holds one shared gate per quota so
+concurrent callers do not each rediscover the same limit. A quota is an account
+at an endpoint using one model, so the gate key carries all three — the endpoint,
+a digest of the credential (never the credential), the provider's own account
+fields such as organization or resource group, and the model the call actually
+uses. Two tenants in one process do not pause each other. Defaults are 5 attempts
 or 60 seconds of total waiting, whichever comes first — the caps SAP AI Core
 documents. Tune or disable it per provider through `rateLimit` on the provider
 config:

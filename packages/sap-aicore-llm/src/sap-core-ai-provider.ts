@@ -505,9 +505,21 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
    * — two groups on the same model do not share a limit, so both belong here.
    */
   protected override rateLimitKey(model?: string): string {
-    return `sap-ai-core:${this.resourceGroup ?? 'default'}:${
-      model ?? this.modelOverride ?? this.model
-    }`;
+    return `sap-ai-core:${this.rateLimitScope()}:${
+      this.resourceGroup ?? 'default'
+    }:${model ?? this.modelOverride ?? this.model}`;
+  }
+
+  /**
+   * The quota belongs to a service instance, not to the process. Two instances
+   * in one process — a tenant each, say — must not share a pause. Auth falls
+   * back to `AICORE_SERVICE_KEY` when no credentials are passed, and that is
+   * one instance for the whole process, so it is one scope.
+   */
+  protected override rateLimitScope(): string {
+    const creds = this.config.credentials;
+    if (!creds) return 'aicore-service-key';
+    return `${creds.servicUrl}|${this.credentialFingerprint(creds.clientId)}`;
   }
 
   private static extractErrorDetail(error: unknown): string {

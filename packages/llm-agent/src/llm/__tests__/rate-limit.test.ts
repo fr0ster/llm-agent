@@ -8,10 +8,14 @@ import type {
 import { BaseLLMProvider } from '../base-llm-provider.js';
 import {
   DEFAULT_RATE_LIMIT_POLICY,
+  GATE_IDLE_TTL_MS,
+  GATE_SOFT_LIMIT,
   gateFor,
   isRateLimitedError,
   preserveRateLimit,
+  pruneRateLimitGates,
   RateLimitGate,
+  rateLimitGateCount,
   resetRateLimitGates,
   runWithRateLimitRetry,
 } from '../rate-limit.js';
@@ -225,6 +229,20 @@ describe('runWithRateLimitRetry', () => {
 });
 
 describe('RateLimitGate', () => {
+  it('keeps waiting when another caller extends the hold mid-sleep', async () => {
+    const gate = new RateLimitGate();
+    gate.penalise(40);
+    const started = Date.now();
+    const waiting = gate.waitUntilOpen();
+    // A second 429 lands while this caller is already asleep.
+    setTimeout(() => gate.penalise(300), 10);
+    await waiting;
+    assert.ok(
+      Date.now() - started >= 300,
+      'waking on the old deadline spends a request on a quota still shut',
+    );
+  });
+
   it('never shortens an existing hold', () => {
     const gate = new RateLimitGate();
     const now = 1_000;
@@ -242,6 +260,35 @@ describe('RateLimitGate', () => {
   it('hands the same gate to every caller on one key', () => {
     assert.equal(gateFor('same'), gateFor('same'));
     assert.notEqual(gateFor('same'), gateFor('other'));
+  });
+});
+
+describe('the gate registry', () => {
+  it('keeps a gate that is still holding a pause, however long it idles', () => {
+    resetRateLimitGates();
+    gateFor('held').penalise(GATE_IDLE_TTL_MS * 2);
+    pruneRateLimitGates(Date.now() + GATE_IDLE_TTL_MS + 1);
+    assert.ok(gateFor('held').remaining() > 0);
+  });
+
+  it('keeps a gate that was used recently, open or not', () => {
+    resetRateLimitGates();
+    gateFor('fresh');
+    pruneRateLimitGates();
+    assert.equal(rateLimitGateCount(), 1);
+  });
+
+  it('does not grow without bound across many per-request models', () => {
+    resetRateLimitGates();
+    for (let i = 0; i < GATE_SOFT_LIMIT; i += 1) gateFor(`model-${i}`);
+    gateFor('held').penalise(GATE_IDLE_TTL_MS * 2);
+    // Ten minutes later, none of those one-off models has been used again.
+    pruneRateLimitGates(Date.now() + GATE_IDLE_TTL_MS + 1);
+    assert.equal(
+      rateLimitGateCount(),
+      1,
+      'only the gate still holding a pause survives',
+    );
   });
 });
 

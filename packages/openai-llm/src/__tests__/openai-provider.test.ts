@@ -640,3 +640,55 @@ describe('OpenAIProvider — the quota a per-request model spends', () => {
     );
   });
 });
+
+describe('OpenAIProvider — one quota per account and endpoint', () => {
+  // @ts-expect-error — protected hook, read for test
+  const keyOf = (p: OpenAIProvider) => p.rateLimitKey() as string;
+
+  it('separates two API keys on the same endpoint', () => {
+    const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    const b = new OpenAIProvider({ apiKey: 'sk-b', model: 'gpt-4o' });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('separates two endpoints on the same key', () => {
+    const a = new OpenAIProvider({
+      apiKey: 'sk-a',
+      model: 'gpt-4o',
+      baseURL: 'https://api.openai.com/v1',
+    });
+    const b = new OpenAIProvider({
+      apiKey: 'sk-a',
+      model: 'gpt-4o',
+      baseURL: 'https://my-gateway.internal/v1',
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('separates organizations and projects, which is how OpenAI meters', () => {
+    const base = { apiKey: 'sk-a', model: 'gpt-4o' };
+    const one = new OpenAIProvider({ ...base, organization: 'org-1' });
+    const two = new OpenAIProvider({ ...base, organization: 'org-2' });
+    const proj = new OpenAIProvider({
+      ...base,
+      organization: 'org-1',
+      project: 'p',
+    });
+    assert.notEqual(keyOf(one), keyOf(two));
+    assert.notEqual(keyOf(one), keyOf(proj));
+  });
+
+  it('gives the same account the same key, so the pause is actually shared', () => {
+    const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    const b = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    assert.equal(keyOf(a), keyOf(b));
+  });
+
+  it('never puts the credential itself in the key', () => {
+    const p = new OpenAIProvider({
+      apiKey: 'sk-secret-value',
+      model: 'gpt-4o',
+    });
+    assert.ok(!keyOf(p).includes('sk-secret-value'));
+  });
+});

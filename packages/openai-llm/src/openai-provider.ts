@@ -55,6 +55,20 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     });
   }
 
+  /**
+   * OpenAI meters per organization and per project, and an account reaching a
+   * different `baseURL` (Azure, a gateway, a local vLLM) is a different quota
+   * again. The base scope covers the endpoint and the credential; these two
+   * split one credential's traffic the way OpenAI bills it.
+   */
+  protected override rateLimitScope(): string {
+    return [
+      super.rateLimitScope(),
+      this.config.organization ?? '',
+      this.config.project ?? '',
+    ].join('|');
+  }
+
   async chat(
     messages: Message[],
     tools?: unknown[],

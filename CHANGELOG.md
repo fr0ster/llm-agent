@@ -23,10 +23,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   attempts, 60 seconds).
 
   A rate limit belongs to the quota, not to the request that discovered it, so
-  the pause is held in a **process-wide gate keyed per model** — one caller's
+  the pause is held in a **process-wide gate keyed per quota** — one caller's
   429 pauses every other caller on the same quota. Otherwise each concurrent
   caller rediscovers the same closed limit and the window keeps being pushed
-  out, which is how a limit that should last one minute lasts several.
+  out, which is how a limit that should last one minute lasts several. A quota
+  is an account at an endpoint using one model: the key carries the endpoint, a
+  digest of the credential (never the credential itself), the provider's own
+  account fields — OpenAI organization and project, AI Core service instance and
+  resource group — and the model the call actually uses, per-request override
+  included. Two tenants sharing a process do not pause each other. The registry
+  reclaims gates that are open and ten minutes idle, so an open-ended set of
+  per-request models cannot grow it without bound.
 
   Wired into `sap-aicore-llm`, `openai-llm` (and therefore `deepseek-llm` and
   `ollama-llm`) and `anthropic-llm`, on both the chat and the streaming path.

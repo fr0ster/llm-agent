@@ -235,7 +235,7 @@ new SapCoreAIProvider({
 });
 ```
 
-Two things follow from the limit belonging to the quota rather than to one
+Three things follow from the limit belonging to the quota rather than to one
 request:
 
 - **The pause is shared.** When one call is told to wait, every other call
@@ -243,6 +243,10 @@ request:
   caller discovers the same closed quota separately, and a limit that should
   last one window lasts several. Resource groups are isolated, so they do not
   share a gate.
+- **The pause is per service instance.** The gate key carries the AI Core
+  endpoint, a digest of the client id, and the resource group — never the client
+  secret. Two tenants in one process therefore do not pause each other, and two
+  providers pointing at the same instance do share the pause, which is the point.
 - **Nothing above retries it again.** Once the policy is spent the error carries
   `rateLimited`, and `RetryLlm` leaves a marked error alone.
 

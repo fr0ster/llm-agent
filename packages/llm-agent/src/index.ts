@@ -22,6 +22,7 @@ export {
   RateLimitGate,
   type RateLimitPolicy,
   type RateLimitRetryOptions,
+  rateLimitGateCount,
   resetRateLimitGates,
   runWithRateLimitRetry,
 } from './llm/rate-limit.js';
