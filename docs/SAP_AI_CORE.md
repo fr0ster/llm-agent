@@ -84,7 +84,8 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 | `resourceGroup` | `string` | — | SAP AI Core resource group |
 | `credentials` | `SapAICoreCredentials` | — | Programmatic OAuth2 credentials (bypasses env var) |
 | `apiKey` | `string` | — | Not used by SAP provider (auth handled by SDK) |
-| `log` | `object` | — | Optional logger with `debug()` and `error()` methods |
+| `rateLimit` | `object` | — | Overrides for the 429 policy (see [Rate limits](#rate-limits-429)). Omit for the documented defaults |
+| `log` | `object` | — | Optional logger with `debug()`, `error()` and an optional `warn()` (a rate-limit backoff is reported through `warn` when present, `error` otherwise) |
 
 ### Environment Variables
 
@@ -209,6 +210,54 @@ agent:
   llmCallStrategy: non-streaming
 ```
 
+## Rate limits (429)
+
+SAP AI Core meters requests per minute, per model, per resource group. Over the
+limit it answers `429 Too Many Requests` with a `Retry-After` header in seconds.
+
+The provider answers it as SAP's Rate Limit Management guidance prescribes: no
+immediate retry, exponential backoff with jitter, `Retry-After` used as the wait
+when the server sends one, and a cap on both retries and total waiting.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false` passes every 429 straight to the caller |
+| `maxAttempts` | `5` | Total attempts including the first |
+| `maxTotalWaitMs` | `60000` | Give up once the accumulated waiting would exceed this |
+| `baseDelayMs` | `1000` | First backoff step when the server names no time |
+| `maxDelayMs` | `20000` | Ceiling for one computed step, before jitter |
+
+```ts
+new SapCoreAIProvider({
+  model: 'anthropic--claude-4.5-sonnet',
+  resourceGroup: 'default',
+  rateLimit: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
+});
+```
+
+Two things follow from the limit belonging to the quota rather than to one
+request:
+
+- **The pause is shared.** When one call is told to wait, every other call
+  against that model and resource group waits too. Otherwise each concurrent
+  caller discovers the same closed quota separately, and a limit that should
+  last one window lasts several. Resource groups are isolated, so they do not
+  share a gate.
+- **Nothing above retries it again.** Once the policy is spent the error carries
+  `rateLimited`, and `RetryLlm` leaves a marked error alone.
+
+Read the outcome as a fact, not as a substring of a message:
+
+```ts
+import { findRateLimit } from '@mcp-abap-adt/llm-agent';
+
+const limit = findRateLimit(error);   // undefined when it was not a rate limit
+if (limit) console.warn(limit.attempts, limit.retryAfterSeconds);
+```
+
+If 429s persist after this, the quota itself is too small for the traffic:
+spread the load across resource groups, or raise the model's limit in AI Core.
+
 ## Tool Format Conversion
 
 MCP tools are converted to OpenAI function format before being sent to SAP AI Core. `SapCoreAIProvider` handles this conversion automatically.
@@ -288,6 +337,7 @@ Use this endpoint to dynamically discover which embedding model names are valid 
 | `Model not found` | Model not deployed | Deploy the model in SAP AI Core Launchpad |
 | `Resource group not found` | Wrong resource group | Check `SAP_AI_RESOURCE_GROUP` value |
 | `OAuth2 token error` | Wrong `tokenServiceUrl` | Verify the URL from service key `uaa.url` |
+| `429 Too Many Requests` surviving the retries | Sustained throttling — the per-minute quota for that model is smaller than the traffic | The error carries `rateLimited` and `retryAfterSeconds`; see [Rate limits](#rate-limits-429). Spread load across resource groups or raise the model's limit |
 | `400 "Either a prompt template or messages must be defined"` | SDK requires `prompt.template` | Fixed in v2.9.0 — upgrade the package |
 | `400 "Unused parameters"` | Using `messagesHistory` instead of `messages` | Fixed in v2.9.0 — upgrade the package |
 | `Stream finished with token length exceeded` | `maxTokens` too low for tool-calling models | Set `maxTokens: 32768` or higher in config |

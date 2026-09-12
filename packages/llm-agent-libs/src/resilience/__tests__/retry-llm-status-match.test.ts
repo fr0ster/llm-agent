@@ -59,3 +59,61 @@ describe('RetryLlm — status classification', () => {
     assert.equal(llm.calls(), 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rate limits the provider already handled (issue #282)
+// ---------------------------------------------------------------------------
+
+describe('RetryLlm — a spent provider rate-limit policy', () => {
+  const rateLimited = () =>
+    Object.assign(new Error('429 Too Many Requests'), {
+      rateLimited: true as const,
+      attempts: 5,
+      retryAfterSeconds: 30,
+    });
+
+  it('does not retry an error the provider already gave up on', async () => {
+    let calls = 0;
+    const inner: ILlm = {
+      chat: async () => {
+        calls += 1;
+        const error = new LlmError('OpenAI API error: 429 Too Many Requests');
+        error.cause = rateLimited();
+        return { ok: false as const, error };
+      },
+      streamChat: async function* () {
+        yield { ok: false as const, error: new LlmError('unused') };
+      },
+    };
+    const llm = new RetryLlm(inner, { maxAttempts: 3, backoffMs: 1 });
+    const res = await llm.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(res.ok, false);
+    assert.equal(
+      calls,
+      1,
+      'the quota is closed; more attempts only lengthen it',
+    );
+  });
+
+  it('still retries a 429 from a provider with no policy of its own', async () => {
+    let calls = 0;
+    const inner: ILlm = {
+      chat: async () => {
+        calls += 1;
+        if (calls < 2) {
+          const error = new LlmError('rate limited');
+          error.cause = { status: 429 };
+          return { ok: false as const, error };
+        }
+        return { ok: true as const, value: { content: 'ok' } };
+      },
+      streamChat: async function* () {
+        yield { ok: false as const, error: new LlmError('unused') };
+      },
+    };
+    const llm = new RetryLlm(inner, { maxAttempts: 3, backoffMs: 1 });
+    const res = await llm.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(res.ok, true);
+    assert.equal(calls, 2);
+  });
+});

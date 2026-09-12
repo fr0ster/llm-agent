@@ -66,16 +66,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         options?.temperature ?? this.config.temperature ?? 0.7;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
-      const response = await this.client.post('/chat/completions', {
-        model,
-        messages: this.formatMessages(messages),
-        tools: tools && tools.length > 0 ? tools : undefined,
-        tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-        temperature,
-        ...this.getTokenLimitParam(model, maxTokens),
-        ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-        ...(options?.stop ? { stop: options.stop } : {}),
-      });
+      const response = await this.withRateLimitRetry(() =>
+        this.client.post('/chat/completions', {
+          model,
+          messages: this.formatMessages(messages),
+          tools: tools && tools.length > 0 ? tools : undefined,
+          tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+          temperature,
+          ...this.getTokenLimitParam(model, maxTokens),
+          ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+          ...(options?.stop ? { stop: options.stop } : {}),
+        }),
+      );
 
       const choice = response.data.choices[0];
 
@@ -100,7 +102,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`${this.providerName} API error: ${message}`);
+      throw this.preserveRateLimit(
+        error,
+        new Error(`${this.providerName} API error: ${message}`),
+      );
     }
   }
 
@@ -115,21 +120,23 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         options?.temperature ?? this.config.temperature ?? 0.7;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
-      const response = await this.client.post(
-        '/chat/completions',
-        {
-          model,
-          messages: this.formatMessages(messages),
-          tools: tools && tools.length > 0 ? tools : undefined,
-          tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-          temperature,
-          ...this.getTokenLimitParam(model, maxTokens),
-          ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-          ...(options?.stop ? { stop: options.stop } : {}),
-          stream: true,
-          stream_options: { include_usage: true },
-        },
-        { responseType: 'stream' },
+      const response = await this.withRateLimitRetry(() =>
+        this.client.post(
+          '/chat/completions',
+          {
+            model,
+            messages: this.formatMessages(messages),
+            tools: tools && tools.length > 0 ? tools : undefined,
+            tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+            temperature,
+            ...this.getTokenLimitParam(model, maxTokens),
+            ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+            ...(options?.stop ? { stop: options.stop } : {}),
+            stream: true,
+            stream_options: { include_usage: true },
+          },
+          { responseType: 'stream' },
+        ),
       );
 
       const stream = response.data;
@@ -203,7 +210,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`${this.providerName} Streaming error: ${message}`);
+      throw this.preserveRateLimit(
+        error,
+        new Error(`${this.providerName} Streaming error: ${message}`),
+      );
     }
   }
 

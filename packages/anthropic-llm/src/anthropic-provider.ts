@@ -67,7 +67,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         requestBody.tools = tools;
       }
 
-      const response = await this.client.post('/messages', requestBody);
+      const response = await this.withRateLimitRetry(() =>
+        this.client.post('/messages', requestBody),
+      );
 
       // Handle multi-block response (text + tool_use)
       const content = response.data.content as Array<{
@@ -102,7 +104,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`Anthropic API error: ${message}`);
+      throw this.preserveRateLimit(
+        error,
+        new Error(`Anthropic API error: ${message}`),
+      );
     }
   }
 
@@ -133,22 +138,31 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     }
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
-    const response = await fetch(`${baseURL}/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey ?? '',
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify(requestBody),
-    });
+    type OpenStream = Response & { body: ReadableStream<Uint8Array> };
+    const response = await this.withRateLimitRetry<OpenStream>(async () => {
+      const res = await fetch(`${baseURL}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey ?? '',
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(requestBody),
+      });
 
-    if (!response.ok || !response.body) {
-      const text = await response.text().catch(() => '');
-      throw new Error(
-        `Anthropic streaming error: HTTP ${response.status} — ${text}`,
-      );
-    }
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => '');
+        const error = new Error(
+          `Anthropic streaming error: HTTP ${res.status} — ${text}`,
+        ) as Error & { response?: { status: number; headers: Headers } };
+        // This is the one path on fetch rather than axios. The shared policy
+        // reads the status and Retry-After off the axios shape, so give it one;
+        // Headers already answers to the same case-insensitive get().
+        error.response = { status: res.status, headers: res.headers };
+        throw error;
+      }
+      return res as OpenStream;
+    });
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();

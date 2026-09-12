@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import {
+  isRateLimitedError,
+  type Message,
+  resetRateLimitGates,
+} from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '../openai-provider.js';
 
 // ---------------------------------------------------------------------------
@@ -498,5 +502,108 @@ describe('OpenAIProvider — streamChat() usage', () => {
       completionTokens: 1,
       totalTokens: 6,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (issue #282)
+// ---------------------------------------------------------------------------
+
+const tooManyRequests = (retryAfter?: string) =>
+  Object.assign(new Error('Request failed with status code 429'), {
+    isAxiosError: true,
+    response: {
+      status: 429,
+      headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+      data: { error: { message: 'rate limit exceeded' } },
+    },
+  });
+
+describe('OpenAIProvider — rate limiting', () => {
+  const fast = { baseDelayMs: 1, maxDelayMs: 2 };
+
+  it('retries a 429 and returns the eventual answer', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: fast,
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      if (calls < 3) throw tooManyRequests();
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    const res = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(res.content, 'ok');
+    assert.equal(calls, 3);
+  });
+
+  it('keeps the 429 readable as a fact once it gives up', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: { ...fast, maxAttempts: 2 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('3');
+    };
+    try {
+      await provider.chat([{ role: 'user', content: 'hi' }]);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(isRateLimitedError(e));
+      assert.equal(e.attempts, 2);
+      assert.equal(e.retryAfterSeconds, 3);
+      assert.match((e as Error).message, /OpenAI API error/);
+    }
+  });
+
+  it('does not retry an ordinary failure', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: fast,
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      throw Object.assign(new Error('server exploded'), {
+        isAxiosError: true,
+        response: { status: 500, headers: {}, data: {} },
+      });
+    };
+    await assert.rejects(
+      provider.chat([{ role: 'user', content: 'hi' }]),
+      /server exploded/,
+    );
+    assert.equal(calls, 1);
+  });
+
+  it('passes a 429 straight through when the policy is disabled', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: { enabled: false },
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      throw tooManyRequests();
+    };
+    await assert.rejects(provider.chat([{ role: 'user', content: 'hi' }]));
+    assert.equal(calls, 1);
   });
 });

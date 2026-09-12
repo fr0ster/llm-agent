@@ -1,0 +1,291 @@
+import assert from 'node:assert/strict';
+import { beforeEach, describe, it } from 'node:test';
+import type {
+  LLMCallOptions,
+  LLMResponse,
+  Message,
+} from '../../interfaces/index.js';
+import { BaseLLMProvider } from '../base-llm-provider.js';
+import {
+  DEFAULT_RATE_LIMIT_POLICY,
+  gateFor,
+  isRateLimitedError,
+  preserveRateLimit,
+  RateLimitGate,
+  resetRateLimitGates,
+  runWithRateLimitRetry,
+} from '../rate-limit.js';
+
+/** Keep the suite fast: the policy is about ordering, not about real seconds. */
+const FAST = { baseDelayMs: 1, maxDelayMs: 2, maxTotalWaitMs: 5_000 };
+
+const tooManyRequests = (retryAfter?: string) => ({
+  response: {
+    status: 429,
+    headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+  },
+});
+
+const isRateLimited = (e: unknown) =>
+  (e as { response?: { status?: number } })?.response?.status === 429;
+
+const retryAfterSeconds = (e: unknown) => {
+  const raw = (e as { response?: { headers?: Record<string, string> } })
+    ?.response?.headers?.['retry-after'];
+  return raw === undefined ? undefined : Number(raw);
+};
+
+beforeEach(() => resetRateLimitGates());
+
+describe('runWithRateLimitRetry', () => {
+  it('passes a successful call straight through', async () => {
+    let calls = 0;
+    const out = await runWithRateLimitRetry(
+      async () => {
+        calls += 1;
+        return 'ok';
+      },
+      { key: 'k', policy: FAST, isRateLimited },
+    );
+    assert.equal(out, 'ok');
+    assert.equal(calls, 1);
+  });
+
+  it('rethrows a non-rate-limit error immediately, without retrying', async () => {
+    let calls = 0;
+    await assert.rejects(
+      runWithRateLimitRetry(
+        async () => {
+          calls += 1;
+          throw new Error('boom');
+        },
+        { key: 'k', policy: FAST, isRateLimited },
+      ),
+      /boom/,
+    );
+    assert.equal(calls, 1, 'a real failure must not be multiplied by retries');
+  });
+
+  it('retries a 429 and returns the eventual success', async () => {
+    let calls = 0;
+    const out = await runWithRateLimitRetry(
+      async () => {
+        calls += 1;
+        if (calls < 3) throw tooManyRequests();
+        return 'ok';
+      },
+      { key: 'k', policy: FAST, isRateLimited },
+    );
+    assert.equal(out, 'ok');
+    assert.equal(calls, 3);
+  });
+
+  it('gives up after maxAttempts and annotates the error', async () => {
+    let calls = 0;
+    try {
+      await runWithRateLimitRetry(
+        async () => {
+          calls += 1;
+          throw tooManyRequests();
+        },
+        { key: 'k', policy: { ...FAST, maxAttempts: 3 }, isRateLimited },
+      );
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(
+        isRateLimitedError(e),
+        'consumers read a fact, not a substring',
+      );
+      assert.equal(e.attempts, 3);
+    }
+    assert.equal(calls, 3);
+  });
+
+  it('stops once the accumulated wait would exceed maxTotalWaitMs', async () => {
+    let calls = 0;
+    await assert.rejects(
+      runWithRateLimitRetry(
+        async () => {
+          calls += 1;
+          throw tooManyRequests('30');
+        },
+        {
+          key: 'k',
+          policy: { ...FAST, maxAttempts: 10, maxTotalWaitMs: 10 },
+          isRateLimited,
+          retryAfterSeconds,
+        },
+      ),
+      (e: unknown) => isRateLimitedError(e),
+    );
+    assert.equal(calls, 1, '30s asked for, 10ms budget — no second attempt');
+  });
+
+  it("uses the server's Retry-After rather than its own guess", async () => {
+    let calls = 0;
+    const seen: Array<number | undefined> = [];
+    await runWithRateLimitRetry(
+      async () => {
+        calls += 1;
+        if (calls < 2) throw tooManyRequests('0.01');
+        return 'ok';
+      },
+      {
+        key: 'k',
+        policy: FAST,
+        isRateLimited,
+        retryAfterSeconds,
+        onRetry: ({ retryAfterSeconds }) => seen.push(retryAfterSeconds),
+      },
+    );
+    assert.deepEqual(seen, [0.01]);
+  });
+
+  it('holds every caller on the same quota, not just the one that hit it', async () => {
+    await runWithRateLimitRetry(
+      (() => {
+        let calls = 0;
+        return async () => {
+          calls += 1;
+          if (calls < 2) throw tooManyRequests('0.05');
+          return 'ok';
+        };
+      })(),
+      { key: 'shared', policy: FAST, isRateLimited },
+    );
+    // The penalty outlives the call that earned it.
+    const gate = gateFor('shared');
+    assert.ok(gate.remaining() >= 0);
+  });
+
+  it('passes everything through when disabled', async () => {
+    let calls = 0;
+    await assert.rejects(
+      runWithRateLimitRetry(
+        async () => {
+          calls += 1;
+          throw tooManyRequests();
+        },
+        { key: 'k', policy: { enabled: false }, isRateLimited },
+      ),
+    );
+    assert.equal(calls, 1);
+  });
+
+  it('ships defaults matching what SAP documents', () => {
+    assert.equal(DEFAULT_RATE_LIMIT_POLICY.maxAttempts, 5);
+    assert.equal(DEFAULT_RATE_LIMIT_POLICY.maxTotalWaitMs, 60_000);
+  });
+});
+
+describe('RateLimitGate', () => {
+  it('never shortens an existing hold', () => {
+    const gate = new RateLimitGate();
+    const now = 1_000;
+    gate.penalise(500, now);
+    gate.penalise(100, now);
+    assert.equal(gate.remaining(now), 500);
+  });
+
+  it('reports nothing to wait once the hold has passed', () => {
+    const gate = new RateLimitGate();
+    gate.penalise(500, 1_000);
+    assert.equal(gate.remaining(2_000), 0);
+  });
+
+  it('hands the same gate to every caller on one key', () => {
+    assert.equal(gateFor('same'), gateFor('same'));
+    assert.notEqual(gateFor('same'), gateFor('other'));
+  });
+});
+
+describe('preserveRateLimit', () => {
+  it('leaves an ordinary error alone', () => {
+    const wrapped = new Error('wrapped');
+    assert.equal(preserveRateLimit(new Error('plain'), wrapped), wrapped);
+    assert.equal(isRateLimitedError(wrapped), false);
+  });
+
+  it('carries the facts onto the provider error', () => {
+    const original = Object.assign(new Error('429'), {
+      rateLimited: true as const,
+      attempts: 4,
+      retryAfterSeconds: 12,
+    });
+    const wrapped = preserveRateLimit(original, new Error('Provider error'));
+    assert.ok(isRateLimitedError(wrapped));
+    assert.equal(wrapped.attempts, 4);
+    assert.equal(wrapped.retryAfterSeconds, 12);
+    assert.equal(wrapped.message, 'Provider error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The provider hooks
+// ---------------------------------------------------------------------------
+
+class ProbeProvider extends BaseLLMProvider {
+  async chat(): Promise<LLMResponse> {
+    return { content: '' };
+  }
+  async *streamChat(
+    _messages: Message[],
+    _tools?: unknown[],
+    _options?: LLMCallOptions,
+  ): AsyncIterable<LLMResponse> {
+    yield { content: '' };
+  }
+  saysRateLimited(e: unknown) {
+    return this.isRateLimited(e);
+  }
+  readsRetryAfter(e: unknown) {
+    return this.retryAfterSeconds(e);
+  }
+  quotaKey() {
+    return this.rateLimitKey();
+  }
+}
+
+describe('BaseLLMProvider rate-limit hooks', () => {
+  const provider = new ProbeProvider({ apiKey: 'k', model: 'some-model' });
+
+  it('recognises 429 wherever the transport put it', () => {
+    assert.equal(provider.saysRateLimited({ response: { status: 429 } }), true);
+    assert.equal(provider.saysRateLimited({ status: 429 }), true);
+    assert.equal(provider.saysRateLimited({ statusCode: 429 }), true);
+  });
+
+  it('treats other failures as failures', () => {
+    assert.equal(
+      provider.saysRateLimited({ response: { status: 500 } }),
+      false,
+    );
+    assert.equal(provider.saysRateLimited(new Error('socket hang up')), false);
+  });
+
+  it('reads Retry-After as seconds', () => {
+    assert.equal(provider.readsRetryAfter(tooManyRequests('7')), 7);
+  });
+
+  it('reads Retry-After as an HTTP-date', () => {
+    const when = new Date(Date.now() + 5_000).toUTCString();
+    const seconds = provider.readsRetryAfter(tooManyRequests(when));
+    assert.ok(seconds !== undefined && seconds > 3 && seconds <= 6);
+  });
+
+  it('reads a Headers object as readily as a plain one', () => {
+    const headers = new Headers({ 'Retry-After': '3' });
+    assert.equal(
+      provider.readsRetryAfter({ response: { status: 429, headers } }),
+      3,
+    );
+  });
+
+  it('says nothing when the server said nothing', () => {
+    assert.equal(provider.readsRetryAfter(tooManyRequests()), undefined);
+  });
+
+  it('keys the quota by model, since that is how limits are metered', () => {
+    assert.match(provider.quotaKey(), /some-model/);
+  });
+});

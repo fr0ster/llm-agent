@@ -2237,6 +2237,34 @@ The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → Ret
 
 `RetryLlm` is now enabled by default (3 attempts, 2s backoff, retry on 429/500/502/503).
 
+**429 is handled below this chain.** Every provider built on `BaseLLMProvider`
+answers a rate limit itself, where the HTTP response is still intact: it honours
+`Retry-After`, backs off with full jitter, and holds one shared gate per model so
+concurrent callers do not each rediscover the same limit. Defaults are 5 attempts
+or 60 seconds of total waiting, whichever comes first — the caps SAP AI Core
+documents. Tune or disable it per provider through `rateLimit` on the provider
+config:
+
+```ts
+new OpenAIProvider({
+  apiKey,
+  model: 'gpt-4o',
+  rateLimit: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
+  // rateLimit: { enabled: false } — pass every 429 straight to the caller
+});
+```
+
+When that policy gives up it marks the error, and `RetryLlm` passes a marked
+error through untouched rather than multiplying attempts against a closed quota.
+Consumers read the fact instead of matching digits in a message:
+
+```ts
+import { findRateLimit } from '@mcp-abap-adt/llm-agent';
+
+const limit = findRateLimit(error);
+if (limit) console.warn(`throttled after ${limit.attempts} attempts`, limit.retryAfterSeconds);
+```
+
 ## IMetrics / ITracer / ISessionManager / IToolCache
 
 ### IMetrics
