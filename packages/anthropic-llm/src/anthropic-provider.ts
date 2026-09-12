@@ -41,6 +41,11 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     });
   }
 
+  /** The resolved endpoint, default filled in — see `quotaEndpoint`. */
+  protected override quotaEndpoint(): string {
+    return this.client.defaults.baseURL ?? 'default';
+  }
+
   async chat(
     messages: Message[],
     tools?: unknown[],

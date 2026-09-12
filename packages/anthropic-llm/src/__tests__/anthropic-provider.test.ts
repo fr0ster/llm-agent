@@ -383,3 +383,31 @@ describe('AnthropicProvider — rate limiting', () => {
     }
   });
 });
+
+describe('AnthropicProvider — one quota per account and endpoint', () => {
+  // @ts-expect-error — protected hook, read for test
+  const keyOf = (p: AnthropicProvider) => p.rateLimitKey() as string;
+  const model = 'claude-3-5-sonnet-20241022';
+
+  it('treats an omitted endpoint and the explicit default as one quota', () => {
+    const implicit = new AnthropicProvider({ apiKey: 'sk-a', model });
+    const explicit = new AnthropicProvider({
+      apiKey: 'sk-a',
+      model,
+      baseURL: 'https://api.anthropic.com/v1',
+    });
+    assert.equal(keyOf(implicit), keyOf(explicit));
+  });
+
+  it('separates two API keys', () => {
+    assert.notEqual(
+      keyOf(new AnthropicProvider({ apiKey: 'sk-a', model })),
+      keyOf(new AnthropicProvider({ apiKey: 'sk-b', model })),
+    );
+  });
+
+  it('never puts the credential itself in the key', () => {
+    const p = new AnthropicProvider({ apiKey: 'sk-secret-value', model });
+    assert.ok(!keyOf(p).includes('sk-secret-value'));
+  });
+});

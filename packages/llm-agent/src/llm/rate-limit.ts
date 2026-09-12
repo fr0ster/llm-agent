@@ -139,7 +139,13 @@ const gates = new Map<string, GateEntry>();
  * doing its job, and a recently used one may still be someone's in-flight call.
  */
 export const GATE_IDLE_TTL_MS = 10 * 60_000;
-export const GATE_SOFT_LIMIT = 500;
+/**
+ * How many quotas the registry keeps. Enforced by evicting OPEN gates, so a
+ * process holding more than this many live pauses at once can exceed it — a
+ * held gate is a real pause and is never dropped. Evicting an open one costs
+ * nothing: it carries no deadline, and the next call mints an equivalent.
+ */
+export const GATE_LIMIT = 500;
 
 /** The gate for one quota. Shared across every provider instance in the process. */
 export function gateFor(key: string): RateLimitGate {
@@ -149,17 +155,17 @@ export function gateFor(key: string): RateLimitGate {
     existing.lastUsed = now;
     return existing.gate;
   }
-  if (gates.size >= GATE_SOFT_LIMIT) pruneRateLimitGates(now);
+  if (gates.size >= GATE_LIMIT) reclaimGates(now);
   const entry: GateEntry = { gate: new RateLimitGate(), lastUsed: now };
   gates.set(key, entry);
   return entry.gate;
 }
 
 /**
- * Reclaim gates that are open and long idle. Runs on its own when the registry
- * passes the soft limit; exported so a long-lived host can run it on a timer,
- * and so the reclaim can be tested at a chosen `now` without waiting ten
- * minutes.
+ * Reclaim gates that are open and long idle. Exported so a long-lived host can
+ * run it on a timer, and so the reclaim can be tested at a chosen `now` without
+ * waiting ten minutes. It frees only what is certainly stale; the size bound is
+ * enforced separately, by `reclaimGates`.
  */
 export function pruneRateLimitGates(now: number = Date.now()): void {
   for (const [key, entry] of gates) {
@@ -169,6 +175,34 @@ export function pruneRateLimitGates(now: number = Date.now()): void {
     ) {
       gates.delete(key);
     }
+  }
+}
+
+/**
+ * Hold the registry at `GATE_LIMIT`.
+ *
+ * Age alone is not a bound: a burst of per-request model overrides mints keys
+ * far faster than the ten-minute idle rule retires them, and the map grows for
+ * as long as the burst lasts. So once the stale entries are gone, the least
+ * recently used OPEN gates go too, oldest first, until the registry is back
+ * under the limit.
+ *
+ * Only open gates are evicted. One still holding a pause is the pause, and
+ * dropping it would release every caller it was holding. An open gate holds
+ * nothing — a caller that kept a reference and penalises it afterwards loses
+ * coordination for that one window, and nothing more.
+ */
+function reclaimGates(now: number): void {
+  pruneRateLimitGates(now);
+  if (gates.size < GATE_LIMIT) return;
+
+  const open = [...gates]
+    .filter(([, entry]) => entry.gate.remaining(now) === 0)
+    .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+
+  for (const [key] of open) {
+    if (gates.size < GATE_LIMIT) return;
+    gates.delete(key);
   }
 }
 

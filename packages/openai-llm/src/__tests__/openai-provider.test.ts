@@ -678,6 +678,20 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
     assert.notEqual(keyOf(one), keyOf(proj));
   });
 
+  it('treats an omitted endpoint and the explicit default as one quota', () => {
+    const implicit = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    const explicit = new OpenAIProvider({
+      apiKey: 'sk-a',
+      model: 'gpt-4o',
+      baseURL: 'https://api.openai.com/v1',
+    });
+    assert.equal(
+      keyOf(implicit),
+      keyOf(explicit),
+      'the same server metered as two quotas would stop coordinating',
+    );
+  });
+
   it('gives the same account the same key, so the pause is actually shared', () => {
     const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
     const b = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });

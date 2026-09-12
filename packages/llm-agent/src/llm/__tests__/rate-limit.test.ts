@@ -9,7 +9,7 @@ import { BaseLLMProvider } from '../base-llm-provider.js';
 import {
   DEFAULT_RATE_LIMIT_POLICY,
   GATE_IDLE_TTL_MS,
-  GATE_SOFT_LIMIT,
+  GATE_LIMIT,
   gateFor,
   isRateLimitedError,
   preserveRateLimit,
@@ -278,9 +278,28 @@ describe('the gate registry', () => {
     assert.equal(rateLimitGateCount(), 1);
   });
 
-  it('does not grow without bound across many per-request models', () => {
+  it('stays bounded through a burst faster than the idle rule retires', () => {
+    // The reported failure: 1500 keys inside the TTL left 1500 gates behind.
     resetRateLimitGates();
-    for (let i = 0; i < GATE_SOFT_LIMIT; i += 1) gateFor(`model-${i}`);
+    for (let i = 0; i < GATE_LIMIT * 3; i += 1) gateFor(`burst-${i}`);
+    assert.ok(
+      rateLimitGateCount() <= GATE_LIMIT,
+      `bounded by the limit, saw ${rateLimitGateCount()}`,
+    );
+  });
+
+  it('evicts the least recently used first, and never a held gate', () => {
+    resetRateLimitGates();
+    gateFor('held').penalise(GATE_IDLE_TTL_MS * 2);
+    gateFor('oldest');
+    for (let i = 0; i < GATE_LIMIT * 2; i += 1) gateFor(`burst-${i}`);
+    assert.ok(gateFor('held').remaining() > 0, 'a live pause survives a burst');
+    assert.ok(rateLimitGateCount() <= GATE_LIMIT + 1);
+  });
+
+  it('reclaims idle gates on demand as well', () => {
+    resetRateLimitGates();
+    for (let i = 0; i < GATE_LIMIT; i += 1) gateFor(`model-${i}`);
     gateFor('held').penalise(GATE_IDLE_TTL_MS * 2);
     // Ten minutes later, none of those one-off models has been used again.
     pruneRateLimitGates(Date.now() + GATE_IDLE_TTL_MS + 1);

@@ -100,9 +100,20 @@ export abstract class BaseLLMProvider<
    */
   protected rateLimitScope(): string {
     return [
-      this.config.baseURL ?? 'default',
+      this.quotaEndpoint(),
       this.credentialFingerprint(this.config.apiKey),
     ].join('|');
+  }
+
+  /**
+   * The endpoint this provider actually reaches — the RESOLVED one, not the
+   * configured one. A provider left to its default and a provider handed that
+   * same default explicitly talk to the same server and share its limit; read
+   * from the config alone they would look like two quotas and stop
+   * coordinating. Override wherever a default is filled in.
+   */
+  protected quotaEndpoint(): string {
+    return this.config.baseURL ?? 'default';
   }
 
   /** Available to subclasses building their own scope out of other fields. */

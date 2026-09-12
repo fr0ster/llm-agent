@@ -69,6 +69,15 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     ].join('|');
   }
 
+  /**
+   * The axios client already holds the resolved endpoint, default filled in —
+   * and it is the one every request goes to. Subclasses that only change the
+   * default (DeepSeek, Ollama) are covered by reading it here.
+   */
+  protected override quotaEndpoint(): string {
+    return this.client.defaults.baseURL ?? 'default';
+  }
+
   async chat(
     messages: Message[],
     tools?: unknown[],
