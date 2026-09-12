@@ -34,7 +34,7 @@ Only consumers who adopted `rateLimit` in the hours 22.2.0 existed are affected.
 | `findRateLimit(error)` | `findThrottled(error)` |
 | `error.rateLimited` | `error.throttled` |
 | `RateLimitPolicy`, `RateLimitedError` | `ThrottlePolicy`, `ThrottledError` |
-| `import … from '…/llm/rate-limit.js'` | the package root, or `'…/llm/throttle.js'` |
+| any deep import of `llm/rate-limit.js` | `@mcp-abap-adt/llm-agent` — the package exports only `"."`, and the contract has moved to `interfaces/throttle-strategy.ts` |
 
 There is no replacement for `enabled: false`, because turning the handling off
 also stopped marking the quota closed for every other caller in the process —
