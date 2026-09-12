@@ -33,6 +33,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`maxAttempts` is checked as a count, not a duration.** It includes the first
+  attempt, so `0` behaved as `1` and `1.5` as `2` — each meaning something other
+  than what it said. A positive integer is now required. The three durations
+  beside it still accept zero, where that is a real choice.
+
 - **The error says which cap ended it** — `reason` is `attempts`, `budget`, or
   `gate` (the pause was already longer than the budget, so no request was
   sent). The two are fixed by opposite settings, and a consumer that cannot
@@ -52,7 +57,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   typed from the real config, the next field added upstream cannot be silently
   lost here.
 
-- **`llm.whenThrottled` is configurable on the server too** (#285). The policy
+- **`llm.whenThrottled` is configurable on the server too** (#285), in the
+  named-map form as well, where values are normalised and not merely checked —
+  `${ENV_VAR}` substitution leaves numbers as strings, and a custom strategy
+  would be handed one while the type promised a number. The policy
   crossed two more hand-written field lists on the way from YAML to a provider:
   the flat `llm:` allow-list in `resolveLlmSection`, and the object
   `makeDefaultRoleLlm` builds for `makeLlm`. Both now carry it, and both

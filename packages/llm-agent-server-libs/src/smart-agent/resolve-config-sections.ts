@@ -59,17 +59,30 @@ export function resolveLlmSection(
 function validateLlmMap(
   map: Record<string, SmartServerLlmConfig>,
 ): Record<string, SmartServerLlmConfig> {
+  const out: Record<string, SmartServerLlmConfig> = {};
   for (const [role, entry] of Object.entries(map ?? {})) {
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== 'object') {
+      out[role] = entry;
+      continue;
+    }
     const raw = entry as unknown as Record<string, unknown>;
-    if (raw.whenThrottled !== undefined) {
-      whenThrottledOption(raw.whenThrottled, `llm.${role}.whenThrottled`);
-    }
-    if (raw.maxTokens !== undefined) {
-      positiveIntOption(raw.maxTokens, `llm.${role}.maxTokens`);
-    }
+    // The normalised values are written back, not merely checked. `${ENV_VAR}`
+    // substitution leaves numbers as strings, and the resolved config is typed
+    // as though they were numbers: the built-in strategy happens to coerce them
+    // in arithmetic, a custom one would be handed a string and told it was a
+    // number. Validating without keeping the result is checking the door and
+    // then walking through the window.
+    out[role] = {
+      ...(entry as SmartServerLlmConfig),
+      ...(raw.whenThrottled !== undefined
+        ? whenThrottledOption(raw.whenThrottled, `llm.${role}.whenThrottled`)
+        : {}),
+      ...(raw.maxTokens !== undefined
+        ? positiveIntOption(raw.maxTokens, `llm.${role}.maxTokens`)
+        : {}),
+    };
   }
-  return map;
+  return out;
 }
 
 /**
@@ -119,8 +132,21 @@ function whenThrottledOption(
   const policy: Partial<ThrottlePolicy> = {};
   for (const [key, v] of Object.entries(raw)) {
     if (v === undefined || v === null) continue;
+    // A count, not a duration: fractional attempts do not exist, and zero of
+    // them is not "none" — the first attempt is included in the total, so 0
+    // behaves as 1 and 1.5 as 2. Silently meaning something other than what it
+    // says is the whole failure mode this block exists to prevent.
+    if (key === 'maxAttempts') {
+      const n = Number(v);
+      if (!Number.isSafeInteger(n) || n < 1) {
+        throw new Error(
+          `Invalid ${path}.maxAttempts: expected a positive integer, got ${JSON.stringify(v)}`,
+        );
+      }
+      policy.maxAttempts = n;
+      continue;
+    }
     if (
-      key === 'maxAttempts' ||
       key === 'maxTotalWaitMs' ||
       key === 'baseDelayMs' ||
       key === 'maxDelayMs'

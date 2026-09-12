@@ -60,6 +60,30 @@ describe('llm.whenThrottled from YAML', () => {
     assert.equal(llmOf(yamlWith({}))?.whenThrottled, undefined);
   });
 
+  it('rejects an attempt count that is not a positive integer', () => {
+    // It is a count including the first attempt, so 0 would behave as 1 and
+    // 1.5 as 2 — each meaning something other than what it says.
+    for (const bad of [0, -1, 1.5, 'many']) {
+      assert.throws(
+        () =>
+          resolveSmartServerConfig(
+            {},
+            yamlWith({ whenThrottled: { maxAttempts: bad } }),
+            {},
+          ),
+        /Invalid llm\.whenThrottled\.maxAttempts/,
+        `expected a config error for ${JSON.stringify(bad)}`,
+      );
+    }
+  });
+
+  it('accepts a zero budget, which is a real choice', () => {
+    // Unlike attempts, the durations are genuinely allowed to be zero: it means
+    // do not wait at all, and the shared pause is still marked.
+    const llm = llmOf(yamlWith({ whenThrottled: { maxTotalWaitMs: 0 } }));
+    assert.deepEqual(llm?.whenThrottled, { maxTotalWaitMs: 0 });
+  });
+
   it('fails fast on a budget that is not a number', () => {
     assert.throws(
       () =>
@@ -132,6 +156,36 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
         ),
       /Invalid llm\.main\.whenThrottled\.maxTotalWaitMs/,
     );
+  });
+
+  it('normalises the values it checks, not just checks them', () => {
+    // `${ENV_VAR}` substitution leaves numbers as strings, and the resolved
+    // config is typed as though they were numbers. A custom strategy would be
+    // handed a string and told it was a number.
+    const llm = resolveSmartServerConfig(
+      {},
+      mapYaml({
+        whenThrottled: { maxAttempts: '3', maxTotalWaitMs: '20000' },
+        maxTokens: '8192',
+      }),
+      {},
+    ).llm as Record<
+      string,
+      { whenThrottled?: Record<string, unknown>; maxTokens?: unknown }
+    >;
+    assert.strictEqual(llm.main?.whenThrottled?.maxAttempts, 3);
+    assert.strictEqual(llm.main?.whenThrottled?.maxTotalWaitMs, 20000);
+    assert.strictEqual(llm.main?.maxTokens, 8192);
+  });
+
+  it('leaves the rest of the entry untouched', () => {
+    const llm = resolveSmartServerConfig(
+      {},
+      mapYaml({ whenThrottled: { maxAttempts: 2 } }),
+      {},
+    ).llm as Record<string, { model?: string; provider?: string }>;
+    assert.equal(llm.main?.model, 'qwen2.5');
+    assert.equal(llm.main?.provider, 'ollama');
   });
 
   it('fails fast on a bad maxTokens under a role', () => {
