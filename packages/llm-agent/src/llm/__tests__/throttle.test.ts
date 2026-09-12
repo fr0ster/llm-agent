@@ -6,13 +6,15 @@ import type {
   LLMResponse,
   Message,
 } from '../../interfaces/index.js';
-import { BaseLLMProvider } from '../base-llm-provider.js';
 import {
   DEFAULT_THROTTLE_POLICY,
+  type IThrottleStrategy,
+} from '../../interfaces/throttle-strategy.js';
+import { BaseLLMProvider } from '../base-llm-provider.js';
+import {
   GATE_IDLE_TTL_MS,
   GATE_LIMIT,
   gateFor,
-  type IThrottleStrategy,
   isThrottledError,
   leaseQuotaGate,
   preserveThrottled,

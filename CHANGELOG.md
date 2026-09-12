@@ -38,6 +38,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   than what it said. A positive integer is now required. The three durations
   beside it still accept zero, where that is a real choice.
 
+- **The throttle contract lives with the other seams.** `IThrottleStrategy`,
+  `ThrottleContext`, `ThrottleDecision`, `ThrottlePolicy` and
+  `DefaultThrottleStrategy` are in `interfaces/throttle-strategy.ts`, beside
+  `IWaitStrategy` and the six other `*-strategy` contracts, rather than in the
+  implementation module. Same names from the package root either way; a
+  consumer reading `interfaces/` now finds it where the convention says it is.
+
 - **The error says which cap ended it** — `reason` is `attempts`, `budget`, or
   `gate` (the pause was already longer than the budget, so no request was
   sent). The two are fixed by opposite settings, and a consumer that cannot
