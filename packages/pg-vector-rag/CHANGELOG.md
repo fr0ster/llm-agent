@@ -1,5 +1,18 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 23.0.0
+
+Throttle handling, named for what it does and always on (#285, #286).
+
+`rateLimit` is now `whenThrottled`. The old name read as a limit we impose; it
+is the opposite — the rules for what we do when a server limits us. The `enabled`
+switch is gone, because sending another request into a quota the server has just
+closed is never the better answer. A consumer needing different mechanics
+supplies an `IThrottleStrategy`.
+
+The policy 22.2.0 announced is also, finally, reachable: `makeLlm` and the
+server config forward it, in the named-map form as well.
+
 ## 22.2.0
 
 Rate-limit handling for every LLM provider (#282, #283).
