@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import {
+  isRateLimitedError,
+  type Message,
+  resetRateLimitGates,
+} from '@mcp-abap-adt/llm-agent';
 import { SapCoreAIProvider } from '../sap-core-ai-provider.js';
 
 // ---------------------------------------------------------------------------
@@ -257,5 +261,163 @@ describe('SapCoreAIProvider — createClient', () => {
     // @ts-expect-error — access private method for testing
     const createClient = p.createClient.bind(p);
     assert.equal(typeof createClient, 'function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (issue #282)
+// ---------------------------------------------------------------------------
+
+const completion = (text: string) => ({
+  getToolCalls: () => undefined,
+  getContent: () => text,
+  getFinishReason: () => 'stop',
+  getTokenUsage: () => undefined,
+});
+
+const tooManyRequests = (retryAfter?: string) =>
+  Object.assign(new Error('Request failed with status code 429'), {
+    response: {
+      status: 429,
+      headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+      data: 'rate limit exceeded',
+    },
+  });
+
+describe('SapCoreAIProvider — rate limiting', () => {
+  const fast = { baseDelayMs: 1, maxDelayMs: 2 };
+
+  it('retries a 429 and returns the eventual answer', async () => {
+    resetRateLimitGates();
+    const provider = new SapCoreAIProvider({
+      model: 'anthropic--claude-4.5-sonnet',
+      rateLimit: fast,
+    });
+    let calls = 0;
+    // @ts-expect-error — stub the SDK client for test
+    provider.createClient = () => ({
+      chatCompletion: async () => {
+        calls += 1;
+        if (calls < 3) throw tooManyRequests('0.01');
+        return completion('ok');
+      },
+    });
+    const res = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(res.content, 'ok');
+    assert.equal(calls, 3);
+  });
+
+  it('keeps the 429 readable as a fact once it gives up', async () => {
+    resetRateLimitGates();
+    const provider = new SapCoreAIProvider({
+      model: 'anthropic--claude-4.5-sonnet',
+      rateLimit: { ...fast, maxAttempts: 2 },
+    });
+    // @ts-expect-error — stub the SDK client for test
+    provider.createClient = () => ({
+      chatCompletion: async () => {
+        throw tooManyRequests('0.01');
+      },
+    });
+    try {
+      await provider.chat([{ role: 'user', content: 'hi' }]);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(isRateLimitedError(e));
+      assert.equal(e.attempts, 2);
+      assert.equal(e.retryAfterSeconds, 0.01);
+      assert.match((e as Error).message, /SAP AI SDK API error/);
+    }
+  });
+
+  it('does not retry an ordinary failure', async () => {
+    resetRateLimitGates();
+    const provider = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      rateLimit: fast,
+    });
+    let calls = 0;
+    // @ts-expect-error — stub the SDK client for test
+    provider.createClient = () => ({
+      chatCompletion: async () => {
+        calls += 1;
+        throw new Error('deployment not found');
+      },
+    });
+    await assert.rejects(
+      provider.chat([{ role: 'user', content: 'hi' }]),
+      /deployment not found/,
+    );
+    assert.equal(calls, 1);
+  });
+
+  it('keys the quota by resource group as well as model', () => {
+    const one = new SapCoreAIProvider({ model: 'gpt-4o', resourceGroup: 'a' });
+    const two = new SapCoreAIProvider({ model: 'gpt-4o', resourceGroup: 'b' });
+    // @ts-expect-error — protected hook, read for test
+    assert.notEqual(one.rateLimitKey(), two.rateLimitKey());
+    // @ts-expect-error — protected hook, read for test
+    assert.match(one.rateLimitKey(), /gpt-4o/);
+  });
+});
+
+describe('SapCoreAIProvider — one quota per service instance', () => {
+  const creds = (servicUrl: string, clientId: string) => ({
+    servicUrl,
+    clientId,
+    clientSecret: 'secret',
+    tokenServiceUrl: 'https://uaa.example/oauth/token',
+  });
+  // @ts-expect-error — protected hook, read for test
+  const keyOf = (p: SapCoreAIProvider) => p.rateLimitKey() as string;
+
+  it('separates two service instances', () => {
+    const a = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-one'),
+    });
+    const b = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.two.aicore', 'sb-two'),
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('separates two tenants on one AI Core endpoint', () => {
+    const a = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-tenant-a'),
+    });
+    const b = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-tenant-b'),
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('reads one service URL written several ways as one instance', () => {
+    const a = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore/v2/', 'sb-one'),
+    });
+    const b = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://API.One.aicore/v2', 'sb-one'),
+    });
+    assert.equal(keyOf(a), keyOf(b));
+  });
+
+  it('treats the env service key as one instance for the process', () => {
+    const a = new SapCoreAIProvider({ model: 'gpt-4o' });
+    const b = new SapCoreAIProvider({ model: 'gpt-4o' });
+    assert.equal(keyOf(a), keyOf(b));
+  });
+
+  it('never puts the client secret in the key', () => {
+    const p = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      credentials: creds('https://api.one.aicore', 'sb-one'),
+    });
+    assert.ok(!keyOf(p).includes('secret'));
   });
 });

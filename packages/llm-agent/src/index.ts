@@ -12,6 +12,20 @@ export * from './external-results.js';
 export { assertClientDescriptors } from './interfaces/assert-client-descriptors.js';
 export * from './interfaces/index.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
+export {
+  DEFAULT_RATE_LIMIT_POLICY,
+  findRateLimit,
+  gateFor,
+  isRateLimitedError,
+  preserveRateLimit,
+  type RateLimitedError,
+  RateLimitGate,
+  type RateLimitPolicy,
+  type RateLimitRetryOptions,
+  rateLimitGateCount,
+  resetRateLimitGates,
+  runWithRateLimitRetry,
+} from './llm/rate-limit.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';
 export * from './rag/index.js';
 export * from './types.js';

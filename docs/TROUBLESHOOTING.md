@@ -231,6 +231,31 @@ rag:
 - Reduce the MCP tool count (limit the connected MCP server's exposed tool set).
 - Use a less rate-limited embedding-model deployment.
 
+### Chat requests fail with `429` under concurrent load
+
+**Symptom.** Under real traffic the agent returns `SAP AI SDK API error: … 429`
+(or `OpenAI API error: … 429`, or the Anthropic equivalent). One user at a time
+is fine; several at once are not.
+
+**Cause.** The limit is per model per tenant, and every caller sharing one
+provider account shares it. Before the provider-level policy landed, each
+concurrent call met the closed quota separately, spent its own attempts against
+it, and the window kept being pushed out.
+
+**Fix.** Providers built on `BaseLLMProvider` now back off with jitter, honour
+`Retry-After`, and hold one shared gate per model so a 429 pauses every caller on
+that quota, not only the one that hit it. Defaults: 5 attempts or 60 seconds of
+waiting. Tune per provider:
+
+```ts
+new SapCoreAIProvider({ model, rateLimit: { maxAttempts: 3, maxTotalWaitMs: 30_000 } });
+```
+
+If 429s still surface, the quota is genuinely too small: the surfaced error
+carries `rateLimited` and `retryAfterSeconds` (read them with `findRateLimit`),
+so the number to compare against your traffic is right there. Spread callers
+across resource groups, or raise the model's limit.
+
 ### `/health` reports `"status": "degraded"` with a `toolCatalog` block
 
 **Symptom.**

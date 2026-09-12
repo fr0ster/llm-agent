@@ -3,6 +3,7 @@
  */
 
 import type { LlmUsage } from './interfaces/types.js';
+import type { RateLimitPolicy } from './llm/rate-limit.js';
 
 export interface Message {
   /**
@@ -81,6 +82,13 @@ export interface LLMProviderConfig {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  /**
+   * How this provider answers HTTP 429. Omit for the shared default: back off
+   * with jitter, honour `Retry-After`, give up after 5 attempts or 60 seconds
+   * of waiting. Set `{ enabled: false }` to pass every 429 straight to the
+   * caller.
+   */
+  rateLimit?: Partial<RateLimitPolicy>;
 }
 
 export interface LLMCallOptions {

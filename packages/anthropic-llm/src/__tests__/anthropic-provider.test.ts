@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { type Message, resetRateLimitGates } from '@mcp-abap-adt/llm-agent';
 import { AnthropicProvider } from '../anthropic-provider.js';
 
 // ---------------------------------------------------------------------------
@@ -305,5 +305,109 @@ describe('AnthropicProvider — chat() usage', () => {
       completionTokens: 25,
       totalTokens: 40,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (issue #282)
+// ---------------------------------------------------------------------------
+
+describe('AnthropicProvider — rate limiting', () => {
+  const fast = { baseDelayMs: 1, maxDelayMs: 2 };
+
+  it('retries a 429 on chat() and returns the eventual answer', async () => {
+    resetRateLimitGates();
+    const provider = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+      rateLimit: fast,
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      if (calls < 2) {
+        throw Object.assign(new Error('429'), {
+          isAxiosError: true,
+          response: { status: 429, headers: {}, data: {} },
+        });
+      }
+      return {
+        data: {
+          content: [{ type: 'text', text: 'hello' }],
+          stop_reason: 'end_turn',
+        },
+      };
+    };
+    const res = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(res.content, 'hello');
+    assert.equal(calls, 2);
+  });
+
+  it('retries a 429 on the streaming path, which runs on fetch', async () => {
+    resetRateLimitGates();
+    const provider = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+      rateLimit: fast,
+    });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls < 2) {
+        return new Response('slow down', {
+          status: 429,
+          headers: { 'retry-after': '0.01' },
+        });
+      }
+      const body = [
+        'event: content_block_delta',
+        'data: {"delta":{"type":"text_delta","text":"hi"}}',
+        '',
+        '',
+      ].join('\n');
+      return new Response(body, { status: 200 });
+    }) as typeof fetch;
+    try {
+      const chunks: string[] = [];
+      for await (const c of provider.streamChat([
+        { role: 'user', content: 'hi' },
+      ])) {
+        if (c.content) chunks.push(c.content);
+      }
+      assert.deepEqual(chunks, ['hi']);
+      assert.equal(calls, 2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('AnthropicProvider — one quota per account and endpoint', () => {
+  // @ts-expect-error — protected hook, read for test
+  const keyOf = (p: AnthropicProvider) => p.rateLimitKey() as string;
+  const model = 'claude-3-5-sonnet-20241022';
+
+  it('treats an omitted endpoint and the explicit default as one quota', () => {
+    const implicit = new AnthropicProvider({ apiKey: 'sk-a', model });
+    const explicit = new AnthropicProvider({
+      apiKey: 'sk-a',
+      model,
+      baseURL: 'https://api.anthropic.com/v1',
+    });
+    assert.equal(keyOf(implicit), keyOf(explicit));
+  });
+
+  it('separates two API keys', () => {
+    assert.notEqual(
+      keyOf(new AnthropicProvider({ apiKey: 'sk-a', model })),
+      keyOf(new AnthropicProvider({ apiKey: 'sk-b', model })),
+    );
+  });
+
+  it('never puts the credential itself in the key', () => {
+    const p = new AnthropicProvider({ apiKey: 'sk-secret-value', model });
+    assert.ok(!keyOf(p).includes('sk-secret-value'));
   });
 });

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import {
+  gateFor,
+  isRateLimitedError,
+  type Message,
+  resetRateLimitGates,
+} from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '../openai-provider.js';
 
 // ---------------------------------------------------------------------------
@@ -498,5 +503,235 @@ describe('OpenAIProvider — streamChat() usage', () => {
       completionTokens: 1,
       totalTokens: 6,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (issue #282)
+// ---------------------------------------------------------------------------
+
+const tooManyRequests = (retryAfter?: string) =>
+  Object.assign(new Error('Request failed with status code 429'), {
+    isAxiosError: true,
+    response: {
+      status: 429,
+      headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+      data: { error: { message: 'rate limit exceeded' } },
+    },
+  });
+
+describe('OpenAIProvider — rate limiting', () => {
+  const fast = { baseDelayMs: 1, maxDelayMs: 2 };
+
+  it('retries a 429 and returns the eventual answer', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: fast,
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      if (calls < 3) throw tooManyRequests();
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    const res = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(res.content, 'ok');
+    assert.equal(calls, 3);
+  });
+
+  it('keeps the 429 readable as a fact once it gives up', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: { ...fast, maxAttempts: 2 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('3');
+    };
+    try {
+      await provider.chat([{ role: 'user', content: 'hi' }]);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.ok(isRateLimitedError(e));
+      assert.equal(e.attempts, 2);
+      assert.equal(e.retryAfterSeconds, 3);
+      assert.match((e as Error).message, /OpenAI API error/);
+    }
+  });
+
+  it('does not retry an ordinary failure', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: fast,
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      throw Object.assign(new Error('server exploded'), {
+        isAxiosError: true,
+        response: { status: 500, headers: {}, data: {} },
+      });
+    };
+    await assert.rejects(
+      provider.chat([{ role: 'user', content: 'hi' }]),
+      /server exploded/,
+    );
+    assert.equal(calls, 1);
+  });
+
+  it('passes a 429 straight through when the policy is disabled', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: { enabled: false },
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      throw tooManyRequests();
+    };
+    await assert.rejects(provider.chat([{ role: 'user', content: 'hi' }]));
+    assert.equal(calls, 1);
+  });
+});
+
+describe('OpenAIProvider — the quota a per-request model spends', () => {
+  it('gates an override model apart from the configured one', async () => {
+    resetRateLimitGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      rateLimit: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 2 },
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      throw tooManyRequests('5');
+    };
+    await assert.rejects(
+      provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+        model: 'gpt-5',
+      }),
+    );
+    const keyOf = (m: string) =>
+      // @ts-expect-error — protected hook, read for test
+      provider.rateLimitKey(m) as string;
+    assert.ok(
+      gateFor(keyOf('gpt-5')).remaining() > 0,
+      'the throttled model is held',
+    );
+    assert.equal(
+      gateFor(keyOf('gpt-4o')).remaining(),
+      0,
+      'a model that was never called must not be held',
+    );
+  });
+});
+
+describe('OpenAIProvider — one quota per account and endpoint', () => {
+  // @ts-expect-error — protected hook, read for test
+  const keyOf = (p: OpenAIProvider) => p.rateLimitKey() as string;
+
+  it('separates two API keys on the same endpoint', () => {
+    const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    const b = new OpenAIProvider({ apiKey: 'sk-b', model: 'gpt-4o' });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('separates two endpoints on the same key', () => {
+    const a = new OpenAIProvider({
+      apiKey: 'sk-a',
+      model: 'gpt-4o',
+      baseURL: 'https://api.openai.com/v1',
+    });
+    const b = new OpenAIProvider({
+      apiKey: 'sk-a',
+      model: 'gpt-4o',
+      baseURL: 'https://my-gateway.internal/v1',
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('separates organizations and projects, which is how OpenAI meters', () => {
+    const base = { apiKey: 'sk-a', model: 'gpt-4o' };
+    const one = new OpenAIProvider({ ...base, organization: 'org-1' });
+    const two = new OpenAIProvider({ ...base, organization: 'org-2' });
+    const proj = new OpenAIProvider({
+      ...base,
+      organization: 'org-1',
+      project: 'p',
+    });
+    assert.notEqual(keyOf(one), keyOf(two));
+    assert.notEqual(keyOf(one), keyOf(proj));
+  });
+
+  it('treats an omitted endpoint and the explicit default as one quota', () => {
+    const implicit = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    const explicit = new OpenAIProvider({
+      apiKey: 'sk-a',
+      model: 'gpt-4o',
+      baseURL: 'https://api.openai.com/v1',
+    });
+    assert.equal(
+      keyOf(implicit),
+      keyOf(explicit),
+      'the same server metered as two quotas would stop coordinating',
+    );
+  });
+
+  it('reads one endpoint written several ways as one quota', () => {
+    const spellings = [
+      'https://api.openai.com/v1',
+      'https://api.openai.com/v1/',
+      'https://API.OpenAI.com/v1',
+      'https://api.openai.com:443/v1',
+    ].map((baseURL) =>
+      keyOf(new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o', baseURL })),
+    );
+    assert.equal(new Set(spellings).size, 1, spellings.join('\n'));
+  });
+
+  it('still separates endpoints that differ in more than spelling', () => {
+    const key = (baseURL: string) =>
+      keyOf(new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o', baseURL }));
+    assert.notEqual(
+      key('https://api.openai.com/v1'),
+      key('https://api.openai.com/v2'),
+    );
+    assert.notEqual(
+      key('https://api.openai.com/v1'),
+      key('https://api.openai.com:8443/v1'),
+    );
+    assert.notEqual(
+      key('https://gw.internal/v1?deployment=a'),
+      key('https://gw.internal/v1?deployment=b'),
+    );
+  });
+
+  it('gives the same account the same key, so the pause is actually shared', () => {
+    const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    const b = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    assert.equal(keyOf(a), keyOf(b));
+  });
+
+  it('never puts the credential itself in the key', () => {
+    const p = new OpenAIProvider({
+      apiKey: 'sk-secret-value',
+      model: 'gpt-4o',
+    });
+    assert.ok(!keyOf(p).includes('sk-secret-value'));
   });
 });

@@ -392,7 +392,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
       return { ok: true, value: parseProviderResponse(raw, onDiagnostic) };
     } catch (err) {
       if (err instanceof LlmError) return { ok: false, error: err };
-      return { ok: false, error: new LlmError(String(err)) };
+      return { ok: false, error: asLlmError(err) };
     }
   }
 
@@ -450,7 +450,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
       }
     } catch (err) {
       if (err instanceof LlmError) yield { ok: false, error: err };
-      else yield { ok: false, error: new LlmError(String(err)) };
+      else yield { ok: false, error: asLlmError(err) };
     }
   }
 
@@ -498,4 +498,19 @@ export class LlmAdapter implements ILlm, IModelProvider {
       };
     }
   }
+}
+
+/**
+ * Wrap a thrown provider error as an `LlmError` without losing what it knew.
+ *
+ * `String(err)` keeps the message and throws away everything structured — the
+ * HTTP status, and the rate-limit marker a provider attached. Both matter
+ * upstream: the retry decorator classifies on status, and re-retrying an
+ * already-exhausted rate limit only lengthens the outage. Keeping the original
+ * on `cause` leaves the message identical and the facts reachable.
+ */
+function asLlmError(err: unknown): LlmError {
+  const wrapped = new LlmError(String(err));
+  if (typeof err === 'object' && err !== null) wrapped.cause = err;
+  return wrapped;
 }

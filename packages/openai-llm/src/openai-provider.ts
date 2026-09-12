@@ -55,6 +55,29 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     });
   }
 
+  /**
+   * OpenAI meters per organization and per project, and an account reaching a
+   * different `baseURL` (Azure, a gateway, a local vLLM) is a different quota
+   * again. The base scope covers the endpoint and the credential; these two
+   * split one credential's traffic the way OpenAI bills it.
+   */
+  protected override rateLimitScope(): string {
+    return [
+      super.rateLimitScope(),
+      this.config.organization ?? '',
+      this.config.project ?? '',
+    ].join('|');
+  }
+
+  /**
+   * The axios client already holds the resolved endpoint, default filled in —
+   * and it is the one every request goes to. Subclasses that only change the
+   * default (DeepSeek, Ollama) are covered by reading it here.
+   */
+  protected override quotaEndpoint(): string {
+    return this.client.defaults.baseURL ?? 'default';
+  }
+
   async chat(
     messages: Message[],
     tools?: unknown[],
@@ -66,16 +89,20 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         options?.temperature ?? this.config.temperature ?? 0.7;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
-      const response = await this.client.post('/chat/completions', {
-        model,
-        messages: this.formatMessages(messages),
-        tools: tools && tools.length > 0 ? tools : undefined,
-        tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-        temperature,
-        ...this.getTokenLimitParam(model, maxTokens),
-        ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-        ...(options?.stop ? { stop: options.stop } : {}),
-      });
+      const response = await this.withRateLimitRetry(
+        () =>
+          this.client.post('/chat/completions', {
+            model,
+            messages: this.formatMessages(messages),
+            tools: tools && tools.length > 0 ? tools : undefined,
+            tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+            temperature,
+            ...this.getTokenLimitParam(model, maxTokens),
+            ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+            ...(options?.stop ? { stop: options.stop } : {}),
+          }),
+        { model },
+      );
 
       const choice = response.data.choices[0];
 
@@ -100,7 +127,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`${this.providerName} API error: ${message}`);
+      throw this.preserveRateLimit(
+        error,
+        new Error(`${this.providerName} API error: ${message}`),
+      );
     }
   }
 
@@ -115,21 +145,25 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         options?.temperature ?? this.config.temperature ?? 0.7;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
-      const response = await this.client.post(
-        '/chat/completions',
-        {
-          model,
-          messages: this.formatMessages(messages),
-          tools: tools && tools.length > 0 ? tools : undefined,
-          tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-          temperature,
-          ...this.getTokenLimitParam(model, maxTokens),
-          ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-          ...(options?.stop ? { stop: options.stop } : {}),
-          stream: true,
-          stream_options: { include_usage: true },
-        },
-        { responseType: 'stream' },
+      const response = await this.withRateLimitRetry(
+        () =>
+          this.client.post(
+            '/chat/completions',
+            {
+              model,
+              messages: this.formatMessages(messages),
+              tools: tools && tools.length > 0 ? tools : undefined,
+              tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+              temperature,
+              ...this.getTokenLimitParam(model, maxTokens),
+              ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+              ...(options?.stop ? { stop: options.stop } : {}),
+              stream: true,
+              stream_options: { include_usage: true },
+            },
+            { responseType: 'stream' },
+          ),
+        { model },
       );
 
       const stream = response.data;
@@ -203,7 +237,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`${this.providerName} Streaming error: ${message}`);
+      throw this.preserveRateLimit(
+        error,
+        new Error(`${this.providerName} Streaming error: ${message}`),
+      );
     }
   }
 

@@ -54,6 +54,8 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
   log?: {
     debug(message: string, meta?: Record<string, unknown>): void;
     error(message: string, meta?: Record<string, unknown>): void;
+    /** Optional: a rate-limit backoff is reported here when the logger has it. */
+    warn?(message: string, meta?: Record<string, unknown>): void;
   };
 }
 
@@ -187,9 +189,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // multiplexing. A shared keepAlive agent can cause SAP AI Core to route a
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
-      const callAgent = new https.Agent({ keepAlive: false, timeout: 60_000 });
-      const response = await client.chatCompletion(undefined, {
-        httpsAgent: callAgent,
+      const response = await this.withRateLimitRetry(() => {
+        const callAgent = new https.Agent({
+          keepAlive: false,
+          timeout: 60_000,
+        });
+        return client.chatCompletion(undefined, { httpsAgent: callAgent });
       });
 
       const toolCalls = response.getToolCalls();
@@ -247,7 +252,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               : JSON.stringify(axiosErr.response.data),
         });
       }
-      throw new Error(`SAP AI SDK API error: ${detail}`);
+      throw this.preserveRateLimit(
+        error,
+        new Error(`SAP AI SDK API error: ${detail}`),
+      );
     } finally {
       this.modelOverride = undefined;
     }
@@ -290,20 +298,40 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // Each stream gets its own agent to prevent connection multiplexing.
       // A shared keepAlive agent can cause SAP AI Core to route SSE chunks
       // to the wrong stream when multiple requests share the same XSUAA user.
-      const streamAgent = new https.Agent({
-        keepAlive: false,
-        timeout: 120_000,
-      });
       this.log?.debug('SAP AI SDK streamChat opening stream', {
         model,
         keepAlive: false,
         timeoutMs: 120_000,
       });
-      const streamResponse = await client.stream(
-        undefined,
-        undefined,
-        undefined,
-        { httpsAgent: streamAgent },
+      const streamResponse = await this.withRateLimitRetry(
+        () => {
+          const streamAgent = new https.Agent({
+            keepAlive: false,
+            timeout: 120_000,
+          });
+          return client.stream(undefined, undefined, undefined, {
+            httpsAgent: streamAgent,
+          });
+        },
+        {
+          onRetry: ({ attempt, delayMs, retryAfterSeconds }) => {
+            const log = this.log;
+            if (!log) return;
+            // Throttling is operationally significant, so it is not a debug
+            // line; loggers without warn still hear about it.
+            (log.warn ?? log.error).call(
+              log,
+              'SAP AI Core rate limit, backing off',
+              {
+                model,
+                resourceGroup: this.resourceGroup ?? 'default',
+                attempt,
+                delayMs: Math.round(delayMs),
+                retryAfterSeconds,
+              },
+            );
+          },
+        },
       );
       streamOpened = true;
       this.log?.debug('SAP AI SDK streamChat stream opened', {
@@ -397,7 +425,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         ...SapCoreAIProvider.summarizeStreamingError(error),
       });
       const detail = SapCoreAIProvider.extractErrorDetail(error);
-      throw new Error(`SAP AI SDK streaming error: ${detail}`);
+      throw this.preserveRateLimit(
+        error,
+        new Error(`SAP AI SDK streaming error: ${detail}`),
+      );
     } finally {
       this.modelOverride = undefined;
     }
@@ -469,6 +500,30 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   /**
    * Extract detailed error information from SAP AI SDK / axios errors.
    */
+  /**
+   * AI Core meters per model, and resource groups are isolated from one another
+   * — two groups on the same model do not share a limit, so both belong here.
+   */
+  protected override rateLimitKey(model?: string): string {
+    return `sap-ai-core:${this.rateLimitScope()}:${
+      this.resourceGroup ?? 'default'
+    }:${model ?? this.modelOverride ?? this.model}`;
+  }
+
+  /**
+   * The quota belongs to a service instance, not to the process. Two instances
+   * in one process — a tenant each, say — must not share a pause. Auth falls
+   * back to `AICORE_SERVICE_KEY` when no credentials are passed, and that is
+   * one instance for the whole process, so it is one scope.
+   */
+  protected override rateLimitScope(): string {
+    const creds = this.config.credentials;
+    if (!creds) return 'aicore-service-key';
+    return `${this.canonicalEndpoint(creds.servicUrl)}|${this.credentialFingerprint(
+      creds.clientId,
+    )}`;
+  }
+
   private static extractErrorDetail(error: unknown): string {
     if (error !== null && typeof error === 'object') {
       // biome-ignore lint/suspicious/noExplicitAny: axios error shape is untyped

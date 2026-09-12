@@ -9,6 +9,66 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Every LLM provider now answers HTTP 429** (#282). Until now no provider
+  handled a rate limit: the status collapsed into a message, and the only way
+  upstream to recognise one was to match the digits `429` in prose.
+
+  The policy is shared (`packages/llm-agent/src/llm/rate-limit.ts`) and applied
+  by `BaseLLMProvider`, which is where the HTTP response is still intact. It
+  follows what SAP AI Core documents under Rate Limit Management: no immediate
+  retry, exponential backoff with full jitter, `Retry-After` honoured when the
+  server sends one, and a cap on both retries and total waiting (defaults: 5
+  attempts, 60 seconds).
+
+  A rate limit belongs to the quota, not to the request that discovered it, so
+  the pause is held in a **process-wide gate keyed per quota** — one caller's
+  429 pauses every other caller on the same quota. Otherwise each concurrent
+  caller rediscovers the same closed limit and the window keeps being pushed
+  out, which is how a limit that should last one minute lasts several. A quota
+  is an account at an endpoint using one model: the key carries the endpoint, a
+  digest of the credential (never the credential itself), the provider's own
+  account fields — OpenAI organization and project, AI Core service instance and
+  resource group — and the model the call actually uses, per-request override
+  included. The endpoint is the resolved one, canonicalised, so a provider left to
+  its default and one handed that same default explicitly still share a pause —
+  as do two spellings of one URL that differ only by a trailing slash, host
+  casing or an explicit default port. Two tenants
+  sharing a process do not pause each other. The registry is bounded: gates that
+  are open and ten minutes idle are reclaimed, and past `GATE_LIMIT` the least
+  recently used idle ones are evicted too, so a burst of per-request models
+  cannot grow it. Never evicted: a gate holding a pause, or one a call is still
+  holding — a request is in flight until the server answers, and has no pause on
+  it until then.
+
+  Wired into `sap-aicore-llm`, `openai-llm` (and therefore `deepseek-llm` and
+  `ollama-llm`) and `anthropic-llm`, on both the chat and the streaming path.
+
+- **`rateLimit` on `LLMProviderConfig`** — per-provider overrides for the above,
+  `{ enabled: false }` to opt out entirely. `maxTotalWaitMs` bounds all the
+  waiting a call does, the time spent behind another caller's pause included: a
+  pause longer than what is left of the budget is refused outright, with a
+  `rateLimited` error carrying what remains of it, rather than holding a call
+  far past the wait it asked for.
+
+- **`findRateLimit(error)`**, exported from `@mcp-abap-adt/llm-agent`, returns
+  the `{ rateLimited, attempts, retryAfterSeconds }` facts from an error or
+  anywhere in its `cause` chain. Consumers read a fact instead of matching a
+  substring.
+
+### Changed
+
+- **`LlmAdapter` keeps the original error on `cause`** when wrapping a provider
+  failure as `LlmError`. The message is unchanged; what was lost before was
+  everything structured — the HTTP status and the rate-limit marker.
+
+- **`RetryLlm` no longer retries an exhausted rate limit.** When a provider's own
+  policy has already backed off, honoured `Retry-After` and given up, it marks
+  the error; retrying it here would multiply attempts against a quota that is
+  demonstrably closed. A provider with no policy of its own is unaffected — its
+  429s are still retried as before.
+
 ## [22.1.0] — 2026-09-07
 
 Dependency release. **Minor, not patch:** the declared floors of six runtime
