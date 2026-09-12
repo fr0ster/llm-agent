@@ -83,9 +83,11 @@ const sleep = async (ms: number, signal?: AbortSignal): Promise<void> => {
 
 /**
  * Per-caller spread on waking, so everyone released by one penalty does not
- * wake in the same millisecond and rebuild the herd the penalty broke up. It
- * doubles as the slack on a capped wait: without it, jitter truncated to an
- * exact budget could return a hair early and read as a refusal.
+ * wake in the same millisecond and rebuild the herd the penalty broke up.
+ *
+ * It is added to a wait, never to a budget: a wait capped at exactly the budget
+ * simply loses the spread, which costs nothing — a caller whose budget ends
+ * with the pause is leaving either way.
  */
 const WAKE_SPREAD_MS = 250;
 
@@ -142,6 +144,8 @@ export class RateLimitGate {
       // Out of the caller's budget with the gate still shut. It is told, not
       // held: `remaining()` still reports the hold, and the caller decides.
       if (budget <= 0) return;
+      // A timer that lands a hair early is simply waited out again on the next
+      // turn, which is why the cap needs no padding to be safe.
       await sleep(
         Math.min(left + Math.random() * WAKE_SPREAD_MS, budget),
         signal,
@@ -347,7 +351,9 @@ async function attemptWithGate<T>(
       const before = Date.now();
       // Capped as well as pre-checked: a pause that fits when the wait starts
       // can be extended past the budget by someone else's 429 while it runs.
-      await gate.waitUntilOpen(opts.signal, budgetLeft + WAKE_SPREAD_MS);
+      // The cap is the budget exactly. Padding it to protect the wake spread
+      // would make the budget the one thing it must not be — approximate.
+      await gate.waitUntilOpen(opts.signal, budgetLeft);
       waited += Date.now() - before;
       const stillShut = gate.remaining();
       if (stillShut > 0) throw outOfBudgetAtGate(stillShut, attempt);

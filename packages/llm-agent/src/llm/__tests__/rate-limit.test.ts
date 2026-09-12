@@ -249,6 +249,27 @@ describe('runWithRateLimitRetry', () => {
     assert.ok(Date.now() - started < 400, 'and the caller is not held past it');
   });
 
+  it('never waits past the budget, even when the pause ends exactly on it', async () => {
+    // The wake spread is added to a wait, never to a budget. Padded, a hold
+    // equal to the budget slept the budget PLUS the jitter — the one thing a
+    // hard bound must not do.
+    resetRateLimitGates();
+    gateFor('exact').penalise(200);
+    const started = Date.now();
+    const out = await runWithRateLimitRetry(async () => 'ok', {
+      key: 'exact',
+      policy: { ...FAST, maxTotalWaitMs: 200 },
+      isRateLimited,
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(
+      out,
+      'ok',
+      'the pause ends within the budget, so the call runs',
+    );
+    assert.ok(elapsed < 300, `waited ${elapsed}ms against a 200ms budget`);
+  });
+
   it('gives up when another caller extends the pause past the budget', async () => {
     // The pause fits when the wait starts; a 429 elsewhere lengthens it while
     // this caller is already asleep. The budget still holds.
