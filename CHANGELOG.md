@@ -57,14 +57,23 @@ arriving, the provider's own invented timeout has nothing left to protect.
   `MCPClientWrapper.callTool` / `callTools` now take an `AbortSignal` and hand
   it to the SDK request.
 
-  **The two-minute request timeout stays**, against this release's own grain,
-  because the SDK leaves no way to decline one: `Protocol.request` reads
-  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer.
-  Sending nothing is not "no ceiling" — it is the SDK's sixty seconds, half of
-  ours and exactly the cut that orphans a lock. Spelling "none" as a sentinel
-  maximum was tried and rejected: a magic number standing in for infinity is
-  worse to live with than a named default a consumer can raise. `timeout` and
-  `toolTimeouts` still win when set.
+  **`DEFAULT_MCP_REQUEST_TIMEOUT_MS` rises from two minutes to one hour.** A
+  default survives here against this release's grain because the SDK leaves no
+  way to decline one: `Protocol.request` reads
+  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer,
+  so sending nothing is not "no ceiling" — it is the SDK's own sixty seconds.
+  Spelling "none" as a sentinel maximum was tried and rejected; a magic number
+  standing in for infinity is worse to live with than a named number.
+
+  Which number, then, given the two failures are not symmetric. Too low cuts a
+  tool mid-flight, and on an ABAP write chain that leaves the object
+  created-but-inactive and locked by a session nobody will unlock, for someone
+  to clear by hand. Too high hangs one call in one session, which ends by
+  itself. Deployments report single steps running past fifteen minutes, so two
+  minutes was the cutting kind of wrong. An hour is a ceiling meant never to be
+  reached rather than an estimate of anything; a real limit belongs in
+  `toolTimeouts`, per tool, where a catalogue lookup and a write chain can be
+  told apart. `timeout` and `toolTimeouts` still win when set.
 
 - **The Qdrant store imposes no ceiling by default.** `timeoutMs` defaulted to
   thirty seconds and aborted every request on its own controller. It arms no
@@ -74,9 +83,9 @@ arriving, the provider's own invented timeout has nothing left to protect.
 Where that leaves things, exactly. On the model path — LLM providers,
 embedders — and in the vector store, this library now chooses no duration at
 all. On the MCP path it still does, and cannot stop: the SDK always arms a
-timer, so our two minutes on a tool call and its own sixty seconds on the
-protocol chatter we send no options with (`listTools` during connect, `ping`)
-both remain.
+timer, so an hour on a tool call and its own sixty seconds on the protocol
+chatter we send no options with (`listTools` during connect, `ping`) both
+remain.
 
 ### Fixed
 

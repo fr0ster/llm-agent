@@ -72,17 +72,19 @@ test('session-resume: live server-assigned sessionId takes priority over config.
 
 // ── Task 7 tests — resolveToolTimeout ────────────────────────────────────────
 
-test('resolveToolTimeout: falls back to the named two-minute default', () => {
-  // A default against this repository's preference, kept because the SDK
-  // leaves no way to decline one: it reads
-  // `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a
-  // timer, so sending nothing means its own SIXTY seconds — half of this, and
-  // on an ABAP write chain the cut orphans a lock.
-  assert.strictEqual(resolveToolTimeout('T', {}), 120_000);
-  assert.strictEqual(DEFAULT_MCP_REQUEST_TIMEOUT_MS, 120_000);
+test('resolveToolTimeout: falls back to an hour, a ceiling meant not to be reached', () => {
+  // A default sits here only because the SDK leaves no way to decline one: it
+  // reads `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a
+  // timer, so sending nothing means its own SIXTY seconds. The two failures
+  // are not symmetric — too low cuts an ABAP write chain and orphans a lock
+  // someone must clear by hand; too high hangs one call in one session, which
+  // ends by itself. Steps past fifteen minutes exist, so two minutes was the
+  // cutting kind of wrong.
+  assert.strictEqual(resolveToolTimeout('T', {}), 3_600_000);
+  assert.strictEqual(DEFAULT_MCP_REQUEST_TIMEOUT_MS, 3_600_000);
   assert.ok(
-    DEFAULT_MCP_REQUEST_TIMEOUT_MS > 60_000,
-    'must exceed the SDK default it exists to displace',
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS > 15 * 60_000,
+    'must clear the longest step anyone has reported',
   );
 });
 

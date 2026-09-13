@@ -2,7 +2,19 @@
 
 ## 25.0.0
 
-The caller's signal reaches a tool call (#296).
+The caller's signal reaches a tool call, and the ceiling stops cutting (#296).
+
+### Breaking
+
+- `DEFAULT_MCP_REQUEST_TIMEOUT_MS` rises from 120 000 to 3 600 000 (one hour).
+  Removing it outright was tried and reverted: `Protocol.request` reads
+  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer,
+  so omitting the field means the SDK's own sixty seconds — half the old
+  ceiling. The failures are not symmetric: too low cuts an ABAP write chain
+  and orphans a lock someone must clear by hand, while too high hangs one call
+  in one session, which ends by itself. Steps past fifteen minutes are
+  reported, so two minutes was the cutting kind of wrong. An hour is a ceiling
+  meant not to be reached; a real limit belongs in `toolTimeouts`, per tool.
 
 ### Fixed
 
@@ -11,16 +23,6 @@ The caller's signal reaches a tool call (#296).
   of only racing the promise around it. An abort now ends the tool call rather
   than answering the caller and leaving it running — on an ABAP write chain,
   with its lock still held.
-
-### Unchanged
-
-- `DEFAULT_MCP_REQUEST_TIMEOUT_MS` (120 000) stays. Removing it was tried and
-  reverted: `Protocol.request` reads
-  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer,
-  so omitting the field means the SDK's own sixty seconds — half the ceiling,
-  and precisely the cut that leaves an ABAP object created-but-inactive and
-  locked. Expressing "none" as a sentinel maximum was the other option and is
-  not worth the magic number.
 
 ## 24.1.0
 
