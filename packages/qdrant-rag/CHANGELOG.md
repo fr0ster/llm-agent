@@ -2,7 +2,13 @@
 
 ## 25.0.0
 
-Release 25.0.0.
+No ceiling of ours (#296).
+
+### Breaking
+
+- `timeoutMs` no longer defaults to thirty seconds. Unset, a request is bounded
+  by the caller's signal alone; the option still applies when a consumer sets
+  one.
 
 ## 24.1.0
 

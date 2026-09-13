@@ -50,10 +50,23 @@ arriving, the provider's own invented timeout has nothing left to protect.
   `RagResolutionConfig.timeoutMs` stays and now says what it is: the client
   timeout for an external vector backend, not the embedder's.
 
-With this, nothing on the model path sets a timeout — no LLM provider, no
-embedder. Elsewhere the library still has two, and both are the transport's own
-rather than a decision taken over anybody's head: the Qdrant store's client
-timeout, and the MCP client's, which is passed only when a consumer sets it.
+- **The MCP client's two-minute default is gone, and the caller's signal now
+  reaches the request.** `resolveToolTimeout` fell back to 120 000 ms with no
+  consumer config, and `McpClientAdapter.callTool` raced the caller's signal
+  around the call rather than passing it in — so the library's number won and
+  the caller's did not arrive. On an ABAP write chain that is not a safety net
+  but a lock generator: a cut mid-chain leaves the object created-but-inactive
+  and locked by a session nobody will unlock. `MCPClientWrapper.callTool` and
+  `callTools` take an optional `AbortSignal` and hand it to the SDK;
+  `timeout` and `toolTimeouts` still apply when a consumer sets them.
+
+- **The Qdrant store imposes no ceiling by default.** `timeoutMs` defaulted to
+  thirty seconds and aborted every request on its own controller. Unset, a
+  request is now bounded by the caller's signal alone.
+
+With this the library sets no timeout of its own anywhere: not on the model
+path, not on the MCP path, not on the vector store. Every remaining duration is
+one a consumer wrote down.
 
 ### Fixed
 

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   buildHttpTransportOptions,
-  DEFAULT_MCP_REQUEST_TIMEOUT_MS,
   MCPClientWrapper,
   resolveToolTimeout,
 } from '../client.js';
@@ -72,17 +71,12 @@ test('session-resume: live server-assigned sessionId takes priority over config.
 
 // ── Task 7 tests — resolveToolTimeout ────────────────────────────────────────
 
-test('resolveToolTimeout: returns DEFAULT_MCP_REQUEST_TIMEOUT_MS (120000) when no config', () => {
-  assert.strictEqual(
-    resolveToolTimeout('T', {}),
-    120_000,
-    'must return 120000 when no timeout/toolTimeouts configured',
-  );
-  assert.strictEqual(
-    DEFAULT_MCP_REQUEST_TIMEOUT_MS,
-    120_000,
-    'DEFAULT_MCP_REQUEST_TIMEOUT_MS must be 120000',
-  );
+test('resolveToolTimeout: returns nothing when the consumer configured nothing', () => {
+  // Two minutes used to be returned here. It was a guess about somebody else's
+  // tool, and on an ABAP write chain the cut leaves the object locked by a
+  // session nobody will unlock. Unset now means unbounded by us: the caller's
+  // signal is the bound.
+  assert.strictEqual(resolveToolTimeout('T', {}), undefined);
 });
 
 test('resolveToolTimeout: returns config.timeout when no per-tool override', () => {

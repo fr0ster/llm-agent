@@ -97,11 +97,17 @@ export class McpClientAdapter implements IMcpClient {
   ): Promise<Result<McpToolResult, McpError>> {
     try {
       const result = await withAbort(
-        this.client.callTool({
-          id: crypto.randomUUID(),
-          name,
-          arguments: args,
-        }),
+        // The signal goes INTO the call, not only around it. Racing it outside
+        // answers the caller and leaves the tool running — on an ABAP write
+        // chain, with its lock still held.
+        this.client.callTool(
+          {
+            id: crypto.randomUUID(),
+            name,
+            arguments: args,
+          },
+          options?.signal,
+        ),
         options?.signal,
         () => new McpError('Aborted', 'ABORTED'),
       );

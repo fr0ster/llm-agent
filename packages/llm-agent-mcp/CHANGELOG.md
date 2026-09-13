@@ -2,7 +2,23 @@
 
 ## 25.0.0
 
-Release 25.0.0.
+No timeout of ours, and the caller's signal reaches the call (#296).
+
+### Breaking
+
+- `resolveToolTimeout` returns `undefined` when the consumer configured
+  nothing, instead of falling back to two minutes, and
+  `DEFAULT_MCP_REQUEST_TIMEOUT_MS` is removed. Two minutes was a guess about
+  somebody else's tool, and on an ABAP write chain the cut leaves the object
+  created-but-inactive and locked by a session nobody will unlock. `timeout`
+  and `toolTimeouts` still apply when set.
+
+### Fixed
+
+- `MCPClientWrapper.callTool` / `callTools` accept an `AbortSignal` and pass it
+  to the SDK request; `McpClientAdapter` hands the caller's signal down instead
+  of only racing the promise around it. An abort now ends the tool call rather
+  than answering the caller and leaving it running.
 
 ## 24.1.0
 

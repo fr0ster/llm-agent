@@ -14,30 +14,29 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { toMcpError } from './error-mapping.js';
 
-/** Default per-call MCP request timeout in ms (2 minutes).
- *  Consumer can override globally via MCPClientConfig.timeout or per-tool via MCPClientConfig.toolTimeouts. */
-export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000;
-
 /**
- * Resolve the MCP request timeout for a specific tool call.
+ * Resolve the MCP request timeout for a specific tool call, if the consumer set
+ * one.
  *
  * Resolution order (first defined wins):
  *   1. config.toolTimeouts[name]  — per-tool override
  *   2. config.timeout             — global per-call default
- *   3. DEFAULT_MCP_REQUEST_TIMEOUT_MS (120 000 ms = 2 min)
+ *   3. none
+ *
+ * There is no default. Two minutes used to sit here, and it was a guess about
+ * somebody else's tool: an ABAP write chain that outruns it is cut mid-flight,
+ * which leaves the object created-but-inactive and locked by a session nobody
+ * will unlock. The bound is the caller's `signal`, which `callTool` now passes
+ * to the SDK.
  *
  * resetTimeoutOnProgress is always set to true by callTool so a slow but
- * actively-reporting tool never hits the ceiling.
+ * actively-reporting tool never hits a ceiling the consumer did set.
  */
 export function resolveToolTimeout(
   name: string,
   config: Pick<MCPClientConfig, 'timeout' | 'toolTimeouts'>,
-): number {
-  return (
-    config.toolTimeouts?.[name] ??
-    config.timeout ??
-    DEFAULT_MCP_REQUEST_TIMEOUT_MS
-  );
+): number | undefined {
+  return config.toolTimeouts?.[name] ?? config.timeout;
 }
 
 type McpToolDef = {
@@ -148,7 +147,7 @@ export interface MCPClientConfig {
    *  or other per-request metadata. Default = no-op. */
   requestHeadersStrategy?: IMcpRequestHeadersStrategy;
 
-  /** Default per-call MCP request timeout in ms (default 120000 = 2 min). Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
+  /** Per-call MCP request timeout in ms. **No default** — unset, a call is bounded only by the caller's `signal`. Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
   timeout?: number;
 
   /**
@@ -419,7 +418,10 @@ export class MCPClientWrapper {
   /**
    * Execute a tool call
    */
-  async callTool(toolCall: ToolCall): Promise<ToolResult> {
+  async callTool(
+    toolCall: ToolCall,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
     // For embedded mode, use direct handler or server instance
     if (this.detectedTransport === 'embedded') {
       try {
@@ -475,11 +477,18 @@ export class MCPClientWrapper {
       if (!this.client) {
         await this.connect();
       }
+      const configuredTimeout = resolveToolTimeout(toolCall.name, this.config);
       const response = await this.client?.callTool(
         { name: toolCall.name, arguments: toolCall.arguments },
         undefined,
         {
-          timeout: resolveToolTimeout(toolCall.name, this.config),
+          // The caller's deadline reaches the request itself. Racing it
+          // outside would answer the caller and leave an ABAP write chain
+          // running with its lock still held.
+          ...(signal ? { signal } : {}),
+          ...(configuredTimeout !== undefined
+            ? { timeout: configuredTimeout }
+            : {}),
           resetTimeoutOnProgress: true,
         },
       );
@@ -547,9 +556,12 @@ export class MCPClientWrapper {
   /**
    * Execute multiple tool calls
    */
-  async callTools(toolCalls: ToolCall[]): Promise<ToolResult[]> {
+  async callTools(
+    toolCalls: ToolCall[],
+    signal?: AbortSignal,
+  ): Promise<ToolResult[]> {
     const results = await Promise.all(
-      toolCalls.map((toolCall) => this.callTool(toolCall)),
+      toolCalls.map((toolCall) => this.callTool(toolCall, signal)),
     );
     return results;
   }
