@@ -4,6 +4,7 @@ import {
   isThrottledError,
   type Message,
   resetQuotaGates,
+  WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { SapCoreAIProvider } from '../sap-core-ai-provider.js';
 
@@ -285,13 +286,13 @@ const tooManyRequests = (retryAfter?: string) =>
   });
 
 describe('SapCoreAIProvider — rate limiting', () => {
-  const fast = { baseDelayMs: 1, maxDelayMs: 2 };
+  const waits = { maxAttempts: 5, strategy: new WaitAsTold() };
 
   it('retries a 429 and returns the eventual answer', async () => {
     resetQuotaGates();
     const provider = new SapCoreAIProvider({
       model: 'anthropic--claude-4.5-sonnet',
-      whenThrottled: fast,
+      whenThrottled: waits,
     });
     let calls = 0;
     // @ts-expect-error — stub the SDK client for test
@@ -311,7 +312,7 @@ describe('SapCoreAIProvider — rate limiting', () => {
     resetQuotaGates();
     const provider = new SapCoreAIProvider({
       model: 'anthropic--claude-4.5-sonnet',
-      whenThrottled: { ...fast, maxAttempts: 2 },
+      whenThrottled: { maxAttempts: 2, strategy: new WaitAsTold() },
     });
     // @ts-expect-error — stub the SDK client for test
     provider.createClient = () => ({
@@ -334,7 +335,7 @@ describe('SapCoreAIProvider — rate limiting', () => {
     resetQuotaGates();
     const provider = new SapCoreAIProvider({
       model: 'gpt-4o',
-      whenThrottled: fast,
+      whenThrottled: waits,
     });
     let calls = 0;
     // @ts-expect-error — stub the SDK client for test

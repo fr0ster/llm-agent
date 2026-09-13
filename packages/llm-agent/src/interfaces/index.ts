@@ -252,11 +252,12 @@ export type { ITaskFormalizer, ITaskSpec } from './task-spec.js';
 export { renderTaskSpec } from './task-spec.js';
 export {
   DEFAULT_THROTTLE_POLICY,
-  DefaultThrottleStrategy,
   type IThrottleStrategy,
+  ReportThrottling,
   type ThrottleContext,
   type ThrottleDecision,
   type ThrottlePolicy,
+  WaitAsTold,
 } from './throttle-strategy.js';
 export {
   type IToolCatalogReporter,

@@ -32,13 +32,44 @@ const llmOf = (yaml: Record<string, unknown>) =>
 
 describe('llm.whenThrottled from YAML', () => {
   it('reaches the resolved config', () => {
+    const llm = llmOf(yamlWith({ whenThrottled: { maxAttempts: 3 } }));
+    assert.deepEqual(llm?.whenThrottled, { maxAttempts: 3 });
+  });
+
+  it("names a shipped strategy, the only durations being the server's own", () => {
     const llm = llmOf(
-      yamlWith({ whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 20000 } }),
+      yamlWith({ whenThrottled: { strategy: 'wait-as-told' } }),
     );
-    assert.deepEqual(llm?.whenThrottled, {
-      maxAttempts: 3,
-      maxTotalWaitMs: 20000,
-    });
+    assert.equal(
+      (llm?.whenThrottled as { strategy?: { name?: string } })?.strategy?.name,
+      'wait-as-told',
+    );
+  });
+
+  it("refuses a duration, which is not the operator's to guess", () => {
+    // How long anyone's users will sit still is not a YAML question. Waiting is
+    // a strategy, and a strategy is code.
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          yamlWith({ whenThrottled: { maxTotalWaitMs: 20000 } }),
+          {},
+        ),
+      /Unknown llm\.whenThrottled key 'maxTotalWaitMs'/,
+    );
+  });
+
+  it('refuses a strategy it does not ship', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          yamlWith({ whenThrottled: { strategy: 'exponential' } }),
+          {},
+        ),
+      /expected 'report' or 'wait-as-told'/,
+    );
   });
 
   it('rejects an on/off switch, which this is not', () => {
@@ -75,25 +106,6 @@ describe('llm.whenThrottled from YAML', () => {
         `expected a config error for ${JSON.stringify(bad)}`,
       );
     }
-  });
-
-  it('accepts a zero budget, which is a real choice', () => {
-    // Unlike attempts, the durations are genuinely allowed to be zero: it means
-    // do not wait at all, and the shared pause is still marked.
-    const llm = llmOf(yamlWith({ whenThrottled: { maxTotalWaitMs: 0 } }));
-    assert.deepEqual(llm?.whenThrottled, { maxTotalWaitMs: 0 });
-  });
-
-  it('fails fast on a budget that is not a number', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          yamlWith({ whenThrottled: { maxTotalWaitMs: 'soon' } }),
-          {},
-        ),
-      /llm\.whenThrottled\.maxTotalWaitMs/,
-    );
   });
 
   it('fails fast on a misspelled key rather than ignoring it', () => {
@@ -146,15 +158,15 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
     );
   });
 
-  it('fails fast on a bad budget under a role', () => {
+  it('fails fast on a bad attempt count under a role', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          mapYaml({ whenThrottled: { maxTotalWaitMs: 'soon' } }),
+          mapYaml({ whenThrottled: { maxAttempts: 0 } }),
           {},
         ),
-      /Invalid llm\.main\.whenThrottled\.maxTotalWaitMs/,
+      /Invalid llm\.main\.whenThrottled\.maxAttempts/,
     );
   });
 
@@ -165,7 +177,7 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
     const llm = resolveSmartServerConfig(
       {},
       mapYaml({
-        whenThrottled: { maxAttempts: '3', maxTotalWaitMs: '20000' },
+        whenThrottled: { maxAttempts: '3' },
         maxTokens: '8192',
       }),
       {},
@@ -174,7 +186,6 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
       { whenThrottled?: Record<string, unknown>; maxTokens?: unknown }
     >;
     assert.strictEqual(llm.main?.whenThrottled?.maxAttempts, 3);
-    assert.strictEqual(llm.main?.whenThrottled?.maxTotalWaitMs, 20000);
     assert.strictEqual(llm.main?.maxTokens, 8192);
   });
 

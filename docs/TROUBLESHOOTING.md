@@ -242,13 +242,19 @@ provider account shares it. Before the provider-level policy landed, each
 concurrent call met the closed quota separately, spent its own attempts against
 it, and the window kept being pushed out.
 
-**Fix.** Providers built on `BaseLLMProvider` now back off with jitter, honour
-`Retry-After`, and hold one shared gate per model so a 429 pauses every caller on
-that quota, not only the one that hit it. Defaults: 5 attempts or 60 seconds of
-waiting. Tune per provider:
+**Fix.** Providers built on `BaseLLMProvider` read the status and the
+`Retry-After` interval, record that the quota is shut so no other call spends a
+request discovering it, and hand the failure up. **Nothing waits by default** —
+how long a caller may be held is the caller's decision, not the library's. Opt
+in where waiting is acceptable:
 
 ```ts
-new SapCoreAIProvider({ model, whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 30_000 } });
+import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
+
+new SapCoreAIProvider({
+  model,
+  whenThrottled: { strategy: new WaitAsTold(), maxAttempts: 3 },
+});
 ```
 
 If 429s still surface, the quota is genuinely too small: the surfaced error

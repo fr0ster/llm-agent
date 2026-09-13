@@ -84,7 +84,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 | `resourceGroup` | `string` | — | SAP AI Core resource group |
 | `credentials` | `SapAICoreCredentials` | — | Programmatic OAuth2 credentials (bypasses env var) |
 | `apiKey` | `string` | — | Not used by SAP provider (auth handled by SDK) |
-| `whenThrottled` | `object` | — | Overrides for the 429 policy (see [Rate limits](#rate-limits-429)). Omit for the documented defaults |
+| `whenThrottled` | `object` | — | `maxAttempts` and a `strategy`. Omit and nothing waits — see [Throttling](#throttling-429) |
 | `log` | `object` | — | Optional logger with `debug()` and `error()`. Throttling is not reported here — see `setThrottleObserver` below, which covers every provider |
 
 ### Environment Variables
@@ -210,87 +210,73 @@ agent:
   llmCallStrategy: non-streaming
 ```
 
-## Rate limits (429)
+## Throttling (429)
 
 SAP AI Core meters requests per minute, per model, per resource group. Over the
 limit it answers `429 Too Many Requests` with a `Retry-After` header in seconds.
 
-The provider answers it as SAP's Rate Limit Management guidance prescribes: no
-immediate retry, exponential backoff with jitter, `Retry-After` used as the wait
-when the server sends one, and a cap on both retries and total waiting.
+The provider establishes the facts and **does not decide how long you may be
+held**. It reads the status and the interval, records that the quota is shut,
+and hands the failure up. Whether to sit out that interval or to tell your own
+user depends on who is waiting at the other end, which a library cannot see: a
+CLI can happily wait a minute, an HTTP service answering inside a request
+cannot.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `maxAttempts` | `5` | Total attempts including the first. A positive integer — `0` would behave as `1`, so it is rejected rather than quietly meaning something else |
-| `maxTotalWaitMs` | `60000` | Give up once the accumulated waiting would exceed this. Waiting behind another caller's pause counts too, so a call cannot be held past the budget it declared |
-| `baseDelayMs` | `1000` | First backoff step when the server names no time |
-| `maxDelayMs` | `20000` | Ceiling for one computed step, before jitter |
-| `strategy` | the default | How those numbers become a decision. See below |
+Two strategies ship. Neither invents a duration.
 
-There is no switch for turning this off. Sending another request into a quota
-the server has just closed is never the better answer, so it is not a
-preference — it is correctness, and it is always on, for every provider. A
-consumer who needs different mechanics supplies a strategy:
+| Strategy | What it does |
+|---|---|
+| `ReportThrottling` (default) | Never waits. Returns the failure with what the server said |
+| `WaitAsTold` | Waits exactly the interval the server named, and reports when it named none |
 
 ```ts
-const giveUpAtOnce: IThrottleStrategy = {
-  name: 'no-wait',
-  // `waitMs` is taken by the SHARED pause either way: opting out of waiting is
-  // this caller's business, opting out of marking the quota closed is not.
-  decide: ({ retryAfterSeconds }) => ({
-    waitMs: (retryAfterSeconds ?? 0) * 1000,
-    retry: false,
-    reason: 'attempts',
-  }),
-};
-```
+import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 
-```ts
 new SapCoreAIProvider({
   model: 'anthropic--claude-4.5-sonnet',
   resourceGroup: 'default',
-  whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
+  whenThrottled: { strategy: new WaitAsTold(), maxAttempts: 3 },
 });
 ```
 
-Three things follow from the limit belonging to the quota rather than to one
-request:
+`maxAttempts` is the only number in the policy, and it is a count rather than a
+duration — the one bound that can be set without knowing anything about the
+caller. A consumer who wants exponential backoff writes a strategy: that is a
+guess about someone else's server, and a guess belongs to whoever owns it.
 
-- **The pause is shared.** When one call is told to wait, every other call
-  against that model and resource group waits too. Otherwise each concurrent
-  caller discovers the same closed quota separately, and a limit that should
-  last one window lasts several. Resource groups are isolated, so they do not
-  share a gate.
-- **The pause is per service instance.** The gate key carries the AI Core
-  endpoint, a digest of the client id, and the resource group — never the client
-  secret. Two tenants in one process therefore do not pause each other, and two
-  providers pointing at the same instance do share the pause, which is the point.
-- **Nothing above retries it again.** Once the policy is spent the error carries
-  `throttled`, and `RetryLlm` leaves a marked error alone.
+A caller that wants a deadline already has one — pass an `AbortSignal`. It is
+your deadline, from your own clock, rather than a number the library invented.
+
+### What is shared, and what is not
+
+Knowing is shared; waiting is not.
+
+The quota's closing time is recorded in a process-wide gate keyed by account,
+endpoint and model, so **a call into a quota already known to be shut is never
+sent**. There is nothing to learn from a refusal that can be predicted, and a
+refusal we ask for is a refusal we are charged for. The caller gets the failure
+immediately, with the interval remaining.
+
+What is not shared is the decision to wait. A gate that held every caller would
+impose a delay nobody consented to — the same mistake as a budget, wearing the
+word "guarantee".
 
 ### Seeing it happen
 
 ```ts
 import { setThrottleObserver } from '@mcp-abap-adt/llm-agent';
 
-setThrottleObserver((e) =>
-  log.warn('throttled', e),
-);
+setThrottleObserver((e) => log.warn('throttled', e));
 ```
 
-One subscription for every provider, fired on **every** 429 — including the last
-one, where the policy gives up. The event carries the quota key, the policy in
-force, the attempt, whether the server named a `Retry-After` and which, the wait,
-the budget left, and on the last one which cap ended it.
+One subscription for every provider, fired on every refusal and on every call
+turned away at a shut gate. The event carries the quota key, the policy and
+strategy in force, the attempt, whether the server named an interval and which,
+and why a call is not going on.
 
-The policy travels with the event because the numbers cannot be read without it:
-`attempt 3` is the end under `maxAttempts: 3` and the middle under `5`. It also
-answers the question a setting that crosses several layers otherwise leaves
-open, which is whether it arrived at all.
-
-Whether the server sends `Retry-After` is worth reading off these events before
-tuning anything: if it does, the server's number always wins and `baseDelayMs`
-and `maxDelayMs` never come into play.
+Whether the server sends `Retry-After` is worth reading off these events: with
+`WaitAsTold` it is the difference between waiting and reporting, and a server
+that documents the header but omits it is telling you something.
 
 Read the outcome as a fact, not as a substring of a message:
 
@@ -301,8 +287,8 @@ const limit = findThrottled(error);   // undefined when it was not throttling
 if (limit) console.warn(limit.attempts, limit.retryAfterSeconds, limit.reason);
 ```
 
-If 429s persist after this, the quota itself is too small for the traffic:
-spread the load across resource groups, or raise the model's limit in AI Core.
+If throttling persists, the quota itself is too small for the traffic: spread
+the load across resource groups, or raise the model's limit in AI Core.
 
 ## Tool Format Conversion
 
@@ -383,7 +369,7 @@ Use this endpoint to dynamically discover which embedding model names are valid 
 | `Model not found` | Model not deployed | Deploy the model in SAP AI Core Launchpad |
 | `Resource group not found` | Wrong resource group | Check `SAP_AI_RESOURCE_GROUP` value |
 | `OAuth2 token error` | Wrong `tokenServiceUrl` | Verify the URL from service key `uaa.url` |
-| `429 Too Many Requests` surviving the retries | Sustained throttling — the per-minute quota for that model is smaller than the traffic | The error carries `throttled` and `retryAfterSeconds`; see [Rate limits](#rate-limits-429). Spread load across resource groups or raise the model's limit |
+| `429 Too Many Requests` surviving the retries | Sustained throttling — the per-minute quota for that model is smaller than the traffic | The error carries `throttled` and `retryAfterSeconds`; see [Throttling](#throttling-429). Spread load across resource groups or raise the model's limit |
 | `400 "Either a prompt template or messages must be defined"` | SDK requires `prompt.template` | Fixed in v2.9.0 — upgrade the package |
 | `400 "Unused parameters"` | Using `messagesHistory` instead of `messages` | Fixed in v2.9.0 — upgrade the package |
 | `Stream finished with token length exceeded` | `maxTokens` too low for tool-calling models | Set `maxTokens: 32768` or higher in config |

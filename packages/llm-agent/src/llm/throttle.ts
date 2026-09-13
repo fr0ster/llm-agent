@@ -25,13 +25,15 @@
 
 import {
   DEFAULT_THROTTLE_POLICY,
-  DefaultThrottleStrategy,
+  type IThrottleStrategy,
+  ReportThrottling,
   type ThrottleDecision,
   type ThrottlePolicy,
 } from '../interfaces/throttle-strategy.js';
 import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
 
-const defaultStrategy = new DefaultThrottleStrategy();
+/** Nothing waits unless the consumer says so. */
+const defaultStrategy = new ReportThrottling();
 
 /** An error annotated by this module, so consumers read a fact instead of prose. */
 export interface ThrottledError extends Error {
@@ -46,7 +48,7 @@ export interface ThrottledError extends Error {
    * on either. `gate` means the pause was already longer than the budget and no
    * request was sent at all.
    */
-  reason?: 'attempts' | 'budget' | 'gate';
+  reason?: ThrottleDecision['reason'];
 }
 
 export function isThrottledError(e: unknown): e is ThrottledError {
@@ -315,16 +317,16 @@ export interface ThrottleRetryOptions {
 export interface ThrottleEvent {
   /** The quota: account, endpoint and model. Carries no credential. */
   key: string;
-  /** The numbers in force for this call. */
-  policy: Omit<ThrottlePolicy, 'strategy'> & { strategy: string };
+  /** The numbers in force, and the strategy that read them. */
+  policy: { maxAttempts: number; strategy: string };
   /** 1-based, the attempt that was just refused. */
   attempt: number;
   /** Did the server name an interval, and which. Absent means it did not. */
   retryAfterSeconds?: number;
-  /** How long the quota is now held. */
+  /** How long the quota is shut, as far as we can tell. */
   waitMs: number;
-  /** What is left of the budget after this wait. */
-  budgetLeftMs: number;
+  /** How long this call has already spent waiting. */
+  waitedMs: number;
   /** False on the last one, with `reason` saying which cap ended it. */
   willRetry: boolean;
   reason?: ThrottleDecision['reason'];
@@ -384,29 +386,43 @@ async function attemptWithGate<T>(
   policy: ThrottlePolicy,
   gate: QuotaGate,
 ): Promise<T> {
+  const strategy = policy.strategy ?? defaultStrategy;
   let attempt = 0;
   let waited = 0;
+  // True when the wait ahead is one this caller already chose, in the catch
+  // below. Without it the gate would ask the strategy a second time about a
+  // refusal it had just answered, and report the same event twice.
+  let servingOwnWait = false;
 
   for (;;) {
-    // Waiting at the gate is waiting. Uncounted it was free, so a caller with a
-    // ten-millisecond budget could sit out a minute-long pause another caller
-    // had earned, its declared budget saying nothing about the time it spent.
-    // Decided before the wait, never during it: a hold longer than what is left
-    // of the budget is refused outright rather than half-served.
-    const hold = gate.remaining();
-    if (hold > 0) {
-      const budgetLeft = policy.maxTotalWaitMs - waited;
-      if (hold > budgetLeft) throw outOfBudgetAtGate(hold, attempt);
+    // A quota known to be shut is not a reason to hold this caller — it is a
+    // reason not to spend a request finding out. The strategy decides which:
+    // sit out the interval the server named, or leave now with it.
+    const shut = gate.remaining();
+    if (shut > 0) {
+      if (!servingOwnWait) {
+        const decision = strategy.decide({
+          attempt,
+          retryAfterSeconds: shut / 1000,
+          waitedMs: waited,
+          policy,
+        });
+        report(opts, policy, strategy, {
+          attempt,
+          retryAfterSeconds: shut / 1000,
+          waitMs: shut,
+          waitedMs: waited,
+          decision,
+        });
+        if (!decision.retry) {
+          throw knownShut(shut, attempt, decision.reason);
+        }
+      }
       const before = Date.now();
-      // Capped as well as pre-checked: a pause that fits when the wait starts
-      // can be extended past the budget by someone else's 429 while it runs.
-      // The cap is the budget exactly. Padding it to protect the wake spread
-      // would make the budget the one thing it must not be — approximate.
-      await gate.waitUntilOpen(opts.signal, budgetLeft);
+      await gate.waitUntilOpen(opts.signal);
       waited += Date.now() - before;
-      const stillShut = gate.remaining();
-      if (stillShut > 0) throw outOfBudgetAtGate(stillShut, attempt);
     }
+    servingOwnWait = false;
 
     try {
       return await fn();
@@ -415,42 +431,25 @@ async function attemptWithGate<T>(
 
       attempt += 1;
       const retryAfter = opts.retryAfterSeconds?.(error);
-      const decision = (policy.strategy ?? defaultStrategy).decide({
+      const decision = strategy.decide({
         attempt,
         retryAfterSeconds: retryAfter,
         waitedMs: waited,
         policy,
       });
 
-      // Hold everyone else too, and hold them whether or not THIS caller is
-      // going on. The pause describes the quota, not one request: giving up
-      // with the gate open sends every other caller straight back into a limit
-      // the server just said was closed. That is why the decision carries a
-      // wait in both cases, rather than being retry-or-nothing.
-      //
-      // The gate is given the interval alone. This caller then serves its own
-      // backoff there, on the next turn of the loop, rather than sleeping
-      // beside it: two mechanisms waiting out one pause double-count it, and
-      // the leftover milliseconds between them decide outcomes at the margin.
-      // The per-caller spread that keeps the released callers from waking
-      // together lives in `waitUntilOpen`, where the waiting is done.
+      // Recorded whether or not THIS caller goes on. What the server said is
+      // true for everyone, and a caller that leaves without writing it down
+      // sends the next one to discover it again, at the cost of another
+      // refusal. Knowing is shared; waiting is not.
       gate.penalise(decision.waitMs);
 
-      emit({
-        key: opts.key,
-        policy: {
-          maxAttempts: policy.maxAttempts,
-          maxTotalWaitMs: policy.maxTotalWaitMs,
-          baseDelayMs: policy.baseDelayMs,
-          maxDelayMs: policy.maxDelayMs,
-          strategy: (policy.strategy ?? defaultStrategy).name,
-        },
+      report(opts, policy, strategy, {
         attempt,
         retryAfterSeconds: retryAfter,
         waitMs: decision.waitMs,
-        budgetLeftMs: Math.max(0, policy.maxTotalWaitMs - waited),
-        willRetry: decision.retry,
-        reason: decision.reason,
+        waitedMs: waited,
+        decision,
       });
 
       if (!decision.retry) {
@@ -462,8 +461,33 @@ async function attemptWithGate<T>(
         delayMs: decision.waitMs,
         retryAfterSeconds: retryAfter,
       });
+      servingOwnWait = true;
     }
   }
+}
+
+function report(
+  opts: ThrottleRetryOptions,
+  policy: ThrottlePolicy,
+  strategy: IThrottleStrategy,
+  info: {
+    attempt: number;
+    retryAfterSeconds?: number;
+    waitMs: number;
+    waitedMs: number;
+    decision: ThrottleDecision;
+  },
+): void {
+  emit({
+    key: opts.key,
+    policy: { maxAttempts: policy.maxAttempts, strategy: strategy.name },
+    attempt: info.attempt,
+    retryAfterSeconds: info.retryAfterSeconds,
+    waitMs: info.waitMs,
+    waitedMs: info.waitedMs,
+    willRetry: info.decision.retry,
+    reason: info.decision.reason,
+  });
 }
 
 const MAX_CAUSE_DEPTH = 5;
@@ -515,24 +539,24 @@ export function preserveThrottled<E extends Error>(
 }
 
 /**
- * The shared pause outlasts what this caller said it would wait.
+ * The quota is shut and this caller is not waiting it out.
  *
- * There is no server error to annotate here — the request was never sent,
- * because sending it into a quota known to be closed is the one thing the gate
- * exists to prevent. It is still a rate limit, and says so, carrying what is
- * left of the pause so the consumer can decide.
+ * No request was sent, because there is nothing to learn from a refusal we can
+ * already predict — and a refusal we ask for is a refusal we are charged for.
+ * The remaining interval goes up with the error so the caller can decide.
  */
-function outOfBudgetAtGate(
+function knownShut(
   remainingMs: number,
   attempts: number,
+  reason: ThrottledError['reason'],
 ): ThrottledError {
   const e = new Error(
-    'rate limited: the pause on this quota outlasts the configured wait budget',
+    'throttled: the quota is closed and this call is not waiting it out',
   ) as ThrottledError;
   e.throttled = true;
   e.attempts = attempts;
   e.retryAfterSeconds = remainingMs / 1000;
-  e.reason = 'gate';
+  if (reason !== undefined) e.reason = reason;
   return e;
 }
 

@@ -3,7 +3,11 @@
  * Internal module — not re-exported by the package barrel.
  */
 
-import type { ThrottlePolicy } from '@mcp-abap-adt/llm-agent';
+import {
+  ReportThrottling,
+  type ThrottlePolicy,
+  WaitAsTold,
+} from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartServerAgentConfig,
@@ -110,13 +114,10 @@ function positiveIntOption(
 /**
  * Read the optional `llm.whenThrottled` block, failing fast on a bad value.
  *
- * Numbers only: there is no key here for turning throttle handling off, because
- * there is no correct alternative to waiting out a quota the server has closed.
- * Different mechanics are a strategy, supplied in code, not a YAML switch.
- *
- * Only the policy's own keys are accepted, and each is checked: a budget
- * silently parsed as NaN would disable the cap it was written to impose, which
- * is worse than being told the value is wrong.
+ * One number and one name. There is nothing here for how long to wait, because
+ * nothing waits unless a strategy says to, and a strategy is code — a duration
+ * in YAML would be the library guessing on the operator's behalf at how long
+ * their users will sit still.
  */
 function whenThrottledOption(
   value: unknown,
@@ -146,22 +147,18 @@ function whenThrottledOption(
       policy.maxAttempts = n;
       continue;
     }
-    if (
-      key === 'maxTotalWaitMs' ||
-      key === 'baseDelayMs' ||
-      key === 'maxDelayMs'
-    ) {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0) {
+    if (key === 'strategy') {
+      if (v !== 'report' && v !== 'wait-as-told') {
         throw new Error(
-          `Invalid ${path}.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
+          `Invalid ${path}.strategy: expected 'report' or 'wait-as-told', got ${JSON.stringify(v)}. Anything else is code, and is passed to the provider directly.`,
         );
       }
-      policy[key] = n;
+      policy.strategy =
+        v === 'wait-as-told' ? new WaitAsTold() : new ReportThrottling();
       continue;
     }
     throw new Error(
-      `Unknown ${path} key '${key}'. Known keys: maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
+      `Unknown ${path} key '${key}'. Known keys: maxAttempts, strategy.`,
     );
   }
   return Object.keys(policy).length > 0 ? { whenThrottled: policy } : {};

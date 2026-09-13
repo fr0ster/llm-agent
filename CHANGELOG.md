@@ -9,6 +9,40 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **Nothing waits unless the consumer says so.** 23.0.0 shipped a wait budget in
+  milliseconds, which is a timeout by another name — and a timeout set by the
+  one party that cannot see who is waiting at the other end. A CLI can sit out a
+  minute; an HTTP service answering inside a request cannot. The library now
+  establishes facts and leaves the decision where the knowledge is.
+
+  `maxTotalWaitMs`, `baseDelayMs` and `maxDelayMs` are gone from
+  `ThrottlePolicy`, and with them the exponential backoff: a computed delay is a
+  guess about someone else's server, and a guess belongs to whoever is willing
+  to own it. What remains is `maxAttempts`, a count, plus a `strategy`.
+
+  Two strategies ship:
+
+  | Strategy | What it does |
+  |---|---|
+  | `ReportThrottling` (default) | Never waits. Returns the failure with what the server said |
+  | `WaitAsTold` | Waits exactly the interval the server named, and reports when it named none |
+
+  A caller wanting a deadline passes an `AbortSignal` — its own clock, rather
+  than a number the library invented.
+
+- **The shared gate holds knowledge, not callers.** A call into a quota already
+  known to be shut is still never sent — there is nothing to learn from a
+  predictable refusal, and a refusal we ask for is one we are charged for. But a
+  caller that has not opted into waiting is no longer held at the gate: it gets
+  the failure immediately with the interval remaining. Imposing a delay nobody
+  consented to was the budget's mistake wearing the word "guarantee".
+
+- **`llm.whenThrottled` in YAML takes `maxAttempts` and a strategy name**
+  (`report` or `wait-as-told`). A duration there would be the operator guessing
+  how long their users will sit still.
+
 ### Security
 
 - **Trace files are no longer world readable** (#289). `SessionLogger` created
