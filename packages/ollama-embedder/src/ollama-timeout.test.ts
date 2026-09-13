@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
-import { OpenAiEmbedder } from './openai-embedder.js';
+import { OllamaEmbedder } from './ollama.js';
 
 /**
  * A ceiling on every request fires instead of the decision above it: a caller
@@ -17,19 +17,18 @@ function captureSignal() {
     'fetch',
     async (_url: unknown, init?: unknown) => {
       seen.push((init as { signal?: AbortSignal | null })?.signal);
-      return new Response(
-        JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({ embedding: [0.1, 0.2] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     },
   );
   return { seen, restore: () => fetchMock.mock.restore() };
 }
 
-const embedder = () =>
-  new OpenAiEmbedder({ apiKey: 'sk-test', model: 'text-embedding-3-small' });
+const embedder = () => new OllamaEmbedder({ model: 'nomic-embed-text' });
 
-describe('OpenAiEmbedder — the caller owns the bound', () => {
+describe('OllamaEmbedder — the caller owns the bound', () => {
   it('sends the caller signal unchanged', async () => {
     const { seen, restore } = captureSignal();
     try {

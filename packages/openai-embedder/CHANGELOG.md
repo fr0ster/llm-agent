@@ -2,14 +2,16 @@
 
 ## 25.0.0
 
-No ceiling of ours (#296).
+No timeout, and no option for one (#296).
 
 ### Breaking
 
-- `timeoutMs` no longer defaults to thirty seconds. A ceiling on every request
-  fires instead of the decision above it — a caller waiting out a server's
-  `Retry-After` is cut before the interval is up. The option is still honoured
-  when set; the bound otherwise is the caller's own `signal`.
+- `timeoutMs` is removed from `OpenAiEmbedderConfig`. It defaulted to thirty
+  seconds, and a ceiling on every request fires instead of the decision above
+  it — a caller waiting out a server's `Retry-After` is cut before the interval
+  is up. It was also a second way to say what `signal` already says. What
+  reaches the wire is the caller's signal or nothing; a consumer that wants a
+  ceiling passes `AbortSignal.timeout()` per call.
 
 ## 24.1.0
 

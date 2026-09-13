@@ -11,36 +11,11 @@ export interface OllamaEmbedderConfig {
   ollamaUrl?: string;
   /** Required: embedding model name (e.g. 'bge-m3'). No default — must be set explicitly. */
   model: string;
-  /**
-   * Per-request ceiling in milliseconds. **No default** — omit it and a request
-   * is bounded only by the caller's own `signal`, which is where a deadline
-   * belongs.
-   */
-  timeoutMs?: number;
-}
-
-/**
- * The signal for one request: the caller's, narrowed by a ceiling only if the
- * consumer set one.
- *
- * There is no default ceiling. A duration here runs on every request and fires
- * *instead* of whatever the caller decided — a strategy told to wait out a
- * server's `Retry-After` never gets to, because the request was already cut.
- * The bound belongs to whoever is waiting, and reaches us as `options.signal`.
- */
-function requestSignal(
-  caller: AbortSignal | undefined,
-  timeoutMs: number | undefined,
-): AbortSignal | undefined {
-  if (timeoutMs === undefined) return caller;
-  const ceiling = AbortSignal.timeout(timeoutMs);
-  return caller ? AbortSignal.any([caller, ceiling]) : ceiling;
 }
 
 export class OllamaEmbedder implements IEmbedderBatch {
   private readonly ollamaUrl: string;
   readonly model: string;
-  private readonly timeoutMs: number | undefined;
 
   constructor(config: OllamaEmbedderConfig) {
     if (!config?.model) {
@@ -48,7 +23,6 @@ export class OllamaEmbedder implements IEmbedderBatch {
     }
     this.ollamaUrl = config.ollamaUrl ?? 'http://localhost:11434';
     this.model = config.model;
-    this.timeoutMs = config.timeoutMs;
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
@@ -59,13 +33,15 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const signal = requestSignal(options?.signal, this.timeoutMs);
-
+        // The caller's signal and nothing else. A ceiling of our own would run
+        // on every request and fire instead of whatever decided above us — a
+        // caller waiting out a server's Retry-After, cut before the interval
+        // is up. A consumer that wants one passes AbortSignal.timeout().
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, prompt: text }),
-          signal,
+          signal: options?.signal,
         });
 
         if (!res.ok) {
@@ -106,13 +82,15 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const signal = requestSignal(options?.signal, this.timeoutMs);
-
+        // The caller's signal and nothing else. A ceiling of our own would run
+        // on every request and fire instead of whatever decided above us — a
+        // caller waiting out a server's Retry-After, cut before the interval
+        // is up. A consumer that wants one passes AbortSignal.timeout().
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, input: texts }),
-          signal,
+          signal: options?.signal,
         });
 
         if (!res.ok) {
