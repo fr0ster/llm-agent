@@ -2233,9 +2233,20 @@ builder.withRateLimiter(new TokenBucketRateLimiter({
 }));
 ```
 
-The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry attempts also respect the rate limit.
+The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter`.
 
-`RetryLlm` is now enabled by default (3 attempts, 2s backoff, retry on 429/500/502/503).
+**It takes one permit per outer call, not per HTTP attempt.** `RateLimiterLlm.chat` awaits `acquire()` once and then hands off to the chain, so anything that retries below it — `RetryLlm`, or a provider's own throttling loop — sends requests the window never counted. A consumer metering a shared quota needs the accounting above the retrying, which means its own wrapper taking a permit around each attempt; this seam admits a call and cannot see inside it.
+
+`RetryLlm` is enabled by default (3 attempts, 2s backoff, retry on 429/500/502/503) and configured via `SmartAgentConfig.retry`. Note that the count is retries *after* the first call: three of them is four requests, which matters to anyone metering a provider.
+
+**The deadline is yours, and it reaches the transport.** No provider sets a
+timeout of its own — the SAP AI Core provider used to impose sixty seconds on a
+call and a hundred and twenty on a stream, which is a guess about somebody
+else's model, prompt and tool loop, and a large input legitimately outran it.
+Pass `signal` in `CallOptions` and it travels through the adapter into the
+provider's SDK call, so an abort ends the request rather than only the waiting
+around it. Without one, a call runs until the server answers or the connection
+breaks.
 
 **429 is answered below this chain, and nothing waits by default.** Every
 provider built on `BaseLLMProvider` reads the status and the `Retry-After`

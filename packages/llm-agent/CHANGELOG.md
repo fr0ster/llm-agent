@@ -1,5 +1,15 @@
 # @mcp-abap-adt/llm-agent
 
+## 25.0.0
+
+The deadline reaches the transport (#296).
+
+### Changed
+
+- **`BaseAgentLlmBridge` declares `signal`** on both call shapes, so an adapter
+  can carry the caller's deadline down to the provider instead of racing the
+  promise around it.
+
 ## 24.1.0
 
 The deadline 24.0.0 promised (#294).

@@ -1,5 +1,17 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 25.0.0
+
+The deadline reaches the transport (#296).
+
+### Fixed
+
+- **`LlmAdapter` forwards `signal` to the inner call.** It built the inner
+  options from temperature, maxTokens, topP and stop, and raced the promise
+  with `withAbort` — so on the `makeLlm` path, which is every consumer, an
+  abort answered the caller and left the HTTP request running. Both the chat
+  and the streaming path now pass it down.
+
 ## 24.1.0
 
 The deadline 24.0.0 promised (#294).

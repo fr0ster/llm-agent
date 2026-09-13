@@ -194,10 +194,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
       const response = await this.withThrottleRetry(
         () => {
-          const callAgent = new https.Agent({
-            keepAlive: false,
-            timeout: 60_000,
-          });
+          // No timeout of ours. Sixty seconds used to sit here, and it was a
+          // guess about somebody else's model, prompt and tool loop — a large
+          // input legitimately outruns it, and the call then died for a reason
+          // that had nothing to do with the server. The deadline belongs to
+          // the caller and arrives as `options.signal`.
+          const callAgent = new https.Agent({ keepAlive: false });
           return client.chatCompletion(undefined, {
             httpsAgent: callAgent,
             signal: options?.signal,
@@ -311,14 +313,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       this.log?.debug('SAP AI SDK streamChat opening stream', {
         model,
         keepAlive: false,
-        timeoutMs: 120_000,
       });
       const streamResponse = await this.withThrottleRetry(
         () => {
-          const streamAgent = new https.Agent({
-            keepAlive: false,
-            timeout: 120_000,
-          });
+          // As above: the caller's signal is the deadline, and the SDK takes
+          // it directly.
+          const streamAgent = new https.Agent({ keepAlive: false });
           // The SDK takes the signal as its own second parameter, so an abort
           // ends the stream itself and not only the waiting around it.
           return client.stream(undefined, options?.signal, undefined, {

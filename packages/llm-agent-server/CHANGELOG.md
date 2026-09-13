@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 25.0.0
+
+Release 25.0.0.
+
 ## 24.1.0
 
 The deadline 24.0.0 promised (#294).

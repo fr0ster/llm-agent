@@ -61,6 +61,12 @@ export interface BaseAgentLlmBridge {
       maxTokens?: number;
       topP?: number;
       stop?: string[];
+      /**
+       * The caller's deadline. Carried all the way to the provider's SDK call,
+       * which is the only place it can actually stop anything: an adapter that
+       * merely stops waiting leaves the request running with nobody holding it.
+       */
+      signal?: AbortSignal;
     },
   ): Promise<{ content: string; raw?: unknown }>;
   streamWithTools(
@@ -71,6 +77,12 @@ export interface BaseAgentLlmBridge {
       maxTokens?: number;
       topP?: number;
       stop?: string[];
+      /**
+       * The caller's deadline. Carried all the way to the provider's SDK call,
+       * which is the only place it can actually stop anything: an adapter that
+       * merely stops waiting leaves the request running with nobody holding it.
+       */
+      signal?: AbortSignal;
     },
   ): AsyncGenerator<
     { content: string; raw?: unknown } | AgentStreamChunk,

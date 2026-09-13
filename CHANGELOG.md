@@ -9,6 +9,47 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [25.0.0] — 2026-09-13
+
+The deadline reaches the transport, and the provider stops guessing at one (#296).
+
+24.1.0 wired `signal` through every provider and said so, and that much was
+true. But `makeLlm` returns `LlmAdapter(LlmProviderBridge(provider))` on every
+branch, and the adapter dropped the signal — so on the path every consumer
+actually uses, the deadline 24.0.0 promised still did not arrive. With it
+arriving, the provider's own invented timeout has nothing left to protect.
+
+### Breaking
+
+- **The SAP AI Core provider sets no transport timeout.** Sixty seconds on a
+  call and a hundred and twenty on a stream were guesses about someone else's
+  model, prompt and tool loop; a large tool-loop input legitimately outran them
+  and the call died for a reason that had nothing to do with the server. The
+  deadline is the caller's `AbortSignal`, which the provider already hands to
+  the SDK on both paths.
+
+  *Migration.* A deployment that relied on those seconds as a hard bound passes
+  an `AbortSignal` in `CallOptions`. Without one, a call now runs until the
+  server answers or the connection breaks.
+
+### Fixed
+
+- **`LlmAdapter` forwards the caller's signal to the transport.** It built the
+  inner call's options from four fields — temperature, maxTokens, topP, stop —
+  with `signal` not among them, and raced the promise with `withAbort` instead.
+  On abort the caller was answered at once and the HTTP request ran on, holding
+  a socket and a response nobody would read. `BaseAgentLlmBridge` now declares
+  `signal` and the adapter passes it, on both the chat and the streaming path.
+
+### Documentation
+
+- **`RateLimiterLlm` takes one permit per outer call, not per HTTP attempt.**
+  Its own header claimed the opposite — "rate limiter sits outermost so that
+  retry attempts also respect the limit" — and the code awaits `acquire()` once
+  before handing off to a chain that retries inside. Corrected in
+  `docs/INTEGRATION.md`, along with the note that `RetryLlm`'s `maxAttempts: 3`
+  means four requests, not three.
+
 ## [24.1.0] — 2026-09-13
 
 The deadline 24.0.0 promised (#294).
