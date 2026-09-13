@@ -74,8 +74,11 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       }
 
       const response = await this.withThrottleRetry(
-        () => this.client.post('/messages', requestBody),
-        { model },
+        () =>
+          this.client.post('/messages', requestBody, {
+            signal: options?.signal,
+          }),
+        { model, signal: options?.signal },
       );
 
       // Handle multi-block response (text + tool_use)

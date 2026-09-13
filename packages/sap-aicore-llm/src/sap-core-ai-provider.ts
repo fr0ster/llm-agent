@@ -11,6 +11,7 @@
 import https from 'node:https';
 import type {
   IModelInfo,
+  LLMCallOptions,
   LLMProviderConfig,
   LLMResponse,
   Message,
@@ -171,7 +172,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     }
   }
 
-  async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
+  async chat(
+    messages: Message[],
+    tools?: unknown[],
+    options?: LLMCallOptions,
+  ): Promise<LLMResponse> {
     try {
       this.log?.debug('Sending chat request via SAP AI SDK', {
         model: this.modelOverride ?? this.model,
@@ -187,13 +192,19 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // multiplexing. A shared keepAlive agent can cause SAP AI Core to route a
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
-      const response = await this.withThrottleRetry(() => {
-        const callAgent = new https.Agent({
-          keepAlive: false,
-          timeout: 60_000,
-        });
-        return client.chatCompletion(undefined, { httpsAgent: callAgent });
-      });
+      const response = await this.withThrottleRetry(
+        () => {
+          const callAgent = new https.Agent({
+            keepAlive: false,
+            timeout: 60_000,
+          });
+          return client.chatCompletion(undefined, {
+            httpsAgent: callAgent,
+            signal: options?.signal,
+          });
+        },
+        { signal: options?.signal },
+      );
 
       const toolCalls = response.getToolCalls();
       const content = response.getContent() || '';
@@ -262,6 +273,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   async *streamChat(
     messages: Message[],
     tools?: unknown[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse> {
     const model = this.modelOverride ?? this.model;
     const messageSummary = SapCoreAIProvider.summarizeMessages(messages);
@@ -301,15 +313,20 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         keepAlive: false,
         timeoutMs: 120_000,
       });
-      const streamResponse = await this.withThrottleRetry(() => {
-        const streamAgent = new https.Agent({
-          keepAlive: false,
-          timeout: 120_000,
-        });
-        return client.stream(undefined, undefined, undefined, {
-          httpsAgent: streamAgent,
-        });
-      });
+      const streamResponse = await this.withThrottleRetry(
+        () => {
+          const streamAgent = new https.Agent({
+            keepAlive: false,
+            timeout: 120_000,
+          });
+          // The SDK takes the signal as its own second parameter, so an abort
+          // ends the stream itself and not only the waiting around it.
+          return client.stream(undefined, options?.signal, undefined, {
+            httpsAgent: streamAgent,
+          });
+        },
+        { signal: options?.signal },
+      );
       streamOpened = true;
       this.log?.debug('SAP AI SDK streamChat stream opened', {
         model,
