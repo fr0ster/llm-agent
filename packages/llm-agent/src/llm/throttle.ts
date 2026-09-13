@@ -1,5 +1,5 @@
 /**
- * Shared rate-limit handling for every LLM provider.
+ * Shared handling of server-governed throttling, for every LLM provider.
  *
  * None of the providers handled HTTP 429 (issue #282). Each one let the status
  * collapse into an error message, so consumers were reduced to matching the
@@ -10,7 +10,11 @@
  * `Retry-After`, and a herd of concurrent callers that will all rediscover the
  * same limit unless something holds them back together.
  *
- * SAP AI Core states the rules this implements
+ * The delay is always the server's. `Retry-After` may arrive as seconds or as
+ * an HTTP-date; both reduce to a delay from now, which is why "throttling" is
+ * the right word for it and why none of it is ours to invent.
+ *
+ * SAP AI Core states the rules this follows
  * (help.sap.com, Rate Limit Management):
  *
  *   Do not retry immediately after a 429. Use exponential backoff with jitter

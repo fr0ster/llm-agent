@@ -1,6 +1,13 @@
 /**
  * What a provider does when a server throttles it.
  *
+ * Throttling, and specifically the SERVER'S. Client-side throttling is spacing
+ * calls out on our own initiative, and this library does none of it: it sets no
+ * interval, computes none, and has no number of its own to set one with. The
+ * server names a delay — `Retry-After` is either seconds or an HTTP-date, and
+ * both reduce to a delay from now — and we either observe it or report it.
+ * Where the server names nothing, there is no throttling to observe.
+ *
  * The library establishes facts and decides nothing. This is a 429. The server
  * named this interval, or named none. The quota is shut until then. What to do
  * about it — wait, give up, count attempts, give up after the third — belongs
