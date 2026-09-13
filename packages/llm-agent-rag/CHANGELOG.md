@@ -2,7 +2,17 @@
 
 ## 25.0.0
 
-Release 25.0.0.
+The embedder deadline is the caller's (#296).
+
+### Breaking
+
+- `timeoutMs` is removed from `EmbedderResolutionConfig` and is no longer
+  forwarded to the embedder factory. The embedders it reached no longer read
+  it, so leaving it in place would have let a caller set a deadline that was
+  silently dropped. Pass `AbortSignal.timeout()` in `CallOptions` instead.
+- `RagResolutionConfig.timeoutMs` is unchanged and now documented for what it
+  is: the client timeout for an external vector backend (Qdrant), not the
+  embedder's.
 
 ## 24.1.0
 

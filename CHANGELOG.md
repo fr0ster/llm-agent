@@ -43,8 +43,17 @@ arriving, the provider's own invented timeout has nothing left to protect.
   *Migration.* A consumer that wants a ceiling passes one per call:
   `embed(text, { signal: AbortSignal.timeout(30_000) })`.
 
-With this, no timeout is set anywhere in the library. The four LLM providers
-other than SAP AI Core never had one.
+- **`EmbedderResolutionConfig.timeoutMs` is removed too.** The high-level
+  `resolveEmbedder` still accepted it and still forwarded it into the embedder
+  factory, where nothing reads it any more — so the field would have compiled,
+  passed review, and silently dropped a deadline someone thought they had set.
+  `RagResolutionConfig.timeoutMs` stays and now says what it is: the client
+  timeout for an external vector backend, not the embedder's.
+
+With this, nothing on the model path sets a timeout — no LLM provider, no
+embedder. Elsewhere the library still has two, and both are the transport's own
+rather than a decision taken over anybody's head: the Qdrant store's client
+timeout, and the MCP client's, which is passed only when a consumer sets it.
 
 ### Fixed
 

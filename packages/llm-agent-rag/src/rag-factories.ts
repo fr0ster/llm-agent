@@ -114,7 +114,6 @@ export interface EmbedderResolutionConfig {
   url?: string;
   apiKey?: string;
   model?: string;
-  timeoutMs?: number;
   /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
   resourceGroup?: string;
   /**
@@ -172,7 +171,6 @@ export function resolveEmbedder(
     url: cfg.url,
     apiKey: cfg.apiKey,
     model: cfg.model,
-    timeoutMs: cfg.timeoutMs,
     resourceGroup: cfg.resourceGroup,
     scenario: cfg.scenario,
   };
@@ -215,6 +213,11 @@ export interface RagResolutionConfig {
   dedupThreshold?: number;
   vectorWeight?: number;
   keywordWeight?: number;
+  /**
+   * Client timeout for an external vector backend (Qdrant). It is the store's,
+   * not the embedder's: embedding calls are bounded by the caller's
+   * `CallOptions.signal` and by nothing else.
+   */
   timeoutMs?: number;
   /** Search scoring strategy for hybrid RAG stores (VectorRag). */
   strategy?: ISearchStrategy;
