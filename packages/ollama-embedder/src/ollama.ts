@@ -11,14 +11,11 @@ export interface OllamaEmbedderConfig {
   ollamaUrl?: string;
   /** Required: embedding model name (e.g. 'bge-m3'). No default — must be set explicitly. */
   model: string;
-  /** Per-request timeout in milliseconds. Default: 30 000 */
-  timeoutMs?: number;
 }
 
 export class OllamaEmbedder implements IEmbedderBatch {
   private readonly ollamaUrl: string;
   readonly model: string;
-  private readonly timeoutMs: number;
 
   constructor(config: OllamaEmbedderConfig) {
     if (!config?.model) {
@@ -26,7 +23,6 @@ export class OllamaEmbedder implements IEmbedderBatch {
     }
     this.ollamaUrl = config.ollamaUrl ?? 'http://localhost:11434';
     this.model = config.model;
-    this.timeoutMs = config.timeoutMs ?? 30_000;
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
@@ -37,16 +33,15 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-        const signal = options?.signal
-          ? AbortSignal.any([options.signal, timeoutSignal])
-          : timeoutSignal;
-
+        // The caller's signal and nothing else. A ceiling of our own would run
+        // on every request and fire instead of whatever decided above us — a
+        // caller waiting out a server's Retry-After, cut before the interval
+        // is up. A consumer that wants one passes AbortSignal.timeout().
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, prompt: text }),
-          signal,
+          signal: options?.signal,
         });
 
         if (!res.ok) {
@@ -87,16 +82,15 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-        const signal = options?.signal
-          ? AbortSignal.any([options.signal, timeoutSignal])
-          : timeoutSignal;
-
+        // The caller's signal and nothing else. A ceiling of our own would run
+        // on every request and fire instead of whatever decided above us — a
+        // caller waiting out a server's Retry-After, cut before the interval
+        // is up. A consumer that wants one passes AbortSignal.timeout().
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, input: texts }),
-          signal,
+          signal: options?.signal,
         });
 
         if (!res.ok) {

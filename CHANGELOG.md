@@ -32,6 +32,67 @@ arriving, the provider's own invented timeout has nothing left to protect.
   an `AbortSignal` in `CallOptions`. Without one, a call now runs until the
   server answers or the connection breaks.
 
+- **`OpenAiEmbedder` and the Ollama embedder have no timeout at all, and no
+  option for one.** Both defaulted `timeoutMs` to thirty seconds and merged it
+  into the caller's signal on every request. Removing the default was half the
+  job: the option itself was a second way to say what `signal` already says,
+  and a per-request ceiling fixed at construction is the shape being removed.
+  `timeoutMs` is gone from both configs; what reaches the wire is the caller's
+  signal or nothing. `sap-aicore-embedder` never had either.
+
+  *Migration.* A consumer that wants a ceiling passes one per call:
+  `embed(text, { signal: AbortSignal.timeout(30_000) })`.
+
+- **`EmbedderResolutionConfig.timeoutMs` is removed too.** The high-level
+  `resolveEmbedder` still accepted it and still forwarded it into the embedder
+  factory, where nothing reads it any more — so the field would have compiled,
+  passed review, and silently dropped a deadline someone thought they had set.
+  `RagResolutionConfig.timeoutMs` stays and now says what it is: the client
+  timeout for an external vector backend, not the embedder's.
+
+- **An MCP tool call carries the caller's signal, on both transports.**
+  `McpClientAdapter.callTool` raced the caller's signal around the call rather
+  than passing it in, so an abort answered the caller and left the tool
+  running. On an ABAP write chain that means a lock still held.
+  `MCPClientWrapper.callTool` / `callTools` now take an `AbortSignal` and hand
+  it to the SDK request, and `callToolHandler` / `toolCallHandler` receive it on
+  the embedded path — where the tool runs in the caller's own process, and
+  where leaving it out would have missed the case entirely.
+
+  An abort also stops being mistaken for a lost connection: the wrapper used to
+  reconnect and call again, which is a request nobody is waiting for and, on a
+  write tool, a second attempt at the same change.
+
+  **`DEFAULT_MCP_REQUEST_TIMEOUT_MS` rises from two minutes to one hour.** A
+  default survives here against this release's grain because the SDK leaves no
+  way to decline one: `Protocol.request` reads
+  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer,
+  so sending nothing is not "no ceiling" — it is the SDK's own sixty seconds.
+  Spelling "none" as a sentinel maximum was tried and rejected; a magic number
+  standing in for infinity is worse to live with than a named number.
+
+  Which number, then, given the two failures are not symmetric. Too low cuts a
+  tool mid-flight, and on an ABAP write chain that leaves the object
+  created-but-inactive and locked by a session nobody will unlock, for someone
+  to clear by hand. Too high hangs one call in one session, which ends by
+  itself. Deployments report single steps running past fifteen minutes, so two
+  minutes was the cutting kind of wrong. An hour is a ceiling meant never to be
+  reached rather than an estimate of anything; a real limit belongs in
+  `toolTimeouts`, per tool, where a catalogue lookup and a write chain can be
+  told apart. `timeout` and `toolTimeouts` still win when set.
+
+- **The Qdrant store imposes no ceiling by default.** `timeoutMs` defaulted to
+  thirty seconds and aborted every request on its own controller. It arms no
+  timer at all now unless a consumer sets one; the package speaks to Qdrant
+  over plain `fetch` and pulls in no client library with a default of its own.
+
+Where that leaves things, exactly. On the model path — LLM providers,
+embedders — and in the vector store, this library now chooses no duration at
+all. On the MCP path it still does, and cannot stop: the SDK always arms a
+timer, so an hour on a tool call and its own sixty seconds on the protocol
+chatter we send no options with (`listTools` during connect, `ping`) both
+remain.
+
 ### Fixed
 
 - **`LlmAdapter` forwards the caller's signal to the transport.** It built the

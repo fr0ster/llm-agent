@@ -14,17 +14,36 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { toMcpError } from './error-mapping.js';
 
-/** Default per-call MCP request timeout in ms (2 minutes).
- *  Consumer can override globally via MCPClientConfig.timeout or per-tool via MCPClientConfig.toolTimeouts. */
-export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000;
+/**
+ * Default per-call MCP request timeout: one hour.
+ *
+ * A default sits here against this release's grain, because the SDK leaves no
+ * way to decline one — `Protocol.request` reads
+ * `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer.
+ * Saying nothing is not "no ceiling"; it is the SDK's own sixty seconds.
+ *
+ * So the question is only which number, and the two failures are not
+ * symmetric. Too low cuts a tool mid-flight: on an ABAP write chain that
+ * leaves the object created-but-inactive and locked by a session nobody will
+ * unlock, and someone has to clean it up by hand. Too high hangs one call in
+ * one session, which ends by itself. Deployments exist where a single step
+ * legitimately runs past fifteen minutes, so the old two minutes was the
+ * cutting kind of wrong.
+ *
+ * An hour is therefore a ceiling meant never to be reached rather than an
+ * estimate of anything. A consumer that wants a real bound sets `timeout`, and
+ * `toolTimeouts` narrows it per tool — which is where a genuine limit belongs,
+ * since a catalogue lookup and a write chain have nothing in common.
+ */
+export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 3_600_000;
 
 /**
  * Resolve the MCP request timeout for a specific tool call.
  *
  * Resolution order (first defined wins):
  *   1. config.toolTimeouts[name]  — per-tool override
- *   2. config.timeout             — global per-call default
- *   3. DEFAULT_MCP_REQUEST_TIMEOUT_MS (120 000 ms = 2 min)
+ *   2. config.timeout             — the consumer's own default
+ *   3. DEFAULT_MCP_REQUEST_TIMEOUT_MS (one hour)
  *
  * resetTimeoutOnProgress is always set to true by callTool so a slow but
  * actively-reporting tool never hits the ceiling.
@@ -100,6 +119,7 @@ export interface MCPClientConfig {
   toolCallHandler?: (
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ) => Promise<unknown>;
 
   /**
@@ -115,6 +135,7 @@ export interface MCPClientConfig {
   callToolHandler?: (
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ) => Promise<unknown>;
 
   /**
@@ -148,7 +169,7 @@ export interface MCPClientConfig {
    *  or other per-request metadata. Default = no-op. */
   requestHeadersStrategy?: IMcpRequestHeadersStrategy;
 
-  /** Default per-call MCP request timeout in ms (default 120000 = 2 min). Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
+  /** Per-call MCP request timeout in ms (default 3600000 = 1 h, a ceiling meant not to be reached). Per-tool overrides via toolTimeouts, which is where a real limit belongs. resetTimeoutOnProgress extends it while a tool reports progress. */
   timeout?: number;
 
   /**
@@ -419,22 +440,30 @@ export class MCPClientWrapper {
   /**
    * Execute a tool call
    */
-  async callTool(toolCall: ToolCall): Promise<ToolResult> {
+  async callTool(
+    toolCall: ToolCall,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
     // For embedded mode, use direct handler or server instance
     if (this.detectedTransport === 'embedded') {
       try {
         let result: unknown;
 
         if (this.config.callToolHandler) {
+          // The signal goes to the handler, not just around it. Embedded is
+          // the path where the tool runs in this very process, so a handler
+          // that ignores it keeps working after the caller has been answered.
           result = await this.config.callToolHandler(
             toolCall.name,
             toolCall.arguments,
+            signal,
           );
         } else if (this.config.toolCallHandler) {
           // Use provided handler
           result = await this.config.toolCallHandler(
             toolCall.name,
             toolCall.arguments,
+            signal,
           );
         } else {
           throw new Error(
@@ -479,6 +508,10 @@ export class MCPClientWrapper {
         { name: toolCall.name, arguments: toolCall.arguments },
         undefined,
         {
+          // The caller's deadline reaches the request itself. Racing it
+          // outside would answer the caller and leave an ABAP write chain
+          // running with its lock still held.
+          ...(signal ? { signal } : {}),
           timeout: resolveToolTimeout(toolCall.name, this.config),
           resetTimeoutOnProgress: true,
         },
@@ -498,6 +531,12 @@ export class MCPClientWrapper {
         isError: response.isError === true,
       };
     } catch (error: unknown) {
+      // An abort is not a lost connection. The caller has already been
+      // answered by the time this runs, so reconnecting and calling again
+      // sends a request nobody is waiting for — and on a write tool that is a
+      // second attempt at the same change. Where a wrapper is shared it is
+      // worse still: the disconnect drops calls belonging to other callers.
+      if (signal?.aborted) throw error;
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       // Auto-reconnect logic: if it fails, try to connect again and retry once
@@ -513,6 +552,8 @@ export class MCPClientWrapper {
           isError: response.isError === true,
         };
       } catch (retryError: unknown) {
+        // Same again before the session-recovery attempt.
+        if (signal?.aborted) throw retryError;
         // Resume-with-session failed — the server may have dropped the session.
         // Clear it and try ONE fresh connect so a truly-gone session does not
         // wedge the client.
@@ -547,9 +588,12 @@ export class MCPClientWrapper {
   /**
    * Execute multiple tool calls
    */
-  async callTools(toolCalls: ToolCall[]): Promise<ToolResult[]> {
+  async callTools(
+    toolCalls: ToolCall[],
+    signal?: AbortSignal,
+  ): Promise<ToolResult[]> {
     const results = await Promise.all(
-      toolCalls.map((toolCall) => this.callTool(toolCall)),
+      toolCalls.map((toolCall) => this.callTool(toolCall, signal)),
     );
     return results;
   }

@@ -30,7 +30,10 @@ export interface QdrantRagConfig {
   collectionName: string;
   embedder: IEmbedder;
   apiKey?: string;
-  /** Per-request timeout in ms. Default: 30 000 */
+  /**
+   * Per-request timeout in ms. **No default** — unset, a request is bounded
+   * only by the caller's own signal.
+   */
   timeoutMs?: number;
 }
 
@@ -39,7 +42,7 @@ export class QdrantRag implements IRag {
   private readonly collectionName: string;
   private readonly embedder: IEmbedder;
   private readonly apiKey?: string;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | undefined;
   private collectionEnsured = false;
 
   constructor(config: QdrantRagConfig) {
@@ -47,7 +50,7 @@ export class QdrantRag implements IRag {
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
     this.apiKey = config.apiKey;
-    this.timeoutMs = config.timeoutMs ?? 30_000;
+    this.timeoutMs = config.timeoutMs;
   }
 
   private _headers(): Record<string, string> {
@@ -61,8 +64,15 @@ export class QdrantRag implements IRag {
     init: RequestInit,
     signal?: AbortSignal,
   ): Promise<Response> {
+    // Thirty seconds used to be imposed here whether or not anyone asked. A
+    // ceiling on every request fires instead of whatever decided above it, so
+    // there is none unless the consumer set one; the caller's signal is the
+    // bound otherwise.
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const timer =
+      this.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => ctrl.abort(), this.timeoutMs);
     if (signal) {
       signal.addEventListener('abort', () => ctrl.abort(signal.reason), {
         once: true,
@@ -75,7 +85,7 @@ export class QdrantRag implements IRag {
         headers: { ...this._headers(), ...(init.headers ?? {}) },
       });
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
   }
 
