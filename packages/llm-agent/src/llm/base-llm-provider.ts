@@ -205,7 +205,7 @@ export abstract class BaseLLMProvider<
   ): Promise<T> {
     return runWithThrottleRetry(fn, {
       key: this.quotaKey(extra?.model),
-      policy: this.config.whenThrottled,
+      strategy: this.config.whenThrottled,
       isThrottled: (e: unknown) => this.isThrottled(e),
       retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
       signal: extra?.signal,

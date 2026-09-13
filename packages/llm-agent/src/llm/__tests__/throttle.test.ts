@@ -7,7 +7,6 @@ import type {
   Message,
 } from '../../interfaces/index.js';
 import {
-  DEFAULT_THROTTLE_POLICY,
   type IThrottleStrategy,
   WaitAsTold,
 } from '../../interfaces/throttle-strategy.js';
@@ -27,9 +26,6 @@ import {
   setThrottleObserver,
   type ThrottleEvent,
 } from '../throttle.js';
-
-/** The policy is a count now; the intervals come from the fake server. */
-const FAST = { maxAttempts: 5 };
 
 const tooManyRequests = (retryAfter?: string) => ({
   response: {
@@ -57,7 +53,7 @@ describe('runWithThrottleRetry', () => {
         calls += 1;
         return 'ok';
       },
-      { key: 'k', policy: FAST, isThrottled },
+      { key: 'k', isThrottled },
     );
     assert.equal(out, 'ok');
     assert.equal(calls, 1);
@@ -73,7 +69,7 @@ describe('runWithThrottleRetry', () => {
         },
         {
           key: 'k',
-          policy: { ...FAST, strategy: new WaitAsTold() },
+          strategy: new WaitAsTold(),
           isThrottled,
         },
       ),
@@ -93,7 +89,7 @@ describe('runWithThrottleRetry', () => {
           calls += 1;
           throw tooManyRequests('30');
         },
-        { key: 'reported', policy: FAST, isThrottled, retryAfterSeconds },
+        { key: 'reported', isThrottled, retryAfterSeconds },
       );
       assert.fail('should have thrown');
     } catch (e) {
@@ -114,7 +110,7 @@ describe('runWithThrottleRetry', () => {
         async () => {
           throw tooManyRequests('30');
         },
-        { key: 'shared', policy: FAST, isThrottled, retryAfterSeconds },
+        { key: 'shared', isThrottled, retryAfterSeconds },
       ),
     );
     assert.ok(gateFor('shared').remaining() > 25_000);
@@ -130,7 +126,7 @@ describe('runWithThrottleRetry', () => {
           calls += 1;
           return 'ok';
         },
-        { key: 'known', policy: FAST, isThrottled },
+        { key: 'known', isThrottled },
       );
       assert.fail('should have thrown');
     } catch (e) {
@@ -152,7 +148,7 @@ describe('runWithThrottleRetry', () => {
       },
       {
         key: 'waiting',
-        policy: { ...FAST, strategy: new WaitAsTold() },
+        strategy: new WaitAsTold(),
         isThrottled,
         retryAfterSeconds,
       },
@@ -179,7 +175,7 @@ describe('runWithThrottleRetry', () => {
         },
         {
           key: 'silent',
-          policy: { ...FAST, strategy: new WaitAsTold() },
+          strategy: new WaitAsTold(),
           isThrottled,
           retryAfterSeconds,
         },
@@ -203,7 +199,7 @@ describe('runWithThrottleRetry', () => {
         },
         {
           key: 'capped',
-          policy: { maxAttempts: 3, strategy: new WaitAsTold() },
+          strategy: new WaitAsTold({ maxAttempts: 3 }),
           isThrottled,
           retryAfterSeconds,
         },
@@ -223,7 +219,7 @@ describe('runWithThrottleRetry', () => {
     const started = Date.now();
     const out = await runWithThrottleRetry(async () => 'ok', {
       key: 'busy',
-      policy: { ...FAST, strategy: new WaitAsTold() },
+      strategy: new WaitAsTold(),
       isThrottled,
     });
     assert.equal(out, 'ok');
@@ -238,7 +234,7 @@ describe('runWithThrottleRetry', () => {
     await assert.rejects(
       runWithThrottleRetry(async () => 'ok', {
         key: 'aborting',
-        policy: { ...FAST, strategy: new WaitAsTold() },
+        strategy: new WaitAsTold(),
         isThrottled,
         signal: ac.signal,
       }),
@@ -258,7 +254,7 @@ describe('runWithThrottleRetry', () => {
         },
         {
           key: 'listeners',
-          policy: { maxAttempts: 4, strategy: new WaitAsTold() },
+          strategy: new WaitAsTold({ maxAttempts: 4 }),
           isThrottled,
           retryAfterSeconds,
           signal: ac.signal,
@@ -292,7 +288,7 @@ describe('runWithThrottleRetry', () => {
         },
         {
           key: 'own',
-          policy: { ...FAST, strategy: onceThenGiveUp },
+          strategy: onceThenGiveUp,
           isThrottled,
           retryAfterSeconds,
         },
@@ -303,10 +299,14 @@ describe('runWithThrottleRetry', () => {
     assert.ok(asked >= 2);
   });
 
-  it('caps attempts and nothing else', () => {
-    // The only bound the library sets is a count. A duration would be a guess
-    // about a caller it cannot see.
-    assert.deepEqual(Object.keys(DEFAULT_THROTTLE_POLICY), ['maxAttempts']);
+  it('has no knobs of its own — the strategy is the whole configuration', () => {
+    // A bound out here would silently overrule a strategy that had decided to
+    // keep going. Whatever a strategy wants to limit, it limits itself.
+    const call = runWithThrottleRetry(async () => 'ok', {
+      key: 'bare',
+      isThrottled,
+    });
+    return call.then((out) => assert.equal(out, 'ok'));
   });
 });
 
@@ -329,7 +329,7 @@ describe('the throttle observer', () => {
         },
         {
           key: 'watched',
-          policy: { maxAttempts: 3, strategy: new WaitAsTold() },
+          strategy: new WaitAsTold({ maxAttempts: 3 }),
           isThrottled,
           retryAfterSeconds,
         },
@@ -344,8 +344,9 @@ describe('the throttle observer', () => {
     assert.equal(seen.at(-1)?.reason, 'attempts');
   });
 
-  it('carries the policy, so the numbers beside it can be read', () => {
-    // `attempt 3` is the end under maxAttempts 3 and the middle under 5.
+  it('names the strategy that made the call', () => {
+    // Which strategy is in force is the one thing about the decision that is
+    // not visible in the numbers, and it decides how to read them.
     resetQuotaGates();
     return runWithThrottleRetry(
       (() => {
@@ -358,16 +359,14 @@ describe('the throttle observer', () => {
       })(),
       {
         key: 'watched',
-        policy: { ...FAST, strategy: new WaitAsTold() },
+        strategy: new WaitAsTold(),
         isThrottled,
         retryAfterSeconds,
       },
     ).then(() => {
-      const e = seen[0];
-      assert.equal(e?.policy.maxAttempts, FAST.maxAttempts);
-      assert.equal(e?.policy.strategy, 'wait-as-told');
-      assert.equal(e?.attempt, 1);
-      assert.equal(e?.key, 'watched');
+      assert.equal(seen[0]?.strategy, 'wait-as-told');
+      assert.equal(seen[0]?.attempt, 1);
+      assert.equal(seen[0]?.key, 'watched');
     });
   });
 
@@ -380,7 +379,7 @@ describe('the throttle observer', () => {
         },
         {
           key: 'silent',
-          policy: { maxAttempts: 1, strategy: new WaitAsTold() },
+          strategy: new WaitAsTold({ maxAttempts: 1 }),
           isThrottled,
         },
       ),
@@ -409,7 +408,7 @@ describe('the throttle observer', () => {
       })(),
       {
         key: 'watched',
-        policy: { ...FAST, strategy: new WaitAsTold() },
+        strategy: new WaitAsTold(),
         isThrottled,
         retryAfterSeconds,
       },
@@ -425,7 +424,7 @@ describe('the throttle observer', () => {
         async () => {
           throw tooManyRequests();
         },
-        { key: 'unwatched', policy: FAST, isThrottled },
+        { key: 'unwatched', isThrottled },
       ),
       (e: unknown) => isThrottledError(e),
     );
@@ -554,7 +553,7 @@ describe('the gate registry', () => {
       },
       {
         key: 'busy',
-        policy: { ...FAST, strategy: new WaitAsTold() },
+        strategy: new WaitAsTold(),
         isThrottled,
         retryAfterSeconds,
       },

@@ -4,8 +4,8 @@
  */
 
 import {
+  type IThrottleStrategy,
   ReportThrottling,
-  type ThrottlePolicy,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
@@ -112,27 +112,39 @@ function positiveIntOption(
 }
 
 /**
- * Read the optional `llm.whenThrottled` block, failing fast on a bad value.
+ * Read the optional `llm.whenThrottled` value: the name of a shipped strategy,
+ * or that name with the strategy's own options.
  *
- * One number and one name. There is nothing here for how long to wait, because
- * nothing waits unless a strategy says to, and a strategy is code — a duration
- * in YAML would be the library guessing on the operator's behalf at how long
- * their users will sit still.
+ * No duration, and no attempt cap outside the strategy. How long anyone waits
+ * and how often they come back belong to the strategy the operator chose;
+ * a number out here would overrule it.
  */
 function whenThrottledOption(
   value: unknown,
   path = 'llm.whenThrottled',
-): { whenThrottled?: Partial<ThrottlePolicy> } {
+): { whenThrottled?: IThrottleStrategy } {
   if (value === undefined || value === null) return {};
+
+  const named = (name: unknown, options: { maxAttempts?: number } = {}) => {
+    if (name === 'report') return new ReportThrottling();
+    if (name === 'wait-as-told') return new WaitAsTold(options);
+    throw new Error(
+      `Invalid ${path}: expected 'report' or 'wait-as-told', got ${JSON.stringify(name)}. Anything else is code, and is passed to the provider directly.`,
+    );
+  };
+
+  if (typeof value === 'string') return { whenThrottled: named(value) };
+
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(
-      `Invalid ${path}: expected a mapping, got ${JSON.stringify(value)}`,
+      `Invalid ${path}: expected a strategy name or a mapping, got ${JSON.stringify(value)}`,
     );
   }
+
   const raw = value as Record<string, unknown>;
-  const policy: Partial<ThrottlePolicy> = {};
+  const options: { maxAttempts?: number } = {};
   for (const [key, v] of Object.entries(raw)) {
-    if (v === undefined || v === null) continue;
+    if (key === 'strategy' || v === undefined || v === null) continue;
     // A count, not a duration: fractional attempts do not exist, and zero of
     // them is not "none" — the first attempt is included in the total, so 0
     // behaves as 1 and 1.5 as 2. Silently meaning something other than what it
@@ -144,24 +156,14 @@ function whenThrottledOption(
           `Invalid ${path}.maxAttempts: expected a positive integer, got ${JSON.stringify(v)}`,
         );
       }
-      policy.maxAttempts = n;
-      continue;
-    }
-    if (key === 'strategy') {
-      if (v !== 'report' && v !== 'wait-as-told') {
-        throw new Error(
-          `Invalid ${path}.strategy: expected 'report' or 'wait-as-told', got ${JSON.stringify(v)}. Anything else is code, and is passed to the provider directly.`,
-        );
-      }
-      policy.strategy =
-        v === 'wait-as-told' ? new WaitAsTold() : new ReportThrottling();
+      options.maxAttempts = n;
       continue;
     }
     throw new Error(
-      `Unknown ${path} key '${key}'. Known keys: maxAttempts, strategy.`,
+      `Unknown ${path} key '${key}'. Known keys: strategy, maxAttempts.`,
     );
   }
-  return Object.keys(policy).length > 0 ? { whenThrottled: policy } : {};
+  return { whenThrottled: named(raw.strategy, options) };
 }
 
 export function resolveRagSection(

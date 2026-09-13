@@ -24,11 +24,9 @@
  */
 
 import {
-  DEFAULT_THROTTLE_POLICY,
   type IThrottleStrategy,
   ReportThrottling,
   type ThrottleDecision,
-  type ThrottlePolicy,
 } from '../interfaces/throttle-strategy.js';
 import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
 
@@ -290,7 +288,8 @@ export function resetQuotaGates(): void {
 export interface ThrottleRetryOptions {
   /** Identifies the quota being spent. Limits are per model, so include it. */
   key: string;
-  policy?: Partial<ThrottlePolicy>;
+  /** What to do about a 429. Omit and nothing waits. */
+  strategy?: IThrottleStrategy;
   /** Does this error mean "too many requests"? */
   isThrottled: (error: unknown) => boolean;
   /** What the server asked us to wait, in seconds, if it said. */
@@ -317,8 +316,8 @@ export interface ThrottleRetryOptions {
 export interface ThrottleEvent {
   /** The quota: account, endpoint and model. Carries no credential. */
   key: string;
-  /** The numbers in force, and the strategy that read them. */
-  policy: { maxAttempts: number; strategy: string };
+  /** The strategy that made the call. */
+  strategy: string;
   /** 1-based, the attempt that was just refused. */
   attempt: number;
   /** Did the server name an interval, and which. Absent means it did not. */
@@ -371,10 +370,9 @@ export async function runWithThrottleRetry<T>(
   fn: () => Promise<T>,
   opts: ThrottleRetryOptions,
 ): Promise<T> {
-  const policy: ThrottlePolicy = { ...DEFAULT_THROTTLE_POLICY, ...opts.policy };
   const { gate, release } = leaseQuotaGate(opts.key);
   try {
-    return await attemptWithGate(fn, opts, policy, gate);
+    return await attemptWithGate(fn, opts, gate);
   } finally {
     release();
   }
@@ -383,10 +381,9 @@ export async function runWithThrottleRetry<T>(
 async function attemptWithGate<T>(
   fn: () => Promise<T>,
   opts: ThrottleRetryOptions,
-  policy: ThrottlePolicy,
   gate: QuotaGate,
 ): Promise<T> {
-  const strategy = policy.strategy ?? defaultStrategy;
+  const strategy = opts.strategy ?? defaultStrategy;
   let attempt = 0;
   let waited = 0;
   // True when the wait ahead is one this caller already chose, in the catch
@@ -405,9 +402,8 @@ async function attemptWithGate<T>(
           attempt,
           retryAfterSeconds: shut / 1000,
           waitedMs: waited,
-          policy,
         });
-        report(opts, policy, strategy, {
+        report(opts, strategy, {
           attempt,
           retryAfterSeconds: shut / 1000,
           waitMs: shut,
@@ -435,7 +431,6 @@ async function attemptWithGate<T>(
         attempt,
         retryAfterSeconds: retryAfter,
         waitedMs: waited,
-        policy,
       });
 
       // Recorded whether or not THIS caller goes on. What the server said is
@@ -444,7 +439,7 @@ async function attemptWithGate<T>(
       // refusal. Knowing is shared; waiting is not.
       gate.penalise(decision.waitMs);
 
-      report(opts, policy, strategy, {
+      report(opts, strategy, {
         attempt,
         retryAfterSeconds: retryAfter,
         waitMs: decision.waitMs,
@@ -468,7 +463,6 @@ async function attemptWithGate<T>(
 
 function report(
   opts: ThrottleRetryOptions,
-  policy: ThrottlePolicy,
   strategy: IThrottleStrategy,
   info: {
     attempt: number;
@@ -480,7 +474,7 @@ function report(
 ): void {
   emit({
     key: opts.key,
-    policy: { maxAttempts: policy.maxAttempts, strategy: strategy.name },
+    strategy: strategy.name,
     attempt: info.attempt,
     retryAfterSeconds: info.retryAfterSeconds,
     waitMs: info.waitMs,

@@ -317,7 +317,7 @@ describe('AnthropicProvider — chat() usage', () => {
 // ---------------------------------------------------------------------------
 
 describe('AnthropicProvider — rate limiting', () => {
-  const waits = { maxAttempts: 5, strategy: new WaitAsTold() };
+  const waits = new WaitAsTold();
 
   it('retries a 429 on chat() and returns the eventual answer', async () => {
     resetQuotaGates();

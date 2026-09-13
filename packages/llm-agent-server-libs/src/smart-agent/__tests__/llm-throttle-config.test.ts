@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import { resolveSmartServerConfig } from '../config.js';
 import { makeDefaultRoleLlm } from '../llm/role-llm-resolver.js';
 
@@ -31,29 +32,24 @@ const llmOf = (yaml: Record<string, unknown>) =>
     | undefined;
 
 describe('llm.whenThrottled from YAML', () => {
-  it('reaches the resolved config', () => {
-    const llm = llmOf(yamlWith({ whenThrottled: { maxAttempts: 3 } }));
-    assert.deepEqual(llm?.whenThrottled, { maxAttempts: 3 });
-  });
-
-  it("names a shipped strategy, the only durations being the server's own", () => {
-    const llm = llmOf(
-      yamlWith({ whenThrottled: { strategy: 'wait-as-told' } }),
-    );
+  it('takes a bare strategy name', () => {
+    const llm = llmOf(yamlWith({ whenThrottled: 'wait-as-told' }));
     assert.equal(
-      (llm?.whenThrottled as { strategy?: { name?: string } })?.strategy?.name,
+      (llm?.whenThrottled as { name?: string })?.name,
       'wait-as-told',
     );
   });
 
   it("refuses a duration, which is not the operator's to guess", () => {
-    // How long anyone's users will sit still is not a YAML question. Waiting is
-    // a strategy, and a strategy is code.
+    // How long anyone's users will sit still is not a YAML question, and not
+    // the library's either. Waiting is a strategy, and a strategy is code.
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          yamlWith({ whenThrottled: { maxTotalWaitMs: 20000 } }),
+          yamlWith({
+            whenThrottled: { strategy: 'wait-as-told', maxTotalWaitMs: 20000 },
+          }),
           {},
         ),
       /Unknown llm\.whenThrottled key 'maxTotalWaitMs'/,
@@ -65,7 +61,7 @@ describe('llm.whenThrottled from YAML', () => {
       () =>
         resolveSmartServerConfig(
           {},
-          yamlWith({ whenThrottled: { strategy: 'exponential' } }),
+          yamlWith({ whenThrottled: 'exponential' }),
           {},
         ),
       /expected 'report' or 'wait-as-told'/,
@@ -137,13 +133,13 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
     },
   });
 
-  it('carries a valid policy through', () => {
+  it('carries a strategy through', () => {
     const llm = resolveSmartServerConfig(
       {},
-      mapYaml({ whenThrottled: { maxAttempts: 2 } }),
+      mapYaml({ whenThrottled: 'wait-as-told' }),
       {},
-    ).llm as Record<string, { whenThrottled?: unknown }>;
-    assert.deepEqual(llm.main?.whenThrottled, { maxAttempts: 2 });
+    ).llm as Record<string, { whenThrottled?: { name?: string } }>;
+    assert.equal(llm.main?.whenThrottled?.name, 'wait-as-told');
   });
 
   it('fails fast on a misspelled key under a role', () => {
@@ -151,7 +147,9 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
       () =>
         resolveSmartServerConfig(
           {},
-          mapYaml({ whenThrottled: { maxAttempt: 2 } }),
+          mapYaml({
+            whenThrottled: { strategy: 'wait-as-told', maxAttempt: 2 },
+          }),
           {},
         ),
       /Unknown llm\.main\.whenThrottled key 'maxAttempt'/,
@@ -163,7 +161,9 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
       () =>
         resolveSmartServerConfig(
           {},
-          mapYaml({ whenThrottled: { maxAttempts: 0 } }),
+          mapYaml({
+            whenThrottled: { strategy: 'wait-as-told', maxAttempts: 0 },
+          }),
           {},
         ),
       /Invalid llm\.main\.whenThrottled\.maxAttempts/,
@@ -174,25 +174,15 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
     // `${ENV_VAR}` substitution leaves numbers as strings, and the resolved
     // config is typed as though they were numbers. A custom strategy would be
     // handed a string and told it was a number.
-    const llm = resolveSmartServerConfig(
-      {},
-      mapYaml({
-        whenThrottled: { maxAttempts: '3' },
-        maxTokens: '8192',
-      }),
-      {},
-    ).llm as Record<
-      string,
-      { whenThrottled?: Record<string, unknown>; maxTokens?: unknown }
-    >;
-    assert.strictEqual(llm.main?.whenThrottled?.maxAttempts, 3);
+    const llm = resolveSmartServerConfig({}, mapYaml({ maxTokens: '8192' }), {})
+      .llm as Record<string, { maxTokens?: unknown }>;
     assert.strictEqual(llm.main?.maxTokens, 8192);
   });
 
   it('leaves the rest of the entry untouched', () => {
     const llm = resolveSmartServerConfig(
       {},
-      mapYaml({ whenThrottled: { maxAttempts: 2 } }),
+      mapYaml({ whenThrottled: 'wait-as-told' }),
       {},
     ).llm as Record<string, { model?: string; provider?: string }>;
     assert.equal(llm.main?.model, 'qwen2.5');
@@ -240,15 +230,15 @@ describe('makeDefaultRoleLlm', () => {
         apiKey: 'sk-test',
         model: 'gpt-4o',
         maxTokens: 8192,
-        whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 20_000 },
+        whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
       },
       0.1,
     );
     const config = configOf(llm);
-    assert.deepEqual(config?.whenThrottled, {
-      maxAttempts: 3,
-      maxTotalWaitMs: 20_000,
-    });
+    assert.equal(
+      (config?.whenThrottled as { name?: string })?.name,
+      'wait-as-told',
+    );
     assert.equal(config?.maxTokens, 8192);
   });
 

@@ -286,7 +286,7 @@ const tooManyRequests = (retryAfter?: string) =>
   });
 
 describe('SapCoreAIProvider — rate limiting', () => {
-  const waits = { maxAttempts: 5, strategy: new WaitAsTold() };
+  const waits = new WaitAsTold();
 
   it('retries a 429 and returns the eventual answer', async () => {
     resetQuotaGates();
@@ -312,7 +312,7 @@ describe('SapCoreAIProvider — rate limiting', () => {
     resetQuotaGates();
     const provider = new SapCoreAIProvider({
       model: 'anthropic--claude-4.5-sonnet',
-      whenThrottled: { maxAttempts: 2, strategy: new WaitAsTold() },
+      whenThrottled: new WaitAsTold({ maxAttempts: 2 }),
     });
     // @ts-expect-error — stub the SDK client for test
     provider.createClient = () => ({

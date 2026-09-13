@@ -253,7 +253,7 @@ import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 
 new SapCoreAIProvider({
   model,
-  whenThrottled: { strategy: new WaitAsTold(), maxAttempts: 3 },
+  whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
 });
 ```
 

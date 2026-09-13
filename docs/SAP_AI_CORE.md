@@ -84,7 +84,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 | `resourceGroup` | `string` | — | SAP AI Core resource group |
 | `credentials` | `SapAICoreCredentials` | — | Programmatic OAuth2 credentials (bypasses env var) |
 | `apiKey` | `string` | — | Not used by SAP provider (auth handled by SDK) |
-| `whenThrottled` | `object` | — | `maxAttempts` and a `strategy`. Omit and nothing waits — see [Throttling](#throttling-429) |
+| `whenThrottled` | `IThrottleStrategy` | — | The strategy itself. Omit and nothing waits — see [Throttling](#throttling-429) |
 | `log` | `object` | — | Optional logger with `debug()` and `error()`. Throttling is not reported here — see `setThrottleObserver` below, which covers every provider |
 
 ### Environment Variables
@@ -235,14 +235,17 @@ import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 new SapCoreAIProvider({
   model: 'anthropic--claude-4.5-sonnet',
   resourceGroup: 'default',
-  whenThrottled: { strategy: new WaitAsTold(), maxAttempts: 3 },
+  whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
 });
 ```
 
-`maxAttempts` is the only number in the policy, and it is a count rather than a
-duration — the one bound that can be set without knowing anything about the
-caller. A consumer who wants exponential backoff writes a strategy: that is a
-guess about someone else's server, and a guess belongs to whoever owns it.
+There is no policy object and no number of ours beside the strategy. Whatever a
+strategy wants to bound, it bounds on its own terms — `WaitAsTold` takes its own
+`maxAttempts`, and unbounded is its default. A cap sitting outside would
+silently overrule a strategy that had decided to keep going.
+
+A consumer who wants exponential backoff writes one: that is a guess about
+someone else's server, and a guess belongs to whoever owns it.
 
 A caller that wants a deadline already has one — pass an `AbortSignal`. It is
 your deadline, from your own clock, rather than a number the library invented.

@@ -11,16 +11,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed — BREAKING
 
-- **Nothing waits unless the consumer says so.** 23.0.0 shipped a wait budget in
-  milliseconds, which is a timeout by another name — and a timeout set by the
-  one party that cannot see who is waiting at the other end. A CLI can sit out a
-  minute; an HTTP service answering inside a request cannot. The library now
-  establishes facts and leaves the decision where the knowledge is.
+- **`whenThrottled` is the strategy, and the policy object is gone.** 23.0.0
+  shipped a wait budget in milliseconds, which is a timeout by another name —
+  and a timeout set by the one party that cannot see who is waiting at the other
+  end. A CLI can sit out a minute; an HTTP service answering inside a request
+  cannot. The library now establishes facts and leaves every decision where the
+  knowledge is.
 
-  `maxTotalWaitMs`, `baseDelayMs` and `maxDelayMs` are gone from
-  `ThrottlePolicy`, and with them the exponential backoff: a computed delay is a
-  guess about someone else's server, and a guess belongs to whoever is willing
-  to own it. What remains is `maxAttempts`, a count, plus a `strategy`.
+  `ThrottlePolicy` is removed entirely, `maxTotalWaitMs`, `baseDelayMs`,
+  `maxDelayMs` and the exponential backoff with it: a computed delay is a guess
+  about someone else's server. `maxAttempts` went too, and not only because it
+  is a number — a cap sitting outside the strategy silently overrules a strategy
+  that had decided to keep going. Whatever a strategy wants to bound, it bounds
+  itself: `WaitAsTold` takes its own `maxAttempts`, unbounded by default.
 
   Two strategies ship:
 
@@ -39,9 +42,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the failure immediately with the interval remaining. Imposing a delay nobody
   consented to was the budget's mistake wearing the word "guarantee".
 
-- **`llm.whenThrottled` in YAML takes `maxAttempts` and a strategy name**
-  (`report` or `wait-as-told`). A duration there would be the operator guessing
-  how long their users will sit still.
+- **`llm.whenThrottled` in YAML is a strategy name** — `report` or
+  `wait-as-told` — optionally with that strategy's own options. A duration there
+  would be the operator guessing how long their users will sit still.
 
 ### Security
 

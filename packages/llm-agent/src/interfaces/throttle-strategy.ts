@@ -1,49 +1,33 @@
 /**
  * What a provider does when a server throttles it.
  *
- * The library establishes facts and never decides how long a caller may be
- * held. A 429 is a fact; the interval the server named is a fact; that the
- * quota is shut until a given moment is a fact. Whether to sit out that
- * interval or to hand the failure to a user is not — it depends on who is
- * waiting at the other end, which the library cannot see. A CLI can happily
- * wait a minute; an HTTP service answering inside a request cannot.
+ * The library establishes facts and decides nothing. This is a 429. The server
+ * named this interval, or named none. The quota is shut until then. What to do
+ * about it — wait, give up, count attempts, give up after the third — belongs
+ * entirely to the consumer, because the consumer is the only one who knows who
+ * is waiting at the other end.
  *
- * So waiting is a strategy, supplied by the consumer, and nothing waits by
- * default. Two are shipped, because between them they cover what anyone
- * actually wants:
+ * So `whenThrottled` is not a policy object with the library's numbers in it.
+ * It is the strategy itself. Anything a strategy wants to bound, it bounds on
+ * its own terms: a `maxAttempts` sitting outside would silently overrule a
+ * strategy that had already decided to keep going.
  *
- * - `ReportThrottling` — never wait. Return the failure with what the server
- *   said, and let the caller decide.
- * - `WaitAsTold` — wait exactly as long as the server asked, and only then.
- *   When it named no interval, report instead of guessing at milliseconds.
+ * Two ship, and neither invents a duration:
  *
- * Neither invents a duration. A consumer who wants exponential backoff writes
- * it: that is a guess about someone else's server, and a guess belongs to
- * whoever is willing to own it.
+ * - `ReportThrottling` — never waits. Returns the failure with what the server
+ *   said, and the caller decides. This is what happens when nothing is set.
+ * - `WaitAsTold` — waits exactly the interval the server named, and reports
+ *   when it named none, rather than guessing at milliseconds.
  */
 
-export interface ThrottlePolicy {
-  /**
-   * Total attempts INCLUDING the first. Read only by a strategy that retries.
-   *
-   * A count, not a duration — the one bound the library can set without
-   * knowing anything about the caller.
-   */
-  maxAttempts: number;
-  /** How the facts become a decision. Omit for `ReportThrottling`. */
-  strategy?: IThrottleStrategy;
-}
-
-/** What the strategy is told. */
+/** What the strategy is told. All of it observed, none of it assumed. */
 export interface ThrottleContext {
   /** 1-based. The attempt just refused, or 0 when the quota was known shut. */
   attempt: number;
   /** What the server asked us to wait, in seconds, if it said. */
   retryAfterSeconds?: number;
-  /** Waiting already spent on this call. */
+  /** How long this call has already spent waiting. */
   waitedMs: number;
-  /** The numbers in force, so a strategy need not close over them. */
-  policy: ThrottlePolicy;
 }
 
 export interface ThrottleDecision {
@@ -56,18 +40,14 @@ export interface ThrottleDecision {
   waitMs: number;
   /** Whether this caller sits it out and tries again. */
   retry: boolean;
-  /** When not retrying, why. */
-  reason?: 'reported' | 'attempts' | 'no-interval';
+  /** When not retrying, why — free text from a consumer's own strategy. */
+  reason?: string;
 }
 
 export interface IThrottleStrategy {
   readonly name: string;
   decide(ctx: ThrottleContext): ThrottleDecision;
 }
-
-export const DEFAULT_THROTTLE_POLICY: Omit<ThrottlePolicy, 'strategy'> = {
-  maxAttempts: 5,
-};
 
 /** Seconds the server named, in milliseconds, or 0 when it named none. */
 function servedWaitMs(retryAfterSeconds: number | undefined): number {
@@ -77,7 +57,7 @@ function servedWaitMs(retryAfterSeconds: number | undefined): number {
 }
 
 /**
- * Never wait. The default.
+ * Never wait. What happens when nothing is configured.
  *
  * The failure goes up carrying what the server said, and the caller — who knows
  * whether anyone is waiting on the other end — decides whether to sit it out.
@@ -99,27 +79,33 @@ export class ReportThrottling implements IThrottleStrategy {
 /**
  * Wait exactly as long as the server asked, and only then.
  *
- * For a caller that has no one waiting on it — a batch job, a CLI — and would
+ * For a caller with nobody waiting on it — a batch job, a CLI — that would
  * rather have the answer late than not at all.
  *
- * When the server named no interval, this reports instead of guessing. A
- * missing `Retry-After` is itself a signal: SAP AI Core documents the header,
- * so its absence says something is not as expected, and a number we invent
- * would be an estimate of a system we cannot see.
+ * When the server names no interval this reports instead of guessing. A missing
+ * `Retry-After` is itself a signal: SAP AI Core documents the header, so its
+ * absence says something is not as expected, and a number invented here would
+ * be an estimate of a system we cannot see.
+ *
+ * `maxAttempts` is the strategy's own, because choosing this strategy is the
+ * consumer's act and so is bounding it. Omit it and the strategy keeps
+ * returning for as long as the server keeps naming an interval; bound that with
+ * an `AbortSignal`, which is a deadline from the caller's own clock.
  */
 export class WaitAsTold implements IThrottleStrategy {
   readonly name = 'wait-as-told';
+  private readonly maxAttempts: number;
 
-  decide({
-    attempt,
-    retryAfterSeconds,
-    policy,
-  }: ThrottleContext): ThrottleDecision {
+  constructor(options: { maxAttempts?: number } = {}) {
+    this.maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+  }
+
+  decide({ attempt, retryAfterSeconds }: ThrottleContext): ThrottleDecision {
     const waitMs = servedWaitMs(retryAfterSeconds);
     if (waitMs <= 0) {
       return { waitMs: 0, retry: false, reason: 'no-interval' };
     }
-    if (attempt >= policy.maxAttempts) {
+    if (attempt >= this.maxAttempts) {
       return { waitMs, retry: false, reason: 'attempts' };
     }
     return { waitMs, retry: true };

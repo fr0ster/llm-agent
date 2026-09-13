@@ -2257,13 +2257,14 @@ new OpenAIProvider({ apiKey, model: 'gpt-4o' });
 new OpenAIProvider({
   apiKey,
   model: 'gpt-4o',
-  whenThrottled: { strategy: new WaitAsTold(), maxAttempts: 3 },
+  whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
 });
 ```
 
-`maxAttempts` is a count, the only bound settable without knowing the caller.
-A deadline is expressed the way deadlines already are, with an `AbortSignal`
-from the caller's own clock.
+Nothing of ours sits beside the strategy. `WaitAsTold` takes its own
+`maxAttempts` — unbounded by default — because choosing the strategy and
+bounding it are the same person's decision. A deadline is expressed the way
+deadlines already are, with an `AbortSignal` from the caller's own clock.
 
 From a server's YAML, the same two by name:
 
@@ -2271,9 +2272,10 @@ From a server's YAML, the same two by name:
 llm:
   provider: sap-ai-sdk
   model: anthropic--claude-4.5-sonnet
-  whenThrottled:
-    strategy: wait-as-told
-    maxAttempts: 3
+  whenThrottled: wait-as-told        # or, with the strategy's own options:
+  # whenThrottled:
+  #   strategy: wait-as-told
+  #   maxAttempts: 3
 ```
 
 There is no duration to put there. Anything beyond these two is code, passed to

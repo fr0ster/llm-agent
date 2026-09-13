@@ -522,7 +522,7 @@ const tooManyRequests = (retryAfter?: string) =>
   });
 
 describe('OpenAIProvider — rate limiting', () => {
-  const waits = { maxAttempts: 5, strategy: new WaitAsTold() };
+  const waits = new WaitAsTold();
 
   it('retries a 429 and returns the eventual answer', async () => {
     resetQuotaGates();
@@ -554,7 +554,7 @@ describe('OpenAIProvider — rate limiting', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: { maxAttempts: 2, strategy: new WaitAsTold() },
+      whenThrottled: new WaitAsTold({ maxAttempts: 2 }),
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
@@ -578,7 +578,7 @@ describe('OpenAIProvider — rate limiting', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: { maxAttempts: 1, strategy: new WaitAsTold() },
+      whenThrottled: new WaitAsTold({ maxAttempts: 1 }),
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
@@ -644,10 +644,8 @@ describe('OpenAIProvider — rate limiting', () => {
       apiKey: 'test-key',
       model: 'gpt-4o',
       whenThrottled: {
-        strategy: {
-          name: 'never-wait',
-          decide: () => ({ waitMs: 0, retry: false, reason: 'attempts' }),
-        },
+        name: 'never-wait',
+        decide: () => ({ waitMs: 0, retry: false, reason: 'attempts' }),
       },
     });
     let calls = 0;
@@ -667,7 +665,7 @@ describe('OpenAIProvider — the quota a per-request model spends', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 2 },
+      whenThrottled: new WaitAsTold({ maxAttempts: 1 }),
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
