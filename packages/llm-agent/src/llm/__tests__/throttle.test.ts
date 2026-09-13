@@ -662,6 +662,29 @@ describe('BaseLLMProvider rate-limit hooks', () => {
     assert.equal(provider.readsRetryAfter(tooManyRequests()), undefined);
   });
 
+  it('reads a blank header as "did not say", not as zero', () => {
+    // Number('') is 0, so reading it arithmetically would report an interval
+    // the server never named. The absence is itself the signal: Anthropic
+    // returns a 429 with no Retry-After when a spend cap is reached, and that
+    // one does not clear by waiting at all.
+    for (const blank of ['', ' ', '\t']) {
+      assert.equal(
+        provider.readsRetryAfter(tooManyRequests(blank)),
+        undefined,
+        `a header of ${JSON.stringify(blank)} must read as absent`,
+      );
+    }
+  });
+
+  it('still reads a genuine zero as zero', () => {
+    assert.equal(provider.readsRetryAfter(tooManyRequests('0')), 0);
+  });
+
+  it('ignores a header it cannot make sense of', () => {
+    assert.equal(provider.readsRetryAfter(tooManyRequests('soon')), undefined);
+    assert.equal(provider.readsRetryAfter(tooManyRequests('-5')), undefined);
+  });
+
   it('keys the quota by model, since that is how limits are metered', () => {
     assert.match(provider.keyFor(), /some-model/);
   });

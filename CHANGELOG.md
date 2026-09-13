@@ -70,6 +70,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **A blank `Retry-After` reads as "the server did not say", not as zero.**
+  `Number('')` is 0, so an empty or whitespace header reported an interval the
+  server never named. The absence is itself the signal — Anthropic returns a 429
+  with no `Retry-After` when a spend cap is reached, and that one does not clear
+  by waiting at all, so a strategy told "wait 0 seconds" would retry into it
+  forever.
+
+  A numeric header is also no longer reconsidered as a date: Node's fallback
+  parser reads `-5` as the year 2001, which turned a malformed value into
+  "retry immediately".
+
 - **A failed streaming call now writes a response trace** (#290). `DEBUG_LLM`
   left only the request: the loop returned on the error chunk before the
   response was written, in both the tool loop and the pass-through path. That is

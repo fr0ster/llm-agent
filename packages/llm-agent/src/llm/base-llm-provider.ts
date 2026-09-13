@@ -165,17 +165,32 @@ export abstract class BaseLLMProvider<
   }
 
   /**
-   * How long the server asked us to wait.
+   * How long the server asked us to wait, or undefined if it did not say.
    *
-   * `Retry-After` is seconds in the SAP AI Core contract and is usually seconds
-   * elsewhere, but the HTTP spec also allows an HTTP-date, so both are read.
+   * RFC 9110 allows two forms, `delay-seconds` and an HTTP-date, and they are
+   * told apart by the fact that a valid date never parses as a number. SAP AI
+   * Core documents seconds ("Time in seconds to wait before retrying"); the
+   * date form is read because the spec permits it, not because anyone sends it.
+   *
+   * An empty or blank header is "did not say", not "zero". `Number('')` is 0,
+   * so reading it arithmetically would have us report an interval the server
+   * never named — a lie in the one place it costs most, since the absence is
+   * itself the signal. Anthropic returns a 429 with no `Retry-After` when a
+   * spend cap is reached, and that one does not clear by waiting at all.
    */
   protected retryAfterSeconds(error: unknown): number | undefined {
-    const raw = headerOf(error, 'retry-after');
-    if (raw === undefined) return undefined;
+    const raw = headerOf(error, 'retry-after')?.trim();
+    if (raw === undefined || raw === '') return undefined;
+
+    // Numeric first, and once it is numeric it is never reconsidered as a date.
+    // Node's fallback date parser is lenient enough to read '-5' as the year
+    // 2001, which would turn a malformed header into "retry immediately".
     const seconds = Number(raw);
-    if (Number.isFinite(seconds) && seconds >= 0) return seconds;
-    const when = Date.parse(String(raw));
+    if (!Number.isNaN(seconds)) {
+      return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+    }
+
+    const when = Date.parse(raw);
     if (!Number.isNaN(when)) return Math.max(0, (when - Date.now()) / 1000);
     return undefined;
   }
