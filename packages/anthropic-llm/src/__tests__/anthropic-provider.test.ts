@@ -420,3 +420,87 @@ describe('AnthropicProvider — one quota per account and endpoint', () => {
     assert.ok(!keyOf(p).includes('sk-secret-value'));
   });
 });
+
+describe("AnthropicProvider — the caller's deadline", () => {
+  it('hands the signal to the streaming request', async () => {
+    // This path runs on fetch rather than axios, which is how it was missed:
+    // the two edits that wired the other providers silently matched nothing
+    // here, and "every provider honours it" was true of two out of three.
+    resetQuotaGates();
+    const provider = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+    });
+    const originalFetch = globalThis.fetch;
+    let seen: AbortSignal | undefined;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      seen = init?.signal ?? undefined;
+      return new Response(
+        [
+          'event: content_block_delta',
+          'data: {"delta":{"type":"text_delta","text":"hi"}}',
+          '',
+          '',
+        ].join('\n'),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    try {
+      const ac = new AbortController();
+      for await (const _ of provider.streamChat(
+        [{ role: 'user', content: 'hi' }],
+        undefined,
+        { signal: ac.signal },
+      )) {
+        // drain
+      }
+      assert.equal(
+        seen,
+        ac.signal,
+        'a deadline that stops only the waiting leaves the stream running',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('ends the streaming wait when the caller aborts', async () => {
+    resetQuotaGates();
+    const provider = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+      // Bounded so a regression fails on the clock rather than hanging.
+      whenThrottled: new WaitAsTold({ maxAttempts: 2 }),
+    });
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response('slow down', {
+        status: 429,
+        headers: { 'retry-after': '0.5' },
+      });
+    }) as typeof fetch;
+    try {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 20);
+      const started = Date.now();
+      await assert.rejects(async () => {
+        for await (const _ of provider.streamChat(
+          [{ role: 'user', content: 'hi' }],
+          undefined,
+          { signal: ac.signal },
+        )) {
+          // drain
+        }
+      });
+      assert.ok(
+        Date.now() - started < 400,
+        `the interval must not outlast the caller, waited ${Date.now() - started}ms`,
+      );
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

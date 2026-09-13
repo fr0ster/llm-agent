@@ -160,6 +160,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify(requestBody),
+          signal: options?.signal,
         });
 
         if (!res.ok || !res.body) {
@@ -175,7 +176,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         }
         return res as OpenStream;
       },
-      { model },
+      { model, signal: options?.signal },
     );
 
     const reader = response.body.getReader();
