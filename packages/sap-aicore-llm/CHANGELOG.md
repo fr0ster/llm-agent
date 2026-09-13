@@ -1,5 +1,19 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 25.0.0
+
+The consumer owns the transport numbers too (#296).
+
+### Breaking
+
+- **No transport timeout of ours.** The per-call HTTPS agent used sixty seconds
+  and the per-stream one a hundred and twenty. Both were guesses about someone
+  else's model, prompt and tool loop, and a large tool-loop input legitimately
+  outran them — the call then failed for a reason that had nothing to do with
+  the server. The deadline is the caller's `AbortSignal`, which the provider
+  already passes to the SDK on both paths. A deployment wanting a hard bound
+  supplies one.
+
 ## 24.1.0
 
 The deadline 24.0.0 promised (#294).

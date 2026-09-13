@@ -9,6 +9,88 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [25.0.0] — 2026-09-13
+
+The consumer owns the transport numbers too (#296).
+
+22.2.0 established one rule for throttling: the library establishes facts and
+decides nothing, because how long anyone may be held depends on who is waiting
+at the other end and this library cannot see them. Three places still broke it
+— a socket timeout, a retry policy nobody asked for, and an adapter that
+accepted the caller's deadline and dropped it. This release finishes the job.
+
+### Breaking
+
+- **`RetryLlm` is off unless you ask for it, and takes a strategy.** The builder
+  used to install it on everyone with `maxAttempts: 3`, `backoffMs: 2000` and
+  `retryOn: [429, 500, 502, 503]`. Those numbers were spent against somebody
+  else's provider, and the name misled: the loop counts retries after the first
+  call, so three meant four requests. Its constructor now takes an
+  `IFailureStrategy`, defaulting to `ReportFailure`, and the builder installs
+  the decorator only when one is configured. `RetryOptions` is gone from the
+  public surface.
+
+  *Migration.* To keep the old behaviour, ask for it in your own words:
+
+  ```ts
+  import { RetryWithBackoff } from '@mcp-abap-adt/llm-agent';
+
+  new RetryLlm(inner, new RetryWithBackoff({
+    attempts: 3, firstWaitMs: 2000, statuses: [429, 500, 502, 503],
+  }));
+  ```
+
+  or set `whenFailed` on `MakeLlmConfig` / `SmartAgentConfig`. A config file's
+  existing `agent.retry` block keeps working unchanged — it is reshaped into
+  the same strategy, because those numbers were already the consumer's.
+
+- **The SAP AI Core provider sets no transport timeout.** Sixty seconds on a
+  call and a hundred and twenty on a stream were guesses about someone else's
+  model, prompt and tool loop; a large tool-loop input legitimately outran them
+  and the call died for a reason that had nothing to do with the server. The
+  deadline is the caller's `AbortSignal`. A deployment that wants a hard bound
+  passes one; without it a call runs until the server answers or the connection
+  breaks.
+
+### Added
+
+- **`IFailureStrategy`, the sibling of `IThrottleStrategy`.** Exported from the
+  main package with `FailureContext`, `FailureDecision`, and two
+  implementations. `ReportFailure` never waits and is what happens when nothing
+  is configured; `RetryWithBackoff` is the classic policy with its attempts,
+  first wait, statuses and mid-stream hints named by whoever constructs it and
+  no defaults in the library.
+
+  Separate from `IThrottleStrategy` rather than folded into it, because the two
+  differ in what is known. A `429` carries the server's own interval, and the
+  honest options are to observe it or report it. A `502` carries nothing, so
+  every number after one can only come from the consumer.
+
+- **`whenFailed` on `MakeLlmConfig` and `SmartAgentConfig`.**
+
+### Fixed
+
+- **`LlmAdapter` forwards the caller's signal to the transport.** 24.1.0 wired
+  `signal` through every provider and said so, and that much was true — but
+  `makeLlm` returns `LlmAdapter(LlmProviderBridge(provider))` on every branch,
+  and the adapter built the inner call's options from four fields with `signal`
+  not among them. It raced the promise instead: on abort the caller was
+  answered at once and the HTTP request ran on, holding a socket and a response
+  nobody would read. So on the path every consumer actually uses, the deadline
+  24.0.0 promised and 24.1.0 delivered still did not arrive. `BaseAgentLlmBridge`
+  now declares `signal` and the adapter passes it, on both the chat and the
+  streaming path.
+
+- **`extractStatusCode` / `isRetryableStatus` moved to a leaf module**
+  (`resilience/status.ts`), so the strategies in `interfaces/` and the retry
+  decorators share one classification without a cycle between the layers. Both
+  names are still exported from where they were.
+
+
+## [25.0.0] — 2026-09-13
+
+Release 25.0.0.
+
 ## [24.1.0] — 2026-09-13
 
 The deadline 24.0.0 promised (#294).

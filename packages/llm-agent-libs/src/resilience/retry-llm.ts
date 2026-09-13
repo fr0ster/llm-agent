@@ -1,50 +1,44 @@
 /**
- * RetryLlm — ILlm decorator that retries transient failures with exponential backoff.
+ * RetryLlm — ILlm decorator that retries a failed call, as far as the
+ * consumer's strategy says to.
  *
  * Composition order: RetryLlm → CircuitBreakerLlm → LlmAdapter
  * Retry sits outside the circuit breaker so that retry attempts are not
  * counted as separate failures.
+ *
+ * It used to carry its own numbers — three attempts, a two-second doubling
+ * backoff, four statuses — and the builder installed it on everyone whether or
+ * not they had asked. Those were guesses about somebody else's provider and
+ * somebody else's caller, of exactly the kind `IThrottleStrategy` removed from
+ * the throttling path. Now the decision belongs to an `IFailureStrategy`, and
+ * `RetryWithBackoff` is how a consumer asks for the old behaviour in its own
+ * words.
  */
 
 import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  extractStatusCode,
+  type FailureContext,
   findThrottled,
-  isRetryableStatus,
+  type IFailureStrategy,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
   type LlmTool,
+  ReportFailure,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 
-export interface RetryOptions {
-  /** Maximum number of retry attempts (total calls = maxAttempts + 1). Default: 3. */
-  maxAttempts: number;
-  /** Initial backoff delay in ms. Doubles each attempt. Default: 2000. */
-  backoffMs: number;
-  /** HTTP status codes that trigger retry. Default: [429, 500, 502, 503]. */
-  retryOn: number[];
-  /** Substrings in error message that trigger mid-stream retry (replays entire stream). Default: []. */
-  retryOnMidStream: string[];
-}
-
-const DEFAULT_OPTIONS: RetryOptions = {
-  maxAttempts: 3,
-  backoffMs: 2000,
-  retryOn: [429, 500, 502, 503],
-  retryOnMidStream: [],
-};
-
 export class RetryLlm implements ILlm {
-  private readonly opts: RetryOptions;
+  private readonly strategy: IFailureStrategy;
   healthCheck?: ILlm['healthCheck'];
 
   constructor(
     private readonly inner: ILlm,
-    options?: Partial<RetryOptions>,
+    strategy: IFailureStrategy = new ReportFailure(),
   ) {
-    this.opts = { ...DEFAULT_OPTIONS, ...options };
+    this.strategy = strategy;
     if (inner.healthCheck) {
       this.healthCheck = inner.healthCheck.bind(inner);
     }
@@ -59,22 +53,19 @@ export class RetryLlm implements ILlm {
     tools?: LlmTool[],
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
-    for (let attempt = 0; ; attempt++) {
+    let waitedMs = 0;
+    for (let attempt = 1; ; attempt++) {
       if (options?.signal?.aborted) {
         return { ok: false, error: new LlmError('Aborted', 'ABORTED') };
       }
 
       const result = await this.inner.chat(messages, tools, options);
+      if (result.ok) return result;
 
-      if (
-        result.ok ||
-        attempt >= this.opts.maxAttempts ||
-        !this.isRetryable(result.error)
-      ) {
-        return result;
-      }
+      const decision = this.decide(result.error, attempt, waitedMs, false);
+      if (!decision.retry) return result;
 
-      await this.backoff(attempt, options?.signal);
+      waitedMs += await this.wait(decision.waitMs, options?.signal);
     }
   }
 
@@ -83,14 +74,15 @@ export class RetryLlm implements ILlm {
     tools?: LlmTool[],
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
-    for (let attempt = 0; ; attempt++) {
+    let waitedMs = 0;
+    for (let attempt = 1; ; attempt++) {
       if (options?.signal?.aborted) {
         yield { ok: false, error: new LlmError('Aborted', 'ABORTED') };
         return;
       }
 
       let chunksYielded = 0;
-      let shouldRetry = false;
+      let waitMs: number | undefined;
 
       for await (const chunk of this.inner.streamChat(
         messages,
@@ -100,68 +92,67 @@ export class RetryLlm implements ILlm {
         if (chunk.ok) {
           chunksYielded++;
           yield chunk;
-        } else {
-          const canRetry = attempt < this.opts.maxAttempts;
+          continue;
+        }
 
-          // Pre-stream failure: retry on HTTP status codes (existing behavior)
-          if (
-            chunksYielded === 0 &&
-            canRetry &&
-            this.isRetryable(chunk.error)
-          ) {
-            shouldRetry = true;
-            break;
-          }
-
-          // Mid-stream failure: retry on configured substrings
-          if (
-            chunksYielded > 0 &&
-            canRetry &&
-            this.isMidStreamRetryable(chunk.error)
-          ) {
-            yield { ok: true, value: { content: '', reset: true } };
-            shouldRetry = true;
-            break;
-          }
-
+        const midStream = chunksYielded > 0;
+        const decision = this.decide(chunk.error, attempt, waitedMs, midStream);
+        if (!decision.retry) {
           yield chunk;
           return;
         }
+        // Replaying a stream that already yielded means the consumer must drop
+        // what it has: the reset chunk says so before anything new arrives.
+        if (midStream) {
+          yield { ok: true, value: { content: '', reset: true } };
+        }
+        waitMs = decision.waitMs;
+        break;
       }
 
-      if (!shouldRetry) return;
-
-      await this.backoff(attempt, options?.signal);
+      if (waitMs === undefined) return;
+      waitedMs += await this.wait(waitMs, options?.signal);
     }
   }
 
-  private isRetryable(error: LlmError): boolean {
-    // A provider that runs its own rate-limit policy marks the error when that
-    // policy is spent — it has already backed off, honoured Retry-After and
-    // given up. Retrying it here would multiply the attempts against a quota
-    // that is demonstrably closed, so the marker ends the matter.
-    if (findThrottled(error)) return false;
-    // Shared with RetryEmbedder: structured status wins, message match is a
-    // word-boundary last resort. Replaces a bare includes() that fired on any
-    // message merely containing the digits (e.g. "4290").
-    return isRetryableStatus(error, this.opts.retryOn);
+  /**
+   * A throttled error is the throttling seam's business and never this one's.
+   *
+   * The provider marks it when its own `IThrottleStrategy` is spent: it has
+   * already seen the `429`, read `Retry-After` and decided. Retrying here would
+   * spend more requests against a quota that is demonstrably closed, and would
+   * do it without the interval the server named.
+   */
+  private decide(
+    error: LlmError,
+    attempt: number,
+    waitedMs: number,
+    midStream: boolean,
+  ): { retry: boolean; waitMs: number } {
+    if (findThrottled(error)) return { retry: false, waitMs: 0 };
+    const ctx: FailureContext = {
+      status: extractStatusCode(error),
+      attempt,
+      waitedMs,
+      midStream,
+      error,
+    };
+    const decision = this.strategy.decide(ctx);
+    return { retry: decision.retry, waitMs: Math.max(0, decision.waitMs) };
   }
 
-  private isMidStreamRetryable(error: LlmError): boolean {
-    if (this.opts.retryOnMidStream.length === 0) return false;
-    const msg = error.message;
-    return this.opts.retryOnMidStream.some((sub) => msg.includes(sub));
-  }
-
-  private backoff(attempt: number, signal?: AbortSignal): Promise<void> {
-    const delay = this.opts.backoffMs * 2 ** attempt;
+  /** Sleep, returning what was actually spent so the strategy can count it. */
+  private wait(ms: number, signal?: AbortSignal): Promise<number> {
+    if (ms <= 0) return Promise.resolve(0);
+    const started = Date.now();
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, delay);
+      const done = () => resolve(Date.now() - started);
+      const timer = setTimeout(done, ms);
       signal?.addEventListener(
         'abort',
         () => {
           clearTimeout(timer);
-          resolve();
+          done();
         },
         { once: true },
       );

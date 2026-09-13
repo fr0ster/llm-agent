@@ -374,6 +374,11 @@ export class LlmAdapter implements ILlm, IModelProvider {
             maxTokens: options.maxTokens,
             topP: options.topP,
             stop: options.stop,
+            // The deadline goes down to the transport. Racing the promise
+            // instead — which is all `withAbort` below can do — reports
+            // promptly and leaves the HTTP request running, holding a socket
+            // and a response nobody will read.
+            signal: options.signal,
             // model intentionally NOT forwarded — the adapter's configured model
             // takes precedence. Client-facing model names (e.g. "smart-agent")
             // must not override the actual LLM provider model.
@@ -424,6 +429,11 @@ export class LlmAdapter implements ILlm, IModelProvider {
             maxTokens: options.maxTokens,
             topP: options.topP,
             stop: options.stop,
+            // The deadline goes down to the transport. Racing the promise
+            // instead — which is all `withAbort` below can do — reports
+            // promptly and leaves the HTTP request running, holding a socket
+            // and a response nobody will read.
+            signal: options.signal,
             // model intentionally NOT forwarded — the adapter's configured model
             // takes precedence. Client-facing model names (e.g. "smart-agent")
             // must not override the actual LLM provider model.

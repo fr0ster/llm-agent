@@ -1,5 +1,30 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 25.0.0
+
+The consumer owns the transport numbers too (#296).
+
+### Breaking
+
+- **`RetryLlm` takes an `IFailureStrategy`** and defaults to `ReportFailure`.
+  `RetryOptions` is gone. The builder installs the decorator only when
+  `agent.whenFailed` or the older `agent.retry` block is set — it used to
+  install three attempts and a two-second doubling backoff on everyone, which
+  meant four requests per call from numbers this library had no business
+  choosing. An existing `agent.retry` block keeps working and is reshaped into
+  `RetryWithBackoff`.
+- **`makeLlm` accepts `whenFailed`** and wraps the LLM in `RetryLlm` when it is
+  given, outermost so a retried attempt is a fresh call through everything
+  below.
+
+### Fixed
+
+- **`LlmAdapter` forwards `signal` to the inner call.** It built the inner
+  options from temperature, maxTokens, topP and stop, and raced the promise
+  with `withAbort` — so on the `makeLlm` path, which is every consumer, an
+  abort answered the caller and left the HTTP request running. Both the chat
+  and the streaming path now pass it down.
+
 ## 24.1.0
 
 The deadline 24.0.0 promised (#294).

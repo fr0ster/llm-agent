@@ -193,7 +193,7 @@ export { NoopReranker } from './reranker/noop-reranker.js';
 // Resilience
 // ---------------------------------------------------------------------------
 export { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
-export { RetryLlm, type RetryOptions } from './resilience/retry-llm.js';
+export { RetryLlm } from './resilience/retry-llm.js';
 export {
   type TokenBucketConfig,
   TokenBucketRateLimiter,

@@ -5,6 +5,7 @@ import {
   LlmError,
   type LlmStreamChunk,
   type Result,
+  RetryWithBackoff,
 } from '@mcp-abap-adt/llm-agent';
 import { RetryLlm } from '../retry-llm.js';
 
@@ -58,12 +59,15 @@ describe('RetryLlm — mid-stream retry', () => {
       })();
     });
 
-    const retry = new RetryLlm(inner, {
-      maxAttempts: 2,
-      backoffMs: 10,
-      retryOn: [],
-      retryOnMidStream: ['SSE stream'],
-    });
+    const retry = new RetryLlm(
+      inner,
+      new RetryWithBackoff({
+        attempts: 2,
+        firstWaitMs: 10,
+        statuses: [],
+        midStreamHints: ['SSE stream'],
+      }),
+    );
 
     const chunks: Result<LlmStreamChunk, LlmError>[] = [];
     for await (const chunk of retry.streamChat([])) {
@@ -102,11 +106,10 @@ describe('RetryLlm — mid-stream retry', () => {
       })();
     });
 
-    const retry = new RetryLlm(inner, {
-      maxAttempts: 2,
-      backoffMs: 10,
-      retryOn: [],
-    });
+    const retry = new RetryLlm(
+      inner,
+      new RetryWithBackoff({ attempts: 2, firstWaitMs: 10, statuses: [] }),
+    );
 
     const chunks: Result<LlmStreamChunk, LlmError>[] = [];
     for await (const chunk of retry.streamChat([])) {
@@ -135,12 +138,15 @@ describe('RetryLlm — mid-stream retry', () => {
       })();
     });
 
-    const retry = new RetryLlm(inner, {
-      maxAttempts: 2,
-      backoffMs: 10,
-      retryOn: [],
-      retryOnMidStream: ['SSE stream'],
-    });
+    const retry = new RetryLlm(
+      inner,
+      new RetryWithBackoff({
+        attempts: 2,
+        firstWaitMs: 10,
+        statuses: [],
+        midStreamHints: ['SSE stream'],
+      }),
+    );
 
     const chunks: Result<LlmStreamChunk, LlmError>[] = [];
     for await (const chunk of retry.streamChat([])) {

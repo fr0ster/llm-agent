@@ -52,6 +52,7 @@ import {
   defaultToolNamespace,
   FallbackRag,
   type IEmbedder,
+  type IFailureStrategy,
   InMemoryRag,
   type IRag,
   type IRagEditor,
@@ -61,6 +62,7 @@ import {
   QueryEmbedding,
   type RagCollectionMeta,
   type RagCollectionScope,
+  RetryWithBackoff,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -1104,14 +1106,15 @@ export class SmartAgentBuilder {
     };
 
     // ---- Retry wrapping (outside circuit breaker) ----------------------------
-    // Enable retry by default with sensible defaults; explicit config overrides.
-    const retryOpts = agentCfg.retry ?? {
-      maxAttempts: 3,
-      backoffMs: 2000,
-      retryOn: [429, 500, 502, 503],
-      retryOnMidStream: [],
-    };
-    wrappedMainLlm = new RetryLlm(wrappedMainLlm, retryOpts);
+    // Only when the consumer asked. This used to install three attempts and a
+    // two-second doubling backoff on everyone, which is this library guessing
+    // about somebody else's provider — the same guess `whenThrottled` removed
+    // from the throttling path. Say nothing and a failure comes back as it
+    // arrived.
+    const failureStrategy = resolveFailureStrategy(agentCfg);
+    if (failureStrategy) {
+      wrappedMainLlm = new RetryLlm(wrappedMainLlm, failureStrategy);
+    }
 
     // ---- Rate limiter wrapping (outermost — retry attempts also throttled) ----
     if (this._rateLimiter) {
@@ -1387,4 +1390,29 @@ export class SmartAgentBuilder {
         : {}),
     };
   }
+}
+
+/**
+ * The failure strategy for the main LLM, or nothing.
+ *
+ * Two ways to say it, and the strategy wins. `whenFailed` is the seam; the
+ * older `agent.retry` block is kept working because it is a consumer's own
+ * numbers written in a config file, which is exactly whose numbers they should
+ * be — it is only reshaped into the strategy that now carries them.
+ *
+ * Neither set means no retry decorator at all, not a decorator that declines:
+ * a wrapper nobody asked for is one more layer between a caller and its error.
+ */
+function resolveFailureStrategy(
+  agentCfg: SmartAgentConfig,
+): IFailureStrategy | undefined {
+  if (agentCfg.whenFailed) return agentCfg.whenFailed;
+  const legacy = agentCfg.retry;
+  if (!legacy) return undefined;
+  return new RetryWithBackoff({
+    attempts: legacy.maxAttempts ?? 3,
+    firstWaitMs: legacy.backoffMs ?? 2000,
+    statuses: legacy.retryOn ?? [429, 500, 502, 503],
+    midStreamHints: legacy.retryOnMidStream ?? [],
+  });
 }
