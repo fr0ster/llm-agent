@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   buildHttpTransportOptions,
+  DEFAULT_MCP_REQUEST_TIMEOUT_MS,
   MCPClientWrapper,
-  NO_REQUEST_CEILING_MS,
   resolveToolTimeout,
 } from '../client.js';
 
@@ -72,21 +72,17 @@ test('session-resume: live server-assigned sessionId takes priority over config.
 
 // ── Task 7 tests — resolveToolTimeout ────────────────────────────────────────
 
-test('resolveToolTimeout: asks for no ceiling when the consumer configured nothing', () => {
-  // Two minutes used to be returned here — a guess about somebody else's tool,
-  // and on an ABAP write chain the cut leaves the object locked by a session
-  // nobody will unlock. Returning undefined instead would be worse, not
-  // better: the SDK reads `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC`
-  // and would apply its own SIXTY seconds. So "none" is sent explicitly.
-  assert.strictEqual(resolveToolTimeout('T', {}), NO_REQUEST_CEILING_MS);
+test('resolveToolTimeout: falls back to the named two-minute default', () => {
+  // A default against this repository's preference, kept because the SDK
+  // leaves no way to decline one: it reads
+  // `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a
+  // timer, so sending nothing means its own SIXTY seconds — half of this, and
+  // on an ABAP write chain the cut orphans a lock.
+  assert.strictEqual(resolveToolTimeout('T', {}), 120_000);
+  assert.strictEqual(DEFAULT_MCP_REQUEST_TIMEOUT_MS, 120_000);
   assert.ok(
-    NO_REQUEST_CEILING_MS > 60_000,
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS > 60_000,
     'must exceed the SDK default it exists to displace',
-  );
-  assert.strictEqual(
-    NO_REQUEST_CEILING_MS,
-    2 ** 31 - 1,
-    'one millisecond more overflows a Node timer to firing immediately',
   );
 });
 

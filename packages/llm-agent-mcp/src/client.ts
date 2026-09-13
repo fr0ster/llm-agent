@@ -14,42 +14,39 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { toMcpError } from './error-mapping.js';
 
-/**
- * "No ceiling", in the only vocabulary the MCP SDK has.
- *
- * `Protocol.request` reads `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC`
- * and always arms a timer, so there is no way to ask it for none — omitting the
- * field does not remove the timeout, it silently accepts the SDK's own sixty
- * seconds. That is worse than the two minutes this client used to impose, and
- * sixty seconds is exactly the cut that leaves an ABAP object
- * created-but-inactive and locked by a session nobody will unlock.
- *
- * So "none" is spelled as the largest delay a Node timer can hold: about
- * twenty-five days, and one millisecond more overflows to firing immediately.
- * It is not a policy number — nothing is expected to run this long. It is how
- * this SDK spells off.
- */
-export const NO_REQUEST_CEILING_MS = 2_147_483_647;
+/** Default per-call MCP request timeout in ms (2 minutes).
+ *  Consumer can override globally via MCPClientConfig.timeout or per-tool via MCPClientConfig.toolTimeouts. */
+export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000;
 
 /**
  * Resolve the MCP request timeout for a specific tool call.
  *
  * Resolution order (first defined wins):
  *   1. config.toolTimeouts[name]  — per-tool override
- *   2. config.timeout             — global default
- *   3. NO_REQUEST_CEILING_MS      — i.e. none of ours
+ *   2. config.timeout             — global per-call default
+ *   3. DEFAULT_MCP_REQUEST_TIMEOUT_MS (120 000 ms = 2 min)
  *
- * The bound when the consumer sets nothing is the caller's `signal`, which
- * `callTool` passes to the SDK alongside this.
+ * A default sits here against this repository's own preference, because the
+ * SDK leaves no way to decline one: `Protocol.request` reads
+ * `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer.
+ * Sending nothing is not "no ceiling", it is the SDK's sixty seconds — half of
+ * this, and on an ABAP write chain the cut leaves an object
+ * created-but-inactive and locked by a session nobody will unlock. Of the
+ * choices actually available, a named two minutes a consumer can raise is the
+ * honest one.
  *
  * resetTimeoutOnProgress is always set to true by callTool so a slow but
- * actively-reporting tool never hits a ceiling the consumer did set.
+ * actively-reporting tool never hits the ceiling.
  */
 export function resolveToolTimeout(
   name: string,
   config: Pick<MCPClientConfig, 'timeout' | 'toolTimeouts'>,
 ): number {
-  return config.toolTimeouts?.[name] ?? config.timeout ?? NO_REQUEST_CEILING_MS;
+  return (
+    config.toolTimeouts?.[name] ??
+    config.timeout ??
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS
+  );
 }
 
 type McpToolDef = {
@@ -160,7 +157,7 @@ export interface MCPClientConfig {
    *  or other per-request metadata. Default = no-op. */
   requestHeadersStrategy?: IMcpRequestHeadersStrategy;
 
-  /** Per-call MCP request timeout in ms. **No default of ours** — unset, no ceiling is applied and the call is bounded by the caller's `signal`. Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
+  /** Default per-call MCP request timeout in ms (default 120000 = 2 min). Per-tool overrides via toolTimeouts. resetTimeoutOnProgress extends it while a tool reports progress. */
   timeout?: number;
 
   /**
@@ -498,8 +495,6 @@ export class MCPClientWrapper {
           // outside would answer the caller and leave an ABAP write chain
           // running with its lock still held.
           ...(signal ? { signal } : {}),
-          // Always sent: omitting it is not "no timeout", it is the SDK's own
-          // sixty seconds.
           timeout: resolveToolTimeout(toolCall.name, this.config),
           resetTimeoutOnProgress: true,
         },

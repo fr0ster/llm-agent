@@ -2,32 +2,25 @@
 
 ## 25.0.0
 
-No ceiling of ours on a tool call, and the caller's signal reaches it (#296).
-
-### Breaking
-
-- `DEFAULT_MCP_REQUEST_TIMEOUT_MS` (120 000) is removed. Two minutes was a
-  guess about somebody else's tool, and on an ABAP write chain the cut leaves
-  the object created-but-inactive and locked by a session nobody will unlock.
-- `resolveToolTimeout` now returns `NO_REQUEST_CEILING_MS` when the consumer
-  configured nothing, **not** `undefined`. Omitting the field would not remove
-  the timeout: `Protocol.request` reads
-  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and would apply the SDK's
-  own sixty seconds — half the old ceiling, and precisely the cut that orphans
-  a lock. `timeout` and `toolTimeouts` still win when set.
+The caller's signal reaches a tool call (#296).
 
 ### Fixed
 
 - `MCPClientWrapper.callTool` / `callTools` accept an `AbortSignal` and pass it
   to the SDK request; `McpClientAdapter` hands the caller's signal down instead
   of only racing the promise around it. An abort now ends the tool call rather
-  than answering the caller and leaving it running.
+  than answering the caller and leaving it running — on an ABAP write chain,
+  with its lock still held.
 
 ### Unchanged
 
-- `listTools` (during connect) and `ping` send no request options, so they keep
-  the SDK's own sixty seconds. That bound belongs to the transport, and a
-  liveness check without one says nothing.
+- `DEFAULT_MCP_REQUEST_TIMEOUT_MS` (120 000) stays. Removing it was tried and
+  reverted: `Protocol.request` reads
+  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer,
+  so omitting the field means the SDK's own sixty seconds — half the ceiling,
+  and precisely the cut that leaves an ABAP object created-but-inactive and
+  locked. Expressing "none" as a sentinel maximum was the other option and is
+  not worth the magic number.
 
 ## 24.1.0
 
