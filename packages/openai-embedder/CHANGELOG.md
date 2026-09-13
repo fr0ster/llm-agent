@@ -2,7 +2,14 @@
 
 ## 25.0.0
 
-Release 25.0.0.
+No ceiling of ours (#296).
+
+### Breaking
+
+- `timeoutMs` no longer defaults to thirty seconds. A ceiling on every request
+  fires instead of the decision above it — a caller waiting out a server's
+  `Retry-After` is cut before the interval is up. The option is still honoured
+  when set; the bound otherwise is the caller's own `signal`.
 
 ## 24.1.0
 

@@ -8,15 +8,37 @@ export interface OpenAiEmbedderConfig {
   baseURL?: string;
   /** Required: embedding model name (e.g. 'text-embedding-3-small'). No default — must be set explicitly. */
   model: string;
-  /** Per-request timeout in milliseconds. Default: 30 000 */
+  /**
+   * Per-request ceiling in milliseconds. **No default** — omit it and a request
+   * is bounded only by the caller's own `signal`, which is where a deadline
+   * belongs.
+   */
   timeoutMs?: number;
+}
+
+/**
+ * The signal for one request: the caller's, narrowed by a ceiling only if the
+ * consumer set one.
+ *
+ * There is no default ceiling. A duration here runs on every request and fires
+ * *instead* of whatever the caller decided — a strategy told to wait out a
+ * server's `Retry-After` never gets to, because the request was already cut.
+ * The bound belongs to whoever is waiting, and reaches us as `options.signal`.
+ */
+function requestSignal(
+  caller: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+): AbortSignal | undefined {
+  if (timeoutMs === undefined) return caller;
+  const ceiling = AbortSignal.timeout(timeoutMs);
+  return caller ? AbortSignal.any([caller, ceiling]) : ceiling;
 }
 
 export class OpenAiEmbedder implements IEmbedderBatch {
   private readonly baseURL: string;
   private readonly apiKey: string;
   readonly model: string;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | undefined;
 
   constructor(config: OpenAiEmbedderConfig) {
     if (!config.apiKey) {
@@ -31,7 +53,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       '',
     );
     this.model = config.model;
-    this.timeoutMs = config.timeoutMs ?? 30_000;
+    this.timeoutMs = config.timeoutMs;
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
@@ -41,10 +63,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-        const signal = options?.signal
-          ? AbortSignal.any([options.signal, timeoutSignal])
-          : timeoutSignal;
+        const signal = requestSignal(options?.signal, this.timeoutMs);
 
         const res = await fetch(url, {
           method: 'POST',
@@ -107,10 +126,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-          const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-          const signal = options?.signal
-            ? AbortSignal.any([options.signal, timeoutSignal])
-            : timeoutSignal;
+          const signal = requestSignal(options?.signal, this.timeoutMs);
 
           const res = await fetch(url, {
             method: 'POST',

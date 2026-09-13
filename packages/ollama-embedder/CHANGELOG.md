@@ -2,7 +2,12 @@
 
 ## 25.0.0
 
-Release 25.0.0.
+No ceiling of ours (#296).
+
+### Breaking
+
+- `timeoutMs` no longer defaults to thirty seconds. The bound is the caller's
+  own `signal`; the option is still honoured when a consumer sets one.
 
 ## 24.1.0
 

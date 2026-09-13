@@ -32,6 +32,13 @@ arriving, the provider's own invented timeout has nothing left to protect.
   an `AbortSignal` in `CallOptions`. Without one, a call now runs until the
   server answers or the connection breaks.
 
+- **`OpenAiEmbedder` and the Ollama embedder impose no ceiling by default.**
+  Both defaulted `timeoutMs` to thirty seconds and merged it into the caller's
+  signal on every request. The option stays and is honoured when set; what is
+  gone is the library choosing a number on the consumer's behalf. Same
+  migration: pass a `signal`, or set `timeoutMs` explicitly if a ceiling is
+  what you want. `sap-aicore-embedder` never had one.
+
 ### Fixed
 
 - **`LlmAdapter` forwards the caller's signal to the transport.** It built the
