@@ -50,23 +50,36 @@ arriving, the provider's own invented timeout has nothing left to protect.
   `RagResolutionConfig.timeoutMs` stays and now says what it is: the client
   timeout for an external vector backend, not the embedder's.
 
-- **The MCP client's two-minute default is gone, and the caller's signal now
-  reaches the request.** `resolveToolTimeout` fell back to 120 000 ms with no
-  consumer config, and `McpClientAdapter.callTool` raced the caller's signal
-  around the call rather than passing it in — so the library's number won and
-  the caller's did not arrive. On an ABAP write chain that is not a safety net
-  but a lock generator: a cut mid-chain leaves the object created-but-inactive
-  and locked by a session nobody will unlock. `MCPClientWrapper.callTool` and
-  `callTools` take an optional `AbortSignal` and hand it to the SDK;
-  `timeout` and `toolTimeouts` still apply when a consumer sets them.
+- **An MCP tool call has no ceiling of ours, and the caller's signal reaches
+  the request.** `resolveToolTimeout` fell back to two minutes with no consumer
+  config, and `McpClientAdapter.callTool` raced the caller's signal around the
+  call rather than passing it in — so the library's number won and the caller's
+  never arrived. On an ABAP write chain that is not a safety net but a lock
+  generator: a cut mid-chain leaves the object created-but-inactive and locked
+  by a session nobody will unlock.
+
+  Note what "removing" it means here, because omitting the field would have
+  made things worse rather than better. The SDK reads
+  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and always arms a timer,
+  so sending nothing does not mean no timeout — it means the SDK's own
+  **sixty** seconds, half of what this client imposed and exactly the cut that
+  orphans a lock. "None" is therefore sent explicitly, as
+  `NO_REQUEST_CEILING_MS` (2³¹−1 ms, the largest delay a Node timer holds).
+  `timeout` and `toolTimeouts` still win when a consumer sets them, and
+  `MCPClientWrapper.callTool` / `callTools` now take an `AbortSignal` and hand
+  it to the SDK.
 
 - **The Qdrant store imposes no ceiling by default.** `timeoutMs` defaulted to
-  thirty seconds and aborted every request on its own controller. Unset, a
-  request is now bounded by the caller's signal alone.
+  thirty seconds and aborted every request on its own controller. It arms no
+  timer at all now unless a consumer sets one; the package speaks to Qdrant
+  over plain `fetch` and pulls in no client library with a default of its own.
 
-With this the library sets no timeout of its own anywhere: not on the model
-path, not on the MCP path, not on the vector store. Every remaining duration is
-one a consumer wrote down.
+Where that leaves things, exactly: nothing this library *chooses* a duration
+for — no LLM provider, no embedder, no tool call, no vector-store request.
+Two SDK-owned ceilings remain outside that, and are the transport's: the MCP
+SDK's sixty seconds on protocol chatter we send no options with (`listTools`
+during connect, `ping`), where a bound is what makes a liveness check mean
+anything.
 
 ### Fixed
 

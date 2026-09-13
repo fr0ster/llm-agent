@@ -2,16 +2,19 @@
 
 ## 25.0.0
 
-No timeout of ours, and the caller's signal reaches the call (#296).
+No ceiling of ours on a tool call, and the caller's signal reaches it (#296).
 
 ### Breaking
 
-- `resolveToolTimeout` returns `undefined` when the consumer configured
-  nothing, instead of falling back to two minutes, and
-  `DEFAULT_MCP_REQUEST_TIMEOUT_MS` is removed. Two minutes was a guess about
-  somebody else's tool, and on an ABAP write chain the cut leaves the object
-  created-but-inactive and locked by a session nobody will unlock. `timeout`
-  and `toolTimeouts` still apply when set.
+- `DEFAULT_MCP_REQUEST_TIMEOUT_MS` (120 000) is removed. Two minutes was a
+  guess about somebody else's tool, and on an ABAP write chain the cut leaves
+  the object created-but-inactive and locked by a session nobody will unlock.
+- `resolveToolTimeout` now returns `NO_REQUEST_CEILING_MS` when the consumer
+  configured nothing, **not** `undefined`. Omitting the field would not remove
+  the timeout: `Protocol.request` reads
+  `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC` and would apply the SDK's
+  own sixty seconds — half the old ceiling, and precisely the cut that orphans
+  a lock. `timeout` and `toolTimeouts` still win when set.
 
 ### Fixed
 
@@ -19,6 +22,12 @@ No timeout of ours, and the caller's signal reaches the call (#296).
   to the SDK request; `McpClientAdapter` hands the caller's signal down instead
   of only racing the promise around it. An abort now ends the tool call rather
   than answering the caller and leaving it running.
+
+### Unchanged
+
+- `listTools` (during connect) and `ping` send no request options, so they keep
+  the SDK's own sixty seconds. That bound belongs to the transport, and a
+  liveness check without one says nothing.
 
 ## 24.1.0
 

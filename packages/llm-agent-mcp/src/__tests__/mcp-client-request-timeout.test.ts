@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   buildHttpTransportOptions,
   MCPClientWrapper,
+  NO_REQUEST_CEILING_MS,
   resolveToolTimeout,
 } from '../client.js';
 
@@ -71,12 +72,22 @@ test('session-resume: live server-assigned sessionId takes priority over config.
 
 // ── Task 7 tests — resolveToolTimeout ────────────────────────────────────────
 
-test('resolveToolTimeout: returns nothing when the consumer configured nothing', () => {
-  // Two minutes used to be returned here. It was a guess about somebody else's
-  // tool, and on an ABAP write chain the cut leaves the object locked by a
-  // session nobody will unlock. Unset now means unbounded by us: the caller's
-  // signal is the bound.
-  assert.strictEqual(resolveToolTimeout('T', {}), undefined);
+test('resolveToolTimeout: asks for no ceiling when the consumer configured nothing', () => {
+  // Two minutes used to be returned here — a guess about somebody else's tool,
+  // and on an ABAP write chain the cut leaves the object locked by a session
+  // nobody will unlock. Returning undefined instead would be worse, not
+  // better: the SDK reads `options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC`
+  // and would apply its own SIXTY seconds. So "none" is sent explicitly.
+  assert.strictEqual(resolveToolTimeout('T', {}), NO_REQUEST_CEILING_MS);
+  assert.ok(
+    NO_REQUEST_CEILING_MS > 60_000,
+    'must exceed the SDK default it exists to displace',
+  );
+  assert.strictEqual(
+    NO_REQUEST_CEILING_MS,
+    2 ** 31 - 1,
+    'one millisecond more overflows a Node timer to firing immediately',
+  );
 });
 
 test('resolveToolTimeout: returns config.timeout when no per-tool override', () => {
