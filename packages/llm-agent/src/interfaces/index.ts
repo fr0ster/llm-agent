@@ -248,13 +248,6 @@ export type {
   SubAgentContextRequest,
   SubAgentContextResult,
 } from './subagent-context.js';
-export {
-  type FailureContext,
-  type FailureDecision,
-  type IFailureStrategy,
-  ReportFailure,
-  RetryWithBackoff,
-} from './failure-strategy.js';
 export type { ITaskFormalizer, ITaskSpec } from './task-spec.js';
 export { renderTaskSpec } from './task-spec.js';
 export {

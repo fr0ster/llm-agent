@@ -593,7 +593,7 @@ pipeline-agnostic; the flat pipeline additionally emits richer per-tool
 
 The `ILlm` chain supports two optional decorators, composed by the builder:
 
-- **`RetryLlm`** — retries a failed call as far as an `IFailureStrategy` says to, and is installed **only when the consumer supplies one** (`SmartAgentConfig.whenFailed`, `MakeLlmConfig.whenFailed`, or the older `SmartAgentConfig.retry` block, which is reshaped into `RetryWithBackoff`). It carries no numbers of its own: three attempts and a two-second doubling backoff used to be installed on everyone, which is the same guess about somebody else's provider that `IThrottleStrategy` removed from the throttling path. A 429 marked by a provider's own throttle strategy is never retried here. For streaming, a pre-stream failure (zero chunks yielded) is decided on status; a mid-stream one only when the strategy's `midStreamHints` match, and the replay emits a `reset` chunk so consumers discard accumulated state.
+- **`RetryLlm`** — retries transient failures (5xx, and a 429 from a provider that runs no throttle strategy of its own) with exponential backoff. Configured via `SmartAgentConfig.retry`. For streaming, retries pre-stream failures (zero chunks yielded) on HTTP status codes, and mid-stream failures on configurable error substrings (`retryOnMidStream`). Mid-stream retry replays the entire stream and emits a `reset` chunk so consumers discard accumulated state.
 - **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`.
 
 Throttling is answered one layer lower, inside the provider. See **Server-governed throttling** below for why, and for why that layer decides nothing.

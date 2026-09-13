@@ -12,7 +12,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
-import { LlmError, type LlmFinishReason, type LlmStreamChunk, type Result, RetryWithBackoff } from '@mcp-abap-adt/llm-agent';
+import {
+  LlmError,
+  type LlmFinishReason,
+  type LlmStreamChunk,
+  type Result,
+} from '@mcp-abap-adt/llm-agent';
 import { RetryLlm } from '../../../resilience/retry-llm.js';
 
 /**
@@ -117,15 +122,12 @@ describe('tool-loop stream reset handling', () => {
       })();
     });
 
-    const retry = new RetryLlm(
-      inner,
-      new RetryWithBackoff({
-        attempts: 2,
-        firstWaitMs: 10,
-        statuses: [],
-        midStreamHints: ['SSE stream'],
-      }),
-    );
+    const retry = new RetryLlm(inner, {
+      maxAttempts: 2,
+      backoffMs: 10,
+      retryOn: [],
+      retryOnMidStream: ['SSE stream'],
+    });
 
     // Simulate tool-loop WITHOUT reset handling (current bug)
     let content = '';
@@ -201,15 +203,12 @@ describe('tool-loop stream reset handling', () => {
       })();
     });
 
-    const retry = new RetryLlm(
-      inner,
-      new RetryWithBackoff({
-        attempts: 2,
-        firstWaitMs: 10,
-        statuses: [],
-        midStreamHints: ['SSE stream'],
-      }),
-    );
+    const retry = new RetryLlm(inner, {
+      maxAttempts: 2,
+      backoffMs: 10,
+      retryOn: [],
+      retryOnMidStream: ['SSE stream'],
+    });
 
     const result = await consumeStreamLikeToolLoop(retry.streamChat([]));
 
@@ -247,15 +246,12 @@ describe('tool-loop stream reset handling', () => {
       })();
     });
 
-    const retry = new RetryLlm(
-      inner,
-      new RetryWithBackoff({
-        attempts: 2,
-        firstWaitMs: 10,
-        statuses: [],
-        midStreamHints: ['SSE stream'],
-      }),
-    );
+    const retry = new RetryLlm(inner, {
+      maxAttempts: 2,
+      backoffMs: 10,
+      retryOn: [],
+      retryOnMidStream: ['SSE stream'],
+    });
 
     const result = await consumeStreamLikeToolLoop(retry.streamChat([]));
 

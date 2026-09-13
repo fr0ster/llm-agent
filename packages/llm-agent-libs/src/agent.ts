@@ -27,7 +27,6 @@ import type {
   McpTool,
   Message,
   ModelUsageEntry,
-  IFailureStrategy,
   RagResult,
   Result,
   StreamHookContext,
@@ -214,18 +213,7 @@ export interface SmartAgentConfig {
    * steer MCP tool discovery. Default: false (single-phase tool retrieval).
    */
   enrichedToolSearch?: boolean;
-  /**
-   * What to do when a call fails for a reason no server named an interval for
-   * — a 5xx, a dropped connection. Set it and the main LLM is wrapped in
-   * `RetryLlm`; omit it and a failure comes back as it arrived, for the caller
-   * to decide about. There is no default, because how many times to repeat
-   * somebody's request is not this library's judgement to make.
-   */
-  whenFailed?: IFailureStrategy;
-  /**
-   * The same decision in its older shape, kept working for configs that
-   * already carry it. Reshaped into `RetryWithBackoff`. Prefer `whenFailed`.
-   */
+  /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
   retry?: {
     maxAttempts?: number;
     backoffMs?: number;

@@ -1,12 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm, LlmResponse, Result } from '@mcp-abap-adt/llm-agent';
-import { LlmError, RetryWithBackoff } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { RetryLlm } from '../retry-llm.js';
-
-/** The statuses this suite is about, with the numbers named per test. */
-const transient = (o: { attempts: number; firstWaitMs: number }) =>
-  new RetryWithBackoff({ ...o, statuses: [429, 500, 502, 503] });
 
 /**
  * A fake ILlm whose non-streaming chat() fails with a scripted error a fixed
@@ -35,10 +31,7 @@ describe('RetryLlm — status classification', () => {
       new LlmError('HTTP 429 Too Many Requests', 'LLM_ERROR'),
       1,
     );
-    const r = await new RetryLlm(
-      llm,
-      transient({ attempts: 3, firstWaitMs: 1 }),
-    ).chat([]);
+    const r = await new RetryLlm(llm, { backoffMs: 1 }).chat([]);
     assert.equal(r.ok, true);
     assert.equal(llm.calls(), 2);
   });
@@ -50,10 +43,9 @@ describe('RetryLlm — status classification', () => {
       new LlmError('model context of 4290 tokens exceeded', 'LLM_ERROR'),
       1,
     );
-    const r = await new RetryLlm(
-      llm,
-      transient({ attempts: 3, firstWaitMs: 1 }),
-    ).chat([]);
+    const r = await new RetryLlm(llm, { backoffMs: 1, maxAttempts: 3 }).chat(
+      [],
+    );
     assert.equal(r.ok, false);
     assert.equal(llm.calls(), 1); // no retry
   });
@@ -62,10 +54,7 @@ describe('RetryLlm — status classification', () => {
     const err = new LlmError('opaque provider failure', 'LLM_ERROR');
     (err as { cause?: unknown }).cause = { status: 503 };
     const llm = makeFailingLlm(err, 1);
-    const r = await new RetryLlm(
-      llm,
-      transient({ attempts: 3, firstWaitMs: 1 }),
-    ).chat([]);
+    const r = await new RetryLlm(llm, { backoffMs: 1 }).chat([]);
     assert.equal(r.ok, true);
     assert.equal(llm.calls(), 2);
   });
@@ -96,7 +85,7 @@ describe('RetryLlm — a spent provider rate-limit policy', () => {
         yield { ok: false as const, error: new LlmError('unused') };
       },
     };
-    const llm = new RetryLlm(inner, transient({ attempts: 3, firstWaitMs: 1 }));
+    const llm = new RetryLlm(inner, { maxAttempts: 3, backoffMs: 1 });
     const res = await llm.chat([{ role: 'user', content: 'hi' }]);
     assert.equal(res.ok, false);
     assert.equal(
@@ -122,21 +111,9 @@ describe('RetryLlm — a spent provider rate-limit policy', () => {
         yield { ok: false as const, error: new LlmError('unused') };
       },
     };
-    const llm = new RetryLlm(inner, transient({ attempts: 3, firstWaitMs: 1 }));
+    const llm = new RetryLlm(inner, { maxAttempts: 3, backoffMs: 1 });
     const res = await llm.chat([{ role: 'user', content: 'hi' }]);
     assert.equal(res.ok, true);
     assert.equal(calls, 2);
-  });
-});
-
-describe('RetryLlm — nothing configured', () => {
-  it('does not retry when the consumer named no strategy', async () => {
-    // The builder used to install three attempts and a doubling backoff on
-    // everyone. Four requests per call, from a library that cannot see whose
-    // provider it is spending. Silence now means silence.
-    const llm = makeFailingLlm(new LlmError('HTTP 502 Bad Gateway'), 1);
-    const r = await new RetryLlm(llm).chat([]);
-    assert.equal(r.ok, false);
-    assert.equal(llm.calls(), 1);
   });
 });

@@ -2237,48 +2237,16 @@ The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → Ret
 
 **It takes one permit per outer call, not per HTTP attempt.** `RateLimiterLlm.chat` awaits `acquire()` once and then hands off to the chain, so anything that retries below it — `RetryLlm`, or a provider's own throttling loop — sends requests the window never counted. A consumer metering a shared quota needs the accounting above the retrying, which means its own wrapper taking a permit around each attempt; this seam admits a call and cannot see inside it.
 
-**Retry is off unless you ask for it.** `RetryLlm` used to be installed on
-everyone with three attempts, a two-second doubling backoff and four statuses.
-Those were this library's numbers, spent against somebody else's provider — and
-`maxAttempts: 3` meant four requests, the first call plus three more, which is
-not what most readers of the name expected. The decision is now an
-`IFailureStrategy`, the sibling of `IThrottleStrategy`:
+`RetryLlm` is enabled by default (3 attempts, 2s backoff, retry on 429/500/502/503) and configured via `SmartAgentConfig.retry`. Note that the count is retries *after* the first call: three of them is four requests, which matters to anyone metering a provider.
 
-```ts
-import { ReportFailure, RetryWithBackoff } from '@mcp-abap-adt/llm-agent';
-
-// The default when nothing is set: the failure comes back as it arrived.
-await makeLlm({ provider: 'openai', apiKey, model: 'gpt-4o' }, 0);
-
-// The old behaviour, in the consumer's own words.
-await makeLlm({
-  provider: 'openai', apiKey, model: 'gpt-4o',
-  whenFailed: new RetryWithBackoff({
-    attempts: 3,
-    firstWaitMs: 2000,
-    statuses: [500, 502, 503],
-  }),
-}, 0);
-```
-
-Separate from `whenThrottled` because the two differ in what is known. A `429`
-carries the server's own interval and the only honest options are to observe it
-or report it. A `502` carries nothing, so every number after one — how long,
-how many times — can only come from whoever is waiting.
-
-From a server's YAML the older `agent.retry` block still works and is reshaped
-into `RetryWithBackoff`. There is no `llm.whenFailed` name to write there:
-unlike the throttling strategies, this one is nothing but numbers, and they
-belong in the same file as the rest of the deployment's own.
-
-**The deadline is yours, and it now reaches the transport.** No provider sets a
-timeout of its own any more — the SAP AI Core provider used to impose sixty
-seconds on a call and a hundred and twenty on a stream, which is a guess about
-somebody else's model, prompt and tool loop, and a large input legitimately
-outran it. Pass `signal` in `CallOptions` and it travels through the adapter
-into the provider's SDK call, so an abort ends the request rather than only the
-waiting around it. Without one, a call runs until the server answers or the
-connection breaks.
+**The deadline is yours, and it reaches the transport.** No provider sets a
+timeout of its own — the SAP AI Core provider used to impose sixty seconds on a
+call and a hundred and twenty on a stream, which is a guess about somebody
+else's model, prompt and tool loop, and a large input legitimately outran it.
+Pass `signal` in `CallOptions` and it travels through the adapter into the
+provider's SDK call, so an abort ends the request rather than only the waiting
+around it. Without one, a call runs until the server answers or the connection
+breaks.
 
 **429 is answered below this chain, and nothing waits by default.** Every
 provider built on `BaseLLMProvider` reads the status and the `Retry-After`
@@ -2497,10 +2465,7 @@ const handle = await new SmartAgentBuilder({
   })
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
   // Resilience
-  // retry is configured via agentConfig, not the builder fluent API, and is
-  // off unless configured:
-  //   agentConfig: { whenFailed: new RetryWithBackoff({ attempts: 3, firstWaitMs: 2000, statuses: [500, 502, 503] }) }
-  // the older shape still works and is reshaped into the same strategy:
+  // retry is configured via agentConfig, not builder fluent API:
   //   agentConfig: { retry: { maxAttempts: 3, backoffMs: 2000, retryOn: [429, 500, 502, 503], retryOnMidStream: ['SSE stream'] } }
   // Pipeline stage configuration
   .withMode('smart')

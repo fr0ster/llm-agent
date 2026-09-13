@@ -2,26 +2,13 @@
 
 ## 25.0.0
 
-The consumer owns the transport numbers too (#296).
-
-### Added
-
-- **`IFailureStrategy`**, the sibling of `IThrottleStrategy`, with
-  `FailureContext`, `FailureDecision`, `ReportFailure` and `RetryWithBackoff`.
-  What to do about a failure nobody named an interval for — a 5xx, a dropped
-  connection — is the consumer's decision, because every number after one can
-  only come from whoever is waiting. `ReportFailure` is what happens when
-  nothing is configured; `RetryWithBackoff` takes its attempts, first wait,
-  statuses and mid-stream hints explicitly, with no defaults.
+The deadline reaches the transport (#296).
 
 ### Changed
 
 - **`BaseAgentLlmBridge` declares `signal`** on both call shapes, so an adapter
-  can carry the caller's deadline to the transport instead of racing the
+  can carry the caller's deadline down to the provider instead of racing the
   promise around it.
-- **`extractStatusCode` / `isRetryableStatus` moved to `resilience/status.ts`**,
-  a leaf both the strategies and the retry decorators can import without a
-  cycle. Both names are still exported from where they were.
 
 ## 24.1.0
 

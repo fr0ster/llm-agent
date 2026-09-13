@@ -9,7 +9,6 @@
  */
 
 import type {
-  IFailureStrategy,
   ILlm,
   IModelResolver,
   IThrottleStrategy,
@@ -20,7 +19,6 @@ import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
-import { RetryLlm } from './resilience/retry-llm.js';
 
 // ---------------------------------------------------------------------------
 // LLM provider resolution
@@ -46,16 +44,6 @@ export interface MakeLlmConfig {
    * deadline expresses it as an `AbortSignal`.
    */
   whenThrottled?: IThrottleStrategy;
-  /**
-   * What this LLM does when a call fails for a reason no server named an
-   * interval for — a 5xx, a dropped connection. Set it and the LLM is wrapped
-   * in `RetryLlm`; omit it and the failure comes back as it arrived.
-   *
-   * Separate from `whenThrottled` because the two cases differ in what is
-   * known: a `429` carries the server's own interval, and a `502` carries
-   * nothing, so any wait after one is a number only the consumer can supply.
-   */
-  whenFailed?: IFailureStrategy;
   /** When false, streamChat() is replaced with chat() yielding a single chunk. Default: true. */
   streaming?: boolean;
 }
@@ -302,13 +290,6 @@ export async function makeLlm(
   // Wrap with non-streaming adapter when streaming is disabled for this provider
   if (cfg.streaming === false) {
     llm = new NonStreamingLlm(llm);
-  }
-
-  // Retry only when asked. Outermost, so a retried attempt is a fresh call
-  // through everything below — including anything the consumer has wrapped
-  // around this LLM to meter it.
-  if (cfg.whenFailed) {
-    llm = new RetryLlm(llm, cfg.whenFailed);
   }
 
   return llm;
