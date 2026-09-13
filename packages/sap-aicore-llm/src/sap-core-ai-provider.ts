@@ -54,8 +54,6 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
   log?: {
     debug(message: string, meta?: Record<string, unknown>): void;
     error(message: string, meta?: Record<string, unknown>): void;
-    /** Optional: a rate-limit backoff is reported here when the logger has it. */
-    warn?(message: string, meta?: Record<string, unknown>): void;
   };
 }
 
@@ -303,36 +301,15 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         keepAlive: false,
         timeoutMs: 120_000,
       });
-      const streamResponse = await this.withThrottleRetry(
-        () => {
-          const streamAgent = new https.Agent({
-            keepAlive: false,
-            timeout: 120_000,
-          });
-          return client.stream(undefined, undefined, undefined, {
-            httpsAgent: streamAgent,
-          });
-        },
-        {
-          onRetry: ({ attempt, delayMs, retryAfterSeconds }) => {
-            const log = this.log;
-            if (!log) return;
-            // Throttling is operationally significant, so it is not a debug
-            // line; loggers without warn still hear about it.
-            (log.warn ?? log.error).call(
-              log,
-              'SAP AI Core rate limit, backing off',
-              {
-                model,
-                resourceGroup: this.resourceGroup ?? 'default',
-                attempt,
-                delayMs: Math.round(delayMs),
-                retryAfterSeconds,
-              },
-            );
-          },
-        },
-      );
+      const streamResponse = await this.withThrottleRetry(() => {
+        const streamAgent = new https.Agent({
+          keepAlive: false,
+          timeout: 120_000,
+        });
+        return client.stream(undefined, undefined, undefined, {
+          httpsAgent: streamAgent,
+        });
+      });
       streamOpened = true;
       this.log?.debug('SAP AI SDK streamChat stream opened', {
         model,

@@ -2,7 +2,7 @@
  * Core types for LLM Proxy
  */
 
-import type { ThrottlePolicy } from './interfaces/throttle-strategy.js';
+import type { IThrottleStrategy } from './interfaces/throttle-strategy.js';
 import type { LlmUsage } from './interfaces/types.js';
 
 export interface Message {
@@ -83,15 +83,14 @@ export interface LLMProviderConfig {
   temperature?: number;
   maxTokens?: number;
   /**
-   * What this provider does when the server throttles it. Omit for the shared
-   * default: back off with jitter, honour `Retry-After`, give up after 5
-   * attempts or 60 seconds of waiting.
+   * What this provider does when a server throttles it.
    *
-   * There is no switch for turning it off — sending another request into a
-   * quota the server has just closed is never the better answer. Different
-   * mechanics go through `strategy`.
+   * Omit and nothing waits: the failure comes back carrying what the server
+   * said, and the caller decides. This is the strategy itself, not a policy
+   * with our numbers in it — a bound set out here would overrule a strategy
+   * that had decided otherwise.
    */
-  whenThrottled?: Partial<ThrottlePolicy>;
+  whenThrottled?: IThrottleStrategy;
 }
 
 export interface LLMCallOptions {

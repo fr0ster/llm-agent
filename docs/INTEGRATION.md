@@ -2237,69 +2237,58 @@ The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → Ret
 
 `RetryLlm` is now enabled by default (3 attempts, 2s backoff, retry on 429/500/502/503).
 
-**429 is handled below this chain.** Every provider built on `BaseLLMProvider`
-answers a rate limit itself, where the HTTP response is still intact: it honours
-`Retry-After`, backs off with full jitter, and holds one shared gate per quota so
-concurrent callers do not each rediscover the same limit. A quota is an account
-at an endpoint using one model, so the gate key carries all three — the endpoint,
-a digest of the credential (never the credential), the provider's own account
-fields such as organization or resource group, and the model the call actually
-uses. Two tenants in one process do not pause each other. Defaults are 5 attempts
-or 60 seconds of total waiting, whichever comes first — the caps SAP AI Core
-documents. Tune it per provider through `whenThrottled` on the provider
-config:
+**429 is answered below this chain, and nothing waits by default.** Every
+provider built on `BaseLLMProvider` reads the status and the `Retry-After`
+interval where the HTTP response is still intact, records that the quota is shut
+so no other call spends a request discovering it, and hands the failure up.
+
+How long a caller may be held is the caller's decision. A library that picks a
+duration is guessing at who is waiting at the other end: a CLI can sit out a
+minute, an HTTP service answering inside a request cannot. Two strategies ship,
+and neither invents a number.
 
 ```ts
+import { ReportThrottling, WaitAsTold } from '@mcp-abap-adt/llm-agent';
+
+// The default: report what the server said and let the caller decide.
+new OpenAIProvider({ apiKey, model: 'gpt-4o' });
+
+// Opt in where waiting is acceptable — a batch job, a CLI.
 new OpenAIProvider({
   apiKey,
   model: 'gpt-4o',
-  whenThrottled: { maxAttempts: 3, maxTotalWaitMs: 30_000 },
-  // There is no on/off switch: waiting out a closed quota is correctness, not
-  // preference. Different mechanics go through `whenThrottled.strategy`.
+  whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
 });
 ```
 
-Through the composition root it is the same field:
+Nothing of ours sits beside the strategy. `WaitAsTold` takes its own
+`maxAttempts` — unbounded by default — because choosing the strategy and
+bounding it are the same person's decision. A deadline is expressed the way
+deadlines already are, with an `AbortSignal` from the caller's own clock.
 
-```ts
-const llm = await makeLlm(
-  {
-    provider: 'sap-ai-sdk',
-    model: 'anthropic--claude-4.5-sonnet',
-    whenThrottled: { maxTotalWaitMs: 20_000 },
-  },
-  0.1,
-);
-```
-
-From a server's YAML it is the `llm.whenThrottled` block:
+From a server's YAML, the same two by name:
 
 ```yaml
 llm:
   provider: sap-ai-sdk
   model: anthropic--claude-4.5-sonnet
-  whenThrottled:
-    maxTotalWaitMs: 20000
-    maxAttempts: 3
+  whenThrottled: wait-as-told        # or, with the strategy's own options:
+  # whenThrottled:
+  #   strategy: wait-as-told
+  #   maxAttempts: 3
 ```
 
-Keys are checked at startup: a misspelled one or an unparseable budget fails
-there rather than silently leaving the default in place.
+There is no duration to put there. Anything beyond these two is code, passed to
+the provider directly.
 
-A service answering inside an HTTP request usually wants `maxTotalWaitMs` below
-its own client's timeout. Waiting longer than the client will wait leaves the
-caller with a cut connection instead of the "retry in N seconds" answer the
-policy is able to give.
-
-When that policy gives up it marks the error, and `RetryLlm` passes a marked
-error through untouched rather than multiplying attempts against a closed quota.
-Consumers read the fact instead of matching digits in a message:
+When a call gives up, the error carries the facts, and `RetryLlm` leaves a marked
+error alone rather than retrying a quota it can see is shut:
 
 ```ts
 import { findThrottled } from '@mcp-abap-adt/llm-agent';
 
 const limit = findThrottled(error);
-if (limit) console.warn(`throttled after ${limit.attempts} attempts`, limit.retryAfterSeconds);
+if (limit) console.warn(limit.attempts, limit.retryAfterSeconds, limit.reason);
 ```
 
 ## IMetrics / ITracer / ISessionManager / IToolCache

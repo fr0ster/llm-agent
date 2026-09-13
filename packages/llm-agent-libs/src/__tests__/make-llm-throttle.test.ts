@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ThrottlePolicy } from '@mcp-abap-adt/llm-agent';
+import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import { type MakeLlmConfig, makeLlm } from '../providers.js';
 
 /**
@@ -13,17 +13,14 @@ import { type MakeLlmConfig, makeLlm } from '../providers.js';
  * `private` is compile-time only, and the alternative — asserting on timing
  * through a stubbed transport — would test the policy rather than the wiring.
  */
-function policyOf(llm: unknown): Partial<ThrottlePolicy> | undefined {
+function policyOf(llm: unknown): { name?: string } | undefined {
   const bridge = (llm as { agent?: unknown }).agent as
-    | { provider?: { config?: { whenThrottled?: Partial<ThrottlePolicy> } } }
+    | { provider?: { config?: { whenThrottled?: { name?: string } } } }
     | undefined;
   return bridge?.provider?.config?.whenThrottled;
 }
 
-const POLICY: Partial<ThrottlePolicy> = {
-  maxAttempts: 2,
-  maxTotalWaitMs: 15_000,
-};
+const POLICY = new WaitAsTold({ maxAttempts: 2 });
 
 const CASES: Array<{ name: string; cfg: MakeLlmConfig }> = [
   {
@@ -56,10 +53,10 @@ describe('makeLlm — the rate-limit policy reaches the provider', () => {
   for (const { name, cfg } of CASES) {
     it(`forwards it for ${name}`, async () => {
       const llm = await makeLlm({ ...cfg, whenThrottled: POLICY }, 0.1);
-      assert.deepEqual(
-        policyOf(llm),
-        POLICY,
-        `${name} built a provider without the configured policy`,
+      assert.equal(
+        policyOf(llm)?.name,
+        'wait-as-told',
+        `${name} built a provider without the configured strategy`,
       );
     });
 

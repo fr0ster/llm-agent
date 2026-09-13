@@ -9,6 +9,97 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`whenThrottled` is the strategy, and the policy object is gone.** 23.0.0
+  shipped a wait budget in milliseconds, which is a timeout by another name —
+  and a timeout set by the one party that cannot see who is waiting at the other
+  end. A CLI can sit out a minute; an HTTP service answering inside a request
+  cannot. The library now establishes facts and leaves every decision where the
+  knowledge is.
+
+  `ThrottlePolicy` is removed entirely, `maxTotalWaitMs`, `baseDelayMs`,
+  `maxDelayMs` and the exponential backoff with it: a computed delay is a guess
+  about someone else's server. `maxAttempts` went too, and not only because it
+  is a number — a cap sitting outside the strategy silently overrules a strategy
+  that had decided to keep going. Whatever a strategy wants to bound, it bounds
+  itself: `WaitAsTold` takes its own `maxAttempts`, unbounded by default.
+
+  Two strategies ship:
+
+  | Strategy | What it does |
+  |---|---|
+  | `ReportThrottling` (default) | Never waits. Returns the failure with what the server said |
+  | `WaitAsTold` | Waits exactly the interval the server named, and reports when it named none |
+
+  A caller wanting a deadline passes an `AbortSignal` — its own clock, rather
+  than a number the library invented.
+
+- **The shared gate holds knowledge, not callers.** A call into a quota already
+  known to be shut is still never sent — there is nothing to learn from a
+  predictable refusal, and a refusal we ask for is one we are charged for. But a
+  caller that has not opted into waiting is no longer held at the gate: it gets
+  the failure immediately with the interval remaining. Imposing a delay nobody
+  consented to was the budget's mistake wearing the word "guarantee".
+
+- **Every throttle event and strategy decision carries a `source`** —
+  `response` when a server refused a call, `gate` when none was sent because the
+  quota was already recorded shut. Without it the interval synthesised from our
+  own record was indistinguishable from one the server sent, which left the
+  observer unable to answer the question it was added for.
+
+- **An attempt cap on `report` is refused** rather than accepted and dropped. A
+  value that passes validation and does nothing reads as configured, and stays
+  wrong until somebody measures.
+
+- **`llm.whenThrottled` in YAML is a strategy name** — `report` or
+  `wait-as-told` — optionally with that strategy's own options. A duration there
+  would be the operator guessing how long their users will sit still.
+
+### Security
+
+- **Trace files are no longer world readable** (#289). `SessionLogger` created
+  its directory and files at whatever the umask allowed — commonly `0755` and
+  `0644` — while holding the full prompt, the full response, and the arguments
+  and results of every tool call. For an ABAP consumer that is source, table
+  contents and whatever the user typed. Now `0700` and `0600`, with a test, since
+  a mode argument is the kind of thing a refactor drops in silence.
+
+### Added
+
+- **`setThrottleObserver`** (#291). Throttling was nearly invisible: one provider
+  of five logged it, and only when a retry followed, so the case that most needs
+  seeing — the policy giving up — wrote nothing at all. One subscription now
+  covers every provider and fires on every 429, carrying the quota, the policy in
+  force, the attempt, whether the server named a `Retry-After`, the wait, the
+  budget left, and which cap ended it. The policy travels with the event because
+  `attempt 3` is the end under `maxAttempts: 3` and the middle under `5`.
+
+  The per-provider logging it replaces is gone, along with the optional `warn?`
+  that had been added to `SapCoreAIConfig` to host it.
+
+### Fixed
+
+- **A blank `Retry-After` reads as "the server did not say", not as zero.**
+  `Number('')` is 0, so an empty or whitespace header reported an interval the
+  server never named. The absence is itself the signal — Anthropic returns a 429
+  with no `Retry-After` when a spend cap is reached, and that one does not clear
+  by waiting at all, so a strategy told "wait 0 seconds" would retry into it
+  forever.
+
+  A numeric header is also no longer reconsidered as a date: Node's fallback
+  parser reads `-5` as the year 2001, which turned a malformed value into
+  "retry immediately".
+
+- **A failed streaming call now writes a response trace** (#290). `DEBUG_LLM`
+  left only the request: the loop returned on the error chunk before the
+  response was written, in both the tool loop and the pass-through path. That is
+  the case the tracing exists for — a successful call is reconstructable from
+  the ordinary logs, a provider dying mid-stream is not. The trace now carries
+  the error with its cause chain, the content accumulated so far, and how many
+  chunks arrived, which separates a stream that never opened from one that died
+  halfway.
+
 ## [23.0.0] — 2026-09-13
 
 Throttle handling, named for what it does and always on (#285, #286).

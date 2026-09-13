@@ -593,10 +593,10 @@ pipeline-agnostic; the flat pipeline additionally emits richer per-tool
 
 The `ILlm` chain supports two optional decorators, composed by the builder:
 
-- **`RetryLlm`** — retries transient failures (429, 5xx) with exponential backoff. Configured via `SmartAgentConfig.retry`. For streaming, retries pre-stream failures (zero chunks yielded) on HTTP status codes, and mid-stream failures on configurable error substrings (`retryOnMidStream`). Mid-stream retry replays the entire stream and emits a `reset` chunk so consumers discard accumulated state.
+- **`RetryLlm`** — retries transient failures (5xx, and a 429 from a provider that runs no throttle strategy of its own) with exponential backoff. Configured via `SmartAgentConfig.retry`. For streaming, retries pre-stream failures (zero chunks yielded) on HTTP status codes, and mid-stream failures on configurable error substrings (`retryOnMidStream`). Mid-stream retry replays the entire stream and emits a `reset` chunk so consumers discard accumulated state.
 - **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`.
 
-A rate limit is answered one layer lower, inside the provider (`BaseLLMProvider.withRateLimitRetry`), because only the provider still holds the HTTP response — its `Retry-After` header and its status — before the message is flattened into prose. The provider policy also holds a **process-wide gate per quota**, so one caller's 429 pauses every other caller on the same model instead of each discovering the limit for itself. When that policy is spent it marks the error, and `RetryLlm` does not retry a marked error: the quota is demonstrably closed, and more attempts would only lengthen the outage. A provider that runs no policy of its own is unaffected — `RetryLlm` still retries its 429s.
+Throttling is answered one layer lower, inside the provider. See **Server-governed throttling** below for why, and for why that layer decides nothing.
 
 Composition order: `RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry sits outside the circuit breaker so retry attempts are not counted as separate failures. Token usage is tracked by `IRequestLogger` (injected via builder) rather than a decorator wrapper.
 
@@ -612,6 +612,92 @@ Two invariants hold across that chain:
 
 - **Batch capability is preserved, never fabricated.** `isBatchEmbedder` only tests for the presence of `embedBatch`, so each layer picks its class by inspecting its inner (the `wrapEmbedder` pattern, shared by `withRetry` and `withCircuitBreaker`). A decorator that exposed `embedBatch` unconditionally would make a non-batch embedder look batch-capable and send callers down the batch path.
 - **Composition is idempotent, and its metadata travels.** `composeResilientEmbedder` brands the chain with a symbol-keyed `{ maxBatchSize }`, and `wrapEmbedder` propagates that brand onto its own wrapper — its `inner` is `protected`, so a re-resolution could not otherwise see it and would stack the decorators. The cap is owned by the first composition; a later call carrying a *different explicit* `maxBatchSize` keeps the original and logs one warning.
+
+### Server-governed throttling (429)
+
+A 429 is handled inside the provider (`BaseLLMProvider.withThrottleRetry`) and
+**the library decides nothing about it**. This section records why, because the
+shape is unusual and was arrived at by removing things.
+
+**Where.** Only the provider still holds the HTTP response — the status and the
+`Retry-After` header — before the message is flattened into prose by the ILlm
+adapter. A layer above can only match digits in a string, which is what
+consumers were reduced to before this existed.
+
+**What the library establishes.** Facts, and only facts: this is a 429; the
+server named this interval, or named none; the quota is shut until then. Each is
+observed, none is computed.
+
+**What it refuses to decide.** How long a caller may be held. That depends
+entirely on who is waiting at the other end, which the library cannot see: a CLI
+can sit out a minute, an HTTP service answering inside a request cannot. Two
+earlier shapes were tried and removed:
+
+- A wait budget in milliseconds (`maxTotalWaitMs`). A timeout by another name,
+  set by the one party without the information to set it. Sixty seconds came
+  from SAP's guidance, which is advice to a client choosing its own tolerance —
+  not a number a library may choose on a consumer's behalf.
+- Exponential backoff for when the server names no interval. A computed delay is
+  a guess about someone else's server, and a guess belongs to whoever is willing
+  to own it.
+
+**Why `whenThrottled` is the strategy itself, with nothing beside it.** Even an
+attempt cap out in the config would silently overrule a strategy that had
+decided to keep going. Whatever a strategy wants to bound, it bounds on its own
+terms: `WaitAsTold` takes its own `maxAttempts` and is unbounded without one.
+Two ship — `ReportThrottling` (the default, never waits) and `WaitAsTold` (waits
+exactly the named interval) — and neither invents a duration.
+
+A consumer wanting a deadline expresses it the way deadlines already are, with
+an `AbortSignal` from its own clock.
+
+**Why "throttling" and not "retry".** The mechanism is a delay between calls,
+which is what throttling means. The distinction that matters is whose: this is
+*server-governed* throttling. Client-side throttling — spacing calls out on our
+own initiative — the library does not do at all.
+
+**Why only `Retry-After`.** It is the one standardised channel (RFC 9110, either
+`delay-seconds` or an HTTP-date; both reduce to a delay from now). Everything
+else is a vendor extension — OpenAI's `x-ratelimit-*`, Anthropic's
+`anthropic-ratelimit-*` — with differing formats and no interoperability
+guarantee. Parsing those would be a per-vendor guess in a shared module. The
+seam for it exists where vendor knowledge belongs: `retryAfterSeconds()` is
+protected on `BaseLLMProvider`, so a provider that wants to read its own headers
+overrides that one method.
+
+**A missing header is a signal, not a zero.** SAP AI Core documents the header,
+so its absence says something is not as expected; Anthropic omits it entirely
+for a spend-cap 429, and that one does not clear by waiting at all. So a blank
+or absent value reads as "the server did not say", and `WaitAsTold` reports
+rather than retrying into something that will never open.
+
+**Knowing is shared; waiting is not.** The quota's closing time lives in a
+process-wide gate keyed by account, endpoint and model, so a call into a quota
+already known to be shut is never sent — a refusal we can predict is one we need
+not buy, and buying it earns another penalty. But the gate does not hold a
+caller that never asked to wait. An earlier version did, and that was the budget
+mistake again, wearing the word "guarantee": a delay imposed on someone who had
+not consented to one.
+
+**Relationship to `RetryLlm`.** When a strategy stops, the error is marked, and
+`RetryLlm` does not retry a marked error — the quota is demonstrably shut and
+more attempts only lengthen the outage. A provider running no strategy of its
+own is unaffected; `RetryLlm` still retries its 429s as before.
+
+**Observability.** `setThrottleObserver` is one process-wide subscription
+covering every provider, fired on every refusal and every call turned away at a
+shut gate. It exists because the first version logged from a single provider
+that happened to have a logger on its config, leaving four silent — and because
+two questions are otherwise unanswerable from a running system: whether this
+server sends `Retry-After` at all, and whether the configured strategy is the
+one actually in force.
+
+Each event, and each strategy decision, carries a `source`. `response` means a
+server refused a call and the interval is its own, absence meaning it sent no
+header. `gate` means no request was sent and the interval is what is left of our
+own record. Without that distinction the synthesised gate interval reads exactly
+like a server's answer, and the first of those two questions — the one the
+observer was added for — stays unanswered.
 
 ## Protocol Contracts
 

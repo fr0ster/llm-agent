@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type Message, resetQuotaGates } from '@mcp-abap-adt/llm-agent';
+import {
+  type Message,
+  resetQuotaGates,
+  WaitAsTold,
+} from '@mcp-abap-adt/llm-agent';
 import { AnthropicProvider } from '../anthropic-provider.js';
 
 // ---------------------------------------------------------------------------
@@ -313,23 +317,28 @@ describe('AnthropicProvider — chat() usage', () => {
 // ---------------------------------------------------------------------------
 
 describe('AnthropicProvider — rate limiting', () => {
-  const fast = { baseDelayMs: 1, maxDelayMs: 2 };
+  const waits = new WaitAsTold();
 
   it('retries a 429 on chat() and returns the eventual answer', async () => {
     resetQuotaGates();
     const provider = new AnthropicProvider({
       apiKey: 'sk-test',
       model: 'claude-3-5-sonnet-20241022',
-      whenThrottled: fast,
+      whenThrottled: waits,
     });
     let calls = 0;
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
       calls += 1;
       if (calls < 2) {
+        // With an interval: nothing is guessed, so nothing waits without one.
         throw Object.assign(new Error('429'), {
           isAxiosError: true,
-          response: { status: 429, headers: {}, data: {} },
+          response: {
+            status: 429,
+            headers: { 'retry-after': '0.01' },
+            data: {},
+          },
         });
       }
       return {
@@ -349,7 +358,7 @@ describe('AnthropicProvider — rate limiting', () => {
     const provider = new AnthropicProvider({
       apiKey: 'sk-test',
       model: 'claude-3-5-sonnet-20241022',
-      whenThrottled: fast,
+      whenThrottled: waits,
     });
     const originalFetch = globalThis.fetch;
     let calls = 0;

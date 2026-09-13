@@ -1,62 +1,66 @@
 /**
  * What a provider does when a server throttles it.
  *
- * The seam lives here, beside the other strategies, rather than next to the
- * implementation that ships with it: a consumer programs against this package,
- * and a contract kept in the implementation file is a contract nobody finds.
+ * Throttling, and specifically the SERVER'S. Client-side throttling is spacing
+ * calls out on our own initiative, and this library does none of it: it sets no
+ * interval, computes none, and has no number of its own to set one with. The
+ * server names a delay — `Retry-After` is either seconds or an HTTP-date, and
+ * both reduce to a delay from now — and we either observe it or report it.
+ * Where the server names nothing, there is no throttling to observe.
  *
- * The policy is the numbers; the strategy turns them into a decision. The
- * shared pause per quota is NOT part of it — that is an invariant the runner
- * keeps either way, because one caller declining to wait is its own business
- * and one caller declining to mark the quota closed is everyone's.
+ * The library establishes facts and decides nothing. This is a 429. The server
+ * named this interval, or named none. The quota is shut until then. What to do
+ * about it — wait, give up, count attempts, give up after the third — belongs
+ * entirely to the consumer, because the consumer is the only one who knows who
+ * is waiting at the other end.
+ *
+ * So `whenThrottled` is not a policy object with the library's numbers in it.
+ * It is the strategy itself. Anything a strategy wants to bound, it bounds on
+ * its own terms: a `maxAttempts` sitting outside would silently overrule a
+ * strategy that had already decided to keep going.
+ *
+ * Two ship, and neither invents a duration:
+ *
+ * - `ReportThrottling` — never waits. Returns the failure with what the server
+ *   said, and the caller decides. This is what happens when nothing is set.
+ * - `WaitAsTold` — waits exactly the interval the server named, and reports
+ *   when it named none, rather than guessing at milliseconds.
  */
 
-export interface ThrottlePolicy {
-  /** Total attempts INCLUDING the first. 1 waits out no throttling of its own. */
-  maxAttempts: number;
-  /** Give up once the accumulated waiting would exceed this. */
-  maxTotalWaitMs: number;
-  /** First backoff step when the server names no time of its own. */
-  baseDelayMs: number;
-  /** Ceiling for one computed step, before jitter. */
-  maxDelayMs: number;
-  /**
-   * How the numbers above turn into a decision. Omit for the default.
-   *
-   * There is no switch to turn throttle handling off, because there is no case
-   * where sending another request into a quota the server has just closed is
-   * the better answer — that is correctness, not preference. A consumer who
-   * wants different mechanics supplies them here, and the shared pause, which
-   * is the part other callers depend on, is kept either way.
-   */
-  strategy?: IThrottleStrategy;
-}
-
-/** What the strategy is told about the 429 that just came back. */
+/** What the strategy is told. All of it observed, none of it assumed. */
 export interface ThrottleContext {
-  /** 1-based: the attempt that was just refused. */
+  /**
+   * Where this came from, which changes what the interval means.
+   *
+   * `response` — a server just refused the call. `retryAfterSeconds` is what it
+   * said, and absent means it said nothing.
+   *
+   * `gate` — no request was sent, because the quota was already recorded as
+   * shut. `retryAfterSeconds` is what is left of OUR record, not a fresh
+   * statement from the server. A strategy that treats the two alike will be
+   * wrong about at least one of them.
+   */
+  source: 'response' | 'gate';
+  /** 1-based. The attempt just refused, or 0 for a `gate` decision. */
   attempt: number;
-  /** What the server asked us to wait, in seconds, if it said. */
+  /** The interval, read as `source` says. */
   retryAfterSeconds?: number;
-  /** Waiting already spent on this call, the shared pause included. */
+  /** How long this call has already spent waiting. */
   waitedMs: number;
-  /** The numbers in force, so a strategy need not close over them. */
-  policy: ThrottlePolicy;
 }
 
 export interface ThrottleDecision {
   /**
-   * How long this quota is closed.
+   * How long this quota is shut, as far as we can tell.
    *
-   * Taken by the shared pause whether or not THIS caller retries: the quota is
-   * shut regardless of who has budget left, and a caller that gives up with the
-   * gate open sends everyone else straight back into the limit.
+   * Recorded whether or not THIS caller waits: it is what the server said, and
+   * the next caller deserves to know it even if this one is leaving.
    */
   waitMs: number;
-  /** Whether this caller waits it out and tries again. */
+  /** Whether this caller sits it out and tries again. */
   retry: boolean;
-  /** When not retrying, which cap ended it. */
-  reason?: 'attempts' | 'budget';
+  /** When not retrying, why — free text from a consumer's own strategy. */
+  reason?: string;
 }
 
 export interface IThrottleStrategy {
@@ -64,52 +68,65 @@ export interface IThrottleStrategy {
   decide(ctx: ThrottleContext): ThrottleDecision;
 }
 
-export const DEFAULT_THROTTLE_POLICY: Omit<ThrottlePolicy, 'strategy'> = {
-  maxAttempts: 5,
-  maxTotalWaitMs: 60_000,
-  baseDelayMs: 1_000,
-  maxDelayMs: 20_000,
-};
+/** Seconds the server named, in milliseconds, or 0 when it named none. */
+function servedWaitMs(retryAfterSeconds: number | undefined): number {
+  return retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds)
+    ? retryAfterSeconds * 1000
+    : 0;
+}
 
 /**
- * What SAP AI Core documents: the server's own `Retry-After` when it sends one,
- * otherwise exponential backoff with full jitter, capped by attempts and by
- * total waiting.
+ * Never wait. What happens when nothing is configured.
+ *
+ * The failure goes up carrying what the server said, and the caller — who knows
+ * whether anyone is waiting on the other end — decides whether to sit it out.
+ * The quota is still recorded as shut, so the next call does not spend a
+ * request discovering it.
  */
-export class DefaultThrottleStrategy implements IThrottleStrategy {
-  readonly name = 'default-throttle';
+export class ReportThrottling implements IThrottleStrategy {
+  readonly name = 'report';
 
-  decide({
-    attempt,
-    retryAfterSeconds,
-    waitedMs,
-    policy,
-  }: ThrottleContext): ThrottleDecision {
-    const served =
-      retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds);
-
-    // The server's own number wins. A computed guess is for when it stays
-    // silent — it is an estimate of something the server already knows.
-    const waitMs = served
-      ? (retryAfterSeconds as number) * 1000
-      : jittered(policy.baseDelayMs * 2 ** (attempt - 1), policy.maxDelayMs);
-
-    if (attempt >= policy.maxAttempts) {
-      return { waitMs, retry: false, reason: 'attempts' };
-    }
-    if (waitedMs + waitMs > policy.maxTotalWaitMs) {
-      return { waitMs, retry: false, reason: 'budget' };
-    }
-    return { waitMs, retry: true };
+  decide({ retryAfterSeconds }: ThrottleContext): ThrottleDecision {
+    return {
+      waitMs: servedWaitMs(retryAfterSeconds),
+      retry: false,
+      reason: 'reported',
+    };
   }
 }
 
 /**
- * Full jitter: a random point in [0, computed], not computed ± a nudge.
+ * Wait exactly as long as the server asked, and only then.
  *
- * Scaling a shared delay by a factor near 1 keeps the herd together; drawing
- * from the whole interval is what actually spreads it.
+ * For a caller with nobody waiting on it — a batch job, a CLI — that would
+ * rather have the answer late than not at all.
+ *
+ * When the server names no interval this reports instead of guessing. A missing
+ * `Retry-After` is itself a signal: SAP AI Core documents the header, so its
+ * absence says something is not as expected, and a number invented here would
+ * be an estimate of a system we cannot see.
+ *
+ * `maxAttempts` is the strategy's own, because choosing this strategy is the
+ * consumer's act and so is bounding it. Omit it and the strategy keeps
+ * returning for as long as the server keeps naming an interval; bound that with
+ * an `AbortSignal`, which is a deadline from the caller's own clock.
  */
-function jittered(computed: number, maxDelayMs: number): number {
-  return Math.random() * Math.min(computed, maxDelayMs);
+export class WaitAsTold implements IThrottleStrategy {
+  readonly name = 'wait-as-told';
+  private readonly maxAttempts: number;
+
+  constructor(options: { maxAttempts?: number } = {}) {
+    this.maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+  }
+
+  decide({ attempt, retryAfterSeconds }: ThrottleContext): ThrottleDecision {
+    const waitMs = servedWaitMs(retryAfterSeconds);
+    if (waitMs <= 0) {
+      return { waitMs: 0, retry: false, reason: 'no-interval' };
+    }
+    if (attempt >= this.maxAttempts) {
+      return { waitMs, retry: false, reason: 'attempts' };
+    }
+    return { waitMs, retry: true };
+  }
 }

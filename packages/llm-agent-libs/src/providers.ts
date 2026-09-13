@@ -11,8 +11,8 @@
 import type {
   ILlm,
   IModelResolver,
+  IThrottleStrategy,
   LLMProviderConfig,
-  ThrottlePolicy,
 } from '@mcp-abap-adt/llm-agent';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
@@ -35,13 +35,15 @@ export interface MakeLlmConfig {
   resourceGroup?: string;
   credentials?: SapAICoreCredentials;
   /**
-   * How the provider answers HTTP 429. Omit for the documented defaults — back
-   * off with jitter, honour `Retry-After`, give up after 5 attempts or 60
-   * seconds of waiting. A service answering inside an HTTP request usually
-   * wants `maxTotalWaitMs` below its own client's timeout, so the caller gets
-   * the "retry in N seconds" answer instead of a cut connection.
+   * What the provider does when a server throttles it: `maxAttempts` and a
+   * `strategy`. Omit and nothing waits — the failure comes back carrying what
+   * the server said, and the caller decides.
+   *
+   * There is no duration here. How long anyone may be held depends on who is
+   * waiting at the other end, which this library cannot see; a caller with a
+   * deadline expresses it as an `AbortSignal`.
    */
-  whenThrottled?: Partial<ThrottlePolicy>;
+  whenThrottled?: IThrottleStrategy;
   /** When false, streamChat() is replaced with chat() yielding a single chunk. Default: true. */
   streaming?: boolean;
 }

@@ -3,7 +3,11 @@
  * Internal module — not re-exported by the package barrel.
  */
 
-import type { ThrottlePolicy } from '@mcp-abap-adt/llm-agent';
+import {
+  type IThrottleStrategy,
+  ReportThrottling,
+  WaitAsTold,
+} from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartServerAgentConfig,
@@ -108,30 +112,50 @@ function positiveIntOption(
 }
 
 /**
- * Read the optional `llm.whenThrottled` block, failing fast on a bad value.
+ * Read the optional `llm.whenThrottled` value: the name of a shipped strategy,
+ * or that name with the strategy's own options.
  *
- * Numbers only: there is no key here for turning throttle handling off, because
- * there is no correct alternative to waiting out a quota the server has closed.
- * Different mechanics are a strategy, supplied in code, not a YAML switch.
- *
- * Only the policy's own keys are accepted, and each is checked: a budget
- * silently parsed as NaN would disable the cap it was written to impose, which
- * is worse than being told the value is wrong.
+ * No duration, and no attempt cap outside the strategy. How long anyone waits
+ * and how often they come back belong to the strategy the operator chose;
+ * a number out here would overrule it.
  */
 function whenThrottledOption(
   value: unknown,
   path = 'llm.whenThrottled',
-): { whenThrottled?: Partial<ThrottlePolicy> } {
+): { whenThrottled?: IThrottleStrategy } {
   if (value === undefined || value === null) return {};
+
+  const named = (name: unknown, options: { maxAttempts?: number } = {}) => {
+    if (name === 'report') {
+      // `report` never retries, so an attempt cap beside it has nothing to cap.
+      // Accepting it and dropping it is the worse failure: a value that passes
+      // validation and does nothing reads as configured, and stays wrong until
+      // someone measures.
+      if (options.maxAttempts !== undefined) {
+        throw new Error(
+          `Invalid ${path}.maxAttempts: 'report' never retries, so there is nothing to limit. Use 'wait-as-told' if you meant to retry.`,
+        );
+      }
+      return new ReportThrottling();
+    }
+    if (name === 'wait-as-told') return new WaitAsTold(options);
+    throw new Error(
+      `Invalid ${path}: expected 'report' or 'wait-as-told', got ${JSON.stringify(name)}. Anything else is code, and is passed to the provider directly.`,
+    );
+  };
+
+  if (typeof value === 'string') return { whenThrottled: named(value) };
+
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(
-      `Invalid ${path}: expected a mapping, got ${JSON.stringify(value)}`,
+      `Invalid ${path}: expected a strategy name or a mapping, got ${JSON.stringify(value)}`,
     );
   }
+
   const raw = value as Record<string, unknown>;
-  const policy: Partial<ThrottlePolicy> = {};
+  const options: { maxAttempts?: number } = {};
   for (const [key, v] of Object.entries(raw)) {
-    if (v === undefined || v === null) continue;
+    if (key === 'strategy' || v === undefined || v === null) continue;
     // A count, not a duration: fractional attempts do not exist, and zero of
     // them is not "none" — the first attempt is included in the total, so 0
     // behaves as 1 and 1.5 as 2. Silently meaning something other than what it
@@ -143,28 +167,14 @@ function whenThrottledOption(
           `Invalid ${path}.maxAttempts: expected a positive integer, got ${JSON.stringify(v)}`,
         );
       }
-      policy.maxAttempts = n;
-      continue;
-    }
-    if (
-      key === 'maxTotalWaitMs' ||
-      key === 'baseDelayMs' ||
-      key === 'maxDelayMs'
-    ) {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0) {
-        throw new Error(
-          `Invalid ${path}.${key}: expected a non-negative number, got ${JSON.stringify(v)}`,
-        );
-      }
-      policy[key] = n;
+      options.maxAttempts = n;
       continue;
     }
     throw new Error(
-      `Unknown ${path} key '${key}'. Known keys: maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs.`,
+      `Unknown ${path} key '${key}'. Known keys: strategy, maxAttempts.`,
     );
   }
-  return Object.keys(policy).length > 0 ? { whenThrottled: policy } : {};
+  return { whenThrottled: named(raw.strategy, options) };
 }
 
 export function resolveRagSection(

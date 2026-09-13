@@ -26,6 +26,7 @@ import type {
   ISkillManager,
   ISkillPluginHost,
   ISmartAgent,
+  IThrottleStrategy,
   IToolNamespace,
   IToolsRagHandle,
   LlmTool,
@@ -35,7 +36,6 @@ import type {
   NamespaceClientInput,
   PluginExports,
   SubAgentRegistry,
-  ThrottlePolicy,
 } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedTools,
@@ -137,13 +137,14 @@ export interface SmartServerLlmConfig {
   maxTokens?: number;
   classifierTemperature?: number;
   /**
-   * How the provider answers HTTP 429. Omit for the documented defaults — back
-   * off with jitter, honour `Retry-After`, give up after 5 attempts or 60
-   * seconds of waiting. A server answering inside an HTTP request usually wants
-   * `maxTotalWaitMs` below its own client's timeout, so the caller gets the
-   * "retry in N seconds" answer rather than a cut connection.
+   * What the provider does when a server throttles it: `maxAttempts` and a
+   * `strategy`. Omit and nothing waits — the failure comes back carrying what
+   * the server said, and the caller decides.
+   *
+   * There is no duration here. How long anyone may be held depends on who is
+   * waiting at the other end, which this library cannot see.
    */
-  whenThrottled?: Partial<ThrottlePolicy>;
+  whenThrottled?: IThrottleStrategy;
 }
 
 export interface SmartServerRagConfig {

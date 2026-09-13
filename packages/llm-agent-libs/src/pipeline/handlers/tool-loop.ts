@@ -110,6 +110,26 @@ function summarizeIterationMessages(
   };
 }
 
+/**
+ * The cause chain as plain text, bounded.
+ *
+ * A provider failure usually carries the thing that actually went wrong one or
+ * two levels down — the HTTP status, the socket error — and a trace that shows
+ * only the outermost message is the one that sends someone reading it back to
+ * the logs it was meant to replace.
+ */
+function describeCause(error: unknown): string[] {
+  const chain: string[] = [];
+  const seen = new Set<unknown>();
+  let cur: unknown = (error as { cause?: unknown })?.cause;
+  while (cur && chain.length < 5 && !seen.has(cur)) {
+    seen.add(cur);
+    chain.push(cur instanceof Error ? cur.message : String(cur));
+    cur = (cur as { cause?: unknown })?.cause;
+  }
+  return chain;
+}
+
 export class ToolLoopHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
@@ -446,10 +466,31 @@ export class ToolLoopHandler implements IStageHandler {
         ctx.options,
       );
 
+      let chunksSeen = 0;
       for await (const chunkResult of llmStream) {
         if (!chunkResult.ok) {
           llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
+          // The failure gets a response trace too (#290). This is the case the
+          // tracing exists for — a successful call is reconstructable from the
+          // ordinary logs, a provider or gateway dying mid-stream is not — and
+          // leaving on the error path wrote the question without the answer.
+          // `chunksSeen` separates a stream that never opened from one that
+          // died halfway, which the partial content alone does not say.
+          ctx.options?.sessionLogger?.logStep(
+            `llm_response_iter_${iteration + 1}`,
+            {
+              error: {
+                message: chunkResult.error.message,
+                code: (chunkResult.error as { code?: unknown }).code,
+                cause: describeCause(chunkResult.error),
+              },
+              partialContent: content,
+              finishReason,
+              chunksSeen,
+            },
+            'llm',
+          );
           ctx.yield({
             ok: false,
             error: new OrchestratorError(
@@ -459,6 +500,7 @@ export class ToolLoopHandler implements IStageHandler {
           });
           return false;
         }
+        chunksSeen += 1;
         const chunk = chunkResult.value;
         // Mid-stream retry or fallback reset: discard accumulated state
         if (chunk.reset) {

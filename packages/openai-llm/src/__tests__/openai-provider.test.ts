@@ -5,6 +5,7 @@ import {
   isThrottledError,
   type Message,
   resetQuotaGates,
+  WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '../openai-provider.js';
 
@@ -521,20 +522,22 @@ const tooManyRequests = (retryAfter?: string) =>
   });
 
 describe('OpenAIProvider — rate limiting', () => {
-  const fast = { baseDelayMs: 1, maxDelayMs: 2 };
+  const waits = new WaitAsTold();
 
   it('retries a 429 and returns the eventual answer', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: fast,
+      whenThrottled: waits,
     });
     let calls = 0;
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
       calls += 1;
-      if (calls < 3) throw tooManyRequests();
+      // With an interval: WaitAsTold serves what the server named and guesses
+      // nothing, so a 429 without a header is reported rather than retried.
+      if (calls < 3) throw tooManyRequests('0.01');
       return {
         data: {
           choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
@@ -551,7 +554,7 @@ describe('OpenAIProvider — rate limiting', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: { ...fast, maxAttempts: 2 },
+      whenThrottled: new WaitAsTold({ maxAttempts: 2 }),
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
@@ -575,7 +578,7 @@ describe('OpenAIProvider — rate limiting', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: { ...fast, maxAttempts: 1 },
+      whenThrottled: new WaitAsTold({ maxAttempts: 1 }),
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
@@ -590,23 +593,25 @@ describe('OpenAIProvider — rate limiting', () => {
     }
   });
 
-  it('reports a budget give-up as a budget give-up', async () => {
+  it('reports no-interval when the server named none', async () => {
+    // There is no budget to run out of any more: the only bound is a count,
+    // and a 429 without an interval is reported rather than guessed at.
     resetQuotaGates();
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: { ...fast, maxAttempts: 10, maxTotalWaitMs: 10 },
+      whenThrottled: waits,
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
-      throw tooManyRequests('30');
+      throw tooManyRequests();
     };
     try {
       await provider.chat([{ role: 'user', content: 'hi' }]);
       assert.fail('should have thrown');
     } catch (e) {
       assert.ok(isThrottledError(e));
-      assert.equal(e.reason, 'budget');
+      assert.equal(e.reason, 'no-interval');
     }
   });
 
@@ -615,7 +620,7 @@ describe('OpenAIProvider — rate limiting', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: fast,
+      whenThrottled: waits,
     });
     let calls = 0;
     // @ts-expect-error — stub axios for test
@@ -639,10 +644,8 @@ describe('OpenAIProvider — rate limiting', () => {
       apiKey: 'test-key',
       model: 'gpt-4o',
       whenThrottled: {
-        strategy: {
-          name: 'never-wait',
-          decide: () => ({ waitMs: 0, retry: false, reason: 'attempts' }),
-        },
+        name: 'never-wait',
+        decide: () => ({ waitMs: 0, retry: false, reason: 'attempts' }),
       },
     });
     let calls = 0;
@@ -662,7 +665,7 @@ describe('OpenAIProvider — the quota a per-request model spends', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       model: 'gpt-4o',
-      whenThrottled: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 2 },
+      whenThrottled: new WaitAsTold({ maxAttempts: 1 }),
     });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => {
