@@ -1,5 +1,16 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 24.1.0
+
+The deadline 24.0.0 promised (#294).
+
+24.0.0 removed the wait budget because a deadline belongs to whoever knows who
+is waiting, and pointed at `AbortSignal` as the replacement — which was not
+wired. `LLMCallOptions` now carries `signal`, and every provider honours it on
+both the chat and the streaming path: it bounds the wait for a server's
+throttling and the request itself, so an abort ends the call rather than only
+the part that had not started.
+
 ## 24.0.0
 
 The library establishes facts about throttling and decides nothing (#289, #290, #291).

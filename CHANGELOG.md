@@ -9,6 +9,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [24.1.0] — 2026-09-13
+
+The deadline 24.0.0 promised (#294).
+
+24.0.0 removed the wait budget because a deadline belongs to whoever knows who
+is waiting, and pointed at `AbortSignal` as the replacement — which was not
+wired. `LLMCallOptions` now carries `signal`, and every provider honours it on
+both the chat and the streaming path: it bounds the wait for a server's
+throttling and the request itself, so an abort ends the call rather than only
+the part that had not started.
+
 ### Fixed
 
 - **`signal` on `LLMCallOptions`, and every provider honours it.** 24.0.0 removed
