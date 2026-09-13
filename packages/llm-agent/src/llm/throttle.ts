@@ -322,9 +322,20 @@ export interface ThrottleEvent {
   key: string;
   /** The strategy that made the call. */
   strategy: string;
-  /** 1-based, the attempt that was just refused. */
+  /**
+   * Where this came from.
+   *
+   * `response` — a server refused a call we made. `retryAfterSeconds` is the
+   * server's own, and absent means it sent no header: that is the fact this
+   * event exists to establish, so it must not be confused with the other case.
+   *
+   * `gate` — no request was sent, the quota being already recorded as shut.
+   * The interval is what is left of our own record.
+   */
+  source: 'response' | 'gate';
+  /** 1-based, the attempt that was just refused. 0 for a `gate` event. */
   attempt: number;
-  /** Did the server name an interval, and which. Absent means it did not. */
+  /** The interval, read as `source` says. */
   retryAfterSeconds?: number;
   /** How long the quota is shut, as far as we can tell. */
   waitMs: number;
@@ -403,11 +414,13 @@ async function attemptWithGate<T>(
     if (shut > 0) {
       if (!servingOwnWait) {
         const decision = strategy.decide({
+          source: 'gate',
           attempt,
           retryAfterSeconds: shut / 1000,
           waitedMs: waited,
         });
         report(opts, strategy, {
+          source: 'gate',
           attempt,
           retryAfterSeconds: shut / 1000,
           waitMs: shut,
@@ -432,6 +445,7 @@ async function attemptWithGate<T>(
       attempt += 1;
       const retryAfter = opts.retryAfterSeconds?.(error);
       const decision = strategy.decide({
+        source: 'response',
         attempt,
         retryAfterSeconds: retryAfter,
         waitedMs: waited,
@@ -444,6 +458,7 @@ async function attemptWithGate<T>(
       gate.penalise(decision.waitMs);
 
       report(opts, strategy, {
+        source: 'response',
         attempt,
         retryAfterSeconds: retryAfter,
         waitMs: decision.waitMs,
@@ -469,6 +484,7 @@ function report(
   opts: ThrottleRetryOptions,
   strategy: IThrottleStrategy,
   info: {
+    source: 'response' | 'gate';
     attempt: number;
     retryAfterSeconds?: number;
     waitMs: number;
@@ -479,6 +495,7 @@ function report(
   emit({
     key: opts.key,
     strategy: strategy.name,
+    source: info.source,
     attempt: info.attempt,
     retryAfterSeconds: info.retryAfterSeconds,
     waitMs: info.waitMs,

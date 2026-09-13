@@ -56,6 +56,20 @@ describe('llm.whenThrottled from YAML', () => {
     );
   });
 
+  it('refuses an attempt cap on a strategy that never retries', () => {
+    // It would pass validation and then be dropped — a value that reads as
+    // configured and does nothing, wrong until somebody measures.
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          yamlWith({ whenThrottled: { strategy: 'report', maxAttempts: 3 } }),
+          {},
+        ),
+      /'report' never retries/,
+    );
+  });
+
   it('refuses a strategy it does not ship', () => {
     assert.throws(
       () =>

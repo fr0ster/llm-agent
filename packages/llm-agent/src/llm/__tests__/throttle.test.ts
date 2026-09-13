@@ -370,6 +370,57 @@ describe('the throttle observer', () => {
     });
   });
 
+  it('separates what the server said from what our own record says', async () => {
+    // The event exists to answer whether this server sends Retry-After. A gate
+    // hit synthesises an interval from our own record, so without `source` the
+    // two are indistinguishable and the question stays unanswered.
+    resetQuotaGates();
+    gateFor('mixed').penalise(30_000);
+    await assert.rejects(
+      runWithThrottleRetry(async () => 'ok', { key: 'mixed', isThrottled }),
+      (e: unknown) => isThrottledError(e),
+    );
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.source, 'gate');
+    assert.equal(seen[0]?.attempt, 0, 'no request was sent');
+
+    seen.length = 0;
+    resetQuotaGates();
+    await assert.rejects(
+      runWithThrottleRetry(
+        async () => {
+          throw tooManyRequests('30');
+        },
+        { key: 'mixed', isThrottled, retryAfterSeconds },
+      ),
+      (e: unknown) => isThrottledError(e),
+    );
+    assert.equal(seen[0]?.source, 'response');
+    assert.equal(seen[0]?.attempt, 1);
+    assert.equal(seen[0]?.retryAfterSeconds, 30);
+  });
+
+  it('tells the strategy which of the two it is looking at', async () => {
+    resetQuotaGates();
+    const sources: string[] = [];
+    const watching: IThrottleStrategy = {
+      name: 'watching',
+      decide: (ctx) => {
+        sources.push(ctx.source);
+        return { waitMs: 0, retry: false, reason: 'reported' };
+      },
+    };
+    gateFor('both').penalise(5_000);
+    await assert.rejects(
+      runWithThrottleRetry(async () => 'ok', {
+        key: 'both',
+        strategy: watching,
+        isThrottled,
+      }),
+    );
+    assert.deepEqual(sources, ['gate']);
+  });
+
   it('says whether the server named an interval', async () => {
     resetQuotaGates();
     await assert.rejects(

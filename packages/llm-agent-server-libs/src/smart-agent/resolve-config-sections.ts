@@ -126,7 +126,18 @@ function whenThrottledOption(
   if (value === undefined || value === null) return {};
 
   const named = (name: unknown, options: { maxAttempts?: number } = {}) => {
-    if (name === 'report') return new ReportThrottling();
+    if (name === 'report') {
+      // `report` never retries, so an attempt cap beside it has nothing to cap.
+      // Accepting it and dropping it is the worse failure: a value that passes
+      // validation and does nothing reads as configured, and stays wrong until
+      // someone measures.
+      if (options.maxAttempts !== undefined) {
+        throw new Error(
+          `Invalid ${path}.maxAttempts: 'report' never retries, so there is nothing to limit. Use 'wait-as-told' if you meant to retry.`,
+        );
+      }
+      return new ReportThrottling();
+    }
     if (name === 'wait-as-told') return new WaitAsTold(options);
     throw new Error(
       `Invalid ${path}: expected 'report' or 'wait-as-told', got ${JSON.stringify(name)}. Anything else is code, and is passed to the provider directly.`,

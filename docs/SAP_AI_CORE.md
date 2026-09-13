@@ -273,9 +273,14 @@ setThrottleObserver((e) => log.warn('throttled', e));
 ```
 
 One subscription for every provider, fired on every refusal and on every call
-turned away at a shut gate. The event carries the quota key, the policy and
-strategy in force, the attempt, whether the server named an interval and which,
-and why a call is not going on.
+turned away at a shut gate. The event carries the quota key, the strategy in
+force, the attempt, whether the server named an interval and which, and why a
+call is not going on.
+
+Read `source` before the interval. `response` means a server refused a call and
+the number is its own — absent means it sent no header. `gate` means no request
+was sent and the number is what is left of our own record. Only the first
+answers whether this server sends `Retry-After`.
 
 Whether the server sends `Retry-After` is worth reading off these events: with
 `WaitAsTold` it is the difference between waiting and reporting, and a server

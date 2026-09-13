@@ -692,6 +692,13 @@ two questions are otherwise unanswerable from a running system: whether this
 server sends `Retry-After` at all, and whether the configured strategy is the
 one actually in force.
 
+Each event, and each strategy decision, carries a `source`. `response` means a
+server refused a call and the interval is its own, absence meaning it sent no
+header. `gate` means no request was sent and the interval is what is left of our
+own record. Without that distinction the synthesised gate interval reads exactly
+like a server's answer, and the first of those two questions — the one the
+observer was added for — stays unanswered.
+
 ## Protocol Contracts
 
 ### Streaming Tool Calls

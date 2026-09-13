@@ -29,9 +29,21 @@
 
 /** What the strategy is told. All of it observed, none of it assumed. */
 export interface ThrottleContext {
-  /** 1-based. The attempt just refused, or 0 when the quota was known shut. */
+  /**
+   * Where this came from, which changes what the interval means.
+   *
+   * `response` — a server just refused the call. `retryAfterSeconds` is what it
+   * said, and absent means it said nothing.
+   *
+   * `gate` — no request was sent, because the quota was already recorded as
+   * shut. `retryAfterSeconds` is what is left of OUR record, not a fresh
+   * statement from the server. A strategy that treats the two alike will be
+   * wrong about at least one of them.
+   */
+  source: 'response' | 'gate';
+  /** 1-based. The attempt just refused, or 0 for a `gate` decision. */
   attempt: number;
-  /** What the server asked us to wait, in seconds, if it said. */
+  /** The interval, read as `source` says. */
   retryAfterSeconds?: number;
   /** How long this call has already spent waiting. */
   waitedMs: number;

@@ -42,6 +42,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the failure immediately with the interval remaining. Imposing a delay nobody
   consented to was the budget's mistake wearing the word "guarantee".
 
+- **Every throttle event and strategy decision carries a `source`** —
+  `response` when a server refused a call, `gate` when none was sent because the
+  quota was already recorded shut. Without it the interval synthesised from our
+  own record was indistinguishable from one the server sent, which left the
+  observer unable to answer the question it was added for.
+
+- **An attempt cap on `report` is refused** rather than accepted and dropped. A
+  value that passes validation and does nothing reads as configured, and stays
+  wrong until somebody measures.
+
 - **`llm.whenThrottled` in YAML is a strategy name** — `report` or
   `wait-as-told` — optionally with that strategy's own options. A duration there
   would be the operator guessing how long their users will sit still.
