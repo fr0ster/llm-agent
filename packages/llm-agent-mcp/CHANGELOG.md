@@ -23,6 +23,17 @@ The caller's signal reaches a tool call, and the ceiling stops cutting (#296).
   of only racing the promise around it. An abort now ends the tool call rather
   than answering the caller and leaving it running — on an ABAP write chain,
   with its lock still held.
+- **The embedded transport gets the signal too.** `callToolHandler` and
+  `toolCallHandler` take an optional third argument and receive it. Embedded is
+  the path where the tool runs in the caller's own process, so a signal that
+  reached only the SDK branch left exactly the case this fix is about
+  unaddressed.
+- **An abort no longer looks like a lost connection.** The wrapper's catch
+  reconnects and calls again; by then the caller has been answered, so the
+  retry was a request nobody was waiting for — and on a write tool a second
+  attempt at the same change. Where a wrapper is shared it also dropped other
+  callers' in-flight calls. Both the reconnect and the session-recovery retry
+  now rethrow when the caller's signal has fired.
 
 ## 24.1.0
 

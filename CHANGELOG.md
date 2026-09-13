@@ -50,12 +50,18 @@ arriving, the provider's own invented timeout has nothing left to protect.
   `RagResolutionConfig.timeoutMs` stays and now says what it is: the client
   timeout for an external vector backend, not the embedder's.
 
-- **An MCP tool call carries the caller's signal.**
+- **An MCP tool call carries the caller's signal, on both transports.**
   `McpClientAdapter.callTool` raced the caller's signal around the call rather
   than passing it in, so an abort answered the caller and left the tool
   running. On an ABAP write chain that means a lock still held.
   `MCPClientWrapper.callTool` / `callTools` now take an `AbortSignal` and hand
-  it to the SDK request.
+  it to the SDK request, and `callToolHandler` / `toolCallHandler` receive it on
+  the embedded path — where the tool runs in the caller's own process, and
+  where leaving it out would have missed the case entirely.
+
+  An abort also stops being mistaken for a lost connection: the wrapper used to
+  reconnect and call again, which is a request nobody is waiting for and, on a
+  write tool, a second attempt at the same change.
 
   **`DEFAULT_MCP_REQUEST_TIMEOUT_MS` rises from two minutes to one hour.** A
   default survives here against this release's grain because the SDK leaves no

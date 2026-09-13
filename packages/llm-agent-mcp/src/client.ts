@@ -119,6 +119,7 @@ export interface MCPClientConfig {
   toolCallHandler?: (
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ) => Promise<unknown>;
 
   /**
@@ -134,6 +135,7 @@ export interface MCPClientConfig {
   callToolHandler?: (
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ) => Promise<unknown>;
 
   /**
@@ -448,15 +450,20 @@ export class MCPClientWrapper {
         let result: unknown;
 
         if (this.config.callToolHandler) {
+          // The signal goes to the handler, not just around it. Embedded is
+          // the path where the tool runs in this very process, so a handler
+          // that ignores it keeps working after the caller has been answered.
           result = await this.config.callToolHandler(
             toolCall.name,
             toolCall.arguments,
+            signal,
           );
         } else if (this.config.toolCallHandler) {
           // Use provided handler
           result = await this.config.toolCallHandler(
             toolCall.name,
             toolCall.arguments,
+            signal,
           );
         } else {
           throw new Error(
@@ -524,6 +531,12 @@ export class MCPClientWrapper {
         isError: response.isError === true,
       };
     } catch (error: unknown) {
+      // An abort is not a lost connection. The caller has already been
+      // answered by the time this runs, so reconnecting and calling again
+      // sends a request nobody is waiting for — and on a write tool that is a
+      // second attempt at the same change. Where a wrapper is shared it is
+      // worse still: the disconnect drops calls belonging to other callers.
+      if (signal?.aborted) throw error;
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       // Auto-reconnect logic: if it fails, try to connect again and retry once
@@ -539,6 +552,8 @@ export class MCPClientWrapper {
           isError: response.isError === true,
         };
       } catch (retryError: unknown) {
+        // Same again before the session-recovery attempt.
+        if (signal?.aborted) throw retryError;
         // Resume-with-session failed — the server may have dropped the session.
         // Clear it and try ONE fresh connect so a truly-gone session does not
         // wedge the client.
