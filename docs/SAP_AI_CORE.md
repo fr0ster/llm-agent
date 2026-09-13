@@ -247,8 +247,16 @@ silently overrule a strategy that had decided to keep going.
 A consumer who wants exponential backoff writes one: that is a guess about
 someone else's server, and a guess belongs to whoever owns it.
 
-A caller that wants a deadline already has one — pass an `AbortSignal`. It is
-your deadline, from your own clock, rather than a number the library invented.
+A caller that wants a deadline already has one — pass an `AbortSignal` on the
+call options. It is your deadline, from your own clock, rather than a number the
+library invented, and it bounds both the waiting and the request:
+
+```ts
+const ac = new AbortController();
+setTimeout(() => ac.abort(), 20_000);
+
+await provider.chat(messages, tools, { signal: ac.signal });
+```
 
 ### What is shared, and what is not
 

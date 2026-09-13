@@ -100,6 +100,18 @@ export interface LLMCallOptions {
   maxTokens?: number;
   topP?: number;
   stop?: string[];
+  /**
+   * The caller's deadline, and the only one there is.
+   *
+   * 24.0.0 removed the library's wait budget on the grounds that a deadline
+   * belongs to whoever knows who is waiting — and then offered this in its
+   * place without wiring it, which left a consumer who had used the budget with
+   * nothing at all.
+   *
+   * Honoured while waiting out a server's throttling and by the request itself,
+   * so an abort ends both rather than only the part that had not started.
+   */
+  signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------

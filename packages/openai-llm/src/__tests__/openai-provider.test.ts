@@ -785,3 +785,69 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
     assert.ok(!keyOf(p).includes('sk-secret-value'));
   });
 });
+
+describe("OpenAIProvider — the caller's deadline", () => {
+  // 24.0.0 removed the library's wait budget because a deadline belongs to
+  // whoever knows who is waiting, and named AbortSignal as the replacement
+  // without wiring it. This is the wiring.
+  it('ends the wait when the caller aborts', async () => {
+    resetQuotaGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      // Bounded so a regression fails on the clock rather than hanging: the
+      // server's half-second must not outlast a caller that left at 20ms.
+      whenThrottled: new WaitAsTold({ maxAttempts: 2 }),
+    });
+    let calls = 0;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => {
+      calls += 1;
+      throw tooManyRequests('0.5');
+    };
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 20);
+    const started = Date.now();
+    await assert.rejects(
+      provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+        signal: ac.signal,
+      }),
+    );
+    assert.ok(
+      Date.now() - started < 400,
+      `the interval must not outlast the caller, waited ${Date.now() - started}ms`,
+    );
+    assert.equal(calls, 1);
+  });
+
+  it('hands the signal to the request itself, not only to the waiting', async () => {
+    resetQuotaGates();
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+    });
+    let seen: AbortSignal | undefined;
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      _body: unknown,
+      config?: { signal?: AbortSignal },
+    ) => {
+      seen = config?.signal;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    const ac = new AbortController();
+    await provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+      signal: ac.signal,
+    });
+    assert.equal(
+      seen,
+      ac.signal,
+      'a deadline that only stops the waiting leaves the call itself running',
+    );
+  });
+});

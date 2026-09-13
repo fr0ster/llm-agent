@@ -9,6 +9,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **`signal` on `LLMCallOptions`, and every provider honours it.** 24.0.0 removed
+  the wait budget on the grounds that a deadline belongs to whoever knows who is
+  waiting, and its migration note pointed at `AbortSignal` as the replacement —
+  which was not wired. `LLMCallOptions` had no such field and no provider read
+  one, so a consumer who had used `maxTotalWaitMs` was left with nothing. The
+  advice was published before the thing it described existed.
+
+  The signal was already travelling as far as the provider on `CallOptions`;
+  what was missing was reading it. It now bounds the wait for a server's
+  throttling **and** the request itself, so an abort ends the call rather than
+  only the part that had not started yet. On SAP AI Core the streaming path
+  passes it to the SDK's own signal parameter.
+
 ## [24.0.0] — 2026-09-13
 
 The library establishes facts about throttling and decides nothing (#289, #290, #291).

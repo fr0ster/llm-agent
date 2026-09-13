@@ -91,17 +91,21 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       const response = await this.withThrottleRetry(
         () =>
-          this.client.post('/chat/completions', {
-            model,
-            messages: this.formatMessages(messages),
-            tools: tools && tools.length > 0 ? tools : undefined,
-            tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-            temperature,
-            ...this.getTokenLimitParam(model, maxTokens),
-            ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-            ...(options?.stop ? { stop: options.stop } : {}),
-          }),
-        { model },
+          this.client.post(
+            '/chat/completions',
+            {
+              model,
+              messages: this.formatMessages(messages),
+              tools: tools && tools.length > 0 ? tools : undefined,
+              tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+              temperature,
+              ...this.getTokenLimitParam(model, maxTokens),
+              ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+              ...(options?.stop ? { stop: options.stop } : {}),
+            },
+            { signal: options?.signal },
+          ),
+        { model, signal: options?.signal },
       );
 
       const choice = response.data.choices[0];
@@ -161,9 +165,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               stream: true,
               stream_options: { include_usage: true },
             },
-            { responseType: 'stream' },
+            { responseType: 'stream', signal: options?.signal },
           ),
-        { model },
+        { model, signal: options?.signal },
       );
 
       const stream = response.data;
