@@ -106,3 +106,60 @@ test('runPassThrough emits tagged llm_request_pass and llm_response_pass records
   assert.ok(responseStep, 'expected an llm_response_pass step to be logged');
   assert.equal(responseStep?.area, 'llm');
 });
+
+/** LLM that yields some content and then fails, the way a stream dies midway. */
+function failsMidStreamLlm(): ILlm {
+  return {
+    model: 'test-model',
+    async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+      yield {
+        ok: true,
+        value: { content: 'partial ' },
+      } as Result<LlmStreamChunk, LlmError>;
+      const error = Object.assign(new Error('SAP AI SDK streaming error'), {
+        code: 'LLM_ERROR',
+        cause: new Error('socket hang up'),
+      });
+      yield { ok: false, error } as unknown as Result<LlmStreamChunk, LlmError>;
+    },
+  } as unknown as ILlm;
+}
+
+test('runPassThrough records the response trace when the stream fails (#290)', async () => {
+  // The failed call is the one the tracing exists for. Leaving on the error
+  // path wrote the question and nothing else — no error text, no partial
+  // content, nothing saying how far the stream got.
+  const spySession = new SpySessionLogger();
+  const opts = { sessionLogger: spySession } as unknown as CallOptions;
+
+  for await (const _ of runPassThrough(
+    failsMidStreamLlm(),
+    new NoopRequestLogger(),
+    [{ role: 'user', content: 'hi' }],
+    [],
+    opts,
+  )) {
+    // drain
+  }
+
+  const responseStep = spySession.steps.find(
+    (s) => s.name === 'llm_response_pass',
+  );
+  assert.ok(responseStep, 'a failed stream must still record a response');
+  assert.equal(responseStep?.area, 'llm');
+
+  const data = responseStep?.data as {
+    error?: { message?: string; code?: unknown; cause?: string[] };
+    partialContent?: string;
+    chunksSeen?: number;
+  };
+  assert.match(String(data.error?.message), /streaming error/);
+  assert.equal(data.error?.code, 'LLM_ERROR');
+  assert.deepEqual(data.error?.cause, ['socket hang up']);
+  assert.equal(data.partialContent, 'partial ');
+  assert.equal(
+    data.chunksSeen,
+    1,
+    'one chunk arrived before the failure — this is what separates a stream that died halfway from one that never opened',
+  );
+});

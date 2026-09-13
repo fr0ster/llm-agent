@@ -45,14 +45,32 @@ export async function* runPassThrough(
       requestId: traceId2,
     });
   };
+  let chunksSeen = 0;
   for await (const chunk of stream) {
     if (!chunk.ok) {
       // process() returns on the first error chunk → post-loop code never
-      // runs. Log accumulated (partial) spend BEFORE yielding the error.
+      // runs. Log accumulated (partial) spend BEFORE yielding the error, and
+      // write the response trace here for the same reason (#290): the trace
+      // that matters most is the one for the call that failed, and leaving on
+      // this path recorded the question and nothing else.
+      opts?.sessionLogger?.logStep(
+        'llm_response_pass',
+        {
+          error: {
+            message: chunk.error.message,
+            code: (chunk.error as { code?: unknown }).code,
+            cause: describeCause(chunk.error),
+          },
+          partialContent: passContent,
+          chunksSeen,
+        },
+        'llm',
+      );
       logPassUsage();
       yield chunk;
       return;
     }
+    chunksSeen += 1;
     if (chunk.value.reset) {
       passContent = '';
       passToolCalls.length = 0;
@@ -96,4 +114,22 @@ export async function* runPassThrough(
         : {}),
     },
   };
+}
+
+/**
+ * The cause chain as plain text, bounded. See the twin in `tool-loop.ts`: a
+ * provider failure carries what actually went wrong a level or two down, and a
+ * trace showing only the outermost message sends the reader back to the logs it
+ * was meant to replace.
+ */
+function describeCause(error: unknown): string[] {
+  const chain: string[] = [];
+  const seen = new Set<unknown>();
+  let cur: unknown = (error as { cause?: unknown })?.cause;
+  while (cur && chain.length < 5 && !seen.has(cur)) {
+    seen.add(cur);
+    chain.push(cur instanceof Error ? cur.message : String(cur));
+    cur = (cur as { cause?: unknown })?.cause;
+  }
+  return chain;
 }

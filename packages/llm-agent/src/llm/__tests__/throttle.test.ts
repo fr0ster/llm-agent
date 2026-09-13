@@ -23,6 +23,8 @@ import {
   quotaGateCount,
   resetQuotaGates,
   runWithThrottleRetry,
+  setThrottleObserver,
+  type ThrottleEvent,
 } from '../throttle.js';
 
 /** Keep the suite fast: the policy is about ordering, not about real seconds. */
@@ -419,6 +421,116 @@ describe('runWithThrottleRetry', () => {
   it('ships defaults matching what SAP documents', () => {
     assert.equal(DEFAULT_THROTTLE_POLICY.maxAttempts, 5);
     assert.equal(DEFAULT_THROTTLE_POLICY.maxTotalWaitMs, 60_000);
+  });
+});
+
+describe('the throttle observer', () => {
+  const seen: ThrottleEvent[] = [];
+
+  beforeEach(() => {
+    seen.length = 0;
+    setThrottleObserver((e) => seen.push(e));
+  });
+
+  it('reports every refusal, the last one included', async () => {
+    // The giving-up event is the one an operator most needs, and it was the one
+    // nothing was written for: the old hook fired only before a retry.
+    resetQuotaGates();
+    await assert.rejects(
+      runWithThrottleRetry(
+        async () => {
+          throw tooManyRequests('0.01');
+        },
+        {
+          key: 'watched',
+          policy: { ...FAST, maxAttempts: 3 },
+          isThrottled,
+          retryAfterSeconds,
+        },
+      ),
+      (e: unknown) => isThrottledError(e),
+    );
+    assert.equal(seen.length, 3);
+    assert.deepEqual(
+      seen.map((e) => e.willRetry),
+      [true, true, false],
+    );
+    assert.equal(seen.at(-1)?.reason, 'attempts');
+  });
+
+  it('carries the policy, so the numbers beside it can be read', () => {
+    // `attempt 3` is the end under maxAttempts 3 and the middle under 5.
+    resetQuotaGates();
+    return runWithThrottleRetry(
+      (() => {
+        let calls = 0;
+        return async () => {
+          calls += 1;
+          if (calls < 2) throw tooManyRequests('0.01');
+          return 'ok';
+        };
+      })(),
+      { key: 'watched', policy: FAST, isThrottled, retryAfterSeconds },
+    ).then(() => {
+      const e = seen[0];
+      assert.equal(e?.policy.maxAttempts, DEFAULT_THROTTLE_POLICY.maxAttempts);
+      assert.equal(e?.policy.maxTotalWaitMs, FAST.maxTotalWaitMs);
+      assert.equal(e?.policy.strategy, 'default-throttle');
+      assert.equal(e?.attempt, 1);
+      assert.equal(e?.key, 'watched');
+    });
+  });
+
+  it('says whether the server named an interval', async () => {
+    resetQuotaGates();
+    await assert.rejects(
+      runWithThrottleRetry(
+        async () => {
+          throw tooManyRequests();
+        },
+        { key: 'silent', policy: { ...FAST, maxAttempts: 1 }, isThrottled },
+      ),
+      (e: unknown) => isThrottledError(e),
+    );
+    assert.equal(
+      seen[0]?.retryAfterSeconds,
+      undefined,
+      'absent means the server said nothing, which is what decides whether backoff tuning matters at all',
+    );
+  });
+
+  it('does not let a broken diagnostic break the request', async () => {
+    resetQuotaGates();
+    setThrottleObserver(() => {
+      throw new Error('observer is broken');
+    });
+    const out = await runWithThrottleRetry(
+      (() => {
+        let calls = 0;
+        return async () => {
+          calls += 1;
+          if (calls < 2) throw tooManyRequests('0.01');
+          return 'ok';
+        };
+      })(),
+      { key: 'watched', policy: FAST, isThrottled, retryAfterSeconds },
+    );
+    assert.equal(out, 'ok');
+  });
+
+  it('stops when the observer is cleared', async () => {
+    resetQuotaGates();
+    setThrottleObserver(undefined);
+    await assert.rejects(
+      runWithThrottleRetry(
+        async () => {
+          throw tooManyRequests();
+        },
+        { key: 'unwatched', policy: { ...FAST, maxAttempts: 1 }, isThrottled },
+      ),
+      (e: unknown) => isThrottledError(e),
+    );
+    assert.equal(seen.length, 0);
   });
 });
 

@@ -53,7 +53,18 @@ export class SessionLogger {
     );
 
     try {
-      fs.mkdirSync(this.requestDir, { recursive: true });
+      // 0700 / 0600, not whatever the umask allows.
+      //
+      // These files are not incidental diagnostics: they hold the full prompt,
+      // the full model response, and the arguments and results of every tool
+      // call — for an ABAP consumer that means source, table contents and
+      // whatever the user typed. At the common umask of 022 they would be world
+      // readable, and tracing is switched on precisely when something is going
+      // wrong, which is when they are richest.
+      //
+      // `recursive` only applies the mode to directories it creates; an
+      // existing parent is left as the operator set it.
+      fs.mkdirSync(this.requestDir, { recursive: true, mode: 0o700 });
     } catch (err) {
       console.error(`Failed to create log directory: ${this.requestDir}`, err);
       this.requestDir = null;
@@ -84,7 +95,10 @@ export class SessionLogger {
     }
 
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
       this.fileIndex++;
     } catch (err) {
       console.error(`Failed to write log file: ${filePath}`, err);

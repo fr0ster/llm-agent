@@ -26,6 +26,7 @@
 import {
   DEFAULT_THROTTLE_POLICY,
   DefaultThrottleStrategy,
+  type ThrottleDecision,
   type ThrottlePolicy,
 } from '../interfaces/throttle-strategy.js';
 import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
@@ -301,6 +302,63 @@ export interface ThrottleRetryOptions {
 }
 
 /**
+ * What happened, every time a server says 429.
+ *
+ * Reported for every provider and on every refusal, including the last one —
+ * the case an operator most needs to see was the one nothing was written for.
+ *
+ * The policy travels with the event because the numbers are unreadable without
+ * it: `attempt 3` is the end under `maxAttempts: 3` and the middle under 5. And
+ * because it answers the question a configuration crossing several layers
+ * otherwise leaves open, which is whether it arrived at all.
+ */
+export interface ThrottleEvent {
+  /** The quota: account, endpoint and model. Carries no credential. */
+  key: string;
+  /** The numbers in force for this call. */
+  policy: Omit<ThrottlePolicy, 'strategy'> & { strategy: string };
+  /** 1-based, the attempt that was just refused. */
+  attempt: number;
+  /** Did the server name an interval, and which. Absent means it did not. */
+  retryAfterSeconds?: number;
+  /** How long the quota is now held. */
+  waitMs: number;
+  /** What is left of the budget after this wait. */
+  budgetLeftMs: number;
+  /** False on the last one, with `reason` saying which cap ended it. */
+  willRetry: boolean;
+  reason?: ThrottleDecision['reason'];
+}
+
+type ThrottleObserver = (event: ThrottleEvent) => void;
+
+let observer: ThrottleObserver | undefined;
+
+/**
+ * Watch every throttling decision in this process.
+ *
+ * One subscription rather than a logger per provider: only two of five
+ * providers had anywhere to put a log line, which is why four of them said
+ * nothing. Where the event goes is the consumer's business; that it is emitted
+ * at all is not.
+ *
+ * Pass `undefined` to stop watching. A throwing observer is ignored — a
+ * diagnostic must not turn a wait into a failure.
+ */
+export function setThrottleObserver(fn: ThrottleObserver | undefined): void {
+  observer = fn;
+}
+
+function emit(event: ThrottleEvent): void {
+  if (!observer) return;
+  try {
+    observer(event);
+  } catch {
+    // An observer that throws is a broken diagnostic, not a broken request.
+  }
+}
+
+/**
  * Run `fn`, respecting the shared pause and retrying a rate limit.
  *
  * Any error that is not a rate limit is rethrown untouched and immediately —
@@ -377,6 +435,23 @@ async function attemptWithGate<T>(
       // The per-caller spread that keeps the released callers from waking
       // together lives in `waitUntilOpen`, where the waiting is done.
       gate.penalise(decision.waitMs);
+
+      emit({
+        key: opts.key,
+        policy: {
+          maxAttempts: policy.maxAttempts,
+          maxTotalWaitMs: policy.maxTotalWaitMs,
+          baseDelayMs: policy.baseDelayMs,
+          maxDelayMs: policy.maxDelayMs,
+          strategy: (policy.strategy ?? defaultStrategy).name,
+        },
+        attempt,
+        retryAfterSeconds: retryAfter,
+        waitMs: decision.waitMs,
+        budgetLeftMs: Math.max(0, policy.maxTotalWaitMs - waited),
+        willRetry: decision.retry,
+        reason: decision.reason,
+      });
 
       if (!decision.retry) {
         throw annotate(error, attempt, retryAfter, decision.reason);

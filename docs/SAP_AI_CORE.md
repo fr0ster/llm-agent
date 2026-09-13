@@ -85,7 +85,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 | `credentials` | `SapAICoreCredentials` | — | Programmatic OAuth2 credentials (bypasses env var) |
 | `apiKey` | `string` | — | Not used by SAP provider (auth handled by SDK) |
 | `whenThrottled` | `object` | — | Overrides for the 429 policy (see [Rate limits](#rate-limits-429)). Omit for the documented defaults |
-| `log` | `object` | — | Optional logger with `debug()`, `error()` and an optional `warn()` (a rate-limit backoff is reported through `warn` when present, `error` otherwise) |
+| `log` | `object` | — | Optional logger with `debug()` and `error()`. Throttling is not reported here — see `setThrottleObserver` below, which covers every provider |
 
 ### Environment Variables
 
@@ -267,6 +267,30 @@ request:
   providers pointing at the same instance do share the pause, which is the point.
 - **Nothing above retries it again.** Once the policy is spent the error carries
   `throttled`, and `RetryLlm` leaves a marked error alone.
+
+### Seeing it happen
+
+```ts
+import { setThrottleObserver } from '@mcp-abap-adt/llm-agent';
+
+setThrottleObserver((e) =>
+  log.warn('throttled', e),
+);
+```
+
+One subscription for every provider, fired on **every** 429 — including the last
+one, where the policy gives up. The event carries the quota key, the policy in
+force, the attempt, whether the server named a `Retry-After` and which, the wait,
+the budget left, and on the last one which cap ended it.
+
+The policy travels with the event because the numbers cannot be read without it:
+`attempt 3` is the end under `maxAttempts: 3` and the middle under `5`. It also
+answers the question a setting that crosses several layers otherwise leaves
+open, which is whether it arrived at all.
+
+Whether the server sends `Retry-After` is worth reading off these events before
+tuning anything: if it does, the server's number always wins and `baseDelayMs`
+and `maxDelayMs` never come into play.
 
 Read the outcome as a fact, not as a substring of a message:
 

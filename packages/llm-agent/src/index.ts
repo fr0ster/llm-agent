@@ -22,7 +22,9 @@ export {
   quotaGateCount,
   resetQuotaGates,
   runWithThrottleRetry,
+  setThrottleObserver,
   type ThrottledError,
+  type ThrottleEvent,
   type ThrottleRetryOptions,
 } from './llm/throttle.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';
