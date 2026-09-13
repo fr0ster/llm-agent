@@ -1,5 +1,19 @@
 # @mcp-abap-adt/llm-agent-mcp
 
+## 24.0.0
+
+The library establishes facts about throttling and decides nothing (#289, #290, #291).
+
+23.0.0 gave the throttle policy a wait budget in milliseconds — a timeout by
+another name, set by the one party that cannot see who is waiting at the other
+end. It is gone, along with the computed backoff and the attempt cap beside the
+strategy. `whenThrottled` is now the strategy itself, and nothing waits unless a
+consumer says so.
+
+Also: trace files are no longer world readable, a failed streaming call finally
+writes a trace, and `setThrottleObserver` makes throttling visible in every
+provider rather than one.
+
 ## 23.0.0
 
 Throttle handling, named for what it does and always on (#285, #286).

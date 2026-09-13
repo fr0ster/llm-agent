@@ -9,6 +9,63 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [24.0.0] — 2026-09-13
+
+The library establishes facts about throttling and decides nothing (#289, #290, #291).
+
+23.0.0 gave the throttle policy a wait budget in milliseconds — a timeout by
+another name, set by the one party that cannot see who is waiting at the other
+end. It is gone, along with the computed backoff and the attempt cap beside the
+strategy. `whenThrottled` is now the strategy itself, and nothing waits unless a
+consumer says so.
+
+Also: trace files are no longer world readable, a failed streaming call finally
+writes a trace, and `setThrottleObserver` makes throttling visible in every
+provider rather than one.
+
+### Migrating from 23.0.0
+
+Only consumers who set `whenThrottled` are affected. A consumer who set nothing
+gets one behaviour change: a 429 now comes back immediately carrying what the
+server said, instead of being waited out for up to a minute.
+
+| 23.0.0 | 24.0.0 |
+|---|---|
+| `whenThrottled: { maxAttempts, maxTotalWaitMs, baseDelayMs, maxDelayMs }` | `whenThrottled: new WaitAsTold({ maxAttempts })` |
+| `whenThrottled: { strategy }` | `whenThrottled: strategy` |
+| nothing set — waited, with backoff | nothing set — reports, waits not at all |
+| `ThrottlePolicy`, `DEFAULT_THROTTLE_POLICY`, `DefaultThrottleStrategy` | removed |
+| `llm.whenThrottled: { maxAttempts: 3 }` in YAML | `llm.whenThrottled: wait-as-told` |
+
+To keep waiting, say so:
+
+```ts
+import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
+
+new SapCoreAIProvider({
+  model,
+  whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
+});
+```
+
+There is no replacement for `maxTotalWaitMs`, deliberately. A deadline is the
+caller's, and the caller already has a way to say it:
+
+```ts
+const ac = new AbortController();
+setTimeout(() => ac.abort(), 20_000);
+// pass ac.signal through your call options
+```
+
+`WaitAsTold` also no longer guesses. Where 23.0.0 computed a backoff for a 429
+that named no interval, this reports instead — which is what you want against
+Anthropic's spend-cap 429, since that one carries no `Retry-After` and does not
+clear by waiting at all.
+
+A strategy of your own implements `IThrottleStrategy`; `ThrottleContext` now
+carries `source`, telling a server's refusal apart from a call turned away at a
+quota already known to be shut.
+
 ### Changed — BREAKING
 
 - **`whenThrottled` is the strategy, and the policy object is gone.** 23.0.0
