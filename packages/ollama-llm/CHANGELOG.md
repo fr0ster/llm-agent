@@ -1,5 +1,18 @@
 # @mcp-abap-adt/ollama-llm
 
+## 26.0.0
+
+A deleted RAG collection is gone, whatever happens to its data (#301).
+
+`SimpleRagRegistry.deleteCollection` unregisters first and deletes the data
+after; a failure comes back with the collection already unregistered.
+`closeSession` goes through every collection of the session. A provider
+receives a store name of the collection's owner — the sanitized collection name
+plus `_<12 hex>` over scope, owner and name, at most 63 characters — so another
+session or user never opens what a deletion left, and a store name is released
+only when its deletion has finished. Breaking: see the root CHANGELOG for
+migration.
+
 ## 25.0.0
 
 Release 25.0.0.
