@@ -205,7 +205,7 @@ import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { QdrantRagProvider, buildRagCollectionToolEntries } from '@mcp-abap-adt/llm-agent';
 
 // 1. Build agent with a Qdrant provider
-const { agent } = await new SmartAgentBuilder({ /* ... */ })
+const { agent, ragRegistry } = await new SmartAgentBuilder({ /* ... */ })
   .withMainLlm(myLlm)
   .addRagProvider(new QdrantRagProvider({
     name: 'qdrant-rw',
@@ -217,7 +217,7 @@ const { agent } = await new SmartAgentBuilder({ /* ... */ })
 
 // 2. Register MCP tool handlers on your own MCP server
 //    (llm-agent does not host an embedded MCP server for RAG editing)
-const entries = buildRagCollectionToolEntries({ registry, providerRegistry });
+const entries = buildRagCollectionToolEntries({ registry: ragRegistry, providerRegistry });
 myMcpServer.registerTools(entries);
 
 // 3. LLM creates a session-scoped collection via MCP:
@@ -227,8 +227,9 @@ myMcpServer.registerTools(entries);
 //    Corrects errors:
 //      rag_correct({ collection: 'phase-results', id: '...', text: 'Corrected: 2 items processed' })
 
-// 4. Consumer closes the session on disconnect — flushes session-scoped collections + history
-await agent.closeSession(sessionId);
+// 4. Consumer closes the session on disconnect — deletes its session-scoped collections
+//    (conversation history is cleared by the IHistoryMemory you injected, if any)
+await ragRegistry.closeSession(sessionId);
 ```
 
 ### Programmatic embedding (`SmartAgentBuilder`)

@@ -523,7 +523,7 @@ interface IRagProvider {
 
 | Scope | Lifetime | Who can delete via MCP | Typical use case |
 |-------|----------|------------------------|------------------|
-| `session` | Until `SmartAgent.closeSession()` is called | Session owner only | Scratch pads, phase results, temporary analysis |
+| `session` | Until the consumer calls `ragRegistry.closeSession(sessionId)` | Session owner only | Scratch pads, phase results, temporary analysis |
 | `user` | Persistent across sessions for that user | Same user only | Personal notes, user preferences |
 | `global` | Permanent until explicitly deleted | Any caller (admin-level) | Shared knowledge bases, team fact stores |
 
@@ -607,8 +607,11 @@ class MyDbRagProvider extends AbstractRagProvider {
   readonly editable = true;
   readonly supportedScopes: readonly RagCollectionScope[] = ['session', 'global'];
 
+  // The registry passes a store name of the collection's owner, not the bare
+  // collection name (see "A store belongs to its owner" above) — keep the data
+  // under exactly that name, and delete it by the same one.
   async createCollection(
-    collectionName: string,
+    storeName: string,
     opts: { scope: RagCollectionScope; sessionId?: string; userId?: string },
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>> {
     const scopeCheck = this.checkScope(opts.scope);  // Result — UnsupportedScopeError if the scope isn't in supportedScopes
@@ -616,7 +619,7 @@ class MyDbRagProvider extends AbstractRagProvider {
 
     try {
       // Create / ensure the collection exists in your DB
-      const dbCollection = await myDb.ensureCollection(collectionName);
+      const dbCollection = await myDb.ensureCollection(storeName);
       const rag = new MyDbRag(dbCollection, this.embedder);
       const idStrategy = this.pickIdStrategy(opts.scope, opts);
       const editor = this.buildEditor(rag.writer()!, idStrategy);
@@ -626,9 +629,9 @@ class MyDbRagProvider extends AbstractRagProvider {
     }
   }
 
-  async deleteCollection(name: string): Promise<Result<void, RagError>> {
+  async deleteCollection(storeName: string): Promise<Result<void, RagError>> {
     try {
-      await myDb.dropCollection(name);
+      await myDb.dropCollection(storeName);
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: new RagError(String(err)) };
@@ -694,10 +697,14 @@ The consumer's MCP server populates this from its own session state (e.g. HTTP r
 ### Session cleanup
 
 ```ts
-await agent.closeSession(sessionId);
+// ragRegistry comes from SmartAgentBuilder.build(); historyMemory is the
+// IHistoryMemory you passed to withHistoryMemory, if any.
+const closed = await ragRegistry.closeSession(sessionId);
+if (!closed.ok) log.warn(closed.error.message); // SessionCloseIncompleteError
+historyMemory?.clear(sessionId);
 ```
 
-Call this from your session lifecycle hook (user logout, WebSocket disconnect). It flushes all session-scoped RAG collections created under that `sessionId` and clears the associated conversation history from memory. A collection whose data cannot be deleted is unregistered all the same; see [Deleting a collection](#deleting-a-collection).
+Call this from your session lifecycle hook (user logout, WebSocket disconnect). `closeSession` deletes every session-scoped RAG collection created under that `sessionId`; it does not touch conversation history, which the history memory clears. A collection whose data cannot be deleted is unregistered all the same, and the failures come back together; see [Deleting a collection](#deleting-a-collection).
 
 ### Session cookie support (HTTP server)
 

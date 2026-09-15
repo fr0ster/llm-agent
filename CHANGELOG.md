@@ -9,7 +9,32 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-A deleted RAG collection is gone, whatever happens to its data.
+## [26.0.0] — 2026-09-15
+
+A deleted RAG collection is gone, whatever happens to its data (#301).
+
+Deleting a collection used to depend on its provider: a failed deletion left it
+registered and still queried, `closeSession` stopped at the first failure, and
+a provider without `deleteCollection` kept everything without a word.
+Unregistering then freed the name, so a provider that keeps stores by name
+handed the leftovers to whoever created that name next. The registry now
+unregisters first and deletes after, and gives each owner a store name of its
+own, released only once its deletion has finished.
+
+### Migrating from 25.0.0
+
+Only the collection lifecycle of `SimpleRagRegistry` / `IRagRegistry` and the
+authors of an `IRagProvider` are affected. A consumer that registers stores
+directly with `register` and never calls `createCollection` sees no change.
+
+| 25.0.0 | 26.0.0 |
+|---|---|
+| `deleteCollection` → `{ ok: false }`: the collection is still registered | the collection is gone and its data may remain — report it; there is nothing to retry through the registry |
+| `closeSession` stops at the first failure | goes through every collection; `SessionCloseIncompleteError.failures` names each one |
+| `rag_delete_collection` → `{ ok: false, error }` when the data was not deleted | `{ ok: true, warning }` |
+| a provider without `deleteCollection`: unregistered, data kept silently | the store is emptied through `writer().clearAll()`, or `DeleteUnsupportedError` |
+| `IRagProvider.createCollection(name)` / `deleteCollection(name)` receive the collection name | they receive `<sanitized name>_<12 hex>`: keep the data under exactly that name and delete it by the same one |
+| a user or global collection on a persistent backend found its data under the bare collection name | data written under a bare name before 26.0.0 is not found under the new store name; a provider that must keep it moves it when `createCollection` hands it the new name |
 
 ### Breaking
 
