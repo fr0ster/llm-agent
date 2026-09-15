@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { IRag, IRagEditor, IRagProvider } from '../../interfaces/rag.js';
 import { RagError } from '../../interfaces/types.js';
 import {
+  CollectionDataRemainsError,
   CollectionNotFoundError,
   DeleteUnsupportedError,
   ProviderNotFoundError,
@@ -417,8 +418,8 @@ describe('SimpleRagRegistry.closeSession — goes through every collection', () 
     const reg = registryWith(
       stubProvider({
         deleteCollection: async (name) => {
-          deleted.push(name);
-          return name === 'bad'
+          deleted.push(name.split('--')[0]);
+          return name.startsWith('bad--')
             ? { ok: false, error: new RagError('backend down') }
             : { ok: true, value: undefined };
         },
@@ -441,5 +442,125 @@ describe('SimpleRagRegistry.closeSession — goes through every collection', () 
     assert.equal(reg.get('bad'), undefined);
     assert.equal(reg.get('good'), undefined);
     assert.ok(reg.get('other'));
+  });
+});
+
+describe('SimpleRagRegistry — a name whose deletion failed does not open old data', () => {
+  /**
+   * A provider that keeps its stores by name, as Qdrant or a database does:
+   * creating a name that is already there opens it. Its deletions fail while
+   * `failing` is set.
+   */
+  function storesByName() {
+    const stores = new Map<string, InMemoryRag>();
+    const created: string[] = [];
+    const deleted: string[] = [];
+    let failing = true;
+    const provider: IRagProvider = {
+      name: 'kept',
+      kind: 'vector',
+      editable: true,
+      supportedScopes: ['session', 'user', 'global'],
+      createCollection: async (name) => {
+        created.push(name);
+        let rag = stores.get(name);
+        if (!rag) {
+          rag = new InMemoryRag();
+          stores.set(name, rag);
+        }
+        return { ok: true, value: { rag, editor: {} as IRagEditor } };
+      },
+      deleteCollection: async (name) => {
+        deleted.push(name);
+        if (failing) return { ok: false, error: new RagError('backend down') };
+        stores.delete(name);
+        return { ok: true, value: undefined };
+      },
+    };
+    return {
+      provider,
+      created,
+      deleted,
+      succeed: () => {
+        failing = false;
+      },
+    };
+  }
+
+  async function write(rag: IRag | undefined): Promise<void> {
+    assert.ok(rag);
+    const w = rag.writer?.();
+    assert.ok(w);
+    const up = await w.upsertRaw('r1', 'secret', { id: 'r1' });
+    assert.ok(up.ok);
+  }
+
+  async function holds(rag: IRag | undefined): Promise<boolean> {
+    assert.ok(rag);
+    const got = await rag.getById('r1');
+    assert.ok(got.ok);
+    return got.value !== null;
+  }
+
+  it('a session collection re-created after a failed deletion gets a new store, not the old data', async () => {
+    const kept = storesByName();
+    const reg = registryWith(kept.provider);
+    await create(reg, 'kept', 'notes', 'A');
+    await write(reg.get('notes'));
+    const del = await reg.deleteCollection('notes');
+    assert.ok(!del.ok);
+
+    await create(reg, 'kept', 'notes', 'B');
+    assert.equal(await holds(reg.get('notes')), false);
+    const [first, second] = kept.created;
+    assert.match(first, /^notes--/);
+    assert.match(second, /^notes--/);
+    assert.notEqual(first, second);
+    // It was deleted by the name it was created with.
+    assert.deepEqual(kept.deleted, [first]);
+  });
+
+  it('a user collection whose data may remain is refused under its name, and a session one is not', async () => {
+    const kept = storesByName();
+    const reg = registryWith(kept.provider);
+    const mine = await reg.createCollection({
+      providerName: 'kept',
+      collectionName: 'mine',
+      scope: 'user',
+      userId: 'alice',
+    });
+    assert.ok(mine.ok);
+    await write(reg.get('mine'));
+    assert.ok(!(await reg.deleteCollection('mine')).ok);
+
+    const again = await reg.createCollection({
+      providerName: 'kept',
+      collectionName: 'mine',
+      scope: 'user',
+      userId: 'alice',
+    });
+    assert.ok(!again.ok);
+    assert.ok(again.error instanceof CollectionDataRemainsError);
+    assert.equal(again.error.code, 'RAG_COLLECTION_DATA_REMAINS');
+    assert.equal(reg.get('mine'), undefined);
+
+    await create(reg, 'kept', 'mine', 'S');
+    assert.equal(await holds(reg.get('mine')), false);
+  });
+
+  it('a user collection deleted cleanly can be created again, and keeps its name', async () => {
+    const kept = storesByName();
+    kept.succeed();
+    const reg = registryWith(kept.provider);
+    const params = {
+      providerName: 'kept',
+      collectionName: 'mine',
+      scope: 'user' as const,
+      userId: 'alice',
+    };
+    assert.ok((await reg.createCollection(params)).ok);
+    assert.ok((await reg.deleteCollection('mine')).ok);
+    assert.ok((await reg.createCollection(params)).ok);
+    assert.deepEqual(kept.created, ['mine', 'mine']);
   });
 });

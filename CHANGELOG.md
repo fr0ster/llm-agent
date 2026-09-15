@@ -22,12 +22,23 @@ A deleted RAG collection is gone, whatever happens to its data.
   collection is gone; its data may remain".
 - **`rag_delete_collection` answers `{ ok: true, warning }`** when the
   collection was removed and its data was not.
+- **A session collection's provider receives its own store name.**
+  `createCollection` passes `<collectionName>--<8 hex>` to the provider for a
+  session-scoped collection, and deletes it by that name. A provider that
+  listed or matched session stores by the collection name must now expect the
+  suffix.
 
 ### Fixed
 
 - **`closeSession` goes through every collection of the session.** It stopped
   at the first failure and left the rest registered; it now deletes all of them
   and returns `SessionCloseIncompleteError`, whose `failures` name each one.
+- **A name whose deletion failed no longer opens the old data.** Unregistering
+  freed the name, and a provider that keeps stores by name (Qdrant, a database)
+  opened the leftover store for whoever created it next — a new session read
+  the previous one's data. Session collections now never reuse a store name;
+  a user or global collection whose deletion failed is refused under its name
+  with `CollectionDataRemainsError` for the rest of the process.
 - **A provider without `deleteCollection` no longer leaves data behind
   silently.** The registry empties the store that provider created through
   `writer().clearAll()`, and returns `DeleteUnsupportedError` when there is
