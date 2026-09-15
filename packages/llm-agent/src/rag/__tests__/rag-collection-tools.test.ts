@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { IRagEditor } from '../../interfaces/rag.js';
+import { RagError } from '../../interfaces/types.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
@@ -343,5 +345,45 @@ describe('rag_delete_collection scope enforcement', () => {
       ok: boolean;
     };
     assert.equal(out.ok, true);
+  });
+});
+
+describe('rag_delete_collection when the data cannot be deleted', () => {
+  it('reports the collection removed, with a warning naming the failure', async () => {
+    const reg = new SimpleRagRegistry();
+    const providers = new SimpleRagProviderRegistry();
+    providers.registerProvider({
+      name: 'stub',
+      kind: 'vector',
+      editable: true,
+      supportedScopes: ['session'],
+      createCollection: async () => ({
+        ok: true,
+        value: { rag: new InMemoryRag(), editor: {} as IRagEditor },
+      }),
+      deleteCollection: async () => ({
+        ok: false,
+        error: new RagError('backend down'),
+      }),
+    });
+    reg.setProviderRegistry(providers);
+    const created = await reg.createCollection({
+      providerName: 'stub',
+      collectionName: 's',
+      scope: 'session',
+      sessionId: 'S',
+    });
+    assert.ok(created.ok);
+    const del = buildRagCollectionToolEntries({ registry: reg }).find(
+      (e) => e.toolDefinition.name === 'rag_delete_collection',
+    );
+    assert.ok(del);
+    const out = (await del.handler({ sessionId: 'S' }, { name: 's' })) as {
+      ok: boolean;
+      warning?: string;
+    };
+    assert.equal(out.ok, true);
+    assert.match(out.warning ?? '', /backend down/);
+    assert.equal(reg.get('s'), undefined);
   });
 });

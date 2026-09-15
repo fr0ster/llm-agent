@@ -54,6 +54,40 @@ export class CollectionNotFoundError extends RagError {
   }
 }
 
+/**
+ * A collection was unregistered, but nothing could delete its data: its
+ * provider is gone, or it has no `deleteCollection` and its store no
+ * `writer().clearAll()`.
+ */
+export class DeleteUnsupportedError extends RagError {
+  constructor(collectionName: string, reason: string) {
+    super(
+      `Collection '${collectionName}' was unregistered, but its data was not deleted: ${reason}`,
+      'RAG_DELETE_UNSUPPORTED',
+    );
+    this.name = 'DeleteUnsupportedError';
+  }
+}
+
+/**
+ * A session was closed — every one of its collections unregistered — but the
+ * data of some could not be deleted. `failures` names each, with its error.
+ */
+export class SessionCloseIncompleteError extends RagError {
+  constructor(
+    sessionId: string,
+    readonly failures: ReadonlyArray<{ name: string; error: RagError }>,
+  ) {
+    super(
+      `Session '${sessionId}' closed, but the data of ${failures.length} collection(s) could not be deleted: ${failures
+        .map((f) => `${f.name}: ${f.error.message}`)
+        .join('; ')}`,
+      'RAG_SESSION_CLOSE_INCOMPLETE',
+    );
+    this.name = 'SessionCloseIncompleteError';
+  }
+}
+
 export class ScopeViolationError extends RagError {
   constructor(collectionName: string, reason: string) {
     super(

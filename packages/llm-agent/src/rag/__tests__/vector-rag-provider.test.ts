@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '../../interfaces/rag.js';
+import { UnsupportedScopeError } from '../corrections/errors.js';
 import { VectorRagProvider } from '../providers/vector-rag-provider.js';
 import { VectorRag } from '../vector-rag.js';
 
@@ -30,5 +31,24 @@ describe('VectorRagProvider', () => {
   it('supports only session scope', () => {
     const p = new VectorRagProvider({ name: 'vec', embedder: fakeEmbedder });
     assert.deepEqual(p.supportedScopes, ['session']);
+  });
+});
+
+describe('VectorRagProvider configured scopes', () => {
+  it('accepts the scopes it is configured with, and only those', async () => {
+    const p = new VectorRagProvider({
+      name: 'p',
+      embedder: fakeEmbedder,
+      supportedScopes: ['session', 'user'],
+    });
+    assert.deepEqual(p.supportedScopes, ['session', 'user']);
+    const user = await p.createCollection('u', {
+      scope: 'user',
+      userId: 'alice',
+    });
+    assert.ok(user.ok);
+    const global = await p.createCollection('g', { scope: 'global' });
+    assert.ok(!global.ok);
+    assert.ok(global.error instanceof UnsupportedScopeError);
   });
 });

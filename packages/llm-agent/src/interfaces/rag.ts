@@ -184,10 +184,17 @@ export interface IRagRegistry {
     tags?: readonly string[];
   }): Promise<Result<RagCollectionMeta, RagError>>;
 
-  /** Delete a collection; delegate to provider (if set in meta) then unregister. */
+  /**
+   * Delete a collection: unregister it, then delete its data through the
+   * provider that created it. A failure is returned with the collection
+   * already unregistered.
+   */
   deleteCollection(name: string): Promise<Result<void, RagError>>;
 
-  /** Unregister + delete all session-scoped collections with the given sessionId. */
+  /**
+   * Delete every session-scoped collection with the given sessionId, going
+   * through all of them even when one fails; the failures come back together.
+   */
   closeSession(sessionId: string): Promise<Result<void, RagError>>;
 }
 

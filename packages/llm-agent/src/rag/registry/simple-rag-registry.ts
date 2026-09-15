@@ -9,7 +9,9 @@ import type {
 import { RagError, type Result } from '../../interfaces/types.js';
 import {
   CollectionNotFoundError,
+  DeleteUnsupportedError,
   ProviderNotFoundError,
+  SessionCloseIncompleteError,
 } from '../corrections/errors.js';
 import { ImmutableEditStrategy } from '../strategies/edit/immutable.js';
 
@@ -171,33 +173,83 @@ export class SimpleRagRegistry implements IRagRegistry {
     return { ok: true, value: registered.meta };
   }
 
+  /**
+   * Delete a collection.
+   *
+   * It is unregistered first, whatever follows, so nothing can reach it again.
+   * Then its data goes: a collection a provider created is deleted by that
+   * provider's `deleteCollection` or, where the provider has none, emptied
+   * through its store's `writer().clearAll()`. A collection registered directly,
+   * with no provider, is only unregistered — its store belongs to whoever
+   * registered it. Nothing is retried. A failure comes back as the error, with
+   * the collection already unregistered; its data may remain in the backend.
+   */
   async deleteCollection(name: string): Promise<Result<void, RagError>> {
     const entry = this.entries.get(name);
     if (!entry) {
       return { ok: false, error: new CollectionNotFoundError(name) };
     }
-    if (entry.meta.providerName && this.providerRegistry) {
-      const provider = this.providerRegistry.getProvider(
-        entry.meta.providerName,
-      );
-      if (provider?.deleteCollection) {
-        const res = await provider.deleteCollection(name);
-        if (!res.ok) return res;
-      }
-    }
     this.unregister(name);
-    return { ok: true, value: undefined };
+    const providerName = entry.meta.providerName;
+    if (!providerName) return { ok: true, value: undefined };
+    const provider = this.providerRegistry?.getProvider(providerName);
+    if (!provider) {
+      return {
+        ok: false,
+        error: new DeleteUnsupportedError(
+          name,
+          `provider '${providerName}' is not registered`,
+        ),
+      };
+    }
+    try {
+      if (provider.deleteCollection) {
+        return await provider.deleteCollection(name);
+      }
+      const writer = entry.rag.writer?.();
+      if (writer?.clearAll) return await writer.clearAll();
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof RagError
+            ? err
+            : new RagError(
+                `Deleting the data of collection '${name}' failed: ${err instanceof Error ? err.message : String(err)}`,
+                'RAG_DELETE_ERROR',
+              ),
+      };
+    }
+    return {
+      ok: false,
+      error: new DeleteUnsupportedError(
+        name,
+        `provider '${providerName}' has no deleteCollection, and its store no writer().clearAll()`,
+      ),
+    };
   }
 
+  /**
+   * Delete every session-scoped collection of this session. Goes through all of
+   * them even when one fails — each is unregistered regardless (see
+   * deleteCollection) — and returns the failures together.
+   */
   async closeSession(sessionId: string): Promise<Result<void, RagError>> {
     const victims = Array.from(this.entries.values())
       .filter(
         (e) => e.meta.scope === 'session' && e.meta.sessionId === sessionId,
       )
       .map((e) => e.meta.name);
+    const failures: Array<{ name: string; error: RagError }> = [];
     for (const name of victims) {
       const res = await this.deleteCollection(name);
-      if (!res.ok) return res;
+      if (!res.ok) failures.push({ name, error: res.error });
+    }
+    if (failures.length > 0) {
+      return {
+        ok: false,
+        error: new SessionCloseIncompleteError(sessionId, failures),
+      };
     }
     return { ok: true, value: undefined };
   }

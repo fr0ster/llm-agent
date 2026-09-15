@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IRagEditor } from '../../interfaces/rag.js';
+import type { IRag, IRagEditor, IRagProvider } from '../../interfaces/rag.js';
+import { RagError } from '../../interfaces/types.js';
 import {
   CollectionNotFoundError,
+  DeleteUnsupportedError,
   ProviderNotFoundError,
+  SessionCloseIncompleteError,
 } from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
@@ -262,5 +265,181 @@ describe('SimpleRagRegistry default scope normalization', () => {
     const m = reg.list().find((e) => e.name === 'x');
     assert.ok(m);
     assert.equal(m.scope, 'global');
+  });
+});
+
+/** A provider over plain in-memory stores, deleting as told. */
+function stubProvider(opts: {
+  deleteCollection?: IRagProvider['deleteCollection'];
+  rag?: () => IRag;
+}): IRagProvider {
+  return {
+    name: 'stub',
+    kind: 'vector',
+    editable: true,
+    supportedScopes: ['session', 'user', 'global'],
+    createCollection: async () => ({
+      ok: true,
+      value: {
+        rag: opts.rag?.() ?? new InMemoryRag(),
+        editor: {} as IRagEditor,
+      },
+    }),
+    ...(opts.deleteCollection
+      ? { deleteCollection: opts.deleteCollection }
+      : {}),
+  };
+}
+
+function registryWith(provider: IRagProvider): SimpleRagRegistry {
+  const reg = new SimpleRagRegistry();
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(provider);
+  reg.setProviderRegistry(providers);
+  return reg;
+}
+
+async function create(
+  reg: SimpleRagRegistry,
+  providerName: string,
+  collectionName: string,
+  sessionId = 'S',
+): Promise<void> {
+  const res = await reg.createCollection({
+    providerName,
+    collectionName,
+    scope: 'session',
+    sessionId,
+  });
+  assert.ok(res.ok);
+}
+
+class NoClearRag extends InMemoryRag {
+  writer() {
+    const { upsertRaw, deleteByIdRaw } = super.writer();
+    return { upsertRaw, deleteByIdRaw };
+  }
+}
+
+describe('SimpleRagRegistry.deleteCollection — the collection goes, whatever its data does', () => {
+  it('unregisters even when the provider fails to delete, and returns its error', async () => {
+    const reg = registryWith(
+      stubProvider({
+        deleteCollection: async () => ({
+          ok: false,
+          error: new RagError('backend down', 'BACKEND_DOWN'),
+        }),
+      }),
+    );
+    await create(reg, 'stub', 'x');
+    const res = await reg.deleteCollection('x');
+    assert.ok(!res.ok);
+    assert.equal(res.error.message, 'backend down');
+    assert.equal(reg.get('x'), undefined);
+    assert.equal(reg.list().length, 0);
+  });
+
+  it('unregisters when the provider throws, and returns a RAG_DELETE_ERROR', async () => {
+    const reg = registryWith(
+      stubProvider({
+        deleteCollection: async () => {
+          throw new Error('socket hang up');
+        },
+      }),
+    );
+    await create(reg, 'stub', 'x');
+    const res = await reg.deleteCollection('x');
+    assert.ok(!res.ok);
+    assert.equal(res.error.code, 'RAG_DELETE_ERROR');
+    assert.match(res.error.message, /socket hang up/);
+    assert.equal(reg.get('x'), undefined);
+  });
+
+  it('empties the store of a provider that deletes nothing', async () => {
+    const reg = registryWith(new InMemoryRagProvider({ name: 'mem' }));
+    await create(reg, 'mem', 'x');
+    const rag = reg.get('x');
+    const editor = reg.getEditor('x');
+    assert.ok(rag && editor);
+    const up = await editor.upsert('hello', { id: 'r1' });
+    assert.ok(up.ok);
+    const before = await rag.getById(up.value.id);
+    assert.ok(before.ok && before.value);
+
+    const res = await reg.deleteCollection('x');
+    assert.ok(res.ok);
+    assert.equal(reg.get('x'), undefined);
+    const after = await rag.getById(up.value.id);
+    assert.ok(after.ok);
+    assert.equal(after.value, null);
+  });
+
+  it('reports a provider that can neither delete nor clear, and still unregisters', async () => {
+    const reg = registryWith(stubProvider({ rag: () => new NoClearRag() }));
+    await create(reg, 'stub', 'x');
+    const res = await reg.deleteCollection('x');
+    assert.ok(!res.ok);
+    assert.ok(res.error instanceof DeleteUnsupportedError);
+    assert.equal(res.error.code, 'RAG_DELETE_UNSUPPORTED');
+    assert.equal(reg.get('x'), undefined);
+  });
+
+  it('reports a provider that is no longer registered, and still unregisters', async () => {
+    const reg = registryWith(stubProvider({}));
+    reg.register('x', new InMemoryRag(), undefined, {
+      displayName: 'X',
+      providerName: 'gone',
+    });
+    const res = await reg.deleteCollection('x');
+    assert.ok(!res.ok);
+    assert.ok(res.error instanceof DeleteUnsupportedError);
+    assert.equal(reg.get('x'), undefined);
+  });
+
+  it('leaves the store of a collection registered without a provider untouched', async () => {
+    const reg = new SimpleRagRegistry();
+    const rag = new InMemoryRag();
+    const up = await rag.writer().upsertRaw('r1', 'hello', { id: 'r1' });
+    assert.ok(up.ok);
+    reg.register('x', rag, undefined, { displayName: 'X' });
+
+    const res = await reg.deleteCollection('x');
+    assert.ok(res.ok);
+    assert.equal(reg.get('x'), undefined);
+    const kept = await rag.getById('r1');
+    assert.ok(kept.ok && kept.value, 'the registrant still owns its store');
+  });
+});
+
+describe('SimpleRagRegistry.closeSession — goes through every collection', () => {
+  it('deletes all of the session past a failure, and returns the failures together', async () => {
+    const deleted: string[] = [];
+    const reg = registryWith(
+      stubProvider({
+        deleteCollection: async (name) => {
+          deleted.push(name);
+          return name === 'bad'
+            ? { ok: false, error: new RagError('backend down') }
+            : { ok: true, value: undefined };
+        },
+      }),
+    );
+    await create(reg, 'stub', 'bad', 'S');
+    await create(reg, 'stub', 'good', 'S');
+    await create(reg, 'stub', 'other', 'T');
+
+    const res = await reg.closeSession('S');
+    assert.ok(!res.ok);
+    assert.ok(res.error instanceof SessionCloseIncompleteError);
+    assert.equal(res.error.code, 'RAG_SESSION_CLOSE_INCOMPLETE');
+    assert.deepEqual(
+      res.error.failures.map((f) => f.name),
+      ['bad'],
+    );
+    assert.match(res.error.message, /bad: backend down/);
+    assert.deepEqual(deleted, ['bad', 'good']);
+    assert.equal(reg.get('bad'), undefined);
+    assert.equal(reg.get('good'), undefined);
+    assert.ok(reg.get('other'));
   });
 });

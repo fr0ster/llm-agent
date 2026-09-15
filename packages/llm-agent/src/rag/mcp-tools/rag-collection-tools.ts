@@ -3,6 +3,7 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
 } from '../../interfaces/rag.js';
+import { CollectionNotFoundError } from '../corrections/errors.js';
 import {
   buildCorrectionMetadata,
   deprecateMetadata,
@@ -212,7 +213,16 @@ export function buildRagCollectionToolEntries(opts: {
         }
       }
       const res = await registry.deleteCollection(name);
-      return res.ok ? { ok: true } : { ok: false, error: res.error.message };
+      if (res.ok) return { ok: true };
+      if (res.error instanceof CollectionNotFoundError) {
+        return { ok: false, error: res.error.message };
+      }
+      // The collection is unregistered whatever happened to its data: it is
+      // gone for the caller, and the failure is reported as what it is.
+      return {
+        ok: true,
+        warning: `Collection '${name}' was removed, but its data could not be deleted: ${res.error.message}`,
+      };
     },
   };
 

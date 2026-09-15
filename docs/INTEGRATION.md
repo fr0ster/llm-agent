@@ -531,9 +531,36 @@ interface IRagProvider {
 
 | Provider | Supported scopes | Remarks |
 |----------|-----------------|---------|
-| `InMemoryRagProvider` | `session` | Ephemeral; data lost on process restart |
-| `VectorRagProvider` | `session` | In-process hybrid vector + BM25; persists only in memory |
+| `InMemoryRagProvider` | `session` (default; set `supportedScopes` to change) | Ephemeral; data lost on process restart |
+| `VectorRagProvider` | `session` (default; set `supportedScopes` to change) | In-process hybrid vector + BM25; persists only in memory |
 | `QdrantRagProvider` | `session`, `user`, `global` | Backed by Qdrant; supports `deleteCollection` and `listCollections` |
+
+### Deleting a collection
+
+`IRagRegistry.deleteCollection(name)` — and with it `rag_delete_collection` and
+`closeSession` — unregisters the collection first, whatever follows, so nothing
+reaches it again. Then its data goes:
+
+| The collection was… | Its data |
+|---|---|
+| created by a provider that has `deleteCollection` | deleted by that provider |
+| created by a provider without it | emptied through its store's `writer().clearAll()` |
+| registered directly (`register`, no provider) | left alone — the store belongs to whoever registered it |
+
+Nothing is retried. When the data cannot be deleted, the result is `{ ok: false }`
+with the collection already unregistered:
+
+- **`DeleteUnsupportedError`** (`RAG_DELETE_UNSUPPORTED`) — nothing could delete
+  it: the provider is no longer registered, or it has no `deleteCollection` and
+  its store no `clearAll`.
+- **The provider's own error** — its `deleteCollection` failed; a throw comes
+  back as `RAG_DELETE_ERROR`.
+- **`SessionCloseIncompleteError`** (`RAG_SESSION_CLOSE_INCOMPLETE`) — from
+  `closeSession`, which goes through every collection of the session and lists
+  each failure in `failures`.
+
+`rag_delete_collection` answers `{ ok: true, warning }` in that case: the
+collection is gone for the caller, and the warning says what was left.
 
 ### AbstractRagProvider
 
@@ -650,7 +677,7 @@ The consumer's MCP server populates this from its own session state (e.g. HTTP r
 await agent.closeSession(sessionId);
 ```
 
-Call this from your session lifecycle hook (user logout, WebSocket disconnect). It flushes all session-scoped RAG collections created under that `sessionId` and clears the associated conversation history from memory.
+Call this from your session lifecycle hook (user logout, WebSocket disconnect). It flushes all session-scoped RAG collections created under that `sessionId` and clears the associated conversation history from memory. A collection whose data cannot be deleted is unregistered all the same; see [Deleting a collection](#deleting-a-collection).
 
 ### Session cookie support (HTTP server)
 

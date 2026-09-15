@@ -9,6 +9,37 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+A deleted RAG collection is gone, whatever happens to its data.
+
+### Breaking
+
+- **`SimpleRagRegistry.deleteCollection` unregisters first, always.** A
+  provider whose `deleteCollection` failed left the collection registered —
+  still listed, still queried — holding data its owner had asked to delete. It
+  is now unregistered before its data is touched, and a failure comes back as
+  the error with the collection already gone. A consumer that read
+  `{ ok: false }` as "the collection is still there" must now read it as "the
+  collection is gone; its data may remain".
+- **`rag_delete_collection` answers `{ ok: true, warning }`** when the
+  collection was removed and its data was not.
+
+### Fixed
+
+- **`closeSession` goes through every collection of the session.** It stopped
+  at the first failure and left the rest registered; it now deletes all of them
+  and returns `SessionCloseIncompleteError`, whose `failures` name each one.
+- **A provider without `deleteCollection` no longer leaves data behind
+  silently.** The registry empties the store that provider created through
+  `writer().clearAll()`, and returns `DeleteUnsupportedError` when there is
+  neither — or when the provider is no longer registered. A collection
+  registered directly, without a provider, is still only unregistered: its
+  store belongs to whoever registered it.
+
+### Added
+
+- **`supportedScopes` in the `InMemoryRagProvider` and `VectorRagProvider`
+  config.** The default stays `['session']`.
+
 ## [25.0.0] — 2026-09-13
 
 The deadline reaches the transport, and the provider stops guessing at one (#296).
