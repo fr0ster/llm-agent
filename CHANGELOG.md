@@ -9,6 +9,59 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+A deleted RAG collection is gone, whatever happens to its data.
+
+### Breaking
+
+- **`SimpleRagRegistry.deleteCollection` unregisters first, always.** A
+  provider whose `deleteCollection` failed left the collection registered —
+  still listed, still queried — holding data its owner had asked to delete. It
+  is now unregistered before its data is touched, and a failure comes back as
+  the error with the collection already gone. A consumer that read
+  `{ ok: false }` as "the collection is still there" must now read it as "the
+  collection is gone; its data may remain".
+- **`rag_delete_collection` answers `{ ok: true, warning }`** when the
+  collection was removed and its data was not.
+- **A provider receives a store name of the collection's owner, not the bare
+  collection name.** `createCollection` passes the collection name with
+  non-identifier characters replaced by `_`, plus `_<12 hex>` of a digest over
+  the scope, the owner (`sessionId` or `userId`) and the name — at most 63
+  characters — and deletes the store by that name. The same owner gets the same
+  store; a provider that listed or matched stores by the bare collection name
+  must expect the suffix, and data written under a bare name before this
+  release is not found under the new one.
+
+### Fixed
+
+- **`closeSession` goes through every collection of the session.** It stopped
+  at the first failure and left the rest registered; it now deletes all of them
+  and returns `SessionCloseIncompleteError`, whose `failures` name each one.
+- **Another session or user no longer opens data a deletion left.**
+  Unregistering freed the name, and a provider that keeps stores by name
+  (Qdrant, a database) opened the leftover store for whoever created it next —
+  failed or still running, another session or user read the previous one's
+  data. Each owner now has a store name of its own.
+- **A deletion still running no longer removes what a re-created collection
+  writes.** The same owner creating the collection again got the same store at
+  once, and the deletion finishing afterwards wiped the new records. A store
+  name is now released only when its deletion has finished; the creation waits
+  for it.
+- **Two creations of the same collection at once no longer delete its store.**
+  Both passed the duplicate check, and the loser's rollback deleted the store
+  the winner had just registered. A creation still running now counts as a
+  duplicate.
+- **A provider without `deleteCollection` no longer leaves data behind
+  silently.** The registry empties the store that provider created through
+  `writer().clearAll()`, and returns `DeleteUnsupportedError` when there is
+  neither — or when the provider is no longer registered. A collection
+  registered directly, without a provider, is still only unregistered: its
+  store belongs to whoever registered it.
+
+### Added
+
+- **`supportedScopes` in the `InMemoryRagProvider` and `VectorRagProvider`
+  config.** The default stays `['session']`.
+
 ## [25.0.0] — 2026-09-13
 
 The deadline reaches the transport, and the provider stops guessing at one (#296).

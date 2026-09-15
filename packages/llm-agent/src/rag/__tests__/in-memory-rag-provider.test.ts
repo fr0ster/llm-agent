@@ -42,3 +42,21 @@ describe('InMemoryRagProvider', () => {
     assert.ok(res.value.editor instanceof ImmutableEditStrategy);
   });
 });
+
+describe('InMemoryRagProvider configured scopes', () => {
+  it('accepts the scopes it is configured with, and only those', async () => {
+    const p = new InMemoryRagProvider({
+      name: 'p',
+      supportedScopes: ['session', 'user'],
+    });
+    assert.deepEqual(p.supportedScopes, ['session', 'user']);
+    const user = await p.createCollection('u', {
+      scope: 'user',
+      userId: 'alice',
+    });
+    assert.ok(user.ok);
+    const global = await p.createCollection('g', { scope: 'global' });
+    assert.ok(!global.ok);
+    assert.ok(global.error instanceof UnsupportedScopeError);
+  });
+});

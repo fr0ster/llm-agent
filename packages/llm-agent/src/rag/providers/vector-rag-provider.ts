@@ -13,6 +13,12 @@ export interface VectorRagProviderConfig {
   name: string;
   embedder: IEmbedder;
   editable?: boolean;
+  /**
+   * Scopes this provider accepts. Default `['session']`: its stores live in
+   * this process and are gone after a restart, so whether a longer-lived scope
+   * fits is the host's call.
+   */
+  supportedScopes?: readonly RagCollectionScope[];
   vectorRagConfig?: VectorRagConfig;
   idStrategyFactory?: (opts: {
     scope: RagCollectionScope;
@@ -25,7 +31,7 @@ export class VectorRagProvider extends AbstractRagProvider {
   readonly name: string;
   readonly kind = 'vector';
   readonly editable: boolean;
-  readonly supportedScopes = ['session'] as const;
+  readonly supportedScopes: readonly RagCollectionScope[];
 
   private readonly embedder: IEmbedder;
   private readonly vectorRagConfig?: VectorRagConfig;
@@ -35,6 +41,7 @@ export class VectorRagProvider extends AbstractRagProvider {
     this.name = cfg.name;
     this.embedder = cfg.embedder;
     this.editable = cfg.editable ?? true;
+    this.supportedScopes = cfg.supportedScopes ?? ['session'];
     this.vectorRagConfig = cfg.vectorRagConfig;
     if (cfg.idStrategyFactory) this.idStrategyFactory = cfg.idStrategyFactory;
   }
