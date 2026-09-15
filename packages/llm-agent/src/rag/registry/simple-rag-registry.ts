@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type {
   IRag,
   IRagEditor,
@@ -9,13 +9,44 @@ import type {
 } from '../../interfaces/rag.js';
 import { RagError, type Result } from '../../interfaces/types.js';
 import {
-  CollectionDataRemainsError,
   CollectionNotFoundError,
   DeleteUnsupportedError,
   ProviderNotFoundError,
   SessionCloseIncompleteError,
 } from '../corrections/errors.js';
 import { ImmutableEditStrategy } from '../strategies/edit/immutable.js';
+
+/**
+ * The name a provider keeps a collection's data under.
+ *
+ * The collection name and a digest of its scope, its owner (the session for a
+ * session collection, the user for a user one) and the name. The same
+ * collection of the same owner gets the same store, so a user or global
+ * collection finds its data again after a restart; another session or user
+ * gets another one, so none opens a store someone else's deletion left. It fits
+ * the strictest provider rules: letters, digits and underscores, not starting
+ * with a digit, at most 63 characters (PostgreSQL, HANA).
+ */
+function storeNameFor(params: {
+  collectionName: string;
+  scope: RagCollectionScope;
+  sessionId?: string;
+  userId?: string;
+}): string {
+  const owner =
+    params.scope === 'session'
+      ? (params.sessionId ?? '')
+      : params.scope === 'user'
+        ? (params.userId ?? '')
+        : '';
+  const digest = createHash('sha256')
+    .update(JSON.stringify([params.scope, owner, params.collectionName]))
+    .digest('hex')
+    .slice(0, 12);
+  let base = params.collectionName.replace(/[^a-zA-Z0-9_]/g, '_');
+  if (!/^[a-zA-Z_]/.test(base)) base = `_${base}`;
+  return `${base.slice(0, 63 - digest.length - 1)}_${digest}`;
+}
 
 interface Entry {
   rag: IRag;
@@ -27,11 +58,6 @@ interface Entry {
 
 export class SimpleRagRegistry implements IRagRegistry {
   protected readonly entries = new Map<string, Entry>();
-  /**
-   * User and global collections whose deletion failed in this process: their
-   * data may remain under the name, so the name is not given out again.
-   */
-  protected readonly dataRemains = new Set<string>();
   protected providerRegistry?: IRagProviderRegistry;
   protected mutationListener?: () => void;
 
@@ -134,24 +160,8 @@ export class SimpleRagRegistry implements IRagRegistry {
     }
 
     // A provider that keeps stores by name (Qdrant, a database) opens whatever
-    // is there. A session collection therefore never reuses a store name: each
-    // one gets its own, so a new session cannot open what a failed deletion
-    // left. A user or global collection keeps its name — that is how it finds
-    // its data again after a restart — so after a failed deletion the name is
-    // refused instead, until this process ends.
-    if (
-      params.scope !== 'session' &&
-      this.dataRemains.has(params.collectionName)
-    ) {
-      return {
-        ok: false,
-        error: new CollectionDataRemainsError(params.collectionName),
-      };
-    }
-    const storeName =
-      params.scope === 'session'
-        ? `${params.collectionName}--${randomUUID().slice(0, 8)}`
-        : params.collectionName;
+    // is there, so each owner gets a store name of its own; see storeNameFor.
+    const storeName = storeNameFor(params);
 
     const created = await provider.createCollection(storeName, {
       scope: params.scope,
@@ -213,9 +223,8 @@ export class SimpleRagRegistry implements IRagRegistry {
    * through its store's `writer().clearAll()`. A collection registered directly,
    * with no provider, is only unregistered — its store belongs to whoever
    * registered it. Nothing is retried. A failure comes back as the error, with
-   * the collection already unregistered; its data may remain in the backend. A
-   * user or global collection whose data may remain cannot be created again
-   * under its name in this process (see createCollection).
+   * the collection already unregistered; its data may remain in the backend,
+   * under a store name no other session or user is given (see storeNameFor).
    */
   async deleteCollection(name: string): Promise<Result<void, RagError>> {
     const entry = this.entries.get(name);
@@ -223,9 +232,7 @@ export class SimpleRagRegistry implements IRagRegistry {
       return { ok: false, error: new CollectionNotFoundError(name) };
     }
     this.unregister(name);
-    const res = await this.deleteData(name, entry);
-    if (!res.ok && entry.storeName === name) this.dataRemains.add(name);
-    return res;
+    return this.deleteData(name, entry);
   }
 
   private async deleteData(

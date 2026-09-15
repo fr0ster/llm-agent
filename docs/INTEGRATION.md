@@ -562,19 +562,19 @@ with the collection already unregistered:
 `rag_delete_collection` answers `{ ok: true, warning }` in that case: the
 collection is gone for the caller, and the warning says what was left.
 
-**Data a failed deletion left is never opened again.** A provider that keeps
-stores by name — Qdrant, a database — opens whatever is there when a name is
-created again, so the registry does not hand a name back to it:
+**A store belongs to its owner.** A provider that keeps stores by name —
+Qdrant, a database — opens whatever is there when a name is created again, so
+the name the registry passes it is not the bare collection name. It is the
+collection name (characters other than letters, digits and underscores become
+`_`, a leading digit gets a `_` in front) plus `_` and 12 hex characters of a
+digest over the scope, the owner — the `sessionId` of a session collection,
+the `userId` of a user one — and the name; at most 63 characters in all (the
+PostgreSQL and HANA rule). The provider is later asked to delete that same name.
 
-- **Session collections** get a store name of their own on every
-  `createCollection`: `<collectionName>--<8 hex>` is what the provider receives
-  and is later asked to delete. A new session never opens an old session's
-  store, in this process or after a restart; data a failed deletion left is an
-  orphan nothing points at.
-- **User and global collections** keep their name as the store name — that is
-  how they find their data again after a restart. After a failed deletion,
-  `createCollection` refuses that name with `CollectionDataRemainsError`
-  (`RAG_COLLECTION_DATA_REMAINS`) for the rest of the process.
+The same collection of the same owner gets the same store, so a user or global
+collection finds its data again after a restart. Another session or user gets
+another store, so it never opens what someone else's deletion left — failed or
+still running.
 
 ### AbstractRagProvider
 

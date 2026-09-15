@@ -70,21 +70,6 @@ export class DeleteUnsupportedError extends RagError {
 }
 
 /**
- * A user or global collection cannot be created under this name: a deletion
- * under it failed, its data may remain, and a provider that keeps stores by
- * name would open them again.
- */
-export class CollectionDataRemainsError extends RagError {
-  constructor(collectionName: string) {
-    super(
-      `Collection '${collectionName}' cannot be created: a failed deletion may have left its data, and its provider would open it again`,
-      'RAG_COLLECTION_DATA_REMAINS',
-    );
-    this.name = 'CollectionDataRemainsError';
-  }
-}
-
-/**
  * A session was closed — every one of its collections unregistered — but the
  * data of some could not be deleted. `failures` names each, with its error.
  */
