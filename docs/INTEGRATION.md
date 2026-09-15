@@ -523,7 +523,7 @@ interface IRagProvider {
 
 | Scope | Lifetime | Who can delete via MCP | Typical use case |
 |-------|----------|------------------------|------------------|
-| `session` | Until the consumer calls `ragRegistry.closeSession(sessionId)` | Session owner only | Scratch pads, phase results, temporary analysis |
+| `session` | Until `SmartAgent.closeSession()` is called | Session owner only | Scratch pads, phase results, temporary analysis |
 | `user` | Persistent across sessions for that user | Same user only | Personal notes, user preferences |
 | `global` | Permanent until explicitly deleted | Any caller (admin-level) | Shared knowledge bases, team fact stores |
 
@@ -697,14 +697,10 @@ The consumer's MCP server populates this from its own session state (e.g. HTTP r
 ### Session cleanup
 
 ```ts
-// ragRegistry comes from SmartAgentBuilder.build(); historyMemory is the
-// IHistoryMemory you passed to withHistoryMemory, if any.
-const closed = await ragRegistry.closeSession(sessionId);
-if (!closed.ok) log.warn(closed.error.message); // SessionCloseIncompleteError
-historyMemory?.clear(sessionId);
+await agent.closeSession(sessionId);
 ```
 
-Call this from your session lifecycle hook (user logout, WebSocket disconnect). `closeSession` deletes every session-scoped RAG collection created under that `sessionId`; it does not touch conversation history, which the history memory clears. A collection whose data cannot be deleted is unregistered all the same, and the failures come back together; see [Deleting a collection](#deleting-a-collection).
+Call this from your session lifecycle hook (user logout, WebSocket disconnect). It flushes all session-scoped RAG collections created under that `sessionId` and clears the associated conversation history from memory. A collection whose data cannot be deleted is unregistered all the same; `agent.closeSession` logs the registry's `SessionCloseIncompleteError` as a warning rather than throwing it. See [Deleting a collection](#deleting-a-collection).
 
 ### Session cookie support (HTTP server)
 

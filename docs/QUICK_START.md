@@ -237,15 +237,15 @@ Let the LLM create temporary collections scoped to a session:
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
 
-const { agent, ragRegistry } = await new SmartAgentBuilder({ /* ... */ })
+const { agent } = await new SmartAgentBuilder({ /* ... */ })
   .withMainLlm(myLlm)
   .addRagProvider(new InMemoryRagProvider({ name: 'scratch' }))
   .build();
 
 // LLM can call rag_create_collection via MCP:
 //   rag_create_collection({ provider: 'scratch', name: 'phase-results', scope: 'session' })
-// Later, when the session ends — deletes every session-scoped collection of it:
-await ragRegistry.closeSession('session-id');
+// Later:
+await agent.closeSession('session-id');  // clears all session-scoped collections
 ```
 
 See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full provider setup,
