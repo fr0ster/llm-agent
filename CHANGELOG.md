@@ -41,6 +41,15 @@ A deleted RAG collection is gone, whatever happens to its data.
   (Qdrant, a database) opened the leftover store for whoever created it next —
   failed or still running, another session or user read the previous one's
   data. Each owner now has a store name of its own.
+- **A deletion still running no longer removes what a re-created collection
+  writes.** The same owner creating the collection again got the same store at
+  once, and the deletion finishing afterwards wiped the new records. A store
+  name is now released only when its deletion has finished; the creation waits
+  for it.
+- **Two creations of the same collection at once no longer delete its store.**
+  Both passed the duplicate check, and the loser's rollback deleted the store
+  the winner had just registered. A creation still running now counts as a
+  duplicate.
 - **A provider without `deleteCollection` no longer leaves data behind
   silently.** The registry empties the store that provider created through
   `writer().clearAll()`, and returns `DeleteUnsupportedError` when there is

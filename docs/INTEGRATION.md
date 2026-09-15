@@ -576,6 +576,12 @@ collection finds its data again after a restart. Another session or user gets
 another store, so it never opens what someone else's deletion left — failed or
 still running.
 
+A store name is released only once its deletion has finished. The same owner
+creating the collection again while its deletion is still running waits for
+that deletion, so it cannot remove what the new collection writes. Two
+creations of the same collection at once are not both let through: the second
+is refused with `RAG_DUPLICATE_COLLECTION`.
+
 ### AbstractRagProvider
 
 `AbstractRagProvider` is a base class with helpers for scope validation and editor construction:

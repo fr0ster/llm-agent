@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type {
   IRag,
   IRagEditor,
+  IRagProvider,
   IRagProviderRegistry,
   IRagRegistry,
   RagCollectionMeta,
@@ -58,6 +59,14 @@ interface Entry {
 
 export class SimpleRagRegistry implements IRagRegistry {
   protected readonly entries = new Map<string, Entry>();
+  /**
+   * Store names whose deletion is still running, with that deletion. A store
+   * name is released only once its deletion has finished: a collection created
+   * under it meanwhile waits, so the deletion cannot remove what it writes.
+   */
+  protected readonly deletions = new Map<string, Promise<unknown>>();
+  /** Collection names being created, held until registered or refused. */
+  protected readonly creating = new Set<string>();
   protected providerRegistry?: IRagProviderRegistry;
   protected mutationListener?: () => void;
 
@@ -148,8 +157,12 @@ export class SimpleRagRegistry implements IRagRegistry {
       };
     }
 
-    // Preflight duplicate-name check.
-    if (this.entries.has(params.collectionName)) {
+    // Preflight duplicate-name check, counting creations still running: two at
+    // once would share one store, and the loser's rollback would delete it.
+    if (
+      this.entries.has(params.collectionName) ||
+      this.creating.has(params.collectionName)
+    ) {
       return {
         ok: false,
         error: new RagError(
@@ -159,9 +172,23 @@ export class SimpleRagRegistry implements IRagRegistry {
       };
     }
 
+    this.creating.add(params.collectionName);
+    try {
+      return await this.createUnder(provider, params);
+    } finally {
+      this.creating.delete(params.collectionName);
+    }
+  }
+
+  private async createUnder(
+    provider: IRagProvider,
+    params: Parameters<IRagRegistry['createCollection']>[0],
+  ): Promise<Result<RagCollectionMeta, RagError>> {
     // A provider that keeps stores by name (Qdrant, a database) opens whatever
     // is there, so each owner gets a store name of its own; see storeNameFor.
     const storeName = storeNameFor(params);
+    // Released only when a deletion under it has finished; see deletions.
+    await this.deletions.get(storeName);
 
     const created = await provider.createCollection(storeName, {
       scope: params.scope,
@@ -225,6 +252,8 @@ export class SimpleRagRegistry implements IRagRegistry {
    * registered it. Nothing is retried. A failure comes back as the error, with
    * the collection already unregistered; its data may remain in the backend,
    * under a store name no other session or user is given (see storeNameFor).
+   * The store name itself is held until the deletion has finished (see
+   * deletions).
    */
   async deleteCollection(name: string): Promise<Result<void, RagError>> {
     const entry = this.entries.get(name);
@@ -232,7 +261,16 @@ export class SimpleRagRegistry implements IRagRegistry {
       return { ok: false, error: new CollectionNotFoundError(name) };
     }
     this.unregister(name);
-    return this.deleteData(name, entry);
+    const deletion: Promise<Result<void, RagError>> = this.deleteData(
+      name,
+      entry,
+    ).finally(() => {
+      if (this.deletions.get(entry.storeName) === deletion) {
+        this.deletions.delete(entry.storeName);
+      }
+    });
+    this.deletions.set(entry.storeName, deletion);
+    return deletion;
   }
 
   private async deleteData(

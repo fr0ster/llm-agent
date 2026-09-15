@@ -450,10 +450,10 @@ describe('SimpleRagRegistry — no session or user opens a store someone else le
 
   /**
    * A provider that keeps its stores by name, as Qdrant or a database does:
-   * creating a name that is already there opens it. Its deletions fail, and
-   * wait until the test lets them go.
+   * creating a name that is already there opens it. Its deletions wait until the
+   * test lets them go, then fail or delete the store.
    */
-  function storesByName() {
+  function storesByName(deletion: 'fails' | 'deletes' = 'fails') {
     const stores = new Map<string, InMemoryRag>();
     const created: string[] = [];
     const deleted: string[] = [];
@@ -478,7 +478,11 @@ describe('SimpleRagRegistry — no session or user opens a store someone else le
       deleteCollection: async (name) => {
         deleted.push(name);
         await held;
-        return { ok: false, error: new RagError('backend down') };
+        if (deletion === 'fails') {
+          return { ok: false, error: new RagError('backend down') };
+        }
+        stores.delete(name);
+        return { ok: true, value: undefined };
       },
     };
     return { provider, created, deleted, release };
@@ -550,6 +554,56 @@ describe('SimpleRagRegistry — no session or user opens a store someone else le
     kept.release();
     assert.ok(!(await deletion).ok);
     assert.equal(await holds(reg.get('shared')), false);
+  });
+
+  it('the same owner creating the collection while its deletion runs waits for it, and keeps what it writes', async () => {
+    const kept = storesByName('deletes');
+    const reg = registryWith(kept.provider);
+    assert.ok((await createUser(reg, 'mine', 'alice')).ok);
+    await write(reg.get('mine'));
+
+    const deletion = reg.deleteCollection('mine');
+    let settled = false;
+    const creation = createUser(reg, 'mine', 'alice').then((res) => {
+      settled = true;
+      return res;
+    });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(settled, false, 'the creation waits for the deletion');
+
+    kept.release();
+    assert.ok((await deletion).ok);
+    assert.ok((await creation).ok);
+    const rag = reg.get('mine');
+    assert.equal(
+      await holds(rag),
+      false,
+      'the old data went with the deletion',
+    );
+    await write(rag);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(
+      await holds(rag),
+      true,
+      'the deletion did not reach the new data',
+    );
+  });
+
+  it('two creations of the same collection at once: one is refused, and the store is left alone', async () => {
+    const kept = storesByName('deletes');
+    kept.release();
+    const reg = registryWith(kept.provider);
+    const results = await Promise.all([
+      createUser(reg, 'mine', 'alice'),
+      createUser(reg, 'mine', 'alice'),
+    ]);
+    assert.equal(results.filter((r) => r.ok).length, 1);
+    const refused = results.find((r) => !r.ok);
+    if (!refused || refused.ok) assert.fail('one creation must be refused');
+    assert.equal(refused.error.code, 'RAG_DUPLICATE_COLLECTION');
+    assert.deepEqual(kept.deleted, []);
+    await write(reg.get('mine'));
+    assert.equal(await holds(reg.get('mine')), true);
   });
 
   it('store names fit the strictest provider rules, whatever the collection is called', async () => {
