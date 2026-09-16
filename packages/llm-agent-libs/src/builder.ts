@@ -27,6 +27,7 @@ import type {
   IMcpClient,
   IMcpFailureClassifier,
   IMcpRequestHeadersStrategy,
+  IMcpServer,
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
@@ -49,6 +50,7 @@ import {
   CircuitBreaker,
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
+  collectServerDescriptors,
   defaultToolNamespace,
   FallbackRag,
   type IEmbedder,
@@ -167,6 +169,7 @@ export class SmartAgentBuilder {
   private _historyRag?: IRag;
   private _pipeline?: IPipeline;
   private _mcpClients?: IMcpClient[];
+  private _mcpServers?: IMcpServer[];
   private _classifier?: ISubpromptClassifier;
   private _assembler?: IContextAssembler;
   private _logger?: ILogger;
@@ -338,6 +341,25 @@ export class SmartAgentBuilder {
    */
   withMcpClients(clients: IMcpClient[]): this {
     this._mcpClients = clients;
+    return this;
+  }
+
+  /**
+   * Servers this builder owns: `build()` starts each one and `handle.close()`
+   * stops it. Use this when the caller knows HOW a server is started — a stdio
+   * child with its own environment, an HTTP target with a credential — rather
+   * than handing over an already-connected client.
+   *
+   * Beside `withMcpClients`, never replacing it: a consumer that already holds
+   * clients keeps passing clients. Setting BOTH is a configuration error and
+   * `build()` throws, rather than one silently winning over the other.
+   *
+   * Every server must carry a `descriptor`, or none may — a partly-filled set
+   * throws, because dropping it would re-namespace tools from their `label`
+   * to `s${slotIndex}` with nothing reporting it.
+   */
+  withMcpServers(servers: IMcpServer[]): this {
+    this._mcpServers = servers;
     return this;
   }
 
@@ -985,7 +1007,37 @@ export class SmartAgentBuilder {
       | ReadonlyMap<string, { slotIndex: number; originalName: string }>
       | undefined;
 
-    if (this._mcpClients) {
+    if (this._mcpServers) {
+      if (this._mcpClients)
+        throw new Error(
+          'withMcpServers and withMcpClients are mutually exclusive: pass clients you already hold, or servers this builder should start',
+        );
+
+      // A partly-filled descriptor set is a caller bug: dropping it would
+      // re-namespace every tool from its label to `s${slotIndex}`. Check
+      // before starting anything.
+      const descriptors = collectServerDescriptors(
+        this._mcpServers,
+        'withMcpServers',
+      );
+
+      // Caller-provided servers: start each, keep its stop() for handle.close().
+      // Auto-connect and vectorization are skipped, exactly as on the
+      // `withMcpClients` branch.
+      const started: IMcpClient[] = [];
+      try {
+        for (const server of this._mcpServers) {
+          started.push(await server.start());
+          closeFns.push(() => server.stop());
+        }
+      } catch (err) {
+        // Stop what did start, so a failure half-way leaves no live child.
+        for (const fn of closeFns.splice(0)) await fn();
+        throw err;
+      }
+      mcpClients = started;
+      mcpClientDescriptors = descriptors;
+    } else if (this._mcpClients) {
       // Caller-provided clients: skip auto-connect and vectorization
       mcpClients = this._mcpClients;
     } else {
