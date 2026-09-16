@@ -24,7 +24,11 @@
   6. `EmbedderResolutionOptions.logger` and `RagResolutionOptions.logger` — `llm-agent-rag/src/rag-factories.ts:138` and `:255`
   7. `SessionLifecycleOptions.logger` — `llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts:72`
   8. `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` — `llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:32` and `:78`
-- **`PipelineDeps.logger` and `SmartAgentDeps.logger` are exported but do NOT widen.** They feed the plugin-facing context (`llm-agent-libs/src/pipeline/default-pipeline.ts:474`, `src/agent.ts:311`), so widening either would put an `AnyLogger` in front of every consumer plugin. A consumer assembling those deps by hand calls the exported `normaliseLogger` first.
+- **Three exported logger inputs deliberately do NOT widen**, and this list is as binding as the one above:
+  - `PipelineDeps.logger` and `SmartAgentDeps.logger` — they feed the plugin-facing context (`llm-agent-libs/src/pipeline/default-pipeline.ts:474`, `src/agent.ts:311`), so widening either would put an `AnyLogger` in front of every consumer plugin.
+  - `makeDefaultDeps(overrides?: { … logger?: ILogger })` — `llm-agent-libs/src/testing/index.ts:485`, public through that package's separate `./testing` entry point (`package.json:13`). It exists to build `SmartAgentDeps`, so it inherits that type for the same reason.
+
+  A consumer assembling any of these by hand calls the exported `normaliseLogger` first — one line. Do not "finish the job" by widening them; that is the major this release refuses.
 - **`@mcp-abap-adt/interfaces-utils` becomes a REGULAR dependency** of `@mcp-abap-adt/llm-agent` (currently absent — the package depends only on `zod` today). The import is type-only, which keeps it out of the runtime graph, but a re-exported type must resolve in every consumer's `tsc` — a devDependency would break them. Published version: `1.0.0`.
 - **The external shape is verified, not assumed.** In the interfaces repository (`~/prj/mcp-abap-adt-interfaces`), `packages/interfaces-utils/src/logging/ILogger.ts:5` declares exactly four methods — `info`, `error`, `warn`, `debug`, each `(message: string, meta?: unknown): void` — and it is exported from that package's barrel at `src/index.ts:7` as `export type { ILogger } from './logging/ILogger';`. `npm view @mcp-abap-adt/interfaces-utils version` reports `1.0.0`. If the installed declaration disagrees with this after `npm install`, stop and report it: the re-export in Task 1 depends on this shape being exact.
 - **The boundary mapping is fixed by §7** and must be implemented exactly:
@@ -326,7 +330,16 @@ export { isTextLogger, normaliseLogger } from './logger/normalise-logger.js';
 
 - [ ] **Step 7: Add a type-gate that actually sees the tests**
 
-`npm run build` does **not** type-check any test file: every package's tsconfig excludes them (`packages/llm-agent/tsconfig.json:10`, `packages/llm-agent-libs/tsconfig.json:9` — both list `"**/__tests__/**", "**/*.test.ts"`). Since this whole workstream is a type widening, a gate that never reads the tests proves nothing about them. Add one, at the repo root, as `tsconfig.typecheck.json`:
+`npm run build` does **not** type-check the test files this workstream cares most about. The exclusions are not uniform, and the difference decides what the gate is for:
+
+| package | excludes | so a colocated `*.test.ts` is |
+|---|---|---|
+| `llm-agent` (`tsconfig.json:10`) | `**/__tests__/**`, `**/*.test.ts` | **not** built |
+| `llm-agent-libs` (`tsconfig.json:9`) | `**/__tests__/**`, `**/*.test.ts` | **not** built |
+| `llm-agent-mcp` (`tsconfig.json:8`) | `**/__tests__/**` only | built |
+| `llm-agent-rag` (`tsconfig.json:8`) | `**/__tests__/**` only | built |
+
+Three of this workstream's four tests land in the first two packages, so nothing but a dedicated gate would ever type-check them — and this whole workstream is a type widening. Add that gate, at the repo root, as `tsconfig.typecheck.json`:
 
 ```json
 {
@@ -480,7 +493,7 @@ describe('composeResilientEmbedder with a text logger', () => {
 
 - [ ] **Step 2: Run it and watch it fail**
 
-**Two commands, and neither is `npm run build`.** `npm test` runs `node --import tsx/esm`, which transpiles without type-checking; and `npm run build` never reads a test file at all, because every package tsconfig excludes them. The gate that sees the test is the `typecheck` script from Task 1, Step 7:
+**Two commands, and neither is `npm run build`.** `npm test` runs `node --import tsx/esm`, which transpiles without type-checking; and this particular test lives in `llm-agent`, whose tsconfig excludes both `**/__tests__/**` and `**/*.test.ts` (`tsconfig.json:10`), so the build never reads it. (That is not true of every package — `llm-agent-mcp` and `llm-agent-rag` exclude only `__tests__`, which is why Step 6's colocated test *is* built. See the table in Task 1, Step 7.) The gate that sees this test is the `typecheck` script:
 
 Run: `npm run typecheck`
 Expected: FAIL — `Type 'ITextLogger' is not assignable to type 'ILogger'` (TS2322/TS2345) at the test's `logger:` property.
@@ -602,6 +615,8 @@ describe('LazyConnectionStrategy with a text logger', () => {
 ```
 
 Read `lazy-connection-strategy.ts` around `:118-125` before writing this: it logs once per cooled-down attempt, and the factory argument is the third constructor parameter. If the failure path there emits nothing with `cooldownMs: 0`, adjust the trigger to whatever that file actually logs — but do not drop the test, because this is the seam where a wrong constructor hides.
+
+**This file is colocated, and `llm-agent-mcp`'s tsconfig excludes only `**/__tests__/**`** (`packages/llm-agent-mcp/tsconfig.json:8`) — so unlike the workstream's other three tests, this one is compiled by the ordinary `npm run build` as well as by `npm run typecheck`. It must type-check cleanly under both; a stub that satisfies the runtime but not `IMcpClient` will break the build itself, not just the gate.
 
 - [ ] **Step 7: Run the tests, build and lint**
 
@@ -1019,7 +1034,7 @@ Expected: every workspace builds; the typecheck gate is clean; all tests pass; B
 
 **Three checks, three different jobs — none of them substitutes for another.** This workstream's subject is a type widening, and `npm test` runs `node --import tsx/esm`, which transpiles without type-checking: every widened seam would "pass" its tests while failing to compile for a consumer.
 
-- `npm run build` type-checks the **production** sources of every package. It proves the widened signatures compile and that the frozen output seams still resolve for consumers. It reads no test file — every package tsconfig excludes them.
+- `npm run build` type-checks the **production** sources of every package, proving the widened signatures compile and the frozen output seams still resolve for consumers. It reads *most* test files — but not all, and the difference matters: `llm-agent` and `llm-agent-libs` exclude both `**/__tests__/**` and `**/*.test.ts`, while `llm-agent-mcp` and `llm-agent-rag` exclude only `**/__tests__/**`. A colocated `*.test.ts` in those two packages therefore **is** compiled by the ordinary build — including this workstream's `lazy-connection-strategy-text-logger.test.ts`.
 - `npm run typecheck` reads exactly the four test files this workstream adds. It is the only check that proves those tests actually pass an `ITextLogger` where one is now accepted. Its `include` list is deliberately narrow: a repo-wide version surfaces 315 pre-existing errors in tests nothing has ever type-checked, which is a separate workstream's problem, not this one's.
 - `npm test` proves behaviour — that the events reach the text logger at the levels §7 fixes.
 
