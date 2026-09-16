@@ -313,7 +313,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive — nothing a consumer implements or receives changes |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `IRagProviderSource`; registry wiring (§9.4) | additive |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
-| `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`; `IMcpServer` implementations for stdio and http | additive |
+| `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed stdio and http implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 | additive |
 | `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes`; ask the check when given one | additive |
 | LLM and embedder providers | credential contracts beside `apiKey?: string`, keeping the AI Core env fallback (§9.2) | additive |
 | `@mcp-abap-adt/interfaces-auth` | gains `AccessCheck` and, subject to §4, the three credential contracts | minor |
