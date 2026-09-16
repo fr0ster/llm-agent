@@ -410,8 +410,8 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
       /descriptor/i,
     );
 
-    // Whatever was started before the throw is stopped again.
-    assert.deepEqual(log, ['start:e', 'stop:e']);
+    // The descriptor check runs before the start loop, so nothing started.
+    assert.deepEqual(log, []);
   });
 
   it('withMcpServers and withMcpClients together are a configuration error', async () => {
@@ -427,6 +427,32 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
           .build(),
       /withMcpClients/,
     );
+  });
+
+  it('a start that fails half-way stops what already started, and rethrows the original error', async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const log: string[] = [];
+    const failing: IMcpServer = {
+      async start() {
+        throw new Error('spawn failed');
+      },
+      async stop() {
+        log.push('stop:failing');
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        new SmartAgentBuilder({})
+          .withMainLlm(stubLlm())
+          .withMcpServers([stubServer('a', log), failing])
+          .build(),
+      /spawn failed/,
+    );
+
+    // The first server is stopped; the one whose start() threw was never
+    // registered, so its stop() is not called.
+    assert.deepEqual(log, ['start:a', 'stop:a']);
   });
 
   it('withMcpClients is untouched: nothing is started, nothing is stopped', async () => {
@@ -527,7 +553,9 @@ In `build()`, replace the opening of the injected-clients branch (line 986, `if 
     } else if (this._mcpClients) {
 ```
 
-`closeFns.splice(0)` is safe here because this branch runs before any other closer is registered; if the implementer finds `closeFns` already populated at this point, they must capture the starting length instead and unwind only their own entries. `assertClientDescriptors` still runs downstream and stays the last word on uniqueness and count.
+**This branch is `closeFns`' first real user.** In today's `builder.ts` the array appears exactly three times — declared at :973, named in a comment at :998, and awaited at :1368 — and nothing pushes into it. So `closeFns.splice(0)` here can only ever unwind entries this loop just added, and there are no other closers to preserve. Do not go looking for them; if a future change adds one before this point, capture the starting length and unwind only from there.
+
+`assertClientDescriptors` still runs downstream and stays the last word on uniqueness and count.
 
 - [ ] **Step 5: Run the tests**
 
@@ -859,6 +887,37 @@ test('a partly-filled descriptor set throws before any server is started', async
 
   await assert.rejects(() => factory.build({ sessionId: 's1' }), /descriptor/i);
   assert.equal(started, 0);
+});
+
+test('a start that fails half-way stops the servers already started', async () => {
+  const log: string[] = [];
+  const factory = new SessionGraphFactory({
+    mcpServerFactory: () => [
+      {
+        async start() {
+          log.push('start:a');
+          return stubClient();
+        },
+        async stop() {
+          log.push('stop:a');
+        },
+      },
+      {
+        async start(): Promise<IMcpClient> {
+          throw new Error('spawn failed');
+        },
+        async stop() {
+          log.push('stop:b');
+        },
+      },
+    ],
+    toolsRag: undefined,
+    ragRegistry: makeRagRegistry(),
+    buildAgent: async () => undefined,
+  });
+
+  await assert.rejects(() => factory.build({ sessionId: 's1' }), /spawn failed/);
+  assert.deepEqual(log, ['start:a', 'stop:a']);
 });
 
 test('a failing stop is surfaced, not thrown', async () => {
