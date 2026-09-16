@@ -144,6 +144,9 @@ export interface MCPClientConfig {
   command?: string;
   args?: string[];
 
+  /** Environment for the spawned stdio child. See `McpConnectionConfig.env`. */
+  env?: Record<string, string>;
+
   /**
    * For HTTP transports: URL endpoint
    * Examples:
@@ -317,6 +320,7 @@ export class MCPClientWrapper {
       const stdioTransport = new StdioClientTransport({
         command: this.config.command,
         args: this.config.args || [],
+        ...(this.config.env ? { env: this.config.env } : {}),
       });
 
       this.client = new Client(

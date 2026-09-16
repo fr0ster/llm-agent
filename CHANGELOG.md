@@ -9,6 +9,60 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **`IMcpServer`** — starting and stopping an MCP server is now a contract of
+  its own, beside `IMcpClient` which is only about using one. One implementation
+  per way of starting: a spawned stdio child, a held HTTP connection, an
+  in-process server. `mcpServerFromFactory` builds one from the existing
+  `McpClientFactory`, whose `close` becomes `stop()`.
+- **`collectServerDescriptors`** — the all-or-none descriptor check both new
+  seams share: every server in a set carries a `descriptor`, or none does. A
+  partly-filled set throws rather than silently falling back to positional
+  pairing.
+- **`SmartAgentBuilder.withMcpServers`** — `build()` starts them and
+  `handle.close()` stops them, through the `closeFns` it already awaited.
+  Passing both this and `withMcpClients` is a configuration error rather than
+  one silently winning, and a set where only some servers carry a `descriptor`
+  throws — dropping it would re-namespace tools from their `label` to
+  `s${slotIndex}` with nothing reporting it.
+- **`SessionGraphFactoryOptions.mcpServerFactory`** — per-caller servers, given
+  the identity that `buildPerSessionMcpClients` never received, started before
+  the agent is built and stopped last on dispose.
+- **`SessionLifecycleOptions.buildPerSessionMcpServers`** (`@mcp-abap-adt/llm-agent-server-libs`)
+  — the server-libs counterpart: takes the identity, and `SessionGraphFactory`
+  owns start and stop, so this module keeps no `close` of its own. Supersedes
+  `buildPerSessionMcpClients`.
+- **`SessionGraphFactoryOptions.closePipeline`** — teardown that runs before the
+  session's RAG collections are deleted, so a pipeline still in flight cannot
+  write into a collection being removed. `onDispose` keeps its documented place
+  after `closeSession`.
+- **`McpConnectionConfig.env`** — a spawned stdio child can be given its own
+  environment. Without it the MCP SDK falls back to a sanitised subset of this
+  process's environment, which every child of every caller then shares.
+
+### Changed
+
+- **`SmartAgentHandle.close()` no longer rejects when a connection strategy's
+  `dispose()` throws.** Teardown continues — every MCP server started via
+  `withMcpServers` is still stopped — and the failure is logged through the
+  configured `ILogger` (`console.warn` when none is set) instead of being
+  raised.
+
+### Deprecated
+
+Nothing is removed; all of these keep working until the next major.
+
+- `SessionGraphFactoryOptions.mcpClientFactory` and
+  `mcpClientFactoryWithDescriptors` — superseded by `mcpServerFactory`.
+- `buildPerSessionMcpClients` and `mcpSharedClient` in
+  `@mcp-abap-adt/llm-agent-server-libs` — superseded by `buildPerSessionMcpServers`.
+- `McpClientFactory` as a consumer-facing seam — prefer `IMcpServer` /
+  `mcpServerFromFactory` in new code. Deprecated by this documentation only,
+  not by an `@deprecated` tag on the type: `mcpServerFromFactory` itself takes
+  one as its `factory` parameter, so tagging it would also flag that still-
+  current, still-supported adapter's own signature.
+
 ## [26.0.0] — 2026-09-15
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

@@ -27,6 +27,7 @@ import type {
   IMcpClient,
   IMcpFailureClassifier,
   IMcpRequestHeadersStrategy,
+  IMcpServer,
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
@@ -49,6 +50,7 @@ import {
   CircuitBreaker,
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
+  collectServerDescriptors,
   defaultToolNamespace,
   FallbackRag,
   type IEmbedder,
@@ -118,6 +120,7 @@ import {
 } from './subagent/default-context-builder.js';
 import { SmartAgentSubAgent } from './subagent/smart-agent-subagent.js';
 import type { ITracer } from './tracer/types.js';
+import { stopAll } from './util/stop-all.js';
 import type { IOutputValidator } from './validator/types.js';
 
 // Re-export the public builder config/handle types so the package barrel
@@ -167,6 +170,7 @@ export class SmartAgentBuilder {
   private _historyRag?: IRag;
   private _pipeline?: IPipeline;
   private _mcpClients?: IMcpClient[];
+  private _mcpServers?: IMcpServer[];
   private _classifier?: ISubpromptClassifier;
   private _assembler?: IContextAssembler;
   private _logger?: ILogger;
@@ -338,6 +342,31 @@ export class SmartAgentBuilder {
    */
   withMcpClients(clients: IMcpClient[]): this {
     this._mcpClients = clients;
+    return this;
+  }
+
+  /**
+   * Servers this builder owns: `build()` starts each one and `handle.close()`
+   * stops it. Use this when the caller knows HOW a server is started — a stdio
+   * child with its own environment, an HTTP target with a credential — rather
+   * than handing over an already-connected client.
+   *
+   * Beside `withMcpClients`, never replacing it: a consumer that already holds
+   * clients keeps passing clients. Setting BOTH is a configuration error and
+   * `build()` throws, rather than one silently winning over the other.
+   *
+   * Every server must carry a `descriptor`, or none may — a partly-filled set
+   * throws, because dropping it would re-namespace tools from their `label`
+   * to `s${slotIndex}` with nothing reporting it.
+   *
+   * Those descriptors DO reach the pipeline (`PipelineDeps.mcpClientDescriptors`,
+   * so namespacing works), but do NOT reach `SmartAgentHandle` — unlike the
+   * YAML `mcp:` branch, `handle.mcpClientDescriptors`/`configuredSlotCount`
+   * stay unset here. A caller forced to supply descriptors all-or-none
+   * currently gets nothing back on the handle for it.
+   */
+  withMcpServers(servers: IMcpServer[]): this {
+    this._mcpServers = servers;
     return this;
   }
 
@@ -824,10 +853,14 @@ export class SmartAgentBuilder {
       }
     } // end skipModelValidation guard
 
-    // Auto-create tools RAG if MCP clients will be configured and embedder available
+    // Auto-create tools RAG if MCP clients will be configured and embedder available.
+    // `this._mcpServers` (withMcpServers) must agree with `this._mcpClients`
+    // (withMcpClients) here — a consumer migrating from one seam to the other
+    // must not silently lose the auto-created tools store (and, with it,
+    // DefaultPipeline's rag-tools stage).
     const toolsRag: IRag | undefined =
       this._toolsRag ??
-      ((this.cfg.mcp || this._mcpClients) && this._embedder
+      ((this.cfg.mcp || this._mcpClients || this._mcpServers) && this._embedder
         ? new InMemoryRag()
         : undefined);
 
@@ -985,339 +1018,318 @@ export class SmartAgentBuilder {
       | ReadonlyMap<string, { slotIndex: number; originalName: string }>
       | undefined;
 
-    if (this._mcpClients) {
-      // Caller-provided clients: skip auto-connect and vectorization
-      mcpClients = this._mcpClients;
-    } else {
-      // YAML `mcp:` → route connection through an IMcpConnectionStrategy
-      // (build-on-components). Default to a resilient `makeConnectionStrategy`
-      // (connect + periodic reconnect + readiness via IReadinessReporter) unless
-      // the consumer injected their own. The strategy OWNS lifecycle: its initial
-      // `resolve([])` connects the targets and the agent resolves through it each
-      // iteration; disposal is `connectionStrategy.dispose()` (no per-client
-      // closeFns). `BuilderMcpConfig` is structurally `McpConnectionConfig`.
-      const mcpConfigs = prepareMcpConfigs(
-        this.cfg.mcp,
-        this._mcpRequestHeadersStrategy,
-      );
-      if (mcpConfigs.length > 0 && !connectionStrategy) {
-        connectionStrategy = makeConnectionStrategy(
-          mcpConfigs,
-          log ? { logger: log } : undefined,
-        );
-      }
-      resolved = connectionStrategy
-        ? await connectionStrategy.resolve([])
-        : { clients: [] as IMcpClient[], toolsChanged: false };
-      mcpClients = resolved.clients;
-      // Same snapshot as `mcpClients` above — paired so the pipeline context's
-      // `mcpClientDescriptors` never drifts relative to `mcpClients` across a
-      // reconnect (both refresh paths zip them by index at point-of-use).
-      mcpClientDescriptors = resolved.clientDescriptors;
+    try {
+      if (this._mcpServers) {
+        if (this._mcpClients)
+          throw new Error(
+            'withMcpServers and withMcpClients are mutually exclusive: pass clients you already hold, or servers this builder should start',
+          );
 
-      // ---- Single listTools() pass, settled per client -------------------
-      // Preserve the ORIGINAL client index on a partial failure: build the
-      // per-client input index-preservingly (flatMap over the settled array
-      // aligned by position), NOT via filter().map() — a middle-client
-      // failure must not shift later slots' slotIndex.
-      const descs: readonly McpClientDescriptor[] =
-        resolved.clientDescriptors ??
-        mcpClients.map((_, i) => ({ slotIndex: i }));
-      const settled = await Promise.all(
-        mcpClients.map(async (client) => {
-          try {
-            const result = await client.listTools();
-            return result.ok
-              ? { ok: true as const, value: result.value }
-              : { ok: false as const };
-          } catch {
-            return { ok: false as const };
+        // A partly-filled descriptor set is a caller bug: dropping it would
+        // re-namespace every tool from its label to `s${slotIndex}`. Check
+        // before starting anything.
+        const descriptors = collectServerDescriptors(
+          this._mcpServers,
+          'withMcpServers',
+        );
+
+        // Caller-provided servers: start each, keep its stop() for handle.close().
+        // Auto-connect and vectorization are skipped, exactly as on the
+        // `withMcpClients` branch.
+        const started: IMcpClient[] = [];
+        try {
+          for (const server of this._mcpServers) {
+            started.push(await server.start());
+            closeFns.push(() => server.stop());
           }
-        }),
-      );
-      let clientFailures = 0;
-      let total = 0;
-      const perClient: NamespaceClientInput[] = settled.flatMap((entry, i) => {
-        if (!entry.ok) {
-          clientFailures++;
-          return [];
+        } catch (err) {
+          // Stop what did start, so a failure half-way leaves no live child.
+          await stopAll(closeFns.splice(0));
+          throw err;
         }
-        total += entry.value.length;
-        return [
+        mcpClients = started;
+        mcpClientDescriptors = descriptors;
+      } else if (this._mcpClients) {
+        // Caller-provided clients: skip auto-connect and vectorization
+        mcpClients = this._mcpClients;
+      } else {
+        // YAML `mcp:` → route connection through an IMcpConnectionStrategy
+        // (build-on-components). Default to a resilient `makeConnectionStrategy`
+        // (connect + periodic reconnect + readiness via IReadinessReporter) unless
+        // the consumer injected their own. The strategy OWNS lifecycle: its initial
+        // `resolve([])` connects the targets and the agent resolves through it each
+        // iteration; disposal is `connectionStrategy.dispose()` (no per-client
+        // closeFns). `BuilderMcpConfig` is structurally `McpConnectionConfig`.
+        const mcpConfigs = prepareMcpConfigs(
+          this.cfg.mcp,
+          this._mcpRequestHeadersStrategy,
+        );
+        if (mcpConfigs.length > 0 && !connectionStrategy) {
+          connectionStrategy = makeConnectionStrategy(
+            mcpConfigs,
+            log ? { logger: log } : undefined,
+          );
+        }
+        resolved = connectionStrategy
+          ? await connectionStrategy.resolve([])
+          : { clients: [] as IMcpClient[], toolsChanged: false };
+        mcpClients = resolved.clients;
+        // Same snapshot as `mcpClients` above — paired so the pipeline context's
+        // `mcpClientDescriptors` never drifts relative to `mcpClients` across a
+        // reconnect (both refresh paths zip them by index at point-of-use).
+        mcpClientDescriptors = resolved.clientDescriptors;
+
+        // ---- Single listTools() pass, settled per client -------------------
+        // Preserve the ORIGINAL client index on a partial failure: build the
+        // per-client input index-preservingly (flatMap over the settled array
+        // aligned by position), NOT via filter().map() — a middle-client
+        // failure must not shift later slots' slotIndex.
+        const descs: readonly McpClientDescriptor[] =
+          resolved.clientDescriptors ??
+          mcpClients.map((_, i) => ({ slotIndex: i }));
+        const settled = await Promise.all(
+          mcpClients.map(async (client) => {
+            try {
+              const result = await client.listTools();
+              return result.ok
+                ? { ok: true as const, value: result.value }
+                : { ok: false as const };
+            } catch {
+              return { ok: false as const };
+            }
+          }),
+        );
+        let clientFailures = 0;
+        let total = 0;
+        const perClient: NamespaceClientInput[] = settled.flatMap(
+          (entry, i) => {
+            if (!entry.ok) {
+              clientFailures++;
+              return [];
+            }
+            total += entry.value.length;
+            return [
+              {
+                slotIndex: descs[i]?.slotIndex ?? i,
+                label: descs[i]?.label,
+                client: mcpClients[i],
+                tools: entry.value,
+              },
+            ];
+          },
+        );
+        const built = buildNamespacedTools(
+          perClient,
+          this._toolNamespace ?? defaultToolNamespace,
+        );
+        namespacedTools = built.tools;
+        toolProvenance = built.provenance;
+
+        const toolSummary = await vectorizeMcpTools(
+          mcpClients,
+          toolsRag,
+          requestLogger,
+          log,
+          this._toolRecordKey,
+          undefined,
           {
-            slotIndex: descs[i]?.slotIndex ?? i,
-            label: descs[i]?.label,
-            client: mcpClients[i],
-            tools: entry.value,
+            descriptors: mcpClientDescriptors,
+            configuredSlotCount: resolved.configuredSlotCount,
+            toolNamespace: this._toolNamespace ?? defaultToolNamespace,
+            prebuiltView: {
+              tools: namespacedTools,
+              provenance: toolProvenance,
+              clientFailures,
+              total,
+            },
           },
-        ];
-      });
-      const built = buildNamespacedTools(
-        perClient,
-        this._toolNamespace ?? defaultToolNamespace,
-      );
-      namespacedTools = built.tools;
-      toolProvenance = built.provenance;
-
-      const toolSummary = await vectorizeMcpTools(
-        mcpClients,
-        toolsRag,
-        requestLogger,
-        log,
-        this._toolRecordKey,
-        undefined,
-        {
-          descriptors: mcpClientDescriptors,
-          configuredSlotCount: resolved.configuredSlotCount,
-          toolNamespace: this._toolNamespace ?? defaultToolNamespace,
-          prebuiltView: {
-            tools: namespacedTools,
-            provenance: toolProvenance,
-            clientFailures,
-            total,
-          },
-        },
-      );
-      // Published only when defined: a skipped run must leave the holder empty
-      // rather than storing a zeroed summary. Computing the snapshot above is
-      // unconditional; publishing a catalog status is NOT — it still happens
-      // ONLY through this guard, exactly as before (no writable store → no
-      // publish, even though the snapshot now always exists).
-      if (toolSummary) toolCatalogStatus.publish(toolSummary);
-    }
-
-    // ---- SmartAgent Config ------------------------------------------------
-    const agentCfg: SmartAgentConfig = {
-      maxIterations: 10,
-      maxToolCalls: 30,
-      ragQueryK: 10,
-      ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
-      historySummaryPrompt: this.cfg.prompts?.historySummary,
-      historyAutoSummarizeLimit: this.cfg.agent?.historyAutoSummarizeLimit,
-      ...this.cfg.agent,
-      ...(this.cfg.sessionPolicy
-        ? { sessionPolicy: this.cfg.sessionPolicy }
-        : {}),
-      // Fluent overrides take precedence over cfg.agent
-      ...this._agentOverrides,
-      onBeforeStream: this._onBeforeStream,
-    };
-
-    // ---- Retry wrapping (outside circuit breaker) ----------------------------
-    // Enable retry by default with sensible defaults; explicit config overrides.
-    const retryOpts = agentCfg.retry ?? {
-      maxAttempts: 3,
-      backoffMs: 2000,
-      retryOn: [429, 500, 502, 503],
-      retryOnMidStream: [],
-    };
-    wrappedMainLlm = new RetryLlm(wrappedMainLlm, retryOpts);
-
-    // ---- Rate limiter wrapping (outermost — retry attempts also throttled) ----
-    if (this._rateLimiter) {
-      wrappedMainLlm = new RateLimiterLlm(wrappedMainLlm, this._rateLimiter);
-    }
-
-    // ---- Classifier -------------------------------------------------------
-    const classifierCfg: LlmClassifierConfig = {};
-    if (this.cfg.prompts?.classifier)
-      classifierCfg.systemPrompt = this.cfg.prompts.classifier;
-    const classifier: ISubpromptClassifier =
-      this._classifier ??
-      new LlmClassifier(classifierLlm, classifierCfg, requestLogger);
-
-    // ---- Assembler --------------------------------------------------------
-    const assemblerCfg: ContextAssemblerConfig = {
-      maxTokens: agentCfg.contextBudgetTokens,
-      showReasoning: agentCfg.showReasoning,
-      reasoningInstruction: this.cfg.prompts?.reasoning,
-      historyRecencyWindow: agentCfg.historyRecencyWindow,
-    };
-    if (this.cfg.prompts?.system)
-      assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
-    const assembler: IContextAssembler =
-      this._assembler ?? new ContextAssembler(assemblerCfg);
-
-    // ---- History memory & summarizer ----------------------------------------
-    let historyMemory: IHistoryMemory | undefined;
-    let historySummarizer: IHistorySummarizer | undefined;
-
-    if (agentCfg.semanticHistoryEnabled) {
-      historyMemory =
-        this._historyMemory ??
-        new HistoryMemory({
-          maxSize: agentCfg.historyRecencyWindow ?? 3,
-        });
-      const summarizerLlm = this._helperLlm ?? mainLlm;
-      historySummarizer =
-        this._historySummarizer ??
-        new HistorySummarizer(
-          summarizerLlm,
-          agentCfg.historyTurnSummaryPrompt
-            ? { prompt: agentCfg.historyTurnSummaryPrompt }
-            : undefined,
         );
+        // Published only when defined: a skipped run must leave the holder empty
+        // rather than storing a zeroed summary. Computing the snapshot above is
+        // unconditional; publishing a catalog status is NOT — it still happens
+        // ONLY through this guard, exactly as before (no writable store → no
+        // publish, even though the snapshot now always exists).
+        if (toolSummary) toolCatalogStatus.publish(toolSummary);
+      }
 
-      if (historyRag && !ragRegistry.get('history')) {
-        ragRegistry.register('history', historyRag, undefined, {
-          displayName: 'history',
-          scope: 'global',
-        });
-        // ragStores projection updates via mutation listener.
-      }
-    }
-
-    // ---- Plugin loader (optional) -------------------------------------------
-    let loadedPlugins: import('./plugins/types.js').LoadedPlugins | undefined;
-    if (this._pluginLoader) {
-      const plugins = await this._pluginLoader.load();
-      loadedPlugins = plugins;
-      if (plugins.reranker && !this._reranker) {
-        this._reranker = plugins.reranker;
-      }
-      if (plugins.queryExpander && !this._queryExpander) {
-        this._queryExpander = plugins.queryExpander;
-      }
-      if (plugins.outputValidator && !this._outputValidator) {
-        this._outputValidator = plugins.outputValidator;
-      }
-      if (plugins.skillManager && !this._skillManager) {
-        this._skillManager = plugins.skillManager;
-      }
-      if (plugins.clientAdapters.length > 0) {
-        this._clientAdapters.push(...plugins.clientAdapters);
-      }
-    }
-
-    // ---- Skill vectorization (optional) ------------------------------------
-    if (this._skillManager && toolsRag) {
-      await vectorizeSkills(this._skillManager, toolsRag, requestLogger, log);
-    }
-
-    // ---- Pipeline initialization -------------------------------------------
-    let resolvedCoordinator: ICoordinatorConfig | undefined;
-    if (this._coordinator) {
-      const plannerLlm = this._coordinator.plannerLlm ?? wrappedMainLlm;
-      if (!plannerLlm) {
-        throw new Error(
-          'withCoordinator: requires either cfg.plannerLlm or withMainLlm() to be called',
-        );
-      }
-      // Construct a default context builder from this builder's available RAG
-      // + embedder resources. `toolSource` comes from the toolsRag the parent
-      // already uses for tool-loop retrieval. `projectSource` is left unset
-      // until a dedicated project/domain RAG slot is exposed on the builder.
-      const toolSource = this.buildRetrievalSource(toolsRag, this._embedder);
-      const defaultContextBuilder = new DefaultSubAgentContextBuilder({
-        toolSource,
-      });
-      resolvedCoordinator = {
-        ...this._coordinator,
-        planning: this._coordinator.planning ?? new OneShotPlanning(plannerLlm),
-        dispatch:
-          this._coordinator.dispatch ??
-          new HybridDispatch(
-            new SubAgentDispatch(defaultContextBuilder),
-            new SelfDispatch(plannerLlm),
-          ),
+      // ---- SmartAgent Config ------------------------------------------------
+      const agentCfg: SmartAgentConfig = {
+        maxIterations: 10,
+        maxToolCalls: 30,
+        ragQueryK: 10,
+        ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
+        historySummaryPrompt: this.cfg.prompts?.historySummary,
+        historyAutoSummarizeLimit: this.cfg.agent?.historyAutoSummarizeLimit,
+        ...this.cfg.agent,
+        ...(this.cfg.sessionPolicy
+          ? { sessionPolicy: this.cfg.sessionPolicy }
+          : {}),
+        // Fluent overrides take precedence over cfg.agent
+        ...this._agentOverrides,
+        onBeforeStream: this._onBeforeStream,
       };
-    }
 
-    const pipeline =
-      this._pipeline ??
-      new DefaultPipeline({
-        subAgents: this._subAgents,
-        coordinator: resolvedCoordinator,
-        dagCoordinator: this._dagCoordinator,
-        stepperCoordinator: this._stepperCoordinator,
-      });
-    pipeline.initialize({
-      mainLlm: wrappedMainLlm,
-      helperLlm,
-      classifierLlm,
-      classifier,
-      assembler,
-      mcpClients,
-      mcpClientDescriptors,
-      toolNamespace: this._toolNamespace,
-      toolsRag,
-      historyRag,
-      ragStores,
-      ragRegistry,
-      ragProviderRegistry,
-      embedder: this._embedder,
-      toolSelectionStrategy: this._toolSelectionStrategy,
-      reranker: this._reranker,
-      queryExpander: this._queryExpander,
-      toolPolicy: this._toolPolicy,
-      injectionDetector: this._injectionDetector,
-      toolCache: this._toolCache,
-      outputValidator: this._outputValidator,
-      sessionManager: this._sessionManager,
-      skillManager: this._skillManager,
-      logger: log,
-      requestLogger,
-      tracer: this._tracer,
-      metrics: this._metrics,
-      historyMemory,
-      historySummarizer,
-      llmCallStrategy: this._llmCallStrategy,
-      agentConfig: agentCfg,
-      ...(this._mcpFailureClassifier
-        ? { mcpFailureClassifier: this._mcpFailureClassifier }
-        : {}),
-      ...(this._toolLoopContextStrategyFactory
-        ? {
-            toolLoopContextStrategyFactory:
-              this._toolLoopContextStrategyFactory,
-          }
-        : {}),
-    });
+      // ---- Retry wrapping (outside circuit breaker) ----------------------------
+      // Enable retry by default with sensible defaults; explicit config overrides.
+      const retryOpts = agentCfg.retry ?? {
+        maxAttempts: 3,
+        backoffMs: 2000,
+        retryOn: [429, 500, 502, 503],
+        retryOnMidStream: [],
+      };
+      wrappedMainLlm = new RetryLlm(wrappedMainLlm, retryOpts);
 
-    const agent = new SmartAgent(
-      {
+      // ---- Rate limiter wrapping (outermost — retry attempts also throttled) ----
+      if (this._rateLimiter) {
+        wrappedMainLlm = new RateLimiterLlm(wrappedMainLlm, this._rateLimiter);
+      }
+
+      // ---- Classifier -------------------------------------------------------
+      const classifierCfg: LlmClassifierConfig = {};
+      if (this.cfg.prompts?.classifier)
+        classifierCfg.systemPrompt = this.cfg.prompts.classifier;
+      const classifier: ISubpromptClassifier =
+        this._classifier ??
+        new LlmClassifier(classifierLlm, classifierCfg, requestLogger);
+
+      // ---- Assembler --------------------------------------------------------
+      const assemblerCfg: ContextAssemblerConfig = {
+        maxTokens: agentCfg.contextBudgetTokens,
+        showReasoning: agentCfg.showReasoning,
+        reasoningInstruction: this.cfg.prompts?.reasoning,
+        historyRecencyWindow: agentCfg.historyRecencyWindow,
+      };
+      if (this.cfg.prompts?.system)
+        assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
+      const assembler: IContextAssembler =
+        this._assembler ?? new ContextAssembler(assemblerCfg);
+
+      // ---- History memory & summarizer ----------------------------------------
+      let historyMemory: IHistoryMemory | undefined;
+      let historySummarizer: IHistorySummarizer | undefined;
+
+      if (agentCfg.semanticHistoryEnabled) {
+        historyMemory =
+          this._historyMemory ??
+          new HistoryMemory({
+            maxSize: agentCfg.historyRecencyWindow ?? 3,
+          });
+        const summarizerLlm = this._helperLlm ?? mainLlm;
+        historySummarizer =
+          this._historySummarizer ??
+          new HistorySummarizer(
+            summarizerLlm,
+            agentCfg.historyTurnSummaryPrompt
+              ? { prompt: agentCfg.historyTurnSummaryPrompt }
+              : undefined,
+          );
+
+        if (historyRag && !ragRegistry.get('history')) {
+          ragRegistry.register('history', historyRag, undefined, {
+            displayName: 'history',
+            scope: 'global',
+          });
+          // ragStores projection updates via mutation listener.
+        }
+      }
+
+      // ---- Plugin loader (optional) -------------------------------------------
+      let loadedPlugins: import('./plugins/types.js').LoadedPlugins | undefined;
+      if (this._pluginLoader) {
+        const plugins = await this._pluginLoader.load();
+        loadedPlugins = plugins;
+        if (plugins.reranker && !this._reranker) {
+          this._reranker = plugins.reranker;
+        }
+        if (plugins.queryExpander && !this._queryExpander) {
+          this._queryExpander = plugins.queryExpander;
+        }
+        if (plugins.outputValidator && !this._outputValidator) {
+          this._outputValidator = plugins.outputValidator;
+        }
+        if (plugins.skillManager && !this._skillManager) {
+          this._skillManager = plugins.skillManager;
+        }
+        if (plugins.clientAdapters.length > 0) {
+          this._clientAdapters.push(...plugins.clientAdapters);
+        }
+      }
+
+      // ---- Skill vectorization (optional) ------------------------------------
+      if (this._skillManager && toolsRag) {
+        await vectorizeSkills(this._skillManager, toolsRag, requestLogger, log);
+      }
+
+      // ---- Pipeline initialization -------------------------------------------
+      let resolvedCoordinator: ICoordinatorConfig | undefined;
+      if (this._coordinator) {
+        const plannerLlm = this._coordinator.plannerLlm ?? wrappedMainLlm;
+        if (!plannerLlm) {
+          throw new Error(
+            'withCoordinator: requires either cfg.plannerLlm or withMainLlm() to be called',
+          );
+        }
+        // Construct a default context builder from this builder's available RAG
+        // + embedder resources. `toolSource` comes from the toolsRag the parent
+        // already uses for tool-loop retrieval. `projectSource` is left unset
+        // until a dedicated project/domain RAG slot is exposed on the builder.
+        const toolSource = this.buildRetrievalSource(toolsRag, this._embedder);
+        const defaultContextBuilder = new DefaultSubAgentContextBuilder({
+          toolSource,
+        });
+        resolvedCoordinator = {
+          ...this._coordinator,
+          planning:
+            this._coordinator.planning ?? new OneShotPlanning(plannerLlm),
+          dispatch:
+            this._coordinator.dispatch ??
+            new HybridDispatch(
+              new SubAgentDispatch(defaultContextBuilder),
+              new SelfDispatch(plannerLlm),
+            ),
+        };
+      }
+
+      const pipeline =
+        this._pipeline ??
+        new DefaultPipeline({
+          subAgents: this._subAgents,
+          coordinator: resolvedCoordinator,
+          dagCoordinator: this._dagCoordinator,
+          stepperCoordinator: this._stepperCoordinator,
+        });
+      pipeline.initialize({
         mainLlm: wrappedMainLlm,
-        helperLlm: this._helperLlm,
+        helperLlm,
+        classifierLlm,
+        classifier,
+        assembler,
         mcpClients,
+        mcpClientDescriptors,
+        toolNamespace: this._toolNamespace,
+        toolsRag,
+        historyRag,
         ragStores,
         ragRegistry,
         ragProviderRegistry,
-        classifier,
-        classifierLlm,
-        classifierConfig: classifierCfg,
-        assembler,
-        pipeline,
-        ...(log ? { logger: log } : {}),
-        ...(this._toolPolicy ? { toolPolicy: this._toolPolicy } : {}),
-        ...(this._injectionDetector
-          ? { injectionDetector: this._injectionDetector }
-          : {}),
-        ...(this._reranker ? { reranker: this._reranker } : {}),
-        ...(this._queryExpander ? { queryExpander: this._queryExpander } : {}),
-        ...(this._tracer ? { tracer: this._tracer } : {}),
-        ...(this._metrics ? { metrics: this._metrics } : {}),
-        ...(this._toolCache ? { toolCache: this._toolCache } : {}),
-        ...(this._outputValidator
-          ? { outputValidator: this._outputValidator }
-          : {}),
-        ...(this._sessionManager
-          ? { sessionManager: this._sessionManager }
-          : {}),
-        ...(this._skillManager ? { skillManager: this._skillManager } : {}),
-        ...(this._clientAdapters.length > 0
-          ? { clientAdapters: this._clientAdapters }
-          : {}),
-        ...(this._embedder ? { embedder: this._embedder } : {}),
-        ...(connectionStrategy ? { connectionStrategy } : {}),
-        toolCatalogStatus,
-        ...(this._toolRecordKey ? { toolRecordKey: this._toolRecordKey } : {}),
-        ...(this._toolNamespace ? { toolNamespace: this._toolNamespace } : {}),
-        ...(historyMemory ? { historyMemory } : {}),
-        ...(historySummarizer ? { historySummarizer } : {}),
-        ...(this._llmCallStrategy
-          ? { llmCallStrategy: this._llmCallStrategy }
-          : {}),
-        ...(translateQueryStores.size > 0 ? { translateQueryStores } : {}),
+        embedder: this._embedder,
+        toolSelectionStrategy: this._toolSelectionStrategy,
+        reranker: this._reranker,
+        queryExpander: this._queryExpander,
+        toolPolicy: this._toolPolicy,
+        injectionDetector: this._injectionDetector,
+        toolCache: this._toolCache,
+        outputValidator: this._outputValidator,
+        sessionManager: this._sessionManager,
+        skillManager: this._skillManager,
+        logger: log,
+        requestLogger,
+        tracer: this._tracer,
+        metrics: this._metrics,
+        historyMemory,
+        historySummarizer,
+        llmCallStrategy: this._llmCallStrategy,
+        agentConfig: agentCfg,
         ...(this._mcpFailureClassifier
           ? { mcpFailureClassifier: this._mcpFailureClassifier }
           : {}),
@@ -1327,64 +1339,160 @@ export class SmartAgentBuilder {
                 this._toolLoopContextStrategyFactory,
             }
           : {}),
-        requestLogger,
-      },
-      agentCfg,
-    );
+      });
 
-    // ---- Model provider auto-detection ------------------------------------
-    let modelProvider: IModelProvider | undefined = this._modelProvider;
-    if (!modelProvider) {
-      const candidate = mainLlm;
-      if (isModelProvider(candidate)) {
-        modelProvider = candidate;
+      const agent = new SmartAgent(
+        {
+          mainLlm: wrappedMainLlm,
+          helperLlm: this._helperLlm,
+          mcpClients,
+          ragStores,
+          ragRegistry,
+          ragProviderRegistry,
+          classifier,
+          classifierLlm,
+          classifierConfig: classifierCfg,
+          assembler,
+          pipeline,
+          ...(log ? { logger: log } : {}),
+          ...(this._toolPolicy ? { toolPolicy: this._toolPolicy } : {}),
+          ...(this._injectionDetector
+            ? { injectionDetector: this._injectionDetector }
+            : {}),
+          ...(this._reranker ? { reranker: this._reranker } : {}),
+          ...(this._queryExpander
+            ? { queryExpander: this._queryExpander }
+            : {}),
+          ...(this._tracer ? { tracer: this._tracer } : {}),
+          ...(this._metrics ? { metrics: this._metrics } : {}),
+          ...(this._toolCache ? { toolCache: this._toolCache } : {}),
+          ...(this._outputValidator
+            ? { outputValidator: this._outputValidator }
+            : {}),
+          ...(this._sessionManager
+            ? { sessionManager: this._sessionManager }
+            : {}),
+          ...(this._skillManager ? { skillManager: this._skillManager } : {}),
+          ...(this._clientAdapters.length > 0
+            ? { clientAdapters: this._clientAdapters }
+            : {}),
+          ...(this._embedder ? { embedder: this._embedder } : {}),
+          ...(connectionStrategy ? { connectionStrategy } : {}),
+          toolCatalogStatus,
+          ...(this._toolRecordKey
+            ? { toolRecordKey: this._toolRecordKey }
+            : {}),
+          ...(this._toolNamespace
+            ? { toolNamespace: this._toolNamespace }
+            : {}),
+          ...(historyMemory ? { historyMemory } : {}),
+          ...(historySummarizer ? { historySummarizer } : {}),
+          ...(this._llmCallStrategy
+            ? { llmCallStrategy: this._llmCallStrategy }
+            : {}),
+          ...(translateQueryStores.size > 0 ? { translateQueryStores } : {}),
+          ...(this._mcpFailureClassifier
+            ? { mcpFailureClassifier: this._mcpFailureClassifier }
+            : {}),
+          ...(this._toolLoopContextStrategyFactory
+            ? {
+                toolLoopContextStrategyFactory:
+                  this._toolLoopContextStrategyFactory,
+              }
+            : {}),
+          requestLogger,
+        },
+        agentCfg,
+      );
+
+      // ---- Model provider auto-detection ------------------------------------
+      let modelProvider: IModelProvider | undefined = this._modelProvider;
+      if (!modelProvider) {
+        const candidate = mainLlm;
+        if (isModelProvider(candidate)) {
+          modelProvider = candidate;
+        }
       }
-    }
 
-    // ---- API adapters: merge plugin adapters → builder adapters (builder wins) ---
-    // plugins.apiAdapters does not exist yet (added in Task 4); safe future-compat check.
-    const apiAdapters = new Map<string, ILlmApiAdapter>();
-    const pluginApiAdapters = (
-      loadedPlugins as { apiAdapters?: Map<string, ILlmApiAdapter> } | undefined
-    )?.apiAdapters;
-    if (pluginApiAdapters) {
-      for (const [name, adapter] of pluginApiAdapters) {
+      // ---- API adapters: merge plugin adapters → builder adapters (builder wins) ---
+      // plugins.apiAdapters does not exist yet (added in Task 4); safe future-compat check.
+      const apiAdapters = new Map<string, ILlmApiAdapter>();
+      const pluginApiAdapters = (
+        loadedPlugins as
+          | { apiAdapters?: Map<string, ILlmApiAdapter> }
+          | undefined
+      )?.apiAdapters;
+      if (pluginApiAdapters) {
+        for (const [name, adapter] of pluginApiAdapters) {
+          apiAdapters.set(name, adapter);
+        }
+      }
+      for (const [name, adapter] of this._apiAdapters) {
         apiAdapters.set(name, adapter);
       }
-    }
-    for (const [name, adapter] of this._apiAdapters) {
-      apiAdapters.set(name, adapter);
-    }
 
-    return {
-      agent,
-      chat: (messages, tools, options) =>
-        agent.currentMainLlm.chat(messages, tools, options),
-      streamChat: (messages, tools, options) =>
-        agent.currentMainLlm.streamChat(messages, tools, options),
-      requestLogger,
-      close: async () => {
-        await connectionStrategy?.dispose?.();
-        for (const fn of closeFns) await fn();
-      },
-      circuitBreakers,
-      ragStores,
-      ragRegistry,
-      mcpClients,
-      modelProvider,
-      getApiAdapter: (name: string) => apiAdapters.get(name),
-      listApiAdapters: () => [...apiAdapters.keys()],
-      // Absent (not just undefined-valued) on the caller-provided-`mcpClients`
-      // branch, where `resolved` is undefined and namespacing was never
-      // computed — matches the SmartAgentHandle field docs.
-      ...(resolved
-        ? {
-            namespacedTools,
-            toolProvenance,
-            mcpClientDescriptors: resolved.clientDescriptors,
-            configuredSlotCount: resolved.configuredSlotCount,
+      return {
+        agent,
+        chat: (messages, tools, options) =>
+          agent.currentMainLlm.chat(messages, tools, options),
+        streamChat: (messages, tools, options) =>
+          agent.currentMainLlm.streamChat(messages, tools, options),
+        requestLogger,
+        close: async () => {
+          // Best-effort, like every other teardown routine in this codebase
+          // (SessionGraph.dispose(), SessionGraphFactory's per-stop loop): a
+          // failure in ONE resource must not stop the rest from being torn
+          // down, and close() itself never throws — it is routinely awaited
+          // in a `finally` block, where a raised error would either mask
+          // whatever the `try` block was doing or force every caller to wrap
+          // a routine cleanup call in its own try/catch. Failures are never
+          // swallowed SILENTLY, though: both surface through `log` (or
+          // console.warn without one), the same pattern used everywhere else
+          // teardown failures are reported in this branch.
+          const warn = (message: string) => {
+            if (log) {
+              log.log({ type: 'warning', traceId: 'builder', message });
+            } else {
+              console.warn(`[builder] ${message}`);
+            }
+          };
+          try {
+            await connectionStrategy?.dispose?.();
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            warn(`close_connection_strategy_dispose_failed: ${message}`);
           }
-        : {}),
-    };
+          await stopAll(closeFns, (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            warn(`close_mcp_stop_failed: ${message}`);
+          });
+        },
+        circuitBreakers,
+        ragStores,
+        ragRegistry,
+        mcpClients,
+        modelProvider,
+        getApiAdapter: (name: string) => apiAdapters.get(name),
+        listApiAdapters: () => [...apiAdapters.keys()],
+        // Absent (not just undefined-valued) on the caller-provided-`mcpClients`
+        // branch, where `resolved` is undefined and namespacing was never
+        // computed — matches the SmartAgentHandle field docs.
+        ...(resolved
+          ? {
+              namespacedTools,
+              toolProvenance,
+              mcpClientDescriptors: resolved.clientDescriptors,
+              configuredSlotCount: resolved.configuredSlotCount,
+            }
+          : {}),
+      };
+    } catch (err) {
+      // Everything from here down (model validation was already done above)
+      // can throw before a handle exists to own `close()`: stop every server
+      // already registered in `closeFns` — via `withMcpServers` — on the
+      // ORIGINAL failure, then let that failure through unchanged.
+      await stopAll(closeFns);
+      throw err;
+    }
   }
 }

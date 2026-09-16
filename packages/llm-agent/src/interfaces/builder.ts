@@ -66,7 +66,17 @@ export interface SmartAgentHandle<T extends ISmartAgent = ISmartAgent> {
   streamChat: ILlm['streamChat'];
   /** Request logger for per-model usage tracking. */
   requestLogger: IRequestLogger;
-  /** Gracefully close MCP connections. Call on shutdown. */
+  /**
+   * Gracefully close MCP connections. Call on shutdown.
+   *
+   * Never rejects: every resource this handle owns (the connection strategy,
+   * every server started via `withMcpServers`) is torn down regardless of
+   * whether an earlier one failed, and any individual failure is surfaced
+   * through the configured `ILogger` (a `console.warn` when none was set)
+   * rather than raised. Do not rely on a rejection here to detect a partial
+   * close — check the logger, or the state of the underlying resource
+   * yourself.
+   */
   close(): Promise<void>;
   /** Circuit breakers (empty when not configured). */
   circuitBreakers: CircuitBreaker[];

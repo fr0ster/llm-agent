@@ -1,14 +1,17 @@
 import type {
   ILogger,
   IMcpClient,
+  IMcpServer,
   IRag,
   IRagRegistry,
   McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
+import { collectServerDescriptors } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
+import { stopAll } from '../util/stop-all.js';
 import { SessionGraph } from './session-graph.js';
 
 export interface SessionGraphIdentity {
@@ -41,12 +44,26 @@ export interface SessionAgentParts {
 
 export interface SessionGraphFactoryOptions {
   /**
+   * Servers for THIS caller: the factory starts each one before `buildAgent`,
+   * hands the clients over, and stops them last on dispose. Takes the identity,
+   * which is what per-caller credentials need and what `mcpClientFactory` never
+   * had.
+   *
+   * When set it takes precedence over `mcpClientFactory` and
+   * `mcpClientFactoryWithDescriptors`.
+   */
+  readonly mcpServerFactory?: (identity: SessionGraphIdentity) => IMcpServer[];
+  /**
    * Resolve this session's MCP client(s). Per-session-CAPABLE: the default
    * factory returns the shared GLOBAL client(s) by reference (no re-connect);
    * a creds-aware build (out of scope) returns a fresh per-session client.
    * Either way the tools-catalog RAG is never re-vectorized.
+   *
+   * @deprecated Use `mcpServerFactory`, which also owns lifetime and receives
+   * the identity. Optional since this release: supply exactly one of
+   * `mcpServerFactory`, `mcpClientFactoryWithDescriptors` or this.
    */
-  readonly mcpClientFactory: (identity: SessionGraphIdentity) => IMcpClient[];
+  readonly mcpClientFactory?: (identity: SessionGraphIdentity) => IMcpClient[];
   /**
    * ADDITIVE descriptor-aware seam (#244): when set, takes precedence over
    * `mcpClientFactory` and pairs the resolved clients with the STABLE
@@ -55,6 +72,10 @@ export interface SessionGraphFactoryOptions {
    * active slots `[0,2]` collapse to array indices `[0,1]`). `mcpClientFactory`
    * stays required for back-compat; this field is optional and, when absent,
    * `build()` falls back to `mcpClientFactory` (descriptors stay `undefined`).
+   *
+   * @deprecated Use `mcpServerFactory`, which also owns lifetime and receives
+   * the identity. Optional since this release: supply exactly one of
+   * `mcpServerFactory`, this or `mcpClientFactory`.
    */
   readonly mcpClientFactoryWithDescriptors?: (
     identity: SessionGraphIdentity,
@@ -93,6 +114,15 @@ export interface SessionGraphFactoryOptions {
    * crashes the registry.
    */
   readonly onDispose?: (sessionId: string) => Promise<void>;
+  /**
+   * Per-session teardown that must run BEFORE the session's RAG collections are
+   * deleted — closing a pipeline still in flight, which must not write into a
+   * collection being removed.
+   *
+   * `onDispose` keeps its documented place after `closeSession`; this hook is
+   * the one that runs first.
+   */
+  readonly closePipeline?: (sessionId: string) => Promise<void>;
 }
 
 /**
@@ -110,6 +140,15 @@ export class SessionGraphFactory {
   constructor(private readonly opts: SessionGraphFactoryOptions) {}
 
   async build(identity: SessionGraphIdentity): Promise<SessionGraph> {
+    if (
+      !this.opts.mcpServerFactory &&
+      !this.opts.mcpClientFactoryWithDescriptors &&
+      !this.opts.mcpClientFactory
+    )
+      throw new Error(
+        'SessionGraphFactory needs one of mcpServerFactory, mcpClientFactoryWithDescriptors or mcpClientFactory',
+      );
+
     const logger = new SessionRequestLogger();
     const toolAvailability = new ToolAvailabilityRegistry();
     const pendingToolResults = new PendingToolResultsRegistry();
@@ -117,72 +156,153 @@ export class SessionGraphFactory {
     let mcpClients: IMcpClient[];
     let mcpClientDescriptors: readonly McpClientDescriptor[] | undefined;
     let configuredSlotCount: number | undefined;
-    if (this.opts.mcpClientFactoryWithDescriptors) {
+    const startedServers: IMcpServer[] = [];
+    if (this.opts.mcpServerFactory) {
+      const servers = this.opts.mcpServerFactory(identity);
+      // All or none — see the builder's identical check and why it throws.
+      const descriptors = collectServerDescriptors(servers, 'mcpServerFactory');
+
+      const clients: IMcpClient[] = [];
+      try {
+        for (const server of servers) {
+          clients.push(await server.start());
+          startedServers.push(server);
+        }
+      } catch (err) {
+        await stopAll(
+          startedServers.splice(0).map((server) => () => server.stop()),
+        );
+        throw err;
+      }
+      mcpClients = clients;
+      mcpClientDescriptors = descriptors;
+      // Nothing was filtered out of a configured set, so there is no original
+      // count to preserve; array position is the pairing.
+      configuredSlotCount = undefined;
+    } else if (this.opts.mcpClientFactoryWithDescriptors) {
       const built = this.opts.mcpClientFactoryWithDescriptors(identity);
       mcpClients = built.clients;
       mcpClientDescriptors = built.clientDescriptors;
       configuredSlotCount = built.configuredSlotCount;
     } else {
-      mcpClients = this.opts.mcpClientFactory(identity);
+      // The guard at the top of build() has already ruled out "none set".
+      mcpClients = this.opts.mcpClientFactory?.(identity) ?? [];
     }
-    const agent = await this.opts.buildAgent({
-      sessionId: identity.sessionId,
-      mcpClients,
-      mcpClientDescriptors,
-      configuredSlotCount,
-      toolsRag: this.opts.toolsRag,
-      ragRegistry: this.opts.ragRegistry,
-      logger,
-    });
+    // `buildAgent` runs a full `SmartAgentBuilder.build()` — model validation,
+    // network work — and can throw. When it does, no `SessionGraph` is
+    // constructed, so `dispose()` never runs and `startedServers` becomes
+    // unreachable: stop them here, on the ORIGINAL failure, before rethrowing.
+    let agent: SmartAgent | undefined;
+    let graph: SessionGraph;
+    try {
+      agent = await this.opts.buildAgent({
+        sessionId: identity.sessionId,
+        mcpClients,
+        mcpClientDescriptors,
+        configuredSlotCount,
+        toolsRag: this.opts.toolsRag,
+        ragRegistry: this.opts.ragRegistry,
+        logger,
+      });
 
-    return new SessionGraph({
-      sessionId: identity.sessionId,
-      toolAvailability,
-      pendingToolResults,
-      logger,
-      agent,
-      // Reuse the EXISTING registry teardown — closes scope:session collections
-      // for this sessionId; global/user collections survive (spec A.4). The
-      // Result<void, RagError> is INSPECTED here — a failed close is surfaced
-      // via the optional logger (or console.warn fallback), never silently
-      // dropped (review MEDIUM #2).
-      dispose: async (sessionId) => {
-        const res = await this.opts.ragRegistry.closeSession(sessionId);
-        if (!res.ok) {
-          const message = res.error?.message ?? String(res.error);
-          if (this.opts.logger) {
-            this.opts.logger.log({
-              type: 'warning',
-              traceId: `session:${sessionId}`,
-              message: `session_close_failed: ${message}`,
-            });
-          } else {
-            console.warn(
-              `[session] closeSession(${sessionId}) failed: ${message}`,
-            );
-          }
-        }
-        // Host-supplied per-session teardown (e.g. pipeline IPipelineInstance.close).
-        // Best-effort: a failure here must not crash session disposal.
-        if (this.opts.onDispose) {
-          try {
-            await this.opts.onDispose(sessionId);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
+      graph = new SessionGraph({
+        sessionId: identity.sessionId,
+        toolAvailability,
+        pendingToolResults,
+        logger,
+        agent,
+        // Reuse the EXISTING registry teardown — closes scope:session collections
+        // for this sessionId; global/user collections survive (spec A.4). The
+        // Result<void, RagError> is INSPECTED here — a failed close is surfaced
+        // via the optional logger (or console.warn fallback), never silently
+        // dropped (review MEDIUM #2).
+        dispose: async (sessionId) => {
+          // Single sink for every best-effort teardown failure below: routes to
+          // the configured logger, or console.warn when there is none. Each call
+          // site's two message strings are unchanged from before this helper
+          // existed — the teardown tests assert on them.
+          const warn = (logMessage: string, consoleMessage: string) => {
             if (this.opts.logger) {
               this.opts.logger.log({
                 type: 'warning',
                 traceId: `session:${sessionId}`,
-                message: `session_dispose_hook_failed: ${message}`,
+                message: logMessage,
               });
             } else {
-              console.warn(
+              console.warn(consoleMessage);
+            }
+          };
+
+          // Runs first: a pipeline still in flight must not write into a session
+          // collection that `closeSession` is about to delete. Best-effort, like
+          // every other step here.
+          if (this.opts.closePipeline) {
+            try {
+              await this.opts.closePipeline(sessionId);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(
+                `session_close_pipeline_failed: ${message}`,
+                `[session] closePipeline(${sessionId}) failed: ${message}`,
+              );
+            }
+          }
+          // Best-effort like every other step here: a REJECTING closeSession
+          // must not skip onDispose/stop below it, exactly like a resolved
+          // `{ ok: false }` result must not (handled right underneath). Both
+          // cases route through the same two message strings — unchanged —
+          // since the pre-existing teardown tests assert on them.
+          try {
+            const res = await this.opts.ragRegistry.closeSession(sessionId);
+            if (!res.ok) {
+              const message = res.error?.message ?? String(res.error);
+              warn(
+                `session_close_failed: ${message}`,
+                `[session] closeSession(${sessionId}) failed: ${message}`,
+              );
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            warn(
+              `session_close_failed: ${message}`,
+              `[session] closeSession(${sessionId}) failed: ${message}`,
+            );
+          }
+          // Host-supplied per-session teardown (e.g. pipeline IPipelineInstance.close).
+          // Best-effort: a failure here must not crash session disposal.
+          if (this.opts.onDispose) {
+            try {
+              await this.opts.onDispose(sessionId);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(
+                `session_dispose_hook_failed: ${message}`,
                 `[session] onDispose(${sessionId}) failed: ${message}`,
               );
             }
           }
-        }
-      },
-    });
+          // Last: the clients outlive the pipeline that was still calling them.
+          for (const server of startedServers) {
+            try {
+              await server.stop();
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(
+                `session_mcp_stop_failed: ${message}`,
+                `[session] mcp stop(${sessionId}) failed: ${message}`,
+              );
+            }
+          }
+        },
+      });
+    } catch (err) {
+      // `buildAgent` (or, in principle, the `SessionGraph` construction above)
+      // threw before a `SessionGraph` exists to own teardown — nothing else
+      // will ever stop these servers. Stop them here, on the ORIGINAL error.
+      await stopAll(startedServers.map((server) => () => server.stop()));
+      throw err;
+    }
+
+    return graph;
   }
 }
