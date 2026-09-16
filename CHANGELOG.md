@@ -41,6 +41,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   environment. Without it the MCP SDK falls back to a sanitised subset of this
   process's environment, which every child of every caller then shares.
 
+### Changed
+
+- **`SmartAgentHandle.close()` no longer rejects when a connection strategy's
+  `dispose()` throws.** Teardown continues — every MCP server started via
+  `withMcpServers` is still stopped — and the failure is logged through the
+  configured `ILogger` (`console.warn` when none is set) instead of being
+  raised.
+
 ### Deprecated
 
 Nothing is removed; all of these keep working until the next major.
