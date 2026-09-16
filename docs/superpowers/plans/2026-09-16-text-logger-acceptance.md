@@ -380,8 +380,13 @@ describe('composeResilientEmbedder with a text logger', () => {
 
 - [ ] **Step 2: Run it and watch it fail**
 
+**Two commands, and the type failure is NOT the test run.** `npm test` runs `node --import tsx/esm`, and tsx transpiles without type-checking — code that violates the option type still executes. So the compiler is what proves the type widened, and the test is what proves the behaviour:
+
+Run: `npm run build -w @mcp-abap-adt/llm-agent`
+Expected: FAIL — `Type 'ITextLogger' is not assignable to type 'ILogger'` (TS2322/TS2345) at the test's `logger:` property.
+
 Run: `npm test -w @mcp-abap-adt/llm-agent`
-Expected: FAIL — the options type does not accept an `ITextLogger`.
+Expected: FAIL on the assertion, not on a type — with a text logger, `options?.logger?.log` does not exist, optional chaining swallows the call, and `calls.length` is `0` where the test expects `1`.
 
 - [ ] **Step 3: Widen `ConnectionStrategyOptions`**
 
@@ -453,42 +458,62 @@ git commit -m "feat(llm-agent): connection strategies and embedder resilience ta
 
 - [ ] **Step 1: Write the failing test**
 
-Create `packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts`. It mirrors `mcp-clients-di.test.ts`: local stubs, the builder imported dynamically inside each test, `new SmartAgentBuilder({})`.
+Create `packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts`. It must **observe the adapter**, not merely build an agent: a test that only calls `build()` and `healthCheck()` proves nothing, because a text logger that is silently ignored passes it.
+
+The one path that reliably emits without a network or an MCP server is startup model validation — an LLM whose `chat()` always fails produces exactly one `warning` (attempt 1, then the loop exits on `attempt < maxAttempts`) followed by one `pipeline_error`, and then `build()` rejects. The stubs mirror the existing `builder-startup-validation.test.ts`.
 
 ```ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
   CallOptions,
+  IEmbedder,
+  IEmbedResult,
   ILlm,
   ITextLogger,
   LlmStreamChunk,
   LlmTool,
+  LogEvent,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 
-function stubLlm(): ILlm {
+/** Always fails validation — the startup path is the one that logs. */
+function failingLlm(): ILlm {
   return {
-    async chat(_messages: unknown[], _tools?: LlmTool[], _options?: CallOptions) {
+    async chat(
+      _m: unknown[],
+      _t?: LlmTool[],
+      _o?: CallOptions,
+    ): Promise<Result<{ content: string; finishReason: 'stop' }, Error>> {
       return {
-        ok: true as const,
-        value: { content: 'ok', toolCalls: [], finishReason: 'stop' as const },
+        ok: false as const,
+        error: new Error('deployment list unavailable') as never,
       };
     },
-    async *streamChat(
-      _messages: unknown[],
-      _tools?: LlmTool[],
-      _options?: CallOptions,
-    ): AsyncGenerator<Result<LlmStreamChunk, Error>> {
-      yield { ok: true as const, value: { content: 'ok', finishReason: 'stop' as const } };
+    async *streamChat(): AsyncGenerator<Result<LlmStreamChunk, Error>> {
+      yield {
+        ok: true as const,
+        value: { content: 'OK', finishReason: 'stop' as const },
+      };
+    },
+  } as ILlm;
+}
+
+function stubEmbedder(): IEmbedder {
+  return {
+    async embed(_text: string, _o?: CallOptions): Promise<IEmbedResult> {
+      return { vector: [0.1, 0.2, 0.3] };
     },
   };
 }
 
-function recordingTextLogger(): { logger: ITextLogger; calls: string[] } {
-  const calls: string[] = [];
-  const push = (level: string) => (message: string) => {
-    calls.push(`${level}:${message}`);
+function recordingTextLogger(): {
+  logger: ITextLogger;
+  calls: Array<{ level: string; message: string; meta?: unknown }>;
+} {
+  const calls: Array<{ level: string; message: string; meta?: unknown }> = [];
+  const push = (level: string) => (message: string, meta?: unknown) => {
+    calls.push({ level, message, meta });
   };
   return {
     calls,
@@ -501,47 +526,70 @@ function recordingTextLogger(): { logger: ITextLogger; calls: string[] } {
   };
 }
 
-describe('SmartAgentBuilder.withLogger()', () => {
-  it('accepts a text logger and builds', async () => {
+describe('SmartAgentBuilder.withLogger() — text logger', () => {
+  it('routes events to a text logger at the levels §7 fixes', async () => {
     const { SmartAgentBuilder } = await import('../builder.js');
-    const { logger } = recordingTextLogger();
+    const { logger, calls } = recordingTextLogger();
 
-    const handle = await new SmartAgentBuilder({})
-      .withMainLlm(stubLlm())
-      .withLogger(logger)
-      .build();
+    await assert.rejects(
+      () =>
+        new SmartAgentBuilder({
+          modelValidationAttempts: 2,
+          modelValidationBackoffMs: 1,
+        })
+          .withMainLlm(failingLlm())
+          .withEmbedder(stubEmbedder())
+          .withLogger(logger)
+          .build(),
+      /Startup aborted/,
+    );
 
-    try {
-      const health = await handle.agent.healthCheck();
-      assert.ok(health.ok);
-    } finally {
-      await handle.close();
-    }
+    assert.deepEqual(
+      calls.map((c) => c.level),
+      ['warn', 'error'],
+    );
+    // A `warning` carries its OWN text as the message — not the string 'warning'.
+    assert.match(calls[0].message, /validation attempt 1 failed/);
+    // Every other kind uses the event's type as the message.
+    assert.equal(calls[1].message, 'pipeline_error');
+    // The whole event travels as meta.
+    assert.equal((calls[1].meta as LogEvent).type, 'pipeline_error');
   });
 
-  it('still accepts the event logger, unchanged', async () => {
+  it('the event logger still receives the same events, unchanged', async () => {
     const { SmartAgentBuilder } = await import('../builder.js');
-    const events: string[] = [];
+    const events: LogEvent[] = [];
 
-    const handle = await new SmartAgentBuilder({})
-      .withMainLlm(stubLlm())
-      .withLogger({ log: (e) => void events.push(e.type) })
-      .build();
+    await assert.rejects(
+      () =>
+        new SmartAgentBuilder({
+          modelValidationAttempts: 2,
+          modelValidationBackoffMs: 1,
+        })
+          .withMainLlm(failingLlm())
+          .withEmbedder(stubEmbedder())
+          .withLogger({ log: (e: LogEvent) => void events.push(e) })
+          .build(),
+      /Startup aborted/,
+    );
 
-    try {
-      const health = await handle.agent.healthCheck();
-      assert.ok(health.ok);
-    } finally {
-      await handle.close();
-    }
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['warning', 'pipeline_error'],
+    );
   });
 });
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
 
+**Two commands. The type failure comes from `tsc`; the test fails on its assertion.** `npm test` runs `node --import tsx/esm`, which transpiles without type-checking, so a `withLogger(textLogger)` call that violates the signature still runs — do not expect the test to catch the type.
+
+Run: `npm run build -w @mcp-abap-adt/llm-agent-libs`
+Expected: FAIL — `Argument of type 'ITextLogger' is not assignable to parameter of type 'ILogger'` (TS2345) at the `withLogger(logger)` call.
+
 Run: `npm test -w @mcp-abap-adt/llm-agent-libs`
-Expected: FAIL — `withLogger` does not accept an `ITextLogger`.
+Expected: FAIL on the first assertion — without normalisation `log?.log(...)` finds no `log` method on a text logger, optional chaining swallows every event, and `calls` is `[]` where `['warn', 'error']` is expected. (The second test, which passes an event logger, passes already — it is the regression guard.)
 
 - [ ] **Step 3: Widen `withLogger`, normalising at the setter**
 
@@ -579,22 +627,33 @@ export class SessionGraphFactory {
   constructor(private readonly opts: SessionGraphFactoryOptions) {}
 ```
 
-That form cannot be assigned to, so normalising requires turning it into an explicit field — a two-line change that leaves `this.opts` readonly and every existing `this.opts.*` reference untouched:
+That form cannot be assigned to, so normalising requires an explicit field. **The field needs its own type** — this is the part that is easy to get wrong: normalising at runtime does not narrow the declared type, so if the field stays `SessionGraphFactoryOptions` (whose `logger` is now `AnyLogger`), every existing `this.opts.logger.log(...)` inside the dispose closure stops compiling, because `ITextLogger` has no `log`. Declare the narrowed shape:
 
 ```ts
+/**
+ * The options as this class holds them: identical to what the caller passed,
+ * except the logger is always the event `ILogger`. `AnyLogger` is accepted at
+ * the constructor and normalised once; everything inside this file then keeps
+ * calling `.log(...)` exactly as before.
+ */
+type NormalisedSessionGraphFactoryOptions = Omit<
+  SessionGraphFactoryOptions,
+  'logger'
+> & { readonly logger?: ILogger };
+
 export class SessionGraphFactory {
-  private readonly opts: SessionGraphFactoryOptions;
+  private readonly opts: NormalisedSessionGraphFactoryOptions;
 
   constructor(opts: SessionGraphFactoryOptions) {
-    // Normalise once, here: the dispose closure's `warn` helper and every
-    // other `this.opts.logger` use then keep speaking the event logger.
     this.opts = opts.logger
       ? { ...opts, logger: normaliseLogger(opts.logger) }
-      : opts;
+      : (opts as NormalisedSessionGraphFactoryOptions);
   }
 ```
 
-Import `normaliseLogger` as a runtime import and `AnyLogger` as a type import from `@mcp-abap-adt/llm-agent`.
+The cast in the `else` branch is safe and needed: with no logger present, the two types differ only in a field that is absent.
+
+Import `normaliseLogger` as a runtime import, and `AnyLogger` as a type import, from `@mcp-abap-adt/llm-agent`; `ILogger` is already imported in this file.
 
 Do NOT touch `SessionAgentParts.logger` at :42 — that is `SessionRequestLogger`, a different type with a different job.
 
@@ -715,6 +774,8 @@ npm run build && npm test && npm run lint:check
 ```
 
 Expected: every workspace builds; all tests pass; Biome reports no new warnings.
+
+**`npm run build` is not optional here, and it is not interchangeable with `npm test`.** This workstream's whole subject is a type widening, and the test runner (`node --import tsx/esm`) transpiles without type-checking — every widened seam would "pass" its tests while failing to compile for a consumer. `tsc` is the only check that proves `ILogger | ITextLogger` is actually accepted, and equally that the frozen output seams still resolve.
 
 The claim this workstream makes: **a consumer can now hand over the logger it already has, and nobody who passes the old one notices anything.** The proof is that no pre-existing test needed editing — if one did, the change stopped being additive; stop and report it rather than adjusting the test.
 
