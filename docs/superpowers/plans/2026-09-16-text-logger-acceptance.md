@@ -46,6 +46,7 @@
 | `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` | `ConnectionStrategyOptions.logger` widens |
 | `packages/llm-agent/src/resilience/embedder-resilience.ts` | its `logger` option widens |
 | `packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts` | normalises the widened `ConnectionStrategyOptions.logger` at `:49`, where it stores it |
+| `packages/llm-agent-rag/src/rag-factories.ts` | `EmbedderResolutionOptions.logger` (:138) and `RagResolutionOptions.logger` (:255) widen — both are public, both exported from that package's barrel |
 | `packages/llm-agent-libs/src/builder.ts` | `withLogger` widens; normalise once, at the setter |
 | `packages/llm-agent-libs/src/session/session-graph-factory.ts` | `SessionGraphFactoryOptions.logger` widens; normalise in the constructor |
 | `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts` | `SessionLifecycleOptions.logger` widens; forwarded as-is |
@@ -386,7 +387,7 @@ Run: `npm run build -w @mcp-abap-adt/llm-agent`
 Expected: FAIL — `Type 'ITextLogger' is not assignable to type 'ILogger'` (TS2322/TS2345) at the test's `logger:` property.
 
 Run: `npm test -w @mcp-abap-adt/llm-agent`
-Expected: FAIL on the assertion, not on a type — with a text logger, `options?.logger?.log` does not exist, optional chaining swallows the call, and `calls.length` is `0` where the test expects `1`.
+Expected: FAIL with `TypeError: options?.logger?.log is not a function`. Note what does *not* happen: `?.` guards only the value to its left, so `options?.logger?.log(...)` still calls a property that a text logger does not have — it throws rather than silently skipping. The failure is real either way, but expect the TypeError, not a quiet `calls.length === 0`.
 
 - [ ] **Step 3: Widen `ConnectionStrategyOptions`**
 
@@ -428,19 +429,28 @@ Then replace each `options?.logger?.log({ ... })` with `log?.log({ ... })` — t
 
 Import `normaliseLogger` as a runtime import and `AnyLogger` as a type import from `../logger/to-text-logger.js`.
 
-- [ ] **Step 5: Run the tests, build and lint**
+- [ ] **Step 5: Widen the two public RAG-factory options**
 
-Run: `npm test -w @mcp-abap-adt/llm-agent && npm test -w @mcp-abap-adt/llm-agent-mcp && npm run build && npm run lint:check`
-Expected: all pass, including every pre-existing test in both packages, unedited.
+`packages/llm-agent-rag/src/rag-factories.ts` declares two more public logger inputs — `EmbedderResolutionOptions.logger` (:138, inside the interface at :132) and `RagResolutionOptions.logger` (:255, interface at :249) — and both are exported from that package's barrel (`src/index.ts:12` and `:17`). Leaving them at `ILogger` would be the exact defect §7 exists to remove: `:162` forwards `options?.logger` straight into `composeResilientEmbedder`, which this task just taught to accept both shapes, so a consumer holding a text logger would still have to write an adapter to reach a seam that already accepts one.
 
-- [ ] **Step 6: Commit**
+Change both fields to `logger?: AnyLogger`, keeping their docstrings, and importing `AnyLogger` as a type from `@mcp-abap-adt/llm-agent`.
+
+No normalisation is needed at `:162`: it forwards the option into `composeResilientEmbedder`, whose own option is now `AnyLogger` and which normalises internally (Step 4). If any OTHER site in this file calls `.log(...)` on the option directly, normalise there with `const log = options?.logger ? normaliseLogger(options.logger) : undefined;` and call `log?.log(...)` — search the file for `logger?.log(` before you finish.
+
+- [ ] **Step 6: Run the tests, build and lint**
+
+Run: `npm test -w @mcp-abap-adt/llm-agent && npm test -w @mcp-abap-adt/llm-agent-mcp && npm test -w @mcp-abap-adt/llm-agent-rag && npm run build && npm run lint:check`
+Expected: all pass, including every pre-existing test in all three packages, unedited. The root `npm run build` is what proves the widened options still compile for their consumers.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add packages/llm-agent/src/interfaces/mcp-connection-strategy.ts \
         packages/llm-agent/src/resilience/embedder-resilience.ts \
         packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts \
-        packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts
-git commit -m "feat(llm-agent): connection strategies and embedder resilience take either logger"
+        packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts \
+        packages/llm-agent-rag/src/rag-factories.ts
+git commit -m "feat(llm-agent): connection strategies, embedder resilience and the RAG factories take either logger"
 ```
 
 ---
@@ -589,7 +599,7 @@ Run: `npm run build -w @mcp-abap-adt/llm-agent-libs`
 Expected: FAIL — `Argument of type 'ITextLogger' is not assignable to parameter of type 'ILogger'` (TS2345) at the `withLogger(logger)` call.
 
 Run: `npm test -w @mcp-abap-adt/llm-agent-libs`
-Expected: FAIL on the first assertion — without normalisation `log?.log(...)` finds no `log` method on a text logger, optional chaining swallows every event, and `calls` is `[]` where `['warn', 'error']` is expected. (The second test, which passes an event logger, passes already — it is the regression guard.)
+Expected: FAIL — but on `assert.rejects`, and earlier than the level assertions. `?.` guards only the value to its left, so `log?.log({...})` inside `build()` calls a property a text logger does not have and throws `TypeError: log?.log is not a function`. `build()` therefore rejects with that TypeError instead of `Startup aborted`, and `assert.rejects(..., /Startup aborted/)` fails on the message mismatch — the `calls` assertions are never reached. That is still a correct RED: the test passes only once normalisation makes the event reach the text logger. (The second test, which passes an event logger, passes already — it is the regression guard.)
 
 - [ ] **Step 3: Widen `withLogger`, normalising at the setter**
 
@@ -703,10 +713,15 @@ Under `## [Unreleased]`, in the existing `### Added` block:
 ```markdown
 - **`ITextLogger`** — every seam that accepts a logger now takes an ordinary
   text logger (`info`/`warn`/`error`/`debug(message, meta?)`) as well as the
-  event `ILogger`: `withLogger`, `ConnectionStrategyOptions.logger`,
-  `SessionGraphFactoryOptions.logger`, `SessionLifecycleOptions.logger` and the
-  embedder resilience options. A consumer that already has a logger no longer
-  has to write a `LogEvent` adapter before it can pass one.
+  event `ILogger`: `SmartAgentBuilder.withLogger`,
+  `SessionGraphFactoryOptions.logger`, `ConnectionStrategyOptions.logger`,
+  `ComposeResilienceOptions.logger`, `EmbedderResolutionOptions.logger` and
+  `RagResolutionOptions.logger` in `@mcp-abap-adt/llm-agent-rag`, and
+  `SessionLifecycleOptions.logger` in `@mcp-abap-adt/llm-agent-server-libs`.
+  A consumer that already has a logger no longer has to write a `LogEvent`
+  adapter before it can pass one. Seams that hand a logger *out* — most
+  visibly `IPipelineContext.logger` — are unchanged and still give you the
+  event `ILogger`.
   `normaliseLogger(logger)` and the `AnyLogger` union are exported for anyone
   wiring their own seam. A text logger receives the event's `type` as the
   message — a `warning` carries its own text — and the whole event as `meta`,
@@ -731,8 +746,18 @@ Add a short section in the file's existing voice:
 ````markdown
 ## Passing your own logger
 
-Two shapes are accepted everywhere a logger is taken. If you already have an
-ordinary text logger, pass it:
+Both logger shapes are accepted at every seam that *takes* one from you:
+
+| seam | package |
+|---|---|
+| `SmartAgentBuilder.withLogger` | `llm-agent-libs` |
+| `SessionGraphFactoryOptions.logger` | `llm-agent-libs` |
+| `ConnectionStrategyOptions.logger` | `llm-agent` |
+| `ComposeResilienceOptions.logger` (embedder resilience) | `llm-agent` |
+| `EmbedderResolutionOptions.logger`, `RagResolutionOptions.logger` | `llm-agent-rag` |
+| `SessionLifecycleOptions.logger` | `llm-agent-server-libs` |
+
+If you already have an ordinary text logger, pass it:
 
 ```ts
 import type { ITextLogger } from '@mcp-abap-adt/llm-agent';
@@ -747,9 +772,13 @@ It is normalised at the boundary: internals keep emitting structured
 `LogEvent`s, and your logger receives the event's `type` as the message (a
 `warning` carries its own text) with the whole event as `meta`.
 
-Plugins are the exception, and deliberately so: `IPipelineContext.logger` still
-hands your plugin the event `ILogger`, so `logger.log({ ... })` inside a plugin
-keeps compiling unchanged.
+What stays event-only, deliberately: everywhere llm-agent hands a logger *to
+you*. `IPipelineContext.logger` still gives your plugin the event `ILogger`, so
+`logger.log({ ... })` inside a plugin keeps compiling unchanged — widening that
+would break every existing plugin, which is a major, not this release.
+
+So the rule is one-directional: what you pass in may be either shape; what you
+receive is always the event shape.
 ````
 
 - [ ] **Step 5: Verify and commit**
