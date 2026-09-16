@@ -11,6 +11,7 @@ import type {
   IKnowledgeRagHandle,
   ILogger,
   IMcpClient,
+  IMcpServer,
   IRag,
   IRagRegistry,
   McpClientDescriptor,
@@ -19,6 +20,7 @@ import {
   type SessionAgentParts,
   type SessionGraph,
   SessionGraphFactory,
+  type SessionGraphIdentity,
   SessionRegistry,
   type SmartAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -82,6 +84,9 @@ export interface SessionLifecycleOptions {
    * `sessionId` and invoked during session disposal (before `onDispose`).
    * When absent, or when `mcpSharedClient` is `true`, the shared `mcpClients`
    * (+ `mcpClientDescriptors`) array is used for every session.
+   *
+   * @deprecated Use `buildPerSessionMcpServers`: it receives the identity and
+   * the session factory owns the lifetime.
    */
   buildPerSessionMcpClients?: () => {
     clients: IMcpClient[];
@@ -92,8 +97,20 @@ export interface SessionLifecycleOptions {
   /**
    * Opt out of per-session isolation: when `true`, `buildPerSessionMcpClients`
    * is never called and all sessions share the `mcpClients` reference.
+   *
+   * @deprecated Opting out of per-session isolation belongs to the assembly,
+   * not this module.
    */
   mcpSharedClient?: boolean;
+  /**
+   * Per-session MCP servers. Preferred over `buildPerSessionMcpClients`: it
+   * receives the identity, and `SessionGraphFactory` owns start and stop, so
+   * this module keeps no `close` of its own.
+   *
+   * `mcpSharedClient` does not apply: a caller that wants one shared server
+   * returns the same instance from every call.
+   */
+  buildPerSessionMcpServers?: (identity: SessionGraphIdentity) => IMcpServer[];
 }
 
 /**
@@ -118,11 +135,16 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
   invalidateAll: () => Promise<void>;
   registry: SessionRegistry;
 } {
+  // Serves the deprecated `buildPerSessionMcpClients` path only: a server built
+  // through `buildPerSessionMcpServers` is stopped by the session factory.
   const closeBySession = new Map<string, () => Promise<void>>();
   const usePerSession =
     !!opts.buildPerSessionMcpClients && !opts.mcpSharedClient;
 
   const factory = new SessionGraphFactory({
+    ...(opts.buildPerSessionMcpServers
+      ? { mcpServerFactory: opts.buildPerSessionMcpServers }
+      : {}),
     mcpClientFactory: (identity) => {
       if (!usePerSession || !opts.buildPerSessionMcpClients)
         return opts.mcpClients;
