@@ -9,7 +9,7 @@ MCP client wrapper, adapter, factory, and connection strategies for the SmartAge
 
 - `MCPClientWrapper`, `MCPClientConfig`, `TransportType`
 - `McpClientAdapter`
-- `createDefaultMcpClient(...)`
+- `createDefaultMcpClient(...)` — the `McpClientFactory` that `mcpServerFromFactory` (`@mcp-abap-adt/llm-agent`) wraps into an `IMcpServer`
 - Connection strategies: `LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`
 
 ## Usage
@@ -27,6 +27,18 @@ const client = new MCPClientWrapper({
 await client.connect();
 
 const adapter = new McpClientAdapter(client);
+```
+
+A stdio child can be given its own environment, so it never inherits the
+process's full environment (or another caller's):
+
+```ts
+const stdioClient = new MCPClientWrapper({
+  transport: 'stdio',
+  command: 'my-mcp',
+  env: { API_TOKEN: tokenForThisCaller },
+});
+await stdioClient.connect();
 ```
 
 ## Request Timeouts

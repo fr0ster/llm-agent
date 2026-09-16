@@ -1721,6 +1721,48 @@ const handle = await new SmartAgentBuilder({})
 
 **Note:** When using `withMcpClients()`, the builder skips auto-connect and tool vectorization — the caller is responsible for providing already-connected clients.
 
+## Owning an MCP server's lifetime
+
+A client is something you call; a server is something you start and stop. Hand
+the framework servers when you know how yours is started — and, for a stdio
+child, with what environment:
+
+```ts
+import { mcpServerFromFactory } from '@mcp-abap-adt/llm-agent';
+import { createDefaultMcpClient } from '@mcp-abap-adt/llm-agent-mcp';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+
+const server = mcpServerFromFactory(createDefaultMcpClient, {
+  type: 'stdio',
+  command: 'my-mcp',
+  env: { API_TOKEN: tokenForThisCaller },   // never in args: visible in ps
+});
+
+const handle = await new SmartAgentBuilder(cfg)
+  .withMainLlm(llm)
+  .withMcpServers([server])
+  .build();
+
+await handle.close();   // stops every server it started
+```
+
+Per session, the factory does the same and knows who is asking:
+
+```ts
+import { SessionGraphFactory } from '@mcp-abap-adt/llm-agent-libs';
+
+new SessionGraphFactory({
+  mcpServerFactory: (identity) => [serverFor(identity.userId)],
+  closePipeline: async (sessionId) => pipelines.get(sessionId)?.close(),
+  ragRegistry,
+  toolsRag,
+  buildAgent,
+});
+```
+
+Teardown then runs in one order: `closePipeline`, the session's RAG
+`closeSession`, your `onDispose`, and the servers' `stop()` last.
+
 ## IMcpConnectionStrategy — MCP reconnection
 
 By default the agent starts with an empty tool catalog if the MCP server is unavailable at startup. `IMcpConnectionStrategy` solves this by letting the agent re-resolve its MCP clients on every request.
