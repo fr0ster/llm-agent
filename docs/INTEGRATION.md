@@ -2478,6 +2478,57 @@ interface IToolCache {
 
 Implementations: `ToolCache` (with TTL + SHA-256 key hashing), `NoopToolCache` (no caching).
 
+## Passing your own logger
+
+Both logger shapes are accepted at the seams listed below. The list is exhaustive for *configuration* seams — the places you hand llm-agent a logger for it to use. Any other such input takes the event `ILogger` only.
+
+(`normaliseLogger(logger)` and `isTextLogger(logger)` also take either shape, but they are not seams: they are the adapter itself, exported so you can normalise a logger before handing it to an input that stays event-only. See the end of this section.)
+
+| seam | package |
+|---|---|
+| `SmartAgentBuilder.withLogger` | `llm-agent-libs` |
+| `SessionGraphFactoryOptions.logger` | `llm-agent-libs` |
+| `ConnectionStrategyOptions.logger` | `llm-agent` |
+| `ComposeResilienceOptions.logger` (embedder resilience) | `llm-agent` |
+| `FallbackLlmCallStrategy`'s constructor | `llm-agent` |
+| `EmbedderResolutionOptions.logger`, `RagResolutionOptions.logger` | `llm-agent-rag` |
+| `SessionLifecycleOptions.logger`, `resolveAgentEmbedder`, `resolveToolsStoreEmbedder` | `llm-agent-server-libs` |
+
+If you already have an ordinary text logger, pass it:
+
+```ts
+import type { ITextLogger } from '@mcp-abap-adt/llm-agent';
+
+const handle = await new SmartAgentBuilder(cfg)
+  .withMainLlm(llm)
+  .withLogger(myTextLogger)   // info / warn / error / debug
+  .build();
+```
+
+It is normalised at the boundary: internals keep emitting structured
+`LogEvent`s, and your logger receives the event's `type` as the message (a
+`warning` carries its own text) with the whole event as `meta`.
+
+What stays event-only, deliberately — and it is not only what you *receive*:
+
+- Everywhere llm-agent hands a logger **to** you: `IPipelineContext.logger`
+  still gives your plugin the event `ILogger`, so `logger.log({ ... })` inside
+  a plugin keeps compiling unchanged.
+- Three inputs you **pass in** as well, because each one feeds that same
+  plugin-facing context: `PipelineDeps.logger`, `SmartAgentDeps.logger`, and
+  `makeDefaultDeps({ logger })` from `@mcp-abap-adt/llm-agent-libs/testing`.
+
+Widening any of them would put a text logger in front of every existing
+plugin, which is a major rather than this release. If you assemble those deps
+yourself, normalise first — one line, using the same adapter the widened seams
+use internally:
+
+```ts
+import { normaliseLogger } from '@mcp-abap-adt/llm-agent';
+
+const deps: PipelineDeps = { ...rest, logger: normaliseLogger(myTextLogger) };
+```
+
 ## Builder Wiring
 
 The `SmartAgentBuilder` is interface-only — it has no knowledge of concrete providers. All dependencies must be injected.

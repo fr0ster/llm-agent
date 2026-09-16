@@ -107,6 +107,8 @@ export interface SessionGraphFactoryOptions {
    * (`ragRegistry.closeSession` returning `{ ok: false }`). Without a logger
    * the failure falls back to `console.warn` so it is never silent. The
    * dispose hook never throws — a failed close must not crash session teardown.
+   * An ordinary text logger (`ITextLogger`) is also accepted; it is normalised
+   * to the event `ILogger` once, at the constructor.
    */
   readonly logger?: AnyLogger;
   /**
