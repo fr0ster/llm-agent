@@ -15,7 +15,7 @@
 - **Additive minor.** Nothing is removed; no existing path changes behaviour. A consumer that keeps passing an `ILogger` sees exactly today's behaviour, and no pre-existing test may need editing.
 - **The exported `ILogger` is FROZEN.** It stays `{ log(event: LogEvent): void }` in `packages/llm-agent/src/logger/types.ts`. Do not widen it, rename it, or add members — `IPipelineContext.logger` and `IPipelinePlugin` hand this exact type to consumer plugins, so changing its shape is a major.
 - **Output seams stay `ILogger`:** `packages/llm-agent/src/interfaces/pipeline-plugin.ts` — `IPipelineContext` (declared at :46, its `logger?: ILogger` at :68) and `IPipelinePlugin` (:91). These files are not to be touched by this workstream.
-- **Input seams widen to `ILogger | ITextLogger`. This list is authoritative** — if a task, a docstring or the changelog disagrees with it, this line wins, and any seam not on it stays `ILogger`:
+- **Input seams widen to `ILogger | ITextLogger`. This list is authoritative** — if a task, a docstring or the changelog disagrees with it, this line wins, and any *seam* not on it stays `ILogger`. "Seam" means a place a consumer hands llm-agent a logger for it to use; `normaliseLogger(logger)` and `isTextLogger(logger)` also accept `AnyLogger`, but they are the adapter itself rather than seams, so they are not on this list and do not belong on it:
   1. `SmartAgentBuilder.withLogger` — `llm-agent-libs/src/builder.ts:386`
   2. `SessionGraphFactoryOptions.logger` — `llm-agent-libs/src/session/session-graph-factory.ts:107`
   3. `ConnectionStrategyOptions.logger` — `llm-agent/src/interfaces/mcp-connection-strategy.ts:76`
@@ -975,7 +975,9 @@ Add a short section in the file's existing voice:
 ````markdown
 ## Passing your own logger
 
-Both logger shapes are accepted at the seams listed below. That list is exhaustive — a logger input not on it takes the event `ILogger` only:
+Both logger shapes are accepted at the seams listed below. The list is exhaustive for *configuration* seams — the places you hand llm-agent a logger for it to use. Any other such input takes the event `ILogger` only.
+
+(`normaliseLogger(logger)` and `isTextLogger(logger)` also take either shape, but they are not seams: they are the adapter itself, exported so you can normalise a logger before handing it to an input that stays event-only. See the end of this section.)
 
 | seam | package |
 |---|---|
