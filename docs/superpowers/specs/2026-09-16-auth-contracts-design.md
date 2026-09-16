@@ -10,7 +10,8 @@
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Lifetime keys stay typed; only owner and role become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
-- Umbrella: four workstreams (§10), each gets its own plan, all in one major.
+- **A minor, not a major.** Every seam is added beside what exists, both logger shapes keep working, and nothing is removed. The one behaviour change — dispose order (§3.4) — is named, not smuggled.
+- Umbrella: four workstreams (§10), each gets its own plan.
 
 ---
 
@@ -77,7 +78,7 @@ interface IMcpServer {
 declare function mcpServerFromFactory(factory: McpClientFactory, config: McpConnectionConfig): IMcpServer;
 ```
 
-One implementation per way of starting: **stdio** spawns a child; **http** owns a connection; **embedded** runs in-process. The credential a target needs is demanded by **that implementation's own constructor**, typed per target — which is why a bare `McpClientFactory` cannot express it: its single parameter is a generic `McpConnectionConfig` with nowhere to put a typed credential.
+One implementation per way of starting: **stdio** spawns a child; **http** owns a connection; **embedded** runs in-process. The credential a target needs is demanded by **that implementation's own constructor**, typed per target — which is what a bare `McpClientFactory` cannot express **in its type**: a closure can capture a credential, but its single parameter is a generic `McpConnectionConfig`, so nothing in the signature says which credential this target needs.
 
 `start()` is called once per instance; **reconnection stays with `IMcpConnectionStrategy`**, which already owns outage handling, `toolsChanged` and revectorization. An implementation that cannot be restarted after `stop()` throws; the framework never restarts one on its own.
 
@@ -95,7 +96,9 @@ Nothing is removed. `withMcpClients`, `mcpClientFactory`, `mcpClientFactoryWithD
 
 **Descriptors.** They come from `IMcpServer.descriptor`, and the existing invariant holds unchanged (`assert-client-descriptors.ts`): descriptors are **all or none** (their count must equal the client count), `slotIndex` values are unique non-negative integers, and `configuredSlotCount`, when given, must be **strictly greater than the largest `slotIndex`**. When no server carries a descriptor, array position is the pairing, exactly as today.
 
-**Dispose order.** The pipeline closes first, then the RAG registry's `closeSession`, and `stop()` runs **last** — the pipeline still holds the clients until it is done with them.
+**Dispose order — a stated behaviour change.** Today `SessionGraphFactory.dispose` calls `ragRegistry.closeSession(sessionId)` **first**, then the host's `onDispose`; and `llm-agent-server-libs` closes the session's MCP clients inside that hook, **before** the host's own. The new order is: the pipeline closes, then `closeSession`, and `stop()` runs **last**.
+
+Why: a pipeline still in flight must not write into a session collection `closeSession` is deleting, and the clients must outlive the pipeline that is still calling them. This order applies to the kept, deprecated path too — it is the one place in this design where existing behaviour changes rather than gains an option, so it belongs in the release notes.
 
 ### 3.5 stdio credentials
 
@@ -123,7 +126,7 @@ No `env`, no `cwd`. The SDK then uses `getDefaultEnvironment()` — a sanitized 
 | `pg-vector-rag`, `hana-vector-rag` | `host`/`port`/`user`/`password`/`database`, **or** `connectionString` | `ISecretLoginCredential` |
 | an http MCP implementation | `headers` | whatever its server speaks |
 
-Every one of these is **optional**: a provider constructed the old way keeps working through the deprecation major.
+Every one of these is **optional and additive**: the credential sits beside the existing field, and a provider constructed the old way keeps working unchanged.
 
 **Where they live.** Decision 26 of `@mcp-abap-adt/interfaces` places a contract in the package that accepts it: several acceptors on the SAP side share `interfaces-adt`; contracts accepted **across families** go to `interfaces-auth`, `-network` or `-utils`.
 
@@ -173,7 +176,7 @@ An instance built with identity needs neither the async-local fallback nor the `
 | `user` | `owner` | `public`, `role` |
 | `global` | `public` or `role` | `owner` |
 
-`RagCollectionScope` needs no new member: the earlier "fourth scope for roles" conflated the two axes. **Skills are an ordinary collection** under the same axes, not an exempt "configuration" kind — this supersedes cloud-llm-hub's collection-model spec, retired in hub commit `ae1e0e4b`.
+The axis stores a **policy value**, nothing more: whether *this* caller may delete *that* global collection is the check's decision, read from the value, never encoded in it. `RagCollectionScope` needs no new member: the earlier "fourth scope for roles" conflated the two axes. **Skills are an ordinary collection** under the same axes, not an exempt "configuration" kind — this supersedes cloud-llm-hub's collection-model spec, retired in hub commit `ae1e0e4b`.
 
 ### 6.2 Service or delegated identity
 
@@ -198,17 +201,28 @@ Because `SessionGraphIdentity` types `createFor`, this union lives in `@mcp-abap
 
 ### 6.3 Lifetime stays typed; only ownership becomes opaque
 
-A provider must not depend on whether identity is `userId`, a role, a tenant or something we have not thought of. But two fields are **not** identity — they are lifetime, and the framework itself reads them: `SimpleRagRegistry.closeSession` deletes collections by `meta.scope === 'session' && meta.sessionId === sessionId`. Hide `sessionId` in a blob and `closeSession` goes blind.
+A provider must not depend on whether authorization is a role, a tenant, a department or something we have not thought of. But the **owner keys are not that**: the framework itself reads them, to name a store and to end a session.
+
+```ts
+// simple-rag-registry.ts — the owner key IS the store's identity
+const owner = scope === 'session' ? (sessionId ?? '')
+            : scope === 'user'    ? (userId ?? '')
+            : '';
+sha256(JSON.stringify([scope, owner, collectionName])).slice(0, 12);
+```
+
+`closeSession` finds its collections by `meta.scope === 'session' && meta.sessionId === sessionId`. Hide `sessionId` in a blob and it goes blind; hide `userId` and every user's `user` collection of the same name collapses onto one store name `hash(scope, '', name)` — a cross-user leak, which is what issue #304 is about.
 
 ```ts
 createCollection(name, {
-  scope: RagCollectionScope;      // lifetime — typed, read by the registry
-  sessionId?: string;             // lifetime key for scope: 'session' — typed
-  attributes?: unknown;           // ownership and policy — opaque, persisted, never interpreted
+  scope: RagCollectionScope;      // lifetime and addressing — typed
+  sessionId?: string;             // owner key for scope 'session' — typed
+  userId?: string;                // owner key for scope 'user' — typed
+  attributes?: unknown;           // role and policy only — opaque, persisted, never interpreted
 })
 ```
 
-- `userId` moves into `attributes` (the registry never keys on it), `sessionId` and `scope` stay typed.
+- Both owner keys stay typed. §6.1's "owner is implied by scope" needs a typed owner to read it from; only role and policy are opaque.
 - **The provider persists `attributes`** and hands them back to the check. Today it persists nothing: pg and qdrant use the creation options only for `checkScope` and the id strategy, so a provider decides nothing after a restart or in a second instance.
 - `supportedScopes` keeps its meaning — what a provider can make *outlive* — which is lifetime, not permission.
 
@@ -231,7 +245,9 @@ logger: ILogger | { error: (message: string, meta?: unknown) => void }
 // ILogger doesn't include csrfToken and tlsConfig, so we use loggerAdapter from lib/logger
 ```
 
-**Direction:** llm-agent adopts the `interfaces-utils` contract as a **type-only** dependency and re-exports it, so its 22 files and every implementer keep one import path. `LogEvent` stays and becomes the payload.
+**Direction:** llm-agent adopts the `interfaces-utils` contract and re-exports it, so its 22 files and every implementer keep one import path. The import is types-only (`import type`), which keeps it out of the runtime graph — but a re-exported type must resolve in every consumer's `tsc`, so `@mcp-abap-adt/interfaces-utils` is a **regular dependency**, not a dev one.
+
+**Nobody is forced to migrate.** The seam accepts both shapes — the text contract and today's event sink — and adapts internally. A consumer that implemented `log(event)` keeps working untouched; one that has a text logger can hand it over directly. That is what makes this workstream a minor rather than a major: the old shape is not removed, and the mapping below is what the adapter does when a text logger is supplied. `LogEvent` stays and becomes the payload.
 
 | rule | value |
 |---|---|
@@ -250,7 +266,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated; `attributes` on collection creation; `ILogger` re-exported from `interfaces-utils` | one major, all old seams kept |
+| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated; `attributes` on collection creation; `ILogger` re-exported from `interfaces-utils`, both shapes accepted | additive — no implementer changes |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `RagProviderSource`; registry wiring (§9.4) | additive |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`; `IMcpServer` implementations for stdio and http | additive |
@@ -258,6 +274,8 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | LLM and embedder providers | credential contracts beside `apiKey?: string`, keeping the AI Core env fallback (§9.2) | additive |
 | `@mcp-abap-adt/interfaces-auth` | gains `AccessCheck` and, subject to §4, the three credential contracts | minor |
 | cloud-llm-hub, `llm-agent-server` | **may** adopt the seams; neither is required to | their own work |
+
+**Release shape: a minor.** Nothing is removed, no implementer changes, and every seam is declinable. The single exception is the dispose order (§3.4), which changes on the kept path as well and therefore goes in the release notes. The deprecations — `McpClientFactory`, `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one.
 
 ---
 
@@ -276,7 +294,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 ## 10. Workstreams
 
-Four independent changes under one umbrella; each gets its own plan, all land in one major.
+Four independent changes under one umbrella; each gets its own plan. All four are additive, so they land as a minor — in any order, and a consumer may take one and decline the rest.
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, stop-on-dispose, stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
