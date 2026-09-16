@@ -98,12 +98,16 @@ Nothing is removed by this release, which is a minor (§8). `withMcpClients`, `m
 
 **Ownership: exactly one owner per server.** A started server is stopped by whoever started it, and the two paths never overlap:
 
-| path | starts | stops |
-|---|---|---|
-| builder | `build()`, from `withMcpServers` | `handle.close()`, through the `closeFns` it already awaits |
-| per-session | the session factory, from `mcpServerFactory(identity)`, **before** `buildAgent` so it has clients to pass | the session factory, on dispose |
+| path | starts | stops | if construction fails in between |
+|---|---|---|---|
+| builder | `build()`, from `withMcpServers` | `handle.close()`, through the `closeFns` it already awaits | `build()` itself — no handle is returned, so nobody else can: it stops everything it started and rethrows the original error |
+| per-session | the session factory, from `mcpServerFactory(identity)`, **before** `buildAgent` so it has clients to pass | the session factory, on dispose | the session factory itself — no `SessionGraph` is constructed, so `dispose` never runs and the started servers are unreachable |
 
 On the per-session path `buildAgent` receives clients (`SessionAgentParts.mcpClients`, unchanged) and therefore uses `withMcpClients`, **not** `withMcpServers` — otherwise `stop()` would run twice, once from `handle.close()` and once from the factory.
+
+**The third column is the one that bites.** The first two describe the happy path, where an owner exists; the leaks live in the interval *between* `start()` and that owner. Workstream 1 shipped with it, and the whole-branch review found three separate defects there: `buildAgent` throwing after the servers were started, the builder's much larger window from its start loop to its `return`, and — reported by a human reviewer after the automated ones had passed — `handle.close()` abandoning the remaining servers once one `stop()` rejected. Each was invisible to the tests because every test built successfully.
+
+So an owner is only defined once the interval is closed. Whoever starts a batch owns it from the first `start()` until the object that will own it exists; a failure anywhere in that span stops the whole batch and rethrows the original error, and routine teardown reaches every closer regardless of what any individual one does. Both are best served by one shared unwind helper rather than a copy per path — two copies drift, and in workstream 1 they did: the session factory preserved the original error while the builder masked it.
 
 **Teardown: a new hook, not a moved one.** `onDispose` is documented to run *after* the session-RAG `closeSession` ("run during `SessionGraph.dispose()`, AFTER the session-RAG `closeSession`"), and `llm-agent-server-libs` closes its own session clients inside it. Moving that hook on one path only would make its position depend on an unrelated option — a contract no docstring can state truthfully.
 
