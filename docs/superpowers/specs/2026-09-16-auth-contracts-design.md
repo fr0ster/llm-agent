@@ -1,6 +1,6 @@
 # Authentication and authorization contracts — umbrella design
 
-**Status:** design, revised after review round 2 · **Date:** 2026-09-16 · **Base:** `main` at `abf10310` (v26.0.0)
+**Status:** design, revised after review round 6 · **Date:** 2026-09-16 · **Base:** `main` at `123e6e10` (v26.0.0)
 
 ## TL;DR
 
@@ -8,7 +8,7 @@
 - **Two jobs, never one.** Proving who *we* are to an outside service (a credential) and deciding what *the caller* may do (admission) are different contracts in different places.
 - **One decision-maker for admission**, built by the consumer with the caller's identity, asked wherever it must be — never a second set of rules.
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
-- **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Lifetime keys stay typed; only owner and role become opaque.
+- **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Scope and the owner keys stay typed; only role and policy become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
 - **A minor, not a major.** Every seam is added beside what exists, nothing is removed, and no behaviour on any existing path changes — the safer teardown order comes with the new seam, through a new optional hook (§3.4).
 - Umbrella: four workstreams (§10), each gets its own plan.
@@ -25,7 +25,7 @@ Three rules follow, and every section below is bound by them:
 2. **No default policy.** Where the framework cannot know the answer, it holds no opinion — it does not invent one. An absent access check means the framework does not judge, not that it permits on someone's behalf.
 3. **No privileged topology.** Per-session, shared, single-user, multi-tenant — all are assemblies, and none is the reference.
 
-The framework also imports nothing from `@mcp-abap-adt/interfaces*` today and declares its own `ILogger` and `IMcpRequestHeadersStrategy`. Where that changes below, the dependency is **type-only**, and the contracts are plain shapes with `kind` literals, so a consumer can satisfy them without importing anything.
+The framework also imports nothing from `@mcp-abap-adt/interfaces*` today and declares its own `ILogger` and `IMcpRequestHeadersStrategy`. Where that changes below, the imports are **types-only** (`import type`, so nothing enters the runtime graph) though the package is still a regular dependency, and the contracts are plain shapes with `kind` literals, so a consumer can satisfy them without importing anything.
 
 ---
 
@@ -166,7 +166,7 @@ type AccessCheck<R> = (request: R) => Promise<boolean>;            // interfaces
 type CollectionRequest = { action: 'read' | 'write' | 'create' | 'delete'; attributes: unknown };
 ```
 
-There is no separate collection-access contract: it is `AccessCheck<CollectionRequest>`. The consumer builds it once with the caller's identity and hands the same object wherever it must be asked — the MCP server instance it constructs, and the RAG provider (§6.3). The provider has no rules of its own; it asks.
+There is no separate collection-access contract: it is `AccessCheck<CollectionRequest>`. The consumer builds it once **per caller** and hands that object wherever it must be asked — the MCP server instance it constructs, and the RAG provider it obtains for that caller (`createFor`, §6.2). The provider has no rules of its own; it asks.
 
 **Absent means absent.** A framework that has not been given a check does not judge and does not pretend to permit: it simply has no admission step, exactly as today. Enforcement is the consumer's, and so is its absence.
 
@@ -205,10 +205,19 @@ The axis stores a **policy value**, nothing more: whether *this* caller may dele
 A credential on a RAG provider proves who **we** are to the store; it says nothing about the caller. Whether the store can judge the caller is a separate, typed, optional choice:
 
 ```ts
-interface ISharedRagProviderSource      { readonly identityMode: 'service';   create(): IRagProvider }
-interface IPerIdentityRagProviderSource { readonly identityMode: 'delegated'; createFor(identity: SessionGraphIdentity): IRagProvider }
-type RagProviderSource = ISharedRagProviderSource | IPerIdentityRagProviderSource;
+interface IRagProviderSource {
+  /** Whose credential reaches the store. */
+  readonly identityMode: 'service' | 'delegated';
+  /** No check, no caller: one provider, and the framework judges nothing (§5). */
+  create(): IRagProvider;
+  /** A caller is known: the provider is obtained for them, with the check bound in. */
+  createFor(identity: SessionGraphIdentity, check: AccessCheck<CollectionRequest>): IRagProvider;
+}
 ```
+
+**Why the check is bound at construction, not passed per call.** `IRag.query` and `IRagEditor.upsert` already take a `CallOptions`, so the check could ride along — but an optional per-call argument is forgettable, and a forgotten one means "no judgement" under §5. That is the hub's `?? 'anonymous'` failure in a new place. Bound at construction, it cannot be omitted by a call site.
+
+Under `identityMode: 'service'` that binding is a thin facade over one shared, service-credentialed provider — no extra connection, no pool per caller. Under `'delegated'` the provider behind it carries the caller's own credential. A consumer that supplies no check calls `create()` and gets exactly today's behaviour.
 
 The mode decides **who must filter**: under `service` the consumer's check is the *only* line of defence; under `delegated` the store enforces too and the check is the second. A seam that requires delegation declares `IPerIdentityRagProviderSource` and will not accept a shared source.
 
@@ -221,7 +230,7 @@ The mode decides **who must filter**: under `service` the consumer's check is th
 
 Because `SessionGraphIdentity` types `createFor`, this union lives in `@mcp-abap-adt/llm-agent-libs` beside the session factory unless that identity type moves into `@mcp-abap-adt/llm-agent` first (§9.3).
 
-### 6.3 Lifetime stays typed; only ownership becomes opaque
+### 6.3 Scope and owner keys stay typed; only role and policy become opaque
 
 A provider must not depend on whether authorization is a role, a tenant, a department or something we have not thought of. But the **owner keys are not that**: the framework itself reads them, to name a store and to end a session.
 
@@ -284,7 +293,7 @@ The import is types-only (`import type`), which keeps it out of the runtime grap
 | `rag_upsert`, `rag_query`, `tools_selected` | `debug` |
 | everything else | `info` |
 
-The text shape is the general one: a structured event fits in `meta`, a closed union cannot carry arbitrary text. `interfaces-utils` needs no change; the major is llm-agent's.
+The text shape is the general one: a structured event fits in `meta`, a closed union cannot carry arbitrary text. `interfaces-utils` needs no change, and this release is a minor: the rename that finally leaves one name, when it comes, is llm-agent's major (§9.9).
 
 ---
 
