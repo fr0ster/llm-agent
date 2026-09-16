@@ -1,6 +1,6 @@
 # Authentication and authorization contracts — umbrella design
 
-**Status:** design, revised after review round 6 · **Date:** 2026-09-16 · **Base:** `main` at `123e6e10` (v26.0.0)
+**Status:** design, revised after review round 8 · **Date:** 2026-09-16 · **Base:** `main` at `bd5c464c` (v26.0.0)
 
 ## TL;DR
 
