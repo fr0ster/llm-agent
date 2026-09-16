@@ -205,21 +205,30 @@ The axis stores a **policy value**, nothing more: whether *this* caller may dele
 A credential on a RAG provider proves who **we** are to the store; it says nothing about the caller. Whether the store can judge the caller is a separate, typed, optional choice:
 
 ```ts
-interface IRagProviderSource {
-  /** Whose credential reaches the store. */
-  readonly identityMode: 'service' | 'delegated';
-  /** No check, no caller: one provider, and the framework judges nothing (§5). */
+interface IServiceRagProviderSource {
+  readonly identityMode: 'service';
+  /** No caller, no check: one shared provider, and the framework judges nothing (§5). */
   create(): IRagProvider;
-  /** A caller is known: the provider is obtained for them, with the check bound in. */
+  /** A caller is known: a facade over that shared provider, with the check bound in. */
   createFor(identity: SessionGraphIdentity, check: AccessCheck<CollectionRequest>): IRagProvider;
 }
+
+interface IDelegatedRagProviderSource {
+  readonly identityMode: 'delegated';
+  /** The only way in: there is no service identity to fall back to. */
+  createFor(identity: SessionGraphIdentity, check: AccessCheck<CollectionRequest>): IRagProvider;
+}
+
+type IRagProviderSource = IServiceRagProviderSource | IDelegatedRagProviderSource;
 ```
 
 **Why the check is bound at construction, not passed per call.** `IRag.query` and `IRagEditor.upsert` already take a `CallOptions`, so the check could ride along — but an optional per-call argument is forgettable, and a forgotten one means "no judgement" under §5. That is the hub's `?? 'anonymous'` failure in a new place. Bound at construction, it cannot be omitted by a call site.
 
 Under `identityMode: 'service'` that binding is a thin facade over one shared, service-credentialed provider — no extra connection, no pool per caller. Under `'delegated'` the provider behind it carries the caller's own credential. A consumer that supplies no check calls `create()` and gets exactly today's behaviour.
 
-The mode decides **who must filter**: under `service` the consumer's check is the *only* line of defence; under `delegated` the store enforces too and the check is the second. A consumer that will not accept the first case asserts `identityMode === 'delegated'` where it wires the source, and refuses to start otherwise — the framework does not refuse on its behalf (§1, rule 2).
+The mode decides **who must filter**: under `service` the consumer's check is the *only* line of defence; under `delegated` the store enforces too and the check is the second. A consumer that will not accept the first case types the seam as `IDelegatedRagProviderSource`, and a shared source does not compile there — the refusal is the consumer's, expressed in its own types, and the framework neither performs it nor prevents it.
+
+Why two members rather than one interface with an optional `create()`: a delegated-only store — HANA reached with the caller's JWT — has **no** service identity, so a `create()` on it would have nothing honest to return. Throwing at runtime where a discriminant gives a compile error is the trade this design refuses.
 
 | store | sees today | to see the caller |
 |---|---|---|
@@ -263,7 +272,7 @@ Who writes `attributes`: the component that knows the caller — the tool handle
 
 ### 6.4 Where the registry stands
 
-`SimpleRagRegistry` is shared across per-session builds and receives providers through `setProviderRegistry` (`llm-agent-libs/src/builder.ts:855`); its own comment explains why some collections opt into idempotent registration. A `delegated` source cannot work through that wiring: the registry outlives the identity. Either the registry becomes per-identity for delegated sources, or it holds the `RagProviderSource` and resolves per call — **open (§9.4)**.
+`SimpleRagRegistry` is shared across per-session builds and receives providers through `setProviderRegistry` (`llm-agent-libs/src/builder.ts:855`); its own comment explains why some collections opt into idempotent registration. Anything obtained through `createFor` is bound to one caller — under `delegated` by its credential, under `service` by the check in its facade — and cannot be registered in a registry that outlives that caller. This is not a delegation problem: it is true of every checked path. Either the registry becomes per-caller, or it holds the `IRagProviderSource` and resolves per call — **open (§9.4)**.
 
 ---
 
@@ -302,7 +311,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | package | change | breaking |
 |---|---|---|
 | `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive — nothing a consumer implements or receives changes |
-| `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `RagProviderSource`; registry wiring (§9.4) | additive |
+| `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `IRagProviderSource`; registry wiring (§9.4) | additive |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`; `IMcpServer` implementations for stdio and http | additive |
 | `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes`; ask the check when given one | additive |
@@ -318,8 +327,8 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 1. **HANA and Qdrant delegation.** Which `@sap/hana-client` properties carry a JWT; whether our Qdrant version supports claim-restricted tokens (§6.2).
 2. **SAP AI Core.** Whether the SDK accepts a token source at all; if not, `IBearerCredential` cannot be mandatory there and the `AICORE_SERVICE_KEY` fallback stays.
-3. **`SessionGraphIdentity`'s home** — `llm-agent-libs` today; moving it into `@mcp-abap-adt/llm-agent` lets `RagProviderSource` sit with the other contracts.
-4. **The registry under delegation** — per-identity registry, or a shared registry holding `RagProviderSource` (§6.4).
+3. **`SessionGraphIdentity`'s home** — `llm-agent-libs` today; moving it into `@mcp-abap-adt/llm-agent` lets `IRagProviderSource` sit with the other contracts.
+4. **The registry and `createFor`** — a provider obtained for one caller cannot live in a registry that outlives it. Per-caller registry, or a shared registry holding the `IRagProviderSource` and resolving per call (§6.4).
 5. **Who writes `attributes` at creation** — tool handler, consumer, or both; and the final signatures of `IRagRegistry.createCollection` / `IRagProvider.createCollection` (§6.3).
 6. **An optional marker on authenticated clients.** A seam *may* declare that it accepts only clients a factory produced, making "forgot the caller's credentials" a compile error. It must stay opt-in: mandatory, it would dictate policy. Precedent for the risk: cloud-llm-hub PR #236 (`fix(security): stop caching MCP tool results across callers`, open) — a `ToolCache` shared by every caller returned one user's ABAP result to another within 30 s, below the role check and below their own SAP connection.
 7. **`buildRagCollectionToolEntries`** — mounted by a consumer, or deleted.
@@ -334,7 +343,7 @@ Four independent changes under one umbrella; each gets its own plan. All four ar
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
-3. **RAG identity and attributes** — `RagProviderSource`, persisted opaque attributes, the two axes, registry wiring.
+3. **RAG identity and attributes** — `IRagProviderSource`, persisted opaque attributes, the two axes, registry wiring.
 4. **Text-logger acceptance** — `ITextLogger`, the boundary adapter and its levels (§7). Convergence to one name is deferred to the next major (§9.9).
 
 ---
