@@ -14,7 +14,8 @@
 
 import type { IEmbedder } from '../interfaces/rag.js';
 import { isBatchEmbedder, isBatchSizeLimited } from '../interfaces/rag.js';
-import type { ILogger } from '../logger/types.js';
+import type { AnyLogger } from '../logger/normalise-logger.js';
+import { normaliseLogger } from '../logger/normalise-logger.js';
 import {
   BatchChunkingEmbedder,
   DEFAULT_MAX_BATCH_SIZE,
@@ -64,13 +65,14 @@ export interface ComposeResilienceOptions {
   /** Provider-derived or default cap; never triggers the conflict check. */
   fallbackMaxBatchSize?: number;
   retry?: Partial<EmbedderRetryOptions>;
-  logger?: ILogger;
+  logger?: AnyLogger;
 }
 
 export function composeResilientEmbedder(
   inner: IEmbedder,
   options?: ComposeResilienceOptions,
 ): IEmbedder {
+  const log = options?.logger ? normaliseLogger(options.logger) : undefined;
   const existing = getResilienceMetadata(inner);
   if (existing) {
     const requested = options?.explicitMaxBatchSize;
@@ -78,7 +80,7 @@ export function composeResilientEmbedder(
     // hides the provider, so a derived value falls to the default and would
     // look like a conflict nobody configured. Only an explicit request counts.
     if (requested !== undefined && requested !== existing.maxBatchSize) {
-      options?.logger?.log({
+      log?.log({
         type: 'warning',
         traceId: 'embedder-resolution',
         message:

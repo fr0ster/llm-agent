@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  },
+  // This list is deliberately narrow, not a stand-in for a repo-wide
+  // "typecheck every test" config: pointing tsc at every test in
+  // llm-agent / llm-agent-libs surfaces 315 pre-existing errors in tests
+  // nothing has ever type-checked, which is a separate workstream. A new
+  // test added to either package that needs type-checking in CI must be
+  // added to this list by hand.
+  "include": [
+    "packages/llm-agent/src/logger/normalise-logger.test.ts",
+    "packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts",
+    "packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts",
+    "packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts"
+  ]
+}
