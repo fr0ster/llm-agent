@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (ESM, `.js` import specifiers), npm workspaces, `node:test` via `tsx` (`node --import tsx/esm --test 'src/**/*.test.ts'` per package, `npm test` fans out), Biome for lint and format.
 
-**Spec:** `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` (§3, §10.1; approved at `0eb7b766`)
+**Spec:** `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` (§3, §10.1; base `0eb7b766`)
 
 ## Global Constraints
 
@@ -16,6 +16,8 @@
 - **Deprecations are markers only:** `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients` and `mcpSharedClient` get `@deprecated` JSDoc and keep working until the next major. `closeBySession` is a local `Map` inside `buildSessionLifecycle`, not an option — nothing can be tagged on it, so it gets a code comment saying it serves the deprecated path only. `McpClientFactory` stays as the default implementation's factory (`mcpServerFromFactory` consumes it) and is deprecated **only** as the consumer-facing seam.
 - **Exactly one owner per server:** the builder starts what `withMcpServers` gave it and stops it in `closeFns`; the session factory starts what `mcpServerFactory` gave it and stops it on dispose. `buildAgent` on the session path receives **clients** and therefore uses `withMcpClients`, never `withMcpServers` — otherwise `stop()` runs twice.
 - **Reconnection stays with `IMcpConnectionStrategy`.** `start()` is called once per instance; the framework never restarts one.
+- **Typed stdio/http implementations are NOT in this workstream.** Spec §8's `llm-agent-mcp` row lists them beside `env`, but §3.3 says each demands its credential in its own constructor — and the credential contracts are workstream 2. This workstream ships the generic adapter (`mcpServerFromFactory`) and `env`; the typed implementations land with workstream 2, and §8's row has been amended to say so. Do not report §8 complete from this plan.
+- **A malformed descriptor set throws; it is never downgraded.** Descriptors here come from the caller's own `IMcpServer[]`, so a partly-filled set is a caller bug, and silently falling back to positional pairing would rename every tool from its `label` to `s${slotIndex}` (`buildNamespacedTools`, INTEGRATION.md:1858) with nothing reporting it. Spec §3.4 defines "none → positional" only.
 - **Descriptor invariant is unchanged** (`packages/llm-agent/src/interfaces/assert-client-descriptors.ts`): descriptors are all-or-none and their count equals the client count; `slotIndex` values are unique non-negative integers; `configuredSlotCount`, when given, must be strictly greater than the largest `slotIndex`.
 - **Teardown order on the new path:** `closePipeline` → `ragRegistry.closeSession` → `onDispose` (where its docstring already promises it) → `stop()` last.
 - All artifacts in English. Conventional Commits. Commit after every task.
@@ -133,6 +135,19 @@ test('start() twice throws rather than leaking the first client', async () => {
   await assert.rejects(() => server.start(), /already started/);
 });
 
+test('the adapter is single-use: start() after stop() throws', async () => {
+  const server = mcpServerFromFactory(
+    async () => ({ client: stubClient() }),
+    config,
+  );
+
+  await server.start();
+  await server.stop();
+  // `IMcpServer` says an implementation that cannot be restarted throws.
+  // This one cannot: reconnection is `IMcpConnectionStrategy`'s job.
+  await assert.rejects(() => server.start(), /already stopped/);
+});
+
 test('the descriptor is carried through untouched', () => {
   const server = mcpServerFromFactory(
     async () => ({ client: stubClient() }),
@@ -199,26 +214,35 @@ import type { IMcpServer } from './mcp-server.js';
  *
  * `stop()` is the `close` the factory returned; a factory that returns none
  * has nothing to stop.
+ *
+ * **Single-use.** Once stopped, this instance cannot be started again —
+ * reconnection is `IMcpConnectionStrategy`'s job, not a restarted server's.
+ * A `stop()` before any `start()` is a no-op and leaves the instance usable.
  */
 export function mcpServerFromFactory(
   factory: McpClientFactory,
   config: McpConnectionConfig,
   descriptor?: McpClientDescriptor,
 ): IMcpServer {
-  let started: { close?: () => Promise<void> | void } | undefined;
+  let state: 'idle' | 'started' | 'stopped' = 'idle';
+  let close: (() => Promise<void> | void) | undefined;
 
   return {
     ...(descriptor ? { descriptor } : {}),
     async start(): Promise<IMcpClient> {
-      if (started) throw new Error('IMcpServer already started');
+      if (state === 'started') throw new Error('IMcpServer already started');
+      if (state === 'stopped')
+        throw new Error('IMcpServer already stopped; build a new one');
       const result = await factory(config);
-      started = { close: result.close };
+      state = 'started';
+      close = result.close;
       return result.client;
     },
     async stop(): Promise<void> {
-      const close = started?.close;
-      started = undefined;
-      if (close) await close();
+      const pending = close;
+      close = undefined;
+      if (state === 'started') state = 'stopped';
+      if (pending) await pending();
     },
   };
 }
@@ -363,7 +387,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     assert.deepEqual(log, ['start:a', 'start:b', 'stop:a', 'stop:b']);
   });
 
-  it('a half-filled descriptor set is dropped rather than passed on', async () => {
+  it('a half-filled descriptor set throws instead of renaming tools behind the caller', async () => {
     const { SmartAgentBuilder } = await import('../builder.js');
     const log: string[] = [];
     const described: IMcpServer = {
@@ -374,20 +398,35 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
       async stop() {},
     };
 
-    // One server carries a descriptor, one does not. assertClientDescriptors
-    // requires all or none, so the pair is dropped and array position pairs.
-    const handle = await new SmartAgentBuilder({})
-      .withMainLlm(stubLlm())
-      .withMcpServers([described, stubServer('e', log)])
-      .build();
+    // One server carries a descriptor, one does not. Dropping the pair would
+    // silently re-namespace `abap__Search` to `s0__Search`, so this is a
+    // caller bug and must be loud.
+    await assert.rejects(
+      () =>
+        new SmartAgentBuilder({})
+          .withMainLlm(stubLlm())
+          .withMcpServers([described, stubServer('e', log)])
+          .build(),
+      /descriptor/i,
+    );
 
-    try {
-      const health = await handle.agent.healthCheck();
-      assert.ok(health.ok);
-      assert.equal(health.value.mcp.length, 2);
-    } finally {
-      await handle.close();
-    }
+    // Whatever was started before the throw is stopped again.
+    assert.deepEqual(log, ['start:e', 'stop:e']);
+  });
+
+  it('withMcpServers and withMcpClients together are a configuration error', async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const log: string[] = [];
+
+    await assert.rejects(
+      () =>
+        new SmartAgentBuilder({})
+          .withMainLlm(stubLlm())
+          .withMcpClients([stubMcpClient('c')])
+          .withMcpServers([stubServer('a', log)])
+          .build(),
+      /withMcpClients/,
+    );
   });
 
   it('withMcpClients is untouched: nothing is started, nothing is stopped', async () => {
@@ -432,7 +471,12 @@ Beside `withMcpClients` (line 339):
    * than handing over an already-connected client.
    *
    * Beside `withMcpClients`, never replacing it: a consumer that already holds
-   * clients keeps passing clients.
+   * clients keeps passing clients. Setting BOTH is a configuration error and
+   * `build()` throws, rather than one silently winning over the other.
+   *
+   * Every server must carry a `descriptor`, or none may — a partly-filled set
+   * throws, because dropping it would re-namespace tools from their `label`
+   * to `s${slotIndex}` with nothing reporting it.
    */
   withMcpServers(servers: IMcpServer[]): this {
     this._mcpServers = servers;
@@ -448,24 +492,42 @@ In `build()`, replace the opening of the injected-clients branch (line 986, `if 
 
 ```ts
     if (this._mcpServers) {
-      // Caller-provided servers: start each, keep its stop() for handle.close(),
-      // and take descriptors from the servers themselves. Auto-connect and
-      // vectorization are skipped, exactly as on the `withMcpClients` branch.
-      const started: IMcpClient[] = [];
-      for (const server of this._mcpServers) {
-        started.push(await server.start());
-        closeFns.push(() => server.stop());
-      }
-      mcpClients = started;
+      if (this._mcpClients)
+        throw new Error(
+          'withMcpServers and withMcpClients are mutually exclusive: pass clients you already hold, or servers this builder should start',
+        );
+
+      // A partly-filled descriptor set is a caller bug: dropping it would
+      // re-namespace every tool from its label to `s${slotIndex}`. Check
+      // before starting anything.
       const descriptors = this._mcpServers
         .map((s) => s.descriptor)
         .filter((d): d is McpClientDescriptor => d !== undefined);
-      mcpClientDescriptors =
-        descriptors.length === this._mcpServers.length ? descriptors : undefined;
+      if (descriptors.length !== 0 && descriptors.length !== this._mcpServers.length)
+        throw new Error(
+          `withMcpServers: ${descriptors.length} of ${this._mcpServers.length} servers carry a descriptor — descriptors are all or none`,
+        );
+
+      // Caller-provided servers: start each, keep its stop() for handle.close().
+      // Auto-connect and vectorization are skipped, exactly as on the
+      // `withMcpClients` branch.
+      const started: IMcpClient[] = [];
+      try {
+        for (const server of this._mcpServers) {
+          started.push(await server.start());
+          closeFns.push(() => server.stop());
+        }
+      } catch (err) {
+        // Stop what did start, so a failure half-way leaves no live child.
+        for (const fn of closeFns.splice(0)) await fn();
+        throw err;
+      }
+      mcpClients = started;
+      mcpClientDescriptors = descriptors.length > 0 ? descriptors : undefined;
     } else if (this._mcpClients) {
 ```
 
-The all-or-none rule is why a partial set becomes `undefined`: `assertClientDescriptors` requires the count to equal the client count, and array position is the documented fallback.
+`closeFns.splice(0)` is safe here because this branch runs before any other closer is registered; if the implementer finds `closeFns` already populated at this point, they must capture the starting length instead and unwind only their own entries. `assertClientDescriptors` still runs downstream and stays the last word on uniqueness and count.
 
 - [ ] **Step 5: Run the tests**
 
@@ -488,7 +550,7 @@ one owner starts it and the same owner stops it."
 ### Task 3: stdio passes its own environment
 
 **Files:**
-- Modify: `packages/llm-agent-mcp/src/client.ts` (`MCPClientConfig`, beside `command`/`args` at :66–67; the `StdioClientTransport` construction at :317)
+- Modify: `packages/llm-agent-mcp/src/client.ts` (`MCPClientConfig` opens at :79; its `command?`/`args?` pair is at :144–145, under the comment `For stdio: command and args to execute`; the `StdioClientTransport` construction is at :317)
 - Modify: `packages/llm-agent-mcp/src/factory.ts` (`toMcpClientWrapperConfig`)
 - Modify: `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` (`McpConnectionConfig`)
 - Create: `packages/llm-agent-mcp/src/__tests__/stdio-env.test.ts`
@@ -545,7 +607,7 @@ In `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts`, inside `McpCo
   env?: Record<string, string>;
 ```
 
-In `packages/llm-agent-mcp/src/client.ts`, inside `MCPClientConfig`, after `args?: string[];`:
+In `packages/llm-agent-mcp/src/client.ts`, inside `MCPClientConfig`, after the `command?`/`args?` pair at :144–145:
 
 ```ts
   /** Environment for the spawned stdio child. See `McpConnectionConfig.env`. */
@@ -735,6 +797,70 @@ test('without mcpServerFactory nothing changes: mcpClientFactory is used and no 
   assert.deepEqual(order, ['closeSession', 'onDispose']);
 });
 
+test('adopting mcpServerFactory alone compiles and runs: no deprecated stub needed', async () => {
+  const factory = new SessionGraphFactory({
+    mcpServerFactory: () => [
+      {
+        async start() {
+          return stubClient();
+        },
+        async stop() {},
+      },
+    ],
+    toolsRag: undefined,
+    ragRegistry: makeRagRegistry(),
+    buildAgent: async (parts) => {
+      assert.equal(parts.mcpClients.length, 1);
+      return undefined;
+    },
+  });
+
+  const graph = await factory.build({ sessionId: 's1' });
+  await graph.dispose();
+});
+
+test('no factory at all is a configuration error, named in the message', async () => {
+  const factory = new SessionGraphFactory({
+    toolsRag: undefined,
+    ragRegistry: makeRagRegistry(),
+    buildAgent: async () => undefined,
+  });
+
+  await assert.rejects(
+    () => factory.build({ sessionId: 's1' }),
+    /mcpServerFactory/,
+  );
+});
+
+test('a partly-filled descriptor set throws before any server is started', async () => {
+  let started = 0;
+  const factory = new SessionGraphFactory({
+    mcpServerFactory: () => [
+      {
+        descriptor: { slotIndex: 0, label: 'abap' },
+        async start() {
+          started++;
+          return stubClient();
+        },
+        async stop() {},
+      },
+      {
+        async start() {
+          started++;
+          return stubClient();
+        },
+        async stop() {},
+      },
+    ],
+    toolsRag: undefined,
+    ragRegistry: makeRagRegistry(),
+    buildAgent: async () => undefined,
+  });
+
+  await assert.rejects(() => factory.build({ sessionId: 's1' }), /descriptor/i);
+  assert.equal(started, 0);
+});
+
 test('a failing stop is surfaced, not thrown', async () => {
   const warnings: string[] = [];
   const factory = new SessionGraphFactory({
@@ -797,14 +923,31 @@ In `SessionGraphFactoryOptions`, above `mcpClientFactory`:
   readonly closePipeline?: (sessionId: string) => Promise<void>;
 ```
 
-Mark the two older factories deprecated, without changing them:
+Mark the two older factories deprecated **and make `mcpClientFactory` optional**, so adopting the new seam does not force a consumer to keep a dummy deprecated callback forever:
 
 ```ts
-  /** @deprecated Use `mcpServerFactory`, which also owns lifetime and receives the identity. */
-  readonly mcpClientFactory: (identity: SessionGraphIdentity) => IMcpClient[];
+  /**
+   * @deprecated Use `mcpServerFactory`, which also owns lifetime and receives
+   * the identity. Optional since this release: supply exactly one of
+   * `mcpServerFactory`, `mcpClientFactoryWithDescriptors` or this.
+   */
+  readonly mcpClientFactory?: (identity: SessionGraphIdentity) => IMcpClient[];
 ```
 
-and the same one-line `@deprecated` tag above `mcpClientFactoryWithDescriptors`.
+and the same `@deprecated` tag above `mcpClientFactoryWithDescriptors`.
+
+Widening a required field to optional is additive — every existing consumer still compiles — but it means `build()` must now say so when a caller supplies none of the three. Add that check at the top of `build()`:
+
+```ts
+    if (
+      !this.opts.mcpServerFactory &&
+      !this.opts.mcpClientFactoryWithDescriptors &&
+      !this.opts.mcpClientFactory
+    )
+      throw new Error(
+        'SessionGraphFactory needs one of mcpServerFactory, mcpClientFactoryWithDescriptors or mcpClientFactory',
+      );
+```
 
 - [ ] **Step 4: Start the servers in `build()`**
 
@@ -817,17 +960,33 @@ In `build()`, replace the client-resolution block with:
     const startedServers: IMcpServer[] = [];
     if (this.opts.mcpServerFactory) {
       const servers = this.opts.mcpServerFactory(identity);
-      const clients: IMcpClient[] = [];
-      for (const server of servers) {
-        clients.push(await server.start());
-        startedServers.push(server);
-      }
-      mcpClients = clients;
       const descriptors = servers
         .map((s) => s.descriptor)
         .filter((d): d is McpClientDescriptor => d !== undefined);
-      mcpClientDescriptors =
-        descriptors.length === servers.length ? descriptors : undefined;
+      // All or none — see the builder's identical check and why it throws.
+      if (descriptors.length !== 0 && descriptors.length !== servers.length)
+        throw new Error(
+          `mcpServerFactory: ${descriptors.length} of ${servers.length} servers carry a descriptor — descriptors are all or none`,
+        );
+
+      const clients: IMcpClient[] = [];
+      try {
+        for (const server of servers) {
+          clients.push(await server.start());
+          startedServers.push(server);
+        }
+      } catch (err) {
+        for (const server of startedServers.splice(0)) {
+          try {
+            await server.stop();
+          } catch {
+            // The original failure is what the caller needs to see.
+          }
+        }
+        throw err;
+      }
+      mcpClients = clients;
+      mcpClientDescriptors = descriptors.length > 0 ? descriptors : undefined;
       // Nothing was filtered out of a configured set, so there is no original
       // count to preserve; array position is the pairing.
       configuredSlotCount = undefined;
@@ -837,7 +996,8 @@ In `build()`, replace the client-resolution block with:
       mcpClientDescriptors = built.clientDescriptors;
       configuredSlotCount = built.configuredSlotCount;
     } else {
-      mcpClients = this.opts.mcpClientFactory(identity);
+      // The guard at the top of build() has already ruled out "none set".
+      mcpClients = this.opts.mcpClientFactory?.(identity) ?? [];
     }
 ```
 
@@ -996,6 +1156,35 @@ describe('buildSessionLifecycle — per-session MCP servers', () => {
     }
   });
 
+  it('mcpSharedClient does not suppress the server factory', async () => {
+    const seen: string[] = [];
+
+    const lifecycle = buildSessionLifecycle({
+      ...base,
+      mcpSharedClient: true,
+      buildPerSessionMcpServers: (identity): IMcpServer[] => {
+        seen.push(identity.sessionId);
+        return [
+          {
+            async start() {
+              return stubClient();
+            },
+            async stop() {},
+          },
+        ];
+      },
+    });
+
+    try {
+      await lifecycle.acquire('s1');
+      // `mcpSharedClient` only ever gated `buildPerSessionMcpClients`; a
+      // caller wanting one shared server returns the same instance each time.
+      assert.deepEqual(seen, ['s1']);
+    } finally {
+      await lifecycle.disposeAll();
+    }
+  });
+
   it('without it, the existing per-session client builder still runs', async () => {
     let clientBuilderCalls = 0;
 
@@ -1104,9 +1293,13 @@ own MCP lifetime, and buildPerSessionMcpClients never saw who was asking."
 
 ### Task 6: Tell consumers what they gained
 
+Documentation is not only the changelog: every doc describing the behaviour that changed is updated in this task, not later.
+
 **Files:**
 - Modify: `CHANGELOG.md` (the `[Unreleased]` section)
-- Modify: `docs/INTEGRATION.md`
+- Modify: `docs/INTEGRATION.md` (new section; and `McpConnectionConfig` is already discussed at :1852, so `env` belongs in that field's company)
+- Modify: `docs/ARCHITECTURE.md` (`### 5. MCP Layer`, which opens at :427 — the `Reconnection` bullet at :445 is where "who starts and stops a server" now needs one sentence)
+- Modify: `packages/llm-agent-mcp/README.md` (`## Exports` at :8 and the stdio config in `## Usage` at :15 — `env` is a new field a reader of that file must see)
 
 - [ ] **Step 1: CHANGELOG entry**
 
@@ -1122,6 +1315,10 @@ Under `## [Unreleased]`, add:
   `McpClientFactory`, whose `close` becomes `stop()`.
 - **`SmartAgentBuilder.withMcpServers`** — `build()` starts them and
   `handle.close()` stops them, through the `closeFns` it already awaited.
+  Passing both this and `withMcpClients` is a configuration error rather than
+  one silently winning, and a set where only some servers carry a `descriptor`
+  throws — dropping it would re-namespace tools from their `label` to
+  `s${slotIndex}` with nothing reporting it.
 - **`SessionGraphFactoryOptions.mcpServerFactory`** — per-caller servers, given
   the identity that `buildPerSessionMcpClients` never received, started before
   the agent is built and stopped last on dispose.
@@ -1157,6 +1354,10 @@ the framework servers when you know how yours is started — and, for a stdio
 child, with what environment:
 
 ```ts
+import { mcpServerFromFactory } from '@mcp-abap-adt/llm-agent';
+import { createDefaultMcpClient } from '@mcp-abap-adt/llm-agent-mcp';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+
 const server = mcpServerFromFactory(createDefaultMcpClient, {
   type: 'stdio',
   command: 'my-mcp',
@@ -1174,6 +1375,8 @@ await handle.close();   // stops every server it started
 Per session, the factory does the same and knows who is asking:
 
 ```ts
+import { SessionGraphFactory } from '@mcp-abap-adt/llm-agent-libs';
+
 new SessionGraphFactory({
   mcpServerFactory: (identity) => [serverFor(identity.userId)],
   closePipeline: async (sessionId) => pipelines.get(sessionId)?.close(),
@@ -1187,13 +1390,30 @@ Teardown then runs in one order: `closePipeline`, the session's RAG
 `closeSession`, your `onDispose`, and the servers' `stop()` last.
 ````
 
-- [ ] **Step 3: Verify and commit**
+- [ ] **Step 3: ARCHITECTURE.md and the MCP README**
+
+In `docs/ARCHITECTURE.md`, in `### 5. MCP Layer`, beside the `Reconnection` bullet:
+
+```markdown
+- **Lifetime** — `IMcpServer` (`start`/`stop`, optional `descriptor`) is how a
+  caller hands over a server the framework should own: `withMcpServers` starts
+  them in `build()` and stops them in `handle.close()`;
+  `SessionGraphFactory.mcpServerFactory(identity)` does the same per session and
+  stops them last on dispose. Using a server stays `IMcpClient`, and
+  reconnection stays `IMcpConnectionStrategy`'s — a stopped server is not
+  restarted.
+```
+
+In `packages/llm-agent-mcp/README.md`, add `env` to the stdio example under `## Usage` and one line under `## Exports` noting that `createDefaultMcpClient` is what `mcpServerFromFactory` wraps.
+
+- [ ] **Step 4: Verify and commit**
 
 Run: `npm run lint:check && npm run build && npm test`
 Expected: clean across all workspaces.
 
 ```bash
-git add CHANGELOG.md docs/INTEGRATION.md
+git add CHANGELOG.md docs/INTEGRATION.md docs/ARCHITECTURE.md \
+        packages/llm-agent-mcp/README.md
 git commit -m "docs: the MCP lifetime seam, and what it replaces"
 ```
 
