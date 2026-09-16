@@ -49,8 +49,11 @@ Nothing is removed; all of these keep working until the next major.
   `mcpClientFactoryWithDescriptors` — superseded by `mcpServerFactory`.
 - `buildPerSessionMcpClients` and `mcpSharedClient` in
   `@mcp-abap-adt/llm-agent-server-libs` — superseded by `buildPerSessionMcpServers`.
-- `McpClientFactory` as a consumer-facing seam. It stays as the default
-  implementation's factory, which `mcpServerFromFactory` consumes.
+- `McpClientFactory` as a consumer-facing seam — prefer `IMcpServer` /
+  `mcpServerFromFactory` in new code. Deprecated by this documentation only,
+  not by an `@deprecated` tag on the type: `mcpServerFromFactory` itself takes
+  one as its `factory` parameter, so tagging it would also flag that still-
+  current, still-supported adapter's own signature.
 
 ## [26.0.0] — 2026-09-15
 

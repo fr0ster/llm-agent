@@ -34,10 +34,14 @@ export interface McpConnectionConfig {
   command?: string;
   args?: string[];
   /**
-   * Environment for a spawned stdio child. When omitted the SDK falls back to
-   * `getDefaultEnvironment()` — a sanitised subset of THIS process's
-   * environment — which every child of every caller then shares. Pass the
-   * caller's own values here; never in `args`, which are visible in `ps`.
+   * Environment for a spawned stdio child. The SDK does not substitute this
+   * for its own defaults: it always spawns with
+   * `{ ...getDefaultEnvironment(), ...env }` (`StdioClientTransport`, the
+   * MCP SDK) — a sanitised subset of THIS process's environment merged with,
+   * and overridden by, whatever is set here. Omitting `env` means every
+   * child of every caller shares that same host-default subset; it does NOT
+   * mean no environment at all. Pass the caller's own values here; never in
+   * `args`, which are visible in `ps`.
    */
   env?: Record<string, string>;
   /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */

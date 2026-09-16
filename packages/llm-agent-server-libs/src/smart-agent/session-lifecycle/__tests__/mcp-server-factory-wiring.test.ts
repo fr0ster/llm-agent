@@ -94,6 +94,71 @@ describe('buildSessionLifecycle — per-session MCP servers', () => {
     }
   });
 
+  it('forwards closePipeline to the SessionGraphFactory, run before closeSession on dispose (#7)', async () => {
+    const order: string[] = [];
+    const ragRegistryRecording = {
+      closeSession: async () => {
+        order.push('closeSession');
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagRegistry;
+
+    const lifecycle = buildSessionLifecycle({
+      ...base,
+      ragRegistry: ragRegistryRecording,
+      buildPerSessionMcpServers: (): IMcpServer[] => [
+        {
+          async start() {
+            return stubClient();
+          },
+          async stop() {
+            order.push('stop');
+          },
+        },
+      ],
+      closePipeline: async (sessionId) => {
+        order.push(`closePipeline:${sessionId}`);
+      },
+    });
+
+    const graph = await lifecycle.acquire('s1');
+    lifecycle.release('s1', graph);
+    await lifecycle.disposeAll();
+
+    assert.deepEqual(order, ['closePipeline:s1', 'closeSession', 'stop']);
+  });
+
+  it('without closePipeline, nothing changes: dispose runs closeSession then stop', async () => {
+    const order: string[] = [];
+    const ragRegistryRecording = {
+      closeSession: async () => {
+        order.push('closeSession');
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagRegistry;
+
+    const lifecycle = buildSessionLifecycle({
+      ...base,
+      ragRegistry: ragRegistryRecording,
+      buildPerSessionMcpServers: (): IMcpServer[] => [
+        {
+          async start() {
+            return stubClient();
+          },
+          async stop() {
+            order.push('stop');
+          },
+        },
+      ],
+    });
+
+    const graph = await lifecycle.acquire('s1');
+    lifecycle.release('s1', graph);
+    await lifecycle.disposeAll();
+
+    assert.deepEqual(order, ['closeSession', 'stop']);
+  });
+
   it('without it, the existing per-session client builder still runs', async () => {
     let clientBuilderCalls = 0;
 

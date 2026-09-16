@@ -144,6 +144,49 @@ test('a throwing closePipeline does not block closeSession, onDispose or stop', 
   assert.deepEqual(order, ['closeSession', 'onDispose', 'stop']);
 });
 
+test('a REJECTING closeSession does not block onDispose or stop (#11)', async () => {
+  const order: string[] = [];
+  const ragRegistry = {
+    closeSession: async () => {
+      order.push('closeSession');
+      throw new Error('registry unavailable');
+    },
+  } as unknown as IRagRegistry;
+
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: () => [],
+    mcpServerFactory: () => [
+      {
+        async start() {
+          return stubClient();
+        },
+        async stop() {
+          order.push('stop');
+        },
+      },
+    ],
+    closePipeline: async () => {
+      order.push('closePipeline');
+    },
+    onDispose: async () => {
+      order.push('onDispose');
+    },
+    toolsRag: undefined,
+    ragRegistry,
+    buildAgent: async () => undefined,
+  });
+
+  const graph = await factory.build({ sessionId: 's1' });
+  await graph.dispose();
+
+  assert.deepEqual(order, [
+    'closePipeline',
+    'closeSession',
+    'onDispose',
+    'stop',
+  ]);
+});
+
 test('without mcpServerFactory nothing changes: mcpClientFactory is used and no stop runs', async () => {
   const order: string[] = [];
   const ragRegistry = {
@@ -268,6 +311,27 @@ test('a start that fails half-way stops the servers already started', async () =
     /spawn failed/,
   );
   assert.deepEqual(log, ['start:a', 'stop:a']);
+});
+
+test('buildAgent throwing AFTER every server started stops them all, then rethrows the original error', async () => {
+  const log: string[] = [];
+  const factory = new SessionGraphFactory({
+    mcpServerFactory: () => [stubServer('a', log), stubServer('b', log)],
+    toolsRag: undefined,
+    ragRegistry: makeRagRegistry(),
+    buildAgent: async () => {
+      throw new Error('model validation failed');
+    },
+  });
+
+  await assert.rejects(
+    () => factory.build({ sessionId: 's1' }),
+    /model validation failed/,
+  );
+  // Both servers started (buildAgent runs only after the start loop), and
+  // both must be stopped — nothing holds a reference to them once build()
+  // has thrown, so a server left running here would be leaked forever.
+  assert.deepEqual(log, ['start:a', 'start:b', 'stop:a', 'stop:b']);
 });
 
 test('a failing stop is surfaced, not thrown', async () => {

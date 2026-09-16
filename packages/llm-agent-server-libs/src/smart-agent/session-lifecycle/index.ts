@@ -107,10 +107,25 @@ export interface SessionLifecycleOptions {
    * receives the identity, and `SessionGraphFactory` owns start and stop, so
    * this module keeps no `close` of its own.
    *
-   * `mcpSharedClient` does not apply: a caller that wants one shared server
-   * returns the same instance from every call.
+   * `mcpSharedClient` does not apply here. Sharing one server across sessions
+   * would require an `IMcpServer` whose `start`/`stop` are refcounted (start
+   * returns the existing client and bumps a count, stop decrements it and
+   * only actually stops at zero); `mcpServerFromFactory` is single-use by
+   * contract, NOT such an implementation — session 2's `start()` throws
+   * `already started` while session 1 is live, and disposing session 1 would
+   * stop an instance session 2 is still using. Every call to this factory
+   * must return servers this session alone owns.
    */
   buildPerSessionMcpServers?: (identity: SessionGraphIdentity) => IMcpServer[];
+  /**
+   * Per-session teardown that must run BEFORE the session's RAG collections
+   * are deleted — forwarded to `SessionGraphFactory` unchanged. Lets an
+   * assembly using `buildPerSessionMcpServers` opt into the safer teardown
+   * order (close a pipeline still in flight before its collections vanish
+   * from under it), the same way `onDispose`/`buildPerSessionMcpServers` are
+   * already forwarded.
+   */
+  closePipeline?: (sessionId: string) => Promise<void>;
 }
 
 /**
@@ -176,6 +191,7 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
     ragRegistry: opts.ragRegistry,
     buildAgent: opts.buildAgent,
     logger: opts.logger,
+    ...(opts.closePipeline ? { closePipeline: opts.closePipeline } : {}),
     onDispose: async (sessionId) => {
       const close = closeBySession.get(sessionId);
       if (close) {

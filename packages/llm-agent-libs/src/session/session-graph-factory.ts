@@ -11,6 +11,7 @@ import type { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
+import { stopAll } from '../util/stop-all.js';
 import { SessionGraph } from './session-graph.js';
 
 export interface SessionGraphIdentity {
@@ -168,13 +169,9 @@ export class SessionGraphFactory {
           startedServers.push(server);
         }
       } catch (err) {
-        for (const server of startedServers.splice(0)) {
-          try {
-            await server.stop();
-          } catch {
-            // The original failure is what the caller needs to see.
-          }
-        }
+        await stopAll(
+          startedServers.splice(0).map((server) => () => server.stop()),
+        );
         throw err;
       }
       mcpClients = clients;
@@ -191,92 +188,121 @@ export class SessionGraphFactory {
       // The guard at the top of build() has already ruled out "none set".
       mcpClients = this.opts.mcpClientFactory?.(identity) ?? [];
     }
-    const agent = await this.opts.buildAgent({
-      sessionId: identity.sessionId,
-      mcpClients,
-      mcpClientDescriptors,
-      configuredSlotCount,
-      toolsRag: this.opts.toolsRag,
-      ragRegistry: this.opts.ragRegistry,
-      logger,
-    });
+    // `buildAgent` runs a full `SmartAgentBuilder.build()` — model validation,
+    // network work — and can throw. When it does, no `SessionGraph` is
+    // constructed, so `dispose()` never runs and `startedServers` becomes
+    // unreachable: stop them here, on the ORIGINAL failure, before rethrowing.
+    let agent: SmartAgent | undefined;
+    let graph: SessionGraph;
+    try {
+      agent = await this.opts.buildAgent({
+        sessionId: identity.sessionId,
+        mcpClients,
+        mcpClientDescriptors,
+        configuredSlotCount,
+        toolsRag: this.opts.toolsRag,
+        ragRegistry: this.opts.ragRegistry,
+        logger,
+      });
 
-    return new SessionGraph({
-      sessionId: identity.sessionId,
-      toolAvailability,
-      pendingToolResults,
-      logger,
-      agent,
-      // Reuse the EXISTING registry teardown — closes scope:session collections
-      // for this sessionId; global/user collections survive (spec A.4). The
-      // Result<void, RagError> is INSPECTED here — a failed close is surfaced
-      // via the optional logger (or console.warn fallback), never silently
-      // dropped (review MEDIUM #2).
-      dispose: async (sessionId) => {
-        // Single sink for every best-effort teardown failure below: routes to
-        // the configured logger, or console.warn when there is none. Each call
-        // site's two message strings are unchanged from before this helper
-        // existed — the teardown tests assert on them.
-        const warn = (logMessage: string, consoleMessage: string) => {
-          if (this.opts.logger) {
-            this.opts.logger.log({
-              type: 'warning',
-              traceId: `session:${sessionId}`,
-              message: logMessage,
-            });
-          } else {
-            console.warn(consoleMessage);
-          }
-        };
+      graph = new SessionGraph({
+        sessionId: identity.sessionId,
+        toolAvailability,
+        pendingToolResults,
+        logger,
+        agent,
+        // Reuse the EXISTING registry teardown — closes scope:session collections
+        // for this sessionId; global/user collections survive (spec A.4). The
+        // Result<void, RagError> is INSPECTED here — a failed close is surfaced
+        // via the optional logger (or console.warn fallback), never silently
+        // dropped (review MEDIUM #2).
+        dispose: async (sessionId) => {
+          // Single sink for every best-effort teardown failure below: routes to
+          // the configured logger, or console.warn when there is none. Each call
+          // site's two message strings are unchanged from before this helper
+          // existed — the teardown tests assert on them.
+          const warn = (logMessage: string, consoleMessage: string) => {
+            if (this.opts.logger) {
+              this.opts.logger.log({
+                type: 'warning',
+                traceId: `session:${sessionId}`,
+                message: logMessage,
+              });
+            } else {
+              console.warn(consoleMessage);
+            }
+          };
 
-        // Runs first: a pipeline still in flight must not write into a session
-        // collection that `closeSession` is about to delete. Best-effort, like
-        // every other step here.
-        if (this.opts.closePipeline) {
+          // Runs first: a pipeline still in flight must not write into a session
+          // collection that `closeSession` is about to delete. Best-effort, like
+          // every other step here.
+          if (this.opts.closePipeline) {
+            try {
+              await this.opts.closePipeline(sessionId);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(
+                `session_close_pipeline_failed: ${message}`,
+                `[session] closePipeline(${sessionId}) failed: ${message}`,
+              );
+            }
+          }
+          // Best-effort like every other step here: a REJECTING closeSession
+          // must not skip onDispose/stop below it, exactly like a resolved
+          // `{ ok: false }` result must not (handled right underneath). Both
+          // cases route through the same two message strings — unchanged —
+          // since the pre-existing teardown tests assert on them.
           try {
-            await this.opts.closePipeline(sessionId);
+            const res = await this.opts.ragRegistry.closeSession(sessionId);
+            if (!res.ok) {
+              const message = res.error?.message ?? String(res.error);
+              warn(
+                `session_close_failed: ${message}`,
+                `[session] closeSession(${sessionId}) failed: ${message}`,
+              );
+            }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             warn(
-              `session_close_pipeline_failed: ${message}`,
-              `[session] closePipeline(${sessionId}) failed: ${message}`,
+              `session_close_failed: ${message}`,
+              `[session] closeSession(${sessionId}) failed: ${message}`,
             );
           }
-        }
-        const res = await this.opts.ragRegistry.closeSession(sessionId);
-        if (!res.ok) {
-          const message = res.error?.message ?? String(res.error);
-          warn(
-            `session_close_failed: ${message}`,
-            `[session] closeSession(${sessionId}) failed: ${message}`,
-          );
-        }
-        // Host-supplied per-session teardown (e.g. pipeline IPipelineInstance.close).
-        // Best-effort: a failure here must not crash session disposal.
-        if (this.opts.onDispose) {
-          try {
-            await this.opts.onDispose(sessionId);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            warn(
-              `session_dispose_hook_failed: ${message}`,
-              `[session] onDispose(${sessionId}) failed: ${message}`,
-            );
+          // Host-supplied per-session teardown (e.g. pipeline IPipelineInstance.close).
+          // Best-effort: a failure here must not crash session disposal.
+          if (this.opts.onDispose) {
+            try {
+              await this.opts.onDispose(sessionId);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(
+                `session_dispose_hook_failed: ${message}`,
+                `[session] onDispose(${sessionId}) failed: ${message}`,
+              );
+            }
           }
-        }
-        // Last: the clients outlive the pipeline that was still calling them.
-        for (const server of startedServers) {
-          try {
-            await server.stop();
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            warn(
-              `session_mcp_stop_failed: ${message}`,
-              `[session] mcp stop(${sessionId}) failed: ${message}`,
-            );
+          // Last: the clients outlive the pipeline that was still calling them.
+          for (const server of startedServers) {
+            try {
+              await server.stop();
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(
+                `session_mcp_stop_failed: ${message}`,
+                `[session] mcp stop(${sessionId}) failed: ${message}`,
+              );
+            }
           }
-        }
-      },
-    });
+        },
+      });
+    } catch (err) {
+      // `buildAgent` (or, in principle, the `SessionGraph` construction above)
+      // threw before a `SessionGraph` exists to own teardown — nothing else
+      // will ever stop these servers. Stop them here, on the ORIGINAL error.
+      await stopAll(startedServers.map((server) => () => server.stop()));
+      throw err;
+    }
+
+    return graph;
   }
 }

@@ -1763,6 +1763,27 @@ new SessionGraphFactory({
 Teardown then runs in one order: `closePipeline`, the session's RAG
 `closeSession`, your `onDispose`, and the servers' `stop()` last.
 
+**Caveats — same shape as `withMcpClients()`, plus its own:**
+
+- `withMcpServers()` skips auto-connect and tool vectorization too — the exact
+  same contract as `withMcpClients()` above. The builder starts each server
+  (`server.start()`) and hands the resulting `IMcpClient` straight to the
+  pipeline; it does not vectorize tools for you.
+- Passing both `withMcpServers()` and `withMcpClients()` on the same builder is
+  a configuration error — `build()` throws rather than one silently winning
+  over the other. Pick the seam that matches what you're holding: a client you
+  already connected, or a server this builder should start.
+- Every server in the array must carry a `descriptor`, or none may — a
+  partly-filled set throws before anything starts, because dropping it would
+  silently re-namespace every tool from its `label` to `s${slotIndex}` with
+  nothing reporting it.
+- A consumer that needs to FILTER a configured set at request time (e.g. drop
+  an unhealthy slot while the rest keep their ORIGINAL `slotIndex`) must stay
+  on `mcpClientFactoryWithDescriptors` at the `SessionGraphFactory` layer:
+  `mcpServerFactory` always resolves with `configuredSlotCount: undefined`,
+  because a caller-owned server set has no "some slots were filtered out of a
+  larger configured whole" to preserve — array position IS the pairing.
+
 ## IMcpConnectionStrategy — MCP reconnection
 
 By default the agent starts with an empty tool catalog if the MCP server is unavailable at startup. `IMcpConnectionStrategy` solves this by letting the agent re-resolve its MCP clients on every request.
@@ -1891,7 +1912,7 @@ const defaultToolNamespace: IToolNamespace = {
 };
 ```
 
-`prefix` comes from the server's config `name` (`mcp[].name` in YAML / `McpConnectionConfig.name` programmatically) when set, else `s${slotIndex}` (the server's stable configured-array position). `mcp[].name` must be non-empty, match `^[a-zA-Z0-9_-]+$`, and be unique across all configured servers — an invalid or duplicate label fails config parsing before any connection is attempted. Two servers with `mcp: [{ ..., name: primary }, { ..., name: secondary }]` both exposing `Search` yield `primary__Search` / `secondary__Search`; without `name`, the same collision yields `s0__Search` / `s1__Search`.
+`prefix` comes from the server's config `name` (`mcp[].name` in YAML / `McpConnectionConfig.name` programmatically) when set, else `s${slotIndex}` (the server's stable configured-array position). `mcp[].name` must be non-empty, match `^[a-zA-Z0-9_-]+$`, and be unique across all configured servers — an invalid or duplicate label fails config parsing before any connection is attempted. Two servers with `mcp: [{ ..., name: primary }, { ..., name: secondary }]` both exposing `Search` yield `primary__Search` / `secondary__Search`; without `name`, the same collision yields `s0__Search` / `s1__Search`. See also [Owning an MCP server's lifetime](#owning-an-mcp-servers-lifetime) — `withMcpServers()`/`IMcpServer.descriptor` threads the same `{ slotIndex, label }` shape through when the builder starts the server itself rather than connecting to an already-configured one.
 
 **UX note:** the model only ever sees a namespaced name on a genuine collision. A uniquely-named tool from a single server, or from several servers with no overlapping names, is always exposed bare — this mechanism is invisible until a collision actually happens.
 
