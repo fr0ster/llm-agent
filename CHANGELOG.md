@@ -29,6 +29,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`SessionGraphFactoryOptions.mcpServerFactory`** — per-caller servers, given
   the identity that `buildPerSessionMcpClients` never received, started before
   the agent is built and stopped last on dispose.
+- **`SessionLifecycleOptions.buildPerSessionMcpServers`** (`@mcp-abap-adt/llm-agent-server-libs`)
+  — the server-libs counterpart: takes the identity, and `SessionGraphFactory`
+  owns start and stop, so this module keeps no `close` of its own. Supersedes
+  `buildPerSessionMcpClients`.
 - **`SessionGraphFactoryOptions.closePipeline`** — teardown that runs before the
   session's RAG collections are deleted, so a pipeline still in flight cannot
   write into a collection being removed. `onDispose` keeps its documented place
@@ -44,7 +48,7 @@ Nothing is removed; all of these keep working until the next major.
 - `SessionGraphFactoryOptions.mcpClientFactory` and
   `mcpClientFactoryWithDescriptors` — superseded by `mcpServerFactory`.
 - `buildPerSessionMcpClients` and `mcpSharedClient` in
-  `@mcp-abap-adt/llm-agent-server-libs`.
+  `@mcp-abap-adt/llm-agent-server-libs` — superseded by `buildPerSessionMcpServers`.
 - `McpClientFactory` as a consumer-facing seam. It stays as the default
   implementation's factory, which `mcpServerFromFactory` consumes.
 
