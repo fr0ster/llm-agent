@@ -213,6 +213,22 @@ export class SessionGraphFactory {
       // via the optional logger (or console.warn fallback), never silently
       // dropped (review MEDIUM #2).
       dispose: async (sessionId) => {
+        // Single sink for every best-effort teardown failure below: routes to
+        // the configured logger, or console.warn when there is none. Each call
+        // site's two message strings are unchanged from before this helper
+        // existed — the teardown tests assert on them.
+        const warn = (logMessage: string, consoleMessage: string) => {
+          if (this.opts.logger) {
+            this.opts.logger.log({
+              type: 'warning',
+              traceId: `session:${sessionId}`,
+              message: logMessage,
+            });
+          } else {
+            console.warn(consoleMessage);
+          }
+        };
+
         // Runs first: a pipeline still in flight must not write into a session
         // collection that `closeSession` is about to delete. Best-effort, like
         // every other step here.
@@ -221,33 +237,19 @@ export class SessionGraphFactory {
             await this.opts.closePipeline(sessionId);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            if (this.opts.logger) {
-              this.opts.logger.log({
-                type: 'warning',
-                traceId: `session:${sessionId}`,
-                message: `session_close_pipeline_failed: ${message}`,
-              });
-            } else {
-              console.warn(
-                `[session] closePipeline(${sessionId}) failed: ${message}`,
-              );
-            }
+            warn(
+              `session_close_pipeline_failed: ${message}`,
+              `[session] closePipeline(${sessionId}) failed: ${message}`,
+            );
           }
         }
         const res = await this.opts.ragRegistry.closeSession(sessionId);
         if (!res.ok) {
           const message = res.error?.message ?? String(res.error);
-          if (this.opts.logger) {
-            this.opts.logger.log({
-              type: 'warning',
-              traceId: `session:${sessionId}`,
-              message: `session_close_failed: ${message}`,
-            });
-          } else {
-            console.warn(
-              `[session] closeSession(${sessionId}) failed: ${message}`,
-            );
-          }
+          warn(
+            `session_close_failed: ${message}`,
+            `[session] closeSession(${sessionId}) failed: ${message}`,
+          );
         }
         // Host-supplied per-session teardown (e.g. pipeline IPipelineInstance.close).
         // Best-effort: a failure here must not crash session disposal.
@@ -256,17 +258,10 @@ export class SessionGraphFactory {
             await this.opts.onDispose(sessionId);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            if (this.opts.logger) {
-              this.opts.logger.log({
-                type: 'warning',
-                traceId: `session:${sessionId}`,
-                message: `session_dispose_hook_failed: ${message}`,
-              });
-            } else {
-              console.warn(
-                `[session] onDispose(${sessionId}) failed: ${message}`,
-              );
-            }
+            warn(
+              `session_dispose_hook_failed: ${message}`,
+              `[session] onDispose(${sessionId}) failed: ${message}`,
+            );
           }
         }
         // Last: the clients outlive the pipeline that was still calling them.
@@ -275,17 +270,10 @@ export class SessionGraphFactory {
             await server.stop();
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            if (this.opts.logger) {
-              this.opts.logger.log({
-                type: 'warning',
-                traceId: `session:${sessionId}`,
-                message: `session_mcp_stop_failed: ${message}`,
-              });
-            } else {
-              console.warn(
-                `[session] mcp stop(${sessionId}) failed: ${message}`,
-              );
-            }
+            warn(
+              `session_mcp_stop_failed: ${message}`,
+              `[session] mcp stop(${sessionId}) failed: ${message}`,
+            );
           }
         }
       },

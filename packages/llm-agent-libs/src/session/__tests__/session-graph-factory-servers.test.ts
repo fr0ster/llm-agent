@@ -106,6 +106,44 @@ test('teardown runs closePipeline, then closeSession, then onDispose, then stop'
   ]);
 });
 
+test('a throwing closePipeline does not block closeSession, onDispose or stop', async () => {
+  const order: string[] = [];
+  const ragRegistry = {
+    closeSession: async () => {
+      order.push('closeSession');
+      return { ok: true as const, value: undefined };
+    },
+  } as unknown as IRagRegistry;
+
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: () => [],
+    mcpServerFactory: () => [
+      {
+        async start() {
+          return stubClient();
+        },
+        async stop() {
+          order.push('stop');
+        },
+      },
+    ],
+    closePipeline: async () => {
+      throw new Error('pipeline still draining');
+    },
+    onDispose: async () => {
+      order.push('onDispose');
+    },
+    toolsRag: undefined,
+    ragRegistry,
+    buildAgent: async () => undefined,
+  });
+
+  const graph = await factory.build({ sessionId: 's1' });
+  await graph.dispose();
+
+  assert.deepEqual(order, ['closeSession', 'onDispose', 'stop']);
+});
+
 test('without mcpServerFactory nothing changes: mcpClientFactory is used and no stop runs', async () => {
   const order: string[] = [];
   const ragRegistry = {
