@@ -33,6 +33,13 @@ export interface McpConnectionConfig {
   url?: string;
   command?: string;
   args?: string[];
+  /**
+   * Environment for a spawned stdio child. When omitted the SDK falls back to
+   * `getDefaultEnvironment()` — a sanitised subset of THIS process's
+   * environment — which every child of every caller then shares. Pass the
+   * caller's own values here; never in `args`, which are visible in `ps`.
+   */
+  env?: Record<string, string>;
   /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */
   name?: string;
   /** HTTP transport headers (e.g. `Accept`, reverse-proxy routing like
