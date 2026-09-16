@@ -10,7 +10,7 @@
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Lifetime keys stay typed; only owner and role become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
-- **A minor, not a major.** Every seam is added beside what exists, both logger shapes keep working, and nothing is removed. The one behaviour change — dispose order (§3.4) — is named, not smuggled.
+- **A minor, not a major.** Every seam is added beside what exists, nothing is removed, and no behaviour on any existing path changes — the safer teardown order comes with the new seam, through a new optional hook (§3.4).
 - Umbrella: four workstreams (§10), each gets its own plan.
 
 ---
@@ -105,9 +105,22 @@ Nothing is removed by this release, which is a minor (§8). `withMcpClients`, `m
 
 On the per-session path `buildAgent` receives clients (`SessionAgentParts.mcpClients`, unchanged) and therefore uses `withMcpClients`, **not** `withMcpServers` — otherwise `stop()` would run twice, once from `handle.close()` and once from the factory.
 
-**Dispose order — new on the new seam only.** Today `SessionGraphFactory.dispose` calls `ragRegistry.closeSession(sessionId)` **first**, then the host's `onDispose`, and `onDispose`'s own docstring promises exactly that ("run during `SessionGraph.dispose()`, AFTER the session-RAG `closeSession`"); `llm-agent-server-libs` closes the session's MCP clients inside that hook. On the `mcpServerFactory` path the order becomes: the pipeline closes, then `closeSession`, then `stop()` **last** — a pipeline still in flight must not write into a collection being deleted, and the clients must outlive the pipeline still calling them.
+**Teardown: a new hook, not a moved one.** `onDispose` is documented to run *after* the session-RAG `closeSession` ("run during `SessionGraph.dispose()`, AFTER the session-RAG `closeSession`"), and `llm-agent-server-libs` closes its own session clients inside it. Moving that hook on one path only would make its position depend on an unrelated option — a contract no docstring can state truthfully.
 
-The old path keeps its documented order untouched, so nothing a consumer can observe changes unless it adopts the new seam. That is deliberate: the repository has treated a behaviour change on a kept path as a major before (`fix!: a deleted RAG collection is gone`, #301, v26.0.0), and this design does not repeat it — it offers the fixed order with the new seam and documents the old path's risk as the reason to move.
+So nothing moves. A distinct optional hook is added, and the factory's teardown reads in one line:
+
+| step | what | when |
+|---|---|---|
+| 1 | `closePipeline?(sessionId)` — **new**, optional | before anything is deleted |
+| 2 | `ragRegistry.closeSession(sessionId)` | unchanged |
+| 3 | `onDispose?(sessionId)` | unchanged — still after `closeSession`, as documented |
+| 4 | `stop()` on every server this factory started | last |
+
+Why it is worth a hook: a pipeline still in flight must not write into a collection step 2 is deleting, and the clients must outlive the pipeline still calling them. A consumer that wants that guarantee moves its pipeline teardown into `closePipeline`; one that does not, changes nothing and keeps today's behaviour exactly.
+
+This is deliberate. The repository has charged a major for a behaviour change on a kept path before (`fix!: a deleted RAG collection is gone`, #301, v26.0.0); this design does not repeat it, and offers the safer order as something to opt into.
+
+**Slot counts on this path.** `mcpServerFactory` returns `IMcpServer[]`; `configuredSlotCount` is `undefined`, which means "nothing was filtered out", and the descriptor invariant then checks only uniqueness and count. A consumer that filters a configured set and needs the original positions keeps using `mcpClientFactoryWithDescriptors` until the major that removes it.
 
 ### 3.5 stdio credentials
 
@@ -233,7 +246,7 @@ createCollection(name, {
 
 - Both owner keys stay typed. §6.1's "owner is implied by scope" needs a typed owner to read it from; only role and policy are opaque.
 - **The provider persists `attributes`** and hands them back to the check. Today it persists nothing: pg and qdrant use the creation options only for `checkScope` and the id strategy, so a provider decides nothing after a restart or in a second instance.
-- **This needs a catalog, not row metadata.** In pg a collection *is* a table, created per collection with `metadata JSONB` on each **row** (`schema.ts`) — there is nowhere to put a collection-level fact. Each provider therefore gains a small catalog of its own (`CREATE TABLE IF NOT EXISTS` in pg and HANA; the collection-level equivalent in Qdrant), written on create and read on every decision. Additive: the catalog appears on first use.
+- **This needs a catalog, not row metadata.** In pg a collection *is* a table, created per collection with `metadata JSONB` on each **row** (`schema.ts`) — there is nowhere to put a collection-level fact. Each provider therefore gains a small catalog of its own — `CREATE TABLE IF NOT EXISTS` in pg and HANA, and in Qdrant a catalog collection holding one point per collection (**unverified**: Qdrant exposes no collection-level metadata we have checked) — written on create and read on every decision. Additive: the catalog appears on first use.
 - **A collection created before the catalog existed hands back `undefined`.** The provider does not invent attributes for it, and by §5 the check decides what an absent value means — the framework holds no opinion.
 - `supportedScopes` keeps its meaning — what a provider can make *outlive* — which is lifetime, not permission.
 
@@ -279,7 +292,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated; `attributes` on collection creation; `ILogger` re-exported from `interfaces-utils`, both shapes accepted | additive — no implementer changes |
+| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive — nothing a consumer implements or receives changes |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `RagProviderSource`; registry wiring (§9.4) | additive |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`; `IMcpServer` implementations for stdio and http | additive |
@@ -288,7 +301,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | `@mcp-abap-adt/interfaces-auth` | gains `AccessCheck` and, subject to §4, the three credential contracts | minor |
 | cloud-llm-hub, `llm-agent-server` | **may** adopt the seams; neither is required to | their own work |
 
-**Release shape: a minor.** Nothing is removed, no implementer changes, and every seam is declinable. The single exception is the dispose order (§3.4), which changes on the kept path as well and therefore goes in the release notes. The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam.
+**Release shape: a minor.** Nothing is removed, nothing a consumer implements or receives changes shape, no existing path changes behaviour, and every seam is declinable — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam.
 
 ---
 
@@ -310,10 +323,10 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 Four independent changes under one umbrella; each gets its own plan. All four are additive, so they land as a minor — in any order, and a consumer may take one and decline the rest.
 
-1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, stop-on-dispose, stdio `env`.
+1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
 3. **RAG identity and attributes** — `RagProviderSource`, persisted opaque attributes, the two axes, registry wiring.
-4. **Logger convergence** — one contract, `LogEvent` as payload, levels per §7.
+4. **Text-logger acceptance** — `ITextLogger`, the boundary adapter and its levels (§7). Convergence to one name is deferred to the next major (§9.9).
 
 ---
 
