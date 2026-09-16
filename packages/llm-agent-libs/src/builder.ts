@@ -14,6 +14,7 @@
  */
 
 import type {
+  AnyLogger,
   IClientAdapter,
   IContextAssembler,
   ICoordinatorConfig,
@@ -60,6 +61,7 @@ import {
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
+  normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
   type RagCollectionScope,
@@ -382,9 +384,18 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set a logger for internal pipeline events. */
-  withLogger(logger: ILogger): this {
-    this._logger = logger;
+  /**
+   * Set a logger for internal pipeline events.
+   *
+   * Takes either shape: the event `ILogger`, or an ordinary `ITextLogger`
+   * (`info`/`warn`/`error`/`debug`). A text logger is normalised here, at the
+   * boundary, so everything downstream — `PipelineDeps.logger`, the agent, the
+   * connection strategy — keeps receiving the event logger it already expects,
+   * and `IPipelineContext.logger` still hands plugins the type they compile
+   * against.
+   */
+  withLogger(logger: AnyLogger): this {
+    this._logger = normaliseLogger(logger);
     return this;
   }
 
