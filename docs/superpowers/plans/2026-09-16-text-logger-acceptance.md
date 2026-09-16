@@ -325,11 +325,21 @@ export { isTextLogger, normaliseLogger } from './logger/normalise-logger.js';
     "lib": ["ES2022", "DOM"],
     "types": ["node"]
   },
-  "include": ["packages/*/src/**/*"]
+  "include": [
+    "packages/llm-agent/src/logger/normalise-logger.test.ts",
+    "packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts",
+    "packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts",
+    "packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts"
+  ]
 }
 ```
 
-`composite: false` and the three emit flags are not decoration: `tsconfig.base.json` sets `"composite": true`, and `--noEmit` with `composite` is an error (TS5069). No `references` either — this config compiles the sources directly rather than through project references.
+Two things here are load-bearing, and both were measured on this tree rather than assumed:
+
+- `composite: false` plus the three emit flags. `tsconfig.base.json` sets `"composite": true`, and `--noEmit` with `composite` is TS5069. With them, `tsc -p` runs clean; without, it refuses to start.
+- **The `include` list names only this workstream's own test files.** A repo-wide `"packages/*/src/**/*"` also type-checks every pre-existing test, and those have never been type-checked by anything: running it produces **315 errors** (mostly TS2322/TS2345/TS18047 in stubs that satisfy the runtime but not the declared interfaces, e.g. `builder-context-builder-wiring.test.ts:50`). Fixing those is a separate workstream; dragging them in here would make this plan's very first step fail. The narrow list was verified clean (`tsc -p` exits 0) against two existing test files compiled the same way.
+
+Each listed file is created later in this plan, so add each entry as its task creates it, or create the config with the list complete and expect `tsc` to report only the not-yet-existing paths until then.
 
 Add the script to the root `package.json`:
 
@@ -338,7 +348,7 @@ Add the script to the root `package.json`:
 ```
 
 Run: `npm run typecheck`
-Expected: PASS on the current tree. It must be green *before* the later tasks use it as a gate — if it reports pre-existing errors in test files nobody has type-checked until now, stop and report them rather than fixing them inside this workstream.
+Expected: at this point it type-checks only files this plan has yet to create, so it will report missing inputs — that is fine and expected. It becomes a real gate from Task 2 onward, once the first of those files exists. What it must NEVER do is report errors from test files this workstream did not write; if it does, the `include` list is too broad.
 
 - [ ] **Step 8: Run the tests, build, typecheck and lint**
 
