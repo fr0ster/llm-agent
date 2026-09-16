@@ -390,7 +390,7 @@ Expected: the new tests pass, every existing test still passes, build, typecheck
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/llm-agent/package.json package-lock.json \
+git add package.json packages/llm-agent/package.json package-lock.json \
         tsconfig.typecheck.json \
         packages/llm-agent/src/logger/text-logger.ts \
         packages/llm-agent/src/logger/normalise-logger.ts \
