@@ -219,7 +219,7 @@ interface IRagProviderSource {
 
 Under `identityMode: 'service'` that binding is a thin facade over one shared, service-credentialed provider — no extra connection, no pool per caller. Under `'delegated'` the provider behind it carries the caller's own credential. A consumer that supplies no check calls `create()` and gets exactly today's behaviour.
 
-The mode decides **who must filter**: under `service` the consumer's check is the *only* line of defence; under `delegated` the store enforces too and the check is the second. A seam that requires delegation declares `IPerIdentityRagProviderSource` and will not accept a shared source.
+The mode decides **who must filter**: under `service` the consumer's check is the *only* line of defence; under `delegated` the store enforces too and the check is the second. A consumer that will not accept the first case asserts `identityMode === 'delegated'` where it wires the source, and refuses to start otherwise — the framework does not refuse on its behalf (§1, rule 2).
 
 | store | sees today | to see the caller |
 |---|---|---|
@@ -228,7 +228,7 @@ The mode decides **who must filter**: under `service` the consumer's check is th
 | Qdrant | the holder of one `api-key` | a claim-restricted token; our client sends only `api-key` — **unverified** |
 | OpenAI, Anthropic, AI Core | the service, always | impossible — our users do not exist there |
 
-Because `SessionGraphIdentity` types `createFor`, this union lives in `@mcp-abap-adt/llm-agent-libs` beside the session factory unless that identity type moves into `@mcp-abap-adt/llm-agent` first (§9.3).
+Because `SessionGraphIdentity` types `createFor`, this interface lives in `@mcp-abap-adt/llm-agent-libs` beside the session factory unless that identity type moves into `@mcp-abap-adt/llm-agent` first (§9.3).
 
 ### 6.3 Scope and owner keys stay typed; only role and policy become opaque
 
