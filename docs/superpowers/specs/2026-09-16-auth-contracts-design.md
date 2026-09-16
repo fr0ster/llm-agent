@@ -96,9 +96,18 @@ Nothing is removed by this release, which is a minor (§8). `withMcpClients`, `m
 
 **Descriptors.** They come from `IMcpServer.descriptor`, and the existing invariant holds unchanged (`assert-client-descriptors.ts`): descriptors are **all or none** (their count must equal the client count), `slotIndex` values are unique non-negative integers, and `configuredSlotCount`, when given, must be **strictly greater than the largest `slotIndex`**. When no server carries a descriptor, array position is the pairing, exactly as today.
 
-**Dispose order — a stated behaviour change.** Today `SessionGraphFactory.dispose` calls `ragRegistry.closeSession(sessionId)` **first**, then the host's `onDispose`; and `llm-agent-server-libs` closes the session's MCP clients inside that hook, **before** the host's own. The new order is: the pipeline closes, then `closeSession`, and `stop()` runs **last**.
+**Ownership: exactly one owner per server.** A started server is stopped by whoever started it, and the two paths never overlap:
 
-Why: a pipeline still in flight must not write into a session collection `closeSession` is deleting, and the clients must outlive the pipeline that is still calling them. This order applies to the kept, deprecated path too — it is the one place in this design where existing behaviour changes rather than gains an option, so it belongs in the release notes.
+| path | starts | stops |
+|---|---|---|
+| builder | `build()`, from `withMcpServers` | `handle.close()`, through the `closeFns` it already awaits |
+| per-session | the session factory, from `mcpServerFactory(identity)`, **before** `buildAgent` so it has clients to pass | the session factory, on dispose |
+
+On the per-session path `buildAgent` receives clients (`SessionAgentParts.mcpClients`, unchanged) and therefore uses `withMcpClients`, **not** `withMcpServers` — otherwise `stop()` would run twice, once from `handle.close()` and once from the factory.
+
+**Dispose order — new on the new seam only.** Today `SessionGraphFactory.dispose` calls `ragRegistry.closeSession(sessionId)` **first**, then the host's `onDispose`, and `onDispose`'s own docstring promises exactly that ("run during `SessionGraph.dispose()`, AFTER the session-RAG `closeSession`"); `llm-agent-server-libs` closes the session's MCP clients inside that hook. On the `mcpServerFactory` path the order becomes: the pipeline closes, then `closeSession`, then `stop()` **last** — a pipeline still in flight must not write into a collection being deleted, and the clients must outlive the pipeline still calling them.
+
+The old path keeps its documented order untouched, so nothing a consumer can observe changes unless it adopts the new seam. That is deliberate: the repository has treated a behaviour change on a kept path as a major before (`fix!: a deleted RAG collection is gone`, #301, v26.0.0), and this design does not repeat it — it offers the fixed order with the new seam and documents the old path's risk as the reason to move.
 
 ### 3.5 stdio credentials
 
@@ -224,6 +233,8 @@ createCollection(name, {
 
 - Both owner keys stay typed. §6.1's "owner is implied by scope" needs a typed owner to read it from; only role and policy are opaque.
 - **The provider persists `attributes`** and hands them back to the check. Today it persists nothing: pg and qdrant use the creation options only for `checkScope` and the id strategy, so a provider decides nothing after a restart or in a second instance.
+- **This needs a catalog, not row metadata.** In pg a collection *is* a table, created per collection with `metadata JSONB` on each **row** (`schema.ts`) — there is nowhere to put a collection-level fact. Each provider therefore gains a small catalog of its own (`CREATE TABLE IF NOT EXISTS` in pg and HANA; the collection-level equivalent in Qdrant), written on create and read on every decision. Additive: the catalog appears on first use.
+- **A collection created before the catalog existed hands back `undefined`.** The provider does not invent attributes for it, and by §5 the check decides what an absent value means — the framework holds no opinion.
 - `supportedScopes` keeps its meaning — what a provider can make *outlive* — which is lifetime, not permission.
 
 Who writes `attributes`: the component that knows the caller — the tool handler from its `RagToolContext`, or the consumer calling `createCollection` directly. The registry passes them through and never invents them (§9.5).
@@ -236,18 +247,20 @@ Who writes `attributes`: the component that knows the caller — the tool handle
 
 ## 7. One job, one contract: the logger
 
-`@mcp-abap-adt/llm-agent` declares `ILogger { log(event: LogEvent) }` (10 event kinds, 22 non-test source files); `@mcp-abap-adt/interfaces-utils` declares `ILogger { info/warn/error/debug(message, meta?) }`. Same job, two contracts — and cloud-llm-hub pays for it today:
+`@mcp-abap-adt/llm-agent` declares `ILogger { log(event: LogEvent) }` (10 event kinds, 22 non-test source files); `@mcp-abap-adt/interfaces-utils` declares `ILogger { info/warn/error/debug(message, meta?) }`. Same job, two contracts. The cost is not hypothetical: a consumer that already has a text logger cannot hand it to `withLogger` — it must first write an adapter that turns every call into a `LogEvent`. cloud-llm-hub simply declined to: it passes no logger to llm-agent at all, and its own `ILogger` imports come from `@mcp-abap-adt/connection` and `@mcp-abap-adt/interfaces`, not from here.
 
-```ts
-// srv/lib/errorUtils.ts:106
-logger: ILogger | { error: (message: string, meta?: unknown) => void }
-// srv/connections/BtpOnPremDestinationConnection.ts:14
-// ILogger doesn't include csrfToken and tlsConfig, so we use loggerAdapter from lib/logger
-```
+**What must not change.** `ILogger` is not only an input — llm-agent hands it **out**: `PipelineContext.logger` and `IPipelinePlugin` are typed by it, so a consumer's plugin calls `logger.log({ … })` on our type. Changing the shape of the exported name would break every such plugin, which is a major. So:
 
-**Direction:** llm-agent adopts the `interfaces-utils` contract and re-exports it, so its 22 files and every implementer keep one import path. The import is types-only (`import type`), which keeps it out of the runtime graph — but a re-exported type must resolve in every consumer's `tsc`, so `@mcp-abap-adt/interfaces-utils` is a **regular dependency**, not a dev one.
+| seam | type | rule |
+|---|---|---|
+| exported `ILogger` | `{ log(event: LogEvent): void }` | **unchanged** |
+| `ITextLogger` (re-exported `interfaces-utils` shape) | `info/warn/error/debug(message, meta?)` | new name, new import |
+| input seams — `withLogger`, `SessionGraphFactoryOptions.logger`, `ConnectionStrategyOptions.logger`, embedder resilience, session lifecycle | `ILogger \| ITextLogger` | accept both, normalise at the boundary |
+| output seams — `PipelineContext.logger`, `IPipelinePlugin` | `ILogger` | unchanged, so plugins keep compiling |
 
-**Nobody is forced to migrate.** The seam accepts both shapes — the text contract and today's event sink — and adapts internally. A consumer that implemented `log(event)` keeps working untouched; one that has a text logger can hand it over directly. That is what makes this workstream a minor rather than a major: the old shape is not removed, and the mapping below is what the adapter does when a text logger is supplied. `LogEvent` stays and becomes the payload.
+The import is types-only (`import type`), which keeps it out of the runtime graph — but a re-exported type must resolve in every consumer's `tsc`, so `@mcp-abap-adt/interfaces-utils` is a **regular dependency**, not a dev one.
+
+**The residue, stated plainly.** This leaves llm-agent with two logger names — the very duplication §7 set out to remove. It is the price of not breaking anyone in this release: the convergence to one name is a rename, and a rename is a major (§9.9). The mapping below is what the boundary does when an `ITextLogger` is supplied; `LogEvent` stays and remains the payload.
 
 | rule | value |
 |---|---|
@@ -275,7 +288,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | `@mcp-abap-adt/interfaces-auth` | gains `AccessCheck` and, subject to §4, the three credential contracts | minor |
 | cloud-llm-hub, `llm-agent-server` | **may** adopt the seams; neither is required to | their own work |
 
-**Release shape: a minor.** Nothing is removed, no implementer changes, and every seam is declinable. The single exception is the dispose order (§3.4), which changes on the kept path as well and therefore goes in the release notes. The deprecations — `McpClientFactory`, `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one.
+**Release shape: a minor.** Nothing is removed, no implementer changes, and every seam is declinable. The single exception is the dispose order (§3.4), which changes on the kept path as well and therefore goes in the release notes. The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam.
 
 ---
 
@@ -289,6 +302,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 6. **An optional marker on authenticated clients.** A seam *may* declare that it accepts only clients a factory produced, making "forgot the caller's credentials" a compile error. It must stay opt-in: mandatory, it would dictate policy. Precedent for the risk: cloud-llm-hub PR #236 (`fix(security): stop caching MCP tool results across callers`, open) — a `ToolCache` shared by every caller returned one user's ABAP result to another within 30 s, below the role check and below their own SAP connection.
 7. **`buildRagCollectionToolEntries`** — mounted by a consumer, or deleted.
 8. **The server's YAML `mcp:` block.** Injection already outranks it. It belongs to the `llm-agent-server` assembly, not to the library — but stdio genuinely requires spawning, so "the library never starts anything" is not an option.
+9. **One logger name, at the next major.** This release keeps `ILogger` (the event sink, handed out through `PipelineContext` and `IPipelinePlugin`) and adds `ITextLogger`. Converging them means renaming what consumers' plugins are typed by, which breaks them — so it is a major, scheduled, not silently deferred. Until then llm-agent carries two names for one job, and §7's own argument stands against it.
 
 ---
 
