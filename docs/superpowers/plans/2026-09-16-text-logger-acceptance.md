@@ -4,7 +4,7 @@
 
 **Goal:** Let a consumer hand its ordinary text logger to llm-agent, instead of writing a `LogEvent` adapter first — without changing the logger type llm-agent hands back out.
 
-**Architecture:** `ITextLogger` is added as a re-export of `@mcp-abap-adt/interfaces-utils`' `ILogger` (`info`/`error`/`warn`/`debug`). Every seam that *accepts* a logger widens to `ILogger | ITextLogger` and normalises once, at the boundary, through one internal adapter that turns a `LogEvent` into a levelled text call. Every seam that *hands a logger out* — `IPipelineContext.logger`, `IPipelinePlugin` — keeps the existing `ILogger`, so consumer plugins that call `logger.log({...})` keep compiling.
+**Architecture:** `ITextLogger` is added as a re-export of `@mcp-abap-adt/interfaces-utils`' `ILogger` (`info`/`error`/`warn`/`debug`). Seams that *consume* a logger widen to `ILogger | ITextLogger` and normalise once, at the boundary, through one internal adapter that turns a `LogEvent` into a levelled text call. Two kinds of seam keep the event `ILogger` on purpose: those that *hand a logger out* (`IPipelineContext.logger`, `IPipelinePlugin`), and those that *forward one into* them (`PipelineDeps.logger`, `SmartAgentDeps.logger`) — widening either would put an `AnyLogger` in front of consumer plugins and break them, which is a major. The exact list of widened seams is in Task 4's documentation step; "everywhere" would be false, and saying it would be worse than saying nothing.
 
 **Tech Stack:** TypeScript (ESM, `.js` import specifiers), npm workspaces, `node:test` via `tsx` (`node --import tsx/esm --test 'src/**/*.test.ts'` per package), Biome, `tsc -b` project references.
 
@@ -16,7 +16,8 @@
 - **The exported `ILogger` is FROZEN.** It stays `{ log(event: LogEvent): void }` in `packages/llm-agent/src/logger/types.ts`. Do not widen it, rename it, or add members — `IPipelineContext.logger` and `IPipelinePlugin` hand this exact type to consumer plugins, so changing its shape is a major.
 - **Output seams stay `ILogger`:** `packages/llm-agent/src/interfaces/pipeline-plugin.ts` — `IPipelineContext` (declared at :46, its `logger?: ILogger` at :68) and `IPipelinePlugin` (:91). These files are not to be touched by this workstream.
 - **Input seams widen to `ILogger | ITextLogger`:** `SmartAgentBuilder.withLogger` (`llm-agent-libs/src/builder.ts:386`), `ConnectionStrategyOptions.logger` (`llm-agent/src/interfaces/mcp-connection-strategy.ts:76`), `SessionGraphFactoryOptions.logger` (`llm-agent-libs/src/session/session-graph-factory.ts:107`), embedder resilience (`llm-agent/src/resilience/embedder-resilience.ts:67`), session lifecycle (`llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts:72`).
-- **`@mcp-abap-adt/interfaces-utils` becomes a REGULAR dependency** of `@mcp-abap-adt/llm-agent` (currently absent). The import is type-only, which keeps it out of the runtime graph, but a re-exported type must resolve in every consumer's `tsc` — a devDependency would break them. Published version: `1.0.0`.
+- **`@mcp-abap-adt/interfaces-utils` becomes a REGULAR dependency** of `@mcp-abap-adt/llm-agent` (currently absent — the package depends only on `zod` today). The import is type-only, which keeps it out of the runtime graph, but a re-exported type must resolve in every consumer's `tsc` — a devDependency would break them. Published version: `1.0.0`.
+- **The external shape is verified, not assumed.** In the interfaces repository (`~/prj/mcp-abap-adt-interfaces`), `packages/interfaces-utils/src/logging/ILogger.ts:5` declares exactly four methods — `info`, `error`, `warn`, `debug`, each `(message: string, meta?: unknown): void` — and it is exported from that package's barrel at `src/index.ts:7` as `export type { ILogger } from './logging/ILogger';`. `npm view @mcp-abap-adt/interfaces-utils version` reports `1.0.0`. If the installed declaration disagrees with this after `npm install`, stop and report it: the re-export in Task 1 depends on this shape being exact.
 - **The boundary mapping is fixed by §7** and must be implemented exactly:
 
   | rule | value |
@@ -28,6 +29,7 @@
   | `rag_upsert`, `rag_query`, `tools_selected` | `debug` |
   | everything else | `info` |
 
+- **An object satisfying BOTH shapes is an event logger.** Structural typing allows a text logger that also exposes `log`; `normaliseLogger` returns such an object unchanged rather than wrapping it. This is contract, not an implementation accident — it is what guarantees that every logger working today keeps working identically, and Task 1 pins it with a test.
 - **Two logger names is the accepted residue.** Convergence to one name is a rename, and a rename is a major (§9.9). Do not "clean this up" by unifying them.
 - All artifacts in English. Conventional Commits. Commit after every task.
 
@@ -38,10 +40,10 @@
 | file | responsibility |
 |---|---|
 | `packages/llm-agent/src/logger/text-logger.ts` | **new** — the `ITextLogger` re-export, nothing else |
-| `packages/llm-agent/src/logger/to-text-logger.ts` | **new** — the boundary adapter: `AnyLogger` → `ILogger`, plus the level mapping |
-| `packages/llm-agent/src/logger/to-text-logger.test.ts` | **new** — one assertion per `LogEvent` kind, beside its source |
+| `packages/llm-agent/src/logger/normalise-logger.ts` | **new** — the boundary adapter: `AnyLogger` → `ILogger`, plus the level mapping |
+| `packages/llm-agent/src/logger/normalise-logger.test.ts` | **new** — one assertion per `LogEvent` kind, beside its source |
 | `packages/llm-agent/src/logger/types.ts` | untouched — the frozen `ILogger` and `LogEvent` live here |
-| `packages/llm-agent/src/index.ts` | export `ITextLogger`, `AnyLogger`, `normaliseLogger` |
+| `packages/llm-agent/src/index.ts` | export `ITextLogger`, `AnyLogger`, `normaliseLogger`, `isTextLogger` |
 | `packages/llm-agent/package.json` | add the `interfaces-utils` dependency |
 | `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` | `ConnectionStrategyOptions.logger` widens |
 | `packages/llm-agent/src/resilience/embedder-resilience.ts` | its `logger` option widens |
@@ -58,8 +60,8 @@
 
 **Files:**
 - Create: `packages/llm-agent/src/logger/text-logger.ts`
-- Create: `packages/llm-agent/src/logger/to-text-logger.ts`
-- Create: `packages/llm-agent/src/logger/to-text-logger.test.ts`
+- Create: `packages/llm-agent/src/logger/normalise-logger.ts`
+- Create: `packages/llm-agent/src/logger/normalise-logger.test.ts`
 - Modify: `packages/llm-agent/package.json` (dependencies)
 - Modify: `packages/llm-agent/src/index.ts` (the logger export line is :76)
 
@@ -83,13 +85,13 @@ Then install from the repo root: `npm install`.
 
 - [ ] **Step 2: Write the failing test**
 
-Create `packages/llm-agent/src/logger/to-text-logger.test.ts`. It sits beside its source, like the existing `src/interfaces/assert-client-descriptors.test.ts`.
+Create `packages/llm-agent/src/logger/normalise-logger.test.ts`. It sits beside its source, like the existing `src/interfaces/assert-client-descriptors.test.ts`.
 
 ```ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LogEvent } from './types.js';
-import { isTextLogger, normaliseLogger } from './to-text-logger.js';
+import { isTextLogger, normaliseLogger } from './normalise-logger.js';
 import type { ITextLogger } from './text-logger.js';
 
 type Call = { level: string; message: string; meta?: unknown };
@@ -183,13 +185,38 @@ describe('isTextLogger', () => {
     assert.equal(isTextLogger(logger), true);
     assert.equal(isTextLogger({ log: () => {} }), false);
   });
+
+  it('an object satisfying BOTH shapes is treated as the event logger', () => {
+    // Structural typing permits this: a text logger that also exposes `log`.
+    // The contract says the event path wins, so that today's loggers keep
+    // behaving exactly as they do today rather than being silently re-routed
+    // through the level mapping.
+    const events: LogEvent[] = [];
+    const textCalls: string[] = [];
+    const hybrid = {
+      log: (e: LogEvent) => void events.push(e),
+      info: (m: string) => void textCalls.push(m),
+      error: (m: string) => void textCalls.push(m),
+      warn: (m: string) => void textCalls.push(m),
+      debug: (m: string) => void textCalls.push(m),
+    };
+
+    assert.equal(isTextLogger(hybrid), false);
+
+    const normalised = normaliseLogger(hybrid);
+    assert.equal(normalised, hybrid, 'returned unchanged, not wrapped');
+
+    normalised.log({ type: 'warning', traceId: 't', message: 'careful' });
+    assert.equal(events.length, 1, 'the event path received it');
+    assert.deepEqual(textCalls, [], 'the text methods were never called');
+  });
 });
 ```
 
 - [ ] **Step 3: Run it and watch it fail**
 
 Run: `npm test -w @mcp-abap-adt/llm-agent`
-Expected: FAIL — `Cannot find module './to-text-logger.js'`.
+Expected: FAIL — `Cannot find module './normalise-logger.js'`.
 
 - [ ] **Step 4: Write the re-export**
 
@@ -214,7 +241,7 @@ export type ITextLogger = InterfacesUtilsLogger;
 
 - [ ] **Step 5: Write the adapter**
 
-Create `packages/llm-agent/src/logger/to-text-logger.ts`:
+Create `packages/llm-agent/src/logger/normalise-logger.ts`:
 
 ```ts
 import type { ITextLogger } from './text-logger.js';
@@ -223,7 +250,18 @@ import type { ILogger, LogEvent } from './types.js';
 /** Either logger a consumer may hand to an input seam. */
 export type AnyLogger = ILogger | ITextLogger;
 
-/** An event logger has `log`; a text logger does not. */
+/**
+ * An event logger has a callable `log`; a text logger does not.
+ *
+ * **Precedence is deliberate, and it is part of the contract.** Structural
+ * typing lets one object satisfy BOTH shapes — a text logger that also exposes
+ * `log`. Such an object is treated as an EVENT logger and returned unchanged.
+ * That keeps every logger that works today working exactly as it does today,
+ * which is this release's binding constraint; deciding the other way would
+ * silently re-route an existing consumer's events through the level mapping.
+ * A consumer who wants the text path for a hybrid object passes only its text
+ * methods, or wraps it.
+ */
 export function isTextLogger(logger: AnyLogger): logger is ITextLogger {
   return typeof (logger as ILogger).log !== 'function';
 }
@@ -267,22 +305,54 @@ In `packages/llm-agent/src/index.ts`, beside the existing logger export at :76 (
 
 ```ts
 export type { ITextLogger } from './logger/text-logger.js';
-export type { AnyLogger } from './logger/to-text-logger.js';
-export { isTextLogger, normaliseLogger } from './logger/to-text-logger.js';
+export type { AnyLogger } from './logger/normalise-logger.js';
+export { isTextLogger, normaliseLogger } from './logger/normalise-logger.js';
 ```
 
-- [ ] **Step 7: Run the tests, build and lint**
+- [ ] **Step 7: Add a type-gate that actually sees the tests**
 
-Run: `npm test -w @mcp-abap-adt/llm-agent && npm run build -w @mcp-abap-adt/llm-agent && npm run lint:check`
-Expected: the new tests pass, every existing test still passes, build and lint clean.
+`npm run build` does **not** type-check any test file: every package's tsconfig excludes them (`packages/llm-agent/tsconfig.json:10`, `packages/llm-agent-libs/tsconfig.json:9` — both list `"**/__tests__/**", "**/*.test.ts"`). Since this whole workstream is a type widening, a gate that never reads the tests proves nothing about them. Add one, at the repo root, as `tsconfig.typecheck.json`:
 
-- [ ] **Step 8: Commit**
+```json
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  },
+  "include": ["packages/*/src/**/*"]
+}
+```
+
+`composite: false` and the three emit flags are not decoration: `tsconfig.base.json` sets `"composite": true`, and `--noEmit` with `composite` is an error (TS5069). No `references` either — this config compiles the sources directly rather than through project references.
+
+Add the script to the root `package.json`:
+
+```json
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+```
+
+Run: `npm run typecheck`
+Expected: PASS on the current tree. It must be green *before* the later tasks use it as a gate — if it reports pre-existing errors in test files nobody has type-checked until now, stop and report them rather than fixing them inside this workstream.
+
+- [ ] **Step 8: Run the tests, build, typecheck and lint**
+
+Run: `npm test -w @mcp-abap-adt/llm-agent && npm run build -w @mcp-abap-adt/llm-agent && npm run typecheck && npm run lint:check`
+Expected: the new tests pass, every existing test still passes, build, typecheck and lint clean.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add packages/llm-agent/package.json package-lock.json \
+        tsconfig.typecheck.json \
         packages/llm-agent/src/logger/text-logger.ts \
-        packages/llm-agent/src/logger/to-text-logger.ts \
-        packages/llm-agent/src/logger/to-text-logger.test.ts \
+        packages/llm-agent/src/logger/normalise-logger.ts \
+        packages/llm-agent/src/logger/normalise-logger.test.ts \
         packages/llm-agent/src/index.ts
 git commit -m "feat(llm-agent): accept an ordinary text logger at the boundary
 
@@ -381,9 +451,9 @@ describe('composeResilientEmbedder with a text logger', () => {
 
 - [ ] **Step 2: Run it and watch it fail**
 
-**Two commands, and the type failure is NOT the test run.** `npm test` runs `node --import tsx/esm`, and tsx transpiles without type-checking — code that violates the option type still executes. So the compiler is what proves the type widened, and the test is what proves the behaviour:
+**Two commands, and neither is `npm run build`.** `npm test` runs `node --import tsx/esm`, which transpiles without type-checking; and `npm run build` never reads a test file at all, because every package tsconfig excludes them. The gate that sees the test is the `typecheck` script from Task 1, Step 7:
 
-Run: `npm run build -w @mcp-abap-adt/llm-agent`
+Run: `npm run typecheck`
 Expected: FAIL — `Type 'ITextLogger' is not assignable to type 'ILogger'` (TS2322/TS2345) at the test's `logger:` property.
 
 Run: `npm test -w @mcp-abap-adt/llm-agent`
@@ -405,7 +475,7 @@ export interface ConnectionStrategyOptions {
 }
 ```
 
-Import `AnyLogger` as a type from `../logger/to-text-logger.js`.
+Import `AnyLogger` as a type from `../logger/normalise-logger.js`.
 
 Then, wherever this package consumes that option, normalise once at the point it is stored. The strategies live in `@mcp-abap-adt/llm-agent-mcp` (`strategies/lazy-connection-strategy.ts:32` holds `private readonly _logger?: ILogger;` and assigns it at :49): change that assignment to `this._logger = options?.logger ? normaliseLogger(options.logger) : undefined;`, importing `normaliseLogger` as a runtime import. Its `this._logger?.log({...})` call sites (e.g. :123) then need no change at all — that is the point of normalising.
 
@@ -427,7 +497,7 @@ export function composeResilientEmbedder(
 
 Then replace each `options?.logger?.log({ ... })` with `log?.log({ ... })` — there is one inside the `if (existing)` conflict branch (:81); search the file for any others and convert them the same way. Do not change a single event payload: the messages are asserted by the pre-existing `embedder-resilience.test.ts`.
 
-Import `normaliseLogger` as a runtime import and `AnyLogger` as a type import from `../logger/to-text-logger.js`.
+Import `normaliseLogger` as a runtime import and `AnyLogger` as a type import from `../logger/normalise-logger.js`.
 
 - [ ] **Step 5: Widen the two public RAG-factory options**
 
@@ -437,15 +507,85 @@ Change both fields to `logger?: AnyLogger`, keeping their docstrings, and import
 
 No normalisation is needed at `:162`: it forwards the option into `composeResilientEmbedder`, whose own option is now `AnyLogger` and which normalises internally (Step 4). If any OTHER site in this file calls `.log(...)` on the option directly, normalise there with `const log = options?.logger ? normaliseLogger(options.logger) : undefined;` and call `log?.log(...)` — search the file for `logger?.log(` before you finish.
 
-- [ ] **Step 6: Run the tests, build and lint**
+Three more public inputs take the same treatment, for the same reason — each is exported and each only *consumes* a logger:
 
-Run: `npm test -w @mcp-abap-adt/llm-agent && npm test -w @mcp-abap-adt/llm-agent-mcp && npm test -w @mcp-abap-adt/llm-agent-rag && npm run build && npm run lint:check`
+- `packages/llm-agent/src/policy/fallback-llm-call-strategy.ts:24` — `constructor(private readonly logger?: ILogger) {}`, and the class is exported from `packages/llm-agent/src/index.ts:77`. Widen the parameter to `AnyLogger` and normalise in the constructor body, keeping the private field typed `ILogger`:
+
+```ts
+  private readonly logger?: ILogger;
+
+  constructor(logger?: AnyLogger) {
+    this.logger = logger ? normaliseLogger(logger) : undefined;
+  }
+```
+
+- `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:32` and `:78` — `resolveAgentEmbedder(..., logger?: ILogger)` and `resolveToolsStoreEmbedder(..., logger?: ILogger)`, both re-exported from that package's `src/index.ts:16`. Widen both parameters to `AnyLogger`. No normalisation is needed in either: they only pass the value on (`:44`, `:54`, `:90`, `:97`) into `resolveEmbedder`, which reaches the resilience options this task already widened.
+
+**What deliberately stays `ILogger`, and why.** `PipelineDeps.logger` (`packages/llm-agent-libs/src/interfaces/pipeline.ts:98`) and `SmartAgentDeps.logger` (`packages/llm-agent-libs/src/agent.ts:112-123`) are exported too, but they are not inputs in the sense this workstream means — they *feed the plugin-facing context*: `default-pipeline.ts:474` passes `this.deps.logger` straight into the context handed to plugins, and `agent.ts:311` does the same. Widening either would put an `AnyLogger` on `IPipelineContext.logger` and break every consumer plugin, which is the major this release refuses. A consumer assembling those deps by hand calls the exported `normaliseLogger` itself — one line — and that is what the docs must say.
+
+- [ ] **Step 6: Pin the seam that stores the logger**
+
+`LazyConnectionStrategy` is one of only two places that keep a normalised logger in a field and call it later — a constructor that normalises wrongly still compiles and only fails when something actually logs. Cover it directly. Create `packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { ITextLogger, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
+import { LazyConnectionStrategy } from './lazy-connection-strategy.js';
+
+function recordingTextLogger(): {
+  logger: ITextLogger;
+  calls: Array<{ level: string; message: string }>;
+} {
+  const calls: Array<{ level: string; message: string }> = [];
+  const push = (level: string) => (message: string) => {
+    calls.push({ level, message });
+  };
+  return {
+    calls,
+    logger: {
+      info: push('info'),
+      error: push('error'),
+      warn: push('warn'),
+      debug: push('debug'),
+    },
+  };
+}
+
+describe('LazyConnectionStrategy with a text logger', () => {
+  it('stores a normalised logger and reports a failed connection through it', async () => {
+    const { logger, calls } = recordingTextLogger();
+    const config: McpConnectionConfig = { type: 'stdio', command: 'no-such-command-xyz' };
+
+    const strategy = new LazyConnectionStrategy([config], { logger, cooldownMs: 0 }, async () => {
+      throw new Error('connect refused');
+    });
+
+    await strategy.resolve([]);
+
+    assert.ok(calls.length > 0, 'the text logger received the failure');
+    assert.ok(
+      calls.every((c) => ['info', 'warn', 'error', 'debug'].includes(c.level)),
+      'every call used a real level, i.e. the event was mapped',
+    );
+  });
+});
+```
+
+Read `lazy-connection-strategy.ts` around `:118-125` before writing this: it logs once per cooled-down attempt, and the factory argument is the third constructor parameter. If the failure path there emits nothing with `cooldownMs: 0`, adjust the trigger to whatever that file actually logs — but do not drop the test, because this is the seam where a wrong constructor hides.
+
+- [ ] **Step 7: Run the tests, build and lint**
+
+Run: `npm test -w @mcp-abap-adt/llm-agent && npm test -w @mcp-abap-adt/llm-agent-mcp && npm test -w @mcp-abap-adt/llm-agent-rag && npm run build && npm run typecheck && npm run lint:check`
 Expected: all pass, including every pre-existing test in all three packages, unedited. The root `npm run build` is what proves the widened options still compile for their consumers.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add packages/llm-agent/src/interfaces/mcp-connection-strategy.ts \
+        packages/llm-agent/src/policy/fallback-llm-call-strategy.ts \
+        packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts \
+        packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts \
         packages/llm-agent/src/resilience/embedder-resilience.ts \
         packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts \
         packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts \
@@ -593,9 +733,9 @@ describe('SmartAgentBuilder.withLogger() — text logger', () => {
 
 - [ ] **Step 2: Run it and watch it fail**
 
-**Two commands. The type failure comes from `tsc`; the test fails on its assertion.** `npm test` runs `node --import tsx/esm`, which transpiles without type-checking, so a `withLogger(textLogger)` call that violates the signature still runs — do not expect the test to catch the type.
+**Two commands, and the type gate is `typecheck`, not `build`.** `npm test` runs `node --import tsx/esm`, which transpiles without type-checking, and `npm run build -w @mcp-abap-adt/llm-agent-libs` excludes `src/__tests__/**` entirely (`packages/llm-agent-libs/tsconfig.json:9`) — so neither would notice a signature violation in a test. Use the script Task 1, Step 7 adds:
 
-Run: `npm run build -w @mcp-abap-adt/llm-agent-libs`
+Run: `npm run typecheck`
 Expected: FAIL — `Argument of type 'ITextLogger' is not assignable to parameter of type 'ILogger'` (TS2345) at the `withLogger(logger)` call.
 
 Run: `npm test -w @mcp-abap-adt/llm-agent-libs`
@@ -667,12 +807,49 @@ Import `normaliseLogger` as a runtime import, and `AnyLogger` as a type import, 
 
 Do NOT touch `SessionAgentParts.logger` at :42 — that is `SessionRequestLogger`, a different type with a different job.
 
-- [ ] **Step 5: Run the tests, build and lint**
+- [ ] **Step 5: Pin the session factory's stored logger**
 
-Run: `npm test -w @mcp-abap-adt/llm-agent-libs && npm run build && npm run lint:check`
-Expected: the two new tests pass; every pre-existing test in the package passes unedited — in particular the session teardown tests that assert on `session_close_failed` message strings.
+The factory is the second place that keeps a normalised logger and calls it later — in the `dispose` closure, at teardown. A constructor that normalises wrongly compiles fine and only fails there, so cover it directly. Add to the same test file:
 
-- [ ] **Step 6: Commit**
+```ts
+describe('SessionGraphFactory with a text logger', () => {
+  it('surfaces a teardown failure through a text logger', async () => {
+    const { SessionGraphFactory } = await import('../session/session-graph-factory.js');
+    const { logger, calls } = recordingTextLogger();
+
+    const ragRegistry = {
+      closeSession: async () => {
+        throw new Error('close failed');
+      },
+    } as never;
+
+    const factory = new SessionGraphFactory({
+      mcpClientFactory: () => [],
+      toolsRag: undefined,
+      ragRegistry,
+      buildAgent: async () => undefined,
+      logger,
+    });
+
+    const graph = await factory.build({ sessionId: 's1' });
+    await graph.dispose();
+
+    assert.ok(
+      calls.some((c) => c.message.includes('session_close_failed')),
+      'the teardown failure reached the text logger',
+    );
+  });
+});
+```
+
+`recordingTextLogger()` is the helper already defined at the top of this file for the `withLogger` tests — reuse it rather than declaring a second copy.
+
+- [ ] **Step 6: Run the tests, build, typecheck and lint**
+
+Run: `npm test -w @mcp-abap-adt/llm-agent-libs && npm run build && npm run typecheck && npm run lint:check`
+Expected: the new tests pass; every pre-existing test in the package passes unedited — in particular the session teardown tests that assert on `session_close_failed` message strings.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add packages/llm-agent-libs/src/builder.ts \
@@ -715,13 +892,19 @@ Under `## [Unreleased]`, in the existing `### Added` block:
   text logger (`info`/`warn`/`error`/`debug(message, meta?)`) as well as the
   event `ILogger`: `SmartAgentBuilder.withLogger`,
   `SessionGraphFactoryOptions.logger`, `ConnectionStrategyOptions.logger`,
-  `ComposeResilienceOptions.logger`, `EmbedderResolutionOptions.logger` and
-  `RagResolutionOptions.logger` in `@mcp-abap-adt/llm-agent-rag`, and
-  `SessionLifecycleOptions.logger` in `@mcp-abap-adt/llm-agent-server-libs`.
-  A consumer that already has a logger no longer has to write a `LogEvent`
-  adapter before it can pass one. Seams that hand a logger *out* — most
-  visibly `IPipelineContext.logger` — are unchanged and still give you the
-  event `ILogger`.
+  `ComposeResilienceOptions.logger`, `FallbackLlmCallStrategy`'s constructor,
+  `EmbedderResolutionOptions.logger` and `RagResolutionOptions.logger` in
+  `@mcp-abap-adt/llm-agent-rag`, and `SessionLifecycleOptions.logger`,
+  `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` in
+  `@mcp-abap-adt/llm-agent-server-libs`. A consumer that already has a logger
+  no longer has to write a `LogEvent` adapter before it can pass one.
+- **`normaliseLogger(logger)` and the `AnyLogger` union are exported** for the
+  seams that deliberately keep the event shape. `IPipelineContext.logger` and
+  `IPipelinePlugin` hand `ILogger` *to* you, and `PipelineDeps.logger` and
+  `SmartAgentDeps.logger` feed them — widening any of those would put a text
+  logger in front of every existing plugin. If you assemble those deps by
+  hand, call `normaliseLogger` on your logger first; it is one line, and it is
+  the same adapter the widened seams use internally.
   `normaliseLogger(logger)` and the `AnyLogger` union are exported for anyone
   wiring their own seam. A text logger receives the event's `type` as the
   message — a `warning` carries its own text — and the whole event as `meta`,
@@ -754,8 +937,9 @@ Both logger shapes are accepted at every seam that *takes* one from you:
 | `SessionGraphFactoryOptions.logger` | `llm-agent-libs` |
 | `ConnectionStrategyOptions.logger` | `llm-agent` |
 | `ComposeResilienceOptions.logger` (embedder resilience) | `llm-agent` |
+| `FallbackLlmCallStrategy`'s constructor | `llm-agent` |
 | `EmbedderResolutionOptions.logger`, `RagResolutionOptions.logger` | `llm-agent-rag` |
-| `SessionLifecycleOptions.logger` | `llm-agent-server-libs` |
+| `SessionLifecycleOptions.logger`, `resolveAgentEmbedder`, `resolveToolsStoreEmbedder` | `llm-agent-server-libs` |
 
 If you already have an ordinary text logger, pass it:
 
