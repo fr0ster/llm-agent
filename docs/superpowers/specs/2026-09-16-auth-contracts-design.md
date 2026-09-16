@@ -149,7 +149,7 @@ No `env`, no `cwd`. The SDK then uses `getDefaultEnvironment()` — a sanitized 
 |---|---|---|
 | `LLMProviderConfig.apiKey?: string` (openai, anthropic, deepseek, ollama) | a string, with a comment admitting it cannot describe SAP AI Core | `IApiKeyCredential` |
 | `EmbedderFactoryConfig.apiKey?: string` | a second, separate key seam | `IApiKeyCredential` |
-| `sap-aicore-llm`, `sap-aicore-embedder` | `clientId` + `clientSecret`, **or** the `AICORE_SERVICE_KEY` env fallback | `IBearerCredential` — §9.2 |
+| `sap-aicore-llm`, `sap-aicore-embedder` | `clientId` + `clientSecret`, **or** the `AICORE_SERVICE_KEY` env fallback | `IBearerCredential` — confirmed viable, §9.2: a constructed destination's `headers.Authorization`, rebuilt per call for freshness; the `foundation-models` embedder swaps its own `TokenProvider` instead |
 | `qdrant-rag` | `url` + `apiKey?: string` | `IApiKeyCredential` |
 | `pg-vector-rag`, `hana-vector-rag` | `host`/`port`/`user`/`password`/`database`, **or** `connectionString` | `ISecretLoginCredential` |
 | an http MCP implementation | `headers` | whatever its server speaks |
@@ -332,7 +332,13 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 ## 9. Open questions
 
 1. **HANA and Qdrant delegation.** Which `@sap/hana-client` properties carry a JWT; whether our Qdrant version supports claim-restricted tokens (§6.2).
-2. **SAP AI Core.** Whether the SDK accepts a token source at all; if not, `IBearerCredential` cannot be mandatory there and the `AICORE_SERVICE_KEY` fallback stays.
+2. ~~**SAP AI Core.** Whether the SDK accepts a token source at all.~~ **Answered 2026-09-16 by reading the SDK, not its docs** (SAP/ai-sdk-js at `2315f43`, `@sap-ai-sdk/orchestration` 2.15, `@sap-cloud-sdk/connectivity` 4.x). It accepts one, by three separate routes:
+
+   - **Orchestration** — every `OrchestrationClient` / `OrchestrationEmbeddingClient` overload takes a third argument `destination?: HttpDestinationOrFetchOptions`, and that type is an XOR: either a lookup by name **or a destination object you construct yourself**. A constructed one carries `headers?: Record<string, any>` ("additional headers to be used for calls against the destination"), so `{ url, authentication: 'NoAuthentication', headers: { Authorization: 'Bearer …' } }` is a complete, supported answer. `authTokens?: DestinationAuthToken[]` is the other route — but note the TypeScript type is `{ type; value; expiresIn?; error: string | null }`, with **no `http_header` field** and a required `error`. Blog posts showing `authTokens: [{ http_header: { key, value } }]` describe the destination service's REST payload, not the SDK's type; writing that would not compile.
+   - **Freshness is already solved by our own call shape.** `sap-aicore-llm` builds a new `OrchestrationClient` **per call** (`sap-core-ai-provider.ts:561`, because tools change between calls) and already passes a destination there (`:71`, `:165`, `:564`) — today filled with `OAuth2ClientCredentials`. Moving that construction from the constructor into the per-call path lets `IBearerCredential.token()` be awaited for every request, which is exactly why it is a function. No callback or middleware inside the SDK is needed, and the official docs' "no per-request token refresh" is about *registered* destinations, not constructed ones.
+   - **`foundation-models` is a separate, easier case.** `sap-aicore-embedder` does not use the SDK's auth at all there: it has its own `TokenProvider` (`auth.ts`) doing `grant_type=client_credentials` over `fetch`, and sets `Authorization: Bearer ${token}` by hand (`foundation-embedder.ts:98-101`). `IBearerCredential` replaces that provider directly.
+
+   So `IBearerCredential` is viable for both packages, and the `AICORE_SERVICE_KEY` fallback stays as the no-credential default (§4). **One gap to plan for:** `sap-aicore-embedder`'s orchestration path constructs `new OrchestrationEmbeddingClient(config, deploymentConfig)` with only two arguments (`orchestration-embedder.ts:50`) — the destination seam exists in the SDK but is not wired on our side, so the embedder needs that thread-through, which the LLM provider already has.
 3. **`SessionGraphIdentity`'s home** — `llm-agent-libs` today; moving it into `@mcp-abap-adt/llm-agent` lets `IRagProviderSource` sit with the other contracts.
 4. **The registry and `createFor`** — a provider obtained for one caller cannot live in a registry that outlives it. Per-caller registry, or a shared registry holding the `IRagProviderSource` and resolving per call (§6.4).
 5. **Who writes `attributes` at creation** — tool handler, consumer, or both; and the final signatures of `IRagRegistry.createCollection` / `IRagProvider.createCollection` (§6.3).
