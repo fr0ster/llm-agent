@@ -50,8 +50,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` in
   `@mcp-abap-adt/llm-agent-server-libs`. A consumer that already has a logger
   no longer has to write a `LogEvent` adapter before it can pass one.
-- **`normaliseLogger(logger)` and the `AnyLogger` union are exported** for the
-  seams that deliberately keep the event shape. `IPipelineContext.logger` and
+- **`normaliseLogger(logger)`, the `AnyLogger` union, and the `isTextLogger(logger)`
+  type guard are exported** for the seams that deliberately keep the event
+  shape. `IPipelineContext.logger` and
   `IPipelinePlugin` hand `ILogger` *to* you, and three inputs feed them and so
   stay event-only: `PipelineDeps.logger`, `SmartAgentDeps.logger`, and
   `makeDefaultDeps({ logger })` from `@mcp-abap-adt/llm-agent-libs/testing` —

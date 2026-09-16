@@ -2480,7 +2480,7 @@ Implementations: `ToolCache` (with TTL + SHA-256 key hashing), `NoopToolCache` (
 
 ## Passing your own logger
 
-Both logger shapes are accepted at the seams listed below. The list is exhaustive for *configuration* seams — the places you hand llm-agent a logger for it to use. Any other such input takes the event `ILogger` only.
+Both logger shapes are accepted at the seams listed below. The list covers the seams a consumer passes a logger to directly, plus anything structurally reachable from them — an interface others `extend` carries the widening with it. Anything not reachable from this list takes the event `ILogger` only.
 
 (`normaliseLogger(logger)` and `isTextLogger(logger)` also take either shape, but they are not seams: they are the adapter itself, exported so you can normalise a logger before handing it to an input that stays event-only. See the end of this section.)
 
@@ -2493,6 +2493,7 @@ Both logger shapes are accepted at the seams listed below. The list is exhaustiv
 | `FallbackLlmCallStrategy`'s constructor | `llm-agent` |
 | `EmbedderResolutionOptions.logger`, `RagResolutionOptions.logger` | `llm-agent-rag` |
 | `SessionLifecycleOptions.logger`, `resolveAgentEmbedder`, `resolveToolsStoreEmbedder` | `llm-agent-server-libs` |
+| `makeConnectionStrategy`'s options (`MakeConnectionStrategyOptions extends ConnectionStrategyOptions`), `PeriodicConnectionStrategy`'s `options` | `llm-agent-mcp` |
 
 If you already have an ordinary text logger, pass it:
 
