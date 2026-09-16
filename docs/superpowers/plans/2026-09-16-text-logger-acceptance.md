@@ -932,8 +932,8 @@ Expected: pass, nothing edited among the pre-existing tests.
 Under `## [Unreleased]`, in the existing `### Added` block:
 
 ```markdown
-- **`ITextLogger`** — every seam that accepts a logger now takes an ordinary
-  text logger (`info`/`warn`/`error`/`debug(message, meta?)`) as well as the
+- **`ITextLogger`** — these seams now take an ordinary text logger
+  (`info`/`warn`/`error`/`debug(message, meta?)`) as well as the
   event `ILogger`: `SmartAgentBuilder.withLogger`,
   `SessionGraphFactoryOptions.logger`, `ConnectionStrategyOptions.logger`,
   `ComposeResilienceOptions.logger`, `FallbackLlmCallStrategy`'s constructor,
@@ -944,9 +944,11 @@ Under `## [Unreleased]`, in the existing `### Added` block:
   no longer has to write a `LogEvent` adapter before it can pass one.
 - **`normaliseLogger(logger)` and the `AnyLogger` union are exported** for the
   seams that deliberately keep the event shape. `IPipelineContext.logger` and
-  `IPipelinePlugin` hand `ILogger` *to* you, and `PipelineDeps.logger` and
-  `SmartAgentDeps.logger` feed them — widening any of those would put a text
-  logger in front of every existing plugin. If you assemble those deps by
+  `IPipelinePlugin` hand `ILogger` *to* you, and three inputs feed them and so
+  stay event-only: `PipelineDeps.logger`, `SmartAgentDeps.logger`, and
+  `makeDefaultDeps({ logger })` from `@mcp-abap-adt/llm-agent-libs/testing` —
+  widening any of them would put a text logger in front of every existing
+  plugin. If you assemble those deps by
   hand, call `normaliseLogger` on your logger first; it is one line, and it is
   the same adapter the widened seams use internally.
   `normaliseLogger(logger)` and the `AnyLogger` union are exported for anyone
@@ -973,7 +975,7 @@ Add a short section in the file's existing voice:
 ````markdown
 ## Passing your own logger
 
-Both logger shapes are accepted at every seam that *takes* one from you:
+Both logger shapes are accepted at the seams listed below. That list is exhaustive — a logger input not on it takes the event `ILogger` only:
 
 | seam | package |
 |---|---|
@@ -1000,13 +1002,25 @@ It is normalised at the boundary: internals keep emitting structured
 `LogEvent`s, and your logger receives the event's `type` as the message (a
 `warning` carries its own text) with the whole event as `meta`.
 
-What stays event-only, deliberately: everywhere llm-agent hands a logger *to
-you*. `IPipelineContext.logger` still gives your plugin the event `ILogger`, so
-`logger.log({ ... })` inside a plugin keeps compiling unchanged — widening that
-would break every existing plugin, which is a major, not this release.
+What stays event-only, deliberately — and it is not only what you *receive*:
 
-So the rule is one-directional: what you pass in may be either shape; what you
-receive is always the event shape.
+- Everywhere llm-agent hands a logger **to** you: `IPipelineContext.logger`
+  still gives your plugin the event `ILogger`, so `logger.log({ ... })` inside
+  a plugin keeps compiling unchanged.
+- Three inputs you **pass in** as well, because each one feeds that same
+  plugin-facing context: `PipelineDeps.logger`, `SmartAgentDeps.logger`, and
+  `makeDefaultDeps({ logger })` from `@mcp-abap-adt/llm-agent-libs/testing`.
+
+Widening any of them would put a text logger in front of every existing
+plugin, which is a major rather than this release. If you assemble those deps
+yourself, normalise first — one line, using the same adapter the widened seams
+use internally:
+
+```ts
+import { normaliseLogger } from '@mcp-abap-adt/llm-agent';
+
+const deps: PipelineDeps = { ...rest, logger: normaliseLogger(myTextLogger) };
+```
 ````
 
 - [ ] **Step 5: Verify and commit**
