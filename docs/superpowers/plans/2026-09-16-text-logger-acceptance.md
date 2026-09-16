@@ -993,12 +993,16 @@ git commit -m "feat(llm-agent-server-libs): session lifecycle takes either logge
 Run from the repository root:
 
 ```bash
-npm run build && npm test && npm run lint:check
+npm run build && npm run typecheck && npm test && npm run lint:check
 ```
 
-Expected: every workspace builds; all tests pass; Biome reports no new warnings.
+Expected: every workspace builds; the typecheck gate is clean; all tests pass; Biome reports no new warnings.
 
-**`npm run build` is not optional here, and it is not interchangeable with `npm test`.** This workstream's whole subject is a type widening, and the test runner (`node --import tsx/esm`) transpiles without type-checking — every widened seam would "pass" its tests while failing to compile for a consumer. `tsc` is the only check that proves `ILogger | ITextLogger` is actually accepted, and equally that the frozen output seams still resolve.
+**Three checks, three different jobs — none of them substitutes for another.** This workstream's subject is a type widening, and `npm test` runs `node --import tsx/esm`, which transpiles without type-checking: every widened seam would "pass" its tests while failing to compile for a consumer.
+
+- `npm run build` type-checks the **production** sources of every package. It proves the widened signatures compile and that the frozen output seams still resolve for consumers. It reads no test file — every package tsconfig excludes them.
+- `npm run typecheck` reads exactly the four test files this workstream adds. It is the only check that proves those tests actually pass an `ITextLogger` where one is now accepted. Its `include` list is deliberately narrow: a repo-wide version surfaces 315 pre-existing errors in tests nothing has ever type-checked, which is a separate workstream's problem, not this one's.
+- `npm test` proves behaviour — that the events reach the text logger at the levels §7 fixes.
 
 The claim this workstream makes: **a consumer can now hand over the logger it already has, and nobody who passes the old one notices anything.** The proof is that no pre-existing test needed editing — if one did, the change stopped being additive; stop and report it rather than adjusting the test.
 
