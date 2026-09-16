@@ -8,6 +8,8 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import type { AnyLogger } from '../logger/normalise-logger.js';
+import { normaliseLogger } from '../logger/normalise-logger.js';
 import type { ILogger } from '../logger/types.js';
 import { NonStreamingLlmCallStrategy } from './non-streaming-llm-call-strategy.js';
 import { StreamingLlmCallStrategy } from './streaming-llm-call-strategy.js';
@@ -20,8 +22,11 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
   private streamingDisabled = false;
   private readonly streaming = new StreamingLlmCallStrategy();
   private readonly nonStreaming = new NonStreamingLlmCallStrategy();
+  private readonly logger?: ILogger;
 
-  constructor(private readonly logger?: ILogger) {}
+  constructor(logger?: AnyLogger) {
+    this.logger = logger ? normaliseLogger(logger) : undefined;
+  }
 
   async *call(
     llm: ILlm,

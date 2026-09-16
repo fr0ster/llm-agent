@@ -1,4 +1,5 @@
-import type { CallOptions, ILogger, IMcpClient } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, IMcpClient } from '@mcp-abap-adt/llm-agent';
+import type { AnyLogger } from '../logger/normalise-logger.js';
 import type { IMcpRequestHeadersStrategy } from './mcp-request-headers-strategy.js';
 
 export interface McpClientDescriptor {
@@ -73,6 +74,10 @@ export type McpClientFactory = (
 
 export interface ConnectionStrategyOptions {
   skipRevectorize?: boolean;
-  logger?: ILogger;
+  /**
+   * Either logger shape. An `ITextLogger` is normalised at the boundary, so
+   * everything downstream keeps receiving the event `ILogger`.
+   */
+  logger?: AnyLogger;
   cooldownMs?: number;
 }

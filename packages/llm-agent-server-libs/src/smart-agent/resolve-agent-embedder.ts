@@ -14,9 +14,9 @@
  */
 
 import type {
+  AnyLogger,
   EmbedderFactory,
   IEmbedder,
-  ILogger,
 } from '@mcp-abap-adt/llm-agent';
 import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -29,7 +29,7 @@ export async function resolveAgentEmbedder(
   rag: SmartServerRagConfig | undefined,
   diEmbedder: IEmbedder | undefined,
   extraFactories: Record<string, EmbedderFactory>,
-  logger?: ILogger,
+  logger?: AnyLogger,
 ): Promise<IEmbedder | undefined> {
   // Canonical owner: every non-undefined embedder is wrapped here so its
   // embed() calls log token usage to the per-request logger (carried on
@@ -75,7 +75,7 @@ export async function resolveToolsStoreEmbedder(
   toolsStoreCfg: SmartServerRagConfig,
   diEmbedder: IEmbedder | undefined,
   extraFactories: Record<string, EmbedderFactory>,
-  logger?: ILogger,
+  logger?: AnyLogger,
 ): Promise<IEmbedder | undefined> {
   if (current) {
     // #141's contract is identity: an existing embedder must be reused, never

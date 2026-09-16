@@ -1,8 +1,8 @@
 import type {
+  AnyLogger,
   EmbedderFactory,
   IDocumentEnricher,
   IEmbedder,
-  ILogger,
   IQueryPreprocessor,
   IRag,
   ISearchStrategy,
@@ -135,7 +135,7 @@ export interface EmbedderResolutionOptions {
   /** Additional embedder factories (merged with built-ins). */
   extraFactories?: Record<string, EmbedderFactory>;
   /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
-  logger?: ILogger;
+  logger?: AnyLogger;
 }
 
 /**
@@ -252,7 +252,7 @@ export interface RagResolutionOptions {
   /** Additional embedder factories (merged with built-ins). */
   extraFactories?: Record<string, EmbedderFactory>;
   /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
-  logger?: ILogger;
+  logger?: AnyLogger;
 }
 
 /**
