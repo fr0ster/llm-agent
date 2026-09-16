@@ -85,6 +85,7 @@ export type {
   McpFailureKind,
 } from './mcp-failure-classifier.js';
 export type { IMcpRequestHeadersStrategy } from './mcp-request-headers-strategy.js';
+export type { IMcpServer } from './mcp-server.js';
 export type {
   CounterSnapshot,
   HistogramSnapshot,

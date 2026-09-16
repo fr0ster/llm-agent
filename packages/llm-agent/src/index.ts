@@ -10,7 +10,9 @@ export { ClarifySignal, NeedInfoSignal } from './coordinator-signals.js';
 export * from './errors/index.js';
 export * from './external-results.js';
 export { assertClientDescriptors } from './interfaces/assert-client-descriptors.js';
+export { collectServerDescriptors } from './interfaces/collect-server-descriptors.js';
 export * from './interfaces/index.js';
+export { mcpServerFromFactory } from './interfaces/mcp-server-from-factory.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export {
   findThrottled,
