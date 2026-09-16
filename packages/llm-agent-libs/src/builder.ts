@@ -1439,8 +1439,33 @@ export class SmartAgentBuilder {
           agent.currentMainLlm.streamChat(messages, tools, options),
         requestLogger,
         close: async () => {
-          await connectionStrategy?.dispose?.();
-          for (const fn of closeFns) await fn();
+          // Best-effort, like every other teardown routine in this codebase
+          // (SessionGraph.dispose(), SessionGraphFactory's per-stop loop): a
+          // failure in ONE resource must not stop the rest from being torn
+          // down, and close() itself never throws — it is routinely awaited
+          // in a `finally` block, where a raised error would either mask
+          // whatever the `try` block was doing or force every caller to wrap
+          // a routine cleanup call in its own try/catch. Failures are never
+          // swallowed SILENTLY, though: both surface through `log` (or
+          // console.warn without one), the same pattern used everywhere else
+          // teardown failures are reported in this branch.
+          const warn = (message: string) => {
+            if (log) {
+              log.log({ type: 'warning', traceId: 'builder', message });
+            } else {
+              console.warn(`[builder] ${message}`);
+            }
+          };
+          try {
+            await connectionStrategy?.dispose?.();
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            warn(`close_connection_strategy_dispose_failed: ${message}`);
+          }
+          await stopAll(closeFns, (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            warn(`close_mcp_stop_failed: ${message}`);
+          });
         },
         circuitBreakers,
         ragStores,

@@ -6,6 +6,7 @@ import type {
   IEmbedResult,
   ILlm,
   IMcpClient,
+  IMcpConnectionStrategy,
   IMcpServer,
   LlmStreamChunk,
   LlmTool,
@@ -184,6 +185,83 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     } finally {
       await handle.close();
     }
+  });
+
+  it("close() stops the SECOND server even when the FIRST server's stop() rejects (#12a)", async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const log: string[] = [];
+    const warnings: string[] = [];
+    const failingFirst: IMcpServer = {
+      async start() {
+        log.push('start:a');
+        return stubMcpClient('a');
+      },
+      async stop() {
+        log.push('stop:a-attempted');
+        throw new Error('stop failed for a');
+      },
+    };
+
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withLogger({
+        log: (e) => {
+          if (e.type === 'warning') warnings.push(e.message);
+        },
+      })
+      .withMcpServers([failingFirst, stubServer('b', log)])
+      .build();
+
+    // close() must not throw despite the first server's stop() rejecting —
+    // see the report for the "should close() throw" reasoning.
+    await handle.close();
+
+    assert.deepEqual(
+      log,
+      ['start:a', 'start:b', 'stop:a-attempted', 'stop:b'],
+      'the second server must still be stopped after the first stop() rejects',
+    );
+    assert.ok(
+      warnings.some((m) => m.includes('stop failed for a')),
+      'the swallowed stop() failure must be surfaced, not silently dropped',
+    );
+  });
+
+  it('close() still stops every server when connectionStrategy.dispose() throws (#12b)', async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const log: string[] = [];
+    const warnings: string[] = [];
+    const throwingStrategy: IMcpConnectionStrategy = {
+      async resolve() {
+        return { clients: [], toolsChanged: false };
+      },
+      async dispose() {
+        throw new Error('strategy dispose failed');
+      },
+    };
+
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withLogger({
+        log: (e) => {
+          if (e.type === 'warning') warnings.push(e.message);
+        },
+      })
+      .withMcpConnectionStrategy(throwingStrategy)
+      .withMcpServers([stubServer('a', log), stubServer('b', log)])
+      .build();
+
+    await handle.close();
+
+    assert.deepEqual(
+      log,
+      ['start:a', 'start:b', 'stop:a', 'stop:b'],
+      'a throwing connectionStrategy.dispose() must not prevent the servers from being stopped',
+    );
+    assert.ok(
+      warnings.some((m) => m.includes('strategy dispose failed')),
+      'the swallowed dispose() failure must be surfaced, not silently dropped',
+    );
   });
 
   it('a failure AFTER the start loop (pipeline.initialize) stops every started server, and rethrows the original error (#1)', async () => {
