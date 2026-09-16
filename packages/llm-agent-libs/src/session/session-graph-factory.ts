@@ -1,10 +1,12 @@
 import type {
   ILogger,
   IMcpClient,
+  IMcpServer,
   IRag,
   IRagRegistry,
   McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
+import { collectServerDescriptors } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
@@ -41,12 +43,26 @@ export interface SessionAgentParts {
 
 export interface SessionGraphFactoryOptions {
   /**
+   * Servers for THIS caller: the factory starts each one before `buildAgent`,
+   * hands the clients over, and stops them last on dispose. Takes the identity,
+   * which is what per-caller credentials need and what `mcpClientFactory` never
+   * had.
+   *
+   * When set it takes precedence over `mcpClientFactory` and
+   * `mcpClientFactoryWithDescriptors`.
+   */
+  readonly mcpServerFactory?: (identity: SessionGraphIdentity) => IMcpServer[];
+  /**
    * Resolve this session's MCP client(s). Per-session-CAPABLE: the default
    * factory returns the shared GLOBAL client(s) by reference (no re-connect);
    * a creds-aware build (out of scope) returns a fresh per-session client.
    * Either way the tools-catalog RAG is never re-vectorized.
+   *
+   * @deprecated Use `mcpServerFactory`, which also owns lifetime and receives
+   * the identity. Optional since this release: supply exactly one of
+   * `mcpServerFactory`, `mcpClientFactoryWithDescriptors` or this.
    */
-  readonly mcpClientFactory: (identity: SessionGraphIdentity) => IMcpClient[];
+  readonly mcpClientFactory?: (identity: SessionGraphIdentity) => IMcpClient[];
   /**
    * ADDITIVE descriptor-aware seam (#244): when set, takes precedence over
    * `mcpClientFactory` and pairs the resolved clients with the STABLE
@@ -55,6 +71,10 @@ export interface SessionGraphFactoryOptions {
    * active slots `[0,2]` collapse to array indices `[0,1]`). `mcpClientFactory`
    * stays required for back-compat; this field is optional and, when absent,
    * `build()` falls back to `mcpClientFactory` (descriptors stay `undefined`).
+   *
+   * @deprecated Use `mcpServerFactory`, which also owns lifetime and receives
+   * the identity. Optional since this release: supply exactly one of
+   * `mcpServerFactory`, this or `mcpClientFactory`.
    */
   readonly mcpClientFactoryWithDescriptors?: (
     identity: SessionGraphIdentity,
@@ -93,6 +113,15 @@ export interface SessionGraphFactoryOptions {
    * crashes the registry.
    */
   readonly onDispose?: (sessionId: string) => Promise<void>;
+  /**
+   * Per-session teardown that must run BEFORE the session's RAG collections are
+   * deleted — closing a pipeline still in flight, which must not write into a
+   * collection being removed.
+   *
+   * `onDispose` keeps its documented place after `closeSession`; this hook is
+   * the one that runs first.
+   */
+  readonly closePipeline?: (sessionId: string) => Promise<void>;
 }
 
 /**
@@ -110,6 +139,15 @@ export class SessionGraphFactory {
   constructor(private readonly opts: SessionGraphFactoryOptions) {}
 
   async build(identity: SessionGraphIdentity): Promise<SessionGraph> {
+    if (
+      !this.opts.mcpServerFactory &&
+      !this.opts.mcpClientFactoryWithDescriptors &&
+      !this.opts.mcpClientFactory
+    )
+      throw new Error(
+        'SessionGraphFactory needs one of mcpServerFactory, mcpClientFactoryWithDescriptors or mcpClientFactory',
+      );
+
     const logger = new SessionRequestLogger();
     const toolAvailability = new ToolAvailabilityRegistry();
     const pendingToolResults = new PendingToolResultsRegistry();
@@ -117,13 +155,41 @@ export class SessionGraphFactory {
     let mcpClients: IMcpClient[];
     let mcpClientDescriptors: readonly McpClientDescriptor[] | undefined;
     let configuredSlotCount: number | undefined;
-    if (this.opts.mcpClientFactoryWithDescriptors) {
+    const startedServers: IMcpServer[] = [];
+    if (this.opts.mcpServerFactory) {
+      const servers = this.opts.mcpServerFactory(identity);
+      // All or none — see the builder's identical check and why it throws.
+      const descriptors = collectServerDescriptors(servers, 'mcpServerFactory');
+
+      const clients: IMcpClient[] = [];
+      try {
+        for (const server of servers) {
+          clients.push(await server.start());
+          startedServers.push(server);
+        }
+      } catch (err) {
+        for (const server of startedServers.splice(0)) {
+          try {
+            await server.stop();
+          } catch {
+            // The original failure is what the caller needs to see.
+          }
+        }
+        throw err;
+      }
+      mcpClients = clients;
+      mcpClientDescriptors = descriptors;
+      // Nothing was filtered out of a configured set, so there is no original
+      // count to preserve; array position is the pairing.
+      configuredSlotCount = undefined;
+    } else if (this.opts.mcpClientFactoryWithDescriptors) {
       const built = this.opts.mcpClientFactoryWithDescriptors(identity);
       mcpClients = built.clients;
       mcpClientDescriptors = built.clientDescriptors;
       configuredSlotCount = built.configuredSlotCount;
     } else {
-      mcpClients = this.opts.mcpClientFactory(identity);
+      // The guard at the top of build() has already ruled out "none set".
+      mcpClients = this.opts.mcpClientFactory?.(identity) ?? [];
     }
     const agent = await this.opts.buildAgent({
       sessionId: identity.sessionId,
@@ -147,6 +213,27 @@ export class SessionGraphFactory {
       // via the optional logger (or console.warn fallback), never silently
       // dropped (review MEDIUM #2).
       dispose: async (sessionId) => {
+        // Runs first: a pipeline still in flight must not write into a session
+        // collection that `closeSession` is about to delete. Best-effort, like
+        // every other step here.
+        if (this.opts.closePipeline) {
+          try {
+            await this.opts.closePipeline(sessionId);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (this.opts.logger) {
+              this.opts.logger.log({
+                type: 'warning',
+                traceId: `session:${sessionId}`,
+                message: `session_close_pipeline_failed: ${message}`,
+              });
+            } else {
+              console.warn(
+                `[session] closePipeline(${sessionId}) failed: ${message}`,
+              );
+            }
+          }
+        }
         const res = await this.opts.ragRegistry.closeSession(sessionId);
         if (!res.ok) {
           const message = res.error?.message ?? String(res.error);
@@ -178,6 +265,25 @@ export class SessionGraphFactory {
             } else {
               console.warn(
                 `[session] onDispose(${sessionId}) failed: ${message}`,
+              );
+            }
+          }
+        }
+        // Last: the clients outlive the pipeline that was still calling them.
+        for (const server of startedServers) {
+          try {
+            await server.stop();
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (this.opts.logger) {
+              this.opts.logger.log({
+                type: 'warning',
+                traceId: `session:${sessionId}`,
+                message: `session_mcp_stop_failed: ${message}`,
+              });
+            } else {
+              console.warn(
+                `[session] mcp stop(${sessionId}) failed: ${message}`,
               );
             }
           }
