@@ -56,13 +56,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   stay event-only: `PipelineDeps.logger`, `SmartAgentDeps.logger`, and
   `makeDefaultDeps({ logger })` from `@mcp-abap-adt/llm-agent-libs/testing` —
   widening any of them would put a text logger in front of every existing
-  plugin. If you assemble those deps by
-  hand, call `normaliseLogger` on your logger first; it is one line, and it is
-  the same adapter the widened seams use internally.
-  `normaliseLogger(logger)` and the `AnyLogger` union are exported for anyone
-  wiring their own seam. A text logger receives the event's `type` as the
-  message — a `warning` carries its own text — and the whole event as `meta`,
-  at `error` for `pipeline_error`, `warn` for `warning`, `debug` for
+  plugin. If you assemble those deps by hand, call `normaliseLogger` on your
+  logger first — one line, and the same adapter the widened seams use
+  internally. A text logger then receives the event's `type` as the message
+  (a `warning` carries its own text) and the whole event as `meta`, at `error`
+  for `pipeline_error`, `warn` for `warning`, `debug` for
   `rag_upsert`/`rag_query`/`tools_selected`, and `info` for everything else.
 
 ### Changed
