@@ -72,6 +72,9 @@ export {
   type IToolNamespace,
   type ToolNamespaceContext,
 } from './interfaces/tool-namespace.js';
+export type { AnyLogger } from './logger/normalise-logger.js';
+export { isTextLogger, normaliseLogger } from './logger/normalise-logger.js';
+export type { ITextLogger } from './logger/text-logger.js';
 // Logger
 export type { ILogger, LogEvent } from './logger/types.js';
 export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js';

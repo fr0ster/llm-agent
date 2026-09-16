@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  },
+  "include": [
+    "packages/llm-agent/src/logger/normalise-logger.test.ts",
+    "packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts",
+    "packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts",
+    "packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts"
+  ]
+}
