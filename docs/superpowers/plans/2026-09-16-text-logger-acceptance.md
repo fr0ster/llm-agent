@@ -15,7 +15,16 @@
 - **Additive minor.** Nothing is removed; no existing path changes behaviour. A consumer that keeps passing an `ILogger` sees exactly today's behaviour, and no pre-existing test may need editing.
 - **The exported `ILogger` is FROZEN.** It stays `{ log(event: LogEvent): void }` in `packages/llm-agent/src/logger/types.ts`. Do not widen it, rename it, or add members — `IPipelineContext.logger` and `IPipelinePlugin` hand this exact type to consumer plugins, so changing its shape is a major.
 - **Output seams stay `ILogger`:** `packages/llm-agent/src/interfaces/pipeline-plugin.ts` — `IPipelineContext` (declared at :46, its `logger?: ILogger` at :68) and `IPipelinePlugin` (:91). These files are not to be touched by this workstream.
-- **Input seams widen to `ILogger | ITextLogger`:** `SmartAgentBuilder.withLogger` (`llm-agent-libs/src/builder.ts:386`), `ConnectionStrategyOptions.logger` (`llm-agent/src/interfaces/mcp-connection-strategy.ts:76`), `SessionGraphFactoryOptions.logger` (`llm-agent-libs/src/session/session-graph-factory.ts:107`), embedder resilience (`llm-agent/src/resilience/embedder-resilience.ts:67`), session lifecycle (`llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts:72`).
+- **Input seams widen to `ILogger | ITextLogger`. This list is authoritative** — if a task, a docstring or the changelog disagrees with it, this line wins, and any seam not on it stays `ILogger`:
+  1. `SmartAgentBuilder.withLogger` — `llm-agent-libs/src/builder.ts:386`
+  2. `SessionGraphFactoryOptions.logger` — `llm-agent-libs/src/session/session-graph-factory.ts:107`
+  3. `ConnectionStrategyOptions.logger` — `llm-agent/src/interfaces/mcp-connection-strategy.ts:76`
+  4. `ComposeResilienceOptions.logger` — `llm-agent/src/resilience/embedder-resilience.ts:67`
+  5. `FallbackLlmCallStrategy`'s constructor — `llm-agent/src/policy/fallback-llm-call-strategy.ts:24`
+  6. `EmbedderResolutionOptions.logger` and `RagResolutionOptions.logger` — `llm-agent-rag/src/rag-factories.ts:138` and `:255`
+  7. `SessionLifecycleOptions.logger` — `llm-agent-server-libs/src/smart-agent/session-lifecycle/index.ts:72`
+  8. `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` — `llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:32` and `:78`
+- **`PipelineDeps.logger` and `SmartAgentDeps.logger` are exported but do NOT widen.** They feed the plugin-facing context (`llm-agent-libs/src/pipeline/default-pipeline.ts:474`, `src/agent.ts:311`), so widening either would put an `AnyLogger` in front of every consumer plugin. A consumer assembling those deps by hand calls the exported `normaliseLogger` first.
 - **`@mcp-abap-adt/interfaces-utils` becomes a REGULAR dependency** of `@mcp-abap-adt/llm-agent` (currently absent — the package depends only on `zod` today). The import is type-only, which keeps it out of the runtime graph, but a re-exported type must resolve in every consumer's `tsc` — a devDependency would break them. Published version: `1.0.0`.
 - **The external shape is verified, not assumed.** In the interfaces repository (`~/prj/mcp-abap-adt-interfaces`), `packages/interfaces-utils/src/logging/ILogger.ts:5` declares exactly four methods — `info`, `error`, `warn`, `debug`, each `(message: string, meta?: unknown): void` — and it is exported from that package's barrel at `src/index.ts:7` as `export type { ILogger } from './logging/ILogger';`. `npm view @mcp-abap-adt/interfaces-utils version` reports `1.0.0`. If the installed declaration disagrees with this after `npm install`, stop and report it: the re-export in Task 1 depends on this shape being exact.
 - **The boundary mapping is fixed by §7** and must be implemented exactly:
@@ -47,6 +56,12 @@
 | `packages/llm-agent/package.json` | add the `interfaces-utils` dependency |
 | `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts` | `ConnectionStrategyOptions.logger` widens |
 | `packages/llm-agent/src/resilience/embedder-resilience.ts` | its `logger` option widens |
+| `packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts` | **new** — the conflict path, driven with a text logger |
+| `packages/llm-agent/src/policy/fallback-llm-call-strategy.ts` | its constructor parameter widens; the private field stays `ILogger` |
+| `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts` | `resolveAgentEmbedder` (:32) and `resolveToolsStoreEmbedder` (:78) widen — both re-exported from that package's barrel |
+| `packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts` | **new** — proves the stored logger is the normalised one |
+| `packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts` | **new** — `withLogger` and the session factory, both driven with a text logger |
+| `tsconfig.typecheck.json`, root `package.json` | **new** — the narrow type gate and its `typecheck` script |
 | `packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts` | normalises the widened `ConnectionStrategyOptions.logger` at `:49`, where it stores it |
 | `packages/llm-agent-rag/src/rag-factories.ts` | `EmbedderResolutionOptions.logger` (:138) and `RagResolutionOptions.logger` (:255) widen — both are public, both exported from that package's barrel |
 | `packages/llm-agent-libs/src/builder.ts` | `withLogger` widens; normalise once, at the setter |
@@ -339,7 +354,9 @@ Two things here are load-bearing, and both were measured on this tree rather tha
 - `composite: false` plus the three emit flags. `tsconfig.base.json` sets `"composite": true`, and `--noEmit` with `composite` is TS5069. With them, `tsc -p` runs clean; without, it refuses to start.
 - **The `include` list names only this workstream's own test files.** A repo-wide `"packages/*/src/**/*"` also type-checks every pre-existing test, and those have never been type-checked by anything: running it produces **315 errors** (mostly TS2322/TS2345/TS18047 in stubs that satisfy the runtime but not the declared interfaces, e.g. `builder-context-builder-wiring.test.ts:50`). Fixing those is a separate workstream; dragging them in here would make this plan's very first step fail. The narrow list was verified clean (`tsc -p` exits 0) against two existing test files compiled the same way.
 
-Each listed file is created later in this plan, so add each entry as its task creates it, or create the config with the list complete and expect `tsc` to report only the not-yet-existing paths until then.
+Write the `include` list complete, with all four entries, even though three of those files do not exist yet. TypeScript ignores an `include` pattern that matches nothing **as long as at least one other pattern matches** — and one already does: `normalise-logger.test.ts` was created back in Step 2 of this same task. So the gate is not idle here; it compiles that test and the sources it imports.
+
+(The only state that errors is a config where *no* pattern matches anything — TS18003. That cannot happen from Step 2 onward.)
 
 Add the script to the root `package.json`:
 
@@ -348,7 +365,9 @@ Add the script to the root `package.json`:
 ```
 
 Run: `npm run typecheck`
-Expected: at this point it type-checks only files this plan has yet to create, so it will report missing inputs — that is fine and expected. It becomes a real gate from Task 2 onward, once the first of those files exists. What it must NEVER do is report errors from test files this workstream did not write; if it does, the `include` list is too broad.
+Expected: **PASS** — and it is already doing real work. By this step `normalise-logger.test.ts` exists (Step 2) and the adapter it imports is implemented (Steps 4–5), so the gate compiles that test against the real `normaliseLogger`; the three not-yet-written entries are simply ignored patterns. A green run here is the baseline the later RED steps are measured against.
+
+Two failures mean something is wrong with the config rather than with the code: errors from test files this workstream did not write (the `include` list is too broad — it must never reach into the repo's other tests), or TS18003 "no inputs found" (no pattern matched at all, which cannot happen once Step 2's file exists).
 
 - [ ] **Step 8: Run the tests, build, typecheck and lint**
 
