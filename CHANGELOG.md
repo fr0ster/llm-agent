@@ -48,8 +48,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `EmbedderResolutionOptions.logger` and `RagResolutionOptions.logger` in
   `@mcp-abap-adt/llm-agent-rag`, and `SessionLifecycleOptions.logger`,
   `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` in
-  `@mcp-abap-adt/llm-agent-server-libs`. A consumer that already has a logger
-  no longer has to write a `LogEvent` adapter before it can pass one.
+  `@mcp-abap-adt/llm-agent-server-libs`. Two more take either shape by
+  inheritance rather than by declaration: `MakeConnectionStrategyOptions`
+  extends `ConnectionStrategyOptions`, so `makeConnectionStrategy` accepts one,
+  and so does `PeriodicConnectionStrategy`'s constructor. A consumer that
+  already has a logger no longer has to write a `LogEvent` adapter before it can
+  pass one.
 - **`normaliseLogger(logger)`, the `AnyLogger` union, and the `isTextLogger(logger)`
   type guard are exported** for the seams that deliberately keep the event
   shape. `IPipelineContext.logger` and
@@ -76,6 +80,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   hand it to consumer plugins; widening it would break every plugin. The text
   shape arrives as the separate `ITextLogger`. Converging on one name is a
   rename, and a rename is a major — so it waits for one.
+- **Reading a widened option property now needs a narrow.** Handing a logger in
+  is unaffected, but a consumer that *reads* one — `options.logger?.log(event)`
+  on `ConnectionStrategyOptions`, `ComposeResilienceOptions` or
+  `SessionGraphFactoryOptions` — no longer compiles, because the property is now
+  `AnyLogger`: `Property 'log' does not exist on type 'AnyLogger'`. Call
+  `normaliseLogger(options.logger)` first, or narrow with `isTextLogger`.
+  Nothing changes at runtime.
 
 ### Deprecated
 
