@@ -2,10 +2,16 @@
 
 ## [Unreleased]
 
-`AnthropicConfig.credential` replaces the plain `apiKey` field: a typed
-`IApiKeyCredential` (from `@mcp-abap-adt/interfaces-auth`), asked for fresh on
-every request — both on the axios path (`chat()`) and the fetch path
-(`streamChat()`) — instead of baked into the axios client at construction.
+**BREAKING:** `AnthropicConfig.apiKey` is gone. `AnthropicConfig.credential`
+(a typed `IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`) replaces
+it, required, asked for fresh on every request — both on the axios path
+(`chat()`) and the fetch path (`streamChat()`) — instead of baked into the
+axios client at construction.
+
+Migration: `new AnthropicProvider({ apiKey: 'sk-…', model })` becomes
+`new AnthropicProvider({ credential: staticApiKey('sk-…'), model })`
+(`staticApiKey` is exported from `@mcp-abap-adt/llm-agent`).
+
 Quota scoping keys on the credential OBJECT's identity, not the secret's
 value — calling `staticApiKey(key)` twice creates two separate credential
 objects and therefore two separate rate-limit buckets, even for the same key.

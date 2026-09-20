@@ -2,17 +2,34 @@
 
 ## [Unreleased]
 
-`OllamaConfig.credential` replaces the plain `apiKey` field: an OPTIONAL typed
-`IApiKeyCredential` (from `@mcp-abap-adt/interfaces-auth`), forwarded
-unchanged to `OpenAIProvider` through the existing `super({ ...config })`
-call. Unlike the other three providers, it stays optional — a local Ollama
-server ignores auth, though a gateway placed in front of it may still require
-a key — and when configured, it is asked for fresh on every request. Quota
-scoping keys on the credential OBJECT's identity, not the secret's value —
-calling `staticApiKey(key)` twice creates two separate credential objects and
-therefore two separate rate-limit buckets, even for the same key. Reuse one
-credential object, or set `quotaScope` explicitly, to make two providers
-share a gate.
+**BREAKING:** `OllamaConfig.apiKey` is gone. `OllamaConfig.credential` (an
+OPTIONAL typed `IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`)
+replaces it, forwarded unchanged to `OpenAIProvider` through the existing
+`super({ ...config })` call. Unlike the other three providers, it stays
+optional — a local Ollama server ignores auth, though a gateway placed in
+front of it may still require a key — and when configured, it is asked for
+fresh on every request.
+
+Migration: `new OllamaProvider({ apiKey: 'sk-…', model })` becomes
+`new OllamaProvider({ credential: staticApiKey('sk-…'), model })`
+(`staticApiKey` is exported from `@mcp-abap-adt/llm-agent`); an omitted
+`apiKey` needs no change — omit `credential` too.
+
+**Behaviour change, not just a rename:** before this, a provider constructed
+with no key still sent `Authorization: Bearer ollama` — a dummy value that
+existed only because the OpenAI SDK this class no longer goes through
+demanded a non-empty key. Now, with no `credential` configured, **no
+`Authorization` header is sent at all.** This matters specifically for an
+Ollama instance placed behind a gateway that checks auth: previously it got a
+harmless dummy value, and would have failed loudly; now it silently loses its
+auth header (construction still succeeds, nothing throws). Configure a
+`credential` explicitly whenever the target actually checks the header.
+
+Quota scoping keys on the credential OBJECT's identity, not the secret's
+value — calling `staticApiKey(key)` twice creates two separate credential
+objects and therefore two separate rate-limit buckets, even for the same key.
+Reuse one credential object, or set `quotaScope` explicitly, to make two
+providers share a gate.
 
 ## 26.0.0
 
