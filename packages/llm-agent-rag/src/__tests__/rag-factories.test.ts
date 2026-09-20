@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import { MissingProviderError, staticApiKey } from '@mcp-abap-adt/llm-agent';
 import { _resetPrefetchedForTests } from '../embedder-factories.js';
 import {
   _resetPrefetchedRagForTests,
@@ -76,10 +76,14 @@ describe('rag-factories', () => {
     // Verify it does NOT throw MissingProviderError — actual OpenAI network
     // failure is fine; the test only guards against missing-provider regression.
     try {
+      // Task B4 replaced OpenAiEmbedder's `apiKey: string` with a required
+      // `credential`. This options bag is `Record<string, unknown>` (B6a
+      // owns typing it), so an untyped `credential` still reaches the
+      // constructor and works at runtime.
       await makeRag({
         type: 'in-memory',
         embedder: 'openai',
-        apiKey: 'test',
+        credential: staticApiKey('test'),
         model: 'text-embedding-3-small',
       });
     } catch (err) {

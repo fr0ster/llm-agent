@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import { MissingProviderError, staticApiKey } from '@mcp-abap-adt/llm-agent';
 import {
   _resetPrefetchedForTests,
   prefetchEmbedderFactories,
@@ -26,8 +26,12 @@ describe('factory registry — MissingProviderError', () => {
   });
   it('prefetchEmbedderFactories resolves installed peer', async () => {
     await prefetchEmbedderFactories(['openai']);
+    // Task B4 replaced OpenAiEmbedder's `apiKey: string` with a required
+    // `credential`. This options bag is `Record<string, unknown>` (B6a owns
+    // typing it), so an untyped `credential` still reaches the constructor
+    // and works at runtime.
     const e = resolvePrefetchedEmbedder('openai', {
-      apiKey: 'test',
+      credential: staticApiKey('test'),
       model: 'text-embedding-3-small',
     });
     assert.ok(e);
