@@ -749,7 +749,9 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   // @ts-expect-error — protected hook, read for test
   const keyOf = (p: OpenAIProvider) => p.quotaKey() as string;
 
-  it('separates two different accounts (distinct secrets, distinct credentials)', () => {
+  it('separates two accounts, because each account is its own credential object', () => {
+    // Identity-based on purpose: a bucket key derived from a secret would
+    // put that secret in a cache key, which the architecture forbids.
     // Restores the case a review round found untested: under identity-based
     // scoping (BaseLLMProvider.credentialScope, wired up here by this
     // provider's own `quotaCredential()` override), what actually separates
@@ -851,7 +853,7 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   });
 
   it('gives the same account the same key, so the pause is actually shared', () => {
-    // The other side of the coin from "separates two different accounts"
+    // The other side of the coin from "separates two accounts"
     // above: reusing ONE credential object is what makes two providers the
     // same account. Two separately-constructed credentials for what a human
     // would call "the same key" are NOT coalesced — there is no secret
