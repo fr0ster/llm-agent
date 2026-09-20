@@ -1,5 +1,5 @@
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { staticApiKey, staticLogin } from '../../index.js';
 
 describe('the static conversions', () => {
