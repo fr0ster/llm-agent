@@ -70,19 +70,13 @@ describe('rag-factories', () => {
     }
   });
 
-  it('makeRag in-memory+openai embedder auto-prefetches without prior prefetch (no MissingProviderError)', {
-    skip:
-      'The openai embedder cannot be built through this bridge until the bridge task ' +
-      'forwards `credential`: resolveEmbedder copies a hand-picked whitelist (url, ' +
-      'apiKey, model, resourceGroup, scenario), so a credential passed in is dropped ' +
-      'and the constructor throws. Un-skip in that task.',
-  }, async () => {
+  it('makeRag in-memory+openai embedder auto-prefetches without prior prefetch (no MissingProviderError)', async () => {
     _resetPrefetchedRagForTests();
     _resetPrefetchedForTests();
     try {
-      // Passing a credential HERE is not enough, and the earlier comment claiming
-      // it was is wrong: resolveEmbedder forwards a whitelist, so this credential
-      // never reaches the constructor and this path throws today.
+      // resolveEmbedder now declares `credential` on EmbedderResolutionConfig
+      // and forwards it (and `apiBaseUrl`) instead of a hand-picked whitelist,
+      // so this credential reaches OpenAiEmbedder's constructor for real.
       await makeRag({
         type: 'in-memory',
         embedder: 'openai',
