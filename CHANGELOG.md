@@ -48,14 +48,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `EmbedderResolutionOptions.logger` and `RagResolutionOptions.logger` in
   `@mcp-abap-adt/llm-agent-rag`, and `SessionLifecycleOptions.logger`,
   `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` in
-  `@mcp-abap-adt/llm-agent-server-libs`. Anything that takes one of those option
-  types accepts either shape as well, which follows from the types rather than
-  from a separate decision: `LazyConnectionStrategy` and
-  `PeriodicConnectionStrategy`'s constructors and `makeConnectionStrategy` (whose
-  `MakeConnectionStrategyOptions` extends `ConnectionStrategyOptions`) in
-  `@mcp-abap-adt/llm-agent-mcp`, and `SessionGraphFactory`'s constructor in
-  `@mcp-abap-adt/llm-agent-libs`. A consumer that already has a logger no longer
-  has to write a `LogEvent` adapter before it can pass one.
+  `@mcp-abap-adt/llm-agent-server-libs`. Anything that accepts one of those
+  option types accepts either shape as well, which follows from the types
+  rather than from a separate decision; that set is not listed here, because
+  it grows with every signature that takes one and your compiler can answer
+  it exactly. A consumer that already has a logger no longer has to write a
+  `LogEvent` adapter before it can pass one.
 - **`normaliseLogger(logger)`, the `AnyLogger` union, and the `isTextLogger(logger)`
   type guard are exported** for the seams that deliberately keep the event
   shape. `IPipelineContext.logger` and
