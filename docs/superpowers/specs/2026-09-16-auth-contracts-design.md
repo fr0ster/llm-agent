@@ -10,7 +10,7 @@
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Scope and the owner keys stay typed; only role and policy become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
-- **Additive at runtime; the version is decided at the release.** Every seam is added beside what exists and no behaviour on any existing path changes. **Two things are removed**, both read-side and both from §5.1's single-identity rule: `RagToolContext`'s declared `sessionId?` and `userId?` — the safer teardown order comes with the new seam, through a new optional hook (§3.4). What version carries the accumulated set is §10’s to state, not this summary’s: as it stands the set includes workstream 4’s read-side source break (§7), so it is a major.
+- **Additive at runtime; the version is decided at the release.** Every seam is added beside what exists, no behaviour on any existing path changes, and the safer teardown order arrives through a new optional hook rather than a changed one (§3.4). **Source-wise, §5.1’s single-identity rule adds three breaks to workstream 4’s widened read-side properties (§7):** `RagToolContext` loses its declared `sessionId?` and `userId?` (read-side, measured), and `buildRagCollectionToolEntries` requires an `identity` (a required input). The last is deliberate — an optional one would mean “do not narrow”, and could be forgotten. What version carries the accumulated set is §10’s to state, not this summary’s: with those four in it, it is a major, and §8 carries the migration note.
 - Umbrella: four workstreams (§10), **one plan**, and **one PR per repository**. Two of the four are already merged; the rest land together.
 
 ---
@@ -308,6 +308,8 @@ buildRagCollectionToolEntries({ registry, check })      // rejected: a policy in
 
 The difference from the `createFor(identity, check)` that §6.2 deletes is exactly the second argument. Binding identity at construction was never the mistake; binding a decision was.
 
+**`identity` is required, and that is a source break we are choosing.** `buildRagCollectionToolEntries({ registry })` compiles today and is exported from the package root (`rag/mcp-tools/index.ts` → `rag/index.ts:4` → `index.ts:33`), so requiring the second field breaks any external caller of the old form — that no consumer exists in these repositories is luck, not an argument. It is still the right shape, and an optional `identity?` would be the wrong one: omitting it would have to mean "do not narrow", which is an unnarrowed address space reached by forgetting a field. That is the hub's `?? 'anonymous'` in a new place, and §1.2's "absent means absent" does not license it — absent *judgement* is honest, an absent *address space* is everyone's. No overload without `identity` is kept: the point of the break is that the unsafe call can no longer be written. It is listed in §8's release shape and its migration note.
+
 **The gap this closes is real and present today**, and workstream 3 exists to close it. Measured in `packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts`:
 
 | tool | identity today | what a shared registry lets it reach |
@@ -430,6 +432,10 @@ createCollection(name: string, opts: {
   attributes?: unknown;
 }): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
 
+// on IRagProvider — NEW and optional: build handles for a store that EXISTS.
+// Creates nothing, ensures nothing, writes no catalog row.
+openCollection?(record: RagCollectionRecord): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
+
 // on IRagRegistry — NEW and optional: register an EXISTING store, no creation
 adopt?(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void;
 ```
@@ -440,7 +446,13 @@ And it cannot derive it. `storeNameFor` (`:31`) returns `${base}_${digest}`, whe
 
 **And hydration needs its own member, because `register` cannot express it.** `SimpleRagRegistry.register(name, …)` sets `storeName: name` (`:99`) — it assumes the two are the same, which is true for a collection registered directly and false for every hydrated one. `adopt?()` takes the record whole, so the logical name and the store name stay distinct, and it never creates anything: the store is already there. Optional on `IRagRegistry` so an external implementation of that interface is not broken by gaining a member.
 
-A **new** optional member rather than a wider `listCollections`, for the reason §4.6.2 gives: a provider is something consumers *implement*, so widening a return type breaks every implementation, while an optional addition breaks none. A provider without a catalog simply does not declare it.
+**`adopt` needs handles, and a record is not one — so opening is its own member.** `describeCollections()` returns metadata; the only existing way to obtain an `IRag` and an `IRagEditor` is `IRagProvider.createCollection`, and it cannot serve here. Measured across the three shipped providers, they do not even agree on what it does: `pg-vector-rag` and `hana-vector-rag` call `await rag.ensureSchema()` inside it (`pg-vector-rag-provider.ts:84`, `hana-vector-rag-provider.ts:87`), issuing DDL; `qdrant-rag` issues nothing and defers creation to `_ensureCollection` on first use. That it is safe today to call for an existing store is an accident of the SQL — `CREATE TABLE IF NOT EXISTS`, `CREATE EXTENSION IF NOT EXISTS` (`schema.ts:20`, `:25`) — not a promise the contract makes.
+
+And the accident ends with this very workstream: once `createCollection` also writes a catalog row, calling it to hydrate would rewrite that row, and — since a hydrating caller passes no `attributes`, it is reading them — overwrite what it was trying to recover. So `openCollection?(record)` is separate by necessity, and it is cheap: it is qdrant's existing body, and pg's and hana's minus the `ensureSchema` call.
+
+**The hydration flow, whole:** the consumer calls `describeCollections()`, keeps the records belonging to the caller whose pipeline it is building, calls `openCollection(record)` for each, and `adopt(record, rag, editor)` to register them under their logical names. Nothing in that path creates a store, ensures a schema, or writes a catalog row — which is what "creates nothing" has to mean to be worth saying.
+
+Each is a **new** optional member rather than a widening, for the reason §4.6.2 gives: a provider is something consumers *implement*, so widening a return type breaks every implementation, while an optional addition breaks none. A provider without a catalog simply does not declare it.
 
 **Hydration is explicit, consumer-triggered, and per caller — never automatic.** The framework does not repopulate a registry at startup, for two reasons. When to do it depends on the assembly, and choosing a moment would install a privileged topology (§1.3). More importantly, hydrating one shared registry with every collection the catalog holds would hand every caller an address space containing everyone else's collections — precisely the widening §5.1 exists to prevent. So the consumer reads the catalog and registers what belongs to the caller whose pipeline it is building, which is the same construction-time act as §5.1: the registry a caller reaches contains that caller's collections because that is what was put in it.
 
@@ -490,7 +502,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read and the optional `IRagRegistry.adopt()` hydration path (§6.3); the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, and the optional `IRagRegistry.adopt()` that registers one (§6.3); the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory | additive at runtime; `SessionGraphFactoryOptions.logger` widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
@@ -514,7 +526,44 @@ Read this rather than deriving it. Every row was checked against the packages, n
 
 **Order, and it is not negotiable.** The contract is published, then adopted. An acceptor cannot merge a dependency on an unpublished version, so a plan that interleaves them describes a state that cannot exist. `interfaces-utils` in row 4 shows the easy case — the contract was already on the shelf, so that workstream needed no release at all.
 
-**Release shape.** No existing path changes behaviour and every seam is declinable. **One removal, measured rather than assumed:** §5.1 drops the declared `sessionId?`/`userId?` from `RagToolContext` so identity has one source. Against the repository's own tsc (6.0.3), a call site passing those keys still compiles — the type declares `[key: string]: unknown`, which absorbs them — while a *reader* of one gets `error TS2322: Type 'unknown' is not assignable to type 'string | undefined'`. Same read-side class as workstream 4's widened properties (§7), and there is no reader today because nothing mounts these tools, so it adds no new kind of break to a release already made major by §7 — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam. The version this ships as is decided at the release by what has accumulated (§10), not here: as it stands the set carries workstream 4’s read-side source break, so it is a major.
+**Release shape.** No existing path changes behaviour, and every seam is declinable — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). Two things are not declinable, both from §5.1's single-identity rule:
+
+- **A required input.** `buildRagCollectionToolEntries` now takes an `identity`, so the old one-field call stops compiling. Deliberate, and §5.1 says why no overload without it is kept: an optional `identity?` would mean “do not narrow”, which is an unnarrowed address space reached by forgetting a field.
+- **A removal, measured rather than assumed.** `RagToolContext` loses its declared `sessionId?`/`userId?`. Against the repository's own tsc (6.0.3), a call site passing those keys still compiles — the type declares `[key: string]: unknown`, which absorbs them — while a *reader* of one gets `error TS2322: Type 'unknown' is not assignable to type 'string | undefined'`. That is workstream 4's read-side class (§7), and no reader exists today because nothing mounts these tools.
+
+The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam. The version this ships as is decided at the release by what has accumulated (§10), not here: as it stands the set carries workstream 4's read-side break and §5.1's two, so it is a major.
+
+### Migration — what a consumer on the old contract must do
+
+Three changes need an edit. Nothing else does: a consumer that declines a seam keeps today’s behaviour, and the deprecated members still work.
+
+**1. Build the RAG collection tools with an identity** (§5.1). The identity is the caller the pipeline is being built for — the same one whose collections the instance may address.
+
+```ts
+// before
+const entries = buildRagCollectionToolEntries({ registry });
+// after
+const entries = buildRagCollectionToolEntries({ registry, identity });
+```
+
+**2. Stop reading identity from the tool context** (§5.1). A handler no longer needs to: the entries were built for one caller, so the owner keys come from the bound identity. Call sites that *pass* `sessionId`/`userId` keep compiling and can be left alone — the values simply stop being read — but code that *reads* them must change.
+
+```ts
+// before: the field was typed, and authoritative
+const owner = ctx.userId;                  // string | undefined
+// after: TS2339/TS2322 — there is no such declared field, and no need for one
+```
+
+**3. Narrow a widened logger option before reading it** (§7). Six readable option properties accept `ILogger | ITextLogger`, so a consumer that *reads* one must narrow first; a consumer that only *passes* a logger is unaffected. The guarded form is the one that compiles — the property is optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
+
+```ts
+// before
+options.logger.log(event);
+// after
+if (options.logger) normaliseLogger(options.logger).log(event);
+```
+
+**Not a migration, but worth knowing:** hydrating collections after a restart is new and optional (§6.3). A consumer that does not hydrate behaves exactly as today — an empty registry, and `attributes` that read back as `undefined`.
 
 ---
 

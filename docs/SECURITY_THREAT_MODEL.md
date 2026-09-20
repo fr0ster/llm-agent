@@ -87,7 +87,8 @@ with, so against a shared registry they reach every registered collection. `rag_
 refuses global deletes outright — that pair is the intended shape.
 
 **Planned mitigation — construction, not a check.** Per architecture principle 8, the tool
-entries are built with the caller's identity bound in, so the only collections they can address
+entries are built with the caller's identity bound in — **required, not optional**, so that an
+unnarrowed address space cannot be reached by omitting a field, so the only collections they can address
 are that caller's own and the globals; another caller's collection is absent rather than refused.
 No access check enters the framework. Where addressing cannot answer — a `role`-authorized
 global — the tools refuse, and a consumer that wants that case mounts its own.
