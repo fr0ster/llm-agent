@@ -6,7 +6,7 @@
 
 **Architecture:** Three credential contracts are published from `@mcp-abap-adt/interfaces-auth` and then adopted, beside the existing fields, by every provider that authenticates. Authorization happens at construction: a pipeline's instances are narrowed to what one caller may address, and no access check enters the framework. RAG collections gain persisted opaque `attributes`, a catalog that can be read back, and a hydration path that runs per caller inside an async registry factory.
 
-**Tech Stack:** TypeScript (strict), Node 22, npm workspaces. Tests are `node:test` per package in llm-agent; the interfaces repo's tests are compile-only assertions under `__typechecks__/` plus `npm run check`. Biome for lint and format in both.
+**Tech Stack:** TypeScript (strict), Node 22, npm workspaces. Tests are `node:test` per package in llm-agent, **run through the tsx loader** — every package's own script is `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`, and a bare `node --test file.ts` fails with `ERR_MODULE_NOT_FOUND` because a `.ts` test's `.js` imports do not resolve without it (verified against an existing test). Each command below uses the loader for that reason; `npm test -w packages/<name>` is equivalent; the interfaces repo's tests are compile-only assertions under `__typechecks__/` plus `npm run check`. Biome for lint and format in both.
 
 **Spec:** `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` (this repository). Read it before Task A1 — the plan argues from it and every task below cites the section it implements. Review-clean as of `b3cc465e`.
 
@@ -269,7 +269,7 @@ git checkout -b feat/credentials-and-rag-identity
 `@mcp-abap-adt/interfaces-auth` must be a regular `dependencies` entry in every package that imports a contract, even though every import is `import type`: the re-exported type has to resolve in each consumer's own `tsc`, and a `devDependency` does not travel to a consumer of ours.
 
 **Files:**
-- Modify: `packages/llm-agent/package.json`, `packages/llm-agent-libs/package.json`, `packages/qdrant-rag/package.json`, `packages/pg-vector-rag/package.json`, `packages/hana-vector-rag/package.json`, `packages/sap-aicore-llm/package.json`, `packages/sap-aicore-embedder/package.json`, `packages/llm-agent-mcp/package.json`
+- Modify: the `package.json` of every package that will import a contract — `llm-agent`, `llm-agent-libs`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`, `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm`, `openai-embedder`, `ollama-embedder`, `sap-aicore-llm`, `sap-aicore-embedder`, `llm-agent-mcp`. The four concrete LLM providers and the two embedders are on this list because Task B2 resolves the secret **inside** them, not in the wiring above them.
 - Create: `packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts`
 
 **Interfaces:**
@@ -317,6 +317,8 @@ Expected: `error TS2307: Cannot find module '@mcp-abap-adt/interfaces-auth' or i
 
 ```bash
 for p in llm-agent llm-agent-libs qdrant-rag pg-vector-rag hana-vector-rag \
+         openai-llm anthropic-llm deepseek-llm ollama-llm \
+         openai-embedder ollama-embedder \
          sap-aicore-llm sap-aicore-embedder llm-agent-mcp; do
   npm pkg set "dependencies.@mcp-abap-adt/interfaces-auth=^1.1.0" -w "packages/$p"
 done
@@ -327,7 +329,7 @@ grep -c '"@mcp-abap-adt/interfaces-auth"' package-lock.json   # expect > 0
 - [ ] **Step 4: run the test and the type check**
 
 ```bash
-node --test packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts
+node --import tsx/esm --test packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 ```
 
@@ -348,20 +350,36 @@ own tsc and a devDependency would not travel."
 ### Task B2: the LLM providers accept a credential beside `apiKey`
 
 **Files:**
-- Modify: `packages/llm-agent-libs/src/providers.ts` (`apiKey?: string` on the config, ~`:29`; the five provider constructions, ~`:186`, `:204`, `:222`, `:240`, `:258`; `createDeepSeek(apiKey: string, …)` ~`:303`)
-- Test: `packages/llm-agent-libs/src/__tests__/providers-credential.test.ts`
+- Modify: `packages/llm-agent/src/types.ts` (`LLMProviderConfig`, `:78` — **this** is the contract consumers pass; `providers.ts` only has a local copy)
+- Modify: `packages/llm-agent-libs/src/providers.ts` (local `apiKey?: string` ~`:29`; the five constructions at ~`:186`, `:204`, `:222`, `:240`, `:258`; `createDeepSeek(apiKey: string, …)` ~`:303`)
+- Modify: `packages/openai-llm/src/**`, `packages/anthropic-llm/src/**`, `packages/deepseek-llm/src/**`, `packages/ollama-llm/src/**` — `OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`, `OllamaProvider` each hold the credential and resolve it in their own request path. `SapCoreAIProvider` is Task B6.
+- Test: `packages/llm-agent-libs/src/__tests__/providers-credential.test.ts` and one per provider package, e.g. `packages/openai-llm/src/__tests__/credential.test.ts`
 
 **Interfaces:**
 - Consumes: `IApiKeyCredential`, `IBearerCredential` (Task B1).
-- Produces: `LLMProviderConfig.credential?: IApiKeyCredential | IBearerCredential`. Tasks B6 and B7 use the same field name on the SAP providers, so it is fixed here.
+- Produces: `LLMProviderConfig.credential?: IApiKeyCredential | IBearerCredential` in `llm-agent/src/types.ts`, and the same property on each concrete provider's own config. Tasks B6 and B7 reuse the name, so it is fixed here.
 
-- [ ] **Step 1: read the file and confirm the shape**
+- [ ] **Step 1: find out, per provider, whether a secret can be presented per request**
+
+This decides the whole task, and it differs by SDK.
 
 ```bash
+sed -n '75,95p' packages/llm-agent/src/types.ts          # the real contract
 sed -n '20,40p;180,270p;295,315p' packages/llm-agent-libs/src/providers.ts
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
+  echo "=== $p"
+  grep -rn "apiKey\|Authorization\|new OpenAI\|new Anthropic\|fetch(" \
+    "packages/$p/src" --include='*.ts' | grep -v '__tests__' | head -12
+done
 ```
 
-Note which providers take the key positionally and which take an options object. `createDeepSeek` takes a **required** `string` — a credential-only configuration must resolve it before calling, which is why the resolution happens in the adopting code and not in the factory.
+For each, record in the task report **where the secret enters the wire**:
+
+- a client constructed once with the key → resolve per request through the SDK's own hook (`defaultHeaders` as a function, or a `fetch` override), or rebuild nothing and say why;
+- headers assembled per request by our own code → resolve there, which is the easy case;
+- a key demanded as a required `string` (`createDeepSeek`, `:303`) → resolve before the call and throw the provider's existing missing-key error when it comes back `undefined`.
+
+Do not proceed on an assumption: an answer of “the SDK takes a string once” changes what Step 4 can honestly promise, and the plan would rather say so than pretend.
 
 - [ ] **Step 2: write the failing tests**
 
@@ -404,13 +422,61 @@ describe('resolveProviderSecret', () => {
 });
 ```
 
+- [ ] **Step 2b: write the test that actually matters — two real calls through a provider**
+
+The helper test above pins precedence, and calling a helper twice proves nothing about the provider's lifetime. This one would fail if the secret were resolved once at construction, which is exactly the mistake the first draft of this task made.
+
+```ts
+// packages/openai-llm/src/__tests__/credential.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
+import { OpenAIProvider } from '../index.js';
+
+describe('OpenAIProvider credential', () => {
+  it('presents a freshly asked secret on EVERY request, not the one it was built with', async () => {
+    const authorizations: Array<string | null> = [];
+    let n = 0;
+    const credential: IApiKeyCredential = { kind: 'api-key', secret: async () => `sk-${++n}` };
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL, init: RequestInit = {}) => {
+      authorizations.push(new Headers(init.headers as HeadersInit).get('Authorization'));
+      return new Response(
+        JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const provider = new OpenAIProvider({ model: 'gpt-4o-mini', credential });
+      await provider.chat?.([{ role: 'user', content: 'a' }]);
+      await provider.chat?.([{ role: 'user', content: 'b' }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    assert.equal(authorizations.length, 2, 'both requests went out');
+    assert.notEqual(
+      authorizations[0],
+      authorizations[1],
+      'a secret resolved once at construction would be identical here',
+    );
+    assert.deepEqual(authorizations, ['Bearer sk-1', 'Bearer sk-2']);
+  });
+});
+```
+
+Adjust the method name and the response body to each provider's real call shape, from Step 1. Write the same test for `anthropic-llm`, `deepseek-llm` and `ollama-llm`.
+
 - [ ] **Step 3: run them and watch them fail**
 
 ```bash
-node --test packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
+node --import tsx/esm --test packages/openai-llm/src/__tests__/credential.test.ts
 ```
 
-Expected: `SyntaxError`/`TS2305` — `resolveProviderSecret` is not exported yet.
+Expected: `resolveProviderSecret` is not exported, and the provider test fails on the unknown `credential` option — or, worse and more instructive, passes the same `Authorization` twice.
 
 - [ ] **Step 4: add the property and the resolver**
 
@@ -441,12 +507,22 @@ export async function resolveProviderSecret(cfg: {
 }
 ```
 
-Then at each of the five construction sites, replace the `cfg.apiKey` argument with `await resolveProviderSecret(cfg)`. Where the surrounding function is not yet `async`, make it so; where a factory demands a non-optional string (`createDeepSeek`), resolve first and throw the provider's existing "missing key" error when the result is `undefined`, exactly as it does today for an absent `apiKey`.
+**Pass the credential down; do not resolve it here.** At each of the five construction sites, forward `credential: cfg.credential` alongside the existing `apiKey: cfg.apiKey`. Resolving in the wiring would hand the provider a plain string and freeze the secret for the provider's whole lifetime — the first draft of this task said exactly that, and it contradicts the one thing the contract insists on.
+
+`resolveProviderSecret` therefore lives **in each provider's request path**, where Step 1 said the secret enters the wire:
+
+```ts
+// inside a provider, per request — not in its constructor
+const secret = await resolveProviderSecret(this.cfg);
+if (!secret) throw new MissingApiKeyError(/* the provider's existing error */);
+```
+
+`createDeepSeek(apiKey: string, …)` (`:303`) keeps its signature: it is a convenience over `makeLlm` and a required string is what it promises. A credential-configured DeepSeek goes through `makeLlm` instead.
 
 - [ ] **Step 5: run the tests, the type check and lint**
 
 ```bash
-node --test packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
 npx tsc --noEmit -p packages/llm-agent-libs/tsconfig.json; echo "EXIT=$?"
 npx biome check packages/llm-agent-libs/src/providers.ts
 ```
@@ -454,7 +530,7 @@ npx biome check packages/llm-agent-libs/src/providers.ts
 - [ ] **Step 6: prove the old path is untouched**
 
 ```bash
-node --test packages/llm-agent-libs/src/__tests__/ 2>&1 | tail -5
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/ 2>&1 | tail -5
 ```
 
 Every existing provider test must still pass unchanged. If one needed editing, `apiKey` was widened rather than joined — undo and add, do not widen.
@@ -524,7 +600,7 @@ describe('EmbedderFactoryConfig.credential', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --test packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
+node --import tsx/esm --test packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
 ```
 
 Expected: a type error on `credential` — the property does not exist on `EmbedderFactoryConfig`.
@@ -553,7 +629,7 @@ export interface EmbedderFactoryConfig {
 - [ ] **Step 4: run the test and the type check**
 
 ```bash
-node --test packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
+node --import tsx/esm --test packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 ```
 
@@ -624,7 +700,7 @@ describe('QdrantRag credential', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --test packages/qdrant-rag/src/__tests__/credential.test.ts
+node --import tsx/esm --test packages/qdrant-rag/src/__tests__/credential.test.ts
 ```
 
 Expected: a type error on `credential`, or `['from-field','from-field']` — either way the credential is not yet used.
@@ -647,7 +723,7 @@ and at its one caller, `headers: { ...(await this._headers()), ...(init.headers 
 - [ ] **Step 4: run the test, the package's suite, and the type check**
 
 ```bash
-node --test packages/qdrant-rag/src/__tests__/ 2>&1 | tail -5
+node --import tsx/esm --test packages/qdrant-rag/src/__tests__/ 2>&1 | tail -5
 npx tsc --noEmit -p packages/qdrant-rag/tsconfig.json; echo "EXIT=$?"
 ```
 
@@ -727,7 +803,7 @@ Write the hana twin with `resolveHanaConnectArgs`, asserting `uid`/`pwd` instead
 - [ ] **Step 2: run both and watch them fail**
 
 ```bash
-node --test packages/pg-vector-rag/src/__tests__/credential.test.ts \
+node --import tsx/esm --test packages/pg-vector-rag/src/__tests__/credential.test.ts \
             packages/hana-vector-rag/src/__tests__/credential.test.ts
 ```
 
@@ -755,8 +831,8 @@ export async function resolvePgConnectArgs(cfg: PgVectorRagConfig): Promise<PgPo
 - [ ] **Step 4: run both packages' suites and type-check**
 
 ```bash
-node --test packages/pg-vector-rag/src/__tests__/ 2>&1 | tail -4
-node --test packages/hana-vector-rag/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/pg-vector-rag/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/hana-vector-rag/src/__tests__/ 2>&1 | tail -4
 npx tsc --noEmit -p packages/pg-vector-rag/tsconfig.json; echo "PG=$?"
 npx tsc --noEmit -p packages/hana-vector-rag/tsconfig.json; echo "HANA=$?"
 ```
@@ -813,7 +889,7 @@ describe('buildDestination', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --test packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts
+node --import tsx/esm --test packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts
 ```
 
 - [ ] **Step 3: implement**
@@ -846,7 +922,7 @@ Do **not** reach for `authTokens`: its TypeScript type is `{ type; value; expire
 - [ ] **Step 4: run, type-check, lint**
 
 ```bash
-node --test packages/sap-aicore-llm/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/sap-aicore-llm/src/__tests__/ 2>&1 | tail -4
 npx tsc --noEmit -p packages/sap-aicore-llm/tsconfig.json; echo "EXIT=$?"
 npx biome check packages/sap-aicore-llm/src
 ```
@@ -923,7 +999,7 @@ describe('FoundationEmbedder credential', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --test packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts
+node --import tsx/esm --test packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts
 ```
 
 Expected: a type error on `credential`, or two identical `Authorization` values with a `/oauth/token` request among the urls — either way the internal provider is still in charge.
@@ -955,7 +1031,7 @@ For `orchestration-embedder.ts`, pass a third argument to `new OrchestrationEmbe
 - [ ] **Step 4: run the suite and type-check**
 
 ```bash
-node --test packages/sap-aicore-embedder/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/sap-aicore-embedder/src/__tests__/ 2>&1 | tail -4
 npx tsc --noEmit -p packages/sap-aicore-embedder/tsconfig.json; echo "EXIT=$?"
 ```
 
@@ -973,142 +1049,211 @@ orchestration path gains the destination argument the SDK already accepts and we
 never passed."
 ```
 
-### Task B8: the typed MCP implementations demand their own credential — http first, stdio beside it
+### Task B8: two typed `IMcpServer` implementations, each demanding its own credential
 
-Two implementations, the same shape: the credential is demanded by **that implementation's own constructor**, typed per target. This is what a bare `McpClientFactory` cannot express in its type — a closure can capture a credential, but its single parameter is a generic `McpConnectionConfig`, so nothing in the signature says which credential a target needs. **http first**: it is the main protocol, and `start()` holds a connection to something already running rather than spawning. stdio comes with it because §3.5 is part of this workstream and only stdio actually spawns.
+**These classes do not exist yet.** `IMcpServer` is declared in `@mcp-abap-adt/llm-agent` (workstream 1) and the name appears nowhere in `llm-agent-mcp`; what exists is `MCPClientWrapper` in `client.ts`, whose `connect()` branches on transport and builds `StdioClientTransport({ command, args, env })` (~`:320`) or `StreamableHTTPClientTransport(new URL(url), buildHttpTransportOptions({ headers, sessionId, requestHeadersStrategy }))` (~`:348`). So this task **creates** the two typed implementations on top of that, which is what §8 means by "the typed implementations land with the credential contracts".
+
+**Read this before writing the test — it changes what the test may assert.** `IMcpRequestHeadersStrategy.headers()` returns `Record<string, string>` **synchronously** (`llm-agent/src/interfaces/mcp-request-headers-strategy.ts:7`), and `buildHttpTransportOptions` merges its result into `requestInit.headers` **at connect** (`client.ts:194-209`, and the docstring says so). So an http MCP credential **cannot** be asked per request through the existing seam: it is resolved once per connection. That is consistent rather than a hole — `start()` acquires a connection, the credential is a constructor argument (§4.1), and reconnection is `IMcpConnectionStrategy`'s job, not this class's (§3.3). Widening `headers()` to return a promise would break every consumer that implements the strategy, and is not in this workstream.
 
 **Files:**
-- Modify: the http and stdio implementations under `packages/llm-agent-mcp/src/`
-- Test: `packages/llm-agent-mcp/src/__tests__/credential.test.ts`
+- Create: `packages/llm-agent-mcp/src/servers/http-mcp-server.ts`
+- Create: `packages/llm-agent-mcp/src/servers/stdio-mcp-server.ts`
+- Modify: `packages/llm-agent-mcp/src/index.ts` (export both)
+- Test: `packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts`
 
 **Interfaces:**
-- Consumes: `IApiKeyCredential`, `IBearerCredential` (Task B1); `IMcpServer` from workstream 1, already merged.
-- Produces: a credential argument on each typed implementation's constructor. Nothing later depends on it.
+- Consumes: `IMcpServer`, `IMcpClient`, `IMcpRequestHeadersStrategy` from `@mcp-abap-adt/llm-agent`; `IApiKeyCredential`, `IBearerCredential` (B1); `createDefaultMcpClient` / `toMcpClientWrapperConfig` from `factory.ts`.
+- Produces: `HttpMcpServer` and `StdioMcpServer`. Nothing later in this plan depends on them.
 
-- [ ] **Step 1: find the implementations and read their constructors**
-
-```bash
-cd ~/prj/llm-agent
-grep -rn "implements IMcpServer\|class .*McpServer\|mcpServerFromFactory" \
-  packages/llm-agent-mcp/src --include='*.ts' | grep -v '__tests__'
-grep -rn "stdio\|spawn\|StdioClientTransport" packages/llm-agent-mcp/src --include='*.ts' \
-  | grep -v '__tests__' | head -10
-```
-
-Record in the task report which files hold each, and whether `IMcpServer` is implemented directly or reached through `mcpServerFromFactory`.
-
-- [ ] **Step 2: write the failing tests**
+- [ ] **Step 1: write the failing tests**
 
 ```ts
-// packages/llm-agent-mcp/src/__tests__/credential.test.ts
+// packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import { HttpMcpServer } from '../http-mcp-server.js';
+import { StdioMcpServer } from '../stdio-mcp-server.js';
 
-describe('typed MCP implementations', () => {
-  it('http: the credential reaches the outgoing headers, asked per request', async () => {
-    const seen: Array<string | null> = [];
-    let n = 0;
-    const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++n}` };
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_u: string, init: RequestInit = {}) => {
-      seen.push(new Headers(init.headers as HeadersInit).get('Authorization'));
-      return new Response('{"jsonrpc":"2.0","id":1,"result":{}}', { status: 200 });
-    }) as typeof fetch;
-    try {
-      // Replace with the real class name found in Step 1.
-      const { HttpMcpServer } = await import('../http-mcp-server.js');
-      const server = new HttpMcpServer({ url: 'https://mcp.example', credential });
-      const client = await server.start();
-      await client.listTools?.().catch(() => {});
-      await client.listTools?.().catch(() => {});
-      await server.stop();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-    assert.deepEqual(seen.slice(0, 2), ['Bearer t1', 'Bearer t2']);
+describe('HttpMcpServer', () => {
+  it('resolves the credential at connect and puts it in the connection headers', async () => {
+    let asked = 0;
+    const credential: IBearerCredential = {
+      kind: 'bearer',
+      token: async () => `t${++asked}`,
+    };
+    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp', credential });
+
+    // The seam under test, without a network: the options the transport is given.
+    const options = await server.transportOptionsForTest();
+    assert.equal(options.requestInit.headers.Authorization, 'Bearer t1');
+    assert.equal(asked, 1, 'asked once per connection, because headers() is sync');
+
+    const second = await server.transportOptionsForTest();
+    assert.equal(second.requestInit.headers.Authorization, 'Bearer t2', 'a reconnect refreshes it');
   });
 
-  it('stdio: the credential is passed through env, not argv, so it is not in the process list', async () => {
-    const { StdioMcpServer } = await import('../stdio-mcp-server.js');
+  it('keeps any configured static headers, and does not let them overwrite the credential', async () => {
     const credential: IBearerCredential = { kind: 'bearer', token: async () => 'tok' };
+    const server = new HttpMcpServer({
+      url: 'https://mcp.example/mcp',
+      credential,
+      headers: { 'X-Trace': 'abc', Authorization: 'Bearer stale' },
+    });
+    const options = await server.transportOptionsForTest();
+    assert.equal(options.requestInit.headers['X-Trace'], 'abc');
+    assert.equal(options.requestInit.headers.Authorization, 'Bearer tok', 'the credential wins');
+  });
+});
+
+describe('StdioMcpServer', () => {
+  it('passes the secret through the child env and never through argv', async () => {
+    const credential: IBearerCredential = { kind: 'bearer', token: async () => 'super-secret' };
     const server = new StdioMcpServer({
       command: 'node',
       args: ['-e', 'process.stdin.resume()'],
       credential,
       credentialEnvVar: 'MCP_TOKEN',
     });
-    const spawned = await server.describeSpawnForTest();   // add this seam if absent
-    assert.equal(spawned.env.MCP_TOKEN, 'tok');
-    assert.ok(!spawned.args.join(' ').includes('tok'), 'a secret in argv is world-readable');
-    await server.stop();
+    const spawn = await server.spawnArgsForTest();
+    assert.equal(spawn.env.MCP_TOKEN, 'super-secret');
+    assert.ok(
+      !spawn.args.join(' ').includes('super-secret'),
+      'argv is readable by any process on the machine',
+    );
+    assert.ok(!spawn.command.includes('super-secret'));
+  });
+
+  it('refuses to start when a credential is given with no variable to put it in', async () => {
+    const credential: IBearerCredential = { kind: 'bearer', token: async () => 'x' };
+    const server = new StdioMcpServer({ command: 'node', args: [], credential });
+    await assert.rejects(
+      () => server.spawnArgsForTest(),
+      /credentialEnvVar/,
+      'silently dropping a credential would start an unauthenticated child',
+    );
   });
 });
 ```
 
-- [ ] **Step 3: run them and watch them fail**
+- [ ] **Step 2: run them and watch them fail**
 
 ```bash
-node --test packages/llm-agent-mcp/src/__tests__/credential.test.ts
+node --import tsx/esm --test packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
 ```
 
-Expected: module or export not found, or a type error on `credential`. If the class names from Step 1 differ, fix the test's imports — do not weaken the assertions.
+Expected: the two modules do not exist.
 
-- [ ] **Step 4: implement both**
+- [ ] **Step 3: implement both, on top of what `client.ts` already builds**
 
 ```ts
-// http — start() acquires a connection to something already running
-export class HttpMcpServer implements IMcpServer {
-  constructor(private readonly cfg: {
-    url: string;
-    credential?: IApiKeyCredential | IBearerCredential;
-  }) {}
+// packages/llm-agent-mcp/src/servers/http-mcp-server.ts
+import type { IMcpClient, IMcpServer } from '@mcp-abap-adt/llm-agent';
+import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import { buildHttpTransportOptions } from '../client.js';
 
-  private async authorization(): Promise<Record<string, string>> {
-    const c = this.cfg.credential;
-    if (!c) return {};
-    const value = c.kind === 'bearer' ? await c.token() : await c.secret();
-    return { Authorization: `Bearer ${value}` };   // per request, never cached
+export class HttpMcpServer implements IMcpServer {
+  constructor(
+    private readonly cfg: {
+      url: string;
+      credential?: IApiKeyCredential | IBearerCredential;
+      headers?: Record<string, string>;
+      sessionId?: string;
+    },
+  ) {}
+
+  /** The options the transport is constructed with; exposed for the test. */
+  async transportOptionsForTest() {
+    const { credential, headers, sessionId } = this.cfg;
+    const resolved = credential
+      ? credential.kind === 'bearer'
+        ? await credential.token()
+        : await credential.secret()
+      : undefined;
+    return buildHttpTransportOptions({
+      // The credential goes LAST so a stale static Authorization cannot win.
+      headers: { ...headers, ...(resolved ? { Authorization: `Bearer ${resolved}` } : {}) },
+      sessionId,
+    });
+  }
+
+  async start(): Promise<IMcpClient> {
+    /* build the wrapper with transportOptionsForTest()'s result, connect, return the client */
+  }
+
+  async stop(): Promise<void> {
+    /* release the connection; nothing was spawned */
   }
 }
+```
 
-// stdio — the only implementation that spawns, so the only one with an env
+```ts
+// packages/llm-agent-mcp/src/servers/stdio-mcp-server.ts
 export class StdioMcpServer implements IMcpServer {
-  constructor(private readonly cfg: {
+  constructor(
+    private readonly cfg: {
+      command: string;
+      args: readonly string[];
+      env?: Record<string, string>;
+      credential?: IBearerCredential;
+      /** Which variable the child reads the secret from. Required with a credential. */
+      credentialEnvVar?: string;
+    },
+  ) {}
+
+  async spawnArgsForTest(): Promise<{
     command: string;
     args: readonly string[];
-    credential?: IBearerCredential;
-    /** Which variable the child reads it from. Never an argv entry. */
-    credentialEnvVar?: string;
-  }) {}
-
-  private async spawnEnv(): Promise<Record<string, string>> {
-    const { credential, credentialEnvVar } = this.cfg;
-    if (!credential || !credentialEnvVar) return { ...process.env } as Record<string, string>;
-    return { ...process.env, [credentialEnvVar]: await credential.token() } as Record<string, string>;
+    env: Record<string, string>;
+  }> {
+    const { command, args, env, credential, credentialEnvVar } = this.cfg;
+    if (credential && !credentialEnvVar) {
+      throw new Error(
+        'StdioMcpServer: a credential needs credentialEnvVar — refusing to start a child ' +
+          'without it rather than dropping the secret silently',
+      );
+    }
+    return {
+      command,
+      args,
+      env: {
+        ...(env ?? {}),
+        ...(credential && credentialEnvVar
+          ? { [credentialEnvVar]: await credential.token() }
+          : {}),
+      },
+    };
   }
 }
 ```
 
-The http implementation takes `credential` in its constructor, resolves it per request in whatever builds its headers, and keeps `start()`/`stop()` as acquiring and releasing a connection. The stdio implementation takes the credential plus the environment variable name to place it in, and passes it through the child's `env` — never through `args`, because argv is readable by any process on the machine. Both are typed per target: the credential's type is whatever that server speaks, which is the point §3.3 makes about `McpClientFactory` being unable to say so.
+`start()` on each builds the wrapper through `toMcpClientWrapperConfig` / `createDefaultMcpClient` (`factory.ts:11`, `:36`) rather than duplicating `client.ts`'s branching, and `stop()` releases. Export both from `index.ts`.
 
-- [ ] **Step 5: run, type-check, commit**
+- [ ] **Step 4: run, type-check, lint**
 
 ```bash
-node --test packages/llm-agent-mcp/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
 npx tsc --noEmit -p packages/llm-agent-mcp/tsconfig.json; echo "EXIT=$?"
-git add packages/llm-agent-mcp/src packages/llm-agent-mcp/package.json
-git commit -m "feat(llm-agent-mcp): typed implementations demand their own credential
-
-http first — the main protocol, where start() holds a connection to something
-already running — and stdio beside it for the local case, which is the only one
-that spawns. The credential goes through the child's env and never through argv.
-A bare McpClientFactory cannot express this in its type: its one parameter is a
-generic McpConnectionConfig, so nothing in the signature says which credential a
-target needs."
+npx biome check packages/llm-agent-mcp/src
 ```
 
----
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/llm-agent-mcp/src packages/llm-agent-mcp/package.json
+git commit -m "feat(llm-agent-mcp): typed IMcpServer implementations that demand a credential
+
+They did not exist: IMcpServer is declared in llm-agent and client.ts only built
+transports inline. http first — the main protocol, where start() acquires a
+connection to something already running — and stdio beside it, the only one that
+spawns, with the secret in the child's env and never in argv.
+
+The http credential is resolved at CONNECT, not per request:
+IMcpRequestHeadersStrategy.headers() is synchronous and its result is merged into
+requestInit at connect. Reconnection refreshes it, and reconnection belongs to
+IMcpConnectionStrategy. Widening headers() to a promise would break every
+consumer implementing it, and is not in this workstream."
+```
 
 ## Phase B, workstream 3 — RAG identity, attributes and a catalog that can be read back
 
@@ -1148,11 +1293,17 @@ describe('RagCollectionRecord', () => {
     const record: RagCollectionRecord = {
       storeName: 'my_notes_a1b2c3d4e5f6',
       name: 'my notes',
+      providerName: 'pg',
       scope: 'user',
       userId: 'u-1',
       attributes: { role: 'analyst' },
     };
     assert.notEqual(record.storeName, record.name);
+    // providerName is required: without it a hydrated collection deletes as a
+    // silent no-op and the next hydration resurrects it.
+    // @ts-expect-error providerName is not optional on a record
+    const incomplete: RagCollectionRecord = { storeName: 's', name: 'n' };
+    void incomplete;
   });
 
   it('declares both new provider members as optional, so no existing provider breaks', async () => {
@@ -1181,7 +1332,7 @@ describe('RagCollectionRecord', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
+node --import tsx/esm --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
 ```
 
 Expected: `RagCollectionRecord` and `RagCallerIdentity` are not exported.
@@ -1195,9 +1346,24 @@ export type RagCollectionRecord = {
   readonly storeName: string;
   /** The logical name the registry registers it under. */
   readonly name: string;
+  /**
+   * Which provider owns the store. NOT optional in practice even though the
+   * meta's is: `SimpleRagRegistry.deleteData` returns `{ ok: true }` and calls
+   * nobody when `meta.providerName` is absent, so a hydrated collection without
+   * it deletes as a silent success — the store stays, the catalog row stays, and
+   * the next hydration brings the collection back. Hydration must restore it.
+   */
+  readonly providerName: string;
   readonly scope?: RagCollectionScope;
   readonly sessionId?: string;
   readonly userId?: string;
+  /**
+   * §6.1's axis, persisted. Without it a `global` comes back as `undefined`
+   * after a restart, and a resolver that only refuses `'role'` would then let a
+   * role-gated collection be read. Task B14 fails closed as well, so both
+   * halves have to be wrong for that to happen.
+   */
+  readonly authorization?: RagCollectionAuthorization;
   readonly attributes?: unknown;
 };
 
@@ -1232,12 +1398,12 @@ On `IRagProvider`, add:
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
 ```
 
-and widen `createCollection`'s `opts` with `collectionName?: string` and `attributes?: unknown`. Add `readonly authorization?: RagCollectionAuthorization` to `RagCollectionMeta` and to `IRagRegistry.createCollection`'s params — optional, so nothing existing breaks, and `undefined` on a global means the consumer's check decides what an absent value means (§1.2). Do **not** change `listCollections?()`'s `Promise<Result<string[], RagError>>` — a provider is something consumers implement, so widening a return type breaks every implementation while an optional addition breaks none.
+and widen `createCollection`'s `opts` with `collectionName?: string`, `attributes?: unknown`, `providerName?: string` and `authorization?: RagCollectionAuthorization` — everything the catalog must be able to hand back, because a catalog cannot return what it was never given. Add `readonly authorization?: RagCollectionAuthorization` to `RagCollectionMeta` and to `IRagRegistry.createCollection`'s params — optional, so nothing existing breaks, and `undefined` on a global means the consumer's check decides what an absent value means (§1.2). Do **not** change `listCollections?()`'s `Promise<Result<string[], RagError>>` — a provider is something consumers implement, so widening a return type breaks every implementation while an optional addition breaks none.
 
 - [ ] **Step 4: run the test, then prove no existing provider needed an edit**
 
 ```bash
-node --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
+node --import tsx/esm --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
 for p in llm-agent qdrant-rag pg-vector-rag hana-vector-rag llm-agent-rag; do
   npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
@@ -1325,7 +1491,7 @@ describe('rag_delete_collection reporting', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --test packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts
+node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts
 ```
 
 Expected: `CatalogRecordDeleteError` is not exported. The second and third cases should pass already — they pin today's behaviour, and must keep passing.
@@ -1356,7 +1522,7 @@ if (res.error instanceof CatalogRecordDeleteError) {
 - [ ] **Step 4: run the test, the suite and the type check**
 
 ```bash
-node --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -5
+node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -5
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 ```
 
@@ -1413,8 +1579,10 @@ function fakeClient(failOn?: RegExp) {
               {
                 store_name: 'my_notes_a1b2c3d4e5f6',
                 collection_name: 'my notes',
+                provider_name: 'pg',
                 scope: 'user',
                 user_id: 'u-1',
+                authorization: null,
                 attributes: { role: 'analyst' },
               },
             ],
@@ -1442,6 +1610,7 @@ describe('pg catalog', () => {
       scope: 'user',
       userId: 'u-1',
       collectionName: 'my notes',
+      providerName: 'pg',
       attributes: { role: 'analyst' },
     });
     const listed = await provider.describeCollections!();
@@ -1449,6 +1618,7 @@ describe('pg catalog', () => {
     const [record] = listed.ok ? listed.value : [];
     assert.equal(record.name, 'my notes', 'the logical name survived');
     assert.equal(record.storeName, 'my_notes_a1b2c3d4e5f6');
+    assert.equal(record.providerName, 'pg', 'without this a hydrated delete calls nobody');
     assert.deepEqual(record.attributes, { role: 'analyst' });
   });
 
@@ -1498,7 +1668,7 @@ Write the hana twin against `HanaVectorRagProvider`, whose fake client exposes `
 - [ ] **Step 2: run both and watch them fail**
 
 ```bash
-node --test packages/pg-vector-rag/src/__tests__/catalog.test.ts \
+node --import tsx/esm --test packages/pg-vector-rag/src/__tests__/catalog.test.ts \
             packages/hana-vector-rag/src/__tests__/catalog.test.ts
 ```
 
@@ -1506,7 +1676,7 @@ Expected: `describeCollections` / `openCollection` are not functions on the prov
 
 - [ ] **Step 3: implement both**
 
-A catalog of the provider's own, **created if absent by whatever means the backend supports** — which statement that is belongs to the implementation and not to the design. Note §9.10 while you are here: these packages already send one `IF NOT EXISTS` string to every server version with no negotiation, so do not deepen that assumption; if the backend cannot be relied on for it, catch and check rather than widening the bet.
+The catalog stores everything a record carries — store name, **logical name, provider name, scope, owner keys, authorization** and attributes — because a catalog cannot hand back what it was never given, and two of those are what a hydrated collection needs in order to be deletable and to stay closed. A catalog of the provider's own, **created if absent by whatever means the backend supports** — which statement that is belongs to the implementation and not to the design. Note §9.10 while you are here: these packages already send one `IF NOT EXISTS` string to every server version with no negotiation, so do not deepen that assumption; if the backend cannot be relied on for it, catch and check rather than widening the bet.
 
 `openCollection(record)` is the existing `createCollection` body **minus** the `ensureSchema` call and minus the catalog write. `deleteCollection` deletes the record first and returns `CatalogRecordDeleteError` with the data untouched when that fails:
 
@@ -1532,8 +1702,8 @@ async deleteCollection(storeName: string): Promise<Result<void, RagError>> {
 - [ ] **Step 4: run both suites and type-check both**
 
 ```bash
-node --test packages/pg-vector-rag/src/__tests__/ 2>&1 | tail -4
-node --test packages/hana-vector-rag/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/pg-vector-rag/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/hana-vector-rag/src/__tests__/ 2>&1 | tail -4
 npx tsc --noEmit -p packages/pg-vector-rag/tsconfig.json; echo "PG=$?"
 npx tsc --noEmit -p packages/hana-vector-rag/tsconfig.json; echo "HANA=$?"
 ```
@@ -1650,7 +1820,7 @@ Add the three siblings from B11 — write-then-read-back, `openCollection` issui
 - [ ] **Step 4: run them, watch them fail, then implement**
 
 ```bash
-node --test packages/qdrant-rag/src/__tests__/catalog.test.ts
+node --import tsx/esm --test packages/qdrant-rag/src/__tests__/catalog.test.ts
 ```
 
 Implement per Step 2's answer, including record-before-data delete and `CatalogRecordDeleteError`.
@@ -1658,7 +1828,7 @@ Implement per Step 2's answer, including record-before-data delete and `CatalogR
 - [ ] **Step 5: run, type-check, commit**
 
 ```bash
-node --test packages/qdrant-rag/src/__tests__/ 2>&1 | tail -4
+node --import tsx/esm --test packages/qdrant-rag/src/__tests__/ 2>&1 | tail -4
 npx tsc --noEmit -p packages/qdrant-rag/tsconfig.json; echo "EXIT=$?"
 git add packages/qdrant-rag/src
 git commit -m "feat(qdrant-rag): a catalog, and a delete that reaches it
@@ -1694,6 +1864,7 @@ const editor = { upsert: async () => ({ ok: true, value: { id: '1' } }) } as nev
 const record = {
   storeName: 'my_notes_a1b2c3d4e5f6',
   name: 'my notes',
+  providerName: 'pg',
   scope: 'user' as const,
   userId: 'u-1',
   attributes: { role: 'analyst' },
@@ -1722,20 +1893,36 @@ describe('SimpleRagRegistry.adopt', () => {
     assert.deepEqual(asked, [], 'adopt touches no provider — the store already exists');
   });
 
-  it('deletes through the STORE name, not the logical one', async () => {
+  it('deletes through the STORE name, and actually reaches the provider', async () => {
     const deleted: string[] = [];
+    let providerAsked = 0;
     const registry = new SimpleRagRegistry();
     registry.setProviderRegistry({
-      getProvider: () => ({
-        deleteCollection: async (n: string) => {
-          deleted.push(n);
-          return { ok: true, value: undefined };
-        },
-      }),
+      getProvider: (name: string) => {
+        providerAsked += 1;
+        assert.equal(name, 'pg', 'the provider is looked up by the adopted providerName');
+        return {
+          deleteCollection: async (n: string) => {
+            deleted.push(n);
+            return { ok: true, value: undefined };
+          },
+        };
+      },
     } as never);
-    registry.adopt!({ ...record, providerName: 'pg' } as never, rag, editor);
+    registry.adopt!(record, rag, editor);
     await registry.deleteCollection('my notes');
-    assert.deepEqual(deleted, ['my_notes_a1b2c3d4e5f6'], 'the provider gets the store name');
+    assert.equal(providerAsked, 1, 'a delete that calls nobody is the resurrection bug');
+    assert.deepEqual(deleted, ['my_notes_a1b2c3d4e5f6'], 'and the provider gets the store name');
+  });
+
+  it('restores the authorization axis, so a role-gated global does not read as undefined', () => {
+    const registry = new SimpleRagRegistry();
+    registry.adopt!(
+      { storeName: 'gated_aaaaaaaaaaaa', name: 'gated', providerName: 'pg',
+        scope: 'global', authorization: 'role' },
+      rag,
+    );
+    assert.equal(registry.list()[0].authorization, 'role');
   });
 });
 ```
@@ -1745,7 +1932,7 @@ The third test is the one that proves the two names stayed apart all the way thr
 - [ ] **Step 2: run them and watch them fail**
 
 ```bash
-node --test packages/llm-agent/src/rag/__tests__/adopt.test.ts
+node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/adopt.test.ts
 ```
 
 Expected: `registry.adopt is not a function`.
@@ -1776,6 +1963,13 @@ adopt(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void {
       scope: record.scope,
       sessionId: record.sessionId,
       userId: record.userId,
+      // Both of these are load-bearing, and both were missing from the first
+      // draft of this task. Without providerName, deleteData returns ok and
+      // calls nobody (:258 region), so the store and its catalog row survive a
+      // "successful" delete and the next hydration brings the collection back.
+      // Without authorization, a role-gated global reads as undefined.
+      providerName: record.providerName,
+      authorization: record.authorization,
     },
   });
   this.fireMutation();
@@ -1785,7 +1979,7 @@ adopt(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void {
 - [ ] **Step 4: run the test, then confirm every existing registry test passes unedited**
 
 ```bash
-node --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -6
+node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -6
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 git diff --stat packages/llm-agent/src/rag/__tests__/   # only the new file
 ```
@@ -1898,6 +2092,17 @@ describe('identity comes from construction', () => {
     });
   }
 
+  it('refuses a global whose authorization is UNSET, not just a role-gated one', async () => {
+    // A collection created before the axis existed, or a hydration that lost it.
+    const stale = [{ name: 'legacy', scope: 'global', displayName: 'legacy', editable: true }];
+    const del = buildRagCollectionToolEntries({
+      identity,
+      registry: { list: () => stale, get: () => ({}) as never, getEditor: () => ({}) as never } as never,
+    }).find((e) => e.toolDefinition.name === 'rag_describe_collection')!;
+    const res = (await del.handler({}, { name: 'legacy' })) as { ok: boolean };
+    assert.equal(res.ok, false, 'fail closed: an unset axis is not permission');
+  });
+
   it('reads a public global but refuses a role-gated one', async () => {
     const ok = (await tool('rag_describe_collection').handler({}, { name: 'open' })) as { ok: boolean };
     assert.equal(ok.ok, true);
@@ -1912,7 +2117,7 @@ describe('identity comes from construction', () => {
 - [ ] **Step 2: run them and watch each fail for its own reason**
 
 ```bash
-node --test packages/llm-agent/src/rag/__tests__/tool-identity.test.ts 2>&1 | tail -30
+node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/tool-identity.test.ts 2>&1 | tail -30
 ```
 
 Read every failure message. Some cases would pass today for the wrong reason — the list test, for instance, would pass if `metas` happened to hold only the caller's. The fixture above is built so none of them can.
@@ -1951,9 +2156,18 @@ export function buildRagCollectionToolEntries(opts: {
     if (typeof name !== 'string') return { ok: false as const, error: 'collection is required' };
     const meta = addressable().find((m) => m.name === name);
     if (!meta) return { ok: false as const, error: `Collection '${name}' not found` };
-    // Reading a role-gated global needs a policy, and policy is not ours (§5).
-    if (meta.scope === 'global' && meta.authorization === 'role') {
-      return { ok: false as const, error: `Collection '${name}' is role-restricted` };
+    // Fail CLOSED on globals: only `public` is readable here, and anything else
+    // — `role`, or an absent value from a collection created before the axis
+    // existed — needs a policy, which is not ours (§5, §1.2). Refusing on
+    // `!== 'public'` rather than on `=== 'role'` is what makes a hydration that
+    // lost the axis safe instead of silently permissive.
+    if (meta.scope === 'global' && meta.authorization !== 'public') {
+      return {
+        ok: false as const,
+        error: `Collection '${name}' is not readable here: its authorization is ${
+          meta.authorization ?? 'unset'
+        }`,
+      };
     }
     return { ok: true as const, meta };
   };
@@ -1978,7 +2192,7 @@ Then: all seven handlers take `_ctx` and use `identity`; `rag_create_collection`
 - [ ] **Step 4: run the suite and the type check, and confirm the removal's shape**
 
 ```bash
-node --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -8
+node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -8
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 ```
 
@@ -2109,7 +2323,7 @@ Write the first test first and watch it **pass** before writing the others: it p
 - [ ] **Step 2: run them and watch the last two fail**
 
 ```bash
-node --test packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts 2>&1 | tail -20
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts 2>&1 | tail -20
 ```
 
 Expected: test 1 passes, tests 2 and 3 fail because `ragRegistryFactory` is ignored.
@@ -2144,7 +2358,7 @@ Hand `sessionRegistry` to `buildAgent`, and remember whether it was the session'
 - [ ] **Step 4: run the package's whole suite — every existing test must pass unedited**
 
 ```bash
-node --test packages/llm-agent-libs/src/__tests__/ 2>&1 | tail -8
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/ 2>&1 | tail -8
 npx tsc --noEmit -p packages/llm-agent-libs/tsconfig.json; echo "EXIT=$?"
 git diff --stat packages/llm-agent-libs/src/__tests__/    # only the new file
 ```
@@ -2244,7 +2458,7 @@ AS-6's **State** changes from "latent, not live" to that, naming the commit from
 ```bash
 npm run lint:check && echo "LINT=0"
 npx tsc -b && echo "BUILD=0"
-node --test $(git ls-files 'packages/*/src/**/*.test.ts') 2>&1 | tail -12
+node --import tsx/esm --test $(git ls-files 'packages/*/src/**/*.test.ts') 2>&1 | tail -12
 ```
 
 - [ ] **Step 6: open the PR**
@@ -2299,7 +2513,15 @@ This section records a review that was **run**, on 2026-09-20, after the first d
 - **§3.5 (stdio credentials) had no task at all.** §8 puts the typed stdio implementation in this workstream, beside http. Task B8 now covers both, batched because the shape is identical — a constructor demanding a credential typed per target — with the stdio half asserting the secret travels through the child's `env` and never through argv.
 - **A cross-package import that cannot exist.** Task B14's first draft told an implementer to import `SessionGraphIdentity` into `llm-agent`, but it lives in `llm-agent-libs` and the dependency runs libs → llm-agent, one way. Fixed in both the plan and §5.1 of the spec, which now names `RagCallerIdentity`.
 
-**What the pass confirmed:**
+**What a second, external pass found — four blockers, all of them the plan not matching the code:**
+
+- **Every test command was wrong.** The plan used `node --test file.ts`; each package's own script is `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`, and without the loader a `.ts` test's `.js` imports fail with `ERR_MODULE_NOT_FOUND` — verified against an existing test. All 33 commands now carry the loader, and Tech Stack says why once.
+- **A hydrated collection would have been undeletable, and would have come back.** `RagCollectionRecord` had no `providerName`, and `SimpleRagRegistry.deleteData` returns `{ ok: true }` and calls nobody when `meta.providerName` is absent — so a delete succeeded silently, the store and its catalog row survived, and the next hydration restored the collection. It is now required on the record, persisted in the catalog, and restored by `adopt`, with a test that asserts the provider was actually asked.
+- **A role-gated global would have become readable after a restart.** The `authorization` axis was on the meta but not on the record, not in the create options and not restored by `adopt`, so it came back `undefined` — and B14 refused only on `=== 'role'`. Both halves are fixed: the axis is threaded through, and the resolver now **fails closed** on `!== 'public'`, so either fix alone would have been enough.
+- **B2 froze the secret for the provider's lifetime.** It resolved the credential in the wiring and handed a plain `string` to five constructors, which contradicts the one thing §4 insists on. `LLMProviderConfig` also lives in `llm-agent/src/types.ts:78`, not in `providers.ts` as the task claimed, and the five concrete providers are in four separate packages that B1 never installed the dependency into. B2 now forwards the credential and resolves it **inside each provider's request path**, with a test that makes two real calls and asserts the two `Authorization` headers differ.
+- **B8 referenced classes that do not exist.** `IMcpServer` appears nowhere in `llm-agent-mcp`; `client.ts` builds transports inline. The task now **creates** both implementations on that code, and records a boundary the spec had not: `IMcpRequestHeadersStrategy.headers()` is synchronous and merged at connect, so an http MCP credential is resolved per *connection*, not per request. §3.3 of the spec now says so.
+
+**What the passes confirmed:**
 
 - **Spec coverage.** §3.3-3.4 are workstream 1, merged; §3.5 → B8. §4 and §4.6 → B2-B8. §5 and §5.1 → B14. §6.1 → B9 (the axis) and B14 (what it permits). §6.2 needs no task — it deletes a design, and the constructor credential it leaves behind is B4-B5. §6.3 → B9-B13. §6.4 → B15. §7 is workstream 4, merged. §8's migration → B16.
 - **Not in any task, deliberately:** `AccessCheck` anywhere (§5); a composite registry key (§6.4); delegated identity to HANA or Qdrant (§9.1); converging the two logger names (§9.9); anything that would deepen the `IF NOT EXISTS` assumption (§9.10).
