@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { type Message, staticApiKey } from '@mcp-abap-adt/llm-agent';
 import { DeepSeekProvider } from '../deepseek-provider.js';
 
 // ---------------------------------------------------------------------------
@@ -8,41 +8,66 @@ import { DeepSeekProvider } from '../deepseek-provider.js';
 // ---------------------------------------------------------------------------
 
 describe('DeepSeekProvider — constructor', () => {
-  it('throws when apiKey is missing', { skip: 'B1 removed LLMProviderConfig.apiKey, so there is no field to be missing. Task B3 gives this provider a required `credential`, which makes the absence a compile error rather than a throw, and rewrites this case against it.' }, () => {
+  it('throws when credential is missing', () => {
+    // B1 removed `LLMProviderConfig.apiKey`, so there is no longer a field to
+    // leave empty; `credential` is required (forwarded to `OpenAIProvider`,
+    // which enforces it) and its absence is normally a compile error. This
+    // asserts the runtime fallback for a caller that bypasses the type
+    // (plain JS, or `as any`) still refuses to construct.
     assert.throws(
-      () => new DeepSeekProvider({ apiKey: '', model: 'deepseek-chat' }),
-      /API key is required/,
+      // biome-ignore lint/suspicious/noExplicitAny: intentional missing credential for test
+      () => new DeepSeekProvider({ model: 'deepseek-chat' } as any),
+      /credential/i,
     );
   });
 
   it('throws when model is missing', () => {
     assert.throws(
-      // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
-      () => new DeepSeekProvider({ apiKey: 'sk-test' } as any),
+      () =>
+        // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
+        new DeepSeekProvider({ credential: staticApiKey('sk-test') } as any),
       /model/i,
     );
   });
 
   it('uses custom model when provided', () => {
     const p = new DeepSeekProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'deepseek-coder',
     });
     assert.equal(p.model, 'deepseek-coder');
   });
 
-  it('sets Authorization header', () => {
+  it('sends a Bearer Authorization header, resolved per request', async () => {
+    // Task B3: the credential is no longer baked into `client.defaults.headers`
+    // at construction — a secret resolved once there would be frozen for the
+    // object's lifetime. It is asked for fresh on each request instead; see
+    // credential.test.ts for the "asked twice, differs twice" case.
     const p = new DeepSeekProvider({
-      apiKey: 'sk-deep',
+      credential: staticApiKey('sk-deep'),
       model: 'deepseek-chat',
     });
-    const headers = p.client.defaults.headers as Record<string, unknown>;
-    assert.equal(headers.Authorization, 'Bearer sk-deep');
+    let capturedHeaders: Record<string, unknown> | undefined;
+    // @ts-expect-error — stub axios for test
+    p.client.post = async (
+      _url: string,
+      _body: unknown,
+      config?: { headers?: Record<string, unknown> },
+    ) => {
+      capturedHeaders = config?.headers;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await p.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(capturedHeaders?.Authorization, 'Bearer sk-deep');
   });
 
   it('uses default baseURL', () => {
     const p = new DeepSeekProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'deepseek-chat',
     });
     assert.equal(p.client.defaults.baseURL, 'https://api.deepseek.com/v1');
@@ -55,7 +80,7 @@ describe('DeepSeekProvider — constructor', () => {
 
 describe('DeepSeekProvider — formatMessages', () => {
   const provider = new DeepSeekProvider({
-    apiKey: 'sk-test',
+    credential: staticApiKey('sk-test'),
     model: 'deepseek-chat',
   });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
@@ -144,7 +169,7 @@ describe('DeepSeekProvider — formatMessages', () => {
 describe('DeepSeekProvider — chat error handling', () => {
   it('wraps API errors with "DeepSeek API error:" prefix', async () => {
     const provider = new DeepSeekProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'deepseek-chat',
       baseURL: 'http://localhost:1',
     });
@@ -165,7 +190,7 @@ describe('DeepSeekProvider — chat error handling', () => {
 describe('DeepSeekProvider — streamChat error handling', () => {
   it('wraps streaming errors with "DeepSeek Streaming error:" prefix', async () => {
     const provider = new DeepSeekProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'deepseek-chat',
       baseURL: 'http://localhost:1',
     });
@@ -192,7 +217,7 @@ describe('DeepSeekProvider — streamChat error handling', () => {
 describe('chat() options forwarding', () => {
   it('uses per-request overrides', async () => {
     const provider = new DeepSeekProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'deepseek-chat',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -220,7 +245,7 @@ describe('chat() options forwarding', () => {
 
   it('non-streaming chat does NOT include stream_options', async () => {
     const provider = new DeepSeekProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'deepseek-chat',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -249,7 +274,7 @@ describe('chat() options forwarding', () => {
 describe('DeepSeekProvider — streamChat() inherits usage', () => {
   it('sends stream_options with include_usage: true', async () => {
     const provider = new DeepSeekProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'deepseek-chat',
     });
     let capturedBody: Record<string, unknown> = {};

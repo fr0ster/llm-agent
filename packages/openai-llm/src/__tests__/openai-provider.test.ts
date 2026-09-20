@@ -5,6 +5,7 @@ import {
   isThrottledError,
   type Message,
   resetQuotaGates,
+  staticApiKey,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '../openai-provider.js';
@@ -14,35 +15,64 @@ import { OpenAIProvider } from '../openai-provider.js';
 // ---------------------------------------------------------------------------
 
 describe('OpenAIProvider — constructor', () => {
-  it('throws when apiKey is missing', { skip: 'B1 removed LLMProviderConfig.apiKey, so there is no field to be missing. Task B3 gives this provider a required `credential`, which makes the absence a compile error rather than a throw, and rewrites this case against it.' }, () => {
+  it('throws when credential is missing', () => {
+    // B1 removed `LLMProviderConfig.apiKey`, so there is no longer a field to
+    // leave empty; `credential` is required and its absence is normally a
+    // compile error. This asserts the runtime fallback for a caller that
+    // bypasses the type (plain JS, or `as any`) still refuses to construct.
     assert.throws(
-      () => new OpenAIProvider({ apiKey: '' }),
-      /API key is required/,
+      // biome-ignore lint/suspicious/noExplicitAny: intentional missing credential for test
+      () => new OpenAIProvider({ model: 'gpt-4o' } as any),
+      /credential/i,
     );
   });
 
   it('throws when model is missing', () => {
     assert.throws(
       // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
-      () => new OpenAIProvider({ apiKey: 'sk-test' } as any),
+      () => new OpenAIProvider({ credential: staticApiKey('sk-test') } as any),
       /model/i,
     );
   });
 
   it('uses custom model when provided', () => {
-    const p = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+    const p = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
     assert.equal(p.model, 'gpt-4o');
   });
 
-  it('sets Authorization header', () => {
-    const p = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
-    const headers = p.client.defaults.headers as Record<string, unknown>;
-    assert.equal(headers.Authorization, 'Bearer sk-test');
+  it('sends a Bearer Authorization header, resolved per request', async () => {
+    // Task B3: the credential is no longer baked into `client.defaults.headers`
+    // at construction — a secret resolved once there would be frozen for the
+    // object's lifetime. It is asked for fresh on each request instead; see
+    // credential.test.ts for the "asked twice, differs twice" case.
+    const p = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
+    let capturedHeaders: Record<string, unknown> | undefined;
+    // @ts-expect-error — stub axios for test
+    p.client.post = async (
+      _url: string,
+      _body: unknown,
+      config?: { headers?: Record<string, unknown> },
+    ) => {
+      capturedHeaders = config?.headers;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await p.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(capturedHeaders?.Authorization, 'Bearer sk-test');
   });
 
   it('sets OpenAI-Organization header when provided', () => {
     const p = new OpenAIProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'gpt-4o',
       organization: 'org-abc',
     });
@@ -52,7 +82,7 @@ describe('OpenAIProvider — constructor', () => {
 
   it('sets OpenAI-Project header when provided', () => {
     const p = new OpenAIProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'gpt-4o',
       project: 'proj-xyz',
     });
@@ -61,7 +91,10 @@ describe('OpenAIProvider — constructor', () => {
   });
 
   it('does not set org/project headers when not provided', () => {
-    const p = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+    const p = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
     const headers = p.client.defaults.headers as Record<string, unknown>;
     assert.equal(headers['OpenAI-Organization'], undefined);
     assert.equal(headers['OpenAI-Project'], undefined);
@@ -69,7 +102,7 @@ describe('OpenAIProvider — constructor', () => {
 
   it('uses custom baseURL', () => {
     const p = new OpenAIProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'gpt-4o',
       baseURL: 'https://custom.api/v1',
     });
@@ -82,7 +115,10 @@ describe('OpenAIProvider — constructor', () => {
 // ---------------------------------------------------------------------------
 
 describe('OpenAIProvider — formatMessages', () => {
-  const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+  const provider = new OpenAIProvider({
+    credential: staticApiKey('sk-test'),
+    model: 'gpt-4o',
+  });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
   const fmt = (msgs: Message[]) => (provider as any).formatMessages(msgs);
 
@@ -164,7 +200,10 @@ describe('OpenAIProvider — formatMessages', () => {
 
 describe('OpenAIProvider — getTokenLimitParam', () => {
   const param = (model: string) => {
-    const p = new OpenAIProvider({ apiKey: 'sk-test', model });
+    const p = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model,
+    });
     // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
     return (p as any).getTokenLimitParam(model, 1024);
   };
@@ -217,7 +256,7 @@ describe('OpenAIProvider — getTokenLimitParam', () => {
 describe('OpenAIProvider — chat error handling', () => {
   it('wraps API errors with "OpenAI API error:" prefix', async () => {
     const provider = new OpenAIProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'gpt-4o',
       baseURL: 'http://localhost:1',
     });
@@ -238,7 +277,7 @@ describe('OpenAIProvider — chat error handling', () => {
 describe('OpenAIProvider — streamChat error handling', () => {
   it('wraps streaming errors with "OpenAI Streaming error:" prefix', async () => {
     const provider = new OpenAIProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'gpt-4o',
       baseURL: 'http://localhost:1',
     });
@@ -265,7 +304,7 @@ describe('OpenAIProvider — streamChat error handling', () => {
 describe('OpenAIProvider — chat() options forwarding', () => {
   it('uses per-request model override', async () => {
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -294,7 +333,7 @@ describe('OpenAIProvider — chat() options forwarding', () => {
 
   it('falls back to config when no options provided', async () => {
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       temperature: 0.5,
       maxTokens: 2048,
@@ -320,7 +359,7 @@ describe('OpenAIProvider — chat() options forwarding', () => {
 
   it('forwards topP and stop options', async () => {
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -346,7 +385,7 @@ describe('OpenAIProvider — chat() options forwarding', () => {
 
   it('does not include topP/stop when not provided', async () => {
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -374,7 +413,10 @@ describe('OpenAIProvider — chat() options forwarding', () => {
 
 describe('OpenAIProvider — chat() usage', () => {
   it('returns usage from response', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+    const provider = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: {
@@ -395,7 +437,10 @@ describe('OpenAIProvider — chat() usage', () => {
   });
 
   it('returns undefined usage when not present', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+    const provider = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: {
@@ -413,7 +458,10 @@ describe('OpenAIProvider — chat() usage', () => {
 
 describe('OpenAIProvider — streamChat() usage', () => {
   it('sends stream_options with include_usage: true', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+    const provider = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
     let capturedBody: Record<string, unknown> = {};
     // @ts-expect-error — stub axios for test
     provider.client.post = async (
@@ -436,7 +484,10 @@ describe('OpenAIProvider — streamChat() usage', () => {
   });
 
   it('forwards tool_calls deltas in normalized form (regression: #119)', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+    const provider = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: (async function* () {
@@ -475,7 +526,10 @@ describe('OpenAIProvider — streamChat() usage', () => {
   });
 
   it('yields usage-only chunk at end of stream', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
+    const provider = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: (async function* () {
@@ -527,7 +581,7 @@ describe('OpenAIProvider — rate limiting', () => {
   it('retries a 429 and returns the eventual answer', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       whenThrottled: waits,
     });
@@ -552,7 +606,7 @@ describe('OpenAIProvider — rate limiting', () => {
   it('keeps the 429 readable as a fact once it gives up', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       whenThrottled: new WaitAsTold({ maxAttempts: 2 }),
     });
@@ -576,7 +630,7 @@ describe('OpenAIProvider — rate limiting', () => {
     // boundary is a fact no consumer ever sees.
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       whenThrottled: new WaitAsTold({ maxAttempts: 1 }),
     });
@@ -598,7 +652,7 @@ describe('OpenAIProvider — rate limiting', () => {
     // and a 429 without an interval is reported rather than guessed at.
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       whenThrottled: waits,
     });
@@ -618,7 +672,7 @@ describe('OpenAIProvider — rate limiting', () => {
   it('does not retry an ordinary failure', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       whenThrottled: waits,
     });
@@ -641,7 +695,7 @@ describe('OpenAIProvider — rate limiting', () => {
   it('takes a strategy that refuses to wait', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       whenThrottled: {
         name: 'never-wait',
@@ -663,7 +717,7 @@ describe('OpenAIProvider — the quota a per-request model spends', () => {
   it('gates an override model apart from the configured one', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       whenThrottled: new WaitAsTold({ maxAttempts: 1 }),
     });
@@ -695,20 +749,30 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   // @ts-expect-error — protected hook, read for test
   const keyOf = (p: OpenAIProvider) => p.quotaKey() as string;
 
-  it('separates two API keys on the same endpoint', { skip: 'B1 removed the apiKey the quota key was fingerprinted from. The 429 gate is separated by credential OBJECT identity now (BaseLLMProvider.credentialScope), which is inert until Task B3 overrides quotaCredential() here — B3 rewrites this case against that.' }, () => {
-    const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
-    const b = new OpenAIProvider({ apiKey: 'sk-b', model: 'gpt-4o' });
+  it('separates two credentials on the same endpoint', () => {
+    // B1 removed the apiKey the quota key used to be fingerprinted from. The
+    // 429 gate is separated by credential OBJECT identity now
+    // (BaseLLMProvider.credentialScope), wired up here by this provider's own
+    // `quotaCredential()` override.
+    const a = new OpenAIProvider({
+      credential: staticApiKey('sk-a'),
+      model: 'gpt-4o',
+    });
+    const b = new OpenAIProvider({
+      credential: staticApiKey('sk-b'),
+      model: 'gpt-4o',
+    });
     assert.notEqual(keyOf(a), keyOf(b));
   });
 
   it('separates two endpoints on the same key', () => {
     const a = new OpenAIProvider({
-      apiKey: 'sk-a',
+      credential: staticApiKey('sk-a'),
       model: 'gpt-4o',
       baseURL: 'https://api.openai.com/v1',
     });
     const b = new OpenAIProvider({
-      apiKey: 'sk-a',
+      credential: staticApiKey('sk-a'),
       model: 'gpt-4o',
       baseURL: 'https://my-gateway.internal/v1',
     });
@@ -716,7 +780,7 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   });
 
   it('separates organizations and projects, which is how OpenAI meters', () => {
-    const base = { apiKey: 'sk-a', model: 'gpt-4o' };
+    const base = { credential: staticApiKey('sk-a'), model: 'gpt-4o' };
     const one = new OpenAIProvider({ ...base, organization: 'org-1' });
     const two = new OpenAIProvider({ ...base, organization: 'org-2' });
     const proj = new OpenAIProvider({
@@ -729,9 +793,16 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   });
 
   it('treats an omitted endpoint and the explicit default as one quota', () => {
-    const implicit = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    // Task B3: the quota key separates accounts by credential OBJECT
+    // identity now, not by the secret's value — so these two must share ONE
+    // credential object. Two `staticApiKey('sk-a')` calls would make two
+    // objects and therefore two buckets, which is exactly the case this test
+    // is not about; see credential.test.ts and "one account, two credential
+    // objects, is two quotas" below for that one.
+    const cred = staticApiKey('sk-a');
+    const implicit = new OpenAIProvider({ credential: cred, model: 'gpt-4o' });
     const explicit = new OpenAIProvider({
-      apiKey: 'sk-a',
+      credential: cred,
       model: 'gpt-4o',
       baseURL: 'https://api.openai.com/v1',
     });
@@ -743,20 +814,22 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   });
 
   it('reads one endpoint written several ways as one quota', () => {
+    const cred = staticApiKey('sk-a');
     const spellings = [
       'https://api.openai.com/v1',
       'https://api.openai.com/v1/',
       'https://API.OpenAI.com/v1',
       'https://api.openai.com:443/v1',
     ].map((baseURL) =>
-      keyOf(new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o', baseURL })),
+      keyOf(new OpenAIProvider({ credential: cred, model: 'gpt-4o', baseURL })),
     );
     assert.equal(new Set(spellings).size, 1, spellings.join('\n'));
   });
 
   it('still separates endpoints that differ in more than spelling', () => {
+    const cred = staticApiKey('sk-a');
     const key = (baseURL: string) =>
-      keyOf(new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o', baseURL }));
+      keyOf(new OpenAIProvider({ credential: cred, model: 'gpt-4o', baseURL }));
     assert.notEqual(
       key('https://api.openai.com/v1'),
       key('https://api.openai.com/v2'),
@@ -772,14 +845,32 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   });
 
   it('gives the same account the same key, so the pause is actually shared', () => {
-    const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
-    const b = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
+    const cred = staticApiKey('sk-a');
+    const a = new OpenAIProvider({ credential: cred, model: 'gpt-4o' });
+    const b = new OpenAIProvider({ credential: cred, model: 'gpt-4o' });
     assert.equal(keyOf(a), keyOf(b));
+  });
+
+  it('one account, two credential objects, is two quotas', () => {
+    // The other side of the coin: two separately-constructed credentials
+    // for what a human would call "the same key" are NOT coalesced, because
+    // there is no secret comparison to coalesce them by — only object
+    // identity. A caller that wants them to share a gate reuses one
+    // credential object (above), or sets `quotaScope` explicitly.
+    const a = new OpenAIProvider({
+      credential: staticApiKey('sk-a'),
+      model: 'gpt-4o',
+    });
+    const b = new OpenAIProvider({
+      credential: staticApiKey('sk-a'),
+      model: 'gpt-4o',
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
   });
 
   it('never puts the credential itself in the key', () => {
     const p = new OpenAIProvider({
-      apiKey: 'sk-secret-value',
+      credential: staticApiKey('sk-secret-value'),
       model: 'gpt-4o',
     });
     assert.ok(!keyOf(p).includes('sk-secret-value'));
@@ -793,7 +884,7 @@ describe("OpenAIProvider — the caller's deadline", () => {
   it('ends the wait when the caller aborts', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
       // Bounded so a regression fails on the clock rather than hanging: the
       // server's half-second must not outlast a caller that left at 20ms.
@@ -823,7 +914,7 @@ describe("OpenAIProvider — the caller's deadline", () => {
   it('hands the signal to the request itself, not only to the waiting', async () => {
     resetQuotaGates();
     const provider = new OpenAIProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'gpt-4o',
     });
     let seen: AbortSignal | undefined;

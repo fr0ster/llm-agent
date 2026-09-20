@@ -2,6 +2,7 @@
  * DeepSeek LLM Provider — extends OpenAI (DeepSeek uses OpenAI-compatible API).
  */
 
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IModelInfo,
   LLMProviderConfig,
@@ -10,6 +11,20 @@ import type {
 import { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 
 export interface DeepSeekConfig extends LLMProviderConfig {
+  /**
+   * Forwarded to `OpenAIProvider` through the `super({ ...config })` call
+   * below, unchanged — DeepSeek speaks the OpenAI-compatible wire protocol,
+   * so it needs no header assembly or quota wiring of its own; it inherits
+   * both from the base it extends. Required: this provider cannot
+   * authenticate without one.
+   *
+   * Quota scoping keys on this object's IDENTITY, not its secret: two calls
+   * to `staticApiKey(key)` create two credential objects and therefore two
+   * separate rate-limit buckets, even for the same key. Reuse one credential
+   * object — or set `quotaScope` explicitly — to make two providers share a
+   * gate.
+   */
+  credential: IApiKeyCredential;
   model?: string;
   temperature?: number;
   maxTokens?: number;
