@@ -5,8 +5,6 @@
  * Provider resolution is delegated to `providers.ts`.
  */
 
-import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
-
 // ---------------------------------------------------------------------------
 // Config types
 // ---------------------------------------------------------------------------
@@ -23,8 +21,6 @@ export interface PipelineLlmProviderConfig {
   maxTokens?: number;
   /** SAP AI Core resource group (used when provider is 'sap-ai-sdk') */
   resourceGroup?: string;
-  /** Programmatic OAuth2 credentials for SAP AI Core (bypasses AICORE_SERVICE_KEY env var) */
-  credentials?: SapAICoreCredentials;
   /** When false, streamChat() is replaced with chat(). Default: true. */
   streaming?: boolean;
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
   isThrottledError,
   type Message,
@@ -8,66 +9,64 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { SapCoreAIProvider } from '../sap-core-ai-provider.js';
 
+/** A bearer credential that hands out a fresh, distinguishable token each call. */
+function testCredential(prefix = 't'): IBearerCredential {
+  let n = 0;
+  return { kind: 'bearer', token: async () => `${prefix}${++n}` };
+}
+
+const apiBaseUrl = 'https://api.ai.example.com';
+
 // ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
 
 describe('SapCoreAIProvider — constructor', () => {
-  it('does NOT throw when apiKey is missing (SAP SDK handles auth)', () => {
-    assert.doesNotThrow(() => new SapCoreAIProvider({ model: 'gpt-4o' }));
+  it('does not throw when constructed with a credential and apiBaseUrl', () => {
+    assert.doesNotThrow(
+      () =>
+        new SapCoreAIProvider({
+          model: 'gpt-4o',
+          apiBaseUrl,
+          credential: testCredential(),
+        }),
+    );
   });
 
   it('throws when model is missing (no default constant)', () => {
-    assert.throws(() => new SapCoreAIProvider({}), /requires a 'model'/);
+    assert.throws(
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally omitting required fields to test the model check first
+      () => new SapCoreAIProvider({} as any),
+      /requires a 'model'/,
+    );
   });
 
   it('uses custom model when provided', () => {
-    const p = new SapCoreAIProvider({ model: 'claude-3-5-sonnet' });
+    const p = new SapCoreAIProvider({
+      model: 'claude-3-5-sonnet',
+      apiBaseUrl,
+      credential: testCredential(),
+    });
     assert.equal(p.model, 'claude-3-5-sonnet');
   });
 
   it('sets resourceGroup when provided', () => {
     const p = new SapCoreAIProvider({
       model: 'gpt-4o',
+      apiBaseUrl,
+      credential: testCredential(),
       resourceGroup: 'default',
     });
     assert.equal(p.resourceGroup, 'default');
   });
 
   it('resourceGroup is undefined when not provided', () => {
-    const p = new SapCoreAIProvider({ model: 'gpt-4o' });
+    const p = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      apiBaseUrl,
+      credential: testCredential(),
+    });
     assert.equal(p.resourceGroup, undefined);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Credentials → destination
-// ---------------------------------------------------------------------------
-
-describe('SapCoreAIProvider — credentials / destination', () => {
-  it('builds destination object from credentials', () => {
-    const creds = {
-      clientId: 'sb-xxx',
-      clientSecret: 'secret123',
-      tokenServiceUrl: 'https://auth.example.com/oauth/token',
-      servicUrl: 'https://api.ai.example.com',
-    };
-    const p = new SapCoreAIProvider({ model: 'gpt-4o', credentials: creds });
-
-    // biome-ignore lint/suspicious/noExplicitAny: access private field for testing
-    const dest = (p as any).destination;
-    assert.ok(dest, 'destination should be defined');
-    assert.equal(dest.url, 'https://api.ai.example.com');
-    assert.equal(dest.authentication, 'OAuth2ClientCredentials');
-    assert.equal(dest.clientId, 'sb-xxx');
-    assert.equal(dest.clientSecret, 'secret123');
-    assert.equal(dest.tokenServiceUrl, 'https://auth.example.com/oauth/token');
-  });
-
-  it('destination is undefined when no credentials provided', () => {
-    const p = new SapCoreAIProvider({ model: 'gpt-4o' });
-    // biome-ignore lint/suspicious/noExplicitAny: access private field for testing
-    assert.equal((p as any).destination, undefined);
   });
 });
 
@@ -76,7 +75,11 @@ describe('SapCoreAIProvider — credentials / destination', () => {
 // ---------------------------------------------------------------------------
 
 describe('SapCoreAIProvider — formatMessages', () => {
-  const provider = new SapCoreAIProvider({ model: 'gpt-4o' });
+  const provider = new SapCoreAIProvider({
+    model: 'gpt-4o',
+    apiBaseUrl,
+    credential: testCredential(),
+  });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
   const fmt = (msgs: Message[]) => (provider as any).formatMessages(msgs);
 
@@ -150,7 +153,11 @@ describe('SapCoreAIProvider — formatMessages', () => {
 
 describe('SapCoreAIProvider — streamChat requestConfig', () => {
   it('passes httpsAgent with keepAlive to client.stream()', async () => {
-    const p = new SapCoreAIProvider({ model: 'test-model' });
+    const p = new SapCoreAIProvider({
+      model: 'test-model',
+      apiBaseUrl,
+      credential: testCredential(),
+    });
 
     // Spy on createClient to capture stream() call args
     let streamArgs: unknown[] = [];
@@ -194,7 +201,11 @@ describe('SapCoreAIProvider — chat requestConfig', () => {
   });
 
   it('passes a per-call httpsAgent with keepAlive:false to client.chatCompletion()', async () => {
-    const p = new SapCoreAIProvider({ model: 'test-model' });
+    const p = new SapCoreAIProvider({
+      model: 'test-model',
+      apiBaseUrl,
+      credential: testCredential(),
+    });
     let chatArgs: unknown[] = [];
     // biome-ignore lint/suspicious/noExplicitAny: test spy
     (p as any).createClient = () => ({
@@ -224,7 +235,11 @@ describe('SapCoreAIProvider — chat requestConfig', () => {
   });
 
   it('uses a fresh agent instance per call (no shared agent across calls)', async () => {
-    const p = new SapCoreAIProvider({ model: 'test-model' });
+    const p = new SapCoreAIProvider({
+      model: 'test-model',
+      apiBaseUrl,
+      credential: testCredential(),
+    });
     const agents: unknown[] = [];
     // biome-ignore lint/suspicious/noExplicitAny: test spy
     (p as any).createClient = () => ({
@@ -247,6 +262,34 @@ describe('SapCoreAIProvider — chat requestConfig', () => {
       'each chat() call must get its own agent instance (not a shared one)',
     );
   });
+
+  it('asks the credential for a fresh token on every call (not cached at construction)', async () => {
+    let n = 0;
+    const credential: IBearerCredential = {
+      kind: 'bearer',
+      token: async () => `tok${++n}`,
+    };
+    const p = new SapCoreAIProvider({
+      model: 'test-model',
+      apiBaseUrl,
+      credential,
+    });
+    const seenClients: unknown[] = [];
+    // biome-ignore lint/suspicious/noExplicitAny: test spy — createClient's 3rd arg is the destination built from the credential
+    (p as any).createClient = (
+      _messages: unknown,
+      _tools: unknown,
+      destination: { headers: { Authorization: string } },
+    ) => {
+      seenClients.push(destination.headers.Authorization);
+      return { chatCompletion: () => Promise.resolve(fakeResponse()) };
+    };
+
+    await p.chat([{ role: 'user', content: 'a' }]);
+    await p.chat([{ role: 'user', content: 'b' }]);
+
+    assert.deepEqual(seenClients, ['Bearer tok1', 'Bearer tok2']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -255,7 +298,11 @@ describe('SapCoreAIProvider — chat requestConfig', () => {
 
 describe('SapCoreAIProvider — createClient', () => {
   it('passes tools through to OrchestrationClient config', () => {
-    const p = new SapCoreAIProvider({ model: 'gpt-4o' });
+    const p = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      apiBaseUrl,
+      credential: testCredential(),
+    });
 
     // We cannot fully instantiate OrchestrationClient without SAP env,
     // but we can verify the method exists and accepts tools.
@@ -292,6 +339,8 @@ describe('SapCoreAIProvider — rate limiting', () => {
     resetQuotaGates();
     const provider = new SapCoreAIProvider({
       model: 'anthropic--claude-4.5-sonnet',
+      apiBaseUrl,
+      credential: testCredential(),
       whenThrottled: waits,
     });
     let calls = 0;
@@ -312,6 +361,8 @@ describe('SapCoreAIProvider — rate limiting', () => {
     resetQuotaGates();
     const provider = new SapCoreAIProvider({
       model: 'anthropic--claude-4.5-sonnet',
+      apiBaseUrl,
+      credential: testCredential(),
       whenThrottled: new WaitAsTold({ maxAttempts: 2 }),
     });
     // @ts-expect-error — stub the SDK client for test
@@ -335,6 +386,8 @@ describe('SapCoreAIProvider — rate limiting', () => {
     resetQuotaGates();
     const provider = new SapCoreAIProvider({
       model: 'gpt-4o',
+      apiBaseUrl,
+      credential: testCredential(),
       whenThrottled: waits,
     });
     let calls = 0;
@@ -353,8 +406,19 @@ describe('SapCoreAIProvider — rate limiting', () => {
   });
 
   it('keys the quota by resource group as well as model', () => {
-    const one = new SapCoreAIProvider({ model: 'gpt-4o', resourceGroup: 'a' });
-    const two = new SapCoreAIProvider({ model: 'gpt-4o', resourceGroup: 'b' });
+    const credential = testCredential();
+    const one = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      apiBaseUrl,
+      credential,
+      resourceGroup: 'a',
+    });
+    const two = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      apiBaseUrl,
+      credential,
+      resourceGroup: 'b',
+    });
     // @ts-expect-error — protected hook, read for test
     assert.notEqual(one.quotaKey(), two.quotaKey());
     // @ts-expect-error — protected hook, read for test
@@ -363,62 +427,79 @@ describe('SapCoreAIProvider — rate limiting', () => {
 });
 
 describe('SapCoreAIProvider — one quota per service instance', () => {
-  const creds = (servicUrl: string, clientId: string) => ({
-    servicUrl,
-    clientId,
-    clientSecret: 'secret',
-    tokenServiceUrl: 'https://uaa.example/oauth/token',
-  });
   // @ts-expect-error — protected hook, read for test
   const keyOf = (p: SapCoreAIProvider) => p.quotaKey() as string;
 
-  it('separates two service instances', () => {
+  it('separates two service instances (different apiBaseUrl)', () => {
     const a = new SapCoreAIProvider({
       model: 'gpt-4o',
-      credentials: creds('https://api.one.aicore', 'sb-one'),
+      apiBaseUrl: 'https://api.one.aicore',
+      credential: testCredential(),
     });
     const b = new SapCoreAIProvider({
       model: 'gpt-4o',
-      credentials: creds('https://api.two.aicore', 'sb-two'),
+      apiBaseUrl: 'https://api.two.aicore',
+      credential: testCredential(),
     });
     assert.notEqual(keyOf(a), keyOf(b));
   });
 
-  it('separates two tenants on one AI Core endpoint', () => {
+  it('separates two credential objects on one AI Core endpoint', () => {
+    // Two distinct credential objects — even representing the same tenant —
+    // are two buckets: quota isolation is by the credential's own identity,
+    // not by any field inside it (BaseLLMProvider.credentialScope).
     const a = new SapCoreAIProvider({
       model: 'gpt-4o',
-      credentials: creds('https://api.one.aicore', 'sb-tenant-a'),
+      apiBaseUrl: 'https://api.one.aicore',
+      credential: testCredential(),
     });
     const b = new SapCoreAIProvider({
       model: 'gpt-4o',
-      credentials: creds('https://api.one.aicore', 'sb-tenant-b'),
+      apiBaseUrl: 'https://api.one.aicore',
+      credential: testCredential(),
     });
     assert.notEqual(keyOf(a), keyOf(b));
   });
 
   it('reads one service URL written several ways as one instance', () => {
+    const credential = testCredential();
     const a = new SapCoreAIProvider({
       model: 'gpt-4o',
-      credentials: creds('https://api.one.aicore/v2/', 'sb-one'),
+      apiBaseUrl: 'https://api.one.aicore/v2/',
+      credential,
     });
     const b = new SapCoreAIProvider({
       model: 'gpt-4o',
-      credentials: creds('https://API.One.aicore/v2', 'sb-one'),
+      apiBaseUrl: 'https://API.One.aicore/v2',
+      credential,
     });
     assert.equal(keyOf(a), keyOf(b));
   });
 
-  it('treats the env service key as one instance for the process', () => {
-    const a = new SapCoreAIProvider({ model: 'gpt-4o' });
-    const b = new SapCoreAIProvider({ model: 'gpt-4o' });
+  it('shares one scope when the same credential object is reused', () => {
+    const credential = testCredential();
+    const a = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      apiBaseUrl,
+      credential,
+    });
+    const b = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      apiBaseUrl,
+      credential,
+    });
     assert.equal(keyOf(a), keyOf(b));
   });
 
-  it('never puts the client secret in the key', () => {
+  it('never puts a token in the key', async () => {
+    const credential = testCredential('super-secret-token-');
     const p = new SapCoreAIProvider({
       model: 'gpt-4o',
-      credentials: creds('https://api.one.aicore', 'sb-one'),
+      apiBaseUrl,
+      credential,
     });
-    assert.ok(!keyOf(p).includes('secret'));
+    // Draw a token so a leak into the key would have something to leak.
+    await credential.token();
+    assert.ok(!keyOf(p).includes('super-secret-token-'));
   });
 });
