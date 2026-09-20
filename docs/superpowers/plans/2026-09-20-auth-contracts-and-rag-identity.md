@@ -27,22 +27,21 @@ Copied from the spec. Every task's requirements implicitly include this section.
 - **Interfaces is published before llm-agent adopts it.** An acceptor cannot merge a dependency on an unpublished version (§8).
 - **One PR per repository.** Phase A is one PR in `mcp-abap-adt-interfaces`; Phase B is one PR in llm-agent covering both remaining workstreams (§10).
 - **The user publishes to npm.** Never run `npm publish`; the account has 2FA.
-- **A `@ts-expect-error` in a test file asserts nothing in this repository unless you make it.** Measured: 14 of the 17 packages set `exclude: ["**/__tests__/**", "**/*.test.ts"]`, only the three vector stores include tests, and the one `tsconfig.test.json` that exists lists a single file and **no script runs it** — while 39 such directives already sit in tests across the repo. The runner is tsx, which strips types without checking them, so an unchecked directive is silent whether it holds or not. This is interfaces decision 28 at repository scale: a check that has never failed is an assumption.
+- **A `@ts-expect-error` in a test file asserts nothing here unless you add the file to the repo's own typecheck list.** The mechanism exists and this plan's first draft of this constraint named the wrong one. It is the root `tsconfig.typecheck.json`, run by `npm run typecheck`, and its own comment says why it is narrow:
 
-  So a task that writes a compile assertion **also type-checks the file it wrote**, using the idiom the repo already has:
+  > *This list is deliberately narrow, not a stand-in for a repo-wide "typecheck every test" config: pointing tsc at every test in llm-agent / llm-agent-libs surfaces **315 pre-existing errors** in tests nothing has ever type-checked, which is a separate workstream. A new test added to either package that needs type-checking in CI must be added to this list by hand.*
+
+  So a task that writes a compile assertion adds its file to that `include` array — **appending**, never replacing — and runs the check:
 
   ```bash
-  # ADD the new test to that package's tsconfig.test.json — create it if absent, and
-  # append to `files` rather than replacing it: llm-agent's already lists
-  # src/interfaces/__tests__/pipeline-plugin.test.ts, and replacing the array would
-  # quietly stop checking that one
-  cat packages/<pkg>/tsconfig.test.json
-  # { "extends": "./tsconfig.json", "compilerOptions": { "noEmit": true },
-  #   "files": ["src/…/__tests__/<your>.test.ts"] }
-  npx tsc --noEmit -p packages/<pkg>/tsconfig.test.json; echo "TYPES=$?"
+  npm run typecheck        # tsc -p tsconfig.typecheck.json
   ```
 
-  Scope it to the file you added, as the existing config does — including a package's whole test tree would surface unrelated pre-existing errors and is not this workstream's job. And prove the directive can fail: weaken the one thing it guards and confirm `error TS2578: Unused '@ts-expect-error' directive`. Where a behavioural assertion will do instead, prefer it — `assert.throws` runs under tsx and needs none of this.
+  Then prove the directive can fail: weaken the one thing it guards and confirm `error TS2578: Unused '@ts-expect-error' directive`. A directive that still errors after its guard is weakened is pinning something else.
+
+  Do **not** reach for a per-package `tsconfig.test.json`: one exists in `llm-agent`, lists a single file, and no script runs it. Where a behavioural assertion will do instead, prefer it — `assert.throws` runs under tsx and needs none of this.
+
+- **`tsc` is not the test suite, and this bit once already.** Task B1 was licensed to leave the build red; it also left five tests red in three packages, and nothing noticed because `tsc` excludes test files and tsx strips types without checking them. Every task's verification runs **both**: `npm run build` for the compile state, and `npm test --workspaces` (or the touched packages' own `npm test -w`) for the runtime one. A task that knowingly leaves a test red quarantines it with `{ skip: '<why, and which task fixes it>' }` rather than leaving it to be discovered.
 
 ---
 
@@ -697,11 +696,11 @@ for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
   npm test -w "packages/$p"; npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
 
-# the compile assertion in each credential.test.ts is silent unless checked
-# (Global Constraints): add the file to that package's tsconfig.test.json and
-for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
-  npx tsc --noEmit -p "packages/$p/tsconfig.test.json"; echo "$p types=$?"
-done
+# the compile assertion in each credential.test.ts is silent unless the file is in
+# the repo's typecheck list (Global Constraints) — append all four, then:
+npm run typecheck; echo "TYPES=$?"
+# and the runtime suites, because tsc is not the test suite:
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do npm test -w "packages/$p"; done
 ```
 
 - [ ] **Step 6: commit**
@@ -814,8 +813,8 @@ Both header sites (`:48`, `:109`) already sit inside `await fetch(…)`, so `Aut
 npm test -w packages/openai-embedder
 npx tsc --noEmit -p packages/openai-embedder/tsconfig.json; echo "EXIT=$?"
 # the no-credential case is asserted by assert.throws, which runs — but the
-# @ts-expect-error beside it does not, unless the file is checked (Global Constraints)
-npx tsc --noEmit -p packages/openai-embedder/tsconfig.test.json; echo "TYPES=$?"
+# @ts-expect-error beside it does not, unless the file is in the typecheck list
+npm run typecheck; echo "TYPES=$?"
 ```
 
 - [ ] **Step 5: commit**
@@ -1512,8 +1511,8 @@ node --import tsx/esm --test packages/llm-agent-mcp/src/servers/__tests__/creden
 npx tsc --noEmit -p packages/llm-agent-mcp/tsconfig.json; echo "EXIT=$?"
 # This task's two strongest assertions are compile-only — that a bearer credential is
 # refused where a header key is declared, and that a credential with nowhere to go is
-# unconstructible. Both are silent unless the file is checked (Global Constraints):
-npx tsc --noEmit -p packages/llm-agent-mcp/tsconfig.test.json; echo "TYPES=$?"
+# unconstructible. Both are silent unless this file is in the typecheck list:
+npm run typecheck; echo "TYPES=$?"
 npx biome check packages/llm-agent-mcp/src
 ```
 
@@ -1994,9 +1993,9 @@ and widen `createCollection`'s `opts` with `collectionName?: string`, `attribute
 
 ```bash
 node --import tsx/esm --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
-# `providerName is not optional on a record` is a compile assertion, silent unless the
-# file is checked (Global Constraints):
-npx tsc --noEmit -p packages/llm-agent/tsconfig.test.json; echo "TYPES=$?"
+# `providerName is not optional on a record` is a compile assertion, silent unless this
+# file is in the typecheck list:
+npm run typecheck; echo "TYPES=$?"
 for p in llm-agent qdrant-rag pg-vector-rag hana-vector-rag llm-agent-rag; do
   npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
@@ -2792,9 +2791,9 @@ Then: all seven handlers take `_ctx` and use `identity`; `rag_create_collection`
 node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -8
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 # `identity is required` is the task's central assertion and it is compile-only, so it is
-# silent unless the file is checked (Global Constraints). Prove it can fail too: make
-# `identity` optional and confirm TS2578 on that directive.
-npx tsc --noEmit -p packages/llm-agent/tsconfig.test.json; echo "TYPES=$?"
+# silent unless this file is in the typecheck list. Prove it can fail too: make `identity`
+# optional and confirm TS2578 on that directive.
+npm run typecheck; echo "TYPES=$?"
 ```
 
 - [ ] **Step 5: commit**
