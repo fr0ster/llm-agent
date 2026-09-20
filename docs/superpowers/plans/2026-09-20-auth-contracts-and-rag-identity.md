@@ -277,7 +277,7 @@ git checkout -b feat/credentials-and-rag-identity
 The smallest change that makes every later task expressible: the contracts stop carrying a secret, and core ships the one-line conversions that make a call site's migration mechanical.
 
 **Files:**
-- Modify: the `package.json` of every package that imports a contract — `llm-agent`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`, `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm`, `openai-embedder`, `sap-aicore-llm`, `sap-aicore-embedder`, `llm-agent-mcp`. **Not** `ollama-embedder`: it sends `Content-Type` and nothing else (`ollama.ts:42`, `:91`), so a credential there would be a member nobody calls.
+- Modify: the `package.json` of every package that imports a contract — `llm-agent`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`, `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm`, `openai-embedder`, `sap-aicore-llm`, `sap-aicore-embedder`, `llm-agent-mcp`, **and `llm-agent-server`** — the composition root imports the contracts directly in Task B10, and a workspace would hide the omission through hoisting while a published server carried an undeclared dependency. **Not** `ollama-embedder`: it sends `Content-Type` and nothing else (`ollama.ts:42`, `:91`), so a credential there would be a member nobody calls.
 - Create: `packages/llm-agent/src/credentials/static.ts`, exported from `packages/llm-agent/src/index.ts`
 - Modify: `packages/llm-agent/src/types.ts` (`LLMProviderConfig`, ~`:78` — remove `apiKey`)
 - Modify: `packages/llm-agent/src/interfaces/rag.ts` (`EmbedderFactoryConfig`, ~`:20` — remove `apiKey`)
@@ -285,7 +285,7 @@ The smallest change that makes every later task expressible: the contracts stop 
 
 **Interfaces:**
 - Consumes: `IApiKeyCredential`, `IBearerCredential`, `ISecretLoginCredential` from `@mcp-abap-adt/interfaces-auth@^1.1.0`.
-- Produces, and every later task uses these: `staticApiKey(secret): IApiKeyCredential`, `staticLogin(principal, secret): ISecretLoginCredential`. Both exported from `@mcp-abap-adt/llm-agent`.
+- Produces: `staticApiKey(secret): IApiKeyCredential` and `staticLogin(principal, secret): ISecretLoginCredential`, both exported from `@mcp-abap-adt/llm-agent`. **Removes** `LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey`. Tasks B3-B6 and B10 all use the two conversions.
 
 - [ ] **Step 1: write the failing test**
 
@@ -520,7 +520,10 @@ export function serviceKeyCredential(raw: string): {
 - [ ] **Step 5: repoint `sap-aicore-embedder` and run both packages' suites**
 
 ```bash
+# The embedder needs it, and so does the composition root (Task B10) — declared here so
+# hoisting never hides it.
 npm pkg set "dependencies.@mcp-abap-adt/sap-aicore-auth=*" -w packages/sap-aicore-embedder
+npm pkg set "dependencies.@mcp-abap-adt/sap-aicore-auth=*" -w packages/llm-agent-server
 npm install
 npm test -w packages/sap-aicore-auth
 npm test -w packages/sap-aicore-embedder
@@ -678,7 +681,9 @@ Ollama's stays optional, because it accepts a key today and a gateway may requir
 - Modify: `packages/openai-embedder/src/openai-embedder.ts` — `apiKey: string` required (`:6`), thrown on when missing (`:19`), stored (`:25`), read at two header sites (`:48`, `:109`), both already inside `await fetch(…)`
 - Test: `packages/openai-embedder/src/__tests__/credential.test.ts`
 
-**Interfaces:** consumes `IApiKeyCredential` and `staticApiKey`; produces `credential` on `OpenAiEmbedderConfig`, replacing `apiKey`.
+**Interfaces:**
+- Consumes: `IApiKeyCredential` and `staticApiKey` (B1).
+- Produces: `OpenAiEmbedderConfig.credential: IApiKeyCredential`, **required**, replacing `apiKey: string`. Task B10 constructs this, and `EmbedderFactory` implementations in any consumer construct it too.
 
 - [ ] **Step 1: write the failing test**
 
@@ -787,7 +792,9 @@ ollama-embedder is deliberately untouched: it sends Content-Type and nothing els
 - Modify: `packages/sap-aicore-embedder/src/{foundation-embedder,orchestration-embedder}.ts` — its own `TokenProvider` usage (now in `sap-aicore-auth`), `apiBaseUrl` at `:8`, the header at `:98-101`, and the two-argument `new OrchestrationEmbeddingClient(config, deploymentConfig)` at `orchestration-embedder.ts:50`
 - Test: one per package
 
-**Interfaces:** consumes `IBearerCredential`; produces `credential: IBearerCredential` and `apiBaseUrl: string` on both configs, with **no** env fallback inside either.
+**Interfaces:**
+- Consumes: `IBearerCredential`; `serviceKeyCredential` from Task B2.
+- Produces: `credential: IBearerCredential` and `apiBaseUrl: string` on `SapCoreAIConfig` and on the embedder's config, with **no** env fallback inside either, plus an exported `buildDestination`. Task B10's `sap-ai-sdk` branch constructs both from one `serviceKeyCredential` call.
 
 - [ ] **Step 1: write the failing tests** — the destination carries a freshly asked token, `apiBaseUrl` comes from config, and **no** request goes to a token endpoint from inside the provider:
 
@@ -882,7 +889,9 @@ credential (Task B10)."
 - Modify: `packages/pg-vector-rag/src/connection.ts` and `packages/hana-vector-rag/src/connection.ts` (configs, and `resolvePgConnectArgs` `:27` / `resolveHanaConnectArgs` `:25`)
 - Test: one per package
 
-**Interfaces:** consumes `IApiKeyCredential` (qdrant) and `ISecretLoginCredential` (pg, hana); produces `credential` on all three configs, replacing `apiKey` and `user`/`password`.
+**Interfaces:**
+- Consumes: `IApiKeyCredential` (qdrant), `ISecretLoginCredential` (pg, hana), `staticLogin` (B1).
+- Produces: `credential` on `QdrantRagConfig`, `PgVectorRagConfig` and `HanaVectorRagConfig`, replacing `apiKey` and `user`/`password`; `resolvePgConnectArgs` and `resolveHanaConnectArgs` become `async` and refuse a connection string carrying credentials. Tasks B13 and B14 build on these same configs, and B10 constructs them.
 
 - [ ] **Step 1: write the failing tests.** Three behaviours for pg and hana, and the third is the one that changes from the previous derivation:
 
@@ -1015,7 +1024,7 @@ Both classes take the client factory as a constructor argument, defaulting to `c
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { McpClientFactoryResult, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
-import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { HttpMcpServer } from '../http-mcp-server.js';
 import { StdioMcpServer } from '../stdio-mcp-server.js';
 
@@ -1042,7 +1051,7 @@ describe('HttpMcpServer', () => {
     let asked = 0;
     const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++asked}` };
     const server = new HttpMcpServer(
-      { url: 'https://mcp.example/mcp', credential, headers: { 'X-Trace': 'abc' } },
+      { url: 'https://mcp.example/mcp', auth: { scheme: 'bearer', credential }, headers: { 'X-Trace': 'abc' } },
       f.factory,
     );
 
@@ -1055,11 +1064,38 @@ describe('HttpMcpServer', () => {
     assert.equal(asked, 1, 'asked once per connection: headers() is synchronous (see above)');
   });
 
+  it('puts an API key in the header the TARGET names, not in Authorization', async () => {
+    const f = fakeFactory();
+    const credential: IApiKeyCredential = { kind: 'api-key', secret: async () => 'k-1' };
+    await new HttpMcpServer(
+      { url: 'https://mcp.example/mcp', auth: { scheme: 'header', header: 'x-api-key', credential } },
+      f.factory,
+    ).start();
+    const config = f.configs[0];
+    assert.equal(config.headers?.['x-api-key'], 'k-1');
+    assert.equal(
+      config.headers?.Authorization,
+      undefined,
+      'the api-key contract says nothing about placement, so assuming Bearer would leave ' +
+        'a target that wants x-api-key unauthenticated',
+    );
+  });
+
+  it('will not accept a bearer credential where a header key is declared', () => {
+    const f = fakeFactory();
+    const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
+    // @ts-expect-error each variant demands the one kind it can use
+    void new HttpMcpServer(
+      { url: 'https://mcp.example/mcp', auth: { scheme: 'header', header: 'x-api-key', credential: bearer } },
+      f.factory,
+    );
+  });
+
   it('a static Authorization cannot overwrite the credential', async () => {
     const f = fakeFactory();
     const credential: IBearerCredential = { kind: 'bearer', token: async () => 'tok' };
     await new HttpMcpServer(
-      { url: 'https://mcp.example/mcp', credential, headers: { Authorization: 'Bearer stale' } },
+      { url: 'https://mcp.example/mcp', auth: { scheme: 'bearer', credential }, headers: { Authorization: 'Bearer stale' } },
       f.factory,
     ).start();
     const config = f.configs[0];   // already McpConnectionConfig — no narrowing needed
@@ -1069,7 +1105,7 @@ describe('HttpMcpServer', () => {
   it('tolerates a factory that returns no close at all', async () => {
     const client = { listTools: async () => [] } as never;
     const server = new HttpMcpServer(
-      { url: 'https://mcp.example/mcp' },
+      { url: 'https://mcp.example/mcp', auth: { scheme: 'none' } },
       async () => ({ client }),          // `close` is optional on the contract
     );
     await server.start();
@@ -1078,7 +1114,7 @@ describe('HttpMcpServer', () => {
 
   it('stop() closes exactly once, and is safe to call twice', async () => {
     const f = fakeFactory();
-    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp' }, f.factory);
+    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp', auth: { scheme: 'none' } }, f.factory);
     await server.start();
     await server.stop();
     await server.stop();
@@ -1087,13 +1123,13 @@ describe('HttpMcpServer', () => {
 
   it('stop() before start() does nothing rather than throwing', async () => {
     const f = fakeFactory();
-    await new HttpMcpServer({ url: 'https://mcp.example/mcp' }, f.factory).stop();
+    await new HttpMcpServer({ url: 'https://mcp.example/mcp', auth: { scheme: 'none' } }, f.factory).stop();
     assert.equal(f.closes(), 0);
   });
 
   it('a second start() refuses rather than leaking the first connection', async () => {
     const f = fakeFactory();
-    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp' }, f.factory);
+    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp', auth: { scheme: 'none' } }, f.factory);
     await server.start();
     await assert.rejects(() => server.start(), /already started/);
     assert.equal(f.configs.length, 1);
@@ -1103,7 +1139,10 @@ describe('HttpMcpServer', () => {
     const f = fakeFactory();
     let asked = 0;
     const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++asked}` };
-    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp', credential }, f.factory);
+    const server = new HttpMcpServer(
+      { url: 'https://mcp.example/mcp', auth: { scheme: 'bearer', credential } },
+      f.factory,
+    );
     await server.start();
     await server.stop();
     await server.start();
@@ -1173,9 +1212,22 @@ import { createDefaultMcpClient } from '../factory.js';
 
 type ClientFactory = (config: McpConnectionConfig) => Promise<McpClientFactoryResult>;
 
+/**
+ * Where the material goes is the accepting implementation's business (§4): an api key is
+ * the same key whether a server wants it as `Authorization: Bearer`, `x-api-key` or
+ * `api-key`. So the scheme is declared, not guessed — and declaring it is also what keeps
+ * this off the shared union §4.6.2 forbids: each variant demands the ONE kind it can use,
+ * and `'none'` makes an unauthenticated target a statement rather than an omission.
+ */
+export type HttpMcpAuth =
+  | { readonly scheme: 'bearer'; readonly credential: IBearerCredential }
+  | { readonly scheme: 'header'; readonly header: string; readonly credential: IApiKeyCredential }
+  | { readonly scheme: 'none' };
+
 export interface HttpMcpServerConfig {
   url: string;
-  credential?: IApiKeyCredential | IBearerCredential;
+  /** Required: a target either authenticates or says it does not. */
+  auth: HttpMcpAuth;
   headers?: Record<string, string>;
   timeout?: number;
 }
@@ -1190,22 +1242,28 @@ export class HttpMcpServer implements IMcpServer {
 
   async start(): Promise<IMcpClient> {
     if (this.held) throw new Error('HttpMcpServer is already started');
-    const { url, credential, headers, timeout } = this.cfg;
-    // Resolved HERE, once per connection, because the header seam is synchronous
-    // and merged at connect. A reconnect asks again; that is the refresh.
-    const secret = credential
-      ? credential.kind === 'bearer'
-        ? await credential.token()
-        : await credential.secret()
-      : undefined;
+    const { url, auth, headers, timeout } = this.cfg;
+    // Resolved HERE, once per connection, because the header seam is synchronous and
+    // merged at connect. A reconnect asks again; that is the refresh.
+    const authHeaders = await (async (): Promise<Record<string, string>> => {
+      switch (auth.scheme) {
+        case 'none':
+          return {};
+        case 'bearer':
+          return { Authorization: `Bearer ${await auth.credential.token()}` };
+        case 'header':
+          // The target named its own header: x-api-key, api-key, or whatever it speaks.
+          return { [auth.header]: await auth.credential.secret() };
+      }
+    })();
     const config: McpConnectionConfig = {
       // `type` is REQUIRED on McpConnectionConfig ('http' | 'stdio',
       // mcp-connection-strategy.ts:33). An earlier draft omitted it and hid the
       // omission behind `as McpConnectionConfig`; no cast is needed once it is there.
       type: 'http',
       url,
-      // The credential goes LAST so a stale static Authorization cannot win.
-      headers: { ...headers, ...(secret ? { Authorization: `Bearer ${secret}` } : {}) },
+      // The credential goes LAST so a stale static header cannot win.
+      headers: { ...headers, ...authHeaders },
       ...(timeout !== undefined ? { timeout } : {}),
     };
 
@@ -1635,7 +1693,7 @@ A provider is handed the **store** name, not the logical one: `SimpleRagRegistry
 - Test: `packages/llm-agent/src/__tests__/rag-collection-record.test.ts`
 
 **Interfaces:**
-- Produces, and later tasks use these exact names:
+- Produces — and Tasks B13 through B17 use these exact names:
   - `RagCollectionRecord { storeName; name; scope?; sessionId?; userId?; attributes? }`
   - `RagCallerIdentity { sessionId; userId? }` — declared here, in `llm-agent`; Task B16 requires it
   - `IRagProvider.describeCollections?(): Promise<Result<readonly RagCollectionRecord[], RagError>>`
@@ -1807,7 +1865,7 @@ type breaks every implementation."
 - Test: `packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts`
 
 **Interfaces:**
-- Produces: `CatalogRecordDeleteError extends RagError`. Tasks B11 and B12 raise it; Task B16's handler branches on it.
+- Produces: `CatalogRecordDeleteError extends RagError`. **Tasks B13 and B14 raise it** — pg/hana and qdrant, the packages that own a catalog. The delete handler's branch is added here and must survive B16's rewrite of the tool entries.
 
 - [ ] **Step 1: write the failing test**
 
@@ -1919,7 +1977,7 @@ The same change twice, so one task and one diff. **These packages own the backen
 - Test: `packages/pg-vector-rag/src/__tests__/catalog.test.ts` and its hana twin
 
 **Interfaces:**
-- Consumes: `RagCollectionRecord` (B9), `CatalogRecordDeleteError` (B10).
+- Consumes: `RagCollectionRecord` (B11), `CatalogRecordDeleteError` (B12).
 - Produces: `describeCollections()`, `openCollection()` and a record-first `deleteCollection()` on both providers.
 
 - [ ] **Step 1: write the failing tests**
@@ -2094,6 +2152,10 @@ the data."
 
 The design records the Qdrant catalog as **unverified**: it exposes no collection-level metadata we have checked. So this task starts by finding out, and the answer may change its shape. Do not skip Step 1 and assume the fallback.
 
+**Interfaces:**
+- Consumes: `RagCollectionRecord` (B11), `CatalogRecordDeleteError` (B12), and the credential on `QdrantRagConfig` (B6).
+- Produces: `describeCollections()`, `openCollection()` and a record-first `deleteCollection()` on `QdrantRagProvider` — the same three members Task B13 produces for pg and hana, so a consumer sees one shape across all three stores. Task B17's hydration calls them.
+
 **Files:**
 - Modify: `packages/qdrant-rag/src/{qdrant-rag-provider,qdrant-rag}.ts`
 - Test: `packages/qdrant-rag/src/__tests__/catalog.test.ts`
@@ -2217,7 +2279,7 @@ CatalogRecordDeleteError without touching the collection."
 - Test: `packages/llm-agent/src/rag/__tests__/adopt.test.ts`
 
 **Interfaces:**
-- Consumes: `RagCollectionRecord` (B9).
+- Consumes: `RagCollectionRecord` (B11).
 - Produces: `IRagRegistry.adopt?(record, rag, editor?): void`, honouring a store name that differs from the logical name. Task B17's factory calls it.
 
 - [ ] **Step 1: write the failing tests**
@@ -2376,7 +2438,7 @@ The security change, and the largest behavioural one. Five of the seven handlers
 - Test: `packages/llm-agent/src/rag/__tests__/tool-identity.test.ts`
 
 **Interfaces:**
-- Consumes: `RagCallerIdentity` (B9).
+- Consumes: `RagCallerIdentity` (B11).
 - Produces: `buildRagCollectionToolEntries({ registry, identity, providerRegistry? })` with `identity` **required**, and `RagToolContext` without `sessionId`/`userId`.
 
 - [ ] **Step 1: write the failing tests — one per rule**
@@ -2596,7 +2658,7 @@ index signature absorbs them — but a reader of one must change."
 - Test: `packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts`
 
 **Interfaces:**
-- Consumes: `IRagRegistry.adopt?` (B13), `describeCollections`/`openCollection` (B9/B11/B12) — the factory is where a consumer strings them together.
+- Consumes: `IRagRegistry.adopt?` (B15), `describeCollections`/`openCollection` — declared in B11, implemented in B13 and B14 — the factory is where a consumer strings them together.
 - Produces: `SessionGraphFactoryOptions.ragRegistryFactory?: (identity: SessionGraphIdentity) => Promise<IRagRegistry>`.
 
 - [ ] **Step 1: write the failing tests, starting with the one that protects everyone**
@@ -2891,6 +2953,10 @@ This section records a review that was **run**, not a checklist to run later.
 - Its changelog loop covered eight packages; sixteen are touched. Corrected, including the new `sap-aicore-auth`.
 - Task B1 is the only task allowed to end with `tsc -b` red, and it says so: removing a field from two contracts breaks the packages that read it, and each is claimed by a later task. Its Step 5 writes the compiler's error list into the report, and Task B10's Step 5 treats `tsc -b` returning 0 as the workstream's completion test — so the scope is measured at the start and closed at the end rather than predicted in between.
 
+- **The MCP task I recovered from history was older than the rule it had to obey.** It carried `credential?: IApiKeyCredential | IBearerCredential` — the shared union §4.6.2 forbids — optional, so a bearer-only target compiled with no credential or with an api key. And it built `Authorization: Bearer …` for **any** credential, though §4 says an api key is the same key whether a server wants it as `Authorization`, `x-api-key` or `api-key`, and that the placement is the accepting implementation's business. Replaced by a discriminated `HttpMcpAuth`: each variant demands the one kind it can use, `'header'` names the header, and `'none'` makes an unauthenticated target a statement rather than an omission. Two tests were added for exactly what was wrong — an api key landing in `x-api-key` and not in `Authorization`, and a bearer credential refused where a header key is declared.
+- **Renumbering left stale dependency annotations, and my first audit of them produced a false positive.** B13 said its record came from B9 and its error from B10 (now B11 and B12); B15, B16 and B17 pointed at B9 and B13; and B12 claimed “Tasks B11 and B12 raise it” when the raisers are B13 and B14, the two packages that own a catalog. All corrected. The audit also reported B10 citing B11, which was my own script slicing a workstream header into the wrong block — worth recording, because an audit that cannot tell a real reference from its own boundary error is one finding away from wasting a round.
+- **Five tasks had no `Produces` block, and that block is how a later task learns names.** B1, B4, B5, B6, B11 and B14 now have one. A2, A3 and B18 do not, and should not: two hand work to the user and one writes documentation.
+- **Two dependencies were imported and never declared.** Task B10 imports the credential contracts and `sap-aicore-auth` into `llm-agent-server`, which B1's list omitted and B2 added only to the embedder. A workspace would have hidden both through hoisting while a published server carried undeclared dependencies.
 - **I reintroduced the defect the previous derivation's self-review had fixed.** The freshly written workstream 2 shipped **22 of 104 steps with no code**, and Task B7 said “as written in the previous derivation” — the “Similar to Task N” antipattern the skill names, and the exact thing the last pass had removed. B7 was recovered in full from git history; B3, B4, B5, B6, B9 and B10 gained their implementation snippets and commit commands. Two steps remain prose, and both are decisions rather than edits: handing the publish to the user, and choosing Qdrant's catalog mechanism from what Step 1 found.
 
 **Type consistency.** `credential` is the property name on every concrete config; `credentialRef` on every serializable one; `apiBaseUrl` is the AI Core endpoint everywhere (`parseServiceKey` returns it, `sap-aicore-embedder` already calls it that); `staticApiKey`/`staticLogin` are declared once, in B1, and used by B3-B6 and B10. `RagCollectionRecord` uses `name` for the logical name and `storeName` for the physical one in B11, B13, B14 and B15 alike.
