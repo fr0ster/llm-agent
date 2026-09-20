@@ -12,7 +12,7 @@ import { AnthropicProvider } from '../anthropic-provider.js';
 // ---------------------------------------------------------------------------
 
 describe('AnthropicProvider — constructor', () => {
-  it('throws when apiKey is missing', () => {
+  it('throws when apiKey is missing', { skip: 'B1 removed LLMProviderConfig.apiKey, so there is no field to be missing. Task B3 gives this provider a required `credential`, which makes the absence a compile error rather than a throw, and rewrites this case against it.' }, () => {
     assert.throws(
       () =>
         new AnthropicProvider({
@@ -408,7 +408,7 @@ describe('AnthropicProvider — one quota per account and endpoint', () => {
     assert.equal(keyOf(implicit), keyOf(explicit));
   });
 
-  it('separates two API keys', () => {
+  it('separates two API keys', { skip: 'B1 removed the apiKey the quota key was fingerprinted from. The 429 gate is separated by credential OBJECT identity now (BaseLLMProvider.credentialScope), which is inert until Task B3 overrides quotaCredential() here — B3 rewrites this case against that.' }, () => {
     assert.notEqual(
       keyOf(new AnthropicProvider({ apiKey: 'sk-a', model })),
       keyOf(new AnthropicProvider({ apiKey: 'sk-b', model })),

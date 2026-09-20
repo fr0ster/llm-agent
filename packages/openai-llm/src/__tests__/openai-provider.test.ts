@@ -14,7 +14,7 @@ import { OpenAIProvider } from '../openai-provider.js';
 // ---------------------------------------------------------------------------
 
 describe('OpenAIProvider — constructor', () => {
-  it('throws when apiKey is missing', () => {
+  it('throws when apiKey is missing', { skip: 'B1 removed LLMProviderConfig.apiKey, so there is no field to be missing. Task B3 gives this provider a required `credential`, which makes the absence a compile error rather than a throw, and rewrites this case against it.' }, () => {
     assert.throws(
       () => new OpenAIProvider({ apiKey: '' }),
       /API key is required/,
@@ -695,7 +695,7 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   // @ts-expect-error — protected hook, read for test
   const keyOf = (p: OpenAIProvider) => p.quotaKey() as string;
 
-  it('separates two API keys on the same endpoint', () => {
+  it('separates two API keys on the same endpoint', { skip: 'B1 removed the apiKey the quota key was fingerprinted from. The 429 gate is separated by credential OBJECT identity now (BaseLLMProvider.credentialScope), which is inert until Task B3 overrides quotaCredential() here — B3 rewrites this case against that.' }, () => {
     const a = new OpenAIProvider({ apiKey: 'sk-a', model: 'gpt-4o' });
     const b = new OpenAIProvider({ apiKey: 'sk-b', model: 'gpt-4o' });
     assert.notEqual(keyOf(a), keyOf(b));

@@ -8,7 +8,7 @@ import { DeepSeekProvider } from '../deepseek-provider.js';
 // ---------------------------------------------------------------------------
 
 describe('DeepSeekProvider — constructor', () => {
-  it('throws when apiKey is missing', () => {
+  it('throws when apiKey is missing', { skip: 'B1 removed LLMProviderConfig.apiKey, so there is no field to be missing. Task B3 gives this provider a required `credential`, which makes the absence a compile error rather than a throw, and rewrites this case against it.' }, () => {
     assert.throws(
       () => new DeepSeekProvider({ apiKey: '', model: 'deepseek-chat' }),
       /API key is required/,
