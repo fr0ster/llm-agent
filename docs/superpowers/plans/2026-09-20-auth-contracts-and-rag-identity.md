@@ -1008,6 +1008,7 @@ is already async."
 **Read this before writing the test — it changes what the test may assert.** `IMcpRequestHeadersStrategy.headers()` returns `Record<string, string>` **synchronously** (`llm-agent/src/interfaces/mcp-request-headers-strategy.ts:7`), and `buildHttpTransportOptions` merges its result into `requestInit.headers` **at connect** (`client.ts:194-209`, and the docstring says so). So an http MCP credential **cannot** be asked per request through the existing seam: it is resolved once per connection. That is consistent rather than a hole — `start()` acquires a connection, the credential is a constructor argument (§4.1), and reconnection is `IMcpConnectionStrategy`'s job, not this class's (§3.3). Widening `headers()` to return a promise would break every consumer that implements the strategy, and is not in this workstream.
 
 **Files:**
+- Create: `packages/llm-agent-mcp/src/servers/client-factory.ts` — the shared `ClientFactory` type. Both implementations take it, and a file is a module scope, so it cannot be declared in one and used in the other.
 - Create: `packages/llm-agent-mcp/src/servers/http-mcp-server.ts`
 - Create: `packages/llm-agent-mcp/src/servers/stdio-mcp-server.ts`
 - Modify: `packages/llm-agent-mcp/src/index.ts` (export both)
@@ -1084,6 +1085,24 @@ describe('HttpMcpServer', () => {
       undefined,
       'the api-key contract says nothing about placement, so assuming Bearer would leave ' +
         'a target that wants x-api-key unauthenticated',
+    );
+  });
+
+  it('honours the prefix, so Authorization: Bearer <api-key> is expressible', async () => {
+    const f = fakeFactory();
+    const credential: IApiKeyCredential = { kind: 'api-key', secret: async () => 'k-1' };
+    await new HttpMcpServer(
+      {
+        url: 'https://mcp.example/mcp',
+        auth: { scheme: 'header', header: 'Authorization', prefix: 'Bearer ', credential },
+      },
+      f.factory,
+    ).start();
+    assert.equal(
+      f.configs[0].headers?.Authorization,
+      'Bearer k-1',
+      'an implementation that ignored `prefix` would send the raw key here and every other ' +
+        'test in this file would still pass — which is why this one exists',
     );
   });
 
@@ -1232,6 +1251,14 @@ Expected: the two modules do not exist.
 - [ ] **Step 3: implement both, in full**
 
 ```ts
+// packages/llm-agent-mcp/src/servers/client-factory.ts
+// Declared once: both implementations take it, and a file is a module scope.
+import type { McpClientFactoryResult, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
+
+export type ClientFactory = (config: McpConnectionConfig) => Promise<McpClientFactoryResult>;
+```
+
+```ts
 // packages/llm-agent-mcp/src/servers/http-mcp-server.ts
 import type {
   IMcpClient,
@@ -1241,8 +1268,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { createDefaultMcpClient } from '../factory.js';
-
-type ClientFactory = (config: McpConnectionConfig) => Promise<McpClientFactoryResult>;
+import type { ClientFactory } from './client-factory.js';
 
 /**
  * Where the material goes is the accepting implementation's business (§4): an api key is
@@ -1331,6 +1357,21 @@ export class HttpMcpServer implements IMcpServer {
 
 ```ts
 // packages/llm-agent-mcp/src/servers/stdio-mcp-server.ts
+// A separate file is a separate module scope: nothing here comes from the http one.
+import type {
+  IMcpClient,
+  IMcpServer,
+  McpClientFactoryResult,
+  McpConnectionConfig,
+} from '@mcp-abap-adt/llm-agent';
+import type {
+  IApiKeyCredential,
+  IBearerCredential,
+  ISecretLoginCredential,
+} from '@mcp-abap-adt/interfaces-auth';
+import { createDefaultMcpClient } from '../factory.js';
+import type { ClientFactory } from './client-factory.js';
+
 /**
  * The stdio twin of `HttpMcpAuth`, and it is discriminated for the same two reasons: each
  * variant demands the ONE kind it can use, and `'none'` makes an unauthenticated child a
@@ -3026,6 +3067,8 @@ This section records a review that was **run**, not a checklist to run later.
 - Its changelog loop covered eight packages; sixteen are touched. Corrected, including the new `sap-aicore-auth`.
 - Task B1 is the only task allowed to end with `tsc -b` red, and it says so: removing a field from two contracts breaks the packages that read it, and each is claimed by a later task. Its Step 5 writes the compiler's error list into the report, and Task B10's Step 5 treats `tsc -b` returning 0 as the workstream's completion test — so the scope is measured at the start and closed at the end rather than predicted in between.
 
+- **The `prefix` I added had no test that could fail on it.** The suite covered the raw `x-api-key` case only, so an implementation that ignored `prefix` would have sent the bare key as `Authorization` and every test would still have passed — which is decision 28's point about a check that has never failed being an assumption, applied to a fix of mine rather than to somebody's code. A test now asserts `Authorization: Bearer k-1` and says in its own message why it exists.
+- **The stdio snippet was labelled “in full” and had no imports at all.** A separate file is a separate module scope, so `IBearerCredential`, `IMcpServer`, `McpConnectionConfig`, `createDefaultMcpClient` and `ClientFactory` were all unresolved — and `ClientFactory` could not come from the http file, where it had been declared. It now has its own import block, and `ClientFactory` moved to `servers/client-factory.ts` so both implementations import it from one place.
 - **Fixing the http half and leaving the stdio half was the same mistake twice.** The stdio config kept `credential?` and `credentialEnvVar?` — both optional, so a child needing a secret compiled without one and the mismatch appeared only as a runtime throw — and typed the credential as bearer alone, though a child may expect an api key or a login just as easily. It now has `StdioMcpAuth`, discriminated the same way, with a login carried as **two** variables because a principal and a secret are one fact that travels together and a child reads them separately. The runtime guard disappeared with it: “a credential with nowhere to go” is now unconstructible, which is what the shape buys, so the test asserts a compile error rather than a rejection.
 - **The `'header'` variant could not express the placement its own comment promised.** It wrote the raw secret, so `header: 'Authorization'` would have sent `Authorization: sk-…` rather than `Authorization: Bearer sk-…` — and §4 names exactly those three placements as the ones an api key must be able to take. It gained an optional `prefix`, which makes all three expressible and leaves the raw key the default that `x-api-key` wants.
 - **A dependency was declared and never staged.** Task B2 ran `npm pkg set` against `llm-agent-server` and its `git add` covered only the new package, the embedder and the lockfile; B10 committed `src` alone. The declaration would have stayed uncommitted while a published server carried an undeclared import — the same class of defect as the previous round's, one layer further out. Both tasks now stage the file, and B2 verifies it is staged.
