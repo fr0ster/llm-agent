@@ -298,3 +298,46 @@ describe('DeepSeekProvider — streamChat() inherits usage', () => {
     assert.deepEqual(capturedBody.stream_options, { include_usage: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Quota isolation (fix round 1, review finding 5): DeepSeekProvider has no
+// quotaCredential() override of its own — it inherits OpenAIProvider's by
+// forwarding `credential` through the `super({ ...config })` call in its
+// constructor. Nothing in this suite pinned that forwarding before; a
+// mutation that pinned every DeepSeek instance to one shared `quotaScope`
+// broke no test. This does: it constructs two providers from two distinct
+// credential objects and asserts they land in two distinct buckets, which
+// fails the moment the forwarding — or the credential itself — stops
+// reaching `this.config.credential` on the constructed instance.
+// ---------------------------------------------------------------------------
+
+describe('DeepSeekProvider — quota isolation is per credential (inherited from OpenAIProvider)', () => {
+  it('two distinct credentials are two distinct quota buckets', () => {
+    // @ts-expect-error — protected hook, read for test
+    const keyOf = (p: DeepSeekProvider) => p.quotaKey() as string;
+    const a = new DeepSeekProvider({
+      credential: staticApiKey('sk-deep-a'),
+      model: 'deepseek-chat',
+    });
+    const b = new DeepSeekProvider({
+      credential: staticApiKey('sk-deep-b'),
+      model: 'deepseek-chat',
+    });
+    assert.notEqual(keyOf(a), keyOf(b));
+  });
+
+  it('the same credential object is one shared quota bucket', () => {
+    // @ts-expect-error — protected hook, read for test
+    const keyOf = (p: DeepSeekProvider) => p.quotaKey() as string;
+    const cred = staticApiKey('sk-deep-shared');
+    const a = new DeepSeekProvider({
+      credential: cred,
+      model: 'deepseek-chat',
+    });
+    const b = new DeepSeekProvider({
+      credential: cred,
+      model: 'deepseek-chat',
+    });
+    assert.equal(keyOf(a), keyOf(b));
+  });
+});
