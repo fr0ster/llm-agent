@@ -1,5 +1,16 @@
 # @mcp-abap-adt/openai-llm
 
+## [Unreleased]
+
+`OpenAIConfig.credential` replaces the plain `apiKey` field: a typed
+`IApiKeyCredential` (from `@mcp-abap-adt/interfaces-auth`), asked for fresh on
+every request instead of baked into the axios client at construction. Quota
+scoping keys on the credential OBJECT's identity, not the secret's value —
+calling `staticApiKey(key)` twice creates two separate credential objects and
+therefore two separate rate-limit buckets, even for the same key. Reuse one
+credential object, or set `quotaScope` explicitly, to make two providers
+share a gate.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

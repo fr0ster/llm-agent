@@ -1,5 +1,19 @@
 # @mcp-abap-adt/ollama-llm
 
+## [Unreleased]
+
+`OllamaConfig.credential` replaces the plain `apiKey` field: an OPTIONAL typed
+`IApiKeyCredential` (from `@mcp-abap-adt/interfaces-auth`), forwarded
+unchanged to `OpenAIProvider` through the existing `super({ ...config })`
+call. Unlike the other three providers, it stays optional — a local Ollama
+server ignores auth, though a gateway placed in front of it may still require
+a key — and when configured, it is asked for fresh on every request. Quota
+scoping keys on the credential OBJECT's identity, not the secret's value —
+calling `staticApiKey(key)` twice creates two separate credential objects and
+therefore two separate rate-limit buckets, even for the same key. Reuse one
+credential object, or set `quotaScope` explicitly, to make two providers
+share a gate.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).
