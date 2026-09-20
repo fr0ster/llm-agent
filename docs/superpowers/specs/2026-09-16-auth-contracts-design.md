@@ -6,7 +6,7 @@
 
 - **This is a framework, not an application.** Every seam below is **offered**; a consumer may decline it and keep what it has. Nothing here decides policy on anyone's behalf.
 - **Two jobs, never one.** Proving who *we* are to an outside service (a credential) and deciding what *the caller* may do (admission) are different contracts in different places.
-- **One decision-maker for admission**, built by the consumer with the caller's identity, asked wherever it must be — never a second set of rules.
+- **Admission is the consumer's, and none of it is ours.** Every provider here is a *client* of an outside service; a client proves who it is and judges nobody, because nothing calls it. So there is no authorization at request time anywhere in this framework and no access-check contract in it — a deliberate limit on what we build, not a gap to fill (§1.4, §5).
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Scope and the owner keys stay typed; only role and policy become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
@@ -24,6 +24,7 @@ Three rules follow, and every section below is bound by them:
 1. **Declinable.** A new seam left unused changes nothing. No credential is mandatory, no access check is mandatory, no lifetime contract is mandatory.
 2. **No default policy.** Where the framework cannot know the answer, it holds no opinion — it does not invent one. An absent access check means the framework does not judge, not that it permits on someone's behalf.
 3. **No privileged topology.** Per-session, shared, single-user, multi-tenant — all are assemblies, and none is the reference.
+4. **We build the client side, and only it.** Every provider here — LLM, embedder, RAG store, foreign MCP — is a *client* of something outside. A client proves who it is; it does not judge who is calling it, because nothing calls it. So there is **no authorization at request time anywhere in this framework**, and nothing in it wraps a server. This is a deliberate limit on what we build rather than a gap to fill later: the assembly that faces users — cloud-llm-hub, `llm-agent-server` — is the server, and admission is its job (§5).
 
 The framework also imports nothing from `@mcp-abap-adt/interfaces*` today and declares its own `ILogger` and `IMcpRequestHeadersStrategy`. Where that changes below, the imports are **types-only** (`import type`, so nothing enters the runtime graph) though the package is still a regular dependency, and the contracts are plain shapes with `kind` literals, so a consumer can satisfy them without importing anything.
 
@@ -34,9 +35,11 @@ The framework also imports nothing from `@mcp-abap-adt/interfaces*` today and de
 | job | question | contract | supplied by |
 |---|---|---|---|
 | **A — prove who we are** | how do we authenticate to OpenAI / AI Core / Qdrant / PostgreSQL / HANA / a foreign MCP? | `IApiKeyCredential`, `IBearerCredential`, `ISecretLoginCredential` | whoever constructs the concrete implementation |
-| **B — decide what the caller may do** | may *this* caller use that tool, read that collection, delete it? | `AccessCheck<R>` | the consumer, built with the caller's identity |
+| **B — decide what the caller may do** | may *this* caller use that tool, read that collection, delete it? | **none of ours** — the consumer's own (§5) | the consumer, and it stays there |
 
-**Data isolation is not a third job.** It is job B's decision, enforced again lower down (§6). One object holds the rules; it may be *asked* in more than one place.
+**Both jobs are named here; only job A is ours.** Job B is in the table because leaving it out would suggest the framework has an opinion about admission, and §1.2 says it must not. Naming it and then declining it is the honest form.
+
+**Data isolation is not a third job either, and it is not job B in disguise.** A store is isolated by what its collections are *named* — scope plus the typed owner keys, which the framework reads to address a store and to end a session (§6.3). That is addressing, not permission, and it works with no check anywhere: it is why llm-agent can close issue #304 without owning job B.
 
 ---
 
@@ -79,6 +82,8 @@ declare function mcpServerFromFactory(factory: McpClientFactory, config: McpConn
 ```
 
 One implementation per way of starting: **stdio** spawns a child; **http** owns a connection; **embedded** runs in-process.
+
+**The name says what it manages, not what we are.** An `IMcpServer` is our handle on a server’s *lifetime* — one we spawn, or one already running that we only connect to. Every member is a client’s: start a connection, hand back an `IMcpClient`, release it. Nothing here serves a request, so §1.4 holds even for a contract with `Server` in its name.
 
 **http is the main protocol; stdio is the local case.** Only stdio actually *spawns* anything — a developer machine, or a server this process genuinely must launch itself. For http, `start()` means acquiring and holding a connection to a server that is already running elsewhere, and `stop()` means releasing it; nothing is spawned, and `env` is irrelevant. Workstream 1's concrete work (§3.5, the stdio `env`) therefore served the narrower case, and the ordering for workstream 2 is the reverse of the order these were written in: the typed **http** implementation lands first, because that is what deployments use, with the typed stdio one beside it for local work. The credential a target needs is demanded by **that implementation's own constructor**, typed per target — which is what a bare `McpClientFactory` cannot express **in its type**: a closure can capture a credential, but its single parameter is a generic `McpConnectionConfig`, so nothing in the signature says which credential this target needs.
 
@@ -143,6 +148,10 @@ No `env`, no `cwd`. The SDK then uses `getDefaultEnvironment()` — a sanitized 
 
 ## 4. Credentials name the protocol the accepting side speaks
 
+**What a contract is, and where it stops.** A contract states how a consumer hands its choice over as a parameter, and how the accepting side uses what it got. Nothing else belongs in one. Everything the implementation can hide, it must hide — how the material was obtained, when it expires, which header carries it, whether the far side is reached over HTTP or a database wire. A contract that describes any of that has stopped being a vocabulary and started being one implementation wearing an interface, and the next implementation will not fit it.
+
+This is the test applied throughout §4: each member below is either something the consumer must supply or something the acceptor must read. A member that is neither is a leak, however true it happens to be of the code we have today.
+
 `IApiKeyCredential { kind: 'api-key'; secret() }`, `IBearerCredential { kind: 'bearer'; token() }`, `ISecretLoginCredential { kind: 'secret-login'; principal; secret() }`. A contract never says whether the secret is a static password, a rotated key or a fresh token. The `kind` literal is what makes the check real — though not for the reason first written here: api-key and bearer do differ in their members (`secret()` against `token()`). The overlap is between secret-login and api-key, since a secret login carries everything a key asks for and its extra `principal` does not get in the way; without the literal it satisfies the key contract outright. The literal is also what lets an acceptor narrow a union to one protocol.
 
 | seam | today | contract |
@@ -186,7 +195,7 @@ What differs is what the far side sees, and that is the assembler's choice, made
 | what travels outward | the **caller's** credential | **our** credential |
 | what the far side sees | every consumer of our service | only our service |
 | who judges the caller | the far side — its quotas, its audit, its access control | only us, and if we do not, nobody does |
-| how consumers are kept apart | not our job | job B: identity + `AccessCheck` + collection scope (§2, §5, §6) |
+| how consumers are kept apart | not our job | the consumer's job B, decided from the identity and collection scope we keep for it (§5, §6.3) |
 
 **And the choice is not always there to make.** §6.2’s table says which far sides can see a caller at all: PostgreSQL and HANA can, Qdrant probably can, and for OpenAI, Anthropic and AI Core it is *impossible* — our users do not exist there, so those are opaque by nature and not by decision. Transparent is a choice only where the far side has somewhere to put a caller.
 
@@ -212,7 +221,7 @@ This section, the rule above and §4.5 were `mcp-abap-adt-interfaces`' own crede
 
 Decision 26 of `@mcp-abap-adt/interfaces` places a contract in the package that accepts it: several acceptors on the SAP side share `interfaces-adt`; contracts accepted **across families** go to `interfaces-auth`, `-network` or `-utils`.
 
-- `AccessCheck<R>` is cross-family by construction — decision 26 names llm-agent and the hub as its acceptors — so `interfaces-auth` is its home.
+- `AccessCheck<R>` **does not go to `interfaces-auth`.** Decision 26 named llm-agent and the hub as its two acceptors, and that was true of an earlier draft of this design. §1.4 removes llm-agent as an acceptor, which leaves one — the hub — and a single acceptor keeps its own contract (§5).
 - The three credential contracts go to `interfaces-auth`, and that no longer waits on a second acceptor. `@mcp-abap-adt/connection` has not rebuilt `BasicAuthProvider`/`TokenAuthProvider` on them — it implements `IAuthProvider` and `IRenewableCredential` directly (`src/auth/providers.ts:21`, `:59`) and still depends on `@mcp-abap-adt/interfaces` ^39.0.0, the pre-split facade. That is not a reason to move the contracts: a contract is a shared vocabulary, and whoever needs an implementation writes one — this family, `connection` later if it chooses, or a consumer with a credential source neither of us anticipated. That is what strategies and injection are for, and it is why the contract must not live where only one implementation happens to live today.
 
 **When a contract may be written.** Decision 11 asks who calls a thing, and refuses members added for symmetry — it does not require the acceptor to exist first, and an earlier draft of this design said it did. That reading is unsatisfiable here: the acceptors are separately published packages, and none of them can declare a dependency on a contract that has not been published. So the rule is: a contract may be written once a concrete accepting change has been **specified and checked against the acceptor's actual API**; `interfaces-auth` is published first, and the acceptor then adopts that published version. Demand is still evidenced — by the specified acceptor, not by an impossible ordering.
@@ -261,23 +270,28 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
 
 ---
 
-## 5. Admission: one decision-maker, no framework opinion
+## 5. Admission is the consumer's, and none of it is ours
 
-```ts
-type AccessCheck<R> = (request: R) => Promise<boolean>;            // interfaces-auth
-type CollectionRequest = { action: 'read' | 'write' | 'create' | 'delete'; attributes: unknown };
-```
+Job B needs one decision-maker, built with the caller's identity, asked wherever the answer matters. That is not in dispute. What §1.4 settles is **where it lives**: the component that receives a caller's request is the only one that can judge it, and nothing in this framework receives one. Every provider here is a client of something outside.
 
-There is no separate collection-access contract: it is `AccessCheck<CollectionRequest>`. The consumer builds it once **per caller** and hands that object wherever it must be asked — the MCP server instance it constructs, and the RAG provider it obtains for that caller (`createFor`, §6.2). The provider has no rules of its own; it asks.
+So llm-agent ships **no admission contract and no admission step**. That is not a gap left for later — a framework that has not been given a check does not judge and does not pretend to permit (§1.2), which is also exactly what it does today. Nothing changes because nothing needs to.
 
-**Absent means absent.** A framework that has not been given a check does not judge and does not pretend to permit: it simply has no admission step, exactly as today. Enforcement is the consumer's, and so is its absence.
+**And the contract does not go into `interfaces-auth` either.** `AccessCheck<R> = (request: R) => Promise<boolean>` is one line, and a line belongs to whoever accepts it. The acceptors are assemblies that face users — cloud-llm-hub certainly, `llm-agent-server` perhaps — which is *one consumer today*, not several packages across the family. The placement rule puts it in the consumer. If a second repository later accepts the same shape, that is the moment it moves up, and not before.
 
-cloud-llm-hub shows what an assembly does with it, and what happens without it:
+**What llm-agent does contribute is the inputs to someone else's decision**, and it is careful to contribute nothing more:
+
+- the typed owner keys on collection creation, `scope`/`sessionId`/`userId`, which the framework itself reads to address a store and to end a session (§6.3);
+- opaque `attributes`, persisted on create and handed back unread, so a consumer's rules survive a restart (§6.3);
+- identity in `CallOptions` — `sessionId`, `userId`, `ragFilter.userId` — which is identity and never a secret (§4.1).
+
+Each is a fact the consumer asked us to keep. None is a judgement.
+
+cloud-llm-hub shows what a **server** does with those facts — and what happens when it has to guess them instead:
 
 - ABAP tools: `assertToolAllowed(toolName, toolExposition, allowed)` in `srv/lib/tool-authorization.ts`, deny by default; roles come from request options *or* an async-local store, because — per `srv/agent-manager.ts:348` — tool selection runs twice per request and the second pass rebuilds its own options.
 - RAG collection tools: a module-level `dispatchRagTool(registry, name, body)` deriving identity per call from `cds.context?.user?.id ?? 'anonymous'`.
 
-An instance built with identity needs neither the async-local fallback nor the `'anonymous'` default.
+Both workarounds exist because identity had to be recovered rather than passed. Passing it is what §6.3's typed keys and `CallOptions` are for; deciding with it stays the hub's.
 
 **What llm-agent contributes:** `buildRagCollectionToolEntries({ registry })` returns entries whose handler takes `RagToolContext { sessionId?, userId? }` and has no consumer today (§9.7).
 
@@ -300,37 +314,15 @@ An instance built with identity needs neither the async-local fallback nor the `
 | `user` | `owner` | `public`, `role` |
 | `global` | `public` or `role` | `owner` |
 
-The axis stores a **policy value**, nothing more: whether *this* caller may delete *that* global collection is the check's decision, read from the value, never encoded in it. `RagCollectionScope` needs no new member: the earlier "fourth scope for roles" conflated the two axes. **Skills are an ordinary collection** under the same axes, not an exempt "configuration" kind — this supersedes cloud-llm-hub's collection-model spec, retired in hub commit `ae1e0e4b`.
+The axis stores a **policy value**, nothing more: whether *this* caller may delete *that* global collection is the consumer's decision, read from the value, never encoded in it and never made here. `RagCollectionScope` needs no new member: the earlier "fourth scope for roles" conflated the two axes. **Skills are an ordinary collection** under the same axes, not an exempt "configuration" kind — this supersedes cloud-llm-hub's collection-model spec, retired in hub commit `ae1e0e4b`.
 
-### 6.2 Service or delegated identity
+### 6.2 Service or delegated identity is which credential was passed, and nothing more
 
-A credential on a RAG provider proves who **we** are to the store; it says nothing about the caller. Whether the store can judge the caller is a separate, typed, optional choice:
+A credential on a RAG provider proves who **we** are to the store; it says nothing about the caller. Whether the store can see the caller is decided entirely by **which credential the consumer handed to the constructor** — the service’s, or that caller’s own. That is the whole mechanism, and §4.2 already named the two cases, so this section adds no second vocabulary for them.
 
-```ts
-interface IServiceRagProviderSource {
-  readonly identityMode: 'service';
-  /** No caller, no check: one shared provider, and the framework judges nothing (§5). */
-  create(): IRagProvider;
-  /** A caller is known: a facade over that shared provider, with the check bound in. */
-  createFor(identity: SessionGraphIdentity, check: AccessCheck<CollectionRequest>): IRagProvider;
-}
+**An earlier draft of this section is deleted, and why matters more than what it said.** It declared an `IRagProviderSource` union with `identityMode: 'service' | 'delegated'` and a `createFor(identity, check)` that bound an `AccessCheck` into the provider, arguing that a construction-time binding cannot be forgotten by a call site. That argument was right about forgetting and wrong about ownership: it turned a client into a wrapper around a server. A provider receives no caller’s request, so it has nothing to judge (§1.4), and the check belongs to the assembly that does receive one (§5). Once the check is gone, `createFor` carries nothing a constructor argument does not, and the union has nothing left to discriminate.
 
-interface IDelegatedRagProviderSource {
-  readonly identityMode: 'delegated';
-  /** The only way in: there is no service identity to fall back to. */
-  createFor(identity: SessionGraphIdentity, check: AccessCheck<CollectionRequest>): IRagProvider;
-}
-
-type IRagProviderSource = IServiceRagProviderSource | IDelegatedRagProviderSource;
-```
-
-**Why the check is bound at construction, not passed per call.** `IRag.query` and `IRagEditor.upsert` already take a `CallOptions`, so the check could ride along — but an optional per-call argument is forgettable, and a forgotten one means "no judgement" under §5. That is the hub's `?? 'anonymous'` failure in a new place. Bound at construction, it cannot be omitted by a call site.
-
-Under `identityMode: 'service'` that binding is a thin facade over one shared, service-credentialed provider — no extra connection, no pool per caller. Under `'delegated'` the provider behind it carries the caller's own credential. A consumer that supplies no check calls `create()` and gets exactly today's behaviour.
-
-The mode decides **who must filter**: under `service` the consumer's check is the *only* line of defence; under `delegated` the store enforces too and the check is the second. A consumer that will not accept the first case types the seam as `IDelegatedRagProviderSource`, and a shared source does not compile there — the refusal is the consumer's, expressed in its own types, and the framework neither performs it nor prevents it.
-
-Why two members rather than one interface with an optional `create()`: a delegated-only store — HANA reached with the caller's JWT — has **no** service identity, so a `create()` on it would have nothing honest to return. Throwing at runtime where a discriminant gives a compile error is the trade this design refuses.
+What survives, unchanged in substance: a provider built with the service credential shows the store one identity for everyone; a provider built with the caller’s credential shows it that caller. The first may be shared, the second may not — which is not a rule about RAG but §4.1’s transparent/opaque distinction reaching this far down.
 
 | store | sees today | to see the caller |
 |---|---|---|
@@ -339,7 +331,7 @@ Why two members rather than one interface with an optional `create()`: a delegat
 | Qdrant | the holder of one `api-key` | a claim-restricted token; our client sends only `api-key` — **unverified** |
 | OpenAI, Anthropic, AI Core | the service, always | impossible — our users do not exist there |
 
-Because `SessionGraphIdentity` types `createFor`, this interface lives in `@mcp-abap-adt/llm-agent-libs` beside the session factory unless that identity type moves into `@mcp-abap-adt/llm-agent` first (§9.3).
+**Two of those rows say what is possible, not what we will do.** Reaching PostgreSQL per identity, or HANA with the caller’s JWT, is delegation a consumer may build by passing a credential we accept. The framework performs none of it, and §9.1 leaves the unverified halves unverified rather than planning on them.
 
 ### 6.3 Scope and owner keys stay typed; only role and policy become opaque
 
@@ -365,16 +357,16 @@ createCollection(name, {
 ```
 
 - Both owner keys stay typed. §6.1's "owner is implied by scope" needs a typed owner to read it from; only role and policy are opaque.
-- **The provider persists `attributes`** and hands them back to the check. Today it persists nothing: pg and qdrant use the creation options only for `checkScope` and the id strategy, so a provider decides nothing after a restart or in a second instance.
+- **The provider persists `attributes`** and hands them back **unread**, to whoever asks. It does not consult them, because it has nothing to decide (§1.4). Today it persists nothing: pg and qdrant use the creation options only for `checkScope` and the id strategy, so a provider decides nothing after a restart or in a second instance.
 - **This needs a catalog, not row metadata.** In pg a collection *is* a table, created per collection with `metadata JSONB` on each **row** (`schema.ts`) — there is nowhere to put a collection-level fact. Each provider therefore gains a small catalog of its own — `CREATE TABLE IF NOT EXISTS` in pg and HANA, and in Qdrant a catalog collection holding one point per collection (**unverified**: Qdrant exposes no collection-level metadata we have checked) — written on create and read on every decision. Additive: the catalog appears on first use.
-- **A collection created before the catalog existed hands back `undefined`.** The provider does not invent attributes for it, and by §5 the check decides what an absent value means — the framework holds no opinion.
+- **A collection created before the catalog existed hands back `undefined`.** The provider does not invent attributes for it, and what an absent value means is the consumer's check to decide, outside this framework — which holds no opinion (§1.2, §5).
 - `supportedScopes` keeps its meaning — what a provider can make *outlive* — which is lifetime, not permission.
 
 Who writes `attributes`: the component that knows the caller — the tool handler from its `RagToolContext`, or the consumer calling `createCollection` directly. The registry passes them through and never invents them (§9.5).
 
 ### 6.4 Where the registry stands
 
-`SimpleRagRegistry` is shared across per-session builds and receives providers through `setProviderRegistry` (`llm-agent-libs/src/builder.ts:855`); its own comment explains why some collections opt into idempotent registration. Anything obtained through `createFor` is bound to one caller — under `delegated` by its credential, under `service` by the check in its facade — and cannot be registered in a registry that outlives that caller. This is not a delegation problem: it is true of every checked path. The registry therefore **stays shared and holds the `IRagProviderSource`, resolving per call** (§9.4). Making it per-caller would give every session its own registry to satisfy a rule §4.1 says does not exist, and it would undo the sharing `builder.ts:855` was written for; holding a source costs nothing, because a source is not bound to a caller — only what it produces is.
+`SimpleRagRegistry` is shared across per-session builds and receives providers through `setProviderRegistry` (`llm-agent-libs/src/builder.ts:855`); its own comment explains why some collections opt into idempotent registration. **The question that stood here has dissolved rather than been answered.** It asked how a registry outliving a caller may hold a provider bound to that caller — and what bound one was the `AccessCheck` inside `createFor`'s facade, which §6.2 deletes. What can still be caller-bound is a provider constructed with a caller's own credential, and §4.1 already places that: the pipeline that owns the caller constructs it, and it is not registered anywhere outliving that pipeline. The shared registry goes on holding shared, service-credentialed providers exactly as today, so this section prescribes no change at all.
 
 ---
 
@@ -415,12 +407,12 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | package | change | breaking |
 |---|---|---|
 | `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
-| `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `IRagProviderSource`; registry wiring (§9.4) | additive at runtime; `SessionGraphFactoryOptions.logger` widened, so a consumer that *reads* it must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory | additive at runtime; `SessionGraphFactoryOptions.logger` widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
-| `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes`; ask the check when given one | additive — measured, not assumed (§4.6.1): the connection resolvers are absent from both barrels and unreachable through a closed `exports` map, and their only caller is already `async`. The credential outranks both the connection string and the discrete fields |
+| `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes` and hand them back unread. **No check is asked here** (§5) | additive — measured, not assumed (§4.6.1): the connection resolvers are absent from both barrels and unreachable through a closed `exports` map, and their only caller is already `async`. The credential outranks both the connection string and the discrete fields |
 | LLM and embedder providers | credential contracts beside `apiKey?: string`, keeping the AI Core env fallback (§9.2) | additive |
-| `@mcp-abap-adt/interfaces-auth` | gains `AccessCheck` and, subject to §4, the three credential contracts | minor |
+| `@mcp-abap-adt/interfaces-auth` | gains the three credential contracts — and **not** `AccessCheck`, which has no acceptor here (§5) | minor |
 | cloud-llm-hub, `llm-agent-server` | **may** adopt the seams; neither is required to | their own work |
 
 ### What each workstream needs from another repository
@@ -431,10 +423,10 @@ Read this rather than deriving it. Every row was checked against the packages, n
 |---|---|---|---|
 | 1. MCP lifetime and identity | nothing | — | merged (#305), unreleased |
 | 2. Credential contracts | `IApiKeyCredential`, `IBearerCredential`, `ISecretLoginCredential` | `interfaces-auth` 1.1.0 | not written |
-| 3. RAG identity and attributes | `AccessCheck<R>` | `interfaces-auth` 1.1.0 | not written |
+| 3. RAG identity and attributes | nothing — `AccessCheck` left this design (§5) | — | not written |
 | 4. Text-logger acceptance | `ILogger`, consumed unchanged | `interfaces-utils` 1.0.0, published 2026-09-16 | merged (#306), unreleased |
 
-**`interfaces-auth` is touched once, not once per workstream.** Rows 2 and 3 want the same package and the same version, so the four contracts land in one change and one minor release. Releasing that package twice, each time for whatever this repository happened to need next, is the failure this table exists to prevent: it makes the contract package a servant of one consumer’s schedule rather than a vocabulary.
+**`interfaces-auth` is touched once, and now by one row rather than two.** Row 3 stopped needing it when admission left the design, so what lands is the **three credential contracts** in one change and one minor release — which is, by coincidence worth noting, exactly what the paused PR #90 already contains. Releasing that package twice, each time for whatever this repository happened to need next, is the failure this table exists to prevent: it makes the contract package a servant of one consumer’s schedule rather than a vocabulary.
 
 **Order, and it is not negotiable.** The contract is published, then adopted. An acceptor cannot merge a dependency on an unpublished version, so a plan that interleaves them describes a state that cannot exist. `interfaces-utils` in row 4 shows the easy case — the contract was already on the shelf, so that workstream needed no release at all.
 
@@ -446,7 +438,7 @@ Read this rather than deriving it. Every row was checked against the packages, n
 
 Numbering is load-bearing — other sections cite these by number, so an answered question keeps its place rather than being removed. **Nothing in this list blocks a plan any more.** Items 3, 4 and 5 are answered below because a plan needs their signatures; items 1, 6, 7 and 8 are marked as outside this release’s path, with the reason, which is a different thing from being unanswered.
 
-1. **HANA and Qdrant delegation.** Which `@sap/hana-client` properties carry a JWT; whether our Qdrant version supports claim-restricted tokens (§6.2). **Not blocking.** Delegated identity is §6.2’s far end, not workstream 3’s: that workstream ships `IRagProviderSource`, persisted attributes and the two axes, none of which needs a JWT to reach HANA. It stays a later capability, and the plan declares the delegated path unimplemented rather than describing it as measured.
+1. **HANA and Qdrant delegation.** Which `@sap/hana-client` properties carry a JWT; whether our Qdrant version supports claim-restricted tokens (§6.2). **Not blocking.** Delegated identity is §6.2’s far end, not workstream 3’s: that workstream ships persisted attributes, the two axes and the typed owner keys, none of which needs a JWT to reach HANA. It stays a later capability, and the plan declares the delegated path unimplemented rather than describing it as measured.
 2. ~~**SAP AI Core.** Whether the SDK accepts a token source at all.~~ **Answered 2026-09-16 by reading the SDK, not its docs** (SAP/ai-sdk-js at `2315f43`, `@sap-ai-sdk/orchestration` 2.15, `@sap-cloud-sdk/connectivity` 4.x). It accepts one, by three separate routes:
 
    - **Orchestration** — every `OrchestrationClient` / `OrchestrationEmbeddingClient` overload takes a third argument `destination?: HttpDestinationOrFetchOptions`, and that type is an XOR: either a lookup by name **or a destination object you construct yourself**. A constructed one carries `headers?: Record<string, any>` ("additional headers to be used for calls against the destination"), so `{ url, authentication: 'NoAuthentication', headers: { Authorization: 'Bearer …' } }` is a complete, supported answer. `authTokens?: DestinationAuthToken[]` is the other route — but note the TypeScript type is `{ type; value; expiresIn?; error: string | null }`, with **no `http_header` field** and a required `error`. Blog posts showing `authTokens: [{ http_header: { key, value } }]` describe the destination service's REST payload, not the SDK's type; writing that would not compile.
@@ -454,8 +446,8 @@ Numbering is load-bearing — other sections cite these by number, so an answere
    - **`foundation-models` is a separate, easier case.** `sap-aicore-embedder` does not use the SDK's auth at all there: it has its own `TokenProvider` (`auth.ts`) doing `grant_type=client_credentials` over `fetch`, and sets `Authorization: Bearer ${token}` by hand (`foundation-embedder.ts:98-101`). `IBearerCredential` replaces that provider directly.
 
    So `IBearerCredential` is viable for both packages, and the `AICORE_SERVICE_KEY` fallback stays as the no-credential default (§4). **One gap to plan for:** `sap-aicore-embedder`'s orchestration path constructs `new OrchestrationEmbeddingClient(config, deploymentConfig)` with only two arguments (`orchestration-embedder.ts:50`) — the destination seam exists in the SDK but is not wired on our side, so the embedder needs that thread-through, which the LLM provider already has.
-3. **`SessionGraphIdentity`'s home** — `llm-agent-libs` today; moving it into `@mcp-abap-adt/llm-agent` lets `IRagProviderSource` sit with the other contracts. **Answered: it is declared in `@mcp-abap-adt/llm-agent`, and `llm-agent-libs` re-exports it.** `IRagProviderSource` belongs with the other contracts and refers to the identity, so the identity must be reachable from there. It lives today at `llm-agent-libs/src/session/session-graph-factory.ts:21` and is exported publicly at `llm-agent-libs/src/index.ts:209`; a re-export keeps every existing import compiling, and a re-exported type is the same type, so this is additive.
-4. **The registry and `createFor`** — a provider obtained for one caller cannot live in a registry that outlives it. Per-caller registry, or a shared registry holding the `IRagProviderSource` and resolving per call (§6.4). **Answered: the registry stays shared and holds the source, resolving per call** (§6.4). A registry per caller would install the per-user topology §4.1 refuses and discard the sharing `builder.ts:855` exists for.
+3. **`SessionGraphIdentity`'s home** — `llm-agent-libs` today; moving it into `@mcp-abap-adt/llm-agent` lets `IRagProviderSource` sit with the other contracts. **Moot: the only thing that wanted it moved was `IRagProviderSource`, which §6.2 deletes.** `SessionGraphIdentity` stays where it is — declared at `llm-agent-libs/src/session/session-graph-factory.ts:21`, exported at `llm-agent-libs/src/index.ts:209`. Moving a public type with no acceptor asking is churn, and §11 excludes it.
+4. **The registry and `createFor`** — a provider obtained for one caller cannot live in a registry that outlives it. Per-caller registry, or a shared registry holding the `IRagProviderSource` and resolving per call (§6.4). **Dissolved rather than answered** (§6.4): what made a provider caller-bound was the check, and the check has left the design. The registry needs no change.
 5. **Who writes `attributes` at creation** — tool handler, consumer, or both; and the final signatures of `IRagRegistry.createCollection` / `IRagProvider.createCollection` (§6.3). **Answered in §6.3: whoever knows the caller** — the tool handler from its `RagToolContext`, or a consumer calling `createCollection` directly — with the registry passing them through and never inventing them. What remains is the two signatures, which is plan work rather than a design question.
 6. **An optional marker on authenticated clients.** A seam *may* declare that it accepts only clients a factory produced, making "forgot the caller's credentials" a compile error. It must stay opt-in: mandatory, it would dictate policy. Precedent for the risk: cloud-llm-hub PR #236 (`fix(security): stop caching MCP tool results across callers`, open) — a `ToolCache` shared by every caller returned one user's ABAP result to another within 30 s, below the role check and below their own SAP connection. **Not blocking, and deliberately not in this release:** it must stay opt-in, and an opt-in marker nobody has asked for is a contract without an acceptor (§11).
 7. **`buildRagCollectionToolEntries`** — mounted by a consumer, or deleted. **Not blocking.** It has no consumer today (§5), so leaving it untouched changes nothing for anyone; deciding its fate needs a consumer to argue from, and this release supplies none.
@@ -470,11 +462,11 @@ Four independent changes under one umbrella. They are additive at runtime and a 
 
 **One plan, and one PR per repository.** A workstream is a decomposition of the change, not of the paperwork. Four plans releasing the contract package four times would make it the servant of whatever this repository needed next, which is the failure §8 exists to prevent; and a plan per workstream cannot describe a path start to finish, because each would stop where the next begins.
 
-Workstreams 1 and 4 are already merged, each as its own PR, before this rule was written — that is history and is not undone. What remains is workstreams 2 and 3, and they land as **one plan** across **two PRs**: one in `mcp-abap-adt-interfaces` carrying all four contracts, then — after that package is published, per §8’s order — one in this repository adopting them. **What version carries them is decided once, at the release, by what has accumulated — never per workstream.** Merging a workstream publishes nothing: its entries sit under `[Unreleased]` until the set is cut. Workstream 4 widens six readable option properties, which breaks a consumer that *reads* one (§7), so the release that carries this set is a major.
+Workstreams 1 and 4 are already merged, each as its own PR, before this rule was written — that is history and is not undone. What remains is workstreams 2 and 3, and they land as **one plan** across **two PRs**: one in `mcp-abap-adt-interfaces` carrying the three credential contracts, then — after that package is published, per §8’s order — one in this repository adopting them. **What version carries them is decided once, at the release, by what has accumulated — never per workstream.** Merging a workstream publishes nothing: its entries sit under `[Unreleased]` until the set is cut. Workstream 4 widens six readable option properties, which breaks a consumer that *reads* one (§7), so the release that carries this set is a major.
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
-3. **RAG identity and attributes** — `IRagProviderSource`, persisted opaque attributes, the two axes, registry wiring.
+3. **RAG identity and attributes** — persisted opaque `attributes`, the two axes, the typed owner keys, and optional credentials on the store constructors. No source union, no registry rewiring, and no check (§5, §6.2, §6.4).
 4. **Text-logger acceptance** — `ITextLogger`, the boundary adapter and its levels (§7). Convergence to one name is deferred to the next major (§9.9).
 
 ---
@@ -483,4 +475,5 @@ Workstreams 1 and 4 are already merged, each as its own PR, before this rule was
 
 - Writing a contract nobody is specified to accept. Decision 11 asks who calls a thing; it does not ask the acceptor to exist first, and it cannot — an acceptor in another repository cannot depend on an unpublished contract. The criterion is §4.4’s: a contract may be written once a concrete accepting change has been specified and checked against the acceptor’s actual API, and it is published before that change adopts it.
 - Any consumer's implementation: cloud-llm-hub's per-session graph and XSUAA-backed check, and `llm-agent-server`'s configuration, are theirs.
+- **Anything that judges an incoming caller.** No admission step, no access-check contract, no per-request authorization, and nothing that wraps a server (§1.4). A consumer that needs those builds them where the request actually arrives, and §5 says what we hand it to decide with.
 - llm-agent issue #304 (network-mode isolation), which this design is the prerequisite for.
