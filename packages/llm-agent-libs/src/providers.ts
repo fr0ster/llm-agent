@@ -14,7 +14,7 @@ import type {
   IThrottleStrategy,
   LLMProviderConfig,
 } from '@mcp-abap-adt/llm-agent';
-import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import { MissingProviderError, staticApiKey } from '@mcp-abap-adt/llm-agent';
 import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
@@ -23,6 +23,22 @@ import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
 // ---------------------------------------------------------------------------
 // LLM provider resolution
 // ---------------------------------------------------------------------------
+
+/**
+ * TRANSITIONAL — deleted by Task B8, together with `makeLlm` itself.
+ *
+ * The four concrete providers now take an `IApiKeyCredential` resolved per
+ * request instead of a key captured at construction. `MakeLlmConfig` still
+ * carries `apiKey`, so this converts at the last possible moment rather than
+ * leaving call sites passing a field that no longer exists. It gives a secret
+ * no new home: the key is already in this config, and B8 deletes this
+ * function, this shim and that field in one removal.
+ */
+type ShimCredential = ReturnType<typeof staticApiKey>;
+
+function shimCredential(apiKey: string | undefined) {
+  return apiKey ? staticApiKey(apiKey) : undefined;
+}
 
 export interface MakeLlmConfig {
   provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
@@ -69,7 +85,7 @@ async function loadOpenAI() {
   try {
     const mod = await import(pkg);
     return mod.OpenAIProvider as new (
-      opts: LLMProviderConfig,
+      opts: LLMProviderConfig & { credential?: ShimCredential },
     ) => {
       model: string;
       getModels?: () => Promise<string[]>;
@@ -87,7 +103,7 @@ async function loadDeepSeek() {
   try {
     const mod = await import(pkg);
     return mod.DeepSeekProvider as new (
-      opts: LLMProviderConfig,
+      opts: LLMProviderConfig & { credential?: ShimCredential },
     ) => {
       model: string;
       getModels?: () => Promise<string[]>;
@@ -105,7 +121,7 @@ async function loadOllama() {
   try {
     const mod = await import(pkg);
     return mod.OllamaProvider as new (
-      opts: LLMProviderConfig,
+      opts: LLMProviderConfig & { credential?: ShimCredential },
     ) => {
       model: string;
       getModels?: () => Promise<string[]>;
@@ -123,7 +139,7 @@ async function loadAnthropic() {
   try {
     const mod = await import(pkg);
     return mod.AnthropicProvider as new (
-      opts: LLMProviderConfig,
+      opts: LLMProviderConfig & { credential?: ShimCredential },
     ) => {
       model: string;
       getModels?: () => Promise<string[]>;
@@ -183,7 +199,7 @@ export async function makeLlm(
     case 'deepseek': {
       const DeepSeekProvider = await loadDeepSeek();
       const provider = new DeepSeekProvider({
-        apiKey: cfg.apiKey,
+        credential: shimCredential(cfg.apiKey),
         baseURL: cfg.baseURL,
         model: cfg.model,
         temperature,
@@ -201,7 +217,7 @@ export async function makeLlm(
     case 'ollama': {
       const OllamaProvider = await loadOllama();
       const provider = new OllamaProvider({
-        apiKey: cfg.apiKey,
+        credential: shimCredential(cfg.apiKey),
         baseURL: cfg.baseURL,
         model: cfg.model,
         temperature,
@@ -219,7 +235,7 @@ export async function makeLlm(
     case 'openai': {
       const OpenAIProvider = await loadOpenAI();
       const provider = new OpenAIProvider({
-        apiKey: cfg.apiKey,
+        credential: shimCredential(cfg.apiKey),
         baseURL: cfg.baseURL,
         model: cfg.model,
         temperature,
@@ -237,7 +253,7 @@ export async function makeLlm(
     case 'anthropic': {
       const AnthropicProvider = await loadAnthropic();
       const provider = new AnthropicProvider({
-        apiKey: cfg.apiKey,
+        credential: shimCredential(cfg.apiKey),
         baseURL: cfg.baseURL,
         model: cfg.model,
         temperature,
