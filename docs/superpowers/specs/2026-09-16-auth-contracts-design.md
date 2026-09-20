@@ -143,7 +143,7 @@ No `env`, no `cwd`. The SDK then uses `getDefaultEnvironment()` — a sanitized 
 
 ## 4. Credentials name the protocol the accepting side speaks
 
-`IApiKeyCredential { kind: 'api-key'; secret() }`, `IBearerCredential { kind: 'bearer'; token() }`, `ISecretLoginCredential { kind: 'secret-login'; principal; secret() }`. A contract never says whether the secret is a static password, a rotated key or a fresh token. The `kind` literal is what makes the check real: without it, api-key and bearer are structurally identical.
+`IApiKeyCredential { kind: 'api-key'; secret() }`, `IBearerCredential { kind: 'bearer'; token() }`, `ISecretLoginCredential { kind: 'secret-login'; principal; secret() }`. A contract never says whether the secret is a static password, a rotated key or a fresh token. The `kind` literal is what makes the check real — though not for the reason first written here: api-key and bearer do differ in their members (`secret()` against `token()`). The overlap is between secret-login and api-key, since a secret login carries everything a key asks for and its extra `principal` does not get in the way; without the literal it satisfies the key contract outright. The literal is also what lets an acceptor narrow a union to one protocol.
 
 | seam | today | contract |
 |---|---|---|
@@ -156,12 +156,89 @@ No `env`, no `cwd`. The SDK then uses `getDefaultEnvironment()` — a sanitized 
 
 Every one of these is **optional and additive**: the credential sits beside the existing field, and a provider constructed the old way keeps working unchanged.
 
-**Where they live.** Decision 26 of `@mcp-abap-adt/interfaces` places a contract in the package that accepts it: several acceptors on the SAP side share `interfaces-adt`; contracts accepted **across families** go to `interfaces-auth`, `-network` or `-utils`.
+### 4.1 The unit is the pipeline, so the credential goes in the constructor
+
+This is a framework for assembling **pipelines**, not servers (§1). One pipeline holds its own instances — as many as it needs — and whoever assembles it decides what goes in. A new external user means a new pipeline, which means new instances, which means the credential for that user is simply what its providers were constructed with.
+
+So the credential is a **constructor** argument, and three consequences follow:
+
+- **The pipeline-facing contracts do not change.** `ILlm`, `IEmbedder` and `IRagProvider` say nothing about authentication today and must keep saying nothing. A consumer works with a provider without knowing how it authenticates.
+- **`CallOptions` never carries a credential.** It carries *identity* — `sessionId`, `userId`, `ragFilter.userId`, which answer "who is asking" — and that is a different question from "what proves we may". An optional per-call credential is forgettable, and a forgotten one does not fail: the call proceeds with the instance's credential, which is someone else's. That is the `?? 'anonymous'` failure of cloud-llm-hub in a new place, and the `ToolCache` incident (hub PR #236) is what it costs.
+- **The provider declares which credentials it accepts, as a union.** The constructor's parameter type is the filter: a credential for another protocol does not compile. A database speaking several protocols accepts one union member per protocol, and the branch that knows *where* the material goes — `uid`/`pwd` here, a header there — is inside the implementation and invisible from outside.
+
+`llm-agent-mcp` already has this shape: a server per session is the ordinary case, and its credential is demanded by that implementation's own constructor (§3.3). The rest of the providers are being brought to the same shape, not given a new one.
+
+### 4.2 Whose credential is not a property of the contract
+
+The same contract carries either owner. `IBearerCredential` is `IBearerCredential` whether the token is the service's or an end user's: an end user's token means a provider built per session with that user's credential — the same shape as an MCP server per session, and the contract does not change.
+
+What differs is what the far side sees, and that is the assembler's choice, made **per provider**:
+
+| | transparent | opaque |
+|---|---|---|
+| what travels outward | the **caller's** credential | **our** credential |
+| what the far side sees | every consumer of our service | only our service |
+| who judges the caller | the far side — its quotas, its audit, its access control | only us, and if we do not, nobody does |
+| how consumers are kept apart | not our job | job B: identity + `AccessCheck` + collection scope (§2, §5, §6) |
+
+cloud-llm-hub is both at once, which is why this cannot be one global setting: `x-sap-login`/`x-sap-password` per request reach ABAP (`srv/mcp-manager.ts:88`), so SAP sees each user; the LLM runs on `AICORE_SERVICE_KEY` (`srv/agent-config.ts:291`), so AI Core sees only the hub.
+
+**A shared instance is legal in the opaque case and illegal in the transparent one.** The server's cached per-worker LLM and embedder are correct while the credential is the service's, and wrong the moment it is a caller's — which is the assembler's call to make, and exactly why §1 forbids the framework from having an opinion about topology.
+
+### 4.3 The boundary: not every authentication reduces to a secret
+
+A credential contract can exist only where authentication reduces to **material handed over**, with the acceptor needing to know nothing but where to put it. Three common methods do not reduce:
+
+- **request signing** (SigV4, HMAC) — the secret never travels; it signs. "Give me the secret" would force the acceptor to implement the algorithm, which is precisely the knowledge a credential contract exists to keep out of it.
+- **mutual TLS** — the material lives in the handshake, which is why `IAuthProvider` answers with `transportMaterial()` rather than a secret.
+- **SPNEGO/Kerberos** — a negotiation, and its token is consumed by the request that carried it.
+
+This is not speculation: `@mcp-abap-adt/interfaces` tried and withdrew it. `ICredentialOwningItsFetch` and `ICredentialTransport` existed for the one-shot case and **were removed in 21.0.0, having never been implemented** — such a credential "needs either an exchange it owns end to end, or a signal that the establishing request succeeded".
+
+So the test for a new `kind` is not "is this a different protocol" but: **can the acceptor use it knowing only "here is the material"?** If it cannot, the shape is not a credential but a provider — `IAuthProvider`'s `prepare()` / `authorizationHeader()` / `cookies()` / `transportMaterial()`, already in `interfaces-auth` for exactly this class.
+
+### 4.4 Where they live
+
+This section, the rule above and §4.5 were `mcp-abap-adt-interfaces`' own credential spec until 2026-09-20. One design described in two repositories drifted — the same claim was stated two ways and one open question was answered in one copy and not the other — so the design lives here alone, and that repository keeps only what is about its own shape (`docs/architecture/DECISIONS.md`).
+
+Decision 26 of `@mcp-abap-adt/interfaces` places a contract in the package that accepts it: several acceptors on the SAP side share `interfaces-adt`; contracts accepted **across families** go to `interfaces-auth`, `-network` or `-utils`.
 
 - `AccessCheck<R>` is cross-family by construction — decision 26 names llm-agent and the hub as its acceptors — so `interfaces-auth` is its home.
 - The three credential contracts go to `interfaces-auth`, and that no longer waits on a second acceptor. `@mcp-abap-adt/connection` has not rebuilt `BasicAuthProvider`/`TokenAuthProvider` on them — it implements `IAuthProvider` and `IRenewableCredential` directly (`src/auth/providers.ts:21`, `:59`) and still depends on `@mcp-abap-adt/interfaces` ^39.0.0, the pre-split facade. That is not a reason to move the contracts: a contract is a shared vocabulary, and whoever needs an implementation writes one — this family, `connection` later if it chooses, or a consumer with a credential source neither of us anticipated. That is what strategies and injection are for, and it is why the contract must not live where only one implementation happens to live today.
 
-(Decision 11 — *a member is added because someone needs it* — is what keeps all of them unwritten until an acceptor exists.)
+**When a contract may be written.** Decision 11 asks who calls a thing, and refuses members added for symmetry — it does not require the acceptor to exist first, and an earlier draft of this design said it did. That reading is unsatisfiable here: the acceptors are separately published packages, and none of them can declare a dependency on a contract that has not been published. So the rule is: a contract may be written once a concrete accepting change has been **specified and checked against the acceptor's actual API**; `interfaces-auth` is published first, and the acceptor then adopts that published version. Demand is still evidenced — by the specified acceptor, not by an impossible ordering.
+
+### 4.5 Vector stores, concretely
+
+A vector-store provider accepts the contracts for the protocols its database speaks. PostgreSQL has one for this purpose: a user name and a password message. A static password and an Azure Entra ID token both travel in it, so for `pg-vector-rag` they are **one contract**, and which of the two sits behind it is invisible to the provider.
+
+```ts
+new PgVectorRagProvider({ host, database, credential }); // credential: ISecretLoginCredential
+// inside: { user: credential.principal, password: () => credential.secret() }
+
+// built by whoever owns the secret
+const byPassword = { kind: 'secret-login', principal: 'rag_svc', secret: async () => process.env.PG_PASSWORD! };
+const byEntra    = { kind: 'secret-login', principal: 'rag-app@contoso', secret: () => entra.getToken() };
+```
+
+- **Principal is required.** `pg` falls back to the environment (`PGUSER`, then the OS user) when `user` is missing; with the principal inside the credential there is no such fallback, and no connection under the wrong identity.
+- **Fresh secret per connection.** `pg` 8.23.0 accepts `password` as a function, possibly async, and calls it for each new connection (`Client._getPassword`), so each new pooled connection gets a current token. That is `secret()` being a function rather than a field, paying off without the provider doing anything.
+- **The token source stays outside.** The database package depends on no auth provider; an adapter over an existing token provider is one line: `secret: async () => (await provider.getTokens()).authorizationToken`.
+
+Admission, placement and ownership are §4.1, §4.4 and §4.2; they are not restated here.
+
+What each database speaks, as checked on 2026-09-15:
+
+| package | accepts today | the database also supports | contracts to accept |
+|---|---|---|---|
+| `pg-vector-rag` | connection string, or host/port/user/password/database | a token in the password message (Azure Entra ID) — the same protocol | `ISecretLoginCredential` |
+| `hana-vector-rag` | user and password (`uid`/`pwd`), both required | JWT, SAML, X.509 (SAP HANA Cloud; the `@sap/hana-client` 2.29.27 changelog mentions all three) — separate mechanisms, each needing §4.3's test before it earns a `kind` | `ISecretLoginCredential` now; more once the client's connection properties are read (§4.6) |
+
+### 4.6 Still undecided, and blocking the plan
+
+1. **Passwords in connection strings.** `pg-vector-rag` and `hana-vector-rag` accept a connection string that can carry the password. Keeping it is additive; forbidding it — so the string carries the address only — is a major for both packages. §10's additive claim and this cannot both stand.
+2. **The property, and precedence.** What the credential field is called on each acceptor, and what happens when both it and the existing `apiKey`/`password`/SAP credentials object are supplied. Silently ignoring one is the worst of the three answers.
+3. **Where the endpoint goes.** `sap-aicore-llm` holds the service URL in the same object as its OAuth input (`sap-core-ai-provider.ts:29`, `:164`), and `sap-aicore-embedder` holds `apiBaseUrl` in its credential (`foundation-embedder.ts:8`). An address is not a credential by this section's own rule, so it needs a stated home before either can accept `IBearerCredential`.
 
 ---
 
@@ -327,7 +404,22 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | `@mcp-abap-adt/interfaces-auth` | gains `AccessCheck` and, subject to §4, the three credential contracts | minor |
 | cloud-llm-hub, `llm-agent-server` | **may** adopt the seams; neither is required to | their own work |
 
-**Release shape: a minor.** Nothing is removed, nothing a consumer implements or receives changes shape, no existing path changes behaviour, and every seam is declinable — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam.
+### What each workstream needs from another repository
+
+Read this rather than deriving it. Every row was checked against the packages, not remembered.
+
+| workstream | needs from `mcp-abap-adt-interfaces` | package and version | state |
+|---|---|---|---|
+| 1. MCP lifetime and identity | nothing | — | merged (#305), unreleased |
+| 2. Credential contracts | `IApiKeyCredential`, `IBearerCredential`, `ISecretLoginCredential` | `interfaces-auth` 1.1.0 | not written |
+| 3. RAG identity and attributes | `AccessCheck<R>` | `interfaces-auth` 1.1.0 | not written |
+| 4. Text-logger acceptance | `ILogger`, consumed unchanged | `interfaces-utils` 1.0.0, published 2026-09-16 | merged (#306), unreleased |
+
+**`interfaces-auth` is touched once, not once per workstream.** Rows 2 and 3 want the same package and the same version, so the four contracts land in one change and one minor release. Releasing that package twice, each time for whatever this repository happened to need next, is the failure this table exists to prevent: it makes the contract package a servant of one consumer’s schedule rather than a vocabulary.
+
+**Order, and it is not negotiable.** The contract is published, then adopted. An acceptor cannot merge a dependency on an unpublished version, so a plan that interleaves them describes a state that cannot exist. `interfaces-utils` in row 4 shows the easy case — the contract was already on the shelf, so that workstream needed no release at all.
+
+**Release shape.** Nothing is removed, no existing path changes behaviour, and every seam is declinable — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam. The version this ships as is decided at the release by what has accumulated (§10), not here: as it stands the set carries workstream 4’s read-side source break, so it is a major.
 
 ---
 
