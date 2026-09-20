@@ -1,7 +1,7 @@
 {
-  "name": "@mcp-abap-adt/sap-aicore-embedder",
+  "name": "@mcp-abap-adt/sap-aicore-auth",
   "version": "26.0.0",
-  "description": "SAP AI Core embedding provider (IEmbedder) for @mcp-abap-adt/llm-agent.",
+  "description": "SAP AI Core service-key token exchange (TokenProvider, parseServiceKey, serviceKeyCredential).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,10 +24,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/interfaces-auth": "^1.1.0",
-    "@mcp-abap-adt/llm-agent": "^26.0.0",
-    "@mcp-abap-adt/sap-aicore-auth": "*",
-    "@sap-ai-sdk/orchestration": "^2.15.0"
+    "@mcp-abap-adt/interfaces-auth": "^1.1.0"
   },
   "license": "LGPL-3.0-only",
   "repository": {

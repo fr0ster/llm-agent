@@ -46,6 +46,7 @@
     "@mcp-abap-adt/openai-llm": "^26.0.0",
     "@mcp-abap-adt/pg-vector-rag": "^26.0.0",
     "@mcp-abap-adt/qdrant-rag": "^26.0.0",
+    "@mcp-abap-adt/sap-aicore-auth": "*",
     "@mcp-abap-adt/sap-aicore-embedder": "^26.0.0",
     "@mcp-abap-adt/sap-aicore-llm": "^26.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0",

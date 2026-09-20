@@ -1,9 +1,8 @@
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
-import { TokenProvider } from './auth.js';
+import { parseServiceKey, TokenProvider } from '@mcp-abap-adt/sap-aicore-auth';
 import { decodeEmbedding } from './decode-embedding.js';
 import { resolveDeploymentId } from './deployments.js';
-import { parseServiceKey } from './service-key.js';
 
 export interface FoundationModelsCredentials {
   clientId: string;
