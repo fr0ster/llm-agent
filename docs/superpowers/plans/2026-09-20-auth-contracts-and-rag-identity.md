@@ -36,7 +36,7 @@ Copied verbatim from the spec. Every task's requirements implicitly include this
 | A | `mcp-abap-adt-interfaces` | `feat/credential-contracts` (exists, PR #90 open) | `interfaces-auth` 1.1.0 on the registry, published by the user |
 | B | `llm-agent` (this one) | `feat/credentials-and-rag-identity` | one PR, entries under `[Unreleased]`, no version bump |
 
-**The gate is hard.** Task B1 installs `@mcp-abap-adt/interfaces-auth@^1.1.0`. Until Task A6 reports the publish confirmed, that install cannot resolve and Phase B cannot compile. Do not start Phase B by vendoring the types, declaring them locally, or pointing at a workspace path — any of those makes the published contract untested and the adoption a lie.
+**The gate is hard.** Task B1 installs `@mcp-abap-adt/interfaces-auth@^1.1.0`. Until Task A3 reports the publish confirmed, that install cannot resolve and Phase B cannot compile. Do not start Phase B by vendoring the types, declaring them locally, or pointing at a workspace path — any of those makes the published contract untested and the adoption a lie.
 
 ---
 
@@ -269,7 +269,9 @@ git checkout -b feat/credentials-and-rag-identity
 `@mcp-abap-adt/interfaces-auth` must be a regular `dependencies` entry in every package that imports a contract, even though every import is `import type`: the re-exported type has to resolve in each consumer's own `tsc`, and a `devDependency` does not travel to a consumer of ours.
 
 **Files:**
-- Modify: the `package.json` of every package that will import a contract — `llm-agent`, `llm-agent-libs`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`, `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm`, `openai-embedder`, `ollama-embedder`, `sap-aicore-llm`, `sap-aicore-embedder`, `llm-agent-mcp`. The four concrete LLM providers and the two embedders are on this list because Task B2 resolves the secret **inside** them, not in the wiring above them.
+- Modify: the `package.json` of every package that will import a contract — `llm-agent`, `llm-agent-libs`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`, `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm`, `openai-embedder`, `sap-aicore-llm`, `sap-aicore-embedder`, `llm-agent-mcp`. The four concrete LLM providers are here because Task B2 resolves the secret **inside** them rather than in the wiring above them, and `openai-embedder` because Task B3 does the same.
+
+**`ollama-embedder` is deliberately not on the list.** It sends `Content-Type` and nothing else (`ollama.ts:42`, `:91`) — it does not authenticate, so there is no acceptor for a credential in it, and adding one would be a contract member nobody calls. An earlier draft of this task installed the dependency there anyway.
 - Create: `packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts`
 
 **Interfaces:**
@@ -318,7 +320,7 @@ Expected: `error TS2307: Cannot find module '@mcp-abap-adt/interfaces-auth' or i
 ```bash
 for p in llm-agent llm-agent-libs qdrant-rag pg-vector-rag hana-vector-rag \
          openai-llm anthropic-llm deepseek-llm ollama-llm \
-         openai-embedder ollama-embedder \
+         openai-embedder \
          sap-aicore-llm sap-aicore-embedder llm-agent-mcp; do
   npm pkg set "dependencies.@mcp-abap-adt/interfaces-auth=^1.1.0" -w "packages/$p"
 done
@@ -351,6 +353,7 @@ own tsc and a devDependency would not travel."
 
 **Files:**
 - Modify: `packages/llm-agent/src/types.ts` (`LLMProviderConfig`, `:78` — **this** is the contract consumers pass; `providers.ts` only has a local copy)
+- Create: `packages/llm-agent/src/providers/resolve-provider-secret.ts`, exported from `packages/llm-agent/src/index.ts`. The helper belongs in **core**, not in `llm-agent-libs`: every provider package depends on `@mcp-abap-adt/llm-agent` and **none** depends on `llm-agent-libs` — the dependency runs the other way (measured: `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm` each list `@mcp-abap-adt/llm-agent`, and the last two also list `@mcp-abap-adt/openai-llm`). Declaring it in `providers.ts` would make it unimportable from the four places that must call it.
 - Modify: `packages/llm-agent-libs/src/providers.ts` (local `apiKey?: string` ~`:29`; the five constructions at ~`:186`, `:204`, `:222`, `:240`, `:258`; `createDeepSeek(apiKey: string, …)` ~`:303`)
 - Modify: `packages/openai-llm/src/**`, `packages/anthropic-llm/src/**`, `packages/deepseek-llm/src/**`, `packages/ollama-llm/src/**` — `OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`, `OllamaProvider` each hold the credential and resolve it in their own request path. `SapCoreAIProvider` is Task B6.
 - Test: `packages/llm-agent-libs/src/__tests__/providers-credential.test.ts` and one per provider package, e.g. `packages/openai-llm/src/__tests__/credential.test.ts`
@@ -390,7 +393,7 @@ Three behaviours, and the precedence one is the one that would otherwise be assu
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
-import { resolveProviderSecret } from '../providers.js';
+import { resolveProviderSecret } from '@mcp-abap-adt/llm-agent';
 
 const cred = (v: string): IApiKeyCredential => ({
   kind: 'api-key',
@@ -481,17 +484,9 @@ Expected: `resolveProviderSecret` is not exported, and the provider test fails o
 - [ ] **Step 4: add the property and the resolver**
 
 ```ts
-// in providers.ts, beside the existing apiKey — NOT replacing it
-export interface LLMProviderConfig {
-  // … existing fields unchanged, including:
-  apiKey?: string;
-  /**
-   * Where the secret comes from, when it is not a constant. Outranks `apiKey`:
-   * it is the only one of the two passed deliberately for this purpose, and it
-   * is asked on every call so a rotated key rotates (§4.6.1, §4.6.2).
-   */
-  credential?: IApiKeyCredential | IBearerCredential;
-}
+// packages/llm-agent/src/providers/resolve-provider-secret.ts — in CORE, so every
+// provider package can import it; none of them depends on llm-agent-libs.
+import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 
 /** The secret to present, credential first. `undefined` means neither was given. */
 export async function resolveProviderSecret(cfg: {
@@ -507,9 +502,25 @@ export async function resolveProviderSecret(cfg: {
 }
 ```
 
+```ts
+// packages/llm-agent/src/types.ts — beside the existing apiKey, NOT replacing it
+export interface LLMProviderConfig {
+  // … existing fields unchanged, including:
+  apiKey?: string;
+  /**
+   * Where the secret comes from, when it is not a constant. Outranks `apiKey`:
+   * it is the only one of the two passed deliberately for this purpose, and it
+   * is asked on every call so a rotated key rotates (§4.6.1, §4.6.2).
+   */
+  credential?: IApiKeyCredential | IBearerCredential;
+}
+```
+
+`providers.ts`'s local config gets the same property, and forwards it. `deepseek-llm` and `ollama-llm` both depend on `@mcp-abap-adt/openai-llm`, so check whether they reuse its request path before writing the same code twice — if they do, the change lands once in `openai-llm` and they inherit it.
+
 **Pass the credential down; do not resolve it here.** At each of the five construction sites, forward `credential: cfg.credential` alongside the existing `apiKey: cfg.apiKey`. Resolving in the wiring would hand the provider a plain string and freeze the secret for the provider's whole lifetime — the first draft of this task said exactly that, and it contradicts the one thing the contract insists on.
 
-`resolveProviderSecret` therefore lives **in each provider's request path**, where Step 1 said the secret enters the wire:
+The helper lives in core, and the **call** goes in each provider's request path — where Step 1 said the secret enters the wire, and never in a constructor:
 
 ```ts
 // inside a provider, per request — not in its constructor
@@ -519,13 +530,21 @@ if (!secret) throw new MissingApiKeyError(/* the provider's existing error */);
 
 `createDeepSeek(apiKey: string, …)` (`:303`) keeps its signature: it is a convenience over `makeLlm` and a required string is what it promises. A credential-configured DeepSeek goes through `makeLlm` instead.
 
-- [ ] **Step 5: run the tests, the type check and lint**
+- [ ] **Step 5: run everything this task touched — six packages, not two**
 
 ```bash
 node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
-npx tsc --noEmit -p packages/llm-agent-libs/tsconfig.json; echo "EXIT=$?"
-npx biome check packages/llm-agent-libs/src/providers.ts
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
+  echo "=== $p"; node --import tsx/esm --test "packages/$p/src/__tests__/credential.test.ts"
+done
+for p in llm-agent llm-agent-libs openai-llm anthropic-llm deepseek-llm ollama-llm; do
+  npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
+done
+npx biome check packages/llm-agent/src/providers packages/llm-agent-libs/src/providers.ts \
+  packages/openai-llm/src packages/anthropic-llm/src packages/deepseek-llm/src packages/ollama-llm/src
 ```
+
+Every `tsc` must be `0`. A provider package that fails means the credential reached its config but not its request path.
 
 - [ ] **Step 6: prove the old path is untouched**
 
@@ -538,9 +557,15 @@ Every existing provider test must still pass unchanged. If one needed editing, `
 - [ ] **Step 7: commit**
 
 ```bash
-git add packages/llm-agent-libs/src/providers.ts \
-        packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
-git commit -m "feat(llm-agent-libs): providers accept a credential beside apiKey
+git add packages/llm-agent/src/types.ts \
+        packages/llm-agent/src/providers/resolve-provider-secret.ts \
+        packages/llm-agent/src/index.ts \
+        packages/llm-agent-libs/src/providers.ts \
+        packages/llm-agent-libs/src/__tests__/providers-credential.test.ts \
+        packages/openai-llm/src packages/anthropic-llm/src \
+        packages/deepseek-llm/src packages/ollama-llm/src
+git status --porcelain   # must be empty: nothing this task touched is left behind
+git commit -m "feat: LLM providers accept a credential and resolve it per request
 
 A new optional property, never a widening of apiKey: a consumer that reads
 cfg.apiKey keeps compiling, which widening would have broken (#306 measured the
@@ -554,11 +579,14 @@ call, so a rotated secret rotates."
 
 **Files:**
 - Modify: `packages/llm-agent/src/interfaces/rag.ts` (`EmbedderFactoryConfig`, ~`:20`)
-- Test: `packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts`
+- Modify: `packages/openai-embedder/src/openai-embedder.ts` — the **concrete** embedder, which today demands `apiKey: string` (`:6`), throws without it (`:19`), stores it (`:25`) and reads it at two header sites (`:48`, `:109`). Both sites sit inside `await fetch(…)`, so resolving per request costs no signature.
+- Test: `packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts` and `packages/openai-embedder/src/__tests__/credential.test.ts`
 
 **Interfaces:**
-- Consumes: `IApiKeyCredential`, `IBearerCredential`.
-- Produces: `EmbedderFactoryConfig.credential?: IApiKeyCredential | IBearerCredential`, and the rule that `EmbedderFactory` stays synchronous.
+- Consumes: `IApiKeyCredential`, `IBearerCredential`; `resolveProviderSecret` from core (Task B2).
+- Produces: `EmbedderFactoryConfig.credential?`, the same property on `OpenAiEmbedderConfig`, and the rule that `EmbedderFactory` stays synchronous.
+
+`ollama-embedder` is out of scope here for the reason Task B1 gives: it does not authenticate.
 
 - [ ] **Step 1: write the failing test — the factory must still be sync**
 
@@ -626,23 +654,114 @@ export interface EmbedderFactoryConfig {
 
 `EmbedderFactory`'s signature does not change. Do not make it return a `Promise` — that breaks every consumer that implements one.
 
-- [ ] **Step 4: run the test and the type check**
+- [ ] **Step 3b: write the failing test for the concrete embedder**
+
+The abstract test above proves the config carries a credential. This one proves a shipped embedder actually asks per request, which is where the promise is either kept or quietly dropped.
+
+```ts
+// packages/openai-embedder/src/__tests__/credential.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
+import { OpenAiEmbedder } from '../openai-embedder.js';
+
+describe('OpenAiEmbedder credential', () => {
+  it('asks per request, and a rotated secret rotates', async () => {
+    const seen: Array<string | null> = [];
+    let n = 0;
+    const credential: IApiKeyCredential = { kind: 'api-key', secret: async () => `sk-${++n}` };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_u: string | URL, init: RequestInit = {}) => {
+      seen.push(new Headers(init.headers as HeadersInit).get('Authorization'));
+      return new Response(JSON.stringify({ data: [{ embedding: [0, 0] }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const embedder = new OpenAiEmbedder({ model: 'text-embedding-3-small', credential });
+      await embedder.embed(['a']);
+      await embedder.embed(['b']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(seen, ['Bearer sk-1', 'Bearer sk-2']);
+  });
+
+  it('still throws when neither a key nor a credential is given', () => {
+    // @ts-expect-error neither is configured
+    assert.throws(() => new OpenAiEmbedder({ model: 'm' }));
+  });
+
+  it('still accepts a plain apiKey, exactly as before', async () => {
+    const seen: Array<string | null> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_u: string | URL, init: RequestInit = {}) => {
+      seen.push(new Headers(init.headers as HeadersInit).get('Authorization'));
+      return new Response(JSON.stringify({ data: [{ embedding: [0] }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await new OpenAiEmbedder({ model: 'm', apiKey: 'sk-static' }).embed(['a']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(seen, ['Bearer sk-static']);
+  });
+});
+```
+
+- [ ] **Step 3c: implement it**
+
+`apiKey` becomes optional so a credential-only configuration is expressible, and the constructor's existing throw fires only when **neither** is given — so the current error and its test survive untouched. Note the shape of that change honestly: for a *caller* it is a widening and safe; for anyone *reading* `OpenAiEmbedderConfig.apiKey` the type goes from `string` to `string | undefined`, and no reader outside the package is known.
+
+```ts
+export interface OpenAiEmbedderConfig {
+  apiKey?: string;                       // was: apiKey: string
+  credential?: IApiKeyCredential | IBearerCredential;
+  model: string;
+  // … unchanged
+}
+
+constructor(config: OpenAiEmbedderConfig) {
+  if (!config.apiKey && !config.credential) {
+    throw new Error('OpenAiEmbedder requires an apiKey or a credential');
+  }
+  // …
+}
+
+// at BOTH header sites (:48, :109), already inside `await fetch(…)`:
+Authorization: `Bearer ${await resolveProviderSecret(this.config)}`,
+```
+
+- [ ] **Step 4: run both tests and both type checks**
 
 ```bash
 node --import tsx/esm --test packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
-npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
+node --import tsx/esm --test packages/openai-embedder/src/__tests__/credential.test.ts
+node --import tsx/esm --test packages/openai-embedder/src/openai-embedder.test.ts
+npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "CORE=$?"
+npx tsc --noEmit -p packages/openai-embedder/tsconfig.json; echo "EMBEDDER=$?"
 ```
+
+The pre-existing `openai-embedder.test.ts` must pass **unedited** — it asserts the missing-key throw, which is exactly the behaviour that must survive.
 
 - [ ] **Step 5: commit**
 
 ```bash
 git add packages/llm-agent/src/interfaces/rag.ts \
-        packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
-git commit -m "feat(llm-agent): EmbedderFactoryConfig carries a credential
+        packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts \
+        packages/openai-embedder/src
+git commit -m "feat: embedders carry a credential, and the concrete one asks per request
 
-The factory stays synchronous, so it cannot resolve the secret; it hands the
-credential to the embedder, which asks per embed call. Making the factory async
-would have broken every consumer that implements one."
+EmbedderFactory stays synchronous, so it cannot resolve the secret; it hands the
+credential to the embedder, which asks per embed call — which is what the contract
+required anyway. Making the factory async would have broken every consumer that
+implements one.
+
+OpenAiEmbedder's apiKey becomes optional so a credential-only configuration is
+expressible, and its existing throw now fires only when neither is given, so the
+current error and its test are untouched. ollama-embedder is not included: it
+sends Content-Type and nothing else, so it has no acceptor for a credential."
 ```
 
 ### Task B4: `qdrant-rag` accepts an API-key credential
@@ -1065,73 +1184,136 @@ never passed."
 - Consumes: `IMcpServer`, `IMcpClient`, `IMcpRequestHeadersStrategy` from `@mcp-abap-adt/llm-agent`; `IApiKeyCredential`, `IBearerCredential` (B1); `createDefaultMcpClient` / `toMcpClientWrapperConfig` from `factory.ts`.
 - Produces: `HttpMcpServer` and `StdioMcpServer`. Nothing later in this plan depends on them.
 
-- [ ] **Step 1: write the failing tests**
+- [ ] **Step 1: write the failing tests, through the production seam**
+
+Both classes take the client factory as a constructor argument, defaulting to `createDefaultMcpClient`. That is the seam the tests use — no `*ForTest` helper, because a helper proves only that the helper works. The factory receives a `McpConnectionConfig` and returns `{ client, close }` (`factory.ts:36-48`), so a fake can assert what was passed and count the closes.
 
 ```ts
 // packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import type { McpClientFactoryResult, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { HttpMcpServer } from '../http-mcp-server.js';
 import { StdioMcpServer } from '../stdio-mcp-server.js';
 
-describe('HttpMcpServer', () => {
-  it('resolves the credential at connect and puts it in the connection headers', async () => {
-    let asked = 0;
-    const credential: IBearerCredential = {
-      kind: 'bearer',
-      token: async () => `t${++asked}`,
+/** Records the config it was given, and how often close() was called. */
+function fakeFactory() {
+  const configs: McpConnectionConfig[] = [];
+  let closes = 0;
+  const client = { listTools: async () => [] } as never;
+  const factory = async (config: McpConnectionConfig): Promise<McpClientFactoryResult> => {
+    configs.push(config);
+    return {
+      client,
+      close: async () => {
+        closes += 1;
+      },
     };
-    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp', credential });
+  };
+  return { configs, client, factory, closes: () => closes };
+}
 
-    // The seam under test, without a network: the options the transport is given.
-    const options = await server.transportOptionsForTest();
-    assert.equal(options.requestInit.headers.Authorization, 'Bearer t1');
-    assert.equal(asked, 1, 'asked once per connection, because headers() is sync');
+describe('HttpMcpServer', () => {
+  it('start() resolves the credential into the connection headers and returns the client', async () => {
+    const f = fakeFactory();
+    let asked = 0;
+    const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++asked}` };
+    const server = new HttpMcpServer(
+      { url: 'https://mcp.example/mcp', credential, headers: { 'X-Trace': 'abc' } },
+      f.factory,
+    );
 
-    const second = await server.transportOptionsForTest();
-    assert.equal(second.requestInit.headers.Authorization, 'Bearer t2', 'a reconnect refreshes it');
+    const client = await server.start();
+    assert.equal(client, f.client, 'start() returns the factory\u2019s client');
+    assert.equal(f.configs.length, 1);
+    const config = f.configs[0] as Extract<McpConnectionConfig, { url: string }>;
+    assert.equal(config.headers?.Authorization, 'Bearer t1');
+    assert.equal(config.headers?.['X-Trace'], 'abc', 'static headers survive');
+    assert.equal(asked, 1, 'asked once per connection: headers() is synchronous (see above)');
   });
 
-  it('keeps any configured static headers, and does not let them overwrite the credential', async () => {
+  it('a static Authorization cannot overwrite the credential', async () => {
+    const f = fakeFactory();
     const credential: IBearerCredential = { kind: 'bearer', token: async () => 'tok' };
-    const server = new HttpMcpServer({
-      url: 'https://mcp.example/mcp',
-      credential,
-      headers: { 'X-Trace': 'abc', Authorization: 'Bearer stale' },
-    });
-    const options = await server.transportOptionsForTest();
-    assert.equal(options.requestInit.headers['X-Trace'], 'abc');
-    assert.equal(options.requestInit.headers.Authorization, 'Bearer tok', 'the credential wins');
+    await new HttpMcpServer(
+      { url: 'https://mcp.example/mcp', credential, headers: { Authorization: 'Bearer stale' } },
+      f.factory,
+    ).start();
+    const config = f.configs[0] as Extract<McpConnectionConfig, { url: string }>;
+    assert.equal(config.headers?.Authorization, 'Bearer tok');
+  });
+
+  it('stop() closes exactly once, and is safe to call twice', async () => {
+    const f = fakeFactory();
+    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp' }, f.factory);
+    await server.start();
+    await server.stop();
+    await server.stop();
+    assert.equal(f.closes(), 1, 'a second stop must not close a connection it does not hold');
+  });
+
+  it('stop() before start() does nothing rather than throwing', async () => {
+    const f = fakeFactory();
+    await new HttpMcpServer({ url: 'https://mcp.example/mcp' }, f.factory).stop();
+    assert.equal(f.closes(), 0);
+  });
+
+  it('a second start() refuses rather than leaking the first connection', async () => {
+    const f = fakeFactory();
+    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp' }, f.factory);
+    await server.start();
+    await assert.rejects(() => server.start(), /already started/);
+    assert.equal(f.configs.length, 1);
+  });
+
+  it('a reconnect asks the credential again', async () => {
+    const f = fakeFactory();
+    let asked = 0;
+    const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++asked}` };
+    const server = new HttpMcpServer({ url: 'https://mcp.example/mcp', credential }, f.factory);
+    await server.start();
+    await server.stop();
+    await server.start();
+    const second = f.configs[1] as Extract<McpConnectionConfig, { url: string }>;
+    assert.equal(second.headers?.Authorization, 'Bearer t2');
   });
 });
 
 describe('StdioMcpServer', () => {
-  it('passes the secret through the child env and never through argv', async () => {
+  it('start() puts the secret in the child env and never in argv', async () => {
+    const f = fakeFactory();
     const credential: IBearerCredential = { kind: 'bearer', token: async () => 'super-secret' };
-    const server = new StdioMcpServer({
-      command: 'node',
-      args: ['-e', 'process.stdin.resume()'],
-      credential,
-      credentialEnvVar: 'MCP_TOKEN',
-    });
-    const spawn = await server.spawnArgsForTest();
-    assert.equal(spawn.env.MCP_TOKEN, 'super-secret');
+    const server = new StdioMcpServer(
+      { command: 'node', args: ['-e', 'process.stdin.resume()'], credential, credentialEnvVar: 'MCP_TOKEN' },
+      f.factory,
+    );
+    const client = await server.start();
+    assert.equal(client, f.client);
+    const config = f.configs[0] as Extract<McpConnectionConfig, { type: 'stdio' }>;
+    assert.equal(config.env?.MCP_TOKEN, 'super-secret');
     assert.ok(
-      !spawn.args.join(' ').includes('super-secret'),
+      !config.args?.join(' ').includes('super-secret'),
       'argv is readable by any process on the machine',
     );
-    assert.ok(!spawn.command.includes('super-secret'));
+    assert.ok(!config.command.includes('super-secret'));
   });
 
-  it('refuses to start when a credential is given with no variable to put it in', async () => {
+  it('refuses to start when a credential has no variable to go in', async () => {
+    const f = fakeFactory();
     const credential: IBearerCredential = { kind: 'bearer', token: async () => 'x' };
-    const server = new StdioMcpServer({ command: 'node', args: [], credential });
-    await assert.rejects(
-      () => server.spawnArgsForTest(),
-      /credentialEnvVar/,
-      'silently dropping a credential would start an unauthenticated child',
-    );
+    const server = new StdioMcpServer({ command: 'node', args: [], credential }, f.factory);
+    await assert.rejects(() => server.start(), /credentialEnvVar/);
+    assert.equal(f.configs.length, 0, 'nothing was spawned');
+  });
+
+  it('stop() closes exactly once', async () => {
+    const f = fakeFactory();
+    const server = new StdioMcpServer({ command: 'node', args: [] }, f.factory);
+    await server.start();
+    await server.stop();
+    await server.stop();
+    assert.equal(f.closes(), 1);
   });
 });
 ```
@@ -1144,90 +1326,124 @@ node --import tsx/esm --test packages/llm-agent-mcp/src/servers/__tests__/creden
 
 Expected: the two modules do not exist.
 
-- [ ] **Step 3: implement both, on top of what `client.ts` already builds**
+- [ ] **Step 3: implement both, in full**
 
 ```ts
 // packages/llm-agent-mcp/src/servers/http-mcp-server.ts
-import type { IMcpClient, IMcpServer } from '@mcp-abap-adt/llm-agent';
+import type {
+  IMcpClient,
+  IMcpServer,
+  McpClientFactoryResult,
+  McpConnectionConfig,
+} from '@mcp-abap-adt/llm-agent';
 import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-import { buildHttpTransportOptions } from '../client.js';
+import { createDefaultMcpClient } from '../factory.js';
+
+type ClientFactory = (config: McpConnectionConfig) => Promise<McpClientFactoryResult>;
+
+export interface HttpMcpServerConfig {
+  url: string;
+  credential?: IApiKeyCredential | IBearerCredential;
+  headers?: Record<string, string>;
+  timeout?: number;
+}
 
 export class HttpMcpServer implements IMcpServer {
+  private held: McpClientFactoryResult | undefined;
+
   constructor(
-    private readonly cfg: {
-      url: string;
-      credential?: IApiKeyCredential | IBearerCredential;
-      headers?: Record<string, string>;
-      sessionId?: string;
-    },
+    private readonly cfg: HttpMcpServerConfig,
+    private readonly createClient: ClientFactory = createDefaultMcpClient,
   ) {}
 
-  /** The options the transport is constructed with; exposed for the test. */
-  async transportOptionsForTest() {
-    const { credential, headers, sessionId } = this.cfg;
-    const resolved = credential
+  async start(): Promise<IMcpClient> {
+    if (this.held) throw new Error('HttpMcpServer is already started');
+    const { url, credential, headers, timeout } = this.cfg;
+    // Resolved HERE, once per connection, because the header seam is synchronous
+    // and merged at connect. A reconnect asks again; that is the refresh.
+    const secret = credential
       ? credential.kind === 'bearer'
         ? await credential.token()
         : await credential.secret()
       : undefined;
-    return buildHttpTransportOptions({
+    const config: McpConnectionConfig = {
+      url,
       // The credential goes LAST so a stale static Authorization cannot win.
-      headers: { ...headers, ...(resolved ? { Authorization: `Bearer ${resolved}` } : {}) },
-      sessionId,
-    });
-  }
+      headers: { ...headers, ...(secret ? { Authorization: `Bearer ${secret}` } : {}) },
+      ...(timeout !== undefined ? { timeout } : {}),
+    } as McpConnectionConfig;
 
-  async start(): Promise<IMcpClient> {
-    /* build the wrapper with transportOptionsForTest()'s result, connect, return the client */
+    const held = await this.createClient(config);
+    this.held = held;
+    return held.client;
   }
 
   async stop(): Promise<void> {
-    /* release the connection; nothing was spawned */
+    const held = this.held;
+    if (!held) return;          // never started, or already stopped
+    this.held = undefined;      // cleared FIRST, so a failing close cannot be retried into a double close
+    await held.close();
   }
 }
 ```
 
 ```ts
 // packages/llm-agent-mcp/src/servers/stdio-mcp-server.ts
+export interface StdioMcpServerConfig {
+  command: string;
+  args?: readonly string[];
+  env?: Record<string, string>;
+  credential?: IBearerCredential;
+  /** Which variable the child reads the secret from. Required with a credential. */
+  credentialEnvVar?: string;
+  timeout?: number;
+}
+
 export class StdioMcpServer implements IMcpServer {
+  private held: McpClientFactoryResult | undefined;
+
   constructor(
-    private readonly cfg: {
-      command: string;
-      args: readonly string[];
-      env?: Record<string, string>;
-      credential?: IBearerCredential;
-      /** Which variable the child reads the secret from. Required with a credential. */
-      credentialEnvVar?: string;
-    },
+    private readonly cfg: StdioMcpServerConfig,
+    private readonly createClient: ClientFactory = createDefaultMcpClient,
   ) {}
 
-  async spawnArgsForTest(): Promise<{
-    command: string;
-    args: readonly string[];
-    env: Record<string, string>;
-  }> {
-    const { command, args, env, credential, credentialEnvVar } = this.cfg;
+  async start(): Promise<IMcpClient> {
+    if (this.held) throw new Error('StdioMcpServer is already started');
+    const { command, args, env, credential, credentialEnvVar, timeout } = this.cfg;
     if (credential && !credentialEnvVar) {
+      // Refusing beats spawning an unauthenticated child and dropping the secret.
       throw new Error(
-        'StdioMcpServer: a credential needs credentialEnvVar — refusing to start a child ' +
-          'without it rather than dropping the secret silently',
+        'StdioMcpServer: a credential needs credentialEnvVar — refusing to start without it',
       );
     }
-    return {
+    const config: McpConnectionConfig = {
+      type: 'stdio',
       command,
-      args,
+      args: args ?? [],
       env: {
         ...(env ?? {}),
         ...(credential && credentialEnvVar
           ? { [credentialEnvVar]: await credential.token() }
           : {}),
       },
-    };
+      ...(timeout !== undefined ? { timeout } : {}),
+    } as McpConnectionConfig;
+
+    const held = await this.createClient(config);
+    this.held = held;
+    return held.client;
+  }
+
+  async stop(): Promise<void> {
+    const held = this.held;
+    if (!held) return;
+    this.held = undefined;
+    await held.close();
   }
 }
 ```
 
-`start()` on each builds the wrapper through `toMcpClientWrapperConfig` / `createDefaultMcpClient` (`factory.ts:11`, `:36`) rather than duplicating `client.ts`'s branching, and `stop()` releases. Export both from `index.ts`.
+Neither duplicates `client.ts`'s transport branching: `createDefaultMcpClient` already runs `toMcpClientWrapperConfig` (`factory.ts:39`), which maps `type: 'stdio'` to the stdio branch and a `url` config to `transport: 'auto'` with `headers` and `requestHeadersStrategy` (`factory.ts:14-33`). Export both from `index.ts`.
 
 - [ ] **Step 4: run, type-check, lint**
 
@@ -2512,6 +2728,13 @@ This section records a review that was **run**, on 2026-09-20, after the first d
 - **A type used in a later task was defined by no earlier one.** Task B14 reads `meta.authorization` to decide what a global permits, and `RagCollectionMeta` has no such field — §6.1's second axis was in the spec and in no task. Task B9 now adds `RagCollectionAuthorization` and the optional `authorization?` on the meta and on `createCollection`.
 - **§3.5 (stdio credentials) had no task at all.** §8 puts the typed stdio implementation in this workstream, beside http. Task B8 now covers both, batched because the shape is identical — a constructor demanding a credential typed per target — with the stdio half asserting the secret travels through the child's `env` and never through argv.
 - **A cross-package import that cannot exist.** Task B14's first draft told an implementer to import `SessionGraphIdentity` into `llm-agent`, but it lives in `llm-agent-libs` and the dependency runs libs → llm-agent, one way. Fixed in both the plan and §5.1 of the spec, which now names `RagCallerIdentity`.
+
+**What a third pass found — three more, and the same root cause every time: a file list that did not match a dependency graph.**
+
+- **The helper was unimportable from the four places that must call it.** `resolveProviderSecret` was declared in `llm-agent-libs/src/providers.ts`, and no provider package depends on `llm-agent-libs` — measured: `openai-llm`, `anthropic-llm`, `deepseek-llm` and `ollama-llm` each depend on `@mcp-abap-adt/llm-agent`, and the last two also on `@mcp-abap-adt/openai-llm`. It now lives in core, which all four already have. The task's run and commit steps covered two files in one package while claiming changes in six; both now cover all six, and the commit step ends with a `git status --porcelain` that must come back empty.
+- **Two embedder packages were given a dependency and no task.** B1 installed `interfaces-auth` into `openai-embedder` and `ollama-embedder` saying B2 would resolve inside them, while B2 covered only the four LLM providers and B3 only the abstract `EmbedderFactoryConfig` — so `OpenAiEmbedder` would have kept demanding `apiKey: string` and holding it for its lifetime. B3 now covers it, per request, with the pre-existing missing-key test required to pass unedited. And `ollama-embedder` is **removed** rather than given a credential: it sends `Content-Type` and nothing else (`ollama.ts:42`, `:91`), so a credential there would be a member nobody calls.
+- **B8 had comment stubs where `start()` and `stop()` belong,** no `start`/`stop` on the stdio class at all, and tests that only exercised `*ForTest` helpers — which prove the helper works and nothing about the production path. Both classes now take the client factory as a constructor argument defaulting to `createDefaultMcpClient`, the lifecycle is written out, and the tests go through that seam: the config the factory receives carries the resolved header or env, `start()` returns `result.client`, `stop()` closes exactly once and is safe twice, a second `start()` refuses instead of leaking, and a reconnect asks the credential again.
+- Editorial: the hard gate cited a Task A6 that does not exist. It is Task A3.
 
 **What a second, external pass found — four blockers, all of them the plan not matching the code:**
 
