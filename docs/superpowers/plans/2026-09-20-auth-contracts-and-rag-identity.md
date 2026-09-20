@@ -2,30 +2,30 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let a consumer authenticate every provider in the pipeline through a contract instead of a `string`, and make a caller's RAG collections reachable only through an instance built for that caller — closing llm-agent #304 without the framework ever judging a caller.
+**Goal:** Take every secret out of every contract, so authenticating a provider means constructing it with a credential and nothing else; and make a caller's RAG collections reachable only through an instance built for that caller — closing llm-agent #304 without the framework ever judging a caller.
 
-**Architecture:** Three credential contracts are published from `@mcp-abap-adt/interfaces-auth` and then adopted, beside the existing fields, by every provider that authenticates. Authorization happens at construction: a pipeline's instances are narrowed to what one caller may address, and no access check enters the framework. RAG collections gain persisted opaque `attributes`, a catalog that can be read back, and a hydration path that runs per caller inside an async registry factory.
+**Architecture:** Three credential contracts are published from `@mcp-abap-adt/interfaces-auth` and then accepted by the **constructors of concrete implementations**, typed for what each target speaks. No shared base, no framework-carried options object and no convenience config declares one. Where the framework must construct something later it asks the consumer for a factory. Serializable configuration keeps a non-secret `credentialRef`; `llm-agent-server` becomes the composition root that turns a reference into a credential. Authorization happens at construction: a pipeline's instances are narrowed to what one caller may address, and no access check enters the framework.
 
-**Tech Stack:** TypeScript (strict), Node 22, npm workspaces. Tests are `node:test` per package in llm-agent, **run through the tsx loader** — every package's own script is `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`, and a bare `node --test file.ts` fails with `ERR_MODULE_NOT_FOUND` because a `.ts` test's `.js` imports do not resolve without it (verified against an existing test). Each command below uses the loader for that reason; `npm test -w packages/<name>` is equivalent; the interfaces repo's tests are compile-only assertions under `__typechecks__/` plus `npm run check`. Biome for lint and format in both.
+**Tech Stack:** TypeScript (strict), Node 22, npm workspaces. Tests are `node:test` per package, **run through the tsx loader** — every package's own script is `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`, and a bare `node --test file.ts` fails with `ERR_MODULE_NOT_FOUND` because a `.ts` test's `.js` imports do not resolve without it (verified against an existing test). Each command below uses the loader for that reason; `npm test -w packages/<name>` is equivalent. Biome for lint and format.
 
-**Spec:** `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` (this repository). Read it before Task A1 — the plan argues from it and every task below cites the section it implements. Review-clean as of `b3cc465e`.
+**Spec:** `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` (this repository), review-clean as of `ff6a9142`. Read it before Task A1 — the plan argues from it and every task cites the section it implements. This plan was **re-derived** from that spec after ten review rounds changed §4 fundamentally; the previous derivation is in git history and its workstream 2 is wrong in every particular.
 
 ---
 
 ## Global Constraints
 
-Copied verbatim from the spec. Every task's requirements implicitly include this section.
+Copied from the spec. Every task's requirements implicitly include this section.
 
-- **The framework is the client side.** No component authorizes at request time; none accepts a policy function such as an access check. Authorization is performed at construction, by narrowing what an instance can address (§1.4, §5, and `docs/ARCHITECTURE.md` binding principle 8).
-- **A credential is a constructor argument, never a per-call one.** A forgotten per-call credential does not fail — it proceeds as somebody else (§4.1).
-- **Add a property; never widen an existing one.** The credential arrives beside `apiKey?: string`, `password?: string` and the SAP credential objects, which are not touched.
-- **But every one of those is `@deprecated` on arrival, and removed at the next major** (§4.6.2, §9.11). A static key *is* a credential, so carrying both is two ways to do one job — what §7 is written against. Keeping them is compatibility, not design; every snippet below marks them, and core ships `staticApiKey` / `staticLogin` so a consumer's migration is one line. Widening a readable property breaks every reader: #306 measured `error TS2339: Property 'log' does not exist on type 'AnyLogger'` (§4.6.2).
-- **An explicit credential outranks both the connection string and the discrete fields.** It is the only one of the three passed deliberately for this purpose. Each package keeps its existing relationship between string and discrete fields; this plan does not reconcile that (§4.6.1).
-- **An address is not a credential.** Service URLs and `apiBaseUrl` keep the home they have; `IBearerCredential` carries the token and nothing else (§4.6.3).
-- **Imports from the interfaces packages are `import type`** so nothing enters the runtime graph, while the package is a regular `dependencies` entry so the types resolve in every consumer's `tsc` (§1).
-- **`AccessCheck` is not written anywhere in either repository.** It has one acceptor, cloud-llm-hub, and stays there (§5, interfaces decision 26).
-- **Interfaces is published before llm-agent adopts it.** An acceptor cannot merge a dependency on an unpublished version, so Phase B does not begin until Phase A's version is on the registry (§8, "Order, and it is not negotiable").
-- **One PR per repository.** Phase A is one PR in `mcp-abap-adt-interfaces`; Phase B is one PR in llm-agent covering both workstreams (§10).
+- **A secret belongs in a contract only where the secret IS the contract** (`docs/ARCHITECTURE.md` principle 9, spec §4.6.2). The test: remove it and see what is left. Remove `secret()` from `IApiKeyCredential` and nothing remains — so the credential contracts are the right home. Remove `apiKey` from `LLMProviderConfig` and a complete LLM configuration remains — so it was a passenger, and passengers go.
+- **Construction is the authorization.** A credential is a constructor argument of the concrete implementation that uses it, typed per target. Once the object exists it is authorized, and no method on any contract carries a secret (§4.1).
+- **A knob may vary per call; authorization may not.** `LLMCallOptions` already accepts `model`, `temperature`, `maxTokens` per request, so nothing may force a rebuild to change one (principle 9's corollary).
+- **Where the framework must construct later, it takes a factory, never a secret.** `EmbedderFactory` has this shape; `BuildAgentDeps.makeLlm` already does too.
+- **Serializable configuration carries a non-secret `credentialRef`** — a name the composition root resolves. The value never enters a loaded config object, which is what `${VAR}` substitution got wrong (§4.6.2).
+- **An address is not a credential.** The AI Core endpoint is a field of its own, named `apiBaseUrl` on both SAP packages (§4.6.3).
+- **Imports from the interfaces packages are `import type`** so nothing enters the runtime graph, while the package is a regular `dependencies` entry so the types resolve in each consumer's own `tsc` (§1).
+- **`AccessCheck` is not written in either repository.** One acceptor, cloud-llm-hub, keeps it (§5, interfaces decision 26).
+- **Interfaces is published before llm-agent adopts it.** An acceptor cannot merge a dependency on an unpublished version (§8).
+- **One PR per repository.** Phase A is one PR in `mcp-abap-adt-interfaces`; Phase B is one PR in llm-agent covering both remaining workstreams (§10).
 - **The user publishes to npm.** Never run `npm publish`; the account has 2FA.
 
 ---
@@ -47,38 +47,45 @@ Copied verbatim from the spec. Every task's requirements implicitly include this
 
 | file | responsibility |
 |---|---|
-| `packages/interfaces-auth/src/auth/ICredentials.ts` | the three contracts and their reasoning (exists, uncommitted corrections) |
-| `packages/interfaces-auth/src/__typechecks__/credentials.ts` | compile-only assertions — this package's tests (exists, uncommitted corrections) |
-| `packages/interfaces-auth/src/index.ts` | barrel export (exists, committed) |
-| `packages/interfaces-auth/CHANGELOG.md` | the package's own changelog (exists, uncommitted corrections) |
-| `packages/interfaces-auth/package.json` | version 1.0.0 → 1.1.0 at release |
+| `packages/interfaces-auth/src/auth/ICredentials.ts` | the three contracts (exists, uncommitted corrections) |
+| `packages/interfaces-auth/src/__typechecks__/credentials.ts` | compile-only assertions — this package's tests (exists, uncommitted) |
+| `packages/interfaces-auth/src/index.ts` | barrel (exists, committed) |
+| `packages/interfaces-auth/CHANGELOG.md`, `package.json` | 1.0.0 → 1.1.0 at release |
 
 ### Phase B — `llm-agent`, by responsibility
 
-**Contracts (declared once, in `@mcp-abap-adt/llm-agent`):**
+**Contracts and helpers (in `@mcp-abap-adt/llm-agent`):**
 
 | file | responsibility |
 |---|---|
-| `packages/llm-agent/src/interfaces/rag.ts` | `RagCollectionRecord`, `describeCollections?`, `openCollection?`, `adopt?`, `attributes`/`collectionName` on provider create, `EmbedderFactoryConfig.credential?` |
-| `packages/llm-agent/src/rag/corrections/errors.ts` | `CatalogRecordDeleteError` beside the existing `RagError` family |
-| `packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts` | the seven tool entries; required `identity`; `RagToolContext` without identity fields |
-| `packages/llm-agent/src/rag/registry/simple-rag-registry.ts` | `adopt()` honouring a store name that differs from the logical name |
+| `src/types.ts` | `LLMProviderConfig` **loses** `apiKey` |
+| `src/interfaces/rag.ts` | `EmbedderFactoryConfig` **loses** `apiKey`; gains `RagCollectionRecord`, `RagCallerIdentity`, `RagCollectionAuthorization`, `describeCollections?`, `openCollection?`, `adopt?` |
+| `src/credentials/static.ts` (**new**) | `staticApiKey`, `staticLogin` — the one-line conversions, exported from the barrel |
+| `src/rag/corrections/errors.ts` | `CatalogRecordDeleteError` |
+| `src/rag/mcp-tools/rag-collection-tools.ts` | the seven tool entries; required `identity`; `RagToolContext` without identity fields |
+| `src/rag/registry/simple-rag-registry.ts` | `adopt()` honouring a store name that differs from the logical name |
 
-**Adoption (one file per provider family):**
+**A new package:**
+
+| package | responsibility |
+|---|---|
+| `packages/sap-aicore-auth` (**new**) | `serviceKeyCredential(raw): { credential; apiBaseUrl }` and `parseServiceKey` — the existing `TokenProvider` (`sap-aicore-embedder/src/auth.ts`) and parser (`service-key.ts`) moved out with their tests |
+
+**Adoption, one row per package:**
 
 | file | responsibility |
 |---|---|
-| `packages/llm-agent-libs/src/providers.ts` | `credential?` on `LLMProviderConfig`, threaded to the five providers |
+| `packages/{openai,anthropic,deepseek,ollama}-llm/src/**` | `credential` **replacing** `apiKey` in each constructor, resolved per request |
+| `packages/openai-embedder/src/openai-embedder.ts` | same, and `apiKey` stops being required |
+| `packages/sap-aicore-{llm,embedder}/src/**` | `credential: IBearerCredential` + `apiBaseUrl`; stop reading `AICORE_SERVICE_KEY` |
+| `packages/{qdrant,pg-vector,hana-vector}-rag/src/**` | credential replacing `apiKey`/`user`/`password`; connection string address-only; catalog + record-first delete |
+| `packages/llm-agent-mcp/src/servers/*.ts` (**new**) | typed `IMcpServer` implementations demanding a credential |
+| `packages/llm-agent-libs/src/providers.ts` | `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver` and the five dynamic-import shims **deleted** |
 | `packages/llm-agent-libs/src/session/session-graph-factory.ts` | `ragRegistryFactory?`, session-owned registry and its disposal |
-| `packages/qdrant-rag/src/{qdrant-rag,qdrant-rag-provider}.ts` | `IApiKeyCredential`; async header building; catalog + record-first delete |
-| `packages/pg-vector-rag/src/{connection,pg-vector-rag-provider,schema}.ts` | `ISecretLoginCredential`; async resolver; catalog + record-first delete |
-| `packages/hana-vector-rag/src/{connection,hana-vector-rag-provider,schema}.ts` | as pg |
-| `packages/sap-aicore-llm/src/sap-core-ai-provider.ts` | `IBearerCredential`, destination built per call |
-| `packages/sap-aicore-embedder/src/{foundation-embedder,orchestration-embedder}.ts` | `IBearerCredential` replacing its own `TokenProvider` |
-| `packages/llm-agent-mcp/src/**` (http implementation) | credential demanded by that implementation's constructor |
+| `packages/llm-agent-server-libs/src/smart-agent/{smart-server,pipeline}.ts`, `skill-plugins-config.ts` | four DTOs lose secrets, gain `credentialRef`; `BuildAgentDeps.makeLlm` no longer defaulted |
+| `packages/llm-agent-server/src/**` | the composition root: `credentialFor`, the provider dispatch, `IModelResolver` |
 
 ---
-
 ## Phase A — `mcp-abap-adt-interfaces`: publish the three contracts
 
 Work in `~/prj/mcp-abap-adt-interfaces`. The branch and PR already exist: `feat/credential-contracts`, PR #90, one commit `fbc0311`, and a worktree at `.worktrees/feat-credential-contracts` holding **uncommitted corrections**. Nothing new is designed here — the contracts were written before the plan and the spec has since confirmed their shape and their number.
@@ -254,392 +261,53 @@ npm view @mcp-abap-adt/interfaces-auth dist-tags --prefer-online   # latest: 1.1
 
 ---
 
-## Phase B — `llm-agent`: adopt the contracts, and make the instance the enforcement point
+## Phase B, workstream 2 — every secret leaves every contract
 
-One branch, one PR, both workstreams. Line numbers below were measured at `b3cc465e`; every task's first step re-reads the file, because a line number is a hint and the code is the fact.
+One branch, one PR, both remaining workstreams. Line numbers were measured at `ff6a9142`; every task's first step re-reads the file, because a line number is a hint and the code is the fact.
 
 ```bash
 cd ~/prj/llm-agent && git checkout main && git pull --ff-only
 git checkout -b feat/credentials-and-rag-identity
 ```
 
-**No version bump and no release in this phase.** Entries go under `[Unreleased]`; the version is decided later, at the release, by what has accumulated (§10).
+**No version bump and no release in this phase.** Entries go under `[Unreleased]`; the version is decided at the release by what has accumulated (§10).
 
-### Task B1: take the dependency, and prove the types resolve
+### Task B1: the dependency, the two conversions, and the two contracts that lose `apiKey`
 
-`@mcp-abap-adt/interfaces-auth` must be a regular `dependencies` entry in every package that imports a contract, even though every import is `import type`: the re-exported type has to resolve in each consumer's own `tsc`, and a `devDependency` does not travel to a consumer of ours.
+The smallest change that makes every later task expressible: the contracts stop carrying a secret, and core ships the one-line conversions that make a call site's migration mechanical.
 
 **Files:**
-- Modify: the `package.json` of every package that will import a contract — `llm-agent`, `llm-agent-libs`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`, `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm`, `openai-embedder`, `sap-aicore-llm`, `sap-aicore-embedder`, `llm-agent-mcp`. The four concrete LLM providers are here because Task B2 resolves the secret **inside** them rather than in the wiring above them, and `openai-embedder` because Task B3 does the same.
-
-**`ollama-embedder` is deliberately not on the list.** It sends `Content-Type` and nothing else (`ollama.ts:42`, `:91`) — it does not authenticate, so there is no acceptor for a credential in it, and adding one would be a contract member nobody calls. An earlier draft of this task installed the dependency there anyway.
-- Create: `packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts`
+- Modify: the `package.json` of every package that imports a contract — `llm-agent`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`, `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm`, `openai-embedder`, `sap-aicore-llm`, `sap-aicore-embedder`, `llm-agent-mcp`. **Not** `ollama-embedder`: it sends `Content-Type` and nothing else (`ollama.ts:42`, `:91`), so a credential there would be a member nobody calls.
+- Create: `packages/llm-agent/src/credentials/static.ts`, exported from `packages/llm-agent/src/index.ts`
+- Modify: `packages/llm-agent/src/types.ts` (`LLMProviderConfig`, ~`:78` — remove `apiKey`)
+- Modify: `packages/llm-agent/src/interfaces/rag.ts` (`EmbedderFactoryConfig`, ~`:20` — remove `apiKey`)
+- Test: `packages/llm-agent/src/credentials/__tests__/static.test.ts`
 
 **Interfaces:**
 - Consumes: `IApiKeyCredential`, `IBearerCredential`, `ISecretLoginCredential` from `@mcp-abap-adt/interfaces-auth@^1.1.0`.
-- Produces: nothing. Later tasks rely only on the dependency being present.
+- Produces, and every later task uses these: `staticApiKey(secret): IApiKeyCredential`, `staticLogin(principal, secret): ISecretLoginCredential`. Both exported from `@mcp-abap-adt/llm-agent`.
 
 - [ ] **Step 1: write the failing test**
 
 ```ts
-// packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts
+// packages/llm-agent/src/credentials/__tests__/static.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type {
-  IApiKeyCredential,
-  IBearerCredential,
-  ISecretLoginCredential,
-} from '@mcp-abap-adt/interfaces-auth';
+import { staticApiKey, staticLogin } from '../../index.js';
 
-describe('interfaces-auth', () => {
-  it('is resolvable, and each contract is satisfiable by a plain object', async () => {
-    const key: IApiKeyCredential = { kind: 'api-key', secret: async () => 'sk' };
-    const bearer: IBearerCredential = { kind: 'bearer', token: async () => 'ey' };
-    const login: ISecretLoginCredential = {
-      kind: 'secret-login',
-      principal: 'app_user',
-      secret: async () => 'pw',
-    };
-    assert.equal(await key.secret(), 'sk');
-    assert.equal(await bearer.token(), 'ey');
-    assert.equal(`${login.principal}:${await login.secret()}`, 'app_user:pw');
-  });
-});
-```
-
-- [ ] **Step 2: run it and watch it fail for the right reason**
-
-```bash
-cd ~/prj/llm-agent
-npx tsc --noEmit -p packages/llm-agent/tsconfig.json 2>&1 | head -5
-```
-
-Expected: `error TS2307: Cannot find module '@mcp-abap-adt/interfaces-auth' or its corresponding type declarations.` Any other failure means something else is wrong — stop and read it.
-
-- [ ] **Step 3: install it into the eight packages**
-
-```bash
-for p in llm-agent llm-agent-libs qdrant-rag pg-vector-rag hana-vector-rag \
-         openai-llm anthropic-llm deepseek-llm ollama-llm \
-         openai-embedder \
-         sap-aicore-llm sap-aicore-embedder llm-agent-mcp; do
-  npm pkg set "dependencies.@mcp-abap-adt/interfaces-auth=^1.1.0" -w "packages/$p"
-done
-npm install
-grep -c '"@mcp-abap-adt/interfaces-auth"' package-lock.json   # expect > 0
-```
-
-- [ ] **Step 4: run the test and the type check**
-
-```bash
-node --import tsx/esm --test packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts
-npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
-```
-
-Expected: the test passes, `EXIT=0`.
-
-- [ ] **Step 5: commit**
-
-```bash
-git add package.json package-lock.json packages/*/package.json \
-        packages/llm-agent/src/__tests__/interfaces-auth-resolves.test.ts
-git commit -m "feat: depend on @mcp-abap-adt/interfaces-auth 1.1.0
-
-A regular dependency, not a dev one: every import of it is \`import type\`, so
-nothing enters the runtime graph, but the types must resolve in each consumer's
-own tsc and a devDependency would not travel."
-```
-
-### Task B2: the LLM providers accept a credential beside `apiKey`
-
-**Files:**
-- Modify: `packages/llm-agent/src/types.ts` (`LLMProviderConfig`, `:78` — **this** is the contract consumers pass; `providers.ts` only has a local copy)
-- Create: `packages/llm-agent/src/providers/resolve-provider-secret.ts`, exported from `packages/llm-agent/src/index.ts`. The helper belongs in **core**, not in `llm-agent-libs`: every provider package depends on `@mcp-abap-adt/llm-agent` and **none** depends on `llm-agent-libs` — the dependency runs the other way (measured: `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm` each list `@mcp-abap-adt/llm-agent`, and the last two also list `@mcp-abap-adt/openai-llm`). Declaring it in `providers.ts` would make it unimportable from the four places that must call it.
-- Modify: `packages/llm-agent-libs/src/providers.ts` (local `apiKey?: string` ~`:29`; the five constructions at ~`:186`, `:204`, `:222`, `:240`, `:258`; `makeDefaultLlm(apiKey, model, temperature)` ~`:302`)
-- Modify: `packages/openai-llm/src/**`, `packages/anthropic-llm/src/**`, `packages/deepseek-llm/src/**`, `packages/ollama-llm/src/**` — `OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`, `OllamaProvider` each hold the credential and resolve it in their own request path. `SapCoreAIProvider` is Task B6.
-- Test: `packages/llm-agent-libs/src/__tests__/providers-credential.test.ts` and one per provider package, e.g. `packages/openai-llm/src/__tests__/credential.test.ts`
-
-**Interfaces:**
-- Consumes: `IApiKeyCredential`, `IBearerCredential` (Task B1).
-- Produces: `LLMProviderConfig.credential?: IApiKeyCredential | IBearerCredential` in `llm-agent/src/types.ts`, and the same property on each concrete provider's own config. Tasks B6 and B7 reuse the name, so it is fixed here.
-
-- [ ] **Step 1: find out, per provider, whether a secret can be presented per request**
-
-This decides the whole task, and it differs by SDK.
-
-```bash
-sed -n '75,95p' packages/llm-agent/src/types.ts          # the real contract
-sed -n '20,40p;180,270p;295,315p' packages/llm-agent-libs/src/providers.ts
-for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
-  echo "=== $p"
-  grep -rn "apiKey\|Authorization\|new OpenAI\|new Anthropic\|fetch(" \
-    "packages/$p/src" --include='*.ts' | grep -v '__tests__' | head -12
-done
-```
-
-For each, record in the task report **where the secret enters the wire**:
-
-- a client constructed once with the key → resolve per request through the SDK's own hook (`defaultHeaders` as a function, or a `fetch` override), or rebuild nothing and say why;
-- headers assembled per request by our own code → resolve there, which is the easy case;
-- a key demanded as a required `string` (`makeDefaultLlm`, `:302`) → resolve before the call and throw the provider's existing missing-key error when it comes back `undefined`.
-
-Do not proceed on an assumption: an answer of “the SDK takes a string once” changes what Step 4 can honestly promise, and the plan would rather say so than pretend.
-
-- [ ] **Step 2: write the failing tests**
-
-Three behaviours, and the precedence one is the one that would otherwise be assumed:
-
-```ts
-// packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
-import { resolveProviderSecret } from '@mcp-abap-adt/llm-agent';
-
-const cred = (v: string): IApiKeyCredential => ({
-  kind: 'api-key',
-  secret: async () => v,
-});
-
-describe('resolveProviderSecret', () => {
-  it('uses the credential when both it and apiKey are given', async () => {
-    assert.equal(
-      await resolveProviderSecret({ apiKey: 'from-field', credential: cred('from-credential') }),
-      'from-credential',
-    );
+describe('the static conversions', () => {
+  it('wrap a key that does not rotate, and are asked on every use', async () => {
+    const c = staticApiKey('sk-live');
+    assert.equal(c.kind, 'api-key');
+    assert.equal(await c.secret(), 'sk-live');
+    assert.equal(await c.secret(), 'sk-live');
   });
 
-  it('falls back to apiKey when no credential is given', async () => {
-    assert.equal(await resolveProviderSecret({ apiKey: 'from-field' }), 'from-field');
-  });
-
-  it('asks the credential on every call, so a rotated secret rotates', async () => {
-    let n = 0;
-    const rotating: IApiKeyCredential = { kind: 'api-key', secret: async () => `k${++n}` };
-    assert.equal(await resolveProviderSecret({ credential: rotating }), 'k1');
-    assert.equal(await resolveProviderSecret({ credential: rotating }), 'k2');
-  });
-
-  it('returns undefined when neither is given, rather than inventing one', async () => {
-    assert.equal(await resolveProviderSecret({}), undefined);
-  });
-});
-```
-
-- [ ] **Step 2b: write the test that actually matters — two real calls through a provider**
-
-The helper test above pins precedence, and calling a helper twice proves nothing about the provider's lifetime. This one would fail if the secret were resolved once at construction, which is exactly the mistake the first draft of this task made.
-
-```ts
-// packages/openai-llm/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
-import { OpenAIProvider } from '../index.js';
-
-describe('OpenAIProvider credential', () => {
-  it('presents a freshly asked secret on EVERY request, not the one it was built with', async () => {
-    const authorizations: Array<string | null> = [];
-    let n = 0;
-    const credential: IApiKeyCredential = { kind: 'api-key', secret: async () => `sk-${++n}` };
-
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_url: string | URL, init: RequestInit = {}) => {
-      authorizations.push(new Headers(init.headers as HeadersInit).get('Authorization'));
-      return new Response(
-        JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    }) as typeof fetch;
-
-    try {
-      const provider = new OpenAIProvider({ model: 'gpt-4o-mini', credential });
-      await provider.chat?.([{ role: 'user', content: 'a' }]);
-      await provider.chat?.([{ role: 'user', content: 'b' }]);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-
-    assert.equal(authorizations.length, 2, 'both requests went out');
-    assert.notEqual(
-      authorizations[0],
-      authorizations[1],
-      'a secret resolved once at construction would be identical here',
-    );
-    assert.deepEqual(authorizations, ['Bearer sk-1', 'Bearer sk-2']);
-  });
-});
-```
-
-Adjust the method name and the response body to each provider's real call shape, from Step 1. Write the same test for `anthropic-llm`, `deepseek-llm` and `ollama-llm`.
-
-- [ ] **Step 3: run them and watch them fail**
-
-```bash
-node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
-node --import tsx/esm --test packages/openai-llm/src/__tests__/credential.test.ts
-```
-
-Expected: `resolveProviderSecret` is not exported, and the provider test fails on the unknown `credential` option — or, worse and more instructive, passes the same `Authorization` twice.
-
-- [ ] **Step 4: add the property and the resolver**
-
-```ts
-// packages/llm-agent/src/providers/resolve-provider-secret.ts — in CORE, so every
-// provider package can import it; none of them depends on llm-agent-libs.
-import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-
-/**
- * A key that does not rotate is still a credential. This exists so no config
- * needs a second way to carry a secret — see §4.6.2: the plain fields are
- * deprecated on arrival and gone at the next major, and this is the one-line
- * conversion that makes that removal cheap for a consumer.
- */
-export function staticApiKey(secret: string): IApiKeyCredential {
-  return { kind: 'api-key', secret: async () => secret };
-}
-
-export function staticLogin(principal: string, secret: string): ISecretLoginCredential {
-  return { kind: 'secret-login', principal, secret: async () => secret };
-}
-
-/** The secret to present, credential first. `undefined` means neither was given. */
-export async function resolveProviderSecret(cfg: {
-  apiKey?: string;
-  credential?: IApiKeyCredential | IBearerCredential;
-}): Promise<string | undefined> {
-  if (cfg.credential) {
-    return cfg.credential.kind === 'bearer'
-      ? cfg.credential.token()
-      : cfg.credential.secret();
-  }
-  return cfg.apiKey;
-}
-```
-
-```ts
-// packages/llm-agent/src/types.ts — beside the existing apiKey, NOT replacing it
-export interface LLMProviderConfig {
-  // … existing fields unchanged, including:
-  /** @deprecated Pass `credential: staticApiKey(key)` instead. Removed at the next major (§9.11). */
-  apiKey?: string;
-  /**
-   * Where the secret comes from, when it is not a constant. Outranks `apiKey`:
-   * it is the only one of the two passed deliberately for this purpose, and it
-   * is asked on every call so a rotated key rotates (§4.6.1, §4.6.2).
-   */
-  credential?: IApiKeyCredential | IBearerCredential;
-}
-```
-
-`providers.ts`'s local config gets the same property, and forwards it. `deepseek-llm` and `ollama-llm` both depend on `@mcp-abap-adt/openai-llm`, so check whether they reuse its request path before writing the same code twice — if they do, the change lands once in `openai-llm` and they inherit it.
-
-**Pass the credential down; do not resolve it here.** At each of the five construction sites, forward `credential: cfg.credential` alongside the existing `apiKey: cfg.apiKey`. Resolving in the wiring would hand the provider a plain string and freeze the secret for the provider's whole lifetime — the first draft of this task said exactly that, and it contradicts the one thing the contract insists on.
-
-The helper lives in core, and the **call** goes in each provider's request path — where Step 1 said the secret enters the wire, and never in a constructor:
-
-```ts
-// inside a provider, per request — not in its constructor
-const secret = await resolveProviderSecret(this.cfg);
-if (!secret) throw new MissingApiKeyError(/* the provider's existing error */);
-```
-
-`makeDefaultLlm(apiKey, model, temperature)` (`:302`) is not adapted at all — the spec removes it with `makeLlm` (§4.6.2).
-
-- [ ] **Step 5: run everything this task touched — six packages, not two**
-
-```bash
-node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/providers-credential.test.ts
-for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
-  echo "=== $p"; node --import tsx/esm --test "packages/$p/src/__tests__/credential.test.ts"
-done
-for p in llm-agent llm-agent-libs openai-llm anthropic-llm deepseek-llm ollama-llm; do
-  npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
-done
-npx biome check packages/llm-agent/src/providers packages/llm-agent-libs/src/providers.ts \
-  packages/openai-llm/src packages/anthropic-llm/src packages/deepseek-llm/src packages/ollama-llm/src
-```
-
-Every `tsc` must be `0`. A provider package that fails means the credential reached its config but not its request path.
-
-- [ ] **Step 6: prove the old path is untouched**
-
-```bash
-node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/ 2>&1 | tail -5
-```
-
-Every existing provider test must still pass unchanged. If one needed editing, `apiKey` was widened rather than joined — undo and add, do not widen.
-
-- [ ] **Step 7: commit**
-
-```bash
-git add packages/llm-agent/src/types.ts \
-        packages/llm-agent/src/providers/resolve-provider-secret.ts \
-        packages/llm-agent/src/index.ts \
-        packages/llm-agent-libs/src/providers.ts \
-        packages/llm-agent-libs/src/__tests__/providers-credential.test.ts \
-        packages/openai-llm/src packages/anthropic-llm/src \
-        packages/deepseek-llm/src packages/ollama-llm/src
-# `git status --porcelain` lists STAGED files too, so it can never be empty right
-# after an add. Check the two things separately instead:
-git diff --quiet || { echo "unstaged changes remain in this task's scope"; exit 1; }
-git diff --cached --name-only   # read this list: it must be exactly what the task touched
-git commit -m "feat: LLM providers accept a credential and resolve it per request
-
-A new optional property, never a widening of apiKey: a consumer that reads
-cfg.apiKey keeps compiling, which widening would have broken (#306 measured the
-same move as TS2339). The credential outranks the field and is asked on every
-call, so a rotated secret rotates."
-```
-
-### Task B3: the embedder factory carries a credential without becoming async
-
-`EmbedderFactory = (cfg: EmbedderFactoryConfig) => IEmbedder` is public — `interfaces/rag.ts:35`, re-exported through `interfaces/index.ts:140-141` and `index.ts:14` — and consumers implement it. It returns synchronously, so a factory cannot await a secret before constructing. It does not need to: the credential goes **into** the embedder, which asks per embed call.
-
-**Files:**
-- Modify: `packages/llm-agent/src/interfaces/rag.ts` (`EmbedderFactoryConfig`, ~`:20`)
-- Modify: `packages/openai-embedder/src/openai-embedder.ts` — the **concrete** embedder, which today demands `apiKey: string` (`:6`), throws without it (`:19`), stores it (`:25`) and reads it at two header sites (`:48`, `:109`). Both sites sit inside `await fetch(…)`, so resolving per request costs no signature.
-- Test: `packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts` and `packages/openai-embedder/src/__tests__/credential.test.ts`
-
-**Interfaces:**
-- Consumes: `IApiKeyCredential`, `IBearerCredential`; `resolveProviderSecret` from core (Task B2).
-- Produces: `EmbedderFactoryConfig.credential?`, the same property on `OpenAiEmbedderConfig`, and the rule that `EmbedderFactory` stays synchronous.
-
-`ollama-embedder` is out of scope here for the reason Task B1 gives: it does not authenticate.
-
-- [ ] **Step 1: write the failing test — the factory must still be sync**
-
-```ts
-// packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
-import type { EmbedderFactory, EmbedderFactoryConfig, IEmbedder } from '../interfaces/rag.js';
-
-describe('EmbedderFactoryConfig.credential', () => {
-  it('reaches the embedder, which asks for it per call — the factory stays synchronous', async () => {
-    const asked: string[] = [];
-    const credential: IApiKeyCredential = {
-      kind: 'api-key',
-      secret: async () => {
-        asked.push('asked');
-        return 'sk-live';
-      },
-    };
-
-    // The factory returns an IEmbedder directly: no Promise, no await.
-    const factory: EmbedderFactory = (cfg: EmbedderFactoryConfig): IEmbedder => ({
-      async embed(texts: string[]) {
-        const secret = cfg.credential?.kind === 'api-key' ? await cfg.credential.secret() : cfg.apiKey;
-        assert.equal(secret, 'sk-live');
-        return texts.map(() => [0]);
-      },
-    }) as IEmbedder;
-
-    const embedder = factory({ credential, model: 'm' });
-    await embedder.embed(['a']);
-    await embedder.embed(['b']);
-    assert.equal(asked.length, 2, 'asked once per embed call, not once at construction');
+  it('wrap an identity and a secret, keeping them together', async () => {
+    const c = staticLogin('rag_svc', 'hunter2');
+    assert.equal(c.kind, 'secret-login');
+    assert.equal(c.principal, 'rag_svc');
+    assert.equal(await c.secret(), 'hunter2');
   });
 });
 ```
@@ -647,36 +315,372 @@ describe('EmbedderFactoryConfig.credential', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --import tsx/esm --test packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
+cd ~/prj/llm-agent
+npx tsc --noEmit -p packages/llm-agent/tsconfig.json 2>&1 | head -5
 ```
 
-Expected: a type error on `credential` — the property does not exist on `EmbedderFactoryConfig`.
+Expected: `error TS2307: Cannot find module '@mcp-abap-adt/interfaces-auth'`. Any other failure means something else is wrong — read it.
 
-- [ ] **Step 3: add the property**
+- [ ] **Step 3: install the dependency**
+
+```bash
+for p in llm-agent qdrant-rag pg-vector-rag hana-vector-rag \
+         openai-llm anthropic-llm deepseek-llm ollama-llm openai-embedder \
+         sap-aicore-llm sap-aicore-embedder llm-agent-mcp; do
+  npm pkg set "dependencies.@mcp-abap-adt/interfaces-auth=^1.1.0" -w "packages/$p"
+done
+npm install
+grep -c '"@mcp-abap-adt/interfaces-auth"' package-lock.json   # expect > 0
+```
+
+- [ ] **Step 4: write the conversions**
 
 ```ts
-// packages/llm-agent/src/interfaces/rag.ts — beside apiKey, not replacing it
-export interface EmbedderFactoryConfig {
-  url?: string;
-  /** @deprecated Pass `credential: staticApiKey(key)` instead. Removed at the next major (§9.11). */
-  apiKey?: string;
-  model?: string;
-  timeoutMs?: number;
-  /**
-   * Where the secret comes from. The factory does NOT resolve it — it returns
-   * an IEmbedder synchronously, so it cannot await. It hands this to the
-   * embedder, which asks per embed call, which is what "every secret is a
-   * function, asked on each use" requires anyway (§4.6.2).
-   */
-  credential?: IApiKeyCredential | IBearerCredential;
+// packages/llm-agent/src/credentials/static.ts
+import type {
+  IApiKeyCredential,
+  ISecretLoginCredential,
+} from '@mcp-abap-adt/interfaces-auth';
+
+/**
+ * A key that does not rotate is still a credential. This exists so no config needs
+ * a second way to carry a secret: it is the one-line conversion that makes removing
+ * the plain fields cheap for a consumer (§4.6.2).
+ */
+export function staticApiKey(secret: string): IApiKeyCredential {
+  return { kind: 'api-key', secret: async () => secret };
+}
+
+export function staticLogin(
+  principal: string,
+  secret: string,
+): ISecretLoginCredential {
+  return { kind: 'secret-login', principal, secret: async () => secret };
 }
 ```
 
-`EmbedderFactory`'s signature does not change. Do not make it return a `Promise` — that breaks every consumer that implements one.
+- [ ] **Step 5: take `apiKey` off both contracts, and see what breaks**
 
-- [ ] **Step 3b: write the failing test for the concrete embedder**
+Delete `apiKey?: string` from `LLMProviderConfig` (`types.ts`) and from `EmbedderFactoryConfig` (`interfaces/rag.ts`). Then find every reader, because the compiler is the inventory:
 
-The abstract test above proves the config carries a credential. This one proves a shipped embedder actually asks per request, which is where the promise is either kept or quietly dropped.
+```bash
+npx tsc -b 2>&1 | grep -E "error TS" | sed 's/(.*//' | sort -u
+```
+
+Expected: errors in `llm-agent-libs/src/providers.ts` (deleted in Task B8), the four concrete providers (Task B3), `openai-embedder` (B4), the SAP packages (B5) and the server libs (B9). **Write that list into the task report** — it is the real scope of workstream 2, measured rather than predicted, and later tasks are checked against it.
+
+Do **not** fix them here. This task ends with a broken build in the packages the later tasks own, which is why it is the only task whose commit is allowed to leave `tsc -b` red.
+
+- [ ] **Step 6: run the new test and commit**
+
+```bash
+node --import tsx/esm --test packages/llm-agent/src/credentials/__tests__/static.test.ts
+npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "CORE=$?"   # core itself must be 0
+git add package.json package-lock.json packages/*/package.json \
+        packages/llm-agent/src/credentials packages/llm-agent/src/index.ts \
+        packages/llm-agent/src/types.ts packages/llm-agent/src/interfaces/rag.ts
+git commit -m "feat(llm-agent)!: contracts carry no secret; staticApiKey/staticLogin convert a call site
+
+LLMProviderConfig.apiKey and EmbedderFactoryConfig.apiKey are removed. A plain key is
+one way of OBTAINING what an acceptor needs, not the thing itself, and a static key is
+already a credential — so carrying both offered two ways to do one job (principle 9).
+
+EmbedderFactoryConfig is the case that proves it: the framework passed that object to a
+factory the CONSUMER wrote, carrying a secret from the consumer back to the consumer.
+
+BREAKING: both fields are gone. staticApiKey(key) and staticLogin(user, pw) make each
+call site a one-line change. The packages that read them are fixed in the tasks that
+own them; this commit leaves them red on purpose."
+```
+
+### Task B2: `@mcp-abap-adt/sap-aicore-auth` — the token exchange, moved and exported
+
+`AICORE_SERVICE_KEY` holds OAuth client credentials, not a token: something must exchange them, cache the result and refresh before expiry. That something exists and is tested — it is just not exported, and neither SAP package depends on the other, so it needs a home both can use.
+
+**Files:**
+- Create: `packages/sap-aicore-auth/` — `package.json`, `tsconfig.json`, `src/index.ts`
+- Move: `packages/sap-aicore-embedder/src/auth.ts` → `packages/sap-aicore-auth/src/token-provider.ts` (with `auth.test.ts`)
+- Move: `packages/sap-aicore-embedder/src/service-key.ts` → `packages/sap-aicore-auth/src/service-key.ts` (with `service-key.test.ts`)
+- Create: `packages/sap-aicore-auth/src/service-key-credential.ts`
+- Modify: `packages/sap-aicore-embedder/package.json` (depend on the new package), and its imports
+
+**Interfaces:**
+- Consumes: `IBearerCredential`.
+- Produces: `serviceKeyCredential(raw): { credential: IBearerCredential; apiBaseUrl: string }` and `parseServiceKey(raw): ParsedServiceKey`. Tasks B5 and B10 both use them.
+
+- [ ] **Step 1: read what is being moved, and confirm it is complete**
+
+```bash
+cd ~/prj/llm-agent
+wc -l packages/sap-aicore-embedder/src/{auth,service-key,auth.test,service-key.test}.ts
+grep -n "class TokenProvider\|grant_type=client_credentials\|cachedExpiryMs\|REFRESH_WINDOW_MS" \
+  packages/sap-aicore-embedder/src/auth.ts
+grep -n "export" packages/sap-aicore-embedder/src/service-key.ts
+```
+
+The `TokenProvider` already caches, tracks expiry and refreshes inside a window; `parseServiceKey` already returns `apiBaseUrl` from `serviceurls.AI_API_URL`. This task moves working code — it does not write an exchange.
+
+- [ ] **Step 2: write the failing test for the one new thing**
+
+```ts
+// packages/sap-aicore-auth/src/__tests__/service-key-credential.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { serviceKeyCredential } from '../index.js';
+
+const key = JSON.stringify({
+  clientid: 'cid',
+  clientsecret: 'csecret',
+  url: 'https://auth.example',
+  serviceurls: { AI_API_URL: 'https://aicore.example/v2' },
+});
+
+describe('serviceKeyCredential', () => {
+  it('returns the credential AND the address, because a service key holds both', async () => {
+    const originalFetch = globalThis.fetch;
+    let exchanges = 0;
+    globalThis.fetch = (async () => {
+      exchanges += 1;
+      return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const { credential, apiBaseUrl } = serviceKeyCredential(key);
+      assert.equal(apiBaseUrl, 'https://aicore.example/v2', 'the address is not a credential');
+      assert.equal(credential.kind, 'bearer');
+      assert.equal(await credential.token(), 'tok');
+      assert.equal(await credential.token(), 'tok');
+      assert.equal(exchanges, 1, 'cached — the moved TokenProvider does this already');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('parses nothing until asked, so a deployment without the key can still start', () => {
+    // Constructing must not throw on a malformed key: nothing is read until token().
+    assert.doesNotThrow(() => serviceKeyCredential(key));
+  });
+});
+```
+
+- [ ] **Step 3: run it and watch it fail** — the package does not exist.
+
+```bash
+node --import tsx/esm --test packages/sap-aicore-auth/src/__tests__/service-key-credential.test.ts
+```
+
+- [ ] **Step 4: create the package and move the two files**
+
+```bash
+mkdir -p packages/sap-aicore-auth/src/__tests__
+git mv packages/sap-aicore-embedder/src/auth.ts packages/sap-aicore-auth/src/token-provider.ts
+git mv packages/sap-aicore-embedder/src/auth.test.ts packages/sap-aicore-auth/src/token-provider.test.ts
+git mv packages/sap-aicore-embedder/src/service-key.ts packages/sap-aicore-auth/src/service-key.ts
+git mv packages/sap-aicore-embedder/src/service-key.test.ts packages/sap-aicore-auth/src/service-key.test.ts
+```
+
+Copy `package.json` and `tsconfig.json` from `sap-aicore-embedder` and adjust `name`, `description` and dependencies — it needs `@mcp-abap-adt/interfaces-auth` and nothing from the SDK. Then:
+
+```ts
+// packages/sap-aicore-auth/src/service-key-credential.ts
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import { parseServiceKey } from './service-key.js';
+import { TokenProvider } from './token-provider.js';
+
+/**
+ * A service key holds OAuth client credentials AND an address. The credential is the
+ * secret half; `apiBaseUrl` is not a credential (§4.6.3) and goes to the provider's
+ * own config. Parsing is deferred so a deployment that never names this reference
+ * does not need the key to be present or valid.
+ */
+export function serviceKeyCredential(raw: string): {
+  credential: IBearerCredential;
+  apiBaseUrl: string;
+} {
+  let provider: TokenProvider | undefined;
+  const parsed = () => parseServiceKey(raw);
+  return {
+    credential: {
+      kind: 'bearer',
+      async token() {
+        const { clientId, clientSecret, tokenUrl } = parsed();
+        provider ??= new TokenProvider({ clientId, clientSecret, tokenUrl });
+        return provider.getToken();
+      },
+    },
+    get apiBaseUrl() {
+      return parsed().apiBaseUrl;
+    },
+  };
+}
+```
+
+- [ ] **Step 5: repoint `sap-aicore-embedder` and run both packages' suites**
+
+```bash
+npm pkg set "dependencies.@mcp-abap-adt/sap-aicore-auth=*" -w packages/sap-aicore-embedder
+npm install
+npm test -w packages/sap-aicore-auth
+npm test -w packages/sap-aicore-embedder
+npx tsc --noEmit -p packages/sap-aicore-auth/tsconfig.json; echo "AUTH=$?"
+```
+
+The two moved test files must pass **unedited** beyond their import paths — that is the evidence this was a move and not a rewrite.
+
+- [ ] **Step 6: commit**
+
+```bash
+git add packages/sap-aicore-auth packages/sap-aicore-embedder package-lock.json
+git commit -m "feat(sap-aicore-auth): the token exchange, moved out and exported
+
+AICORE_SERVICE_KEY holds client credentials, not a token, so something must exchange,
+cache and refresh them. That code existed and was tested — TokenProvider plus
+parseServiceKey — and was internal to sap-aicore-embedder, which sap-aicore-llm does
+not depend on. It moves to a package both can use, with its tests unedited beyond
+their import paths.
+
+serviceKeyCredential returns { credential, apiBaseUrl }: a service key holds an
+address as well, an address is not a credential, and parsing is deferred so a
+deployment that never names this reference needs no key at all."
+```
+
+### Task B3: the four concrete LLM providers take a credential instead of a key
+
+Same change four times, so one task and one diff. Each config extends `LLMProviderConfig`, which lost `apiKey` in Task B1, so each now declares its own `credential` typed for what that target speaks — which is the point: a shared base could only type the union, and then `OpenAIConfig` would accept a login it cannot use.
+
+**Files:**
+- Modify: `packages/openai-llm/src/openai-provider.ts` (`OpenAIConfig`, ~`:15`)
+- Modify: `packages/anthropic-llm/src/anthropic-provider.ts` (~`:15`)
+- Modify: `packages/deepseek-llm/src/deepseek-provider.ts` (~`:12`)
+- Modify: `packages/ollama-llm/src/ollama-provider.ts` (~`:8`) — note `OllamaProvider extends OpenAIProvider`, so check whether it inherits the change before writing it twice
+- Test: `packages/openai-llm/src/__tests__/credential.test.ts` and one per package
+
+**Interfaces:**
+- Consumes: `IApiKeyCredential` (B1).
+- Produces: `credential?: IApiKeyCredential` on all four configs. Ollama's stays **optional** — it accepts a key today (`llm-agent-libs/src/providers.ts:204` passes one) and a gateway in front of it may require one; the design replaces plain keys with typed credentials rather than removing the capability.
+
+- [ ] **Step 1: find where each provider puts the secret on the wire**
+
+```bash
+cd ~/prj/llm-agent
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
+  echo "=== $p"
+  grep -rn "apiKey\|Authorization\|x-api-key\|new OpenAI\|new Anthropic\|fetch(" \
+    "packages/$p/src" --include='*.ts' | grep -v '\.test\.' | head -10
+done
+```
+
+Record per provider whether the secret enters through our own header assembly (resolve there, per request) or through an SDK client constructed once (resolve through that SDK's own per-request hook, or state in the report that it cannot be and why). Do not proceed on an assumption.
+
+- [ ] **Step 2: write the failing test — per request, not per construction**
+
+```ts
+// packages/openai-llm/src/__tests__/credential.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
+import { OpenAIProvider } from '../index.js';
+
+describe('OpenAIProvider credential', () => {
+  it('presents a freshly asked secret on EVERY request', async () => {
+    const seen: Array<string | null> = [];
+    let n = 0;
+    const rotating: IApiKeyCredential = { kind: 'api-key', secret: async () => `sk-${++n}` };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_u: string | URL, init: RequestInit = {}) => {
+      seen.push(new Headers(init.headers as HeadersInit).get('Authorization'));
+      return new Response(
+        JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    try {
+      const p = new OpenAIProvider({ credential: rotating, model: 'gpt-4o-mini' });
+      await p.chat([{ role: 'user', content: 'a' }]);
+      await p.chat([{ role: 'user', content: 'b' }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(seen, ['Bearer sk-1', 'Bearer sk-2'],
+      'a secret resolved once at construction would be identical here');
+  });
+
+  it('accepts a static key through the conversion, so a call site is one line', async () => {
+    const p = new OpenAIProvider({ credential: staticApiKey('sk-static'), model: 'm' });
+    assert.ok(p);
+  });
+
+  it('refuses to construct with no credential at all', () => {
+    // @ts-expect-error a provider that cannot authenticate is not constructible
+    assert.throws(() => new OpenAIProvider({ model: 'm' }));
+  });
+});
+```
+
+Adjust the method name and response body per provider from Step 1, and write the twin for anthropic (`x-api-key`), deepseek and ollama (where the credential is optional, so its third case asserts construction **succeeds** without one).
+
+- [ ] **Step 3: run them and watch them fail.**
+
+```bash
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
+  node --import tsx/esm --test "packages/$p/src/__tests__/credential.test.ts"
+done
+```
+
+- [ ] **Step 4: implement**
+
+```ts
+// each provider's own config, typed for what THIS target speaks — which is why the
+// shared base carries nothing (§4.6.2)
+export interface OpenAIConfig extends LLMProviderConfig {
+  credential: IApiKeyCredential;        // required: it cannot authenticate without one
+  model?: string;
+}
+
+// and resolved in the request path, never the constructor: a secret resolved once
+// would be frozen for the object's lifetime
+private async authorization(): Promise<string> {
+  return `Bearer ${await this.credential.secret()}`;
+}
+```
+
+Ollama's stays `credential?: IApiKeyCredential`, and its header is set only when one is configured. `OllamaProvider extends OpenAIProvider`, so check whether it inherits the change before writing it twice.
+
+- [ ] **Step 5: run all four suites and type-check**
+
+```bash
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
+  npm test -w "packages/$p"; npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
+done
+```
+
+- [ ] **Step 6: commit**
+
+```bash
+git add packages/openai-llm/src packages/anthropic-llm/src packages/deepseek-llm/src packages/ollama-llm/src
+git commit -m "feat!: the four LLM providers take a credential, resolved per request
+
+Each config extends LLMProviderConfig, which no longer carries apiKey, so each declares
+its own credential typed for what that target speaks — a shared base could only type
+the union, and then OpenAIConfig would accept a login it cannot use.
+
+Resolved in the request path, not the constructor: a secret resolved once would be
+frozen for the object's lifetime, which is the one thing the contract insists against.
+Ollama's stays optional, because it accepts a key today and a gateway may require one."
+```
+
+### Task B4: `openai-embedder` takes a credential; `ollama-embedder` is untouched
+
+**Files:**
+- Modify: `packages/openai-embedder/src/openai-embedder.ts` — `apiKey: string` required (`:6`), thrown on when missing (`:19`), stored (`:25`), read at two header sites (`:48`, `:109`), both already inside `await fetch(…)`
+- Test: `packages/openai-embedder/src/__tests__/credential.test.ts`
+
+**Interfaces:** consumes `IApiKeyCredential` and `staticApiKey`; produces `credential` on `OpenAiEmbedderConfig`, replacing `apiKey`.
+
+- [ ] **Step 1: write the failing test**
 
 ```ts
 // packages/openai-embedder/src/__tests__/credential.test.ts
@@ -686,7 +690,7 @@ import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import { OpenAiEmbedder } from '../openai-embedder.js';
 
 describe('OpenAiEmbedder credential', () => {
-  it('asks per request, and a rotated secret rotates', async () => {
+  it('asks per request, so a rotated secret rotates', async () => {
     const seen: Array<string | null> = [];
     let n = 0;
     const credential: IApiKeyCredential = { kind: 'api-key', secret: async () => `sk-${++n}` };
@@ -699,166 +703,18 @@ describe('OpenAiEmbedder credential', () => {
       });
     }) as typeof fetch;
     try {
-      const embedder = new OpenAiEmbedder({ model: 'text-embedding-3-small', credential });
-      await embedder.embed(['a']);
-      await embedder.embed(['b']);
+      const e = new OpenAiEmbedder({ model: 'text-embedding-3-small', credential });
+      await e.embed(['a']);
+      await e.embed(['b']);
     } finally {
       globalThis.fetch = originalFetch;
     }
     assert.deepEqual(seen, ['Bearer sk-1', 'Bearer sk-2']);
   });
 
-  it('still throws when neither a key nor a credential is given', () => {
-    // @ts-expect-error neither is configured
-    assert.throws(() => new OpenAiEmbedder({ model: 'm' }));
-  });
-
-  it('still accepts a plain apiKey, exactly as before', async () => {
-    const seen: Array<string | null> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_u: string | URL, init: RequestInit = {}) => {
-      seen.push(new Headers(init.headers as HeadersInit).get('Authorization'));
-      return new Response(JSON.stringify({ data: [{ embedding: [0] }] }), { status: 200 });
-    }) as typeof fetch;
-    try {
-      await new OpenAiEmbedder({ model: 'm', apiKey: 'sk-static' }).embed(['a']);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-    assert.deepEqual(seen, ['Bearer sk-static']);
-  });
-});
-```
-
-- [ ] **Step 3c: implement it**
-
-`apiKey` becomes optional so a credential-only configuration is expressible, and the constructor's existing throw fires only when **neither** is given — so the current error and its test survive untouched. Note the shape of that change honestly: for a *caller* it is a widening and safe; for anyone *reading* `OpenAiEmbedderConfig.apiKey` the type goes from `string` to `string | undefined`, and no reader outside the package is known.
-
-**The class keeps no `config`.** It copies what it needs into fields — `private readonly apiKey: string` (`:15`), `baseURL`, `model` — so there is no `this.config` to hand the helper, and an earlier draft of this step told you to pass one. Two fields replace the one:
-
-```ts
-export interface OpenAiEmbedderConfig {
-  /** @deprecated Pass `credential: staticApiKey(key)` instead. Removed at the next major (§9.11). */
-  apiKey?: string;                       // was: apiKey: string (required)
-  credential?: IApiKeyCredential | IBearerCredential;
-  baseURL?: string;
-  model: string;
-}
-
-export class OpenAiEmbedder implements IEmbedderBatch {
-  private readonly baseURL: string;
-  private readonly apiKey?: string;                                   // was: string
-  private readonly credential?: IApiKeyCredential | IBearerCredential; // new
-  readonly model: string;
-
-  constructor(config: OpenAiEmbedderConfig) {
-    // The existing message is kept verbatim: openai-embedder.test.ts asserts on it.
-    if (!config.apiKey && !config.credential) {
-      throw new Error('OpenAI API key is required for embedding');
-    }
-    if (!config.model) {
-      throw new Error("OpenAIEmbedder requires a 'model'");
-    }
-    this.apiKey = config.apiKey;
-    this.credential = config.credential;
-    this.baseURL = (config.baseURL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
-    this.model = config.model;
-  }
-
-  /** Asked per request, from the two fields — there is no config object to pass. */
-  private async authorization(): Promise<string> {
-    const secret = await resolveProviderSecret({
-      apiKey: this.apiKey,
-      credential: this.credential,
-    });
-    if (!secret) throw new RagError('OpenAI API key is required for embedding', 'RAG_NO_SECRET');
-    return `Bearer ${secret}`;
-  }
-}
-
-// at BOTH header sites (:48, :109), already inside `await fetch(…)`:
-Authorization: await this.authorization(),
-```
-
-- [ ] **Step 4: run both tests and both type checks**
-
-```bash
-node --import tsx/esm --test packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts
-node --import tsx/esm --test packages/openai-embedder/src/__tests__/credential.test.ts
-node --import tsx/esm --test packages/openai-embedder/src/openai-embedder.test.ts
-npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "CORE=$?"
-npx tsc --noEmit -p packages/openai-embedder/tsconfig.json; echo "EMBEDDER=$?"
-```
-
-The pre-existing `openai-embedder.test.ts` must pass **unedited** — it asserts the missing-key throw, which is exactly the behaviour that must survive.
-
-- [ ] **Step 5: commit**
-
-```bash
-git add packages/llm-agent/src/interfaces/rag.ts \
-        packages/llm-agent/src/__tests__/embedder-factory-credential.test.ts \
-        packages/openai-embedder/src
-git commit -m "feat: embedders carry a credential, and the concrete one asks per request
-
-EmbedderFactory stays synchronous, so it cannot resolve the secret; it hands the
-credential to the embedder, which asks per embed call — which is what the contract
-required anyway. Making the factory async would have broken every consumer that
-implements one.
-
-OpenAiEmbedder's apiKey becomes optional so a credential-only configuration is
-expressible, and its existing throw now fires only when neither is given, so the
-current error and its test are untouched. ollama-embedder is not included: it
-sends Content-Type and nothing else, so it has no acceptor for a credential."
-```
-
-### Task B4: `qdrant-rag` accepts an API-key credential
-
-The key is read in three places, every one already inside an `async` function, and `_headers()` is private with a single caller — so making it async is invisible outside the package, whose `exports` map is closed to `"."`.
-
-**Files:**
-- Modify: `packages/qdrant-rag/src/qdrant-rag.ts` (`apiKey?: string` ~`:32`, field ~`:44`, `_headers()` ~`:56`, its only caller ~`:85`)
-- Modify: `packages/qdrant-rag/src/qdrant-rag-provider.ts` (~`:18`, `:37`, `:45`, `:65`, and the two header sites ~`:79`, `:108`)
-- Test: `packages/qdrant-rag/src/__tests__/credential.test.ts`
-
-**Interfaces:**
-- Consumes: `IApiKeyCredential`; the precedence rule from Task B2.
-- Produces: `QdrantRagConfig.credential?` and `QdrantRagProviderConfig.credential?`.
-
-- [ ] **Step 1: write the failing test**
-
-```ts
-// packages/qdrant-rag/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
-import { QdrantRag } from '../qdrant-rag.js';
-
-const embedder = { embed: async (t: string[]) => t.map(() => [0]) } as never;
-
-describe('QdrantRag credential', () => {
-  it('sends the credential api-key, asked per request, and prefers it over apiKey', async () => {
-    const sent: Array<string | null> = [];
-    let n = 0;
-    const credential: IApiKeyCredential = { kind: 'api-key', secret: async () => `k${++n}` };
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_url: string, init: RequestInit) => {
-      sent.push(new Headers(init.headers as HeadersInit).get('api-key'));
-      return new Response('{}', { status: 200 });
-    }) as typeof fetch;
-    try {
-      const rag = new QdrantRag({
-        url: 'http://q',
-        collectionName: 'c',
-        embedder,
-        apiKey: 'from-field',
-        credential,
-      });
-      await rag.query('a').catch(() => {});
-      await rag.query('b').catch(() => {});
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-    assert.deepEqual(sent.slice(0, 2), ['k1', 'k2'], 'asked per request, credential wins');
+  it('still throws when it has no credential, with the message its existing test asserts', () => {
+    // @ts-expect-error no credential configured
+    assert.throws(() => new OpenAiEmbedder({ model: 'm' }), /API key is required/);
   });
 });
 ```
@@ -866,170 +722,74 @@ describe('QdrantRag credential', () => {
 - [ ] **Step 2: run it and watch it fail**
 
 ```bash
-node --import tsx/esm --test packages/qdrant-rag/src/__tests__/credential.test.ts
+node --import tsx/esm --test packages/openai-embedder/src/__tests__/credential.test.ts
 ```
-
-Expected: a type error on `credential`, or `['from-field','from-field']` — either way the credential is not yet used.
 
 - [ ] **Step 3: implement**
 
-Add `credential?: IApiKeyCredential` to both configs beside `apiKey`; keep the `apiKey` field. Make the header builders async and await the resolution:
+The class keeps **no config object** — it copies fields (`:14-16`, `:25-30`) — so there is no `this.config` to hand a helper:
 
 ```ts
-private async _headers(): Promise<Record<string, string>> {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  const key = this.credential ? await this.credential.secret() : this.apiKey;
-  if (key) h['api-key'] = key;
-  return h;
+export interface OpenAiEmbedderConfig {
+  credential: IApiKeyCredential;        // was: apiKey: string
+  baseURL?: string;
+  model: string;
 }
-```
 
-and at its one caller, `headers: { ...(await this._headers()), ...(init.headers ?? {}) }`. Do the same at `qdrant-rag-provider.ts:79` and `:108`, both already inside `async deleteCollection` / `async listCollections`.
+export class OpenAiEmbedder implements IEmbedderBatch {
+  private readonly credential: IApiKeyCredential;
+  private readonly baseURL: string;
+  readonly model: string;
 
-- [ ] **Step 4: run the test, the package's suite, and the type check**
-
-```bash
-node --import tsx/esm --test packages/qdrant-rag/src/__tests__/ 2>&1 | tail -5
-npx tsc --noEmit -p packages/qdrant-rag/tsconfig.json; echo "EXIT=$?"
-```
-
-- [ ] **Step 5: commit**
-
-```bash
-git add packages/qdrant-rag/src packages/qdrant-rag/package.json
-git commit -m "feat(qdrant-rag): accept an IApiKeyCredential beside apiKey
-
-The header builder becomes async, which is invisible: it is private, has one
-caller already inside async _fetch, and the package's exports map is closed to
-\".\" so no consumer can reach it."
-```
-
-### Task B5: `pg-vector-rag` and `hana-vector-rag` accept a secret-login credential
-
-Same change twice, so one task and one diff. Both resolvers are absent from their barrels and unreachable through a closed `exports` map, and each has exactly one production caller which is already `async` — so they become async internally at no visible cost.
-
-**Files:**
-- Modify: `packages/pg-vector-rag/src/connection.ts` (config ~`:1-14`, `resolvePgConnectArgs` ~`:27`)
-- Modify: `packages/hana-vector-rag/src/connection.ts` (config ~`:1-13`, `resolveHanaConnectArgs` ~`:25`)
-- Modify: both `*-vector-rag.ts` at their `createDriverClient` call (`pg:63`, `hana:57`) to `await`
-- Test: `packages/pg-vector-rag/src/__tests__/credential.test.ts`, `packages/hana-vector-rag/src/__tests__/credential.test.ts`
-
-**Interfaces:**
-- Consumes: `ISecretLoginCredential`.
-- Produces: `credential?: ISecretLoginCredential` on both configs; the resolvers return `Promise`.
-
-- [ ] **Step 1: write the failing tests — precedence is the point**
-
-The two packages disagree today about connection string versus discrete fields: pg returns early on a connection string and ignores `user`/`password` (`connection.ts:31-37`), while hana fills only the gaps with `??=` so the discrete fields win (`:33-40`). **The credential outranks both, in both packages**, and each keeps its existing string-versus-fields behaviour otherwise.
-
-```ts
-// packages/pg-vector-rag/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import type { ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
-import { resolvePgConnectArgs } from '../connection.js';
-
-const credential: ISecretLoginCredential = {
-  kind: 'secret-login',
-  principal: 'cred_user',
-  secret: async () => 'cred_pw',
-};
-
-describe('resolvePgConnectArgs credential precedence', () => {
-  it('outranks a connection string, which otherwise wins outright', async () => {
-    const args = await resolvePgConnectArgs({
-      connectionString: 'postgres://str_user:str_pw@h/db',
-      collectionName: 't',
-      credential,
-    });
-    assert.equal(args.user, 'cred_user');
-    assert.equal(args.password, 'cred_pw');
-  });
-
-  it('outranks discrete fields', async () => {
-    const args = await resolvePgConnectArgs({
-      host: 'h', user: 'field_user', password: 'field_pw', collectionName: 't', credential,
-    });
-    assert.equal(args.user, 'cred_user');
-    assert.equal(args.password, 'cred_pw');
-  });
-
-  it('changes nothing when absent', async () => {
-    const args = await resolvePgConnectArgs({
-      host: 'h', user: 'field_user', password: 'field_pw', collectionName: 't',
-    });
-    assert.equal(args.user, 'field_user');
-    assert.equal(args.password, 'field_pw');
-  });
-});
-```
-
-Write the hana twin with `resolveHanaConnectArgs`, asserting `uid`/`pwd` instead of `user`/`password`, and with a `hdbsql://str_user:str_pw@h:443` connection string.
-
-- [ ] **Step 2: run both and watch them fail**
-
-```bash
-node --import tsx/esm --test packages/pg-vector-rag/src/__tests__/credential.test.ts \
-            packages/hana-vector-rag/src/__tests__/credential.test.ts
-```
-
-- [ ] **Step 3: implement both**
-
-Add `credential?: ISecretLoginCredential` to each config. Make each resolver `async`, and resolve the credential **before** the existing branches so it cannot be skipped by pg's early return:
-
-```ts
-export async function resolvePgConnectArgs(cfg: PgVectorRagConfig): Promise<PgPoolConfig> {
-  const max = cfg.poolMax ?? 10;
-  const connectionTimeoutMillis = cfg.connectTimeout ?? 30_000;
-  const fromCredential = cfg.credential
-    ? { user: cfg.credential.principal, password: await cfg.credential.secret() }
-    : undefined;
-
-  if (cfg.connectionString && !fromCredential) {
-    return { connectionString: cfg.connectionString, max, connectionTimeoutMillis };
+  constructor(config: OpenAiEmbedderConfig) {
+    // The existing message, verbatim: openai-embedder.test.ts asserts on it.
+    if (!config.credential) throw new Error('OpenAI API key is required for embedding');
+    if (!config.model) throw new Error("OpenAIEmbedder requires a 'model'");
+    this.credential = config.credential;
+    this.baseURL = (config.baseURL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.model = config.model;
   }
-  // … the existing host branch, with `...fromCredential` applied last so it wins
+
+  /** Asked per request, from the field — there is no config object to pass. */
+  private async authorization(): Promise<string> {
+    return `Bearer ${await this.credential.secret()}`;
+  }
 }
 ```
 
-`await` at each `createDriverClient` call site — both are already `async`, so no signature above them moves. Update the existing `connection.test.ts` in each package to `await` the resolver.
+Both header sites (`:48`, `:109`) already sit inside `await fetch(…)`, so `Authorization: await this.authorization()` costs no signature.
 
-- [ ] **Step 4: run both packages' suites and type-check**
+- [ ] **Step 4: run both suites and type-check**
 
 ```bash
-node --import tsx/esm --test packages/pg-vector-rag/src/__tests__/ 2>&1 | tail -4
-node --import tsx/esm --test packages/hana-vector-rag/src/__tests__/ 2>&1 | tail -4
-npx tsc --noEmit -p packages/pg-vector-rag/tsconfig.json; echo "PG=$?"
-npx tsc --noEmit -p packages/hana-vector-rag/tsconfig.json; echo "HANA=$?"
+npm test -w packages/openai-embedder
+npx tsc --noEmit -p packages/openai-embedder/tsconfig.json; echo "EXIT=$?"
 ```
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add packages/pg-vector-rag/src packages/hana-vector-rag/src \
-        packages/pg-vector-rag/package.json packages/hana-vector-rag/package.json
-git commit -m "feat(pg-vector-rag,hana-vector-rag): accept an ISecretLoginCredential
+git add packages/openai-embedder/src
+git commit -m "feat(openai-embedder)!: take a credential, asked per embed call
 
-Additive, and measured so: neither resolver is in its barrel, both packages
-declare a closed exports map with only \".\", and each resolver's single
-production caller is already async. The credential outranks both the connection
-string and the discrete fields — the two packages disagree with each other about
-those two, and this change does not reconcile that."
+apiKey was required and held for the object's lifetime; a credential replaces it and is
+asked per request. The constructor's existing message is unchanged, because
+openai-embedder.test.ts asserts on it and passes unedited.
+
+ollama-embedder is deliberately untouched: it sends Content-Type and nothing else
+(ollama.ts:42, :91), so a credential there would be a member nobody calls."
 ```
 
-### Task B6: `sap-aicore-llm` takes a bearer token, and builds its destination per call
-
-The provider already constructs a fresh `OrchestrationClient` per call, because tools change between calls, and already passes a destination there. Moving the destination's construction into that path is what lets `token()` be awaited for every request. The service URL is **not** part of the credential and keeps its home.
+### Task B5: the SAP packages take a bearer credential and an `apiBaseUrl`, and stop reading the environment
 
 **Files:**
-- Modify: `packages/sap-aicore-llm/src/sap-core-ai-provider.ts` (credential object ~`:29-34`, service URL read ~`:164`, per-call client ~`:561`, destination sites ~`:71`, `:165`, `:564`)
-- Test: `packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts`
+- Modify: `packages/sap-aicore-llm/src/sap-core-ai-provider.ts` — the credential object at `:29-34` (which holds the service URL too), its read at `:164`, the per-call client at `:561`, destination sites `:71`, `:165`, `:564`
+- Modify: `packages/sap-aicore-embedder/src/{foundation-embedder,orchestration-embedder}.ts` — its own `TokenProvider` usage (now in `sap-aicore-auth`), `apiBaseUrl` at `:8`, the header at `:98-101`, and the two-argument `new OrchestrationEmbeddingClient(config, deploymentConfig)` at `orchestration-embedder.ts:50`
+- Test: one per package
 
-**Interfaces:**
-- Consumes: `IBearerCredential`.
-- Produces: `credential?: IBearerCredential` on the provider config, with `AICORE_SERVICE_KEY` unchanged as the no-credential default.
+**Interfaces:** consumes `IBearerCredential`; produces `credential: IBearerCredential` and `apiBaseUrl: string` on both configs, with **no** env fallback inside either.
 
-- [ ] **Step 1: write the failing test**
+- [ ] **Step 1: write the failing tests** — the destination carries a freshly asked token, `apiBaseUrl` comes from config, and **no** request goes to a token endpoint from inside the provider:
 
 ```ts
 // packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts
@@ -1039,183 +799,198 @@ import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { buildDestination } from '../sap-core-ai-provider.js';
 
 describe('buildDestination', () => {
-  it('asks the credential per call and puts the token in the Authorization header', async () => {
+  it('asks per call and keeps the address out of the credential', async () => {
     let n = 0;
     const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++n}` };
-    const first = await buildDestination({ serviceUrl: 'https://aicore', credential });
-    const second = await buildDestination({ serviceUrl: 'https://aicore', credential });
+    const first = await buildDestination({ apiBaseUrl: 'https://aicore', credential });
+    const second = await buildDestination({ apiBaseUrl: 'https://aicore', credential });
     assert.equal(first.headers?.Authorization, 'Bearer t1');
     assert.equal(second.headers?.Authorization, 'Bearer t2');
-    assert.equal(first.url, 'https://aicore', 'the address is not the credential');
+    assert.equal(first.url, 'https://aicore');
     assert.equal(first.authentication, 'NoAuthentication');
   });
 });
 ```
 
-- [ ] **Step 2: run it and watch it fail**
+- [ ] **Step 2: run them and watch them fail**
 
 ```bash
 node --import tsx/esm --test packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts
+node --import tsx/esm --test packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts
 ```
 
 - [ ] **Step 3: implement**
 
 ```ts
 // packages/sap-aicore-llm/src/sap-core-ai-provider.ts
-import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-
-/** The constructed-destination shape the SDK documents: url + headers, no lookup. */
-export async function buildDestination(cfg: {
-  serviceUrl: string;
+export interface SapCoreAIConfig extends LLMProviderConfig {
   credential: IBearerCredential;
-}): Promise<{
-  url: string;
-  authentication: 'NoAuthentication';
-  headers: Record<string, string>;
-}> {
+  /** The address, a field of its own — not part of the credential (§4.6.3). */
+  apiBaseUrl: string;
+  model?: string;
+}
+
+/** The constructed-destination shape the SDK documents. Built per call, which is free:
+ *  the client is already rebuilt per call because tools change between them. */
+export async function buildDestination(cfg: {
+  apiBaseUrl: string;
+  credential: IBearerCredential;
+}): Promise<{ url: string; authentication: 'NoAuthentication'; headers: Record<string, string> }> {
   return {
-    url: cfg.serviceUrl,
+    url: cfg.apiBaseUrl,
     authentication: 'NoAuthentication',
-    // Asked on every call: the client is already rebuilt per call because tools
-    // change, so this is where a bearer token stays fresh.
     headers: { Authorization: `Bearer ${await cfg.credential.token()}` },
   };
 }
 ```
 
-Do **not** reach for `authTokens`: its TypeScript type is `{ type; value; expiresIn?; error: string | null }` with no `http_header` field, so the shape shown in blog posts does not compile. At the per-call client construction, pass `await buildDestination(...)` when a credential is configured, and leave today's `OAuth2ClientCredentials` destination untouched when one is not.
+Use the constructed-destination shape the SDK documents — `{ url, authentication: 'NoAuthentication', headers: { Authorization } }`. Do **not** reach for `authTokens`: its TypeScript type is `{ type; value; expiresIn?; error: string | null }` with no `http_header` field, so the shape in blog posts does not compile. Build the destination in the **per-call** path, which already exists because the client is rebuilt per call. Delete the `AICORE_SERVICE_KEY` read: the composition root supplies the credential (Task B10), and `config-validator.ts:72`'s rule requiring that variable moves with it.
 
-- [ ] **Step 4: run, type-check, lint**
+- [ ] **Step 4: run both suites and type-check**
 
 ```bash
-node --import tsx/esm --test packages/sap-aicore-llm/src/__tests__/ 2>&1 | tail -4
-npx tsc --noEmit -p packages/sap-aicore-llm/tsconfig.json; echo "EXIT=$?"
-npx biome check packages/sap-aicore-llm/src
+npm test -w packages/sap-aicore-llm
+npm test -w packages/sap-aicore-embedder
+npx tsc --noEmit -p packages/sap-aicore-llm/tsconfig.json; echo "LLM=$?"
+npx tsc --noEmit -p packages/sap-aicore-embedder/tsconfig.json; echo "EMB=$?"
+grep -rn "AICORE_SERVICE_KEY" packages/sap-aicore-llm/src packages/sap-aicore-embedder/src \
+  --include='*.ts' | grep -v '\.test\.' || echo "  neither provider reads the env any more"
 ```
+
+The last command must print the “neither” line: a provider that still reads it has two sources, and the precedence rule this design deleted would be back.
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add packages/sap-aicore-llm/src packages/sap-aicore-llm/package.json
-git commit -m "feat(sap-aicore-llm): accept an IBearerCredential, destination built per call
+git add packages/sap-aicore-llm/src packages/sap-aicore-embedder/src
+git commit -m "feat(sap-aicore-*)!: a bearer credential and an apiBaseUrl, and no env read
 
-The client is already constructed per call, so awaiting token() there is free and
-is why the contract makes it a function. The service URL stays in the provider's
-own config: an address is not a credential."
+The credential object held the service URL alongside the OAuth input; the address is not
+a credential, so it becomes its own apiBaseUrl field — the name parseServiceKey returns
+and sap-aicore-embedder already used. The destination is built per call, which is free,
+because the client is already rebuilt per call.
+
+AICORE_SERVICE_KEY is no longer read here. A provider that reads an env var when handed
+no credential has two sources again; the composition root reads it and builds the one
+credential (Task B10)."
 ```
 
-### Task B7: `sap-aicore-embedder` replaces its own token provider
-
-On the `foundation-models` path this package does not use the SDK's auth at all: it runs its own `TokenProvider` doing `grant_type=client_credentials` over `fetch` and sets the header by hand. A bearer credential replaces that directly. The orchestration path needs a destination threaded through — the seam exists in the SDK and is simply not wired on our side.
+### Task B6: the vector stores take a credential, and a connection string carries the address only
 
 **Files:**
-- Modify: `packages/sap-aicore-embedder/src/foundation-embedder.ts` (credential fields ~`:8-11`, own `TokenProvider` ~`:48`, header ~`:98-101`)
-- Modify: `packages/sap-aicore-embedder/src/orchestration-embedder.ts` (~`:50`, the two-argument `new OrchestrationEmbeddingClient(config, deploymentConfig)`)
-- Test: `packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts`
+- Modify: `packages/qdrant-rag/src/{qdrant-rag,qdrant-rag-provider}.ts` (`apiKey` at `:32`/`:18`, header sites `:56`+`:85`, `:79`, `:108` — all already async)
+- Modify: `packages/pg-vector-rag/src/connection.ts` and `packages/hana-vector-rag/src/connection.ts` (configs, and `resolvePgConnectArgs` `:27` / `resolveHanaConnectArgs` `:25`)
+- Test: one per package
 
-**Interfaces:**
-- Consumes: `IBearerCredential` (Task B1); the `credential` property name fixed by Task B2.
-- Produces: `credential?: IBearerCredential` on both embedder configs.
+**Interfaces:** consumes `IApiKeyCredential` (qdrant) and `ISecretLoginCredential` (pg, hana); produces `credential` on all three configs, replacing `apiKey` and `user`/`password`.
 
-- [ ] **Step 1: write the failing test**
+- [ ] **Step 1: write the failing tests.** Three behaviours for pg and hana, and the third is the one that changes from the previous derivation:
 
 ```ts
-// packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts
+// packages/pg-vector-rag/src/__tests__/credential.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-import { FoundationEmbedder } from '../foundation-embedder.js';
+import { staticLogin } from '@mcp-abap-adt/llm-agent';
+import { resolvePgConnectArgs } from '../connection.js';
 
-describe('FoundationEmbedder credential', () => {
-  it('sends the credential token per request and never calls the token endpoint', async () => {
-    const authorizations: Array<string | null> = [];
-    const urls: string[] = [];
-    let n = 0;
-    const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++n}` };
+describe('resolvePgConnectArgs', () => {
+  it('takes the identity and the secret from the credential', async () => {
+    const args = await resolvePgConnectArgs({
+      host: 'h', collectionName: 't', credential: staticLogin('cred_user', 'cred_pw'),
+    });
+    assert.equal(args.user, 'cred_user');
+    assert.equal(args.password, 'cred_pw');
+  });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL, init: RequestInit = {}) => {
-      urls.push(String(url));
-      authorizations.push(new Headers(init.headers as HeadersInit).get('Authorization'));
-      return new Response(JSON.stringify({ data: [{ embedding: [0, 0] }] }), { status: 200 });
-    }) as typeof fetch;
+  it('accepts a connection string that carries the ADDRESS only', async () => {
+    const args = await resolvePgConnectArgs({
+      connectionString: 'postgres://h:5432/db', collectionName: 't',
+      credential: staticLogin('cred_user', 'cred_pw'),
+    });
+    assert.equal(args.user, 'cred_user');
+  });
 
-    try {
-      const embedder = new FoundationEmbedder({
-        apiBaseUrl: 'https://aicore/v2',
-        model: 'text-embedding-3-small',
-        credential,
-      });
-      await embedder.embed(['a']);
-      await embedder.embed(['b']);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-
-    assert.deepEqual(authorizations, ['Bearer t1', 'Bearer t2'], 'asked per request');
-    assert.ok(
-      urls.every((u) => !u.includes('/oauth/token')),
-      'the internal client_credentials call is skipped entirely when a credential is given',
+  it('REFUSES a connection string carrying credentials, naming the fix', async () => {
+    await assert.rejects(
+      () => resolvePgConnectArgs({
+        connectionString: 'postgres://u:pw@h/db', collectionName: 't',
+        credential: staticLogin('cred_user', 'cred_pw'),
+      }),
+      /staticLogin/,
+      'silently ignoring the embedded password is the failure this replaces',
     );
-    assert.ok(urls.every((u) => u.startsWith('https://aicore/v2')), 'apiBaseUrl still comes from config');
   });
 });
 ```
 
-- [ ] **Step 2: run it and watch it fail**
+Write the hana twin against `resolveHanaConnectArgs` (asserting `uid`/`pwd`, and an `hdbsql://u:pw@h:443` string being refused), and the qdrant one asserting the `api-key` header is asked per request.
+
+- [ ] **Step 2: run them and watch them fail**
 
 ```bash
-node --import tsx/esm --test packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts
+for p in pg-vector-rag hana-vector-rag qdrant-rag; do
+  node --import tsx/esm --test "packages/$p/src/__tests__/credential.test.ts"
+done
 ```
-
-Expected: a type error on `credential`, or two identical `Authorization` values with a `/oauth/token` request among the urls — either way the internal provider is still in charge.
 
 - [ ] **Step 3: implement**
 
 ```ts
-// packages/sap-aicore-embedder/src/foundation-embedder.ts
-import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-
-export interface FoundationEmbedderConfig {
-  // … existing fields unchanged: clientId?, clientSecret?, tokenUrl?, apiBaseUrl, model
-  /**
-   * When given, this replaces the internal TokenProvider outright — no
-   * client_credentials call is made — and is asked on every request.
-   */
-  credential?: IBearerCredential;
+// packages/pg-vector-rag/src/connection.ts
+export interface PgVectorRagConfig {
+  /** The ADDRESS only. A string carrying credentials is refused below. */
+  connectionString?: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  credential: ISecretLoginCredential;    // was: user?: string; password?: string
+  collectionName: string;
+  // … the rest unchanged
 }
 
-// where the header is built today (~:98-101):
-private async authorization(): Promise<string> {
-  if (this.credential) return `Bearer ${await this.credential.token()}`;
-  return `Bearer ${await this.tokenProvider.get()}`;   // today's path, untouched
+export async function resolvePgConnectArgs(cfg: PgVectorRagConfig): Promise<PgPoolConfig> {
+  if (cfg.connectionString && /\/\/[^/@]*:[^/@]*@/.test(cfg.connectionString)) {
+    throw new Error(
+      'connectionString must carry the address only; pass the identity and secret as ' +
+        'a credential — staticLogin(user, password)',
+    );
+  }
+  const user = cfg.credential.principal;
+  const password = await cfg.credential.secret();
+  // … then the existing branches, with user/password applied
 }
 ```
 
-For `orchestration-embedder.ts`, pass a third argument to `new OrchestrationEmbeddingClient(config, deploymentConfig, destination)`, building `destination` with the same shape Task B6 introduced.
+Add `credential` and **delete** `user`/`password` from both configs. Each resolver becomes `async` — invisible outside, because neither is in its package's barrel and both packages declare a closed `exports` map with only `"."`, and each resolver's single production caller is already `async` (`pg-vector-rag.ts:62`, `hana-vector-rag.ts:54`). A connection string containing credentials throws at construction with `staticLogin` named in the message. For qdrant, make the header builders `async` — `_headers()` is private with one caller inside `async _fetch`.
 
-- [ ] **Step 4: run the suite and type-check**
+- [ ] **Step 4: run all three suites and type-check**
 
 ```bash
-node --import tsx/esm --test packages/sap-aicore-embedder/src/__tests__/ 2>&1 | tail -4
-npx tsc --noEmit -p packages/sap-aicore-embedder/tsconfig.json; echo "EXIT=$?"
+for p in pg-vector-rag hana-vector-rag qdrant-rag; do
+  npm test -w "packages/$p"; npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
+done
 ```
 
-Every existing test must pass unedited: the internal `TokenProvider` path is untouched when no credential is configured.
+The existing `connection.test.ts` in pg and hana needs `await` on the resolver — that edit is expected. Any other test that breaks is a finding.
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add packages/sap-aicore-embedder/src packages/sap-aicore-embedder/package.json
-git commit -m "feat(sap-aicore-embedder): an IBearerCredential replaces the internal token provider
+git add packages/pg-vector-rag/src packages/hana-vector-rag/src packages/qdrant-rag/src
+git commit -m "feat(rag stores)!: a credential replaces apiKey, user and password
 
-It never used the SDK's auth here — it ran its own client_credentials fetch and
-set the header by hand, which is exactly what a bearer credential is for. The
-orchestration path gains the destination argument the SDK already accepts and we
-never passed."
+One source, so there is nothing to rank: the two packages disagreed about connection
+string versus discrete fields (pg returns early and ignores them, hana fills gaps with
+??=), and that disagreement disappears with the fields that caused it. A connection
+string now carries the address only and one carrying credentials is refused at
+construction, with staticLogin named in the message — not silently outranked.
+
+The resolvers become async, which is invisible: neither is in its barrel, both packages
+declare a closed exports map with only ".", and each resolver's one production caller
+is already async."
 ```
 
-### Task B8: two typed `IMcpServer` implementations, each demanding its own credential
+### Task B7: two typed `IMcpServer` implementations, each demanding its own credential
 
 **These classes do not exist yet.** `IMcpServer` is declared in `@mcp-abap-adt/llm-agent` (workstream 1) and the name appears nowhere in `llm-agent-mcp`; what exists is `MCPClientWrapper` in `client.ts`, whose `connect()` branches on transport and builds `StdioClientTransport({ command, args, env })` (~`:320`) or `StreamableHTTPClientTransport(new URL(url), buildHttpTransportOptions({ headers, sessionId, requestHeadersStrategy }))` (~`:348`). So this task **creates** the two typed implementations on top of that, which is what §8 means by "the typed implementations land with the credential contracts".
 
@@ -1540,9 +1315,318 @@ IMcpConnectionStrategy. Widening headers() to a promise would break every
 consumer implementing it, and is not in this workstream."
 ```
 
+### Task B8: delete the provider dispatch from `llm-agent-libs`
+
+The single largest removal, and the one that makes the rest true: while a library restates five constructors it does not own, a secret has to travel through a framework config to feed them.
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/providers.ts` — delete `MakeLlmConfig` (`:27`), `makeLlm` (`:173`), `makeDefaultLlm` (`:302`), `DefaultModelResolver` (`:314`) and the five `load*` dynamic-import shims (`:70`, `:88`, `:106`, `:124`, `:142`); the file may cease to exist
+- Modify: `packages/llm-agent-libs/src/index.ts` — drop `MakeLlmConfig`, `makeDefaultLlm`, `makeLlm` (`:177-179`) and `DefaultModelResolver`
+- Modify: every in-repo caller the compiler names
+
+**Interfaces:**
+- Produces: nothing. It **removes** `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver`. `IModelResolver` in core is **untouched** — what held a config was the implementation.
+
+- [ ] **Step 1: write the failing test — a removal's test is that the export is gone**
+
+```ts
+// packages/llm-agent-libs/src/__tests__/no-provider-dispatch.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import * as libs from '../index.js';
+
+describe('llm-agent-libs no longer dispatches providers', () => {
+  for (const name of ['makeLlm', 'makeDefaultLlm', 'DefaultModelResolver']) {
+    it(`does not export ${name}`, () => {
+      assert.equal(
+        (libs as Record<string, unknown>)[name],
+        undefined,
+        `${name} restated a constructor this package does not own, which is why a ` +
+          'secret had to travel through MakeLlmConfig to feed it',
+      );
+    });
+  }
+
+  it('still exports the builder, which is the seam that replaces them', () => {
+    assert.equal(typeof libs.SmartAgentBuilder, 'function');
+  });
+});
+```
+
+- [ ] **Step 2: run it and watch it fail** — all three are still exported.
+
+```bash
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/no-provider-dispatch.test.ts
+```
+
+- [ ] **Step 3: delete, then let the compiler name every caller**
+
+```bash
+npx tsc -b 2>&1 | grep -E "error TS" | sed 's/(.*//' | sort -u
+```
+
+Compare that list against the one Task B1's Step 5 recorded. Each caller is either in `llm-agent-server-libs` (Task B9 or B10 owns it) or a test. The known ones: `build-dag-coordinator-deps.ts:89`, `:102`, `:174`, `plan-analysis.ts:461`, `controller.ts:336`, `dag.ts:49`, `coordinator-resolvers.ts:191`, `role-llm-resolver.ts:11`, `:51`, `:66`, `smart-server.ts:954` (the default), `:1036`, `:1043`, `:1052`, `:1875`, `:1888`, `:1900`, `:2020`, and the shape restated as a type at `server-context.ts:26`, `role-llm-resolver.ts:29`, `:38`, `coordinator-resolvers.ts:176`.
+
+**They keep calling a `makeLlm`** — just the injected one from `BuildAgentDeps`, never a library function. The type restatements stay as they are: the seam's signature does not change, and no `role` parameter is added, because those call sites name roles a closed union cannot (`coordinator-resolvers.ts:165` documents the chain as "top-level `llm.<name>` → `llm.main` → `pipelineFallback`").
+
+- [ ] **Step 4: run the whole repository, and expect it red only where B9 and B10 will land**
+
+```bash
+npx tsc -b 2>&1 | tail -20
+```
+
+Write the remaining errors into the report. If any error is in a package **other** than `llm-agent-server-libs` or `llm-agent-server`, stop: something outside the two composition layers was depending on the dispatch, and that is a finding the spec has not accounted for.
+
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/llm-agent-libs/src
+git commit -m "feat(llm-agent-libs)!: delete the provider dispatch
+
+makeLlm loaded five provider packages by dynamic import() as optional peers — none of
+them declared as a dependency — and restated each of their constructor shapes by hand
+(:77, :95, :113, :131, :156). That private copy of five contracts it does not own was
+the only reason a secret had to sit in a framework config: MakeLlmConfig.apiKey exists
+to feed new DeepSeekProvider({ apiKey }) at :186.
+
+It is also a variation point the consumer owns (principle 5) and glue that belongs to
+the assembly (principle 2), and the seam already exists: withMainLlm(llm: ILlm).
+DefaultModelResolver goes with it, because building a provider for a newly chosen model
+needs a credential. IModelResolver itself is untouched.
+
+BREAKING: makeLlm, makeDefaultLlm, MakeLlmConfig and DefaultModelResolver are removed."
+```
+
+### Task B9: the four server DTOs lose their secrets and gain `credentialRef`
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — `SmartServerLlmConfig.apiKey` (required, `:129`), `SmartServerRagConfig.user`/`password` (`:167-168`), and the default at `:954`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/pipeline.ts` — `PipelineLlmProviderConfig` (`:14-26`), `PipelineRagStoreConfig.apiKey` (`:32`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.ts` — the qdrant store variant (`:19`), threaded at `skill-plugins-host-factory.ts:271`, `:310` and `controller-skill-pipeline-builder.ts:16`, `:47`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts` — the `AICORE_SERVICE_KEY` rule (`:72`) leaves; a missing `makeLlm` becomes a startup refusal
+- Modify: the YAML template and `yaml-loader.ts` (`:15-21`, `:68-81`)
+- Test: `packages/llm-agent-server-libs/src/__tests__/credential-ref.test.ts`
+
+**Interfaces:**
+- Produces: `credentialRef?: string` on `SmartServerLlmConfig`, `PipelineLlmProviderConfig`, `PipelineRagStoreConfig`, `SmartServerRagConfig` and the qdrant skill store. `BuildAgentDeps.makeLlm` keeps its signature and **loses its default**.
+
+- [ ] **Step 1: write the failing tests**
+
+```ts
+// packages/llm-agent-server-libs/src/__tests__/credential-ref.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { loadYamlConfig } from '../smart-agent/yaml-loader.js';   // confirm the name in Step 2
+import { SmartServer } from '../smart-agent/smart-server.js';
+
+describe('serializable configuration carries no secret', () => {
+  it('loads a credentialRef and never a value', () => {
+    const cfg = loadYamlConfig(`
+llm:
+  main:
+    provider: deepseek
+    credentialRef: PRIMARY
+    model: deepseek-chat
+`);
+    assert.equal(cfg.llm?.main?.credentialRef, 'PRIMARY');
+    assert.equal((cfg.llm?.main as Record<string, unknown>).apiKey, undefined);
+  });
+
+  it('refuses a config that still carries apiKey, naming credentialRef', () => {
+    assert.throws(
+      () => loadYamlConfig('llm:\n  main:\n    provider: openai\n    apiKey: sk-live\n'),
+      /credentialRef/,
+      'a silently ignored apiKey would leave an operator believing it was used',
+    );
+  });
+
+  it('refuses to start without BuildAgentDeps.makeLlm, naming the seam', async () => {
+    await assert.rejects(
+      () => new SmartServer({ llm: { provider: 'openai', model: 'gpt-4o' } } as never).start(),
+      /makeLlm/,
+      'the library no longer defaults it, so silence here would be a server with no LLM',
+    );
+  });
+});
+```
+
+- [ ] **Step 2: confirm the loader's real export name and run the tests**
+
+```bash
+grep -n "^export" packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts | head
+node --import tsx/esm --test packages/llm-agent-server-libs/src/__tests__/credential-ref.test.ts
+```
+
+- [ ] **Step 3: implement**
+
+```ts
+// smart-server.ts — serializable, so a NAME and never a value
+export interface SmartServerLlmConfig {
+  provider?: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
+  /** Names a credential the composition root resolves. Omit it and the root's default
+   *  applies. The value never enters this object, which is what ${VAR} got wrong. */
+  credentialRef?: string;
+  url?: string;
+  model?: string;
+  // apiKey is GONE
+}
+
+// and the default that no longer exists (was :954)
+this._deps = {
+- makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
++ makeLlm: deps.makeLlm ?? (() => {
++   throw new Error(
++     'BuildAgentDeps.makeLlm is required: the library no longer constructs providers, ' +
++       'because doing so meant carrying a secret through a framework config',
++   );
++ }),
+  // … the other seams unchanged
+};
+```
+
+Delete `apiKey` from the three config types and `user`/`password` from `SmartServerRagConfig`; add `credentialRef?: string` to all four plus the qdrant skill store. **Keep** the loader, the `${VAR}` substitution machinery and the schema validation in this package — once the shape carries no secret, loading a file is not handling one. Add the two refusals: an `apiKey` still present in YAML, and a missing `makeLlm`. Remove `deps.makeLlm ?? …` at `:954` so the seam is genuinely required. Move `config-validator.ts:72`'s `AICORE_SERVICE_KEY` rule out — only the composition root knows whether it holds a credential.
+
+- [ ] **Step 4: run the package's whole suite**
+
+```bash
+npm test -w packages/llm-agent-server-libs 2>&1 | tail -8
+npx tsc --noEmit -p packages/llm-agent-server-libs/tsconfig.json; echo "EXIT=$?"
+grep -rn "apiKey" packages/llm-agent-server-libs/src --include='*.ts' | grep -v '\.test\.' \
+  || echo "  no secret field left in this package's source"
+```
+
+Fixtures that set `apiKey` must become `credentialRef` — that edit is expected, and is the migration in miniature. A test that breaks for another reason is a finding.
+
+- [ ] **Step 5: update the YAML template**
+
+```yaml
+llm:
+  main:
+    provider: deepseek
+    # nothing here: the composition root's default entry applies
+    model: deepseek-chat
+  classifier:
+    provider: openai
+    credentialRef: OPENAI_KEY_CHEAP     # name a second account when you want one
+    model: gpt-4o-mini
+```
+
+- [ ] **Step 6: commit**
+
+```bash
+git add packages/llm-agent-server-libs/src
+git commit -m "feat(llm-agent-server-libs)!: serializable config carries a reference, never a secret
+
+Four DTOs lose their secret fields and gain credentialRef: SmartServerLlmConfig.apiKey
+(required), PipelineLlmProviderConfig's apiKey and SAP credentials,
+PipelineRagStoreConfig.apiKey, SmartServerRagConfig's user/password, and the qdrant skill
+store. They ARE the YAML, and a file holds neither an object nor a function, so the fix
+is a non-secret name the root resolves — not a field that accepts an instance.
+
+The loader, the env substitution and the schema validation stay here: once the shape
+carries no secret, loading a file is not handling one.
+
+BREAKING at runtime as well as in source: BuildAgentDeps.makeLlm is no longer defaulted,
+so a deployment that never injected one now refuses at startup naming the seam, rather
+than starting with a provider the library chose."
+```
+
+### Task B10: `llm-agent-server` becomes the composition root
+
+The last task of this workstream, and the one that makes every removal above land somewhere. The spec's §8 migration carries the reference implementation; this task is that code, in the app, compiling.
+
+**Files:**
+- Create: `packages/llm-agent-server/src/composition/credential-for.ts` — the reference resolver
+- Create: `packages/llm-agent-server/src/composition/make-llm.ts` — the provider dispatch
+- Create: `packages/llm-agent-server/src/composition/model-resolver.ts` — `IModelResolver` for `PUT /v1/config`
+- Modify: the app's entry point to pass `BuildAgentDeps.makeLlm` and `modelResolver`
+- Test: `packages/llm-agent-server/src/composition/__tests__/*.test.ts`
+
+**Interfaces:**
+- Consumes: every credential contract, `staticApiKey`/`staticLogin`, `serviceKeyCredential`, and the five concrete providers — all sixteen of which this package **already** declares as dependencies, unlike `llm-agent-libs` which reached for five by dynamic import.
+- Produces: nothing importable. It is the root.
+
+- [ ] **Step 1: copy the reference implementation out of the spec, and compile it**
+
+The spec's §8 migration item 4 holds the whole of `credentialFor`, `DEFAULT_REF` and the dispatch, and that block is **verified**: it is extracted from the spec and compiled under `--strict` against stub declarations. Start from it rather than writing a fourth variant.
+
+```bash
+sed -n '/^```ts$/,/^```$/p' docs/superpowers/specs/2026-09-16-auth-contracts-design.md | \
+  grep -n "credentialFor" | head -3    # locate the block, then copy it
+```
+
+- [ ] **Step 2: write the failing tests — one per rule the example encodes**
+
+```
+1. an absent credentialRef resolves to DEFAULT_REF, so a single-account deployment
+   that writes nothing in its YAML still starts;
+2. an unknown reference throws AT STARTUP, naming the reference — not later, as an
+   authentication failure;
+3. nothing is read or parsed until a reference asks: a deployment with no
+   AICORE_SERVICE_KEY starts fine as long as no entry names it;
+4. each provider branch receives a credential of the kind it accepts, and a bearer
+   handed to an api-key provider is refused with a message naming the reference;
+5. ollama is constructed WITHOUT a credential when its entry has none, and WITH one
+   when it does;
+6. sap-ai-sdk takes both halves from the entry — credential and apiBaseUrl — so two
+   AI Core accounts are two entries and not a second read of one env var.
+```
+
+Rule 3 is the one a previous draft of the spec got wrong twice, so assert it explicitly: unset the variable, resolve a different reference, and expect no throw.
+
+- [ ] **Step 3: run them and watch them fail**
+
+```bash
+node --import tsx/esm --test 'packages/llm-agent-server/src/composition/__tests__/*.test.ts'
+```
+
+- [ ] **Step 4: implement, and wire the app**
+
+```ts
+// packages/llm-agent-server/src/index.ts (or wherever the server is constructed)
+import { credentialFor, DEFAULT_REF } from './composition/credential-for.js';
+import { makeLlm } from './composition/make-llm.js';
+import { modelResolver } from './composition/model-resolver.js';
+
+const server = new SmartServer(config, {
+  makeLlm,          // required now: the library defaults nothing (Task B9)
+  modelResolver,    // optional, and what PUT /v1/config needs
+});
+```
+
+Pass `makeLlm` and `modelResolver` into `BuildAgentDeps`. `IModelResolver.resolve(modelName, role)` is unchanged; the implementation constructs with the credential this root holds and picks **its own** temperature per role, because the library's `main ? 0.7 : 0.1` was a policy with our numbers in it and does not move.
+
+- [ ] **Step 5: the whole repository must now be green**
+
+```bash
+npm run lint:check && echo "LINT=0"
+npx tsc -b && echo "BUILD=0"
+node --import tsx/esm --test $(git ls-files 'packages/*/src/**/*.test.ts') 2>&1 | tail -12
+```
+
+`tsc -b` returning 0 here is the workstream's real completion test: every error Task B1 created has been claimed by the task that owned it.
+
+- [ ] **Step 6: commit**
+
+```bash
+git add packages/llm-agent-server/src
+git commit -m "feat(llm-agent-server): become the composition root
+
+It reads the environment, turns a credentialRef into a credential, dispatches the five
+providers and implements IModelResolver behind PUT /v1/config. This is the code the
+library used to hold, and holding it there was the only reason a secret had to travel
+through a framework config.
+
+This package already declared all sixteen provider packages explicitly, which is why the
+dispatch belongs here and not in llm-agent-libs, which reached for five by dynamic
+import(). Being the example is its job (principle 2), so this is also the reference every
+other consumer copies — the spec's §8 migration shows the same code."
+```
 ## Phase B, workstream 3 — RAG identity, attributes and a catalog that can be read back
 
-### Task B9: the record, and the two provider members that make it usable
+These eight tasks survive the re-derivation unchanged in substance: §4.6.2's rewrite did not touch §6. The only edit is in Task B11, which no longer adds a `credential` to `EmbedderFactoryConfig` — Task B1 **removes** that field and nothing replaces it.
+
+### Task B11: the record, and the two provider members that make it usable
 
 A provider is handed the **store** name, not the logical one: `SimpleRagRegistry.createCollection` computes `storeName = storeNameFor(params)` and calls `provider.createCollection(storeName, …)` (`:189`, `:193`). It cannot derive the logical name either — `storeNameFor` (`:31`) returns `${base}_${digest}` with `base` sanitized by `[^a-zA-Z0-9_] → _` and truncated to fit 63 characters. So the logical name must be written, and read back beside the attributes.
 
@@ -1553,12 +1637,12 @@ A provider is handed the **store** name, not the logical one: `SimpleRagRegistry
 **Interfaces:**
 - Produces, and later tasks use these exact names:
   - `RagCollectionRecord { storeName; name; scope?; sessionId?; userId?; attributes? }`
-  - `RagCallerIdentity { sessionId; userId? }` — declared here, in `llm-agent`; Task B14 requires it
+  - `RagCallerIdentity { sessionId; userId? }` — declared here, in `llm-agent`; Task B16 requires it
   - `IRagProvider.describeCollections?(): Promise<Result<readonly RagCollectionRecord[], RagError>>`
   - `IRagProvider.openCollection?(record): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>`
   - `IRagProvider.createCollection(name, opts)` gains `collectionName?: string` and `attributes?: unknown`
   - `IRagRegistry.createCollection(params)` gains `attributes?: unknown`
-  - `RagCollectionAuthorization = 'public' | 'owner' | 'role'` and `RagCollectionMeta.authorization?` — the second of §6.1's two axes, which the meta does not carry today; Task B14 reads it to decide what a global permits
+  - `RagCollectionAuthorization = 'public' | 'owner' | 'role'` and `RagCollectionMeta.authorization?` — the second of §6.1's two axes, which the meta does not carry today; Task B16 reads it to decide what a global permits
 
 - [ ] **Step 1: write the failing test**
 
@@ -1645,7 +1729,7 @@ export type RagCollectionRecord = {
   /**
    * §6.1's axis, persisted. Without it a `global` comes back as `undefined`
    * after a restart, and a resolver that only refuses `'role'` would then let a
-   * role-gated collection be read. Task B14 fails closed as well, so both
+   * role-gated collection be read. Task B16 fails closed as well, so both
    * halves have to be wrong for that to happen.
    */
   readonly authorization?: RagCollectionAuthorization;
@@ -1713,7 +1797,7 @@ of listCollections: a provider is implemented by consumers, so a wider return
 type breaks every implementation."
 ```
 
-### Task B10: the failure names itself
+### Task B12: the failure names itself
 
 `IRagProvider.deleteCollection?` returns an undifferentiated `Result<void, RagError>` (`:218`), and the tool turns any error into `{ ok: true, warning: '… was removed, but its data could not be deleted' }` (`rag-collection-tools.ts:220-225`) — so a catalog failure would be reported as data loss after a successful removal. A typed error carries the phase, as the rest of `rag/corrections/errors.ts` already does and as interfaces decision 25 asks.
 
@@ -1723,7 +1807,7 @@ type breaks every implementation."
 - Test: `packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts`
 
 **Interfaces:**
-- Produces: `CatalogRecordDeleteError extends RagError`. Tasks B11 and B12 raise it; Task B14's handler branches on it.
+- Produces: `CatalogRecordDeleteError extends RagError`. Tasks B11 and B12 raise it; Task B16's handler branches on it.
 
 - [ ] **Step 1: write the failing test**
 
@@ -1825,7 +1909,7 @@ loss after a successful removal. The failure names itself instead (decision 25),
 and a record failure answers ok:false because nothing was lost."
 ```
 
-### Task B11: pg and hana gain a catalog, and delete the record before the data
+### Task B13: pg and hana gain a catalog, and delete the record before the data
 
 The same change twice, so one task and one diff. **These packages own the backend catalog, so resurrection is stopped here or nowhere** — the core wiring can be complete and still leak without this. Both packages take an injectable `clientFactory?: () => PgClient | HanaClient`, so none of this needs a live database.
 
@@ -2006,7 +2090,7 @@ valid. A failed record delete raises CatalogRecordDeleteError and never touches
 the data."
 ```
 
-### Task B12: qdrant gains a catalog — establish the mechanism before building on it
+### Task B14: qdrant gains a catalog — establish the mechanism before building on it
 
 The design records the Qdrant catalog as **unverified**: it exposes no collection-level metadata we have checked. So this task starts by finding out, and the answer may change its shape. Do not skip Step 1 and assume the fallback.
 
@@ -2032,7 +2116,7 @@ Then read the Qdrant HTTP API for the version in use and answer one question in 
 
 - [ ] **Step 3: write the failing tests**
 
-The same four behaviours as Task B11, against a `fetch` fake rather than a SQL client:
+The same four behaviours as Task B13, against a `fetch` fake rather than a SQL client:
 
 ```ts
 // packages/qdrant-rag/src/__tests__/catalog.test.ts
@@ -2123,7 +2207,7 @@ rather than assumed. Record before data, and a failed record delete raises
 CatalogRecordDeleteError without touching the collection."
 ```
 
-### Task B13: the registry adopts an existing store
+### Task B15: the registry adopts an existing store
 
 `register()` cannot do this: it sets `storeName: name` (`:99`), assuming the two are equal — true for a directly registered collection, false for every hydrated one.
 
@@ -2134,7 +2218,7 @@ CatalogRecordDeleteError without touching the collection."
 
 **Interfaces:**
 - Consumes: `RagCollectionRecord` (B9).
-- Produces: `IRagRegistry.adopt?(record, rag, editor?): void`, honouring a store name that differs from the logical name. Task B15's factory calls it.
+- Produces: `IRagRegistry.adopt?(record, rag, editor?): void`, honouring a store name that differs from the logical name. Task B17's factory calls it.
 
 - [ ] **Step 1: write the failing tests**
 
@@ -2283,7 +2367,7 @@ whole, so the logical name and the store name stay apart — and a delete still
 reaches the provider under the store name."
 ```
 
-### Task B14: the tool entries are built for one caller
+### Task B16: the tool entries are built for one caller
 
 The security change, and the largest behavioural one. Five of the seven handlers take the `RagToolContext` they are given and ignore it; a sixth trusts it. After this task identity comes from construction only.
 
@@ -2503,7 +2587,7 @@ longer declares sessionId/userId. Call sites passing them still compile — the
 index signature absorbs them — but a reader of one must change."
 ```
 
-### Task B15: a session can own its registry, and hydrate it
+### Task B17: a session can own its registry, and hydrate it
 
 `SessionGraphFactoryOptions.ragRegistry` is one shared `IRagRegistry` (`session-graph-factory.ts:93`), handed to every build (`:228`) and the object `closeSession` is called on at dispose (`:280`). Its own comment — *"GLOBAL … shared; the per-call scope filter isolates"* — is the model being replaced.
 
@@ -2664,7 +2748,7 @@ async because hydration is, and because SessionAgentParts has no userId to defer
 it with. Absent, the old path runs untouched."
 ```
 
-### Task B16: changelogs, documentation, and the migration note
+### Task B18: changelogs, documentation, and the migration note
 
 Documentation is not only the changelog. A stale doc describing the previous contract is worse than no doc, because it is believed.
 
@@ -2686,59 +2770,46 @@ Read each hit. A file that only mentions `apiKey` in passing may still be correc
 - [ ] **Step 2: write the `[Unreleased]` entries**
 
 ```bash
-for p in llm-agent llm-agent-libs llm-agent-mcp qdrant-rag pg-vector-rag \
-         hana-vector-rag sap-aicore-llm sap-aicore-embedder; do
+for p in llm-agent llm-agent-libs llm-agent-server-libs llm-agent-server llm-agent-mcp \
+         openai-llm anthropic-llm deepseek-llm ollama-llm openai-embedder \
+         qdrant-rag pg-vector-rag hana-vector-rag \
+         sap-aicore-llm sap-aicore-embedder sap-aicore-auth; do
   echo "--- packages/$p/CHANGELOG.md"; head -3 "packages/$p/CHANGELOG.md"
 done
 ```
 
 Each gets an `## [Unreleased]` section saying what a consumer must do, not what we did. No version numbers: the version is decided at the release by what has accumulated (§10).
 
-- [ ] **Step 3: carry §8's three migration items into the root changelog, with their real errors**
+- [ ] **Step 3: point the root changelog at the spec's migration note — do not restate it**
+
+The spec's §8 carries **seven** migration items, each with its before/after and the error a
+consumer will actually see. Restating them here is how the two drift: an earlier version of
+this plan copied three of them inline and they were stale within two commits. The root
+changelog lists their titles and links the section:
 
 ````markdown
 ## [Unreleased]
 
 ### Migration
 
-**1. Build the RAG collection tools with an identity.**
+Seven changes need an edit, and none is optional. Each is written out in full — with its
+before/after and the compiler error you will see — in
+`docs/superpowers/specs/2026-09-16-auth-contracts-design.md` §8:
 
-```ts
-- const entries = buildRagCollectionToolEntries({ registry });
-+ const entries = buildRagCollectionToolEntries({ registry, identity });
-```
-
-**2. Stop reading identity from the tool context.** A handler no longer needs to:
-the entries were built for one caller. Call sites that *pass* `sessionId`/`userId`
-keep compiling — `RagToolContext` declares `[key: string]: unknown`, which
-absorbs them — but code that *reads* one gets
-`TS2322: Type 'unknown' is not assignable to type 'string | undefined'`.
-
-**3. Narrow a widened logger option before reading it.** The property is
-optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
-
-```ts
-- options.logger.log(event);
-+ if (options.logger) normaliseLogger(options.logger).log(event);
-```
-
-**4. Move off the plain key fields — they are deprecated now and gone next major.**
-A static key is a credential, so carrying both is two ways to do one job (§4.6.2,
-§9.11). Each call site is one line:
-
-```ts
-- new OpenAiEmbedder({ model: 'text-embedding-3-small', apiKey: key });
-+ new OpenAiEmbedder({ model: 'text-embedding-3-small', credential: staticApiKey(key) });
-```
-
-The same for `apiKey` on the LLM providers and `qdrant-rag`, and `staticLogin(user, pw)`
-for `pg-vector-rag` and `hana-vector-rag`. Nothing breaks in this release if you do
-not: the fields still work, and only warn.
-
-**Not a migration:** hydrating collections after a restart is new and optional.
-A consumer that does not hydrate behaves exactly as today — an empty registry,
-and `attributes` that read back as `undefined`.
+1. Replace a plain key with a credential (`staticApiKey` / `staticLogin`).
+2. Construct your LLM provider yourself and hand in the instance — `makeLlm`,
+   `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` are gone.
+3. Build the SAP AI Core credential in your composition root, via `serviceKeyCredential`
+   from the new `@mcp-abap-adt/sap-aicore-auth`.
+4. Supply `BuildAgentDeps.makeLlm` — the library no longer defaults it — and move
+   `apiKey: ${VAR}` to `credentialRef: VAR`.
+5. Build the RAG collection tools with an identity.
+6. Stop reading identity from the tool context.
+7. Narrow a widened logger option before reading it.
 ````
+
+Before committing, count the spec's items and compare with this list. If the numbers differ,
+the spec moved and the list is stale — fix the list, never the spec.
 
 - [ ] **Step 4: update the threat model**
 
@@ -2746,10 +2817,10 @@ and `attributes` that read back as `undefined`.
 **State: mitigated.** The tool entries are built with the caller's identity bound
 in — required, not optional — so the only collections they can address are that
 caller's and the globals, and no framework tool mutates a global at all. Landed
-in Task B14 of the plan; see `docs/ARCHITECTURE.md` principle 8.
+in Task B16 of the plan; see `docs/ARCHITECTURE.md` principle 8.
 ```
 
-AS-6's **State** changes from "latent, not live" to that, naming the commit from Task B14, and its Known Limitations row is removed. Keep the description of what was wrong: a threat model that forgets what it fixed cannot tell whether a regression is new.
+AS-6's **State** changes from "latent, not live" to that, naming the commit from Task B16, and its Known Limitations row is removed. Keep the description of what was wrong: a threat model that forgets what it fixed cannot tell whether a regression is new.
 
 - [ ] **Step 5: run everything green**
 
@@ -2778,7 +2849,7 @@ changelog: `buildRagCollectionToolEntries` requires an `identity`;
 widened logger properties are already under `[Unreleased]`. No version bump — the
 version is decided at the release by what has accumulated (§10).
 
-The security change is Task B14: five of seven collection handlers ignored the
+The security change is Task B16: five of seven collection handlers ignored the
 identity they were handed and a sixth trusted it. Latent rather than live, since
 nothing mounted them — see AS-6 in the threat model.
 
@@ -2800,46 +2871,31 @@ git push origin main
 
 ---
 
+
+---
+
 ## Self-review
 
-This section records a review that was **run**, on 2026-09-20, after the first draft. Run it again against the spec before Task B16.
+This section records a review that was **run**, not a checklist to run later.
 
-**What the first pass found, and what it cost:**
+**This plan is a re-derivation, and that is the first thing to know about it.** Ten review rounds changed the spec's §4 from *"add a credential beside `apiKey`"* to *"a secret belongs in a contract only where the secret is the contract"*. The previous derivation's workstream 2 is wrong in every particular — it put a `credential` on `LLMProviderConfig`, kept `makeLlm`, and never mentioned `credentialRef`, `sap-aicore-auth` or the composition root. It was not patched; it was replaced. Phase A and workstream 3 are carried over, because §4.6.2's rewrite touched neither.
 
-- **39 of 94 steps carried no code.** Whole tasks — B7, B8, B11, B12 — described their tests in prose, and B7 said “same shape as B6's”, which the skill names as a plan failure precisely because an implementer may read tasks out of order. Rewritten with the actual test and implementation code; 5 steps remain prose, and each is a decision or a handover rather than an edit.
-- **A type used in a later task was defined by no earlier one.** Task B14 reads `meta.authorization` to decide what a global permits, and `RagCollectionMeta` has no such field — §6.1's second axis was in the spec and in no task. Task B9 now adds `RagCollectionAuthorization` and the optional `authorization?` on the meta and on `createCollection`.
-- **§3.5 (stdio credentials) had no task at all.** §8 puts the typed stdio implementation in this workstream, beside http. Task B8 now covers both, batched because the shape is identical — a constructor demanding a credential typed per target — with the stdio half asserting the secret travels through the child's `env` and never through argv.
-- **A cross-package import that cannot exist.** Task B14's first draft told an implementer to import `SessionGraphIdentity` into `llm-agent`, but it lives in `llm-agent-libs` and the dependency runs libs → llm-agent, one way. Fixed in both the plan and §5.1 of the spec, which now names `RagCallerIdentity`.
+**Spec coverage, section by section.** §3.3-3.4 are workstream 1, merged; §3.5 → B7. §4.1, §4.4, §4.5 → B1-B7. §4.6.1 (address-only connection strings) → B6. §4.6.2 — the section that changed most — is spread across B1 (the two contract removals, the conversions), B2 (`sap-aicore-auth`), B3-B6 (concrete constructors), B8 (the dispatch deleted), B9 (`credentialRef`, the lost default) and B10 (the composition root). §4.6.3 (`apiBaseUrl`) → B5. §5 and §5.1 → B16. §6.1 → B11 and B16. §6.2 needs no task: it deletes a design, and the constructor credential it leaves behind is B6. §6.3 → B11-B15. §6.4 → B17. §7 is workstream 4, merged. §8's migration → B18.
 
-**What a fourth pass found — three, all of them code that would not compile, plus one it did not catch:**
+**Not in any task, deliberately:** `AccessCheck` anywhere (§5); a composite registry key (§6.4); delegated identity to HANA or Qdrant (§9.1); converging the two logger names (§9.9); anything deepening the `IF NOT EXISTS` assumption (§9.10); a `role` parameter on `BuildAgentDeps.makeLlm` (§4.6.2 — its twenty call sites name roles a closed union cannot); and `ollama-embedder`, which authenticates not at all.
 
-- **B3 reached for a `this.config` the class does not have.** `OpenAiEmbedder` copies `apiKey`, `baseURL` and `model` into fields (`:14-16`, `:25-30`) and keeps no config object, so `resolveProviderSecret(this.config)` was uncompilable. Two fields replace the one — `apiKey?: string` and `credential?` — with a private `authorization()` that asks per request, and the existing throw keeps its message verbatim because `openai-embedder.test.ts` asserts on it.
-- **Both MCP servers called an optional member as if it were required.** `McpClientFactoryResult.close?: () => Promise<void> | void` is optional (`mcp-connection-strategy.ts:68`) — a custom factory may legitimately have nothing to clean up — so `await held.close()` fails under strict. It is `await held.close?.()` now, with a test that passes a factory returning no `close` at all.
-- **The http config omitted a required discriminator and hid it behind a cast.** `McpConnectionConfig.type` is required, `'http' | 'stdio'` (`:33`), and `as McpConnectionConfig` was covering its absence. With `type: 'http'` present no cast is needed. `args?: string[]` is also mutable on that contract, so the stdio config copies rather than passing a readonly array through a cast — and the contract's own docstring already states the argv rule this satisfies (`:45-46`), so the plan cites it instead of asserting it.
-- **And one the review did not flag, found while fixing the cast:** the tests narrowed with `Extract<McpConnectionConfig, { url: string }>`, but that type is a single interface with optional `url`, not a union — so `Extract` collapses to `never`. Measured on the repository's tsc: `TS2322: Type 'Cfg' is not assignable to type 'never'`. All four narrowings are gone; the fake's array is already typed.
-- **B2's cleanliness check could never pass.** It ran `git add …` and then required `git status --porcelain` to be empty, which lists staged files. Split: `git diff --quiet` for nothing unstaged, and `git diff --cached --name-only` to read the staged set.
+**What this pass found and fixed while writing:**
 
-**What a third pass found — three more, and the same root cause every time: a file list that did not match a dependency graph.**
+- The reusable half was nearly truncated mid-task: `## [Unreleased]` appears **inside** Task B18's changelog example, and cutting the old plan at that heading would have shipped a task whose last four steps were missing. Extracted by task boundary instead.
+- Task B18 told an implementer to copy §8's *three* migration items inline. The spec has **seven**, and an inline copy is exactly how the two drifted the last time. It now lists titles and points at the section, with an instruction to compare the counts before committing.
+- Its changelog loop covered eight packages; sixteen are touched. Corrected, including the new `sap-aicore-auth`.
+- Task B1 is the only task allowed to end with `tsc -b` red, and it says so: removing a field from two contracts breaks the packages that read it, and each is claimed by a later task. Its Step 5 writes the compiler's error list into the report, and Task B10's Step 5 treats `tsc -b` returning 0 as the workstream's completion test — so the scope is measured at the start and closed at the end rather than predicted in between.
 
-- **The helper was unimportable from the four places that must call it.** `resolveProviderSecret` was declared in `llm-agent-libs/src/providers.ts`, and no provider package depends on `llm-agent-libs` — measured: `openai-llm`, `anthropic-llm`, `deepseek-llm` and `ollama-llm` each depend on `@mcp-abap-adt/llm-agent`, and the last two also on `@mcp-abap-adt/openai-llm`. It now lives in core, which all four already have. The task's run and commit steps covered two files in one package while claiming changes in six; both now cover all six, and the commit step ends with a `git status --porcelain` that must come back empty.
-- **Two embedder packages were given a dependency and no task.** B1 installed `interfaces-auth` into `openai-embedder` and `ollama-embedder` saying B2 would resolve inside them, while B2 covered only the four LLM providers and B3 only the abstract `EmbedderFactoryConfig` — so `OpenAiEmbedder` would have kept demanding `apiKey: string` and holding it for its lifetime. B3 now covers it, per request, with the pre-existing missing-key test required to pass unedited. And `ollama-embedder` is **removed** rather than given a credential: it sends `Content-Type` and nothing else (`ollama.ts:42`, `:91`), so a credential there would be a member nobody calls.
-- **B8 had comment stubs where `start()` and `stop()` belong,** no `start`/`stop` on the stdio class at all, and tests that only exercised `*ForTest` helpers — which prove the helper works and nothing about the production path. Both classes now take the client factory as a constructor argument defaulting to `createDefaultMcpClient`, the lifecycle is written out, and the tests go through that seam: the config the factory receives carries the resolved header or env, `start()` returns `result.client`, `stop()` closes exactly once and is safe twice, a second `start()` refuses instead of leaking, and a reconnect asks the credential again.
-- Editorial: the hard gate cited a Task A6 that does not exist. It is Task A3.
+- **I reintroduced the defect the previous derivation's self-review had fixed.** The freshly written workstream 2 shipped **22 of 104 steps with no code**, and Task B7 said “as written in the previous derivation” — the “Similar to Task N” antipattern the skill names, and the exact thing the last pass had removed. B7 was recovered in full from git history; B3, B4, B5, B6, B9 and B10 gained their implementation snippets and commit commands. Two steps remain prose, and both are decisions rather than edits: handing the publish to the user, and choosing Qdrant's catalog mechanism from what Step 1 found.
 
-**What a second, external pass found — four blockers, all of them the plan not matching the code:**
+**Type consistency.** `credential` is the property name on every concrete config; `credentialRef` on every serializable one; `apiBaseUrl` is the AI Core endpoint everywhere (`parseServiceKey` returns it, `sap-aicore-embedder` already calls it that); `staticApiKey`/`staticLogin` are declared once, in B1, and used by B3-B6 and B10. `RagCollectionRecord` uses `name` for the logical name and `storeName` for the physical one in B11, B13, B14 and B15 alike.
 
-- **Every test command was wrong.** The plan used `node --test file.ts`; each package's own script is `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`, and without the loader a `.ts` test's `.js` imports fail with `ERR_MODULE_NOT_FOUND` — verified against an existing test. All 33 commands now carry the loader, and Tech Stack says why once.
-- **A hydrated collection would have been undeletable, and would have come back.** `RagCollectionRecord` had no `providerName`, and `SimpleRagRegistry.deleteData` returns `{ ok: true }` and calls nobody when `meta.providerName` is absent — so a delete succeeded silently, the store and its catalog row survived, and the next hydration restored the collection. It is now required on the record, persisted in the catalog, and restored by `adopt`, with a test that asserts the provider was actually asked.
-- **A role-gated global would have become readable after a restart.** The `authorization` axis was on the meta but not on the record, not in the create options and not restored by `adopt`, so it came back `undefined` — and B14 refused only on `=== 'role'`. Both halves are fixed: the axis is threaded through, and the resolver now **fails closed** on `!== 'public'`, so either fix alone would have been enough.
-- **B2 froze the secret for the provider's lifetime.** It resolved the credential in the wiring and handed a plain `string` to five constructors, which contradicts the one thing §4 insists on. `LLMProviderConfig` also lives in `llm-agent/src/types.ts:78`, not in `providers.ts` as the task claimed, and the five concrete providers are in four separate packages that B1 never installed the dependency into. B2 now forwards the credential and resolves it **inside each provider's request path**, with a test that makes two real calls and asserts the two `Authorization` headers differ.
-- **B8 referenced classes that do not exist.** `IMcpServer` appears nowhere in `llm-agent-mcp`; `client.ts` builds transports inline. The task now **creates** both implementations on that code, and records a boundary the spec had not: `IMcpRequestHeadersStrategy.headers()` is synchronous and merged at connect, so an http MCP credential is resolved per *connection*, not per request. §3.3 of the spec now says so.
-
-**What the passes confirmed:**
-
-- **Spec coverage.** §3.3-3.4 are workstream 1, merged; §3.5 → B8. §4 and §4.6 → B2-B8. §5 and §5.1 → B14. §6.1 → B9 (the axis) and B14 (what it permits). §6.2 needs no task — it deletes a design, and the constructor credential it leaves behind is B4-B5. §6.3 → B9-B13. §6.4 → B15. §7 is workstream 4, merged. §8's migration → B16.
-- **Not in any task, deliberately:** `AccessCheck` anywhere (§5); a composite registry key (§6.4); delegated identity to HANA or Qdrant (§9.1); converging the two logger names (§9.9); anything that would deepen the `IF NOT EXISTS` assumption (§9.10).
-- **Type consistency.** The credential property is `credential` in every task — B2 fixes the name and B3-B8 reuse it. `RagCollectionRecord` uses `name` for the logical name and `storeName` for the physical one in B9, B11, B12 and B13 alike, and B13's third test exists to catch the two being conflated.
-- **The gate.** No Phase B task may run before Task A3's two registry commands answer 1.1.0.
+**The gate.** No Phase B task may run before Task A3's two registry commands answer 1.1.0.
 
 ---
 
