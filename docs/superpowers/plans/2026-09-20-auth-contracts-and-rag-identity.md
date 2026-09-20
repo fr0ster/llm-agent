@@ -203,9 +203,14 @@ BODY
 
 - [ ] **Step 1: merge PR #90**
 
+**A merge commit, not a squash** — that is this repository's convention (`git log --merges master` shows “Merge pull request #86 from …” and so on), and squashing would collapse the branch's commits into one, losing the reasoning each of them carries. The corrections on this branch took three rounds to get right; their messages are the record of why.
+
 ```bash
-gh pr merge 90 --squash --delete-branch
+gh pr view 90 --json mergeable,mergeStateStatus --jq '{mergeable,mergeStateStatus}'
+# expect MERGEABLE / CLEAN before going further
+gh pr merge 90 --merge --delete-branch
 cd ~/prj/mcp-abap-adt-interfaces && git checkout master && git pull --ff-only
+git log --oneline -6    # the branch's commits must all be here, not one squashed one
 ```
 
 - [ ] **Step 2: bump the version and head the changelog section**
