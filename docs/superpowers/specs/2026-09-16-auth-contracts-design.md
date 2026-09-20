@@ -306,9 +306,13 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
 
    **The same removal answers the model resolver, and `IModelResolver` itself does not change.** An earlier draft said the interface would start taking a factory; that was wrong on two counts, and reading it shows both. `IModelResolver` is one method and holds nothing — `resolve(modelName, role): Promise<ILlm>` (`interfaces/model-resolver.ts:7-12`). What holds a config is the **default implementation**: `DefaultModelResolver` keeps `Omit<MakeLlmConfig, 'model'>` plus a `defaults.temperature`, and on every call builds a whole new provider — `makeLlm({ ...this.providerConfig, model: modelName }, temperature)` (`providers.ts:314-327`).
 
-   **And it is rebuilding an object to change things a call already carries.** `LLMCallOptions` accepts `model`, `temperature`, `maxTokens`, `topP` and `stop` **per request** (`types.ts`, “Per-request model override”). A constructor parameter is a contract like any other; what makes authorization different is that it is fixed at construction and hidden, while a behaviour knob may vary per call — so a knob that can vary per call must not force a rebuild. Its `role === 'main' ? 0.7 : 0.1` is also a policy with our numbers in it, which `LLMProviderConfig`'s own `whenThrottled` comment argues against in the same file.
+   **An earlier draft of this item said per-call options replace it. They do not, and `CallOptions` says so itself.** Its `model` docstring: the override “applies to the main working LLM path… It does **NOT** reach the reviewer, finalizer, planner, or target-state evaluator roles — those receive only a diagnostic-only subset… Same for temperature / maxTokens / topP / stop” (`interfaces/types.ts:35-42`). The exclusion is deliberate, so a client-supplied override cannot corrupt those roles' structured output. And the resolver's actual job is not a per-call override at all: `PUT /v1/config` uses it to **permanently swap** the main, classifier or helper instance (`llm-agent-server-libs/src/smart-agent/http/config-route-handler.ts:106`, `:129`, reached from `smart-server.ts:334`, `:3041`). Retracted.
 
-   So `DefaultModelResolver` leaves with `makeLlm`, and nothing replaces it in the library: one authenticated `ILlm` per pipeline, with model and temperature riding on the call. A consumer that genuinely needs role-dependent instances implements the unchanged `resolve(modelName, role)` itself — returning something it already holds, or constructing with its own credential — and chooses its own numbers.
+   **So the capability stays, and only the implementation moves.** Constructing a provider for a newly chosen model is construction — exactly where a credential belongs — so whoever holds the credential must be the one that builds it. That is not the library: `DefaultModelResolver` could only do it by holding a stored config with a secret in it, plus the five-way dispatch that leaves with `makeLlm`. It moves to `llm-agent-server-libs`, which owns `/v1/config`, already constructs providers a few files away (`build-dag-coordinator-deps.ts:89`) and is the assembly by design (principle 2).
+
+   **Nothing loses a capability silently, because the seam is already optional.** `modelResolver?: IModelResolver` (`smart-server.ts:334`) means a deployment that supplies none has no model switching today either — `config-route-handler.ts:106` checks for exactly that. The contract is untouched, the shipped server keeps the feature by implementing it where the credential lives, and a consumer with its own resolver is unaffected.
+
+   Its `role === 'main' ? 0.7 : 0.1` goes with the class rather than moving: that is a policy with our numbers in it, which `LLMProviderConfig`'s own `whenThrottled` comment argues against a few lines away. Whoever implements the resolver picks its own.
 
    That is the same answer as `EmbedderFactory`'s, arrived at from the other direction, and the repetition is the point: **wherever the framework must construct something later, it asks the consumer for a factory, never for a secret.** One shape covers the embedder, the switched model, and anything of this kind that comes next.
 
@@ -598,7 +602,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 |---|---|---|
 | `@mcp-abap-adt/llm-agent` | **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3) — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` removed** (§4.6.2), `MakeLlmConfig` with them, and `DefaultModelResolver` with them — `IModelResolver` itself is **unchanged** (`model-resolver.ts:7`), since what held a config was the implementation; optional `ragRegistryFactory(identity)` with session-owned disposal (§6.4) | **breaking**: exported functions and `DefaultModelResolver` are removed; the `IModelResolver` contract is untouched. Also additive at runtime for the MCP and RAG seams, and `SessionGraphFactoryOptions.logger` is widened, so a consumer that *reads* it must narrow first (§7) |
-| `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted; **and it constructs providers the way the library used to** — `makeLlm({…})` at `build-dag-coordinator-deps.ts:89` — so it becomes the place that owns a dispatch and supplies the model factory (§4.6.2). Being the example is its job (principle 2) | **breaking** for the model-resolver wiring; additive otherwise |
+| `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted; **and it constructs providers the way the library used to** — `makeLlm({…})` at `build-dag-coordinator-deps.ts:89` — so it becomes the place that owns a provider dispatch **and implements `IModelResolver`** for `PUT /v1/config`, where the deployment's credential already is (§4.6.2). Being the example is its job (principle 2) | additive for its own consumers: `modelResolver?` was already optional (`smart-server.ts:334`), and the shipped server keeps the feature |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
 | `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | a credential in their own constructors, replacing `apiKey`/`user`/`password`, with a connection string that carries the address only; persist `attributes` in a catalog of their own, hand them back unread through the new optional `describeCollections()`, build handles for an existing store through `openCollection()`, and **delete the catalog record before the data inside their own `deleteCollection`, raising `CatalogRecordDeleteError` and leaving the data untouched when that first step fails** — these packages own the backend catalog, so resurrection is stopped here or nowhere (§6.3). **No check is asked here** (§5) | **breaking**, and in two ways: source-level, because `apiKey`/`user`/`password` are removed from the configs (§4.6.2), and at runtime for one input, because a connection string carrying credentials is now refused at construction rather than used. What the measurement in §4.6.1 still buys is narrower than an earlier draft of this cell claimed: the *resolvers* are absent from both barrels and unreachable through a closed `exports` map, and their only caller is already `async`, so making them async is invisible — but the config type is public, so removing a field from it is not |
 | concrete LLM and embedder providers | a credential **replacing** `apiKey?: string` in their own constructors, with the AI Core `AICORE_SERVICE_KEY` fallback moved **out** of the provider (§4.6.2): a provider that reads an env var when no credential was passed has two sources again, and the precedence this section deleted would be back. The composition root reads the env and builds the one `IBearerCredential` the provider is constructed with — same behaviour for a deployment that sets nothing else, one source for the provider | **breaking**: the plain field is removed, `staticApiKey` converts a call site in one line (§4.6.2) |
@@ -654,18 +658,25 @@ A connection string carrying credentials is now **refused at construction**, wit
 + builder.withMainLlm(new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model }));
 ```
 
-`DefaultModelResolver` goes too, and `IModelResolver` does not change. It rebuilt a provider on
-every call to set a model and a temperature that `LLMCallOptions` already carries per request:
+`DefaultModelResolver` goes too, and `IModelResolver` does **not** change. If you relied on the
+library's implementation for `PUT /v1/config` model switching, implement the same one-method
+contract where your credential lives — which is what `llm-agent-server-libs` now does for the
+shipped server:
 
 ```ts
-- new DefaultModelResolver({ provider: 'openai', apiKey: key })   // rebuilt per model switch
-+ // pass model and temperature per call instead — LLMCallOptions has both:
-+ await llm.complete(messages, { model: 'gpt-4o', temperature: 0.7 });
+- new DefaultModelResolver({ provider: 'openai', apiKey: key })
++ const modelResolver: IModelResolver = {
++   async resolve(modelName, role) {
++     const provider = new OpenAIProvider({ credential: myCredential, model: modelName });
++     return new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model });
++   },
++ };
 ```
 
-An assembly that truly needs role-dependent instances implements the unchanged
-`resolve(modelName, role)` itself, returning what it already holds, and picks its own numbers
-rather than inheriting our `main ? 0.7 : 0.1`.
+Pick your own temperature per role if you want one: the library's `main ? 0.7 : 0.1` was a policy
+with our numbers in it and does not move. And note that per-call `CallOptions.model` is **not** a
+substitute — by its own contract it does not reach the reviewer, finalizer, planner or
+evaluator roles (`types.ts:35-42`).
 
 **3. Move an `AICORE_SERVICE_KEY` read into your composition root** (§4.6.2). The SAP providers no longer read it: the root reads the env and builds the one `IBearerCredential` the provider is constructed with. A deployment that sets nothing else behaves as before.
 
