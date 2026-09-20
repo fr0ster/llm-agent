@@ -1,4 +1,5 @@
 import type {
+  AnyLogger,
   ILogger,
   IMcpClient,
   IMcpServer,
@@ -6,7 +7,10 @@ import type {
   IRagRegistry,
   McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
-import { collectServerDescriptors } from '@mcp-abap-adt/llm-agent';
+import {
+  collectServerDescriptors,
+  normaliseLogger,
+} from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
@@ -103,8 +107,10 @@ export interface SessionGraphFactoryOptions {
    * (`ragRegistry.closeSession` returning `{ ok: false }`). Without a logger
    * the failure falls back to `console.warn` so it is never silent. The
    * dispose hook never throws — a failed close must not crash session teardown.
+   * An ordinary text logger (`ITextLogger`) is also accepted; it is normalised
+   * to the event `ILogger` once, at the constructor.
    */
-  readonly logger?: ILogger;
+  readonly logger?: AnyLogger;
   /**
    * Optional per-session teardown hook run during `SessionGraph.dispose()`,
    * AFTER the session-RAG `closeSession`. The host uses this to free per-session
@@ -136,8 +142,26 @@ export interface SessionGraphFactoryOptions {
  * The per-session worker set is FRESH per session (re-wired via buildAgent
  * with the session logger), never the server's global worker map.
  */
+
+/**
+ * The options as this class holds them: identical to what the caller passed,
+ * except the logger is always the event `ILogger`. `AnyLogger` is accepted at
+ * the constructor and normalised once; everything inside this file then keeps
+ * calling `.log(...)` exactly as before.
+ */
+type NormalisedSessionGraphFactoryOptions = Omit<
+  SessionGraphFactoryOptions,
+  'logger'
+> & { readonly logger?: ILogger };
+
 export class SessionGraphFactory {
-  constructor(private readonly opts: SessionGraphFactoryOptions) {}
+  private readonly opts: NormalisedSessionGraphFactoryOptions;
+
+  constructor(opts: SessionGraphFactoryOptions) {
+    this.opts = opts.logger
+      ? { ...opts, logger: normaliseLogger(opts.logger) }
+      : (opts as NormalisedSessionGraphFactoryOptions);
+  }
 
   async build(identity: SessionGraphIdentity): Promise<SessionGraph> {
     if (

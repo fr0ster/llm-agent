@@ -40,6 +40,33 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`McpConnectionConfig.env`** — a spawned stdio child can be given its own
   environment. Without it the MCP SDK falls back to a sanitised subset of this
   process's environment, which every child of every caller then shares.
+- **`ITextLogger`** — these seams now take an ordinary text logger
+  (`info`/`warn`/`error`/`debug(message, meta?)`) as well as the
+  event `ILogger`: `SmartAgentBuilder.withLogger`,
+  `SessionGraphFactoryOptions.logger`, `ConnectionStrategyOptions.logger`,
+  `ComposeResilienceOptions.logger`, `FallbackLlmCallStrategy`'s constructor,
+  `EmbedderResolutionOptions.logger` and `RagResolutionOptions.logger` in
+  `@mcp-abap-adt/llm-agent-rag`, and `SessionLifecycleOptions.logger`,
+  `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` in
+  `@mcp-abap-adt/llm-agent-server-libs`. Anything that accepts one of those
+  option types accepts either shape as well, which follows from the types
+  rather than from a separate decision; that set is not listed here, because
+  it grows with every signature that takes one and your compiler can answer
+  it exactly. A consumer that already has a logger no longer has to write a
+  `LogEvent` adapter before it can pass one.
+- **`normaliseLogger(logger)`, the `AnyLogger` union, and the `isTextLogger(logger)`
+  type guard are exported** for the seams that deliberately keep the event
+  shape. `IPipelineContext.logger` and
+  `IPipelinePlugin` hand `ILogger` *to* you, and three inputs feed them and so
+  stay event-only: `PipelineDeps.logger`, `SmartAgentDeps.logger`, and
+  `makeDefaultDeps({ logger })` from `@mcp-abap-adt/llm-agent-libs/testing` —
+  widening any of them would put a text logger in front of every existing
+  plugin. If you assemble those deps by hand, call `normaliseLogger` on your
+  logger first — one line, and the same adapter the widened seams use
+  internally. A text logger then receives the event's `type` as the message
+  (a `warning` carries its own text) and the whole event as `meta`, at `error`
+  for `pipeline_error`, `warn` for `warning`, `debug` for
+  `rag_upsert`/`rag_query`/`tools_selected`, and `info` for everything else.
 
 ### Changed
 
@@ -48,6 +75,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `withMcpServers` is still stopped — and the failure is logged through the
   configured `ILogger` (`console.warn` when none is set) instead of being
   raised.
+- **llm-agent now has two logger names**, deliberately. The exported `ILogger`
+  keeps its event shape because `IPipelineContext.logger` and `IPipelinePlugin`
+  hand it to consumer plugins; widening it would break every plugin. The text
+  shape arrives as the separate `ITextLogger`. Converging on one name is a
+  rename, and a rename is a major — so it waits for one.
+- **Reading a widened option property now needs a narrow.** Handing a logger in
+  is unaffected, but a consumer that *reads* one — `options.logger?.log(event)`
+  on `ConnectionStrategyOptions`, `ComposeResilienceOptions` or
+  `SessionGraphFactoryOptions` — no longer compiles, because the property is now
+  `AnyLogger`: `Property 'log' does not exist on type 'AnyLogger'`. These
+  properties are optional and `normaliseLogger` takes a non-optional
+  `AnyLogger`, so `normaliseLogger(options.logger)` on its own does not compile
+  either. What does, measured:
+  `if (options.logger) normaliseLogger(options.logger).log(event);`
+  Nothing changes at runtime.
 
 ### Deprecated
 

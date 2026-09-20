@@ -8,8 +8,8 @@
  */
 
 import type {
+  AnyLogger,
   IKnowledgeRagHandle,
-  ILogger,
   IMcpClient,
   IMcpServer,
   IRag,
@@ -69,7 +69,7 @@ export interface SessionLifecycleOptions {
   ragRegistry: IRagRegistry;
   buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
   /** Optional logger forwarded to SessionGraphFactory for cleanup-failure surfacing. */
-  logger?: ILogger;
+  logger?: AnyLogger;
   /**
    * Optional per-session teardown hook run during `SessionGraph.dispose()`.
    * The host wires this to invoke the pipeline plugin's

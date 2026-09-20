@@ -8,6 +8,7 @@ import type {
   McpConnectionConfig,
   McpConnectionResult,
 } from '@mcp-abap-adt/llm-agent';
+import { normaliseLogger } from '@mcp-abap-adt/llm-agent';
 import { createDefaultMcpClient } from '../factory.js';
 
 interface Slot {
@@ -46,7 +47,9 @@ export class LazyConnectionStrategy
     this._skipRevectorize = options?.skipRevectorize ?? false;
     this._cooldownMs = options?.cooldownMs ?? 30000;
     this._factory = factory ?? createDefaultMcpClient;
-    this._logger = options?.logger;
+    this._logger = options?.logger
+      ? normaliseLogger(options.logger)
+      : undefined;
     this._slots = configs.map((config) => ({
       config,
       lastAttempt: 0,
