@@ -51,6 +51,12 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    on a framework-carried options object, not on a convenience config. So `LLMProviderConfig`,
    `EmbedderFactoryConfig` and `MakeLlmConfig` carry none, while `interfaces-auth`'s three
    credential contracts are made of nothing else.
+   *A constructor parameter is a contract too — the question is only what may be in one.* Model,
+   temperature and `maxTokens` are behaviour knobs, and `LLMCallOptions` already accepts all three
+   **per request**; authorization is not a knob but a property of the object's identity, fixed
+   where the object is made and never varied by a call. It follows that a knob which can vary per
+   call must **not** force a rebuild: code that constructs a new provider to change a temperature
+   is doing at construction time what the call already carries.
    *Why the passenger case is worse than it looks:* a shared base can only type the **union** of
    every provider's credential, so the compiler stops being able to say which credential a target
    actually needs — the loss principle 4 and the `IMcpServer` design hold against a bare

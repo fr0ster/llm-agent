@@ -355,7 +355,7 @@ own tsc and a devDependency would not travel."
 **Files:**
 - Modify: `packages/llm-agent/src/types.ts` (`LLMProviderConfig`, `:78` — **this** is the contract consumers pass; `providers.ts` only has a local copy)
 - Create: `packages/llm-agent/src/providers/resolve-provider-secret.ts`, exported from `packages/llm-agent/src/index.ts`. The helper belongs in **core**, not in `llm-agent-libs`: every provider package depends on `@mcp-abap-adt/llm-agent` and **none** depends on `llm-agent-libs` — the dependency runs the other way (measured: `openai-llm`, `anthropic-llm`, `deepseek-llm`, `ollama-llm` each list `@mcp-abap-adt/llm-agent`, and the last two also list `@mcp-abap-adt/openai-llm`). Declaring it in `providers.ts` would make it unimportable from the four places that must call it.
-- Modify: `packages/llm-agent-libs/src/providers.ts` (local `apiKey?: string` ~`:29`; the five constructions at ~`:186`, `:204`, `:222`, `:240`, `:258`; `createDeepSeek(apiKey: string, …)` ~`:303`)
+- Modify: `packages/llm-agent-libs/src/providers.ts` (local `apiKey?: string` ~`:29`; the five constructions at ~`:186`, `:204`, `:222`, `:240`, `:258`; `makeDefaultLlm(apiKey, model, temperature)` ~`:302`)
 - Modify: `packages/openai-llm/src/**`, `packages/anthropic-llm/src/**`, `packages/deepseek-llm/src/**`, `packages/ollama-llm/src/**` — `OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`, `OllamaProvider` each hold the credential and resolve it in their own request path. `SapCoreAIProvider` is Task B6.
 - Test: `packages/llm-agent-libs/src/__tests__/providers-credential.test.ts` and one per provider package, e.g. `packages/openai-llm/src/__tests__/credential.test.ts`
 
@@ -381,7 +381,7 @@ For each, record in the task report **where the secret enters the wire**:
 
 - a client constructed once with the key → resolve per request through the SDK's own hook (`defaultHeaders` as a function, or a `fetch` override), or rebuild nothing and say why;
 - headers assembled per request by our own code → resolve there, which is the easy case;
-- a key demanded as a required `string` (`createDeepSeek`, `:303`) → resolve before the call and throw the provider's existing missing-key error when it comes back `undefined`.
+- a key demanded as a required `string` (`makeDefaultLlm`, `:302`) → resolve before the call and throw the provider's existing missing-key error when it comes back `undefined`.
 
 Do not proceed on an assumption: an answer of “the SDK takes a string once” changes what Step 4 can honestly promise, and the plan would rather say so than pretend.
 
@@ -544,7 +544,7 @@ const secret = await resolveProviderSecret(this.cfg);
 if (!secret) throw new MissingApiKeyError(/* the provider's existing error */);
 ```
 
-`createDeepSeek(apiKey: string, …)` (`:303`) keeps its signature: it is a convenience over `makeLlm` and a required string is what it promises. A credential-configured DeepSeek goes through `makeLlm` instead.
+`makeDefaultLlm(apiKey, model, temperature)` (`:302`) is not adapted at all — the spec removes it with `makeLlm` (§4.6.2).
 
 - [ ] **Step 5: run everything this task touched — six packages, not two**
 
