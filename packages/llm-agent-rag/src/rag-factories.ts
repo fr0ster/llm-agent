@@ -1,4 +1,8 @@
 import type {
+  IApiKeyCredential,
+  IBearerCredential,
+} from '@mcp-abap-adt/interfaces-auth';
+import type {
   AnyLogger,
   EmbedderFactory,
   IDocumentEnricher,
@@ -15,6 +19,11 @@ import {
   MissingProviderError,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  assertCredentialKind,
+  EMBEDDER_CREDENTIALS,
+} from './credential-guard.js';
+import type { EmbedderFactoryOpts } from './embedder-factories.js';
 import {
   builtInEmbedderFactories,
   prefetchEmbedderFactories,
@@ -112,8 +121,10 @@ export interface EmbedderResolutionConfig {
   /** Embedder name — looked up in the factory registry. Default: 'ollama' */
   embedder?: string;
   url?: string;
-  apiKey?: string;
   model?: string;
+  credential?: IApiKeyCredential | IBearerCredential;
+  /** Where the credential is valid — the SAP targets take it instead of reading the environment. */
+  apiBaseUrl?: string;
   /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
   resourceGroup?: string;
   /**
@@ -132,8 +143,12 @@ export interface EmbedderResolutionConfig {
 export interface EmbedderResolutionOptions {
   /** Pre-built embedder injected by the consumer (takes precedence). */
   injectedEmbedder?: IEmbedder;
-  /** Additional embedder factories (merged with built-ins). */
-  extraFactories?: Record<string, EmbedderFactory>;
+  /**
+   * Additional embedder factories (merged with built-ins), typed to the same
+   * bag the built-ins receive — a consumer's own factory sees `credential`
+   * and `apiBaseUrl` too, not the narrower upstream `EmbedderFactoryConfig`.
+   */
+  extraFactories?: Record<string, (opts: EmbedderFactoryOpts) => IEmbedder>;
   /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
   logger?: AnyLogger;
 }
@@ -167,13 +182,15 @@ export function resolveEmbedder(
   if (options?.injectedEmbedder) return compose(options.injectedEmbedder);
 
   const name = cfg.embedder ?? 'ollama';
-  const opts = {
+  const opts: EmbedderFactoryOpts = {
     url: cfg.url,
-    apiKey: cfg.apiKey,
     model: cfg.model,
+    credential: cfg.credential,
+    apiBaseUrl: cfg.apiBaseUrl,
     resourceGroup: cfg.resourceGroup,
     scenario: cfg.scenario,
   };
+  assertCredentialKind(name, cfg.credential, EMBEDDER_CREDENTIALS[name]);
 
   // Check built-in prefetch-based factories first
   if (name in builtInEmbedderFactories) {

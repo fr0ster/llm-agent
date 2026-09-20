@@ -1,7 +1,24 @@
+import type {
+  IApiKeyCredential,
+  IBearerCredential,
+} from '@mcp-abap-adt/interfaces-auth';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 
-export type EmbedderFactoryOpts = Record<string, unknown>;
+/**
+ * What a named embedder factory receives. Declared rather than
+ * `Record<string, unknown>`: the constructor it reaches is cast, so a field
+ * this type omits is a field the build cannot miss on removal.
+ */
+export interface EmbedderFactoryOpts {
+  url?: string;
+  model?: string;
+  credential?: IApiKeyCredential | IBearerCredential;
+  /** Where the credential is valid — the SAP targets take it instead of reading the environment. */
+  apiBaseUrl?: string;
+  resourceGroup?: string;
+  scenario?: 'orchestration' | 'foundation-models';
+}
 
 const PACKAGE_BY_NAME: Record<string, string> = {
   openai: '@mcp-abap-adt/openai-embedder',

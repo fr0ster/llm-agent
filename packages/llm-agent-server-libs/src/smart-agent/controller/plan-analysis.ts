@@ -63,6 +63,7 @@ import type {
   IEmbedResult,
   SkillIngestResult,
 } from '@mcp-abap-adt/llm-agent';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import {
   buildIngestResult,
   makeInMemoryStoreProvider,
@@ -291,12 +292,18 @@ async function makeRealEmbedder(): Promise<IEmbedder> {
   // EVAL_EMBEDDER=1; provider/model come from .env.
   const rag = await import('@mcp-abap-adt/llm-agent-rag');
   rag.prefetchEmbedderFactories?.();
+  // This is a harness the user runs by hand, so reading the environment here
+  // directly (rather than through DI) is legitimate.
+  //
+  // NOTE (pre-existing, not this task's): this passes `provider:`, but
+  // `resolveEmbedder`'s config field is `embedder:` — so this live path has
+  // always silently fallen back to 'ollama'. Left alone.
   return rag.resolveEmbedder({
     provider: process.env.LLM_PROVIDER ?? 'ollama',
     model: process.env.EMBEDDING_MODEL,
-    apiKey: process.env.OPENAI_API_KEY,
+    credential: staticApiKey(process.env.OPENAI_API_KEY ?? ''),
     url: process.env.OLLAMA_URL,
-  } as never);
+  });
 }
 
 // --------------------------------------------------------------------------
