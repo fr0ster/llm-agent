@@ -1,5 +1,28 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## [Unreleased]
+
+**BREAKING:** `apiKey` is gone from `EmbedderResolutionConfig` and
+`EmbedderFactoryOpts`, replaced by `credential` (an `IApiKeyCredential` or
+`IBearerCredential` from `@mcp-abap-adt/interfaces-auth`) and, for the SAP
+targets, `apiBaseUrl`. `resolveEmbedder` used to copy a hand-picked whitelist
+of fields into an untyped bag (`Record<string, unknown>`) reaching a cast
+constructor, so a credential passed in was silently dropped once the openai
+and SAP embedders stopped accepting a plain `apiKey`; the bag is now declared
+and the credential object itself is forwarded — not a copy — so quota
+identity survives. A consumer's own `extraFactories` entry now receives the
+same typed bag instead of the narrower upstream `EmbedderFactoryConfig`. A new
+`credential-guard.ts` checks each named target's requirement before
+construction: a missing required credential, the wrong kind, or a credential
+supplied to a target that takes none (`ollama`) now throws at resolution
+instead of producing an embedder that cannot authenticate.
+
+Migration: `resolveEmbedder({ embedder: 'openai', apiKey })` becomes
+`resolveEmbedder({ embedder: 'openai', credential: staticApiKey(apiKey) })`
+(`staticApiKey` is exported from `@mcp-abap-adt/llm-agent`); the SAP targets
+also need `apiBaseUrl` (see `serviceKeyCredential` in
+`@mcp-abap-adt/sap-aicore-auth`).
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).
