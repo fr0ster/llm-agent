@@ -41,6 +41,25 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    authorization is `role` — the framework's own tools **refuse** rather than decide. Declining
    with no basis is honest; inventing a default permits on someone's behalf.
    See `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` §1.4, §4.1 and §5.1.
+9. **A secret belongs in a contract only where the secret IS the contract.** The test is to
+   remove it and see what is left. Take `secret()` out of `IApiKeyCredential` and nothing
+   remains — the secret was the whole subject, which is why the credential contracts are the
+   right place for one, and why an authentication provider may speak of tokens and headers
+   freely. Take `apiKey` out of `LLMProviderConfig` and a complete LLM configuration remains —
+   model, temperature, base URL, throttling. There the secret was a passenger on a contract about
+   something else, and a passenger is where it must never be: not on a shared provider base, not
+   on a framework-carried options object, not on a convenience config. So `LLMProviderConfig`,
+   `EmbedderFactoryConfig` and `MakeLlmConfig` carry none, while `interfaces-auth`'s three
+   credential contracts are made of nothing else.
+   *Why the passenger case is worse than it looks:* a shared base can only type the **union** of
+   every provider's credential, so the compiler stops being able to say which credential a target
+   actually needs — the loss principle 4 and the `IMcpServer` design hold against a bare
+   factory.
+   *Corollary, and the practical half:* where the framework must construct something **later** —
+   an embedder for a worker, a provider for a switched model — it takes a **factory** from the
+   consumer, never a credential. The factory is the consumer's own code and closes over the secret
+   it already holds. `EmbedderFactory` has this shape; `IModelResolver` must take it instead of a
+   stored provider config. See the spec §4.6.2.
 
 > See also **Current Technical Debt** at the end of this document for the residual
 > composition-root files (e.g. `smart-server.ts`) left large by design after the
