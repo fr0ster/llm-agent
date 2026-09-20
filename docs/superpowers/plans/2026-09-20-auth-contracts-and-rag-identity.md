@@ -118,12 +118,19 @@ git show HEAD:packages/interfaces-auth/src/auth/ICredentials.ts | grep -c 'overl
 
 A directive that would hold for another reason is not a test of what it names. For each `@ts-expect-error` in `__typechecks__/credentials.ts`, weaken only the thing it claims to guard, and confirm the build fails with "Unused '@ts-expect-error' directive" — meaning the assignment started compiling, which is what the directive was pinning.
 
+**Save a copy before you weaken anything.** `git checkout --` restores from HEAD, and HEAD here is the version *before* these corrections — so using it to undo a test edit silently discards the correction you are trying to verify. Copy the file aside instead, and check a marker after every restore:
+
 ```bash
+F=packages/interfaces-auth/src/auth/ICredentials.ts
+cp "$F" /tmp/ICredentials.orig.ts          # once, before the first weakening
+
 # example for the secret-login → api-key overlap: widen the api-key literal
-sed -i "s/readonly kind: 'api-key';/readonly kind: string;/" packages/interfaces-auth/src/auth/ICredentials.ts
+sed -i "s/readonly kind: 'api-key';/readonly kind: string;/" "$F"
 npx tsc --noEmit -p packages/interfaces-auth/tsconfig.json
 # expect: error TS2578: Unused '@ts-expect-error' directive.
-git checkout -- packages/interfaces-auth/src/auth/ICredentials.ts   # restore before the next one
+
+cp /tmp/ICredentials.orig.ts "$F"          # restore — NOT git checkout --
+grep -c 'overlap that matters' "$F"        # must be 1: the correction is still there
 ```
 
 Repeat for `_wrongKindKey`, `_wrongKindBearer`, `_anonymous`, `_nameless`, `_held`, `_rejected`. Any directive that still errors after its guard is weakened is pinning something else — fix the case, do not keep it.
@@ -136,7 +143,15 @@ npm run check > /tmp/check-a1.log 2>&1; echo "EXIT=$?"
 tail -30 /tmp/check-a1.log
 ```
 
-Expected: `EXIT=0`. `check:surface` must report the three new symbols in `interfaces-auth` and no placement change elsewhere; `check:graph` must pass with the new file importing nothing.
+Expected: `EXIT=0`. Note what those checks do and do not say: `check:surface` compares placement against the frozen 44.0.0 baseline and `check:graph` asserts the import graph — neither enumerates new symbols by name, so do not go looking for that line. Verify the three directly instead:
+
+```bash
+grep -oE "I(ApiKey|Bearer|SecretLogin)Credential" packages/interfaces-auth/dist/index.d.ts | sort -u
+# expect all three — exported from the package
+grep -c "IApiKeyCredential" packages/interfaces/dist/index.d.ts
+# expect 0 — deliberately NOT re-exported through the deprecated facade: the contract is
+# published first and adopted after (§4.4), and the facade leaves with its next major
+```
 
 - [ ] **Step 4: commit**
 
