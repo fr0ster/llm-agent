@@ -10,7 +10,7 @@
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Scope and the owner keys stay typed; only role and policy become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
-- **A minor, not a major.** Every seam is added beside what exists, nothing is removed, and no behaviour on any existing path changes — the safer teardown order comes with the new seam, through a new optional hook (§3.4).
+- **Additive at runtime; the version is decided at the release.** Every seam is added beside what exists, nothing is removed, and no behaviour on any existing path changes — the safer teardown order comes with the new seam, through a new optional hook (§3.4). What version carries the accumulated set is §10’s to state, not this summary’s: as it stands the set includes workstream 4’s read-side source break (§7), so it is a major.
 - Umbrella: four workstreams (§10), each gets its own plan.
 
 ---
@@ -94,7 +94,7 @@ builder.withMcpServers(servers: IMcpServer[]): this;   // beside withMcpClients,
 
 `build()` starts them, pushes each `stop()` into the `closeFns` the handle already awaits, and pairs descriptors. `SessionGraphFactory` and `llm-agent-server-libs` become **consumers** of that seam rather than owners of their own glue; cloud-llm-hub may adopt it without adopting `SessionGraphFactory`. An optional `mcpServerFactory?: (identity) => IMcpServer[]` on the session factory gives the per-session case the identity that `buildPerSessionMcpClients` never had.
 
-Nothing is removed by this release, which is a minor (§8). `withMcpClients`, `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient` and `closeBySession` are marked deprecated and live at least until the **next** major, with the new seam taking precedence when set — the same courtesy `mcpClientFactoryWithDescriptors` received in #244. A consumer that declines the seam keeps exactly today's behaviour.
+Nothing is removed by this release, and nothing on an existing path changes behaviour; what version it ships as is §10’s (§8). `withMcpClients`, `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient` and `closeBySession` are marked deprecated and live at least until the **next** major, with the new seam taking precedence when set — the same courtesy `mcpClientFactoryWithDescriptors` received in #244. A consumer that declines the seam keeps exactly today's behaviour.
 
 **Descriptors.** They come from `IMcpServer.descriptor`, and the existing invariant holds unchanged (`assert-client-descriptors.ts`): descriptors are **all or none** (their count must equal the client count), `slotIndex` values are unique non-negative integers, and `configuredSlotCount`, when given, must be **strictly greater than the largest `slotIndex`**. When no server carries a descriptor, array position is the pairing, exactly as today.
 
@@ -158,7 +158,14 @@ Every one of these is **optional and additive**: the credential sits beside the 
 
 ### 4.1 The unit is the pipeline, so the credential goes in the constructor
 
-This is a framework for assembling **pipelines**, not servers (§1). One pipeline holds its own instances — as many as it needs — and whoever assembles it decides what goes in. A new external user means a new pipeline, which means new instances, which means the credential for that user is simply what its providers were constructed with.
+This is a framework for assembling **pipelines**, not servers (§1). One pipeline holds its own instances — as many as it needs — and whoever assembles it decides what goes in, including whether an instance is fresh or one it already had.
+
+**A new pipeline does not mean new instances of everything,** and reading it that way would install the privileged topology §1 forbids. It means the pipeline is constructed, and each provider in it is whatever the assembler passed. Which of the two that is follows from §4.2:
+
+- **Transparent** — the credential is a caller’s, so the instance holding it is **caller-scoped by necessity**: sharing it would hand one caller’s credential to another.
+- **Opaque** — the credential is the service’s, so an instance **may be shared** across pipelines and simply handed to the new one. The server’s cached per-worker LLM and embedder are correct here, and no plan should replace them with per-user instances to satisfy a rule that does not exist.
+
+Either way the credential for that pipeline is simply what its providers were constructed with.
 
 So the credential is a **constructor** argument, and three consequences follow:
 
@@ -180,6 +187,8 @@ What differs is what the far side sees, and that is the assembler's choice, made
 | what the far side sees | every consumer of our service | only our service |
 | who judges the caller | the far side — its quotas, its audit, its access control | only us, and if we do not, nobody does |
 | how consumers are kept apart | not our job | job B: identity + `AccessCheck` + collection scope (§2, §5, §6) |
+
+**And the choice is not always there to make.** §6.2’s table says which far sides can see a caller at all: PostgreSQL and HANA can, Qdrant probably can, and for OpenAI, Anthropic and AI Core it is *impossible* — our users do not exist there, so those are opaque by nature and not by decision. Transparent is a choice only where the far side has somewhere to put a caller.
 
 cloud-llm-hub is both at once, which is why this cannot be one global setting: `x-sap-login`/`x-sap-password` per request reach ABAP (`srv/mcp-manager.ts:88`), so SAP sees each user; the LLM runs on `AICORE_SERVICE_KEY` (`srv/agent-config.ts:291`), so AI Core sees only the hub.
 
@@ -399,7 +408,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `IRagProviderSource`; registry wiring (§9.4) | additive at runtime; `SessionGraphFactoryOptions.logger` widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
-| `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes`; ask the check when given one | additive |
+| `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes`; ask the check when given one | additive — **except** that §4.6.1 is open for `pg-vector-rag` and `hana-vector-rag`: forbidding passwords in connection strings would make those two a major |
 | LLM and embedder providers | credential contracts beside `apiKey?: string`, keeping the AI Core env fallback (§9.2) | additive |
 | `@mcp-abap-adt/interfaces-auth` | gains `AccessCheck` and, subject to §4, the three credential contracts | minor |
 | cloud-llm-hub, `llm-agent-server` | **may** adopt the seams; neither is required to | their own work |
@@ -456,6 +465,6 @@ Four independent changes under one umbrella; each gets its own plan. They are ad
 
 ## 11. Out of scope
 
-- Writing any contract before a package accepts it (decision 11).
+- Writing a contract nobody is specified to accept. Decision 11 asks who calls a thing; it does not ask the acceptor to exist first, and it cannot — an acceptor in another repository cannot depend on an unpublished contract. The criterion is §4.4’s: a contract may be written once a concrete accepting change has been specified and checked against the acceptor’s actual API, and it is published before that change adopts it.
 - Any consumer's implementation: cloud-llm-hub's per-session graph and XSUAA-backed check, and `llm-agent-server`'s configuration, are theirs.
 - llm-agent issue #304 (network-mode isolation), which this design is the prerequisite for.
