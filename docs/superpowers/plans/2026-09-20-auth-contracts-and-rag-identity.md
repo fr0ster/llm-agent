@@ -535,7 +535,9 @@ The two moved test files must pass **unedited** beyond their import paths — th
 - [ ] **Step 6: commit**
 
 ```bash
-git add packages/sap-aicore-auth packages/sap-aicore-embedder package-lock.json
+git add packages/sap-aicore-auth packages/sap-aicore-embedder \
+        packages/llm-agent-server/package.json package-lock.json
+git diff --cached --name-only | grep llm-agent-server   # the root's declaration must be staged
 git commit -m "feat(sap-aicore-auth): the token exchange, moved out and exported
 
 AICORE_SERVICE_KEY holds client credentials, not a token, so something must exchange,
@@ -1024,7 +1026,11 @@ Both classes take the client factory as a constructor argument, defaulting to `c
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { McpClientFactoryResult, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
-import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import type {
+  IApiKeyCredential,
+  IBearerCredential,
+  ISecretLoginCredential,
+} from '@mcp-abap-adt/interfaces-auth';
 import { HttpMcpServer } from '../http-mcp-server.js';
 import { StdioMcpServer } from '../stdio-mcp-server.js';
 
@@ -1156,7 +1162,11 @@ describe('StdioMcpServer', () => {
     const f = fakeFactory();
     const credential: IBearerCredential = { kind: 'bearer', token: async () => 'super-secret' };
     const server = new StdioMcpServer(
-      { command: 'node', args: ['-e', 'process.stdin.resume()'], credential, credentialEnvVar: 'MCP_TOKEN' },
+      {
+        command: 'node',
+        args: ['-e', 'process.stdin.resume()'],
+        auth: { scheme: 'env-token', variable: 'MCP_TOKEN', credential },
+      },
       f.factory,
     );
     const client = await server.start();
@@ -1170,17 +1180,39 @@ describe('StdioMcpServer', () => {
     assert.ok(!config.command.includes('super-secret'));
   });
 
-  it('refuses to start when a credential has no variable to go in', async () => {
+  it('cannot be constructed with a credential and nowhere to put it', () => {
     const f = fakeFactory();
     const credential: IBearerCredential = { kind: 'bearer', token: async () => 'x' };
-    const server = new StdioMcpServer({ command: 'node', args: [], credential }, f.factory);
-    await assert.rejects(() => server.start(), /credentialEnvVar/);
-    assert.equal(f.configs.length, 0, 'nothing was spawned');
+    // @ts-expect-error the variant demands a variable — this state is unconstructible
+    void new StdioMcpServer({ command: 'node', args: [], auth: { scheme: 'env-token', credential } }, f.factory);
+  });
+
+  it('passes a login as two variables, because a principal and a secret travel together', async () => {
+    const f = fakeFactory();
+    const credential: ISecretLoginCredential = {
+      kind: 'secret-login',
+      principal: 'svc',
+      secret: async () => 'pw',
+    };
+    await new StdioMcpServer(
+      {
+        command: 'node',
+        args: [],
+        auth: { scheme: 'env-login', userVariable: 'DB_USER', secretVariable: 'DB_PASS', credential },
+      },
+      f.factory,
+    ).start();
+    const config = f.configs[0] as Extract<McpConnectionConfig, { type: 'stdio' }>;
+    assert.equal(config.env?.DB_USER, 'svc');
+    assert.equal(config.env?.DB_PASS, 'pw');
   });
 
   it('stop() closes exactly once', async () => {
     const f = fakeFactory();
-    const server = new StdioMcpServer({ command: 'node', args: [] }, f.factory);
+    const server = new StdioMcpServer(
+      { command: 'node', args: [], auth: { scheme: 'none' } },
+      f.factory,
+    );
     await server.start();
     await server.stop();
     await server.stop();
@@ -1221,7 +1253,20 @@ type ClientFactory = (config: McpConnectionConfig) => Promise<McpClientFactoryRe
  */
 export type HttpMcpAuth =
   | { readonly scheme: 'bearer'; readonly credential: IBearerCredential }
-  | { readonly scheme: 'header'; readonly header: string; readonly credential: IApiKeyCredential }
+  | {
+      readonly scheme: 'header';
+      /** Which header carries it: `x-api-key`, `api-key`, or `Authorization`. */
+      readonly header: string;
+      /**
+       * What precedes the key in the value. `'Bearer '` for a target that wants
+       * `Authorization: Bearer sk-…`; omitted for one that wants the raw key, which is
+       * what `x-api-key` expects. Without this the three placements §4 names are not all
+       * expressible — an earlier draft wrote the raw secret and would have sent
+       * `Authorization: sk-…`.
+       */
+      readonly prefix?: string;
+      readonly credential: IApiKeyCredential;
+    }
   | { readonly scheme: 'none' };
 
 export interface HttpMcpServerConfig {
@@ -1252,8 +1297,8 @@ export class HttpMcpServer implements IMcpServer {
         case 'bearer':
           return { Authorization: `Bearer ${await auth.credential.token()}` };
         case 'header':
-          // The target named its own header: x-api-key, api-key, or whatever it speaks.
-          return { [auth.header]: await auth.credential.secret() };
+          // The target named its own header AND its own value shape.
+          return { [auth.header]: `${auth.prefix ?? ''}${await auth.credential.secret()}` };
       }
     })();
     const config: McpConnectionConfig = {
@@ -1286,13 +1331,34 @@ export class HttpMcpServer implements IMcpServer {
 
 ```ts
 // packages/llm-agent-mcp/src/servers/stdio-mcp-server.ts
+/**
+ * The stdio twin of `HttpMcpAuth`, and it is discriminated for the same two reasons: each
+ * variant demands the ONE kind it can use, and `'none'` makes an unauthenticated child a
+ * statement rather than an omission. An earlier draft kept `credential?` and
+ * `credentialEnvVar?` — both optional, so a target needing a secret compiled without one
+ * and the mismatch surfaced only as a runtime throw — and typed the credential as bearer
+ * alone, though a child may just as well expect an api key or a login.
+ *
+ * A login needs **two** variables, because a principal and a secret are one fact that
+ * travels together (§4) and a child reads them separately.
+ */
+export type StdioMcpAuth =
+  | { readonly scheme: 'none' }
+  | { readonly scheme: 'env-token'; readonly variable: string; readonly credential: IBearerCredential }
+  | { readonly scheme: 'env-key'; readonly variable: string; readonly credential: IApiKeyCredential }
+  | {
+      readonly scheme: 'env-login';
+      readonly userVariable: string;
+      readonly secretVariable: string;
+      readonly credential: ISecretLoginCredential;
+    };
+
 export interface StdioMcpServerConfig {
   command: string;
   args?: readonly string[];
   env?: Record<string, string>;
-  credential?: IBearerCredential;
-  /** Which variable the child reads the secret from. Required with a credential. */
-  credentialEnvVar?: string;
+  /** Required: a child either authenticates or says it does not. */
+  auth: StdioMcpAuth;
   timeout?: number;
 }
 
@@ -1306,13 +1372,24 @@ export class StdioMcpServer implements IMcpServer {
 
   async start(): Promise<IMcpClient> {
     if (this.held) throw new Error('StdioMcpServer is already started');
-    const { command, args, env, credential, credentialEnvVar, timeout } = this.cfg;
-    if (credential && !credentialEnvVar) {
-      // Refusing beats spawning an unauthenticated child and dropping the secret.
-      throw new Error(
-        'StdioMcpServer: a credential needs credentialEnvVar — refusing to start without it',
-      );
-    }
+    const { command, args, env, auth, timeout } = this.cfg;
+    // No runtime guard is needed for "a credential with nowhere to go": the type makes
+    // that state unconstructible, which is what the discriminated shape buys.
+    const authEnv = await (async (): Promise<Record<string, string>> => {
+      switch (auth.scheme) {
+        case 'none':
+          return {};
+        case 'env-token':
+          return { [auth.variable]: await auth.credential.token() };
+        case 'env-key':
+          return { [auth.variable]: await auth.credential.secret() };
+        case 'env-login':
+          return {
+            [auth.userVariable]: auth.credential.principal,
+            [auth.secretVariable]: await auth.credential.secret(),
+          };
+      }
+    })();
     const config: McpConnectionConfig = {
       type: 'stdio',
       command,
@@ -1322,12 +1399,7 @@ export class StdioMcpServer implements IMcpServer {
       // The contract's own docstring already states the rule this satisfies:
       // "Pass the caller's own values here; never in `args`, which are visible
       // in `ps`" (mcp-connection-strategy.ts:45-46).
-      env: {
-        ...(env ?? {}),
-        ...(credential && credentialEnvVar
-          ? { [credentialEnvVar]: await credential.token() }
-          : {}),
-      },
+      env: { ...(env ?? {}), ...authEnv },
       ...(timeout !== undefined ? { timeout } : {}),
     };
 
@@ -1667,7 +1739,8 @@ node --import tsx/esm --test $(git ls-files 'packages/*/src/**/*.test.ts') 2>&1 
 - [ ] **Step 6: commit**
 
 ```bash
-git add packages/llm-agent-server/src
+git add packages/llm-agent-server/src packages/llm-agent-server/package.json
+git diff --cached --name-only | grep package.json || echo "  (already committed in B2 — fine)"
 git commit -m "feat(llm-agent-server): become the composition root
 
 It reads the environment, turns a credentialRef into a credential, dispatches the five
@@ -2953,6 +3026,9 @@ This section records a review that was **run**, not a checklist to run later.
 - Its changelog loop covered eight packages; sixteen are touched. Corrected, including the new `sap-aicore-auth`.
 - Task B1 is the only task allowed to end with `tsc -b` red, and it says so: removing a field from two contracts breaks the packages that read it, and each is claimed by a later task. Its Step 5 writes the compiler's error list into the report, and Task B10's Step 5 treats `tsc -b` returning 0 as the workstream's completion test — so the scope is measured at the start and closed at the end rather than predicted in between.
 
+- **Fixing the http half and leaving the stdio half was the same mistake twice.** The stdio config kept `credential?` and `credentialEnvVar?` — both optional, so a child needing a secret compiled without one and the mismatch appeared only as a runtime throw — and typed the credential as bearer alone, though a child may expect an api key or a login just as easily. It now has `StdioMcpAuth`, discriminated the same way, with a login carried as **two** variables because a principal and a secret are one fact that travels together and a child reads them separately. The runtime guard disappeared with it: “a credential with nowhere to go” is now unconstructible, which is what the shape buys, so the test asserts a compile error rather than a rejection.
+- **The `'header'` variant could not express the placement its own comment promised.** It wrote the raw secret, so `header: 'Authorization'` would have sent `Authorization: sk-…` rather than `Authorization: Bearer sk-…` — and §4 names exactly those three placements as the ones an api key must be able to take. It gained an optional `prefix`, which makes all three expressible and leaves the raw key the default that `x-api-key` wants.
+- **A dependency was declared and never staged.** Task B2 ran `npm pkg set` against `llm-agent-server` and its `git add` covered only the new package, the embedder and the lockfile; B10 committed `src` alone. The declaration would have stayed uncommitted while a published server carried an undeclared import — the same class of defect as the previous round's, one layer further out. Both tasks now stage the file, and B2 verifies it is staged.
 - **The MCP task I recovered from history was older than the rule it had to obey.** It carried `credential?: IApiKeyCredential | IBearerCredential` — the shared union §4.6.2 forbids — optional, so a bearer-only target compiled with no credential or with an api key. And it built `Authorization: Bearer …` for **any** credential, though §4 says an api key is the same key whether a server wants it as `Authorization`, `x-api-key` or `api-key`, and that the placement is the accepting implementation's business. Replaced by a discriminated `HttpMcpAuth`: each variant demands the one kind it can use, `'header'` names the header, and `'none'` makes an unauthenticated target a statement rather than an omission. Two tests were added for exactly what was wrong — an api key landing in `x-api-key` and not in `Authorization`, and a bearer credential refused where a header key is declared.
 - **Renumbering left stale dependency annotations, and my first audit of them produced a false positive.** B13 said its record came from B9 and its error from B10 (now B11 and B12); B15, B16 and B17 pointed at B9 and B13; and B12 claimed “Tasks B11 and B12 raise it” when the raisers are B13 and B14, the two packages that own a catalog. All corrected. The audit also reported B10 citing B11, which was my own script slicing a workstream header into the wrong block — worth recording, because an audit that cannot tell a real reference from its own boundary error is one finding away from wasting a round.
 - **Five tasks had no `Produces` block, and that block is how a later task learns names.** B1, B4, B5, B6, B11 and B14 now have one. A2, A3 and B18 do not, and should not: two hand work to the user and one writes documentation.
