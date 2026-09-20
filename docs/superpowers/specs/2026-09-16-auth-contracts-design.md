@@ -308,7 +308,7 @@ The import is types-only (`import type`), which keeps it out of the runtime grap
 | `rag_upsert`, `rag_query`, `tools_selected` | `debug` |
 | everything else | `info` |
 
-The text shape is the general one: a structured event fits in `meta`, a closed union cannot carry arbitrary text. `interfaces-utils` needs no change, and this release is a minor: the rename that finally leaves one name, when it comes, is llm-agent's major (§9.9).
+The text shape is the general one: a structured event fits in `meta`, a closed union cannot carry arbitrary text. `interfaces-utils` needs no change, and the rename that finally leaves one name is a separate, later change (§9.9). This workstream is additive at runtime; the release carrying it is a major because of the read-side break below — §10 says why that is a release decision rather than a workstream one.
 
 **One source-level caveat.** Widening these properties is safe for a consumer that *sets* one and hands it over. A consumer that *reads* one — `options.logger?.log(event)` — no longer compiles, because the property is now the union: `error TS2339: Property 'log' does not exist on type 'AnyLogger'`. Handing a logger in is unaffected. Reading one needs a definedness check first: these properties are optional and `normaliseLogger` takes a non-optional `AnyLogger`, so `normaliseLogger(options.logger)` on its own does not compile either (`error TS2345: Argument of type 'AnyLogger | undefined' is not assignable to parameter of type 'AnyLogger'`). What compiles, measured: `if (options.logger) normaliseLogger(options.logger).log(event);` Nothing changes at runtime, and the inputs that deliberately stay event-only are unaffected.
 
@@ -353,7 +353,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 ## 10. Workstreams
 
-Four independent changes under one umbrella; each gets its own plan. All four are additive at runtime, so they land as a minor — in any order, and a consumer may take one and decline the rest. One source-level exception, in workstream 4: widening a readable option property breaks a consumer that *reads* it, and §7 says what to do about it.
+Four independent changes under one umbrella; each gets its own plan. They are additive at runtime, land in any order, and a consumer may take one and decline the rest. **What version carries them is decided once, at the release, by what has accumulated — never per workstream.** Merging a workstream publishes nothing: its entries sit under `[Unreleased]` until the set is cut. Workstream 4 widens six readable option properties, which breaks a consumer that *reads* one (§7), so the release that carries this set is a major.
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
