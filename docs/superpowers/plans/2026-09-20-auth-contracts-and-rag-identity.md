@@ -94,7 +94,8 @@ Copied from the spec. Every task's requirements implicitly include this section.
 | `packages/openai-embedder/src/openai-embedder.ts` | same, and `apiKey` stops being required |
 | `packages/sap-aicore-{llm,embedder}/src/**` | `credential: IBearerCredential` + `apiBaseUrl`; stop reading `AICORE_SERVICE_KEY` |
 | `packages/{qdrant,pg-vector,hana-vector}-rag/src/**` | credential replacing `apiKey`/`user`/`password`; connection string address-only; catalog + record-first delete |
-| `packages/llm-agent-rag/src/{embedder,rag}-factories.ts` | the resolution bridge: typed bags carrying `credential` and `apiBaseUrl`, plus a `kind` guard — both constructors are reached through casts, so nothing else can catch a dropped credential |
+| `packages/llm-agent-rag/src/embedder-factories.ts` | typed bag carrying `credential` and `apiBaseUrl`, plus a `kind` guard (B6a) — the whitelist dropped credentials in silence |
+| `packages/llm-agent-rag/src/rag-factories.ts` | the same for the three stores (B6b), after B6 gives them a `credential` |
 | `packages/llm-agent-mcp/src/servers/*.ts` (**new**) | typed `IMcpServer` implementations demanding a credential |
 | `packages/llm-agent-libs/src/providers.ts` | `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver` and the five dynamic-import shims **deleted** |
 | `packages/llm-agent-libs/src/session/session-graph-factory.ts` | `ragRegistryFactory?`, session-owned registry and its disposal |
@@ -929,6 +930,238 @@ no credential has two sources again; the composition root reads it and builds th
 credential (Task B10)."
 ```
 
+### Task B6a: the embedder bridge carries credentials, and cannot drop one silently
+
+This task exists because the re-derivation missed a file, and the miss has a failure mode worse than a compile error. `packages/llm-agent-rag` is the bridge every configured embedder and store is built through, and it hides removals twice over. Its embedder bag is `EmbedderFactoryOpts = Record<string, unknown>` reaching a cast constructor (`embedder-factories.ts:4`, `:59`); its store constructor is reached through `type RagCtor = new (opts: Record<string, unknown>) => IRag` and a second `new Cls(opts as unknown as Record<string, unknown>)` (`rag-factories.ts:80`, `:95`). And underneath the casts, `resolveEmbedder` and `makeRag` do not spread their input — they copy a **hand-picked whitelist** of fields, so a member the whitelist omits is dropped in silence whatever the types say.
+
+Measured, not predicted: after Task B4 made `OpenAiEmbedderConfig.credential` required, passing a credential into `makeRag` did **not** reach the embedder, because `resolveEmbedder`'s whitelist is `url, apiKey, model, resourceGroup, scenario`. The constructor throws on every call, the build stays at its expected error count, and `llm-agent-rag`'s own test stayed green because its `catch` asserted only "not `MissingProviderError`". That test is now skipped with its owner named (`753181c5`), and un-skipping it is part of this task.
+
+This is the production path, not a legacy corner: `smart-server.ts:955` defaults `deps.resolveEmbedder` to this package's resolver, and the agent RAG, the tool store, the skill-plugin host (`skill-plugins-host-factory.ts:240`) and plan analysis (`plan-analysis.ts:294`) all arrive through it.
+
+**Why this is two tasks, B6a and B6b.** The embedder half must land as soon as both embedder targets have migrated — openai in B4 and the SAP embedder in B5 — because until it does, those two cannot be constructed from configuration at all. The store half cannot land before B6 gives the three stores their `credential`. Splitting keeps each half landing the moment it is both necessary and possible, instead of leaving a dead path across four tasks. They share `credential-guard.ts`: B6a creates it with the embedder rules, B6b adds the store rules.
+
+**Numbering:** B6a and B6b rather than renumbering B7-B18, whose numbers every generated brief and the execution ledger already reference.
+
+**Files:**
+- Modify: `packages/llm-agent-rag/src/embedder-factories.ts` — `EmbedderFactoryOpts` (`:4`), the constructor cast (`:59`), `builtInEmbedderFactories` (`:66`)
+- Modify: `packages/llm-agent-rag/src/rag-factories.ts` — `EmbedderResolutionConfig` (`:111`) and the `opts` whitelist in `resolveEmbedder` (`:170`). **Leave `RagFactoryOpts`, `resolveRag`, `RagResolutionConfig` and the `makeRag` branches alone** — they are B6b's, after B6.
+- Create: `packages/llm-agent-rag/src/credential-guard.ts` with the **embedder** rules only
+- Modify: `packages/llm-agent-rag/package.json` — add `"@mcp-abap-adt/interfaces-auth": "^1.1.0"`. Task B1 listed every package that imported a contract and this one did not yet; it does now.
+- Modify: `packages/llm-agent-rag/src/__tests__/rag-factories.test.ts` — **un-skip** `makeRag in-memory+openai embedder …` and keep the tightened `catch` that refuses a construction failure
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts:294` — the eval harness calls this resolver through `as never`, passing `apiKey: process.env.OPENAI_API_KEY`. The cast means it will not break, it will quietly resolve an unauthenticated embedder. It is a harness the user runs by hand, so reading the environment there is legitimate: wrap the value in `staticApiKey` and drop the cast. Note in the report that it also passes `provider:` where the resolver reads `embedder:`, so its live path has always fallen back to ollama — leave that defect alone, it is not this task's.
+- Test: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts`
+- Modify: `packages/llm-agent-rag/CHANGELOG.md`
+
+**Interfaces:**
+- Consumes: `IApiKeyCredential`, `IBearerCredential` (B1); `OpenAiEmbedderConfig.credential`, required (B4); the SAP embedder's bearer credential and `apiBaseUrl`, with no environment fallback left (B5).
+- Produces: `credential` and `apiBaseUrl` on `EmbedderResolutionConfig` and `EmbedderFactoryOpts`; `assertCredentialKind` and `EMBEDDER_CREDENTIALS` from `credential-guard.ts`. B6b adds `RAG_CREDENTIALS` to that same file; B10 resolves a `credentialRef` into a credential and needs a typed field here to put it in.
+
+- [ ] **Step 1: write the failing tests**
+
+The seam that makes this testable without a live backend is `extraFactories`: it receives the same `opts` bag the built-ins receive, so a capturing factory proves what the bridge forwards.
+
+```ts
+// packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { EmbedderFactoryOpts } from '../embedder-factories.js';
+import { resolveEmbedder } from '../rag-factories.js';
+
+const apiKey: IApiKeyCredential = { kind: 'api-key', secret: async () => 'k' };
+const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
+
+const stubEmbedder: IEmbedder = {
+  embed: async () => [0],
+  embedBatch: async (texts: string[]) => texts.map(() => [0]),
+};
+
+describe('the embedder bridge and credentials', () => {
+  it('forwards the credential object itself, not a copy of a secret', () => {
+    let seen: EmbedderFactoryOpts | undefined;
+    resolveEmbedder(
+      { embedder: 'capture', credential: apiKey, apiBaseUrl: 'https://aicore.example' },
+      { extraFactories: { capture: (opts) => ((seen = opts), stubEmbedder) } },
+    );
+    assert.equal(seen?.credential, apiKey, 'the same object must arrive, so quota identity survives');
+    assert.equal(seen?.apiBaseUrl, 'https://aicore.example');
+  });
+
+  it('no longer carries an apiKey field for anything to read', () => {
+    let seen: EmbedderFactoryOpts | undefined;
+    resolveEmbedder(
+      { embedder: 'capture', apiKey: 'leftover' } as unknown as Parameters<typeof resolveEmbedder>[0],
+      { extraFactories: { capture: (opts) => ((seen = opts), stubEmbedder) } },
+    );
+    assert.ok(seen && !('apiKey' in seen), 'a stale apiKey must not reach a factory');
+  });
+
+  it('refuses a named embedder that cannot work without a credential', () => {
+    assert.throws(
+      () => resolveEmbedder({ embedder: 'openai' }),
+      /openai.*credential/i,
+      'a missing credential must name itself, not produce an unauthenticated embedder',
+    );
+  });
+
+  it('refuses the wrong kind of credential for the target', () => {
+    assert.throws(() => resolveEmbedder({ embedder: 'openai', credential: bearer }), /openai.*api-key.*bearer/i);
+    assert.throws(
+      () => resolveEmbedder({ embedder: 'sap-ai-core', credential: apiKey, apiBaseUrl: 'https://x' }),
+      /sap-ai-core.*bearer.*api-key/i,
+    );
+  });
+
+  it('refuses a credential for a target that sends none', () => {
+    assert.throws(
+      () => resolveEmbedder({ embedder: 'ollama', credential: apiKey }),
+      /ollama.*no credential/i,
+      'silently ignoring it would hide a misconfigured deployment',
+    );
+  });
+});
+```
+
+- [ ] **Step 2: run them and watch them fail**
+
+```bash
+cd ~/prj/llm-agent
+npm run build
+npm test -w packages/llm-agent-rag
+```
+
+Expected: the credential cases fail, because `credential` and `apiBaseUrl` are neither declared nor forwarded and no guard exists. Note which fail by producing `undefined` rather than by throwing — that silence is the bug.
+
+- [ ] **Step 3: type the bag, and forward what it now carries**
+
+```ts
+// packages/llm-agent-rag/src/embedder-factories.ts
+import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+
+/**
+ * What a named embedder factory receives. Declared rather than
+ * `Record<string, unknown>`: the constructor it reaches is cast, so a field
+ * this type omits is a field the build cannot miss on removal.
+ */
+export interface EmbedderFactoryOpts {
+  url?: string;
+  model?: string;
+  credential?: IApiKeyCredential | IBearerCredential;
+  /** Where the credential is valid — the SAP targets take it instead of reading the environment. */
+  apiBaseUrl?: string;
+  resourceGroup?: string;
+  scenario?: 'orchestration' | 'foundation-models';
+}
+```
+
+`EmbedderResolutionConfig` loses `apiKey?: string` and gains the same two members, and the whitelist at `:170` forwards them — this line is the whole bug, so change it deliberately:
+
+```ts
+  const opts: EmbedderFactoryOpts = {
+    url: cfg.url,
+    model: cfg.model,
+    credential: cfg.credential,
+    apiBaseUrl: cfg.apiBaseUrl,
+    resourceGroup: cfg.resourceGroup,
+    scenario: cfg.scenario,
+  };
+  assertCredentialKind(name, cfg.credential, EMBEDDER_CREDENTIALS[name]);
+```
+
+Keep `extraFactories` typed `(opts: EmbedderFactoryOpts) => IEmbedder` so a consumer's own factory sees the same bag.
+
+- [ ] **Step 4: add the guard, with each target's requirement stated once**
+
+```ts
+// packages/llm-agent-rag/src/credential-guard.ts
+import type {
+  IApiKeyCredential,
+  IBearerCredential,
+  ISecretLoginCredential,
+} from '@mcp-abap-adt/interfaces-auth';
+
+type AnyCredential = IApiKeyCredential | IBearerCredential | ISecretLoginCredential;
+type Kind = AnyCredential['kind'];
+
+/** What each named target accepts. `kinds: []` means it authenticates with nothing. */
+export interface CredentialRule {
+  kinds: readonly Kind[];
+  required: boolean;
+}
+
+export const EMBEDDER_CREDENTIALS: Record<string, CredentialRule> = {
+  openai: { kinds: ['api-key'], required: true },
+  ollama: { kinds: [], required: false },
+  'sap-ai-core': { kinds: ['bearer'], required: true },
+  'sap-aicore': { kinds: ['bearer'], required: true },
+};
+
+
+export function assertCredentialKind(
+  target: string,
+  credential: AnyCredential | undefined,
+  rule: CredentialRule | undefined,
+): void {
+  if (!rule) return; // an unknown name is the caller's error to report, not ours
+  if (!credential) {
+    if (rule.required) {
+      throw new Error(
+        `${target} needs a credential: pass credential (${rule.kinds.join(' or ')}). ` +
+          'Build one with staticApiKey / staticLogin, or resolve it in your composition root.',
+      );
+    }
+    return;
+  }
+  if (rule.kinds.length === 0) {
+    throw new Error(
+      `${target} takes no credential — it sends none on the wire. Remove credential from its configuration.`,
+    );
+  }
+  if (!rule.kinds.includes(credential.kind)) {
+    throw new Error(
+      `${target} needs a ${rule.kinds.join(' or ')} credential, got ${credential.kind}.`,
+    );
+  }
+}
+```
+
+`resolveEmbedder` calls it with `EMBEDDER_CREDENTIALS[name]` **before** the built-in lookup, so a missing credential names itself instead of surfacing as `MissingProviderError`. Ollama's empty `kinds` makes a supplied credential an error rather than something quietly dropped: a credential nobody sends is a misconfigured deployment and should say so. `RAG_CREDENTIALS` belongs to B6b — do not add it here.
+
+- [ ] **Step 5: verify, including the test this unblocks**
+
+```bash
+cd ~/prj/llm-agent
+npm run build                      # count "Found N errors"; ANSI colour defeats grep -c "error TS"
+npm test -w packages/llm-agent-rag  # the un-skipped openai case must now PASS, not skip
+timeout 900 npm test -w packages/llm-agent-server-libs
+```
+
+The un-skipped case passing is this task's real proof: it is the one that was green over a broken path.
+
+- [ ] **Step 6: commit**
+
+```bash
+cd ~/prj/llm-agent
+git add packages/llm-agent-rag packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts
+git commit -m "$(cat <<'MSG'
+feat(llm-agent-rag): the embedder bridge carries a credential, not a key
+
+resolveEmbedder copied a hand-picked whitelist into an untyped bag, so
+removing apiKey from the embedders left this package dropping the
+credential in silence — with a green build and a green test. The bag is
+now declared, the credential object itself is forwarded so quota identity
+survives, and each target's requirement is checked before construction.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+MSG
+)"
+```
+
+Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`: `apiKey` is gone from `EmbedderResolutionConfig` and `EmbedderFactoryOpts`, replaced by `credential` (and `apiBaseUrl` for the SAP targets); a consumer's own `extraFactories` entry now receives the typed bag; and an unusable combination — none where one is needed, the wrong kind, or one supplied to ollama — throws at resolution instead of producing an embedder that cannot authenticate.
+
+---
+
 ### Task B6: the vector stores take a credential, and a connection string carries the address only
 
 **Files:**
@@ -1046,129 +1279,83 @@ declare a closed exports map with only ".", and each resolver's one production c
 is already async."
 ```
 
-### Task B6a: the resolution bridge carries credentials, and cannot drop one silently
+### Task B6b: the store bridge carries credentials, and checks the kind before constructing
 
-This task exists because the re-derivation missed a file, and the miss has a failure mode worse than a compile error. `packages/llm-agent-rag` is the bridge every configured embedder and every configured store is built through, and it is typed as a bag of unknowns: `EmbedderFactoryOpts = Record<string, unknown>` (`embedder-factories.ts:4`), the embedder constructor reached through `mod[className] as new (opts: EmbedderFactoryOpts) => IEmbedder` (`:59`), and the store constructor through `type RagCtor = new (opts: Record<string, unknown>) => IRag` plus a second `new Cls(opts as unknown as Record<string, unknown>)` (`rag-factories.ts:80`, `:95`).
-
-So when Task B4 makes `OpenAiEmbedderConfig.credential` required, when Task B5 takes `AICORE_SERVICE_KEY` away from the SAP embedder, and when Task B6 replaces `apiKey`/`user`/`password` on the three stores, **not one of those removals produces an error in this package**. The build stays green and the product stops authenticating: `resolveEmbedder` keeps forwarding `apiKey: cfg.apiKey` (`:170`), `makeRag` keeps forwarding `apiKey` to qdrant (`:303`) and `user`/`password` to hana and pg, and every one of those fields has ceased to exist on the receiving config.
-
-This is the production path, not a legacy corner. `smart-server.ts:955` defaults `deps.resolveEmbedder` to this package's `resolveEmbedder`, and the agent RAG, the tool store, the skill-plugin host (`skill-plugins-host-factory.ts:240`) and plan analysis (`plan-analysis.ts:294`) all arrive through it.
-
-It is one task rather than an addition to B4 and B6 because it is one file pair with one review surface, and it must land after B6 so its tests can construct the real configs. Between B4 and here the branch is mid-migration, which is already true of B8 through B10.
-
-**Numbering:** inserted as `B6a` rather than renumbering B7–B18. The task numbers are referenced by every generated brief and by the execution ledger, and a review of an earlier draft already caught stale task numbers once; renumbering twelve tasks to avoid one letter is the worse trade.
+The other half of the bridge, and it waited for Task B6 to give the three stores their `credential`. The hazard is the one B6a measured on the embedder side, doubled: `resolveRag` reaches the store constructor through `type RagCtor = new (opts: Record<string, unknown>) => IRag` and then casts again — `new Cls(opts as unknown as Record<string, unknown>)` (`rag-factories.ts:80`, `:95`) — and `makeRag` copies a hand-picked whitelist per store rather than spreading its input. So B6's removal of `apiKey` from qdrant and of `user`/`password` from pg and hana produces **no error in this package**, and a credential passed in would be dropped in silence exactly as the embedder's was. Read B6a's finding before starting: there the same shape was proven, not feared.
 
 **Files:**
-- Modify: `packages/llm-agent-rag/src/embedder-factories.ts` — `EmbedderFactoryOpts` (`:4`), the constructor cast (`:59`), `builtInEmbedderFactories` (`:66`)
-- Modify: `packages/llm-agent-rag/src/rag-factories.ts` — `RagFactoryOpts` (`:27`), `resolveRag` (`:84`), `EmbedderResolutionConfig` (`:111`), the `opts` bag in `resolveEmbedder` (`:170`), `RagResolutionConfig` (`:201`), and the three `makeRag` branches (qdrant `:303`, hana-vector, pg-vector)
-- Create: `packages/llm-agent-rag/src/credential-guard.ts`
-- Modify: `packages/llm-agent-rag/package.json` — add `@mcp-abap-adt/interfaces-auth": "^1.1.0"`. Task B1 listed every package that imports a contract and this one was not among them, because at that point it did not; it does now.
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts:294` — the eval harness calls this resolver through `as never`, passing `apiKey: process.env.OPENAI_API_KEY`. The cast means it will not break; it will quietly resolve an unauthenticated embedder. It is a harness the user runs by hand, so reading the environment there is legitimate — wrap the value in `staticApiKey` and drop the cast. While there, note in the report that it passes `provider:` where the resolver reads `embedder:`, so the live path has always fallen back to ollama; leave that bug alone, it is not this task's.
-- Test: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts`
+- Modify: `packages/llm-agent-rag/src/rag-factories.ts` — `RagFactoryOpts` (`:27`), `resolveRag` (`:84`), `RagResolutionConfig` (`:201`), and the three `makeRag` branches (qdrant `:303`, hana-vector, pg-vector)
+- Modify: `packages/llm-agent-rag/src/credential-guard.ts` — add `RAG_CREDENTIALS`; `assertCredentialKind` itself is unchanged, B6a wrote it
+- Modify: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts` — add the store cases to the file B6a created
 - Modify: `packages/llm-agent-rag/CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: `IApiKeyCredential`, `IBearerCredential`, `ISecretLoginCredential` (B1); `OpenAiEmbedderConfig.credential` required (B4); the SAP embedder's bearer credential and `apiBaseUrl`, with no environment fallback left (B5); `credential` on `QdrantRagConfig`, `PgVectorRagConfig`, `HanaVectorRagConfig` (B6).
-- Produces: `credential` and `apiBaseUrl` on `EmbedderResolutionConfig` and `EmbedderFactoryOpts`; `credential` on `RagFactoryOpts` and `RagResolutionConfig`; `assertCredentialKind` from `credential-guard.ts`. Task B10 resolves a `credentialRef` into a credential object and needs a typed field here to put it in — without this task it would have to pass one through a bag that does not declare it.
+- Consumes: `IApiKeyCredential`, `ISecretLoginCredential` (B1); `credential` on `QdrantRagConfig`, `PgVectorRagConfig`, `HanaVectorRagConfig` (B6); `assertCredentialKind` (B6a).
+- Produces: `credential` on `RagFactoryOpts` and `RagResolutionConfig`; `RAG_CREDENTIALS`. Task B10 resolves a `credentialRef` into a credential and needs a typed field here to put it in.
 
 - [ ] **Step 1: write the failing tests**
 
-The seam that makes this testable without a live backend is `extraFactories`: it receives the same `opts` bag the built-ins receive, so a capturing factory proves what the bridge forwards. The store half is tested through the guard, which throws before any constructor runs.
+The guard throws before any constructor runs, which is what makes this testable without a live backend — and is also the only place a mismatch can be caught, since the construction site casts twice.
 
 ```ts
-// packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import type { EmbedderFactoryOpts } from '../embedder-factories.js';
-import { resolveEmbedder, resolveRag } from '../rag-factories.js';
+// append to packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts
+import type { ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
+import { resolveRag } from '../rag-factories.js';
 
-const apiKey: IApiKeyCredential = { kind: 'api-key', secret: async () => 'k' };
-const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
-
-const stubEmbedder: IEmbedder = {
-  embed: async () => [0],
-  embedBatch: async (texts: string[]) => texts.map(() => [0]),
+const login: ISecretLoginCredential = {
+  kind: 'secret-login',
+  principal: 'u',
+  secret: async () => 'p',
 };
 
-describe('the resolution bridge and credentials', () => {
-  it('forwards the credential object itself, not a copy of a secret', () => {
-    let seen: EmbedderFactoryOpts | undefined;
-    resolveEmbedder(
-      { embedder: 'capture', credential: apiKey, apiBaseUrl: 'https://aicore.example' },
-      {
-        extraFactories: {
-          capture: (opts) => {
-            seen = opts;
-            return stubEmbedder;
-          },
-        },
-      },
-    );
-    assert.equal(seen?.credential, apiKey, 'the same object must arrive, so quota identity survives');
-    assert.equal(seen?.apiBaseUrl, 'https://aicore.example');
-  });
-
-  it('no longer carries an apiKey field for anything to read', () => {
-    let seen: EmbedderFactoryOpts | undefined;
-    resolveEmbedder(
-      // deliberately shaped like the old config, cast because the field is gone
-      { embedder: 'capture', apiKey: 'leftover' } as unknown as Parameters<typeof resolveEmbedder>[0],
-      { extraFactories: { capture: (opts) => ((seen = opts), stubEmbedder) } },
-    );
-    assert.ok(seen && !('apiKey' in seen), 'a stale apiKey must not reach a factory');
-  });
-
-  it('refuses a named embedder that cannot work without a credential', () => {
-    assert.throws(
-      () => resolveEmbedder({ embedder: 'openai' }),
-      /openai.*credential/i,
-      'a missing credential must name itself, not produce an unauthenticated embedder',
-    );
-  });
-
-  it('refuses the wrong kind of credential for the target', () => {
-    assert.throws(
-      () => resolveEmbedder({ embedder: 'openai', credential: bearer }),
-      /openai.*api-key.*bearer/i,
-    );
-    assert.throws(
-      () => resolveEmbedder({ embedder: 'sap-ai-core', credential: apiKey, apiBaseUrl: 'https://x' }),
-      /sap-ai-core.*bearer.*api-key/i,
-    );
-  });
-
-  it('refuses a credential for a target that sends none', () => {
-    assert.throws(
-      () => resolveEmbedder({ embedder: 'ollama', credential: apiKey }),
-      /ollama.*no credential/i,
-      'silently ignoring it would hide a misconfigured deployment',
-    );
-  });
-
-  it('leaves a credential-less ollama alone', () => {
-    const e = resolveEmbedder(
-      { embedder: 'capture' },
-      { extraFactories: { capture: () => stubEmbedder } },
-    );
-    assert.ok(e);
-  });
-
+describe('the store bridge and credentials', () => {
   it('checks the store credential before it reaches a constructor', () => {
     assert.throws(
       () =>
         resolveRag('pg-vector', {
           embedder: stubEmbedder,
           collectionName: 'c',
-          credential: apiKey as never,
+          credential: apiKey,
         }),
       /pg-vector.*secret-login.*api-key/i,
       'the double cast at the construction site means only this guard can catch it',
     );
+    assert.throws(
+      () =>
+        resolveRag('qdrant', {
+          embedder: stubEmbedder,
+          collectionName: 'c',
+          url: 'http://localhost:6333',
+          credential: login,
+        }),
+      /qdrant.*api-key.*secret-login/i,
+    );
+  });
+
+  it('lets a credential-less store through, because both kinds are optional', () => {
+    assert.doesNotThrow(() =>
+      assertCredentialKind('qdrant', undefined, RAG_CREDENTIALS.qdrant),
+    );
+    assert.doesNotThrow(() =>
+      assertCredentialKind('pg-vector', undefined, RAG_CREDENTIALS['pg-vector']),
+    );
+  });
+
+  it('forwards the credential object itself to the named store', () => {
+    // makeRag's branches copy field by field; this asserts the copy includes it
+    const opts = ragOptsFor({
+      type: 'pg-vector',
+      collectionName: 'c',
+      credential: login,
+      host: 'db.example',
+    });
+    assert.equal(opts.credential, login);
+    assert.ok(!('user' in opts) && !('password' in opts));
   });
 });
 ```
+
+`ragOptsFor` does not exist yet — Step 1 of this task is also to decide how to observe what `makeRag` copies. Two honest options, pick one and say why in the report: export a small internal helper that builds the per-store opts (and have `makeRag` call it), or assert through `resolveRag` with a stub module registered via `_resetPrefetchedRagForTests` plus a prefetch of the real workspace package. Prefer the first: it makes the whitelist a named, testable thing rather than an inline literal, which is what let this defect hide twice.
 
 - [ ] **Step 2: run them and watch them fail**
 
@@ -1178,50 +1365,7 @@ npm run build
 npm test -w packages/llm-agent-rag
 ```
 
-Expected: the credential cases fail — `credential` and `apiBaseUrl` are not fields the bridge declares or forwards, and no guard exists. Note which failures are "property does not exist" at runtime (a silently undefined field) rather than a thrown error: that undefined is the bug this task removes.
-
-- [ ] **Step 3: type the embedder bag, and forward what it now carries**
-
-```ts
-// packages/llm-agent-rag/src/embedder-factories.ts
-import type {
-  IApiKeyCredential,
-  IBearerCredential,
-} from '@mcp-abap-adt/interfaces-auth';
-
-/**
- * What a named embedder factory receives. Declared rather than
- * `Record<string, unknown>`: the constructor it reaches is cast, so a field
- * this type omits is a field the build cannot miss on removal.
- */
-export interface EmbedderFactoryOpts {
-  url?: string;
-  model?: string;
-  credential?: IApiKeyCredential | IBearerCredential;
-  /** Where the credential is valid — the SAP targets take it instead of reading the environment. */
-  apiBaseUrl?: string;
-  resourceGroup?: string;
-  scenario?: 'orchestration' | 'foundation-models';
-}
-```
-
-In `rag-factories.ts`, `EmbedderResolutionConfig` loses `apiKey?: string` and gains the same two members, and the bag built at `:170` forwards them:
-
-```ts
-  const opts: EmbedderFactoryOpts = {
-    url: cfg.url,
-    model: cfg.model,
-    credential: cfg.credential,
-    apiBaseUrl: cfg.apiBaseUrl,
-    resourceGroup: cfg.resourceGroup,
-    scenario: cfg.scenario,
-  };
-  assertCredentialKind(name, cfg.credential, EMBEDDER_CREDENTIALS[name]);
-```
-
-Keep the `extraFactories` signature as `(opts: EmbedderFactoryOpts) => IEmbedder` so a consumer's own factory sees the same typed bag.
-
-- [ ] **Step 4: type the store bag, and forward through all three branches**
+- [ ] **Step 3: type the store bag**
 
 `RagFactoryOpts` and `RagResolutionConfig` each lose `apiKey?`, `user?` and `password?`, and gain:
 
@@ -1229,80 +1373,33 @@ Keep the `extraFactories` signature as `(opts: EmbedderFactoryOpts) => IEmbedder
   credential?: IApiKeyCredential | ISecretLoginCredential;
 ```
 
-A union here is honest rather than a widening: this bag is dispatched by store name and handed to a constructor through two casts, so the narrow type lives on each store's own config (Task B6) and the bridge's job is to check the kind before handing it over. Replace `apiKey: cfg.apiKey` in the qdrant branch and `user: cfg.user, password: cfg.password` in the hana and pg branches with `credential: cfg.credential`, and leave `connectionString`, `host`, `port`, `database` and `schema` exactly as they are — B6 made the resolvers refuse a connection string that carries credentials, and this task must not give one a second way in.
+A union here is honest rather than a widening: this bag is dispatched by store name and handed to a constructor through two casts, so the narrow type lives on each store's own config (B6) and the bridge's job is to check the kind before handing it over.
 
-- [ ] **Step 5: add the guard, with the requirement stated once per target**
+- [ ] **Step 4: forward it through all three branches, and leave the address alone**
+
+Replace `apiKey: cfg.apiKey` in the qdrant branch and `user: cfg.user, password: cfg.password` in the hana and pg branches with `credential: cfg.credential`. Leave `connectionString`, `host`, `port`, `database` and `schema` exactly as they are: B6 made the resolvers refuse a connection string that carries credentials, and this task must not hand one a second way in.
+
+- [ ] **Step 5: add the store rules to the guard B6a created**
 
 ```ts
-// packages/llm-agent-rag/src/credential-guard.ts
-import type {
-  IApiKeyCredential,
-  IBearerCredential,
-  ISecretLoginCredential,
-} from '@mcp-abap-adt/interfaces-auth';
-
-type AnyCredential = IApiKeyCredential | IBearerCredential | ISecretLoginCredential;
-type Kind = AnyCredential['kind'];
-
-/** What each named target accepts. `kinds: []` means it authenticates with nothing. */
-export interface CredentialRule {
-  kinds: readonly Kind[];
-  required: boolean;
-}
-
-export const EMBEDDER_CREDENTIALS: Record<string, CredentialRule> = {
-  openai: { kinds: ['api-key'], required: true },
-  ollama: { kinds: [], required: false },
-  'sap-ai-core': { kinds: ['bearer'], required: true },
-  'sap-aicore': { kinds: ['bearer'], required: true },
-};
-
+// packages/llm-agent-rag/src/credential-guard.ts — added, not replacing EMBEDDER_CREDENTIALS
 export const RAG_CREDENTIALS: Record<string, CredentialRule> = {
   qdrant: { kinds: ['api-key'], required: false },
   'pg-vector': { kinds: ['secret-login'], required: false },
   'hana-vector': { kinds: ['secret-login'], required: false },
 };
-
-export function assertCredentialKind(
-  target: string,
-  credential: AnyCredential | undefined,
-  rule: CredentialRule | undefined,
-): void {
-  if (!rule) return; // an unknown name is the caller's error to report, not ours
-  if (!credential) {
-    if (rule.required) {
-      throw new Error(
-        `${target} needs a credential: pass credential (${rule.kinds.join(' or ')}). ` +
-          'Build one with staticApiKey / staticLogin, or resolve it in your composition root.',
-      );
-    }
-    return;
-  }
-  if (rule.kinds.length === 0) {
-    throw new Error(
-      `${target} takes no credential — it sends none on the wire. Remove credential from its configuration.`,
-    );
-  }
-  if (!rule.kinds.includes(credential.kind)) {
-    throw new Error(
-      `${target} needs a ${rule.kinds.join(' or ')} credential, got ${credential.kind}.`,
-    );
-  }
-}
 ```
 
-`resolveEmbedder` calls it with `EMBEDDER_CREDENTIALS[name]` before constructing; `resolveRag` calls it with `RAG_CREDENTIALS[name]` before `new Cls(opts)`. Both `required: false` entries for the stores are deliberate: qdrant's key was optional and pg's and hana's logins have `connectionString` as an alternative, so requiring one here would refuse a working configuration. Ollama's empty `kinds` makes a supplied credential an error rather than something quietly dropped — a credential nobody sends is a misconfigured deployment, and it should say so at startup.
+`resolveRag` calls `assertCredentialKind(name, opts.credential, RAG_CREDENTIALS[name])` before `new Cls(opts)`. All three are `required: false` deliberately: qdrant's key was optional and pg's and hana's logins have `connectionString` as an alternative, so requiring one here would refuse a working configuration.
 
 - [ ] **Step 6: verify**
 
 ```bash
 cd ~/prj/llm-agent
-npm run build                      # count the "Found N errors" lines; ANSI colour defeats grep -c "error TS"
+npm run build                       # count "Found N errors"
 npm test -w packages/llm-agent-rag
-npm test -w packages/llm-agent-server-libs   # it defaults deps.resolveEmbedder to this resolver
+timeout 900 npm test -w packages/llm-agent-server-libs   # it defaults deps.resolveEmbedder to this package
 ```
-
-The bridge's own suite must be green. `llm-agent-server-libs` is expected to change count only through B9/B10 work; report its figures either way, because this is the task that would break it.
 
 - [ ] **Step 7: commit**
 
@@ -1310,22 +1407,22 @@ The bridge's own suite must be green. `llm-agent-server-libs` is expected to cha
 cd ~/prj/llm-agent
 git add packages/llm-agent-rag
 git commit -m "$(cat <<'MSG'
-feat(llm-agent-rag): the resolution bridge carries credentials, not keys
+feat(llm-agent-rag): the store bridge carries a credential, not a key or a login
 
-The bag between configuration and a constructed embedder or store was
-Record<string, unknown> reaching a cast constructor, so removing apiKey,
-user and password from the providers left this package forwarding fields
-that no longer exist — with a green build. It now declares credential and
-apiBaseUrl, forwards the credential object itself so quota identity
-survives, and checks the kind against what each named target accepts
-before any constructor runs.
+The per-store whitelists copied apiKey, user and password into a bag that
+reaches the constructor through two casts, so Task B6's removals left this
+package forwarding fields that no longer exist with nothing able to catch
+it. The bag now declares credential, each branch forwards the object, and
+the kind is checked against what the named store accepts before the
+constructor runs. The connection-string path is untouched, so a credential
+still has exactly one way in.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
 
-Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`: `apiKey`, `user` and `password` are gone from `EmbedderResolutionConfig`, `EmbedderFactoryOpts`, `RagFactoryOpts` and `RagResolutionConfig`, replaced by `credential` (and `apiBaseUrl` for the SAP targets); a consumer's own `extraFactories` entry now receives the typed bag; and an unusable combination — no credential where one is needed, the wrong kind, or one supplied to ollama — throws at resolution instead of producing a provider that cannot authenticate.
+Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`: `apiKey`, `user` and `password` are gone from `RagFactoryOpts` and `RagResolutionConfig`, replaced by `credential`; and a credential of the wrong kind for the named store throws at resolution instead of reaching a constructor that cannot use it.
 
 ---
 
