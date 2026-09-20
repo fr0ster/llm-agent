@@ -69,13 +69,15 @@ export abstract class BaseLLMProvider<
   ): AsyncIterable<LLMResponse>;
 
   /**
-   * Validate configuration
+   * Validate configuration.
+   *
+   * A no-op here: `LLMProviderConfig` carries no credential field (each provider
+   * declares its own, typed for what that target speaks — a shared base could only
+   * type the union, see `@mcp-abap-adt/interfaces-auth`), so this base class has
+   * nothing generic left to check. A provider that needs a credential present
+   * enforces it at its own construction (a required field, or its own override).
    */
-  protected validateConfig(): void {
-    if (!this.config.apiKey) {
-      throw new Error('API key is required');
-    }
-  }
+  protected validateConfig(): void {}
 
   // --- Rate limiting (issue #282) -----------------------------------------
   //
@@ -101,8 +103,23 @@ export abstract class BaseLLMProvider<
   protected quotaScope(): string {
     return [
       this.canonicalEndpoint(this.quotaEndpoint()),
-      this.credentialFingerprint(this.config.apiKey),
+      this.credentialFingerprint(this.quotaCredentialSecret()),
     ].join('|');
+  }
+
+  /**
+   * The secret behind this call's quota, when the base class can see one.
+   *
+   * `LLMProviderConfig` carries no credential field of its own (each provider
+   * declares its own, see `quotaScope`'s doc), so the base has nothing to read by
+   * default and every anonymous-credential provider shares one bucket. A provider
+   * that wants per-credential quota isolation overrides this with its own
+   * credential's resolved secret — never the credential object itself, and never
+   * awaited here: this stays synchronous so `quotaKey` (called from the hot,
+   * synchronous retry setup) does not have to become async for it.
+   */
+  protected quotaCredentialSecret(): string | undefined {
+    return undefined;
   }
 
   /**

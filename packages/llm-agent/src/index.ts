@@ -43,6 +43,8 @@ export { NoopToolCache } from './cache/noop-tool-cache.js';
 export { ToolCache } from './cache/tool-cache.js';
 // Cache
 export type { IToolCache } from './cache/types.js';
+// Credentials
+export { staticApiKey, staticLogin } from './credentials/static.js';
 // Tool utilities
 export {
   CLIENT_PROVIDED_PREFIX,

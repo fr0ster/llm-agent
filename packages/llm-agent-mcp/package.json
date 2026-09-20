@@ -23,6 +23,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^1.1.0",
     "@mcp-abap-adt/llm-agent": "^26.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },

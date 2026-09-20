@@ -20,8 +20,6 @@ export interface IEmbedder {
 export interface EmbedderFactoryConfig {
   /** Base URL for the embedding service (Ollama URL, OpenAI base, etc.) */
   url?: string;
-  /** API key when required by the embedding provider */
-  apiKey?: string;
   /** Embedding model name */
   model?: string;
   /** Per-request timeout in milliseconds */

@@ -34,6 +34,7 @@
     "@mcp-abap-adt/anthropic-llm": "^26.0.0",
     "@mcp-abap-adt/deepseek-llm": "^26.0.0",
     "@mcp-abap-adt/hana-vector-rag": "^26.0.0",
+    "@mcp-abap-adt/interfaces-auth": "^1.1.0",
     "@mcp-abap-adt/llm-agent": "^26.0.0",
     "@mcp-abap-adt/llm-agent-libs": "^26.0.0",
     "@mcp-abap-adt/llm-agent-mcp": "^26.0.0",
