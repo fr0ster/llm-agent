@@ -327,13 +327,17 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
 
    **But it stops being optional in practice, and that is a runtime break of its own.** `SmartServer` supplies a default today — `makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg))` (`smart-server.ts:954`) — so a consumer that never touched the DI seam relies on it, and removing the default means such a deployment **stops starting**, not merely stops compiling. §8 lists it and the migration shows the call; the validator should refuse at startup with a message naming the seam rather than failing later.
 
-   **And the role does not travel in the config — an earlier draft of this paragraph said it does.** `main`, `classifier` and `helper` are keys of the outer YAML map (`yaml-loader.ts:68-81`); what reaches the factory is a `SmartServerLlmConfig`, which contains no role (`:359-360`). So the seam widens by one parameter:
+   **The role does not travel in the config, and it is not added either — two drafts of this paragraph got this wrong in turn.** The first claimed the role reaches the factory; it does not, since `main`, `classifier` and `helper` are keys of the outer YAML map (`yaml-loader.ts:68-81`) while what arrives is a `SmartServerLlmConfig` (`:359-360`). The second then widened the seam to `(cfg, role: 'main' | 'classifier' | 'helper')`. Counting the call sites kills that:
+
+   - the seam is called from about twenty places — `smart-server.ts:1036`, `:1043`, `:1052`, `:1875`, `:1888`, `:1900`, `:2020`, `build-dag-coordinator-deps.ts:89`, `:102`, `:174`, `plan-analysis.ts:461`, `controller.ts:336`, `dag.ts:49`, `coordinator-resolvers.ts:191`, `role-llm-resolver.ts:11`, `:51`, `:66`, and more;
+   - its shape is **restated as a type** in at least four of them — `server-context.ts:26`, `role-llm-resolver.ts:29`, `:38`, `coordinator-resolvers.ts:176` — so a required parameter is a required edit in each;
+   - and the roles are not three. Those calls build a finalizer, a planner, a reviewer, DAG coordinator roles, and **arbitrary named entries**: `coordinator-resolvers.ts:165` documents the chain as “top-level `llm.<name>` → `llm.main` → `pipelineFallback`”. A closed union of three cannot name them, and a `role: string` would be a label nobody can rely on.
+
+   So no parameter is added. It was wanted for role-aware defaults or auditing, which is speculation; the one thing that genuinely needed to vary per entry is **credential selection**, and `credentialRef` sits in the config where every one of those twenty call sites already carries it. The seam keeps the signature it has:
 
    ```ts
-   makeLlm?: (cfg: SmartServerLlmConfig, role: 'main' | 'classifier' | 'helper') => Promise<ILlm>;
-   ```
-
-   Measured rather than assumed: a consumer's existing one-parameter factory still satisfies the two-parameter type — checked against this repository's tsc, which accepts `(cfg) => …` where `(cfg, role) => …` is expected. So the widening is additive for anyone who already injects, and it lets a factory do role-aware defaults or auditing. Credential selection does **not** need it, because `credentialRef` is in the config. `IModelResolver` stays the separate, already-optional seam for `PUT /v1/config` switching (`:334`).
+   makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>;   // unchanged
+   ``` `IModelResolver` stays the separate, already-optional seam for `PUT /v1/config` switching (`:334`).
 
    **`apiKey` leaves the YAML, but a non-secret `credentialRef` replaces it — an earlier draft removed both and lost something real.** Today each role may carry its own `apiKey: ${ENV_VAR}`, so one deployment can put `main` on one account and `classifier` on another. Remove the field with nothing in its place and `{ provider, model, … }` can no longer say **which** credential a role or an endpoint is meant to use; “the app reads the environment” only works when there is one thing to read.
 
@@ -348,6 +352,10 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
        credentialRef: OPENAI_KEY_CHEAP     # a different account, still expressible
        model: gpt-4o-mini
    ```
+
+   **And the rule is general, not an LLM rule — two more DTOs carry the same passenger.** `PipelineRagStoreConfig.apiKey` is a plain secret, documented as “API key (for openai type or Qdrant auth)” (`pipeline.ts:32`), and `SkillPluginsConfig`'s store variant is `{ type: 'qdrant'; url: string; apiKey?: string }` (`skill-plugins-config.ts:19`, threaded at `skill-plugins-host-factory.ts:271`, `:310` and `controller-skill-pipeline-builder.ts:16`, `:47`). Both are YAML DTOs, and by this section's test both fail it the same way: remove the key and a complete store configuration remains. An earlier draft applied `credentialRef` to the LLM configs alone, which would have left the principle true of one config type and false of two others in the same file.
+
+   So they take `credentialRef` as well, resolved the same way, and the embedder and store construction moves to the app with the provider dispatch. The RAG stores' own constructors take the credential (§4.5), so nothing new is needed below.
 
    A reference is not a passenger by this section's test: remove it and the configuration can no longer address the right account, so it is something the config genuinely needs. And it is not a secret — the value never enters the loaded object, which is precisely what `${…}` substitution did wrong. The app maps a `credentialRef` to a credential however it likes: an env var of that name, a vault lookup, a fixed table. Absent, it means “the one credential I hold”, so a single-account deployment writes nothing.
 
@@ -724,8 +732,9 @@ A connection string carrying credentials is now **refused at construction**, wit
 
 `DefaultModelResolver` goes too, and `IModelResolver` does **not** change. If you relied on the
 library's implementation for `PUT /v1/config` model switching, implement the same one-method
-contract where your credential lives — which is what `llm-agent-server-libs` now does for the
-shipped server:
+contract where your credential lives — which is what `llm-agent-server`, the app, now does for
+the shipped server (an earlier draft of this line said `llm-agent-server-libs`, which §4.6.2
+withdrew):
 
 ```ts
 - new DefaultModelResolver({ provider: 'openai', apiKey: key })
@@ -771,29 +780,55 @@ That function is the package's existing `TokenProvider` and `parseServiceKey` mo
 ```
 
 ```ts
-// your composition root: one place that turns a reference into a credential
-const credentials = new Map<string, IApiKeyCredential>([
+// your composition root: one place that turns a reference into a credential.
+// Typed as the union, because a deployment may mix an api key, a bearer token and
+// a keyless provider.
+type AnyCredential = IApiKeyCredential | IBearerCredential;
+const credentials = new Map<string, AnyCredential>([
   ['DEEPSEEK_API_KEY', staticApiKey(process.env.DEEPSEEK_API_KEY!)],
   ['OPENAI_KEY_CHEAP', staticApiKey(process.env.OPENAI_KEY_CHEAP!)],
+  ['AICORE', serviceKeyCredential(process.env.AICORE_SERVICE_KEY!).credential],
 ]);
 
 const deps: BuildAgentDeps = {
-  async makeLlm(cfg, role) {
-    const credential = cfg.credentialRef
-      ? credentials.get(cfg.credentialRef)
-      : theOnlyCredentialIHold;
-    // An unknown reference is a configuration error, and it fails here, at startup,
-    // naming the reference — not later, as an authentication failure.
-    if (!credential) {
-      throw new Error(
-        `llm.${role}.credentialRef '${cfg.credentialRef}' has no credential configured`,
-      );
+  async makeLlm(cfg) {
+    // `credentialRef` is optional twice over: a single-account deployment omits it,
+    // and a keyless provider such as ollama needs none at all.
+    const credential = cfg.credentialRef ? credentials.get(cfg.credentialRef) : undefined;
+    if (cfg.credentialRef && !credential) {
+      // A configuration error, failing at startup and naming the reference — not
+      // later, as an authentication failure.
+      throw new Error(`credentialRef '${cfg.credentialRef}' has no credential configured`);
     }
-    const provider = new OpenAIProvider({ credential, model: cfg.model! });
+
+    // Dispatch on what the config asked for. This is the part that was the
+    // library's and is now yours, and it is the whole reason the secret no longer
+    // has to travel through a framework type.
+    const provider = (() => {
+      switch (cfg.provider) {
+        case 'openai':
+          return new OpenAIProvider({ credential: credential as IApiKeyCredential, model: cfg.model! });
+        case 'anthropic':
+          return new AnthropicProvider({ credential: credential as IApiKeyCredential, model: cfg.model! });
+        case 'deepseek':
+          return new DeepSeekProvider({ credential: credential as IApiKeyCredential, model: cfg.model! });
+        case 'ollama':
+          return new OllamaProvider({ baseURL: cfg.url, model: cfg.model! });   // keyless
+        case 'sap-ai-sdk': {
+          const { credential: c, apiBaseUrl } = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
+          return new SapCoreAIProvider({ credential: c, apiBaseUrl, model: cfg.model! });
+        }
+        default:
+          throw new Error(`unknown llm provider '${cfg.provider}'`);
+      }
+    })();
+
     return new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model });
   },
 };
 ```
+
+`llm-agent-server` carries exactly this switch as the reference implementation — that is what makes it the example (principle 2), and why §11 no longer lists its configuration as out of scope.
 
 `credentialRef` is optional: omit it and the factory uses the one credential the deployment holds, which is what a single-account setup wants.
 
@@ -860,7 +895,7 @@ Four independent changes under one umbrella. Workstreams 1 and 4 are additive; 2
 Workstreams 1 and 4 are already merged, each as its own PR, before this rule was written — that is history and is not undone. What remains is workstreams 2 and 3, and they land as **one plan** across **two PRs**: one in `mcp-abap-adt-interfaces` carrying the three credential contracts, then — after that package is published, per §8’s order — one in this repository adopting them. **What version carries them is decided once, at the release, by what has accumulated — never per workstream.** Merging a workstream publishes nothing: its entries sit under `[Unreleased]` until the set is cut. Workstream 4 widens six readable option properties, which breaks a consumer that *reads* one (§7), so the release that carries this set is a major.
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
-2. **Credential contracts** — write them where §4.4 settles, and adopt them **in place of** the existing fields, not beside them (§4.6.2). Each **concrete** provider config declares its own `credential`, typed for what that target speaks. `apiKey` leaves `LLMProviderConfig` and `EmbedderFactoryConfig` with **nothing** replacing it in either — a shared base could only type the union, and the framework must not carry a secret between a consumer's own components. And `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver` and the five dynamic-import shims **leave `llm-agent-libs` altogether**: a dispatch that restates five constructors it does not own is a variation point the consumer owns (principle 5) and glue that belongs to the assembly (principle 2) — it was also the only reason a secret ever had to sit in a framework config. `IModelResolver` itself is **unchanged** — what held a config was `DefaultModelResolver`, and it leaves because building a provider for a newly chosen model needs a credential. The rest of this workstream's scope, which an earlier draft of this line omitted: `SmartServerLlmConfig` and `PipelineLlmProviderConfig` lose their secret fields and gain a non-secret `credentialRef`, staying serializable, while construction goes through the **existing** `BuildAgentDeps.makeLlm` (`:360`) rather than a new field; the YAML swaps `apiKey: ${VAR}` for `credentialRef: VAR` and its loader, substitution and validation stay in `-libs`; a new `@mcp-abap-adt/sap-aicore-auth` holds `serviceKeyCredential` and `parseServiceKey`, moved with their tests; and `llm-agent-server` becomes the composition root — env, credentials, provider dispatch, and the `IModelResolver` implementation behind `PUT /v1/config`.
+2. **Credential contracts** — write them where §4.4 settles, and adopt them **in place of** the existing fields, not beside them (§4.6.2). Each **concrete** provider config declares its own `credential`, typed for what that target speaks. `apiKey` leaves `LLMProviderConfig` and `EmbedderFactoryConfig` with **nothing** replacing it in either — a shared base could only type the union, and the framework must not carry a secret between a consumer's own components. And `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver` and the five dynamic-import shims **leave `llm-agent-libs` altogether**: a dispatch that restates five constructors it does not own is a variation point the consumer owns (principle 5) and glue that belongs to the assembly (principle 2) — it was also the only reason a secret ever had to sit in a framework config. `IModelResolver` itself is **unchanged** — what held a config was `DefaultModelResolver`, and it leaves because building a provider for a newly chosen model needs a credential. The rest of this workstream's scope, which an earlier draft of this line omitted: `SmartServerLlmConfig`, `PipelineLlmProviderConfig`, **`PipelineRagStoreConfig` (`pipeline.ts:32`) and `SkillPluginsConfig`'s qdrant store (`skill-plugins-config.ts:19`)** lose their secret fields and gain a non-secret `credentialRef`, staying serializable, while construction goes through the **existing** `BuildAgentDeps.makeLlm` (`:360`) unchanged — no `role` parameter is added, because its twenty call sites name roles a closed union cannot; the YAML swaps `apiKey: ${VAR}` for `credentialRef: VAR` and its loader, substitution and validation stay in `-libs`; a new `@mcp-abap-adt/sap-aicore-auth` holds `serviceKeyCredential` and `parseServiceKey`, moved with their tests; and `llm-agent-server` becomes the composition root — env, credentials, provider dispatch, and the `IModelResolver` implementation behind `PUT /v1/config`.
 3. **RAG identity and attributes** — persisted opaque `attributes` **plus the logical name beside them, the `describeCollections()` read, `openCollection()`, the `adopt()` hydration path, and catalog-record removal on delete, record-before-data **inside each provider's own `deleteCollection`** with `CatalogRecordDeleteError` when that first step fails, so nothing resurrects** (§6.3); the collection registry a caller's tools see is that caller's, per pipeline, which needs the optional **async** `ragRegistryFactory(identity): Promise<IRagRegistry>` on `SessionGraphFactoryOptions` — async because hydration happens inside it and `SessionAgentParts` has no `userId` to defer it with — plus session-owned disposal, so this workstream **does** touch the session wiring (§6.4); the two axes; the typed owner keys; the caller's identity bound into the collection tool entries as the single source, closing the five handlers that ignore the context and the one that trusts it, and refusing every mutation of a global (§5.1); a credential on each store constructor **replacing** `apiKey`/`user`/`password`, with the connection string carrying the address only. No source union and no check (§5, §6.2). Registry rewiring is **in** scope, contrary to an earlier draft of this line: the provider registry stays shared and untouched, while the session gains an optional factory for its own collection registry (§6.4).
 4. **Text-logger acceptance** — `ITextLogger`, the boundary adapter and its levels (§7). Convergence to one name is deferred to the next major (§9.9).
 
