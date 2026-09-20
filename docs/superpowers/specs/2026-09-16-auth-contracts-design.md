@@ -292,7 +292,7 @@ Who writes `attributes`: the component that knows the caller — the tool handle
 |---|---|---|
 | exported `ILogger` | `{ log(event: LogEvent): void }` | **unchanged** |
 | `ITextLogger` (re-exported `interfaces-utils` shape) | `info/warn/error/debug(message, meta?)` | new name, new import |
-| input seams — `withLogger`, `SessionGraphFactoryOptions.logger`, `ConnectionStrategyOptions.logger`, embedder resilience, session lifecycle | `ILogger \| ITextLogger` | accept both, normalise at the boundary |
+| input seams — the eight declarations listed in the plan’s Global Constraints, and whatever accepts those types | `ILogger \| ITextLogger` | accept both, normalise at the boundary |
 | output seams — `PipelineContext.logger`, `IPipelinePlugin` | `ILogger` | unchanged, so plugins keep compiling |
 
 The import is types-only (`import type`), which keeps it out of the runtime graph — but a re-exported type must resolve in every consumer's `tsc`, so `@mcp-abap-adt/interfaces-utils` is a **regular dependency**, not a dev one.
