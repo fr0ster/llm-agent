@@ -10,7 +10,7 @@
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Scope and the owner keys stay typed; only role and policy become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
-- **Additive at runtime; the version is decided at the release.** Every seam is added beside what exists, no behaviour on any existing path changes, and the safer teardown order arrives through a new optional hook rather than a changed one (§3.4). **Source-wise, §5.1’s single-identity rule adds three breaks to workstream 4’s widened read-side properties (§7):** `RagToolContext` loses its declared `sessionId?` and `userId?` (read-side, measured), and `buildRagCollectionToolEntries` requires an `identity` (a required input). The last is deliberate — an optional one would mean “do not narrow”, and could be forgotten. What version carries the accumulated set is §10’s to state, not this summary’s: with those four in it, it is a major, and §8 carries the migration note.
+- **No behaviour on any existing path changes, and the version is decided at the release.** New capability arrives through new optional seams — the safer teardown order through a new hook rather than a changed one (§3.4). **What does break is source-level, and deliberate in every case:** §4.6.2 removes `apiKey` from `LLMProviderConfig` and from `EmbedderFactoryConfig`, because a contract does not carry a secret and construction is the authorization; §5.1 removes `RagToolContext`'s declared `sessionId?`/`userId?` and makes `identity` required on `buildRagCollectionToolEntries`, because an optional one would mean “do not narrow” and could be forgotten; and §7 widens six readable option properties. What version carries the set is §10’s to state, not this summary’s — it is a major, and §8 carries the migration note for each.
 - Umbrella: four workstreams (§10), **one plan**, and **one PR per repository**. Two of the four are already merged; the rest land together.
 
 ---
@@ -591,15 +591,29 @@ Read this rather than deriving it. Every row was checked against the packages, n
 **Release shape.** No existing path changes behaviour, and every seam is declinable — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). Two things are not declinable, both from §5.1's single-identity rule:
 
 - **A required input.** `buildRagCollectionToolEntries` now takes an `identity`, so the old one-field call stops compiling. Deliberate, and §5.1 says why no overload without it is kept: an optional `identity?` would mean “do not narrow”, which is an unnarrowed address space reached by forgetting a field.
+- **Two contract removals.** `LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` go (§4.6.2): a contract carries what an acceptor *needs*, and a plain key is one way of *obtaining* it. `staticApiKey(key)` converts a call site in one line. The concrete providers replace their own fields the same way, and a connection string that carries credentials is refused at construction rather than silently outranked.
 - **A removal, measured rather than assumed.** `RagToolContext` loses its declared `sessionId?`/`userId?`. Against the repository's own tsc (6.0.3), a call site passing those keys still compiles — the type declares `[key: string]: unknown`, which absorbs them — while a *reader* of one gets `error TS2322: Type 'unknown' is not assignable to type 'string | undefined'`. That is workstream 4's read-side class (§7), and no reader exists today because nothing mounts these tools.
 
 The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam. The version this ships as is decided at the release by what has accumulated (§10), not here: as it stands the set carries workstream 4's read-side break and §5.1's two, so it is a major.
 
 ### Migration — what a consumer on the old contract must do
 
-Three changes need an edit. Nothing else does: a consumer that declines a seam keeps today’s behaviour, and the deprecated members still work.
+Four changes need an edit, and none of them is optional — nothing here is deprecated-but-working, because §4.6.2 removes rather than deprecates. Everything *else* is declinable as usual: a consumer that leaves a new seam unused keeps today’s behaviour.
 
-**1. Build the RAG collection tools with an identity** (§5.1). The identity is the caller the pipeline is being built for — the same one whose collections the instance may address.
+**1. Replace a plain key with a credential** (§4.6.2). `apiKey` is gone from `LLMProviderConfig`, from `EmbedderFactoryConfig` and from the concrete providers' own configs; a static key is already a credential, and core ships the conversion.
+
+```ts
+- new OpenAiEmbedder({ model: 'text-embedding-3-small', apiKey: key });
++ new OpenAiEmbedder({ model: 'text-embedding-3-small', credential: staticApiKey(key) });
+
+- new PgVectorRagProvider({ connectionString: 'postgres://u:pw@host/db', … });
++ new PgVectorRagProvider({ connectionString: 'postgres://host/db',
++                          credential: staticLogin('u', 'pw'), … });
+```
+
+A connection string carrying credentials is now **refused at construction**, with `staticLogin` named in the message — it is not silently ignored. And a consumer's own embedder factory stops receiving `cfg.apiKey`: it closes over the credential it already holds, which is why the framework no longer carries one.
+
+**2. Build the RAG collection tools with an identity** (§5.1). The identity is the caller the pipeline is being built for — the same one whose collections the instance may address.
 
 ```ts
 // before
@@ -608,7 +622,7 @@ const entries = buildRagCollectionToolEntries({ registry });
 const entries = buildRagCollectionToolEntries({ registry, identity });
 ```
 
-**2. Stop reading identity from the tool context** (§5.1). A handler no longer needs to: the entries were built for one caller, so the owner keys come from the bound identity. Call sites that *pass* `sessionId`/`userId` keep compiling and can be left alone — the values simply stop being read — but code that *reads* them must change.
+**3. Stop reading identity from the tool context** (§5.1). A handler no longer needs to: the entries were built for one caller, so the owner keys come from the bound identity. Call sites that *pass* `sessionId`/`userId` keep compiling and can be left alone — the values simply stop being read — but code that *reads* them must change.
 
 ```ts
 // before: the field was typed, and authoritative
@@ -616,7 +630,7 @@ const owner = ctx.userId;                  // string | undefined
 // after: TS2339/TS2322 — there is no such declared field, and no need for one
 ```
 
-**3. Narrow a widened logger option before reading it** (§7). Six readable option properties accept `ILogger | ITextLogger`, so a consumer that *reads* one must narrow first; a consumer that only *passes* a logger is unaffected. The guarded form is the one that compiles — the property is optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
+**4. Narrow a widened logger option before reading it** (§7). Six readable option properties accept `ILogger | ITextLogger`, so a consumer that *reads* one must narrow first; a consumer that only *passes* a logger is unaffected. The guarded form is the one that compiles — the property is optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
 
 ```ts
 // before
