@@ -818,13 +818,37 @@ node --test packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts
 
 - [ ] **Step 3: implement**
 
-Export a `buildDestination` that returns the constructed-destination shape the SDK documents — `{ url, authentication: 'NoAuthentication', headers: { Authorization } }`. Do **not** use `authTokens`: its TypeScript type is `{ type; value; expiresIn?; error: string | null }` with no `http_header` field, so the shape shown in blog posts does not compile. Call `buildDestination` where the per-call client is constructed. When no credential is configured, keep today's `OAuth2ClientCredentials` path untouched.
+```ts
+// packages/sap-aicore-llm/src/sap-core-ai-provider.ts
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+
+/** The constructed-destination shape the SDK documents: url + headers, no lookup. */
+export async function buildDestination(cfg: {
+  serviceUrl: string;
+  credential: IBearerCredential;
+}): Promise<{
+  url: string;
+  authentication: 'NoAuthentication';
+  headers: Record<string, string>;
+}> {
+  return {
+    url: cfg.serviceUrl,
+    authentication: 'NoAuthentication',
+    // Asked on every call: the client is already rebuilt per call because tools
+    // change, so this is where a bearer token stays fresh.
+    headers: { Authorization: `Bearer ${await cfg.credential.token()}` },
+  };
+}
+```
+
+Do **not** reach for `authTokens`: its TypeScript type is `{ type; value; expiresIn?; error: string | null }` with no `http_header` field, so the shape shown in blog posts does not compile. At the per-call client construction, pass `await buildDestination(...)` when a credential is configured, and leave today's `OAuth2ClientCredentials` destination untouched when one is not.
 
 - [ ] **Step 4: run, type-check, lint**
 
 ```bash
 node --test packages/sap-aicore-llm/src/__tests__/ 2>&1 | tail -4
 npx tsc --noEmit -p packages/sap-aicore-llm/tsconfig.json; echo "EXIT=$?"
+npx biome check packages/sap-aicore-llm/src
 ```
 
 - [ ] **Step 5: commit**
@@ -840,24 +864,107 @@ own config: an address is not a credential."
 
 ### Task B7: `sap-aicore-embedder` replaces its own token provider
 
-This package does not use the SDK's auth on the `foundation-models` path at all: it has its own `TokenProvider` doing `grant_type=client_credentials` over `fetch` and sets the header by hand. `IBearerCredential` replaces that directly. The orchestration path needs a destination threaded through, which the LLM provider already has and this one does not.
+On the `foundation-models` path this package does not use the SDK's auth at all: it runs its own `TokenProvider` doing `grant_type=client_credentials` over `fetch` and sets the header by hand. A bearer credential replaces that directly. The orchestration path needs a destination threaded through — the seam exists in the SDK and is simply not wired on our side.
 
 **Files:**
 - Modify: `packages/sap-aicore-embedder/src/foundation-embedder.ts` (credential fields ~`:8-11`, own `TokenProvider` ~`:48`, header ~`:98-101`)
 - Modify: `packages/sap-aicore-embedder/src/orchestration-embedder.ts` (~`:50`, the two-argument `new OrchestrationEmbeddingClient(config, deploymentConfig)`)
 - Test: `packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts`
 
-- [ ] **Step 1: write the failing test** — same shape as B6's, asserting the `Authorization` header on the outgoing `fetch` changes between two `embed` calls when the credential rotates, and that `apiBaseUrl` is still read from config.
+**Interfaces:**
+- Consumes: `IBearerCredential` (Task B1); the `credential` property name fixed by Task B2.
+- Produces: `credential?: IBearerCredential` on both embedder configs.
 
-- [ ] **Step 2: run it and watch it fail.**
+- [ ] **Step 1: write the failing test**
 
-- [ ] **Step 3: implement.** `credential?: IBearerCredential` beside the existing `clientId`/`clientSecret`/`tokenUrl`; when present, skip the internal `TokenProvider` entirely and ask `token()` per request. Thread a destination into `OrchestrationEmbeddingClient`'s third argument — the seam exists in the SDK and is simply not wired on our side.
+```ts
+// packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import { FoundationEmbedder } from '../foundation-embedder.js';
 
-- [ ] **Step 4: run the suite and type-check.**
+describe('FoundationEmbedder credential', () => {
+  it('sends the credential token per request and never calls the token endpoint', async () => {
+    const authorizations: Array<string | null> = [];
+    const urls: string[] = [];
+    let n = 0;
+    const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++n}` };
 
-- [ ] **Step 5: commit.**
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL, init: RequestInit = {}) => {
+      urls.push(String(url));
+      authorizations.push(new Headers(init.headers as HeadersInit).get('Authorization'));
+      return new Response(JSON.stringify({ data: [{ embedding: [0, 0] }] }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const embedder = new FoundationEmbedder({
+        apiBaseUrl: 'https://aicore/v2',
+        model: 'text-embedding-3-small',
+        credential,
+      });
+      await embedder.embed(['a']);
+      await embedder.embed(['b']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    assert.deepEqual(authorizations, ['Bearer t1', 'Bearer t2'], 'asked per request');
+    assert.ok(
+      urls.every((u) => !u.includes('/oauth/token')),
+      'the internal client_credentials call is skipped entirely when a credential is given',
+    );
+    assert.ok(urls.every((u) => u.startsWith('https://aicore/v2')), 'apiBaseUrl still comes from config');
+  });
+});
+```
+
+- [ ] **Step 2: run it and watch it fail**
 
 ```bash
+node --test packages/sap-aicore-embedder/src/__tests__/bearer-credential.test.ts
+```
+
+Expected: a type error on `credential`, or two identical `Authorization` values with a `/oauth/token` request among the urls — either way the internal provider is still in charge.
+
+- [ ] **Step 3: implement**
+
+```ts
+// packages/sap-aicore-embedder/src/foundation-embedder.ts
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+
+export interface FoundationEmbedderConfig {
+  // … existing fields unchanged: clientId?, clientSecret?, tokenUrl?, apiBaseUrl, model
+  /**
+   * When given, this replaces the internal TokenProvider outright — no
+   * client_credentials call is made — and is asked on every request.
+   */
+  credential?: IBearerCredential;
+}
+
+// where the header is built today (~:98-101):
+private async authorization(): Promise<string> {
+  if (this.credential) return `Bearer ${await this.credential.token()}`;
+  return `Bearer ${await this.tokenProvider.get()}`;   // today's path, untouched
+}
+```
+
+For `orchestration-embedder.ts`, pass a third argument to `new OrchestrationEmbeddingClient(config, deploymentConfig, destination)`, building `destination` with the same shape Task B6 introduced.
+
+- [ ] **Step 4: run the suite and type-check**
+
+```bash
+node --test packages/sap-aicore-embedder/src/__tests__/ 2>&1 | tail -4
+npx tsc --noEmit -p packages/sap-aicore-embedder/tsconfig.json; echo "EXIT=$?"
+```
+
+Every existing test must pass unedited: the internal `TokenProvider` path is untouched when no credential is configured.
+
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/sap-aicore-embedder/src packages/sap-aicore-embedder/package.json
 git commit -m "feat(sap-aicore-embedder): an IBearerCredential replaces the internal token provider
 
 It never used the SDK's auth here — it ran its own client_credentials fetch and
@@ -866,21 +973,140 @@ orchestration path gains the destination argument the SDK already accepts and we
 never passed."
 ```
 
-### Task B8: the http MCP implementation demands its own credential
+### Task B8: the typed MCP implementations demand their own credential — http first, stdio beside it
+
+Two implementations, the same shape: the credential is demanded by **that implementation's own constructor**, typed per target. This is what a bare `McpClientFactory` cannot express in its type — a closure can capture a credential, but its single parameter is a generic `McpConnectionConfig`, so nothing in the signature says which credential a target needs. **http first**: it is the main protocol, and `start()` holds a connection to something already running rather than spawning. stdio comes with it because §3.5 is part of this workstream and only stdio actually spawns.
 
 **Files:**
-- Modify: the http implementation under `packages/llm-agent-mcp/src/` (find it: `grep -rn "class .*Http.*Mcp\|IMcpServer" packages/llm-agent-mcp/src --include='*.ts'`)
-- Test: alongside it
+- Modify: the http and stdio implementations under `packages/llm-agent-mcp/src/`
+- Test: `packages/llm-agent-mcp/src/__tests__/credential.test.ts`
 
-- [ ] **Step 1: locate the implementation and read its constructor.**
+**Interfaces:**
+- Consumes: `IApiKeyCredential`, `IBearerCredential` (Task B1); `IMcpServer` from workstream 1, already merged.
+- Produces: a credential argument on each typed implementation's constructor. Nothing later depends on it.
 
-- [ ] **Step 2: write the failing test** — the constructor accepts a credential typed for what that server speaks, and the credential's value reaches the outgoing request's headers, asked per request.
+- [ ] **Step 1: find the implementations and read their constructors**
 
-- [ ] **Step 3: run it and watch it fail.**
+```bash
+cd ~/prj/llm-agent
+grep -rn "implements IMcpServer\|class .*McpServer\|mcpServerFromFactory" \
+  packages/llm-agent-mcp/src --include='*.ts' | grep -v '__tests__'
+grep -rn "stdio\|spawn\|StdioClientTransport" packages/llm-agent-mcp/src --include='*.ts' \
+  | grep -v '__tests__' | head -10
+```
 
-- [ ] **Step 4: implement.** The credential is demanded by **this implementation's own constructor**, typed per target — which is what a bare `McpClientFactory` cannot express, since its single parameter is a generic `McpConnectionConfig` and nothing in the signature says which credential a target needs. http first: it is the main protocol, and `start()` holds a connection rather than spawning.
+Record in the task report which files hold each, and whether `IMcpServer` is implemented directly or reached through `mcpServerFromFactory`.
 
-- [ ] **Step 5: run, type-check, commit.**
+- [ ] **Step 2: write the failing tests**
+
+```ts
+// packages/llm-agent-mcp/src/__tests__/credential.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+
+describe('typed MCP implementations', () => {
+  it('http: the credential reaches the outgoing headers, asked per request', async () => {
+    const seen: Array<string | null> = [];
+    let n = 0;
+    const credential: IBearerCredential = { kind: 'bearer', token: async () => `t${++n}` };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_u: string, init: RequestInit = {}) => {
+      seen.push(new Headers(init.headers as HeadersInit).get('Authorization'));
+      return new Response('{"jsonrpc":"2.0","id":1,"result":{}}', { status: 200 });
+    }) as typeof fetch;
+    try {
+      // Replace with the real class name found in Step 1.
+      const { HttpMcpServer } = await import('../http-mcp-server.js');
+      const server = new HttpMcpServer({ url: 'https://mcp.example', credential });
+      const client = await server.start();
+      await client.listTools?.().catch(() => {});
+      await client.listTools?.().catch(() => {});
+      await server.stop();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(seen.slice(0, 2), ['Bearer t1', 'Bearer t2']);
+  });
+
+  it('stdio: the credential is passed through env, not argv, so it is not in the process list', async () => {
+    const { StdioMcpServer } = await import('../stdio-mcp-server.js');
+    const credential: IBearerCredential = { kind: 'bearer', token: async () => 'tok' };
+    const server = new StdioMcpServer({
+      command: 'node',
+      args: ['-e', 'process.stdin.resume()'],
+      credential,
+      credentialEnvVar: 'MCP_TOKEN',
+    });
+    const spawned = await server.describeSpawnForTest();   // add this seam if absent
+    assert.equal(spawned.env.MCP_TOKEN, 'tok');
+    assert.ok(!spawned.args.join(' ').includes('tok'), 'a secret in argv is world-readable');
+    await server.stop();
+  });
+});
+```
+
+- [ ] **Step 3: run them and watch them fail**
+
+```bash
+node --test packages/llm-agent-mcp/src/__tests__/credential.test.ts
+```
+
+Expected: module or export not found, or a type error on `credential`. If the class names from Step 1 differ, fix the test's imports — do not weaken the assertions.
+
+- [ ] **Step 4: implement both**
+
+```ts
+// http — start() acquires a connection to something already running
+export class HttpMcpServer implements IMcpServer {
+  constructor(private readonly cfg: {
+    url: string;
+    credential?: IApiKeyCredential | IBearerCredential;
+  }) {}
+
+  private async authorization(): Promise<Record<string, string>> {
+    const c = this.cfg.credential;
+    if (!c) return {};
+    const value = c.kind === 'bearer' ? await c.token() : await c.secret();
+    return { Authorization: `Bearer ${value}` };   // per request, never cached
+  }
+}
+
+// stdio — the only implementation that spawns, so the only one with an env
+export class StdioMcpServer implements IMcpServer {
+  constructor(private readonly cfg: {
+    command: string;
+    args: readonly string[];
+    credential?: IBearerCredential;
+    /** Which variable the child reads it from. Never an argv entry. */
+    credentialEnvVar?: string;
+  }) {}
+
+  private async spawnEnv(): Promise<Record<string, string>> {
+    const { credential, credentialEnvVar } = this.cfg;
+    if (!credential || !credentialEnvVar) return { ...process.env } as Record<string, string>;
+    return { ...process.env, [credentialEnvVar]: await credential.token() } as Record<string, string>;
+  }
+}
+```
+
+The http implementation takes `credential` in its constructor, resolves it per request in whatever builds its headers, and keeps `start()`/`stop()` as acquiring and releasing a connection. The stdio implementation takes the credential plus the environment variable name to place it in, and passes it through the child's `env` — never through `args`, because argv is readable by any process on the machine. Both are typed per target: the credential's type is whatever that server speaks, which is the point §3.3 makes about `McpClientFactory` being unable to say so.
+
+- [ ] **Step 5: run, type-check, commit**
+
+```bash
+node --test packages/llm-agent-mcp/src/__tests__/ 2>&1 | tail -4
+npx tsc --noEmit -p packages/llm-agent-mcp/tsconfig.json; echo "EXIT=$?"
+git add packages/llm-agent-mcp/src packages/llm-agent-mcp/package.json
+git commit -m "feat(llm-agent-mcp): typed implementations demand their own credential
+
+http first — the main protocol, where start() holds a connection to something
+already running — and stdio beside it for the local case, which is the only one
+that spawns. The credential goes through the child's env and never through argv.
+A bare McpClientFactory cannot express this in its type: its one parameter is a
+generic McpConnectionConfig, so nothing in the signature says which credential a
+target needs."
+```
 
 ---
 
@@ -899,9 +1125,10 @@ A provider is handed the **store** name, not the logical one: `SimpleRagRegistry
   - `RagCollectionRecord { storeName; name; scope?; sessionId?; userId?; attributes? }`
   - `RagCallerIdentity { sessionId; userId? }` — declared here, in `llm-agent`; Task B14 requires it
   - `IRagProvider.describeCollections?(): Promise<Result<readonly RagCollectionRecord[], RagError>>`
-  - `IRagProvider.openCollection?(record: RagCollectionRecord): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>`
+  - `IRagProvider.openCollection?(record): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>`
   - `IRagProvider.createCollection(name, opts)` gains `collectionName?: string` and `attributes?: unknown`
   - `IRagRegistry.createCollection(params)` gains `attributes?: unknown`
+  - `RagCollectionAuthorization = 'public' | 'owner' | 'role'` and `RagCollectionMeta.authorization?` — the second of §6.1's two axes, which the meta does not carry today; Task B14 reads it to decide what a global permits
 
 - [ ] **Step 1: write the failing test**
 
@@ -909,13 +1136,18 @@ A provider is handed the **store** name, not the logical one: `SimpleRagRegistry
 // packages/llm-agent/src/__tests__/rag-collection-record.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { IRagProvider, RagCollectionRecord } from '../interfaces/rag.js';
+import type {
+  IRagProvider,
+  RagCallerIdentity,
+  RagCollectionMeta,
+  RagCollectionRecord,
+} from '../interfaces/rag.js';
 
 describe('RagCollectionRecord', () => {
   it('carries both identifiers, because the store name cannot yield the logical one', () => {
     const record: RagCollectionRecord = {
       storeName: 'my_notes_a1b2c3d4e5f6',
-      name: 'my notes',                   // spaces: sanitized away in the store name
+      name: 'my notes',
       scope: 'user',
       userId: 'u-1',
       attributes: { role: 'analyst' },
@@ -923,16 +1155,25 @@ describe('RagCollectionRecord', () => {
     assert.notEqual(record.storeName, record.name);
   });
 
-  it('lets a provider declare both new members as optional', async () => {
+  it('declares both new provider members as optional, so no existing provider breaks', async () => {
     const provider: Partial<IRagProvider> = {
       describeCollections: async () => ({ ok: true, value: [] }),
-      openCollection: async () => ({
-        ok: false,
-        error: new Error('no store') as never,
-      }),
     };
     const listed = await provider.describeCollections!();
     assert.equal(listed.ok, true);
+  });
+
+  it('declares a caller identity with a required session and an optional user', () => {
+    const identity: RagCallerIdentity = { sessionId: 's-1' };
+    assert.equal(identity.userId, undefined);
+  });
+
+  it('carries the second axis on the meta, so a global can say what it permits', () => {
+    const meta: RagCollectionMeta = {
+      name: 'open', displayName: 'open', editable: true,
+      scope: 'global', authorization: 'public',
+    };
+    assert.equal(meta.authorization, 'public');
   });
 });
 ```
@@ -943,11 +1184,12 @@ describe('RagCollectionRecord', () => {
 node --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
 ```
 
-Expected: `RagCollectionRecord` is not exported.
+Expected: `RagCollectionRecord` and `RagCallerIdentity` are not exported.
 
-- [ ] **Step 3: add the type and the members**
+- [ ] **Step 3: add the types and the members**
 
 ```ts
+// packages/llm-agent/src/interfaces/rag.ts
 export type RagCollectionRecord = {
   /** What the provider knows the store by — storeNameFor's output. */
   readonly storeName: string;
@@ -958,25 +1200,71 @@ export type RagCollectionRecord = {
   readonly userId?: string;
   readonly attributes?: unknown;
 };
+
+/**
+ * §6.1's second axis. `owner` is implied by scope and not configurable, so only
+ * a `global` collection carries `public` or `role`. It stores a policy VALUE and
+ * nothing more: whether this caller may act is read from it by the consumer,
+ * never decided here.
+ */
+export type RagCollectionAuthorization = 'public' | 'owner' | 'role';
+
+/**
+ * The caller a pipeline's instances were built for. Declared here rather than
+ * imported: `SessionGraphIdentity` is the same shape but lives in
+ * `llm-agent-libs`, and the dependency runs libs → llm-agent, one way. The
+ * shapes are structurally identical, so a consumer passes one straight in.
+ */
+export type RagCallerIdentity = {
+  readonly sessionId: string;
+  readonly userId?: string;
+};
 ```
 
-On `IRagProvider`, add `describeCollections?` and `openCollection?` as **new optional** members, and add `collectionName?` and `attributes?` to `createCollection`'s `opts`. Do **not** widen `listCollections?()`'s `Promise<Result<string[], RagError>>`: a provider is something consumers implement, so widening a return type breaks every implementation while an optional addition breaks none.
+On `IRagProvider`, add:
 
-- [ ] **Step 4: run the test and the type check.** Then confirm every existing provider still compiles without edits — all three implement `IRagProvider`, and an optional member must not oblige them:
+```ts
+  /** The catalog, read back. A provider without one does not declare this. */
+  describeCollections?(): Promise<Result<readonly RagCollectionRecord[], RagError>>;
+  /** Handles for a store that EXISTS: creates nothing, ensures nothing, writes no record. */
+  openCollection?(
+    record: RagCollectionRecord,
+  ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
+```
+
+and widen `createCollection`'s `opts` with `collectionName?: string` and `attributes?: unknown`. Add `readonly authorization?: RagCollectionAuthorization` to `RagCollectionMeta` and to `IRagRegistry.createCollection`'s params — optional, so nothing existing breaks, and `undefined` on a global means the consumer's check decides what an absent value means (§1.2). Do **not** change `listCollections?()`'s `Promise<Result<string[], RagError>>` — a provider is something consumers implement, so widening a return type breaks every implementation while an optional addition breaks none.
+
+- [ ] **Step 4: run the test, then prove no existing provider needed an edit**
 
 ```bash
-for p in qdrant-rag pg-vector-rag hana-vector-rag llm-agent-rag; do
+node --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
+for p in llm-agent qdrant-rag pg-vector-rag hana-vector-rag llm-agent-rag; do
   npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
+git diff --name-only packages/qdrant-rag packages/pg-vector-rag packages/hana-vector-rag
 ```
 
-All must be `0` **with no source edits**. A failure means a member was added non-optionally.
+All must be `0`, and the last command must print **nothing**. A source edit in a provider means a member was added non-optionally.
 
-- [ ] **Step 5: commit.**
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/llm-agent/src/interfaces/rag.ts \
+        packages/llm-agent/src/__tests__/rag-collection-record.test.ts
+git commit -m "feat(llm-agent): RagCollectionRecord, the catalog read, and openCollection
+
+The record carries both identifiers because a provider is handed the store name
+and cannot derive the logical one: storeNameFor sanitizes and truncates, so two
+logical names collapse onto one base and a long one loses its tail.
+
+describeCollections and openCollection are new optional members, not a widening
+of listCollections: a provider is implemented by consumers, so a wider return
+type breaks every implementation."
+```
 
 ### Task B10: the failure names itself
 
-`IRagProvider.deleteCollection?` returns an undifferentiated `Result<void, RagError>` (`:218`), and the tool turns any error into `{ ok: true, warning: '… was removed, but its data could not be deleted' }` (`rag-collection-tools.ts:220-225`) — so a catalog failure would be reported as data loss after a successful removal. A typed error carries the phase instead of a flag on the result, as the rest of `rag/corrections/errors.ts` already does.
+`IRagProvider.deleteCollection?` returns an undifferentiated `Result<void, RagError>` (`:218`), and the tool turns any error into `{ ok: true, warning: '… was removed, but its data could not be deleted' }` (`rag-collection-tools.ts:220-225`) — so a catalog failure would be reported as data loss after a successful removal. A typed error carries the phase, as the rest of `rag/corrections/errors.ts` already does and as interfaces decision 25 asks.
 
 **Files:**
 - Modify: `packages/llm-agent/src/rag/corrections/errors.ts` (beside `DeleteUnsupportedError` ~`:62`)
@@ -984,80 +1272,401 @@ All must be `0` **with no source edits**. A failure means a member was added non
 - Test: `packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts`
 
 **Interfaces:**
-- Produces: `CatalogRecordDeleteError extends RagError`. Tasks B11 and B12 raise it.
+- Produces: `CatalogRecordDeleteError extends RagError`. Tasks B11 and B12 raise it; Task B14's handler branches on it.
 
 - [ ] **Step 1: write the failing test**
 
 ```ts
+// packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { CatalogRecordDeleteError } from '../corrections/errors.js';
+import { CollectionNotFoundError } from '../corrections/errors.js';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
 
-describe('delete reporting', () => {
-  it('answers ok:false for a catalog-record failure, not a data warning', async () => {
-    const registry = {
-      list: () => [{ name: 'c', scope: 'user', userId: 'u-1', displayName: 'c', editable: true }],
-      deleteCollection: async () => ({ ok: false, error: new CatalogRecordDeleteError('c', 'kaput') }),
-    } as never;
-    const entries = buildRagCollectionToolEntries({ registry, identity: { sessionId: 's', userId: 'u-1' } });
-    const del = entries.find((e) => e.toolDefinition.name === 'rag_delete_collection')!;
-    const res = (await del.handler({}, { name: 'c' })) as { ok: boolean; warning?: string };
-    assert.equal(res.ok, false, 'a record failure is not a successful removal');
-    assert.equal(res.warning, undefined, 'and it is not a data warning');
+const meta = { name: 'c', scope: 'user', userId: 'u-1', displayName: 'c', editable: true };
+const identity = { sessionId: 's-1', userId: 'u-1' };
+
+const entriesWith = (error: Error | null) =>
+  buildRagCollectionToolEntries({
+    identity,
+    registry: {
+      list: () => [meta],
+      deleteCollection: async () =>
+        error ? { ok: false, error } : { ok: true, value: undefined },
+    } as never,
+  });
+
+const runDelete = async (error: Error | null) => {
+  const del = entriesWith(error).find((e) => e.toolDefinition.name === 'rag_delete_collection')!;
+  return (await del.handler({}, { name: 'c' })) as { ok: boolean; warning?: string; error?: string };
+};
+
+describe('rag_delete_collection reporting', () => {
+  it('answers ok:false for a catalog-record failure — it is not a successful removal', async () => {
+    const res = await runDelete(new CatalogRecordDeleteError('c', 'catalog write refused'));
+    assert.equal(res.ok, false);
+    assert.equal(res.warning, undefined, 'and it is not reported as data loss');
+  });
+
+  it('still warns, with ok:true, when the DATA could not be deleted', async () => {
+    const res = await runDelete(new Error('connection reset'));
+    assert.equal(res.ok, true);
+    assert.match(res.warning ?? '', /could not be deleted/);
+  });
+
+  it('still answers ok:false for a collection that is not there', async () => {
+    const res = await runDelete(new CollectionNotFoundError('c'));
+    assert.equal(res.ok, false);
   });
 });
 ```
 
-- [ ] **Step 2: run it and watch it fail** — `CatalogRecordDeleteError` does not exist, and the handler answers `{ ok: true, warning: … }`.
+- [ ] **Step 2: run it and watch it fail**
 
-- [ ] **Step 3: implement** the error class following the file's existing pattern, and branch on it in the handler before the generic warning.
+```bash
+node --test packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts
+```
 
-- [ ] **Step 4: run, type-check.**
+Expected: `CatalogRecordDeleteError` is not exported. The second and third cases should pass already — they pin today's behaviour, and must keep passing.
 
-- [ ] **Step 5: commit.**
+- [ ] **Step 3: implement the error and the branch**
+
+```ts
+// packages/llm-agent/src/rag/corrections/errors.ts — same shape as its neighbours
+export class CatalogRecordDeleteError extends RagError {
+  constructor(collection: string, reason: string) {
+    super(
+      `Catalog record for '${collection}' could not be deleted: ${reason}`,
+      'RAG_CATALOG_RECORD_DELETE_ERROR',
+    );
+  }
+}
+```
+
+```ts
+// rag-collection-tools.ts, in the delete handler, BEFORE the generic warning:
+if (res.error instanceof CatalogRecordDeleteError) {
+  // Nothing was lost: the record and the data both survive, so this is a failed
+  // delete to retry — not a removal with a data problem.
+  return { ok: false, error: res.error.message };
+}
+```
+
+- [ ] **Step 4: run the test, the suite and the type check**
+
+```bash
+node --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -5
+npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
+```
+
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/llm-agent/src/rag/corrections/errors.ts \
+        packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts \
+        packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts
+git commit -m "feat(llm-agent): CatalogRecordDeleteError, so the two delete phases differ
+
+One Result cannot say which phase failed, and the tool turned every error into
+'removed, but its data could not be deleted' — reporting a record failure as data
+loss after a successful removal. The failure names itself instead (decision 25),
+and a record failure answers ok:false because nothing was lost."
+```
 
 ### Task B11: pg and hana gain a catalog, and delete the record before the data
 
-Same change twice, so one task. **These packages own the backend catalog, so resurrection is stopped here or nowhere** — the core wiring can be complete and still leak without this.
+The same change twice, so one task and one diff. **These packages own the backend catalog, so resurrection is stopped here or nowhere** — the core wiring can be complete and still leak without this. Both packages take an injectable `clientFactory?: () => PgClient | HanaClient`, so none of this needs a live database.
 
 **Files:**
 - Modify: `packages/pg-vector-rag/src/{schema,pg-vector-rag-provider}.ts`
 - Modify: `packages/hana-vector-rag/src/{schema,hana-vector-rag-provider}.ts`
-- Test: `packages/pg-vector-rag/src/__tests__/catalog.test.ts` (+ hana twin)
+- Test: `packages/pg-vector-rag/src/__tests__/catalog.test.ts` and its hana twin
 
 **Interfaces:**
-- Consumes: `RagCollectionRecord`, `CatalogRecordDeleteError`.
-- Produces: `describeCollections()` and `openCollection()` implemented for both; `deleteCollection` doing record-then-data.
+- Consumes: `RagCollectionRecord` (B9), `CatalogRecordDeleteError` (B10).
+- Produces: `describeCollections()`, `openCollection()` and a record-first `deleteCollection()` on both providers.
 
-- [ ] **Step 1: write the failing tests**, three behaviours, using each package's injectable `clientFactory` so no live database is needed:
+- [ ] **Step 1: write the failing tests**
 
+```ts
+// packages/pg-vector-rag/src/__tests__/catalog.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
+import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
+
+const embedder = { embed: async (t: string[]) => t.map(() => [0]) } as never;
+
+/** Records every statement, and can be told to fail one of them. */
+function fakeClient(failOn?: RegExp) {
+  const statements: string[] = [];
+  return {
+    statements,
+    client: {
+      query: async (sql: string, _params?: unknown[]) => {
+        statements.push(sql);
+        if (failOn?.test(sql)) throw new Error('refused');
+        if (/FROM\s+\w*catalog/i.test(sql)) {
+          return {
+            rows: [
+              {
+                store_name: 'my_notes_a1b2c3d4e5f6',
+                collection_name: 'my notes',
+                scope: 'user',
+                user_id: 'u-1',
+                attributes: { role: 'analyst' },
+              },
+            ],
+          };
+        }
+        return { rows: [] };
+      },
+    },
+  };
+}
+
+const providerWith = (c: ReturnType<typeof fakeClient>) =>
+  new PgVectorRagProvider({
+    name: 'pg',
+    embedder,
+    connection: { host: 'h', collectionName: '__unused' },
+    clientFactory: () => c.client as never,
+  });
+
+describe('pg catalog', () => {
+  it('writes the logical name and the attributes, and reads them back', async () => {
+    const c = fakeClient();
+    const provider = providerWith(c);
+    await provider.createCollection('my_notes_a1b2c3d4e5f6', {
+      scope: 'user',
+      userId: 'u-1',
+      collectionName: 'my notes',
+      attributes: { role: 'analyst' },
+    });
+    const listed = await provider.describeCollections!();
+    assert.equal(listed.ok, true);
+    const [record] = listed.ok ? listed.value : [];
+    assert.equal(record.name, 'my notes', 'the logical name survived');
+    assert.equal(record.storeName, 'my_notes_a1b2c3d4e5f6');
+    assert.deepEqual(record.attributes, { role: 'analyst' });
+  });
+
+  it('opens an existing store without creating or ensuring anything', async () => {
+    const c = fakeClient();
+    const provider = providerWith(c);
+    const opened = await provider.openCollection!({
+      storeName: 'my_notes_a1b2c3d4e5f6',
+      name: 'my notes',
+      scope: 'user',
+      userId: 'u-1',
+    });
+    assert.equal(opened.ok, true);
+    assert.ok(
+      !c.statements.some((s) => /CREATE|INSERT/i.test(s)),
+      'openCollection creates nothing, ensures nothing, writes no record',
+    );
+  });
+
+  it('deletes the record BEFORE the data', async () => {
+    const c = fakeClient();
+    await providerWith(c).deleteCollection!('my_notes_a1b2c3d4e5f6');
+    const recordAt = c.statements.findIndex((s) => /DELETE\s+FROM\s+\w*catalog/i.test(s));
+    const dataAt = c.statements.findIndex((s) => /DROP\s+TABLE/i.test(s));
+    assert.ok(recordAt >= 0 && dataAt >= 0, 'both statements were issued');
+    assert.ok(recordAt < dataAt, 'record first: an orphaned store is inert, a stale record resurrects');
+  });
+
+  it('leaves the data alone when the record cannot be deleted', async () => {
+    const c = fakeClient(/DELETE\s+FROM\s+\w*catalog/i);
+    const res = await providerWith(c).deleteCollection!('my_notes_a1b2c3d4e5f6');
+    assert.equal(res.ok, false);
+    assert.ok(
+      res.ok === false && res.error instanceof CatalogRecordDeleteError,
+      'the failure names its phase',
+    );
+    assert.ok(
+      !c.statements.some((s) => /DROP\s+TABLE/i.test(s)),
+      'the data statement was never issued',
+    );
+  });
+});
 ```
-1. createCollection writes a catalog row carrying the LOGICAL name and the attributes;
-   describeCollections reads back a record whose `name` differs from its `storeName`.
-2. deleteCollection removes the catalog row BEFORE touching the data — assert on the
-   recorded statement order from the fake client.
-3. when the catalog delete fails, the data statement is NEVER issued and the result is
-   a CatalogRecordDeleteError.
+
+Write the hana twin against `HanaVectorRagProvider`, whose fake client exposes `exec(sql, params)` rather than `query`.
+
+- [ ] **Step 2: run both and watch them fail**
+
+```bash
+node --test packages/pg-vector-rag/src/__tests__/catalog.test.ts \
+            packages/hana-vector-rag/src/__tests__/catalog.test.ts
 ```
 
-- [ ] **Step 2: run them and watch them fail.**
+Expected: `describeCollections` / `openCollection` are not functions on the provider.
 
-- [ ] **Step 3: implement.** A catalog table of the provider's own, **created if absent by whatever means the backend supports** — which statement that is belongs to the implementation, not to the design, and note §9.10: these packages already send one `IF NOT EXISTS` string to every server version with no negotiation, so do not deepen that assumption. `openCollection` is the existing `createCollection` body **minus** the `ensureSchema` call and minus the catalog write. `deleteCollection` deletes the record first and returns `CatalogRecordDeleteError` with the data untouched if that fails.
+- [ ] **Step 3: implement both**
 
-- [ ] **Step 4: run both suites, type-check both.**
+A catalog of the provider's own, **created if absent by whatever means the backend supports** — which statement that is belongs to the implementation and not to the design. Note §9.10 while you are here: these packages already send one `IF NOT EXISTS` string to every server version with no negotiation, so do not deepen that assumption; if the backend cannot be relied on for it, catch and check rather than widening the bet.
 
-- [ ] **Step 5: commit.**
+`openCollection(record)` is the existing `createCollection` body **minus** the `ensureSchema` call and minus the catalog write. `deleteCollection` deletes the record first and returns `CatalogRecordDeleteError` with the data untouched when that fails:
 
-### Task B12: qdrant gains a catalog — verify the mechanism before building on it
+```ts
+async deleteCollection(storeName: string): Promise<Result<void, RagError>> {
+  const client = this.requireClient();
+  try {
+    await client.query(deleteCatalogRowSql(), [storeName]);
+  } catch (err) {
+    // Stop here. Record and data both survive, so this is a retryable failed
+    // delete — not a record pointing at data that is gone.
+    return { ok: false, error: new CatalogRecordDeleteError(storeName, String(err)) };
+  }
+  try {
+    await client.query(dropTableSql(storeName));
+    return { ok: true, value: undefined };
+  } catch (err) {
+    return { ok: false, error: new RagError(String(err), 'RAG_DELETE_ERROR') };
+  }
+}
+```
 
-The design records the Qdrant catalog as **unverified**: it exposes no collection-level metadata we have checked. So this task begins by finding out, and its answer may change the shape.
+- [ ] **Step 4: run both suites and type-check both**
 
-- [ ] **Step 1: establish what Qdrant offers.** Read the client/API version in use and determine whether collection-level metadata exists. Record the finding in the task report either way.
-- [ ] **Step 2: if there is none**, implement the catalog as a dedicated catalog *collection* holding one point per collection, as §6.3 anticipates. If there is metadata, use it and say so — the simpler mechanism wins.
-- [ ] **Step 3: write the three failing tests** from Task B11, adapted.
-- [ ] **Step 4: implement, including record-before-data delete and `CatalogRecordDeleteError`.**
-- [ ] **Step 5: run, type-check, commit.**
+```bash
+node --test packages/pg-vector-rag/src/__tests__/ 2>&1 | tail -4
+node --test packages/hana-vector-rag/src/__tests__/ 2>&1 | tail -4
+npx tsc --noEmit -p packages/pg-vector-rag/tsconfig.json; echo "PG=$?"
+npx tsc --noEmit -p packages/hana-vector-rag/tsconfig.json; echo "HANA=$?"
+```
+
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/pg-vector-rag/src packages/hana-vector-rag/src
+git commit -m "feat(pg-vector-rag,hana-vector-rag): a catalog, and a delete that reaches it
+
+These packages own the backend catalog, so resurrection is stopped here or
+nowhere. The record goes before the data: both orders leave something behind on
+failure, and an orphaned store is inert while a stale record comes back as if
+valid. A failed record delete raises CatalogRecordDeleteError and never touches
+the data."
+```
+
+### Task B12: qdrant gains a catalog — establish the mechanism before building on it
+
+The design records the Qdrant catalog as **unverified**: it exposes no collection-level metadata we have checked. So this task starts by finding out, and the answer may change its shape. Do not skip Step 1 and assume the fallback.
+
+**Files:**
+- Modify: `packages/qdrant-rag/src/{qdrant-rag-provider,qdrant-rag}.ts`
+- Test: `packages/qdrant-rag/src/__tests__/catalog.test.ts`
+
+- [ ] **Step 1: establish what Qdrant actually offers**
+
+```bash
+cd ~/prj/llm-agent
+node -e 'const p=require("./packages/qdrant-rag/package.json");console.log("deps:",p.dependencies)'
+grep -rn "collections/\|/points\|payload" packages/qdrant-rag/src --include='*.ts' \
+  | grep -v '__tests__' | head -20
+```
+
+Then read the Qdrant HTTP API for the version in use and answer one question in the task report: **does a collection carry writable collection-level metadata?** Record the answer either way — "unverified" becomes a fact here, in one direction or the other.
+
+- [ ] **Step 2: pick the mechanism from that answer**
+
+- Metadata exists → store the record there; the simpler mechanism wins.
+- It does not → a dedicated catalog *collection* holding one point per collection, as §6.3 anticipates, with the record in the point's payload and the store name as its id.
+
+- [ ] **Step 3: write the failing tests**
+
+The same four behaviours as Task B11, against a `fetch` fake rather than a SQL client:
+
+```ts
+// packages/qdrant-rag/src/__tests__/catalog.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
+import { QdrantRagProvider } from '../qdrant-rag-provider.js';
+
+type Call = { method: string; url: string };
+
+function fakeFetch(failOn?: (c: Call) => boolean) {
+  const calls: Call[] = [];
+  const fn = (async (url: string | URL, init: RequestInit = {}) => {
+    const call = { method: init.method ?? 'GET', url: String(url) };
+    calls.push(call);
+    if (failOn?.(call)) return new Response('nope', { status: 500 });
+    if (call.url.includes('/catalog/points/scroll')) {
+      return new Response(
+        JSON.stringify({
+          result: {
+            points: [
+              {
+                id: 'my_notes_a1b2c3d4e5f6',
+                payload: {
+                  store_name: 'my_notes_a1b2c3d4e5f6',
+                  collection_name: 'my notes',
+                  scope: 'user',
+                  user_id: 'u-1',
+                  attributes: { role: 'analyst' },
+                },
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response('{"result":{}}', { status: 200 });
+  }) as typeof fetch;
+  return { calls, fn };
+}
+
+describe('qdrant catalog', () => {
+  it('deletes the record before the collection, and stops if the record fails', async () => {
+    const original = globalThis.fetch;
+    const f = fakeFetch((c) => c.url.includes('/catalog/') && c.method === 'POST');
+    globalThis.fetch = f.fn;
+    try {
+      const provider = new QdrantRagProvider({
+        name: 'q',
+        url: 'http://q',
+        embedder: { embed: async (t: string[]) => t.map(() => [0]) } as never,
+      });
+      const res = await provider.deleteCollection!('my_notes_a1b2c3d4e5f6');
+      assert.equal(res.ok, false);
+      assert.ok(res.ok === false && res.error instanceof CatalogRecordDeleteError);
+      assert.ok(
+        !f.calls.some((c) => c.method === 'DELETE' && c.url.endsWith('/my_notes_a1b2c3d4e5f6')),
+        'the collection delete was never issued',
+      );
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+```
+
+Add the three siblings from B11 — write-then-read-back, `openCollection` issuing no create, and record-before-data ordering on the success path.
+
+- [ ] **Step 4: run them, watch them fail, then implement**
+
+```bash
+node --test packages/qdrant-rag/src/__tests__/catalog.test.ts
+```
+
+Implement per Step 2's answer, including record-before-data delete and `CatalogRecordDeleteError`.
+
+- [ ] **Step 5: run, type-check, commit**
+
+```bash
+node --test packages/qdrant-rag/src/__tests__/ 2>&1 | tail -4
+npx tsc --noEmit -p packages/qdrant-rag/tsconfig.json; echo "EXIT=$?"
+git add packages/qdrant-rag/src
+git commit -m "feat(qdrant-rag): a catalog, and a delete that reaches it
+
+The mechanism was unverified in the design and is established in the task report
+rather than assumed. Record before data, and a failed record delete raises
+CatalogRecordDeleteError without touching the collection."
+```
 
 ### Task B13: the registry adopts an existing store
 
@@ -1068,67 +1677,332 @@ The design records the Qdrant catalog as **unverified**: it exposes no collectio
 - Modify: `packages/llm-agent/src/rag/registry/simple-rag-registry.ts`
 - Test: `packages/llm-agent/src/rag/__tests__/adopt.test.ts`
 
-- [ ] **Step 1: write the failing test**
+**Interfaces:**
+- Consumes: `RagCollectionRecord` (B9).
+- Produces: `IRagRegistry.adopt?(record, rag, editor?): void`, honouring a store name that differs from the logical name. Task B15's factory calls it.
+
+- [ ] **Step 1: write the failing tests**
 
 ```ts
-it('registers under the logical name while keeping the provider store name', async () => {
-  const registry = new SimpleRagRegistry();
-  registry.adopt!(
-    { storeName: 'my_notes_a1b2c3d4e5f6', name: 'my notes', scope: 'user', userId: 'u-1',
-      attributes: { role: 'analyst' } },
-    fakeRag, fakeEditor,
-  );
-  assert.equal(registry.get('my notes'), fakeRag, 'addressable by its logical name');
-  assert.equal(registry.list()[0].name, 'my notes');
-  // and the store name is what a later delete must pass to the provider
+// packages/llm-agent/src/rag/__tests__/adopt.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
+
+const rag = { query: async () => ({ ok: true, value: [] }) } as never;
+const editor = { upsert: async () => ({ ok: true, value: { id: '1' } }) } as never;
+const record = {
+  storeName: 'my_notes_a1b2c3d4e5f6',
+  name: 'my notes',
+  scope: 'user' as const,
+  userId: 'u-1',
+  attributes: { role: 'analyst' },
+};
+
+describe('SimpleRagRegistry.adopt', () => {
+  it('registers under the LOGICAL name while keeping the provider store name', () => {
+    const registry = new SimpleRagRegistry();
+    registry.adopt!(record, rag, editor);
+    assert.equal(registry.get('my notes'), rag, 'addressable by its logical name');
+    assert.equal(registry.get('my_notes_a1b2c3d4e5f6'), undefined, 'not by its store name');
+    assert.equal(registry.list()[0].name, 'my notes');
+    assert.equal(registry.list()[0].userId, 'u-1');
+  });
+
+  it('creates nothing: no provider is asked for anything', async () => {
+    const asked: string[] = [];
+    const registry = new SimpleRagRegistry();
+    registry.setProviderRegistry({
+      getProvider: () => {
+        asked.push('getProvider');
+        return undefined;
+      },
+    } as never);
+    registry.adopt!(record, rag, editor);
+    assert.deepEqual(asked, [], 'adopt touches no provider — the store already exists');
+  });
+
+  it('deletes through the STORE name, not the logical one', async () => {
+    const deleted: string[] = [];
+    const registry = new SimpleRagRegistry();
+    registry.setProviderRegistry({
+      getProvider: () => ({
+        deleteCollection: async (n: string) => {
+          deleted.push(n);
+          return { ok: true, value: undefined };
+        },
+      }),
+    } as never);
+    registry.adopt!({ ...record, providerName: 'pg' } as never, rag, editor);
+    await registry.deleteCollection('my notes');
+    assert.deepEqual(deleted, ['my_notes_a1b2c3d4e5f6'], 'the provider gets the store name');
+  });
 });
 ```
 
-Add a second test proving `adopt` creates nothing: the provider fake must record **zero** calls.
+The third test is the one that proves the two names stayed apart all the way through; without it `adopt` could store the logical name as the store name and nothing would notice until a delete silently missed.
 
-- [ ] **Step 2: run and watch it fail.**
-- [ ] **Step 3: implement** `adopt?` as an optional member on `IRagRegistry` (optional so an external implementation is not broken by gaining a member) and implement it on `SimpleRagRegistry`, storing `record.storeName` in the entry and `record.name` as the key.
-- [ ] **Step 4: run, and confirm every existing registry test still passes unedited.**
-- [ ] **Step 5: commit.**
+- [ ] **Step 2: run them and watch them fail**
+
+```bash
+node --test packages/llm-agent/src/rag/__tests__/adopt.test.ts
+```
+
+Expected: `registry.adopt is not a function`.
+
+- [ ] **Step 3: implement**
+
+```ts
+// interfaces/rag.ts, on IRagRegistry — optional, so an external implementation
+// of this interface is not broken by gaining a member
+  adopt?(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void;
+```
+
+```ts
+// simple-rag-registry.ts
+adopt(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void {
+  if (this.entries.has(record.name)) {
+    throw new Error(`Collection '${record.name}' is already registered`);
+  }
+  const editable = Boolean(editor) && !(editor instanceof ImmutableEditStrategy);
+  this.entries.set(record.name, {
+    rag,
+    editor,
+    storeName: record.storeName,      // NOT record.name — this is the whole point
+    meta: {
+      name: record.name,
+      displayName: record.name,
+      editable,
+      scope: record.scope,
+      sessionId: record.sessionId,
+      userId: record.userId,
+    },
+  });
+  this.fireMutation();
+}
+```
+
+- [ ] **Step 4: run the test, then confirm every existing registry test passes unedited**
+
+```bash
+node --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -6
+npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
+git diff --stat packages/llm-agent/src/rag/__tests__/   # only the new file
+```
+
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/llm-agent/src/interfaces/rag.ts \
+        packages/llm-agent/src/rag/registry/simple-rag-registry.ts \
+        packages/llm-agent/src/rag/__tests__/adopt.test.ts
+git commit -m "feat(llm-agent): IRagRegistry.adopt registers an existing store
+
+register() cannot: it sets storeName: name, which is true for a collection
+registered directly and false for every hydrated one. adopt takes the record
+whole, so the logical name and the store name stay apart — and a delete still
+reaches the provider under the store name."
+```
 
 ### Task B14: the tool entries are built for one caller
 
-The security change. Five of the seven handlers take the `RagToolContext` they are given and ignore it; one trusts it. After this task, identity comes from construction only.
+The security change, and the largest behavioural one. Five of the seven handlers take the `RagToolContext` they are given and ignore it; a sixth trusts it. After this task identity comes from construction only.
 
 **Files:**
 - Modify: `packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts`
 - Test: `packages/llm-agent/src/rag/__tests__/tool-identity.test.ts`
 
 **Interfaces:**
-- Produces: `buildRagCollectionToolEntries({ registry, identity, providerRegistry? })` with `identity` **required**; `RagToolContext` without `sessionId`/`userId`.
+- Consumes: `RagCallerIdentity` (B9).
+- Produces: `buildRagCollectionToolEntries({ registry, identity, providerRegistry? })` with `identity` **required**, and `RagToolContext` without `sessionId`/`userId`.
 
 - [ ] **Step 1: write the failing tests — one per rule**
 
+```ts
+// packages/llm-agent/src/rag/__tests__/tool-identity.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
+
+const identity = { sessionId: 's-1', userId: 'u-1' };
+
+const metas = [
+  { name: 'mine', scope: 'user', userId: 'u-1', displayName: 'mine', editable: true },
+  { name: 'theirs', scope: 'user', userId: 'u-2', displayName: 'theirs', editable: true },
+  { name: 'open', scope: 'global', authorization: 'public', displayName: 'open', editable: true },
+  { name: 'gated', scope: 'global', authorization: 'role', displayName: 'gated', editable: true },
+];
+
+function entries(created: unknown[] = []) {
+  const registry = {
+    list: () => metas,
+    get: () => ({}) as never,
+    getEditor: () => ({ upsert: async () => ({ ok: true, value: { id: '1' } }) }) as never,
+    createCollection: async (p: unknown) => {
+      created.push(p);
+      return { ok: true, value: { name: 'new', displayName: 'new', editable: true } };
+    },
+    deleteCollection: async () => ({ ok: true, value: undefined }),
+  } as never;
+  return buildRagCollectionToolEntries({
+    registry,
+    identity,
+    providerRegistry: { getProvider: () => ({}) } as never,
+  });
+}
+
+const tool = (name: string) =>
+  entries().find((e) => e.toolDefinition.name === name)!;
+
+describe('identity comes from construction', () => {
+  it('requires identity — omitting it does not compile', () => {
+    // @ts-expect-error identity is required: an unnarrowed address space must be unwritable
+    buildRagCollectionToolEntries({ registry: {} as never });
+  });
+
+  it('rag_create_collection uses the BOUND identity, not a per-call one', async () => {
+    const created: unknown[] = [];
+    const create = entries(created).find((e) => e.toolDefinition.name === 'rag_create_collection')!;
+    await create.handler({ userId: 'someone-else' }, { provider: 'pg', name: 'n', scope: 'user' });
+    assert.equal((created[0] as { userId?: string }).userId, 'u-1', 'the bound identity wins');
+  });
+
+  it('lists only the caller’s collections and the globals', async () => {
+    const res = (await tool('rag_list_collections').handler({}, {})) as {
+      collections: Array<{ name: string }>;
+    };
+    assert.deepEqual(
+      res.collections.map((c) => c.name).sort(),
+      ['gated', 'mine', 'open'],
+      'another caller’s collection is absent, not denied',
+    );
+  });
+
+  it('describes another caller’s collection as not found', async () => {
+    const res = (await tool('rag_describe_collection').handler({}, { name: 'theirs' })) as {
+      ok: boolean;
+      error?: string;
+    };
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? '', /not found/, 'absent, not refused');
+  });
+
+  for (const name of ['rag_add', 'rag_correct', 'rag_deprecate']) {
+    it(`${name} refuses to mutate a public global`, async () => {
+      const res = (await tool(name).handler(
+        {},
+        { collection: 'open', text: 't', canonicalKey: 'k', newText: 't',
+          predecessorId: '1', predecessorCanonicalKey: 'k', id: '1', reason: 'r' },
+      )) as { ok: boolean };
+      assert.equal(res.ok, false, 'public licenses reading, never writing');
+    });
+  }
+
+  it('reads a public global but refuses a role-gated one', async () => {
+    const ok = (await tool('rag_describe_collection').handler({}, { name: 'open' })) as { ok: boolean };
+    assert.equal(ok.ok, true);
+    const gated = (await tool('rag_describe_collection').handler({}, { name: 'gated' })) as {
+      ok: boolean;
+    };
+    assert.equal(gated.ok, false, 'who holds a role is policy, and policy is not ours');
+  });
+});
 ```
-1. `identity` is required: omitting it is a compile error (a `// @ts-expect-error` line).
-2. rag_create_collection takes its owner keys from the bound identity, NOT from a
-   per-call context that disagrees: pass { userId: 'someone-else' } as ctx and assert the
-   created collection's userId is the bound one.
-3. mutations of a global are refused, whatever its authorization: rag_add, rag_correct and
-   rag_deprecate each answer ok:false for a `global` collection, `public` included.
-4. reads of a `public` global are allowed; reads of a `role` global are refused.
-5. rag_list_collections returns only the caller's collections and the globals.
-6. rag_describe_collection answers "not found" for another caller's collection — absent,
-   not denied.
-```
 
-- [ ] **Step 2: run them and watch them fail** — several will pass trivially today for the wrong reason, so check each failure message says what it should.
-
-- [ ] **Step 3: implement.** Declare `RagCallerIdentity { readonly sessionId: string; readonly userId?: string }` in `llm-agent` beside the tools and add it as a **required** option. Do not import `SessionGraphIdentity`: it lives in `llm-agent-libs` and the dependency runs `llm-agent-libs` → `llm-agent`, one way (verified: `llm-agent`’s own dependencies name no sibling). The shapes are identical, so a consumer passes a `SessionGraphIdentity` straight in. Remove the declared `sessionId?`/`userId?` from `RagToolContext`, keeping its `[key: string]: unknown` index signature — measured on the repository's tsc 6.0.3: a call site passing those keys still compiles, while a reader gets `TS2322: Type 'unknown' is not assignable to type 'string | undefined'`. Have all seven handlers resolve their address space from `identity`. Refuse every mutation of a `global`, and refuse reads of a `role` global.
-
-- [ ] **Step 4: run the suite, type-check, and confirm the removal's shape**
+- [ ] **Step 2: run them and watch each fail for its own reason**
 
 ```bash
-node --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -6
+node --test packages/llm-agent/src/rag/__tests__/tool-identity.test.ts 2>&1 | tail -30
+```
+
+Read every failure message. Some cases would pass today for the wrong reason — the list test, for instance, would pass if `metas` happened to hold only the caller's. The fixture above is built so none of them can.
+
+- [ ] **Step 3: implement**
+
+Declare the identity locally and require it. Do **not** import `SessionGraphIdentity`: it lives in `llm-agent-libs` and the dependency runs `llm-agent-libs` → `llm-agent`, one way — verified from `llm-agent`'s own `package.json`, which names no sibling. The shapes are identical, so a consumer passes a `SessionGraphIdentity` straight in.
+
+```ts
+import type { RagCallerIdentity } from '../../interfaces/rag.js';
+
+export interface RagToolContext {
+  // sessionId and userId are GONE: identity comes from construction, and a
+  // per-call value that disagreed would act as somebody else. The index
+  // signature stays, so call sites passing them keep compiling (measured on
+  // tsc 6.0.3) and no handler can read them as identity.
+  [key: string]: unknown;
+}
+
+export function buildRagCollectionToolEntries(opts: {
+  registry: IRagRegistry;
+  identity: RagCallerIdentity;          // required
+  providerRegistry?: IRagProviderRegistry;
+}): RagToolEntry[] {
+  const { registry, identity } = opts;
+
+  /** Everything this caller may address: its own, plus the globals. */
+  const addressable = () =>
+    registry.list().filter((m) => {
+      if (m.scope === 'session') return m.sessionId === identity.sessionId;
+      if (m.scope === 'user') return m.userId === identity.userId;
+      return true;                       // global: addressable by everyone
+    });
+
+  const resolveReadable = (name: unknown) => {
+    if (typeof name !== 'string') return { ok: false as const, error: 'collection is required' };
+    const meta = addressable().find((m) => m.name === name);
+    if (!meta) return { ok: false as const, error: `Collection '${name}' not found` };
+    // Reading a role-gated global needs a policy, and policy is not ours (§5).
+    if (meta.scope === 'global' && meta.authorization === 'role') {
+      return { ok: false as const, error: `Collection '${name}' is role-restricted` };
+    }
+    return { ok: true as const, meta };
+  };
+
+  const resolveEditor = (name: unknown) => {
+    const readable = resolveReadable(name);
+    if (!readable.ok) return readable;
+    // `public` says who may REACH a global, never who may change one.
+    if (readable.meta.scope === 'global') {
+      return { ok: false as const, error: `Global collections cannot be modified via MCP` };
+    }
+    const editor = registry.getEditor(readable.meta.name);
+    if (!editor) {
+      return { ok: false as const, error: `Collection '${readable.meta.name}' is read-only or unknown` };
+    }
+    return { ok: true as const, editor };
+  };
+```
+
+Then: all seven handlers take `_ctx` and use `identity`; `rag_create_collection` passes `identity.sessionId`/`identity.userId`; `rag_list_collections` filters `addressable()`; `rag_describe_collection` and the three editors go through the resolvers above; `rag_delete_collection` keeps refusing globals and may now drop its own owner-key comparison, because an unaddressable collection never reaches it.
+
+- [ ] **Step 4: run the suite and the type check, and confirm the removal's shape**
+
+```bash
+node --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -8
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 ```
 
-- [ ] **Step 5: commit.**
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts \
+        packages/llm-agent/src/rag/__tests__/tool-identity.test.ts
+git commit -m "feat(llm-agent)!: the collection tools are built for one caller
+
+identity is required, and that is the point: an optional one would mean 'do not
+narrow', which is an unnarrowed address space reached by forgetting a field. Five
+handlers ignored the context they were handed and a sixth trusted it; all seven
+now resolve from the bound identity, and another caller's collection is absent
+rather than refused.
+
+No framework tool mutates a global, whatever its authorization: public says who
+may reach one, never who may change it. A role-gated global is not even readable
+here, because who holds a role is policy.
+
+BREAKING: buildRagCollectionToolEntries requires identity; RagToolContext no
+longer declares sessionId/userId. Call sites passing them still compile — the
+index signature absorbs them — but a reader of one must change."
+```
 
 ### Task B15: a session can own its registry, and hydrate it
 
@@ -1139,87 +2013,297 @@ npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
 - Test: `packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts`
 
 **Interfaces:**
-- Produces: `ragRegistryFactory?: (identity: SessionGraphIdentity) => Promise<IRagRegistry>`.
+- Consumes: `IRagRegistry.adopt?` (B13), `describeCollections`/`openCollection` (B9/B11/B12) — the factory is where a consumer strings them together.
+- Produces: `SessionGraphFactoryOptions.ragRegistryFactory?: (identity: SessionGraphIdentity) => Promise<IRagRegistry>`.
 
-- [ ] **Step 1: write the failing tests**
+- [ ] **Step 1: write the failing tests, starting with the one that protects everyone**
 
+```ts
+// packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { SessionGraphFactory } from '../session/session-graph-factory.js';
+
+const sharedRegistry = () => {
+  const closed: string[] = [];
+  return {
+    closed,
+    registry: {
+      list: () => [],
+      closeSession: async (id: string) => {
+        closed.push(id);
+        return { ok: true as const, value: undefined };
+      },
+    } as never,
+  };
+};
+
+const baseOpts = (extra: Record<string, unknown>) => ({
+  toolsRag: undefined,
+  buildAgent: async (parts: { ragRegistry: unknown }) => {
+    handedToBuild.push(parts.ragRegistry);
+    return undefined as never;
+  },
+  mcpClientFactory: () => ({ clients: [] }),
+  ...extra,
+});
+
+let handedToBuild: unknown[] = [];
+
+describe('ragRegistryFactory', () => {
+  it('without it, behaviour is exactly today’s: the shared registry is used and closed', async () => {
+    handedToBuild = [];
+    const shared = sharedRegistry();
+    const factory = new SessionGraphFactory(baseOpts({ ragRegistry: shared.registry }) as never);
+    const graph = await factory.build({ sessionId: 's-1', userId: 'u-1' });
+    assert.equal(handedToBuild[0], shared.registry, 'the shared one reached buildAgent');
+    await graph.dispose();
+    assert.deepEqual(shared.closed, ['s-1'], 'and closeSession was called on it');
+  });
+
+  it('with it, the factory receives the FULL identity and its registry is used', async () => {
+    handedToBuild = [];
+    const seen: Array<{ sessionId: string; userId?: string }> = [];
+    const shared = sharedRegistry();
+    const own = sharedRegistry();
+    const factory = new SessionGraphFactory(
+      baseOpts({
+        ragRegistry: shared.registry,
+        ragRegistryFactory: async (identity: { sessionId: string; userId?: string }) => {
+          seen.push(identity);
+          return own.registry;
+        },
+      }) as never,
+    );
+    const graph = await factory.build({ sessionId: 's-2', userId: 'u-2' });
+    assert.deepEqual(seen, [{ sessionId: 's-2', userId: 'u-2' }], 'both keys, not just the session');
+    assert.equal(handedToBuild[0], own.registry, 'the session’s own registry reached buildAgent');
+    await graph.dispose();
+    assert.deepEqual(own.closed, ['s-2'], 'dispose closed the session’s registry');
+    assert.deepEqual(shared.closed, [], 'and never touched the shared one');
+  });
+
+  it('is awaited, so a factory that hydrates can do asynchronous work', async () => {
+    handedToBuild = [];
+    const own = sharedRegistry();
+    let hydrated = false;
+    const factory = new SessionGraphFactory(
+      baseOpts({
+        ragRegistry: sharedRegistry().registry,
+        ragRegistryFactory: async () => {
+          await new Promise((r) => setTimeout(r, 1));
+          hydrated = true;
+          return own.registry;
+        },
+      }) as never,
+    );
+    await factory.build({ sessionId: 's-3' });
+    assert.equal(hydrated, true, 'the build waited for it');
+    assert.equal(handedToBuild[0], own.registry);
+  });
+});
 ```
-1. when ragRegistryFactory is given, it is called with the FULL identity — both sessionId
-   and userId — and what it returns is the registry handed to buildAgent.
-2. dispose closes THAT registry and does not call closeSession on the shared one.
-3. when it is absent, behaviour is byte-for-byte today's: the shared ragRegistry is handed
-   to buildAgent and closeSession is called on it at dispose.
+
+Write the first test first and watch it **pass** before writing the others: it pins today's behaviour, and if it ever fails later, the change broke every existing consumer.
+
+- [ ] **Step 2: run them and watch the last two fail**
+
+```bash
+node --test packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts 2>&1 | tail -20
 ```
 
-The third test is the one that protects every existing consumer; write it first.
+Expected: test 1 passes, tests 2 and 3 fail because `ragRegistryFactory` is ignored.
 
-- [ ] **Step 2: run and watch them fail.**
+- [ ] **Step 3: implement**
 
-- [ ] **Step 3: implement.** `async` because hydration lives inside it and `SessionAgentParts` carries no `userId` (`:33`) to defer it with; `build` is already `async build(identity): Promise<SessionGraph>` (`:166`), so nothing above changes. Absent, the old path runs untouched.
+```ts
+export interface SessionGraphFactoryOptions {
+  // … unchanged, including:
+  /** GLOBAL RAG provider/registry — used when no per-session factory is given. */
+  readonly ragRegistry: IRagRegistry;
+  /**
+   * Builds the registry this session owns, and hydrates it. Asynchronous
+   * because hydration is: describeCollections() and openCollection() both are,
+   * and SessionAgentParts carries no userId (:33) to defer the work with. When
+   * absent, `ragRegistry` is used exactly as before.
+   */
+  readonly ragRegistryFactory?: (identity: SessionGraphIdentity) => Promise<IRagRegistry>;
+}
+```
 
-- [ ] **Step 4: run the package's suite — every existing session/teardown test must pass unedited**, including the two that assert on the `session_close_failed` message strings.
+In `build(identity)` — already `async build(identity): Promise<SessionGraph>` (`:166`), so nothing above it changes:
 
-- [ ] **Step 5: commit.**
+```ts
+const sessionRegistry = this.opts.ragRegistryFactory
+  ? await this.opts.ragRegistryFactory(identity)
+  : this.opts.ragRegistry;
+```
 
-### Task B16: changelogs, docs, and the migration note
+Hand `sessionRegistry` to `buildAgent`, and remember whether it was the session's. At dispose, call `closeSession` on the session's own registry when there was one, and on `this.opts.ragRegistry` otherwise — keeping the existing best-effort behaviour and both `session_close_failed` message strings, which the pre-existing teardown tests assert on.
 
-Documentation is not only the changelog: a stale doc describing the previous contract is worse than none, because it is believed.
+- [ ] **Step 4: run the package's whole suite — every existing test must pass unedited**
+
+```bash
+node --test packages/llm-agent-libs/src/__tests__/ 2>&1 | tail -8
+npx tsc --noEmit -p packages/llm-agent-libs/tsconfig.json; echo "EXIT=$?"
+git diff --stat packages/llm-agent-libs/src/__tests__/    # only the new file
+```
+
+The last command printing an edit to an existing test means the old path changed — undo and make the new path additive.
+
+- [ ] **Step 5: commit**
+
+```bash
+git add packages/llm-agent-libs/src/session/session-graph-factory.ts \
+        packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts
+git commit -m "feat(llm-agent-libs): a session can own and hydrate its RAG registry
+
+ragRegistry was one shared object handed to every build and closed at dispose,
+and its comment said the isolation came from a per-call scope filter — which is
+the forgettable per-call mechanism, not the instance. The optional factory is
+async because hydration is, and because SessionAgentParts has no userId to defer
+it with. Absent, the old path runs untouched."
+```
+
+### Task B16: changelogs, documentation, and the migration note
+
+Documentation is not only the changelog. A stale doc describing the previous contract is worse than no doc, because it is believed.
 
 **Files:**
-- Modify: `CHANGELOG.md` (root) and each touched package's `CHANGELOG.md`, under `[Unreleased]` — the top section today is `## 26.0.0`, so the heading must be created
-- Modify: `docs/ARCHITECTURE.md` if any statement in it is now stale (principle 8 is already in place)
-- Modify: `docs/PIPELINES.md`, `docs/EXAMPLES.md`, `README.md` — wherever a credential, `apiKey`, a RAG collection tool or the session registry is described
-- Modify: `docs/SECURITY_THREAT_MODEL.md` — AS-6's state changes from "latent" to mitigated once Task B14 lands
+- Modify: `CHANGELOG.md` (root) and each touched package's `CHANGELOG.md`, under a new `[Unreleased]` heading — the top section today is `## 26.0.0`
+- Modify: `README.md`, `docs/PIPELINES.md`, `docs/EXAMPLES.md`, `docs/SAP_AI_CORE.md` — wherever a credential, `apiKey`, a RAG collection tool or the session registry is described
+- Modify: `docs/SECURITY_THREAT_MODEL.md` — AS-6 becomes mitigated
 
 - [ ] **Step 1: find every place that documents what changed**
 
 ```bash
-grep -rln "apiKey\|buildRagCollectionToolEntries\|ragRegistry\|RagToolContext" \
+cd ~/prj/llm-agent
+grep -rln "apiKey\|clientSecret\|buildRagCollectionToolEntries\|ragRegistry\|RagToolContext\|EmbedderFactory" \
   README.md docs/ --include='*.md'
 ```
 
-- [ ] **Step 2: write the `[Unreleased]` entries**, one per package, each saying what a consumer must do rather than what we did.
+Read each hit. A file that only mentions `apiKey` in passing may still be correct; one that shows it as *the* way to authenticate is now stale.
 
-- [ ] **Step 3: carry the three migration items from the spec's §8 into the root changelog verbatim** — the `identity` argument, no longer reading identity from the tool context, and narrowing a widened logger option. Each with its before/after and the error the consumer will actually see.
-
-- [ ] **Step 4: update AS-6** to say the mitigation has landed, and drop its Known Limitations row.
-
-- [ ] **Step 5: run the whole repository green, then commit**
+- [ ] **Step 2: write the `[Unreleased]` entries**
 
 ```bash
-npm run lint:check && npx tsc -b && node --test packages/*/src/**/__tests__/*.test.ts 2>&1 | tail -10
+for p in llm-agent llm-agent-libs llm-agent-mcp qdrant-rag pg-vector-rag \
+         hana-vector-rag sap-aicore-llm sap-aicore-embedder; do
+  echo "--- packages/$p/CHANGELOG.md"; head -3 "packages/$p/CHANGELOG.md"
+done
+```
+
+Each gets an `## [Unreleased]` section saying what a consumer must do, not what we did. No version numbers: the version is decided at the release by what has accumulated (§10).
+
+- [ ] **Step 3: carry §8's three migration items into the root changelog, with their real errors**
+
+````markdown
+## [Unreleased]
+
+### Migration
+
+**1. Build the RAG collection tools with an identity.**
+
+```ts
+- const entries = buildRagCollectionToolEntries({ registry });
++ const entries = buildRagCollectionToolEntries({ registry, identity });
+```
+
+**2. Stop reading identity from the tool context.** A handler no longer needs to:
+the entries were built for one caller. Call sites that *pass* `sessionId`/`userId`
+keep compiling — `RagToolContext` declares `[key: string]: unknown`, which
+absorbs them — but code that *reads* one gets
+`TS2322: Type 'unknown' is not assignable to type 'string | undefined'`.
+
+**3. Narrow a widened logger option before reading it.** The property is
+optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
+
+```ts
+- options.logger.log(event);
++ if (options.logger) normaliseLogger(options.logger).log(event);
+```
+
+**Not a migration:** hydrating collections after a restart is new and optional.
+A consumer that does not hydrate behaves exactly as today — an empty registry,
+and `attributes` that read back as `undefined`.
+````
+
+- [ ] **Step 4: update the threat model**
+
+```markdown
+**State: mitigated.** The tool entries are built with the caller's identity bound
+in — required, not optional — so the only collections they can address are that
+caller's and the globals, and no framework tool mutates a global at all. Landed
+in Task B14 of the plan; see `docs/ARCHITECTURE.md` principle 8.
+```
+
+AS-6's **State** changes from "latent, not live" to that, naming the commit from Task B14, and its Known Limitations row is removed. Keep the description of what was wrong: a threat model that forgets what it fixed cannot tell whether a regression is new.
+
+- [ ] **Step 5: run everything green**
+
+```bash
+npm run lint:check && echo "LINT=0"
+npx tsc -b && echo "BUILD=0"
+node --test $(git ls-files 'packages/*/src/**/*.test.ts') 2>&1 | tail -12
 ```
 
 - [ ] **Step 6: open the PR**
 
 ```bash
+git add -A && git commit -m "docs: changelogs, migration notes, and the threat model's AS-6"
 git push -u origin feat/credentials-and-rag-identity
 gh pr create --title "feat: credential contracts, and RAG collections a caller cannot address past" \
   --body-file - <<'BODY'
 Workstreams 2 and 3 of `docs/superpowers/specs/2026-09-16-auth-contracts-design.md`,
 in one PR because one plan covers both and `interfaces-auth` is touched once.
+Plan: `docs/superpowers/plans/2026-09-20-auth-contracts-and-rag-identity.md`.
 
-Requires `@mcp-abap-adt/interfaces-auth@^1.1.0` (published first, per §4.4).
+Requires `@mcp-abap-adt/interfaces-auth@^1.1.0`, published first per §4.4.
 
-**Three source breaks, all deliberate** — §8 carries the migration note:
-`buildRagCollectionToolEntries` requires an `identity`; `RagToolContext` loses its
-declared `sessionId?`/`userId?`; and workstream 4's widened logger properties are
-already in `[Unreleased]`. No version bump here — the version is decided at the
-release by what has accumulated (§10).
+**Three source breaks, all deliberate**, with the migration note in the root
+changelog: `buildRagCollectionToolEntries` requires an `identity`;
+`RagToolContext` loses its declared `sessionId?`/`userId?`; and workstream 4's
+widened logger properties are already under `[Unreleased]`. No version bump — the
+version is decided at the release by what has accumulated (§10).
+
+The security change is Task B14: five of seven collection handlers ignored the
+identity they were handed and a sixth trusted it. Latent rather than live, since
+nothing mounted them — see AS-6 in the threat model.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 BODY
 ```
 
+- [ ] **Step 7: delete this plan**
+
+Plans live in the tree only while they are unfinished (`CLAUDE.md`). Once the PR is merged, remove the file on `main` — history keeps it.
+
+```bash
+cd ~/prj/llm-agent && git checkout main && git pull --ff-only
+git rm docs/superpowers/plans/2026-09-20-auth-contracts-and-rag-identity.md
+git commit -m "docs: retire the auth-contracts plan, implemented"
+git push origin main
+```
+
+
 ---
 
 ## Self-review
 
-Run against the spec before starting Task A1, and again before Task B16.
+This section records a review that was **run**, on 2026-09-20, after the first draft. Run it again against the spec before Task B16.
 
-- **Spec coverage.** §3 is workstream 1, merged. §4 and §4.6 → Tasks B2-B8. §5 and §5.1 → B14. §6.1-6.3 → B9-B13. §6.4 → B15. §7 is workstream 4, merged. §8's migration → B16. §9's answered items are decisions the tasks implement; §9.1, §9.6, §9.7, §9.8 and §9.10 are marked outside this release and have no task, by design.
-- **Not in any task, deliberately:** `AccessCheck` anywhere (§5); a composite registry key (§6.4); delegated identity to HANA or Qdrant (§9.1); converging the two logger names (§9.9).
-- **Type consistency.** The credential property is `credential` everywhere — B2 fixes the name and B3-B8 reuse it. `RagCollectionRecord`'s field is `name` for the logical name and `storeName` for the physical one, in B9, B11, B12 and B13 alike.
+**What the first pass found, and what it cost:**
+
+- **39 of 94 steps carried no code.** Whole tasks — B7, B8, B11, B12 — described their tests in prose, and B7 said “same shape as B6's”, which the skill names as a plan failure precisely because an implementer may read tasks out of order. Rewritten with the actual test and implementation code; 5 steps remain prose, and each is a decision or a handover rather than an edit.
+- **A type used in a later task was defined by no earlier one.** Task B14 reads `meta.authorization` to decide what a global permits, and `RagCollectionMeta` has no such field — §6.1's second axis was in the spec and in no task. Task B9 now adds `RagCollectionAuthorization` and the optional `authorization?` on the meta and on `createCollection`.
+- **§3.5 (stdio credentials) had no task at all.** §8 puts the typed stdio implementation in this workstream, beside http. Task B8 now covers both, batched because the shape is identical — a constructor demanding a credential typed per target — with the stdio half asserting the secret travels through the child's `env` and never through argv.
+- **A cross-package import that cannot exist.** Task B14's first draft told an implementer to import `SessionGraphIdentity` into `llm-agent`, but it lives in `llm-agent-libs` and the dependency runs libs → llm-agent, one way. Fixed in both the plan and §5.1 of the spec, which now names `RagCallerIdentity`.
+
+**What the pass confirmed:**
+
+- **Spec coverage.** §3.3-3.4 are workstream 1, merged; §3.5 → B8. §4 and §4.6 → B2-B8. §5 and §5.1 → B14. §6.1 → B9 (the axis) and B14 (what it permits). §6.2 needs no task — it deletes a design, and the constructor credential it leaves behind is B4-B5. §6.3 → B9-B13. §6.4 → B15. §7 is workstream 4, merged. §8's migration → B16.
+- **Not in any task, deliberately:** `AccessCheck` anywhere (§5); a composite registry key (§6.4); delegated identity to HANA or Qdrant (§9.1); converging the two logger names (§9.9); anything that would deepen the `IF NOT EXISTS` assumption (§9.10).
+- **Type consistency.** The credential property is `credential` in every task — B2 fixes the name and B3-B8 reuse it. `RagCollectionRecord` uses `name` for the logical name and `storeName` for the physical one in B9, B11, B12 and B13 alike, and B13's third test exists to catch the two being conflated.
 - **The gate.** No Phase B task may run before Task A3's two registry commands answer 1.1.0.
 
 ---
