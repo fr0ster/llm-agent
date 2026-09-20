@@ -345,12 +345,11 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    llm:
      main:
        provider: deepseek
-       credentialRef: DEEPSEEK_API_KEY     # a NAME the app resolves — was: apiKey: ${DEEPSEEK_API_KEY}
-                                           # (omit it entirely and the root's default applies)
+       # No credentialRef: the root's default entry applies — was: apiKey: ${DEEPSEEK_API_KEY}
        model: deepseek-chat
      classifier:
        provider: openai
-       credentialRef: OPENAI_KEY_CHEAP     # a different account, still expressible
+       credentialRef: OPENAI_KEY_CHEAP     # a second account, named — still expressible
        model: gpt-4o-mini
    ```
 
@@ -769,21 +768,25 @@ That function is the package's existing `TokenProvider` and `parseServiceKey` mo
 ```yaml
   llm:
     main:
--     provider: deepseek
+      provider: deepseek
 -     apiKey: ${DEEPSEEK_API_KEY}
-+     provider: deepseek
-+     credentialRef: DEEPSEEK_API_KEY     # a NAME; the value never enters the loaded config
++     # nothing here: the root's default entry applies. A value never enters the
++     # loaded config, which is what ${...} substitution got wrong.
       model: deepseek-chat
     classifier:
       provider: openai
-+     credentialRef: OPENAI_KEY_CHEAP     # a different account, if you want one
++     credentialRef: OPENAI_KEY_CHEAP     # name a second account when you want one
       model: gpt-4o-mini
 ```
 
 ```ts
-// Your composition root, in full. Type-checked under --strict against stub
-// declarations of the contracts before being written here — four earlier versions of
-// this example did not compile or did not do what the prose beside them claimed.
+// Your composition root, in full. This block is extracted back out of this file and
+// compiled under --strict against stub declarations of the contracts, so what is
+// written here is exactly what was checked — an earlier version was verified as a
+// file and then pasted without its type aliases, which is not the same thing.
+
+type AnyCredential = IApiKeyCredential | IBearerCredential | ISecretLoginCredential;
+
 type CredentialEntry = {
   /** Absent means this target needs none. Any of the three kinds is admissible: a
    *  store entry holds a secret-login, an LLM entry an api key or a bearer token. */
@@ -792,10 +795,16 @@ type CredentialEntry = {
   apiBaseUrl?: string;
 };
 
+/** What an entry with no `credentialRef` resolves to. One per deployment, and the
+ *  root's own choice — NOT a provider's. An OpenAI-only deployment points it at its
+ *  OpenAI key, a SAP-only one at its service key, a keyless one at `{}`. */
+const DEFAULT_REF = 'PRIMARY';
+
 /** A function, not a Map literal, so nothing is read or parsed until it is asked for. */
 function credentialFor(ref: string): CredentialEntry | undefined {
   switch (ref) {
-    case 'DEEPSEEK_API_KEY':
+    case 'PRIMARY':
+      // This deployment's one account. Whatever it is — here, an api key.
       return { credential: staticApiKey(requireEnv('DEEPSEEK_API_KEY')) };
     case 'OPENAI_KEY_CHEAP':
       return { credential: staticApiKey(requireEnv('OPENAI_KEY_CHEAP')) };
@@ -820,7 +829,7 @@ function requireEnv(name: string): string {
 
 const deps: BuildAgentDeps = {
   async makeLlm(cfg) {
-    const ref = cfg.credentialRef ?? 'DEEPSEEK_API_KEY';
+    const ref = cfg.credentialRef ?? DEFAULT_REF;
     const entry = credentialFor(ref);
     if (!entry) throw new Error(`credentialRef '${ref}' has no entry configured`);
 
@@ -871,7 +880,7 @@ Four things in it are the model rather than decoration, and each is where an ear
 - **`credentialFor` is a function, not a `Map` literal.** A literal built every entry at startup, so a DeepSeek-only deployment had to have an `AICORE_SERVICE_KEY` — and `process.env.X!` only hid the `undefined` from the compiler, it did not make the value present. Nothing is read or parsed until a reference asks for it, and `requireEnv` fails with the variable's name when it is missing.
 - **A reference resolves to an *entry*, and the entry admits all three credential kinds.** SAP's service key yields an address as well as a credential, and both belong to the same account — so the SAP branch reads `apiBaseUrl` from the entry rather than re-reading a global env var, which is what makes two AI Core accounts expressible. Admitting `ISecretLoginCredential` is what lets the same registry answer for `rag.user`/`rag.password`; an earlier version typed it to api-key and bearer only, so a PostgreSQL entry could not be added to the registry it was told to use.
 - **Narrowing is explicit, and optional where the target's is.** `apiKey()` refuses anything else for the three providers that need a key; `optionalApiKey()` keeps Ollama's key optional, because `OllamaProvider` accepts one today (`providers.ts:204`) and a gateway in front of it may require it — the design replaces plain keys with typed credentials rather than removing the capability.
-- **The default reference is a name the root chooses**, so a single-account deployment writes no `credentialRef` at all and still resolves. An earlier version said this in prose and then passed `undefined` through a cast, which would have failed at the first request.
+- **The default reference is a name the root chooses — `DEFAULT_REF`, not a provider's.** Two earlier versions failed this differently: the first said so in prose and passed `undefined` through a cast, which would have failed at the first request; the second hardcoded the fallback to `'DEEPSEEK_API_KEY'`, so an OpenAI-only, SAP-only or keyless deployment that omitted the reference would have been made to produce a DeepSeek variable. One named default entry per deployment, pointed at whatever that deployment actually holds — an api key, a service key, or `{}`.
 
 `llm-agent-server` carries exactly this switch as the reference implementation — that is what makes it the example (principle 2), and why §11 no longer lists its configuration as out of scope.
 
