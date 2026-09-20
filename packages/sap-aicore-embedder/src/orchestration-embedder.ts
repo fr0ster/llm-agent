@@ -20,19 +20,24 @@ export interface OrchestrationScenarioEmbedderConfig {
   apiBaseUrl: string;
 }
 
+/** The constructed-destination shape the SAP AI SDK documents. */
+export interface OrchestrationEmbedderDestination {
+  url: string;
+  authentication: 'NoAuthentication';
+  headers: Record<string, string>;
+}
+
 /**
- * The constructed-destination shape the SAP AI SDK documents. Built fresh on
- * every call — never at construction — so a retry or a later call re-asks the
- * credential rather than reusing a token that may already be stale.
+ * Build the constructed-destination the SDK documents. Called from
+ * `embed()`/`embedBatch()` — never at construction, never cached — so a
+ * later call re-asks the credential rather than reusing a token that may
+ * already be stale. Mirrors `sap-core-ai-provider.ts`'s `buildDestination`
+ * (not imported from there: this package does not depend on `sap-aicore-llm`).
  */
 async function buildDestination(cfg: {
   apiBaseUrl: string;
   credential: IBearerCredential;
-}): Promise<{
-  url: string;
-  authentication: 'NoAuthentication';
-  headers: Record<string, string>;
-}> {
+}): Promise<OrchestrationEmbedderDestination> {
   return {
     url: cfg.apiBaseUrl,
     authentication: 'NoAuthentication',
@@ -54,7 +59,11 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
   }
 
   async embed(text: string, _options?: CallOptions): Promise<IEmbedResult> {
-    const client = await this.createClient();
+    const destination = await buildDestination({
+      apiBaseUrl: this.apiBaseUrl,
+      credential: this.credential,
+    });
+    const client = await this.createClient(destination);
     const response = await client.embed({ input: text });
     const embeddings = response.getEmbeddings();
     if (!embeddings || embeddings.length === 0) {
@@ -68,7 +77,11 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
     _options?: CallOptions,
   ): Promise<IEmbedResult[]> {
     if (texts.length === 0) return [];
-    const client = await this.createClient();
+    const destination = await buildDestination({
+      apiBaseUrl: this.apiBaseUrl,
+      credential: this.credential,
+    });
+    const client = await this.createClient(destination);
     const response = await client.embed({ input: texts });
     const embeddings = response.getEmbeddings();
     if (!embeddings || embeddings.length === 0) {
@@ -78,16 +91,22 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
     return sorted.map((e) => ({ vector: decodeEmbedding(e.embedding) }));
   }
 
-  private async createClient() {
+  /**
+   * Create an OrchestrationEmbeddingClient for the given destination.
+   *
+   * `destination` is built by the caller via `buildDestination()`, per call —
+   * same split as `SapCoreAIProvider.createClient()` in `sap-aicore-llm`,
+   * deliberately: it lets a test spy on this method and observe the
+   * destination (and the credential's token behind it) that `embed()`/
+   * `embedBatch()` actually computed, the way `sap-core-ai-provider.test.ts`
+   * already does for the LLM provider.
+   */
+  private async createClient(destination: OrchestrationEmbedderDestination) {
     const { OrchestrationEmbeddingClient } = await import(
       '@sap-ai-sdk/orchestration'
     );
     const modelName = this
       .model as unknown as import('@sap-ai-sdk/orchestration').EmbeddingModel;
-    const destination = await buildDestination({
-      apiBaseUrl: this.apiBaseUrl,
-      credential: this.credential,
-    });
     return new OrchestrationEmbeddingClient(
       { embeddings: { model: { name: modelName } } },
       this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
