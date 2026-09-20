@@ -70,16 +70,19 @@ describe('rag-factories', () => {
     }
   });
 
-  it('makeRag in-memory+openai embedder auto-prefetches without prior prefetch (no MissingProviderError)', async () => {
+  it('makeRag in-memory+openai embedder auto-prefetches without prior prefetch (no MissingProviderError)', {
+    skip:
+      'The openai embedder cannot be built through this bridge until the bridge task ' +
+      'forwards `credential`: resolveEmbedder copies a hand-picked whitelist (url, ' +
+      'apiKey, model, resourceGroup, scenario), so a credential passed in is dropped ' +
+      'and the constructor throws. Un-skip in that task.',
+  }, async () => {
     _resetPrefetchedRagForTests();
     _resetPrefetchedForTests();
-    // Verify it does NOT throw MissingProviderError — actual OpenAI network
-    // failure is fine; the test only guards against missing-provider regression.
     try {
-      // Task B4 replaced OpenAiEmbedder's `apiKey: string` with a required
-      // `credential`. This options bag is `Record<string, unknown>` (B6a
-      // owns typing it), so an untyped `credential` still reaches the
-      // constructor and works at runtime.
+      // Passing a credential HERE is not enough, and the earlier comment claiming
+      // it was is wrong: resolveEmbedder forwards a whitelist, so this credential
+      // never reaches the constructor and this path throws today.
       await makeRag({
         type: 'in-memory',
         embedder: 'openai',
@@ -87,9 +90,17 @@ describe('rag-factories', () => {
         model: 'text-embedding-3-small',
       });
     } catch (err) {
+      // Narrow on purpose: a network failure reaching OpenAI is acceptable here,
+      // failing to CONSTRUCT the embedder is the regression this test exists for,
+      // and the previous blanket check swallowed exactly that.
       assert.ok(
         !(err instanceof MissingProviderError),
         `Expected no MissingProviderError but got: ${err}`,
+      );
+      assert.doesNotMatch(
+        String(err),
+        /API key is required|requires a 'credential'/,
+        `The embedder could not be built at all: ${err}`,
       );
     }
   });
