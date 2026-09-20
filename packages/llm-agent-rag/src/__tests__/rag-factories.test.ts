@@ -77,12 +77,19 @@ describe('rag-factories', () => {
       // resolveEmbedder now declares `credential` on EmbedderResolutionConfig
       // and forwards it (and `apiBaseUrl`) instead of a hand-picked whitelist,
       // so this credential reaches OpenAiEmbedder's constructor for real.
-      await makeRag({
+      const rag = await makeRag({
         type: 'in-memory',
         embedder: 'openai',
         credential: staticApiKey('test'),
         model: 'text-embedding-3-small',
       });
+      // Assert on the HAPPY path too: everything below runs only if something
+      // throws, so without this the case proves nothing when the bridge works —
+      // and it was skipped precisely because it passed while proving nothing.
+      assert.ok(
+        rag,
+        'an in-memory RAG with an openai embedder must be constructible',
+      );
     } catch (err) {
       // Narrow on purpose: a network failure reaching OpenAI is acceptable here,
       // failing to CONSTRUCT the embedder is the regression this test exists for,
