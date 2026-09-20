@@ -1,21 +1,24 @@
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
-import { parseServiceKey, TokenProvider } from '@mcp-abap-adt/sap-aicore-auth';
 import { decodeEmbedding } from './decode-embedding.js';
 import { resolveDeploymentId } from './deployments.js';
-
-export interface FoundationModelsCredentials {
-  clientId: string;
-  clientSecret: string;
-  tokenUrl: string;
-  apiBaseUrl: string;
-}
 
 export interface FoundationModelsEmbedderConfig {
   model: string;
   resourceGroup?: string;
-  /** Explicit credentials. When omitted, `AICORE_SERVICE_KEY` env var is parsed. */
-  credentials?: FoundationModelsCredentials;
+  /**
+   * The bearer credential presented to SAP AI Core. Asked for fresh on every
+   * `embed()`/`embedBatch()` call — never cached here, so a rotating token
+   * keeps rotating. Build one from a service key with `serviceKeyCredential`
+   * (`@mcp-abap-adt/sap-aicore-auth`).
+   */
+  credential: IBearerCredential;
+  /**
+   * SAP AI Core REST inference base URL. Not part of the credential
+   * (§4.6.3) — its own field, the name `parseServiceKey` returns.
+   */
+  apiBaseUrl: string;
   /**
    * Azure OpenAI api-version query parameter for OpenAI-family deployments.
    * Default: '2023-05-15'. Ignored for Gemini-family models.
@@ -44,7 +47,7 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   private readonly azureApiVersion: string;
   private readonly resourceGroup: string;
   private readonly apiBaseUrl: string;
-  private readonly tokenProvider: TokenProvider;
+  private readonly credential: IBearerCredential;
   private deploymentIdPromise: Promise<string> | null = null;
 
   /**
@@ -58,17 +61,12 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   readonly maxBatchSize?: number;
 
   constructor(config: FoundationModelsEmbedderConfig) {
-    const creds = config.credentials ?? this.loadCredentialsFromEnv();
     this.model = config.model;
     this.family = detectFamily(config.model);
     this.azureApiVersion = config.azureApiVersion ?? '2023-05-15';
     this.resourceGroup = config.resourceGroup ?? 'default';
-    this.apiBaseUrl = creds.apiBaseUrl;
-    this.tokenProvider = new TokenProvider({
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
-      tokenUrl: creds.tokenUrl,
-    });
+    this.apiBaseUrl = config.apiBaseUrl;
+    this.credential = config.credential;
     if (this.family === 'gemini') this.maxBatchSize = 250;
   }
 
@@ -94,7 +92,10 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   }
 
   private async requestEmbeddings(input: string[]): Promise<NormalizedItem[]> {
-    const token = await this.tokenProvider.getToken();
+    // Asked fresh on every request — never cached on the instance — so a
+    // rotating credential (client-credentials exchange, Entra ID, ...) keeps
+    // rotating rather than being frozen at construction time.
+    const token = await this.credential.token();
     const deploymentId = await this.getDeploymentId(token);
     const base = `${this.apiBaseUrl}/v2/inference/deployments/${deploymentId}`;
     const headers = {
@@ -158,16 +159,6 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       });
     }
     return this.deploymentIdPromise;
-  }
-
-  private loadCredentialsFromEnv(): FoundationModelsCredentials {
-    const raw = process.env.AICORE_SERVICE_KEY;
-    if (!raw) {
-      throw new Error(
-        'SapAiCoreEmbedder (foundation-models): no credentials provided and AICORE_SERVICE_KEY env var is not set',
-      );
-    }
-    return parseServiceKey(raw);
   }
 }
 

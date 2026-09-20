@@ -1,6 +1,7 @@
 // packages/sap-aicore-embedder/src/sap-ai-core-embedder.test.ts
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { SapAiCoreEmbedder } from './sap-ai-core-embedder.js';
 
 const originalFetch = globalThis.fetch;
@@ -12,26 +13,17 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  delete process.env.AICORE_SERVICE_KEY;
 });
 
-test('scenario: foundation-models calls REST inference endpoint', async () => {
-  process.env.AICORE_SERVICE_KEY = JSON.stringify({
-    clientid: 'cid',
-    clientsecret: 'csec',
-    url: 'https://auth.example.com',
-    serviceurls: { AI_API_URL: 'https://api.example.com' },
-  });
+const credential: IBearerCredential = {
+  kind: 'bearer',
+  token: async () => 'tok',
+};
 
+test('scenario: foundation-models calls REST inference endpoint', async () => {
   globalThis.fetch = (async (url: string | URL | Request) => {
     const u = typeof url === 'string' ? url : url.toString();
     lastUrl = u;
-    if (u.endsWith('/oauth/token')) {
-      return new Response(
-        JSON.stringify({ access_token: 'tok', expires_in: 3600 }),
-        { status: 200 },
-      );
-    }
     if (u.includes('/v2/lm/deployments')) {
       return new Response(
         JSON.stringify({
@@ -60,6 +52,8 @@ test('scenario: foundation-models calls REST inference endpoint', async () => {
   const emb = new SapAiCoreEmbedder({
     model: 'text-embedding-3-small',
     scenario: 'foundation-models',
+    credential,
+    apiBaseUrl: 'https://api.example.com',
   });
   const res = await emb.embed('hi');
   assert.deepEqual(res.vector, [0.5]);
@@ -78,6 +72,8 @@ test('scenario: orchestration delegates to the SDK-based backend', async () => {
   const emb = new SapAiCoreEmbedder({
     model: 'text-embedding-3-small',
     scenario: 'orchestration',
+    credential,
+    apiBaseUrl: 'https://api.example.com',
   });
   assert.ok(emb);
 });
@@ -89,6 +85,10 @@ test('default scenario is orchestration (no REST fetch on construction)', async 
     );
   }) as typeof fetch;
 
-  const emb = new SapAiCoreEmbedder({ model: 'text-embedding-3-small' });
+  const emb = new SapAiCoreEmbedder({
+    model: 'text-embedding-3-small',
+    credential,
+    apiBaseUrl: 'https://api.example.com',
+  });
   assert.ok(emb);
 });
