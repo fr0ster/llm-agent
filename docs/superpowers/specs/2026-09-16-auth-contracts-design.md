@@ -310,6 +310,8 @@ The import is types-only (`import type`), which keeps it out of the runtime grap
 
 The text shape is the general one: a structured event fits in `meta`, a closed union cannot carry arbitrary text. `interfaces-utils` needs no change, and this release is a minor: the rename that finally leaves one name, when it comes, is llm-agent's major (§9.9).
 
+**One source-level caveat.** Widening these properties is safe for a consumer that *sets* one and hands it over. A consumer that *reads* one — `options.logger?.log(event)` — no longer compiles, because the property is now the union: `error TS2339: Property 'log' does not exist on type 'AnyLogger'`. Handing a logger in is unaffected. Reading one needs a definedness check first: these properties are optional and `normaliseLogger` takes a non-optional `AnyLogger`, so `normaliseLogger(options.logger)` on its own does not compile either (`error TS2345: Argument of type 'AnyLogger | undefined' is not assignable to parameter of type 'AnyLogger'`). What compiles, measured: `if (options.logger) normaliseLogger(options.logger).log(event);` Nothing changes at runtime, and the inputs that deliberately stay event-only are unaffected.
+
 ---
 
 ## 8. What changes, and where
@@ -317,7 +319,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 | package | change | breaking |
 |---|---|---|
 | `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
-| `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `IRagProviderSource`; registry wiring (§9.4) | additive |
+| `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `IRagProviderSource`; registry wiring (§9.4) | additive at runtime; `SessionGraphFactoryOptions.logger` widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
 | `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes`; ask the check when given one | additive |
@@ -351,7 +353,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 ## 10. Workstreams
 
-Four independent changes under one umbrella; each gets its own plan. All four are additive, so they land as a minor — in any order, and a consumer may take one and decline the rest.
+Four independent changes under one umbrella; each gets its own plan. All four are additive at runtime, so they land as a minor — in any order, and a consumer may take one and decline the rest. One source-level exception, in workstream 4: widening a readable option property breaks a consumer that *reads* it, and §7 says what to do about it.
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
