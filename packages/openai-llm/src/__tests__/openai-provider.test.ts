@@ -749,11 +749,17 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   // @ts-expect-error — protected hook, read for test
   const keyOf = (p: OpenAIProvider) => p.quotaKey() as string;
 
-  it('separates two credentials on the same endpoint', () => {
-    // B1 removed the apiKey the quota key used to be fingerprinted from. The
-    // 429 gate is separated by credential OBJECT identity now
-    // (BaseLLMProvider.credentialScope), wired up here by this provider's own
-    // `quotaCredential()` override.
+  it('separates two different accounts (distinct secrets, distinct credentials)', () => {
+    // Restores the case a review round found untested: under identity-based
+    // scoping (BaseLLMProvider.credentialScope, wired up here by this
+    // provider's own `quotaCredential()` override), what actually separates
+    // two accounts is that each is its own credential OBJECT — never a
+    // comparison of what their secrets happen to be. Distinct secrets here
+    // are the realistic case (two real API keys); "gives the same account
+    // the same key" below is the shared-object case, and that pair is the
+    // whole contract — a THIRD test that kept these same two objects but
+    // swapped in equal secrets would assert nothing this one doesn't already
+    // cover, since `quotaKey()` never reads a secret at all.
     const a = new OpenAIProvider({
       credential: staticApiKey('sk-a'),
       model: 'gpt-4o',
@@ -797,8 +803,8 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
     // identity now, not by the secret's value — so these two must share ONE
     // credential object. Two `staticApiKey('sk-a')` calls would make two
     // objects and therefore two buckets, which is exactly the case this test
-    // is not about; see credential.test.ts and "one account, two credential
-    // objects, is two quotas" below for that one.
+    // is not about; see credential.test.ts and "separates two different
+    // accounts" above for that one.
     const cred = staticApiKey('sk-a');
     const implicit = new OpenAIProvider({ credential: cred, model: 'gpt-4o' });
     const explicit = new OpenAIProvider({
@@ -845,27 +851,20 @@ describe('OpenAIProvider — one quota per account and endpoint', () => {
   });
 
   it('gives the same account the same key, so the pause is actually shared', () => {
+    // The other side of the coin from "separates two different accounts"
+    // above: reusing ONE credential object is what makes two providers the
+    // same account. Two separately-constructed credentials for what a human
+    // would call "the same key" are NOT coalesced — there is no secret
+    // comparison to coalesce them by, only object identity — which is
+    // exactly what the test above already demonstrates with two real,
+    // distinct secrets; a same-secret variant of it would exercise the
+    // identical code path and assert nothing new (`quotaKey()` never reads a
+    // secret). A caller that wants two providers to share a gate reuses one
+    // credential object, as here, or sets `quotaScope` explicitly.
     const cred = staticApiKey('sk-a');
     const a = new OpenAIProvider({ credential: cred, model: 'gpt-4o' });
     const b = new OpenAIProvider({ credential: cred, model: 'gpt-4o' });
     assert.equal(keyOf(a), keyOf(b));
-  });
-
-  it('one account, two credential objects, is two quotas', () => {
-    // The other side of the coin: two separately-constructed credentials
-    // for what a human would call "the same key" are NOT coalesced, because
-    // there is no secret comparison to coalesce them by — only object
-    // identity. A caller that wants them to share a gate reuses one
-    // credential object (above), or sets `quotaScope` explicitly.
-    const a = new OpenAIProvider({
-      credential: staticApiKey('sk-a'),
-      model: 'gpt-4o',
-    });
-    const b = new OpenAIProvider({
-      credential: staticApiKey('sk-a'),
-      model: 'gpt-4o',
-    });
-    assert.notEqual(keyOf(a), keyOf(b));
   });
 
   it('never puts the credential itself in the key', () => {
