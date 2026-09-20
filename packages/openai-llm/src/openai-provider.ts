@@ -44,6 +44,17 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
    * Every direct instantiation authenticates. Ollama overrides this to
    * `false` — its target ignores the key locally, though a gateway in front
    * of it may still require one — without duplicating this constructor.
+   *
+   * Called from the constructor below, before it returns — so an override
+   * MUST be a constant (as both existing overrides are) and must never read
+   * instance state: `this` is not fully constructed yet at that point, and a
+   * field read here could see it half-initialized.
+   *
+   * `OllamaConfig`/`DeepSeekConfig` reach this constructor through an
+   * `as OpenAIConfig` cast (see their own files), which is what lets a
+   * possibly-`undefined` `credential` satisfy a field typed here as
+   * required. This hook, not the type, is what actually keeps a subclass
+   * honest about whether that's allowed.
    */
   protected requiresCredential(): boolean {
     return true;
@@ -84,9 +95,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   /**
    * `Authorization`, resolved fresh for this one request — never baked into
    * `client.defaults.headers`, which would freeze whatever secret the
-   * credential returned at construction time. Ollama's credential is
-   * optional, so a provider configured without one sends no header at all,
-   * matching what it did before (the target simply ignores auth).
+   * credential returned at construction time.
+   *
+   * BEHAVIOUR CHANGE for Ollama: it used to send `Authorization: Bearer
+   * <key or the literal 'ollama'>` on every request unconditionally — a
+   * dummy value existed only because the OpenAI SDK this class no longer
+   * goes through demanded a non-empty key. Now, with no credential
+   * configured, no header is sent at all. That is a real change for exactly
+   * the case the credential stayed optional for: an Ollama instance sitting
+   * behind a gateway that DOES check auth silently stops being authorized
+   * (`requiresCredential() === false`, so nothing throws either). Correct,
+   * because the SDK's constraint that produced the dummy is gone — but it
+   * is not "the same as before", so it is not described that way here.
    */
   private async authHeader(): Promise<Record<string, string>> {
     const credential = this.config.credential;
