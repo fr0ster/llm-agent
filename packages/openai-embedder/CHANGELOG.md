@@ -1,5 +1,19 @@
 # @mcp-abap-adt/openai-embedder
 
+## [Unreleased]
+
+**BREAKING:** `OpenAiEmbedderConfig.apiKey` is gone. `OpenAiEmbedderConfig.credential`
+(a typed `IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`) replaces it,
+required, asked for fresh on every `embed()`/`embedBatch()` call — including
+each retry attempt — instead of held in a field for the object's lifetime.
+
+Migration: `new OpenAiEmbedder({ apiKey: 'sk-…', model })` becomes
+`new OpenAiEmbedder({ credential: staticApiKey('sk-…'), model })`
+(`staticApiKey` is exported from `@mcp-abap-adt/llm-agent`).
+
+`ollama-embedder` is deliberately untouched: it sends `Content-Type` and
+nothing else, so a credential there would be a member nobody calls.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).
