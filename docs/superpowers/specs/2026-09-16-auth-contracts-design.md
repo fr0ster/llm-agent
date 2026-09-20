@@ -10,7 +10,7 @@
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Scope and the owner keys stay typed; only role and policy become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
-- **Additive at runtime; the version is decided at the release.** Every seam is added beside what exists, nothing is removed, and no behaviour on any existing path changes — the safer teardown order comes with the new seam, through a new optional hook (§3.4). What version carries the accumulated set is §10’s to state, not this summary’s: as it stands the set includes workstream 4’s read-side source break (§7), so it is a major.
+- **Additive at runtime; the version is decided at the release.** Every seam is added beside what exists and no behaviour on any existing path changes. **Two things are removed**, both read-side and both from §5.1's single-identity rule: `RagToolContext`'s declared `sessionId?` and `userId?` — the safer teardown order comes with the new seam, through a new optional hook (§3.4). What version carries the accumulated set is §10’s to state, not this summary’s: as it stands the set includes workstream 4’s read-side source break (§7), so it is a major.
 - Umbrella: four workstreams (§10), **one plan**, and **one PR per repository**. Two of the four are already merged; the rest land together.
 
 ---
@@ -99,7 +99,7 @@ builder.withMcpServers(servers: IMcpServer[]): this;   // beside withMcpClients,
 
 `build()` starts them, pushes each `stop()` into the `closeFns` the handle already awaits, and pairs descriptors. `SessionGraphFactory` and `llm-agent-server-libs` become **consumers** of that seam rather than owners of their own glue; cloud-llm-hub may adopt it without adopting `SessionGraphFactory`. An optional `mcpServerFactory?: (identity) => IMcpServer[]` on the session factory gives the per-session case the identity that `buildPerSessionMcpClients` never had.
 
-Nothing is removed by this release, and nothing on an existing path changes behaviour; what version it ships as is §10’s (§8). `withMcpClients`, `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient` and `closeBySession` are marked deprecated and live at least until the **next** major, with the new seam taking precedence when set — the same courtesy `mcpClientFactoryWithDescriptors` received in #244. A consumer that declines the seam keeps exactly today's behaviour.
+Nothing is removed by **workstream 1**, and nothing on an existing path changes behaviour; what version the whole set ships as is §10's (§8). (Workstream 3 does remove two declared properties — §5.1.) `withMcpClients`, `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient` and `closeBySession` are marked deprecated and live at least until the **next** major, with the new seam taking precedence when set — the same courtesy `mcpClientFactoryWithDescriptors` received in #244. A consumer that declines the seam keeps exactly today's behaviour.
 
 **Descriptors.** They come from `IMcpServer.descriptor`, and the existing invariant holds unchanged (`assert-client-descriptors.ts`): descriptors are **all or none** (their count must equal the client count), `slotIndex` values are unique non-negative integers, and `configuredSlotCount`, when given, must be **strictly greater than the largest `slotIndex`**. When no server carries a descriptor, array position is the pairing, exactly as today.
 
@@ -320,9 +320,23 @@ The difference from the `createFor(identity, check)` that §6.2 deletes is exact
 
 Five of seven ignore the context they are handed. `rag_delete_collection` is the one that shows the intended shape — and note *what* it does: it compares owner keys, which is addressing, and it refuses global deletes outright rather than deciding who may.
 
-**Where addressing genuinely cannot answer, the framework declines instead of deciding.** A `global` collection with `authorization: 'role'` (§6.1) is addressable by everyone by construction, so narrowing says nothing about who may write it. The framework's own tools therefore do not serve that case at all: they operate where addressing settles the question — the caller's `session` and `user` collections, and `public` globals — and refuse a `role`-authorized global exactly as `rag_delete_collection` already refuses global deletes. Refusing is not policy; it is declining to act with no basis, which is §1.2. A consumer that wants that case mounts its own tool, with its own check, on its own side of the boundary.
+**Where addressing genuinely cannot answer, the framework declines instead of deciding.** A `global` collection with `authorization: 'role'` (§6.1) is addressable by everyone by construction, so narrowing says nothing about who may write it. The framework's own tools therefore do not serve that case at all. The line runs between reading and mutating, and it is not the same line for globals as for owned collections:
 
-**What llm-agent contributes:** `buildRagCollectionToolEntries` returns entries whose handler takes `RagToolContext { sessionId?, userId? }`. It has no consumer today (§9.7), which is why five handlers could ignore it without anyone noticing.
+| | the caller's `session` / `user` collections | `global`, `public` | `global`, `role` |
+|---|---|---|---|
+| read (`rag_list_collections`, `rag_describe_collection`, query) | yes — the address space is the caller's | yes — `public` *means* everyone may read, so the value settles it | **refused** — who holds the role is policy |
+| mutate (`rag_add`, `rag_correct`, `rag_deprecate`) | yes — the caller owns them | **refused** | **refused** |
+| delete (`rag_delete_collection`) | yes, owner keys compared | **refused** (already true today, `:193`) | **refused** |
+
+**`public` licenses reading, never writing**, and nothing in §6.1's two axes says otherwise: `public` and `role` are values about who may *reach* a global, and neither describes who may change one. Letting `rag_add` write a `public` global because it is public would be the framework inventing the rule that reachable implies writable — a policy, decided by us, on shared data, for every consumer. So framework tools mutate **no** global, whatever its authorization value, exactly as `rag_delete_collection` already refuses every global delete. A consumer that wants global writes mounts its own tool with its own check; that is not a limitation of this design but the whole of it. Refusing is not policy; it is declining to act with no basis, which is §1.2. A consumer that wants that case mounts its own tool, with its own check, on its own side of the boundary.
+
+**One source of identity, and the per-call one goes.** Binding identity at construction while a handler still reads owner keys from its per-call `RagToolContext` leaves two sources and no rule, and `rag_create_collection` reads exactly that today (`:266-267`). Two sources is the failure principle 8 names in its other half: a per-call identity that disagrees with the instance does not fail, it acts as somebody else — here, creating a collection owned by an identity the address space was never narrowed to.
+
+So the **construction-bound identity is the only source**, and `RagToolContext`'s declared `sessionId?` and `userId?` are **removed** rather than ignored or cross-checked. Ignoring them leaves a field that looks authoritative and is not; cross-checking them makes every call site restate what the instance already knows, and turns a mismatch into a runtime error where there should be no channel to mismatch on. Removing them is also nearly free: `RagToolContext` declares `[key: string]: unknown` (`:15`), so call sites passing those keys keep compiling — they simply stop meaning anything, and no handler can read them as identity.
+
+What stays per-call is what is genuinely per-call and is not identity: the free-form context the index signature carries. `rag_create_collection` then takes its owner keys from the bound identity, which is the same identity that decided what the instance can address — one fact, read once, used everywhere.
+
+**What llm-agent contributes:** `buildRagCollectionToolEntries` returns the seven entries. It has no consumer today (§9.7), which is why five handlers could ignore the context and a sixth could trust it without anyone noticing.
 
 ---
 
@@ -395,6 +409,9 @@ createCollection(name, {
 
 ```ts
 type RagCollectionRecord = {
+  /** What the PROVIDER knows the store by — `storeNameFor`'s output. */
+  readonly storeName: string;
+  /** The LOGICAL name the registry registers it under. Must be persisted; see below. */
   readonly name: string;
   readonly scope?: RagCollectionScope;
   readonly sessionId?: string;        // owner key, typed (as above)
@@ -402,9 +419,26 @@ type RagCollectionRecord = {
   readonly attributes?: unknown;      // opaque, returned exactly as stored
 };
 
-// NEW and optional, on IRagProvider — never a widening of listCollections()
+// on IRagProvider — NEW and optional, never a widening of listCollections()
 describeCollections?(): Promise<Result<readonly RagCollectionRecord[], RagError>>;
+
+// on IRagProvider.createCollection's opts — the logical name and the attributes,
+// because a catalog cannot return what it was never given
+createCollection(name: string, opts: {
+  scope: RagCollectionScope; sessionId?: string; userId?: string;
+  collectionName?: string;           // the logical name; `name` is the store name
+  attributes?: unknown;
+}): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
+
+// on IRagRegistry — NEW and optional: register an EXISTING store, no creation
+adopt?(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void;
 ```
+
+**Two identifiers, because the provider never sees one of them.** `SimpleRagRegistry.createCollection` computes `storeName = storeNameFor(params)` and calls `provider.createCollection(storeName, …)` (`simple-rag-registry.ts:189`, `:193`), so the provider is handed the store name *as* the name. It does already receive the owner keys — `{ scope, sessionId, userId }` are in its signature (`interfaces/rag.ts:209-216`) — and what it never receives is the **logical** `collectionName`.
+
+And it cannot derive it. `storeNameFor` (`:31`) returns `${base}_${digest}`, where `digest` is 12 hex characters of a SHA-256 and `base` is the logical name with every `[^a-zA-Z0-9_]` replaced by `_` and then truncated to fit 63 characters. The prefix is a readable hint, not the name: two different logical names collapse onto one base, and a long one loses its tail. So a catalog keyed only on what the provider was given can return the physical name and nothing else, and after a restart a consumer would know a store exists without knowing what to call it. The logical name must therefore be **written** into the catalog, which is why `createCollection` gains it alongside `attributes`.
+
+**And hydration needs its own member, because `register` cannot express it.** `SimpleRagRegistry.register(name, …)` sets `storeName: name` (`:99`) — it assumes the two are the same, which is true for a collection registered directly and false for every hydrated one. `adopt?()` takes the record whole, so the logical name and the store name stay distinct, and it never creates anything: the store is already there. Optional on `IRagRegistry` so an external implementation of that interface is not broken by gaining a member.
 
 A **new** optional member rather than a wider `listCollections`, for the reason §4.6.2 gives: a provider is something consumers *implement*, so widening a return type breaks every implementation, while an optional addition breaks none. A provider without a catalog simply does not declare it.
 
@@ -456,7 +490,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation plus the optional `describeCollections()` catalog read (§6.3); the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read and the optional `IRagRegistry.adopt()` hydration path (§6.3); the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory | additive at runtime; `SessionGraphFactoryOptions.logger` widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
@@ -480,7 +514,7 @@ Read this rather than deriving it. Every row was checked against the packages, n
 
 **Order, and it is not negotiable.** The contract is published, then adopted. An acceptor cannot merge a dependency on an unpublished version, so a plan that interleaves them describes a state that cannot exist. `interfaces-utils` in row 4 shows the easy case — the contract was already on the shelf, so that workstream needed no release at all.
 
-**Release shape.** Nothing is removed, no existing path changes behaviour, and every seam is declinable — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam. The version this ships as is decided at the release by what has accumulated (§10), not here: as it stands the set carries workstream 4’s read-side source break, so it is a major.
+**Release shape.** No existing path changes behaviour and every seam is declinable. **One removal, measured rather than assumed:** §5.1 drops the declared `sessionId?`/`userId?` from `RagToolContext` so identity has one source. Against the repository's own tsc (6.0.3), a call site passing those keys still compiles — the type declares `[key: string]: unknown`, which absorbs them — while a *reader* of one gets `error TS2322: Type 'unknown' is not assignable to type 'string | undefined'`. Same read-side class as workstream 4's widened properties (§7), and there is no reader today because nothing mounts these tools, so it adds no new kind of break to a release already made major by §7 — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` — are markers for a later major, not part of this one. `McpClientFactory` is a special case: it stays as the default implementation's factory, which `mcpServerFromFactory` consumes, and is deprecated only as the **consumer-facing** seam. The version this ships as is decided at the release by what has accumulated (§10), not here: as it stands the set carries workstream 4’s read-side source break, so it is a major.
 
 ---
 
@@ -516,7 +550,7 @@ Workstreams 1 and 4 are already merged, each as its own PR, before this rule was
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
-3. **RAG identity and attributes** — persisted opaque `attributes` **and the `describeCollections()` read that makes persisting them mean something** (§6.3); the two axes; the typed owner keys; the caller's identity bound into the collection tool entries, closing the five handlers that ignore it (§5.1); optional credentials on the store constructors. No source union, no registry rewiring, and no check (§5, §6.2, §6.4).
+3. **RAG identity and attributes** — persisted opaque `attributes` **plus the logical name beside them, the `describeCollections()` read and the `adopt()` hydration path that together make persisting mean something** (§6.3); the two axes; the typed owner keys; the caller's identity bound into the collection tool entries as the single source, closing the five handlers that ignore the context and the one that trusts it, and refusing every mutation of a global (§5.1); optional credentials on the store constructors. No source union, no registry rewiring, and no check (§5, §6.2, §6.4).
 4. **Text-logger acceptance** — `ITextLogger`, the boundary adapter and its levels (§7). Convergence to one name is deferred to the next major (§9.9).
 
 ---

@@ -91,6 +91,11 @@ entries are built with the caller's identity bound in, so the only collections t
 are that caller's own and the globals; another caller's collection is absent rather than refused.
 No access check enters the framework. Where addressing cannot answer — a `role`-authorized
 global — the tools refuse, and a consumer that wants that case mounts its own.
+Two rules make that mitigation complete, and both are part of it:
+
+- **No framework tool mutates a `global` collection**, whatever its `authorization` value. `public` says who may reach a global, never who may change one; treating reachable as writable would be us inventing a rule about shared data for every consumer. Reads of a `public` global are allowed because the value itself settles them; a `role` global is refused for reads too, since who holds a role is policy.
+- **One source of caller identity.** `RagToolContext`'s declared `sessionId?`/`userId?` are removed, so a per-call value cannot disagree with the identity bound at construction — today `rag_create_collection` reads owner keys from that context (`:266-267`), which would create a collection owned by an identity the address space was never narrowed to. Its `[key: string]: unknown` index signature (`:15`) keeps existing call sites compiling.
+
 Design: `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` §5.1; workstream 3 (§10).
 
 ---
