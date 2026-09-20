@@ -63,4 +63,62 @@ describe('OpenAIProvider credential', () => {
     // @ts-expect-error a provider that cannot authenticate is not constructible
     assert.throws(() => new OpenAIProvider({ model: 'm' }));
   });
+
+  // Fix round 1, review finding 6: `chat()` was the only call site with an
+  // auth assertion. `authHeader()` is awaited into `streamChat()`,
+  // `getModels()` and `getEmbeddingModels()` too — this pins the two the
+  // review named.
+
+  it('presents a freshly asked secret on EVERY streamChat() call too', async () => {
+    const seen: Array<string | undefined> = [];
+    let n = 0;
+    const rotating: IApiKeyCredential = {
+      kind: 'api-key',
+      secret: async () => `sk-${++n}`,
+    };
+    const p = new OpenAIProvider({
+      credential: rotating,
+      model: 'gpt-4o-mini',
+    });
+    // @ts-expect-error — stub axios for test
+    p.client.post = async (
+      _url: string,
+      _body: unknown,
+      config?: { headers?: Record<string, string> },
+    ) => {
+      seen.push(config?.headers?.Authorization);
+      return { data: (async function* () {})() };
+    };
+    for await (const _c of p.streamChat([{ role: 'user', content: 'a' }])) {
+      // drain
+    }
+    for await (const _c of p.streamChat([{ role: 'user', content: 'b' }])) {
+      // drain
+    }
+    assert.deepEqual(seen, ['Bearer sk-1', 'Bearer sk-2']);
+  });
+
+  it('presents a freshly asked secret on EVERY getModels() call too', async () => {
+    const seen: Array<string | undefined> = [];
+    let n = 0;
+    const rotating: IApiKeyCredential = {
+      kind: 'api-key',
+      secret: async () => `sk-${++n}`,
+    };
+    const p = new OpenAIProvider({
+      credential: rotating,
+      model: 'gpt-4o-mini',
+    });
+    // @ts-expect-error — stub axios for test
+    p.client.get = async (
+      _url: string,
+      config?: { headers?: Record<string, string> },
+    ) => {
+      seen.push(config?.headers?.Authorization);
+      return { data: { data: [] } };
+    };
+    await p.getModels();
+    await p.getModels();
+    assert.deepEqual(seen, ['Bearer sk-1', 'Bearer sk-2']);
+  });
 });
