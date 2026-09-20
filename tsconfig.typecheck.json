@@ -19,6 +19,10 @@
     "packages/llm-agent/src/logger/normalise-logger.test.ts",
     "packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts",
     "packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts",
-    "packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts"
+    "packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts",
+    "packages/openai-llm/src/__tests__/credential.test.ts",
+    "packages/anthropic-llm/src/__tests__/credential.test.ts",
+    "packages/deepseek-llm/src/__tests__/credential.test.ts",
+    "packages/ollama-llm/src/__tests__/credential.test.ts"
   ]
 }
