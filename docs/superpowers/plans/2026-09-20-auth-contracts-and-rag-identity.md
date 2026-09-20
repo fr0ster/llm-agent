@@ -564,7 +564,10 @@ git add packages/llm-agent/src/types.ts \
         packages/llm-agent-libs/src/__tests__/providers-credential.test.ts \
         packages/openai-llm/src packages/anthropic-llm/src \
         packages/deepseek-llm/src packages/ollama-llm/src
-git status --porcelain   # must be empty: nothing this task touched is left behind
+# `git status --porcelain` lists STAGED files too, so it can never be empty right
+# after an add. Check the two things separately instead:
+git diff --quiet || { echo "unstaged changes remain in this task's scope"; exit 1; }
+git diff --cached --name-only   # read this list: it must be exactly what the task touched
 git commit -m "feat: LLM providers accept a credential and resolve it per request
 
 A new optional property, never a widening of apiKey: a consumer that reads
@@ -714,23 +717,49 @@ describe('OpenAiEmbedder credential', () => {
 
 `apiKey` becomes optional so a credential-only configuration is expressible, and the constructor's existing throw fires only when **neither** is given — so the current error and its test survive untouched. Note the shape of that change honestly: for a *caller* it is a widening and safe; for anyone *reading* `OpenAiEmbedderConfig.apiKey` the type goes from `string` to `string | undefined`, and no reader outside the package is known.
 
+**The class keeps no `config`.** It copies what it needs into fields — `private readonly apiKey: string` (`:15`), `baseURL`, `model` — so there is no `this.config` to hand the helper, and an earlier draft of this step told you to pass one. Two fields replace the one:
+
 ```ts
 export interface OpenAiEmbedderConfig {
-  apiKey?: string;                       // was: apiKey: string
+  apiKey?: string;                       // was: apiKey: string (required)
   credential?: IApiKeyCredential | IBearerCredential;
+  baseURL?: string;
   model: string;
-  // … unchanged
 }
 
-constructor(config: OpenAiEmbedderConfig) {
-  if (!config.apiKey && !config.credential) {
-    throw new Error('OpenAiEmbedder requires an apiKey or a credential');
+export class OpenAiEmbedder implements IEmbedderBatch {
+  private readonly baseURL: string;
+  private readonly apiKey?: string;                                   // was: string
+  private readonly credential?: IApiKeyCredential | IBearerCredential; // new
+  readonly model: string;
+
+  constructor(config: OpenAiEmbedderConfig) {
+    // The existing message is kept verbatim: openai-embedder.test.ts asserts on it.
+    if (!config.apiKey && !config.credential) {
+      throw new Error('OpenAI API key is required for embedding');
+    }
+    if (!config.model) {
+      throw new Error("OpenAIEmbedder requires a 'model'");
+    }
+    this.apiKey = config.apiKey;
+    this.credential = config.credential;
+    this.baseURL = (config.baseURL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.model = config.model;
   }
-  // …
+
+  /** Asked per request, from the two fields — there is no config object to pass. */
+  private async authorization(): Promise<string> {
+    const secret = await resolveProviderSecret({
+      apiKey: this.apiKey,
+      credential: this.credential,
+    });
+    if (!secret) throw new RagError('OpenAI API key is required for embedding', 'RAG_NO_SECRET');
+    return `Bearer ${secret}`;
+  }
 }
 
 // at BOTH header sites (:48, :109), already inside `await fetch(…)`:
-Authorization: `Bearer ${await resolveProviderSecret(this.config)}`,
+Authorization: await this.authorization(),
 ```
 
 - [ ] **Step 4: run both tests and both type checks**
@@ -1227,7 +1256,7 @@ describe('HttpMcpServer', () => {
     const client = await server.start();
     assert.equal(client, f.client, 'start() returns the factory\u2019s client');
     assert.equal(f.configs.length, 1);
-    const config = f.configs[0] as Extract<McpConnectionConfig, { url: string }>;
+    const config = f.configs[0];   // already McpConnectionConfig — no narrowing needed
     assert.equal(config.headers?.Authorization, 'Bearer t1');
     assert.equal(config.headers?.['X-Trace'], 'abc', 'static headers survive');
     assert.equal(asked, 1, 'asked once per connection: headers() is synchronous (see above)');
@@ -1240,8 +1269,18 @@ describe('HttpMcpServer', () => {
       { url: 'https://mcp.example/mcp', credential, headers: { Authorization: 'Bearer stale' } },
       f.factory,
     ).start();
-    const config = f.configs[0] as Extract<McpConnectionConfig, { url: string }>;
+    const config = f.configs[0];   // already McpConnectionConfig — no narrowing needed
     assert.equal(config.headers?.Authorization, 'Bearer tok');
+  });
+
+  it('tolerates a factory that returns no close at all', async () => {
+    const client = { listTools: async () => [] } as never;
+    const server = new HttpMcpServer(
+      { url: 'https://mcp.example/mcp' },
+      async () => ({ client }),          // `close` is optional on the contract
+    );
+    await server.start();
+    await server.stop();                 // must not throw
   });
 
   it('stop() closes exactly once, and is safe to call twice', async () => {
@@ -1275,7 +1314,7 @@ describe('HttpMcpServer', () => {
     await server.start();
     await server.stop();
     await server.start();
-    const second = f.configs[1] as Extract<McpConnectionConfig, { url: string }>;
+    const second = f.configs[1];
     assert.equal(second.headers?.Authorization, 'Bearer t2');
   });
 });
@@ -1290,7 +1329,7 @@ describe('StdioMcpServer', () => {
     );
     const client = await server.start();
     assert.equal(client, f.client);
-    const config = f.configs[0] as Extract<McpConnectionConfig, { type: 'stdio' }>;
+    const config = f.configs[0];
     assert.equal(config.env?.MCP_TOKEN, 'super-secret');
     assert.ok(
       !config.args?.join(' ').includes('super-secret'),
@@ -1367,11 +1406,15 @@ export class HttpMcpServer implements IMcpServer {
         : await credential.secret()
       : undefined;
     const config: McpConnectionConfig = {
+      // `type` is REQUIRED on McpConnectionConfig ('http' | 'stdio',
+      // mcp-connection-strategy.ts:33). An earlier draft omitted it and hid the
+      // omission behind `as McpConnectionConfig`; no cast is needed once it is there.
+      type: 'http',
       url,
       // The credential goes LAST so a stale static Authorization cannot win.
       headers: { ...headers, ...(secret ? { Authorization: `Bearer ${secret}` } : {}) },
       ...(timeout !== undefined ? { timeout } : {}),
-    } as McpConnectionConfig;
+    };
 
     const held = await this.createClient(config);
     this.held = held;
@@ -1382,7 +1425,10 @@ export class HttpMcpServer implements IMcpServer {
     const held = this.held;
     if (!held) return;          // never started, or already stopped
     this.held = undefined;      // cleared FIRST, so a failing close cannot be retried into a double close
-    await held.close();
+    // `close?` is OPTIONAL on McpClientFactoryResult (mcp-connection-strategy.ts:68):
+    // a custom factory may legitimately have nothing to clean up, and calling it
+    // unconditionally does not compile under strict.
+    await held.close?.();
   }
 }
 ```
@@ -1419,7 +1465,12 @@ export class StdioMcpServer implements IMcpServer {
     const config: McpConnectionConfig = {
       type: 'stdio',
       command,
-      args: args ?? [],
+      // `args?: string[]` is mutable on the contract, so copy rather than pass a
+      // readonly array through a cast.
+      args: [...(args ?? [])],
+      // The contract's own docstring already states the rule this satisfies:
+      // "Pass the caller's own values here; never in `args`, which are visible
+      // in `ps`" (mcp-connection-strategy.ts:45-46).
       env: {
         ...(env ?? {}),
         ...(credential && credentialEnvVar
@@ -1427,7 +1478,7 @@ export class StdioMcpServer implements IMcpServer {
           : {}),
       },
       ...(timeout !== undefined ? { timeout } : {}),
-    } as McpConnectionConfig;
+    };
 
     const held = await this.createClient(config);
     this.held = held;
@@ -1438,7 +1489,7 @@ export class StdioMcpServer implements IMcpServer {
     const held = this.held;
     if (!held) return;
     this.held = undefined;
-    await held.close();
+    await held.close?.();       // optional on the contract — see the http class
   }
 }
 ```
@@ -2728,6 +2779,14 @@ This section records a review that was **run**, on 2026-09-20, after the first d
 - **A type used in a later task was defined by no earlier one.** Task B14 reads `meta.authorization` to decide what a global permits, and `RagCollectionMeta` has no such field — §6.1's second axis was in the spec and in no task. Task B9 now adds `RagCollectionAuthorization` and the optional `authorization?` on the meta and on `createCollection`.
 - **§3.5 (stdio credentials) had no task at all.** §8 puts the typed stdio implementation in this workstream, beside http. Task B8 now covers both, batched because the shape is identical — a constructor demanding a credential typed per target — with the stdio half asserting the secret travels through the child's `env` and never through argv.
 - **A cross-package import that cannot exist.** Task B14's first draft told an implementer to import `SessionGraphIdentity` into `llm-agent`, but it lives in `llm-agent-libs` and the dependency runs libs → llm-agent, one way. Fixed in both the plan and §5.1 of the spec, which now names `RagCallerIdentity`.
+
+**What a fourth pass found — three, all of them code that would not compile, plus one it did not catch:**
+
+- **B3 reached for a `this.config` the class does not have.** `OpenAiEmbedder` copies `apiKey`, `baseURL` and `model` into fields (`:14-16`, `:25-30`) and keeps no config object, so `resolveProviderSecret(this.config)` was uncompilable. Two fields replace the one — `apiKey?: string` and `credential?` — with a private `authorization()` that asks per request, and the existing throw keeps its message verbatim because `openai-embedder.test.ts` asserts on it.
+- **Both MCP servers called an optional member as if it were required.** `McpClientFactoryResult.close?: () => Promise<void> | void` is optional (`mcp-connection-strategy.ts:68`) — a custom factory may legitimately have nothing to clean up — so `await held.close()` fails under strict. It is `await held.close?.()` now, with a test that passes a factory returning no `close` at all.
+- **The http config omitted a required discriminator and hid it behind a cast.** `McpConnectionConfig.type` is required, `'http' | 'stdio'` (`:33`), and `as McpConnectionConfig` was covering its absence. With `type: 'http'` present no cast is needed. `args?: string[]` is also mutable on that contract, so the stdio config copies rather than passing a readonly array through a cast — and the contract's own docstring already states the argv rule this satisfies (`:45-46`), so the plan cites it instead of asserting it.
+- **And one the review did not flag, found while fixing the cast:** the tests narrowed with `Extract<McpConnectionConfig, { url: string }>`, but that type is a single interface with optional `url`, not a union — so `Extract` collapses to `never`. Measured on the repository's tsc: `TS2322: Type 'Cfg' is not assignable to type 'never'`. All four narrowings are gone; the fake's array is already typed.
+- **B2's cleanliness check could never pass.** It ran `git add …` and then required `git status --porcelain` to be empty, which lists staged files. Split: `git diff --quiet` for nothing unstaged, and `git diff --cached --name-only` to read the staged set.
 
 **What a third pass found — three more, and the same root cause every time: a file list that did not match a dependency graph.**
 
