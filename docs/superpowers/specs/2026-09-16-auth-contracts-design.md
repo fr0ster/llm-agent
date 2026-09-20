@@ -345,7 +345,8 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    llm:
      main:
        provider: deepseek
-       credentialRef: DEEPSEEK_API_KEY     # a NAME, resolved by the app — was: apiKey: ${DEEPSEEK_API_KEY}
+       credentialRef: DEEPSEEK_API_KEY     # a NAME the app resolves — was: apiKey: ${DEEPSEEK_API_KEY}
+                                           # (omit it entirely and the root's default applies)
        model: deepseek-chat
      classifier:
        provider: openai
@@ -780,69 +781,80 @@ That function is the package's existing `TokenProvider` and `parseServiceKey` mo
 ```
 
 ```ts
-// Your composition root. A reference names an ENTRY, not just a credential: SAP's
-// service key yields an address as well, and an entry is where that lives.
+// Your composition root, in full. Type-checked under --strict against stub
+// declarations of the contracts before being written here — four earlier versions of
+// this example did not compile or did not do what the prose beside them claimed.
 type CredentialEntry = {
-  credential?: IApiKeyCredential | IBearerCredential;   // absent = this target needs none
-  apiBaseUrl?: string;                                  // SAP AI Core, from the service key
+  /** Absent means this target needs none. Any of the three kinds is admissible: a
+   *  store entry holds a secret-login, an LLM entry an api key or a bearer token. */
+  credential?: AnyCredential;
+  /** SAP AI Core only, and it travels with the credential from the same service key. */
+  apiBaseUrl?: string;
 };
 
-const aicore = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
+/** A function, not a Map literal, so nothing is read or parsed until it is asked for. */
+function credentialFor(ref: string): CredentialEntry | undefined {
+  switch (ref) {
+    case 'DEEPSEEK_API_KEY':
+      return { credential: staticApiKey(requireEnv('DEEPSEEK_API_KEY')) };
+    case 'OPENAI_KEY_CHEAP':
+      return { credential: staticApiKey(requireEnv('OPENAI_KEY_CHEAP')) };
+    case 'AICORE_PROD': {
+      const k = serviceKeyCredential(requireEnv('AICORE_SERVICE_KEY'));
+      return { credential: k.credential, apiBaseUrl: k.apiBaseUrl };
+    }
+    case 'RAG_PG':
+      return { credential: staticLogin(requireEnv('PG_USER'), requireEnv('PG_PASSWORD')) };
+    case 'LOCAL_OLLAMA':
+      return {};
+    default:
+      return undefined;
+  }
+}
 
-const credentials = new Map<string, CredentialEntry>([
-  // 'default' is what an entry with no credentialRef resolves to, which is how a
-  // single-account deployment writes nothing in its YAML.
-  ['default', { credential: staticApiKey(process.env.DEEPSEEK_API_KEY!) }],
-  ['OPENAI_KEY_CHEAP', { credential: staticApiKey(process.env.OPENAI_KEY_CHEAP!) }],
-  ['AICORE_PROD', { credential: aicore.credential, apiBaseUrl: aicore.apiBaseUrl }],
-  ['LOCAL_OLLAMA', {}],                                 // keyless, and says so
-]);
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`${name} is not set, but a credentialRef asked for it`);
+  return v;
+}
 
 const deps: BuildAgentDeps = {
   async makeLlm(cfg) {
-    const ref = cfg.credentialRef ?? 'default';
-    const entry = credentials.get(ref);
-    // A configuration error, failing at startup and naming the reference — not later,
-    // as an authentication failure.
+    const ref = cfg.credentialRef ?? 'DEEPSEEK_API_KEY';
+    const entry = credentialFor(ref);
     if (!entry) throw new Error(`credentialRef '${ref}' has no entry configured`);
 
-    const needsKey = (): IApiKeyCredential => {
+    const apiKey = (): IApiKeyCredential => {
       if (entry.credential?.kind !== 'api-key') {
         throw new Error(`credentialRef '${ref}' must hold an api-key credential for ${cfg.provider}`);
       }
       return entry.credential;
     };
+    const optionalApiKey = (): IApiKeyCredential | undefined => {
+      if (!entry.credential) return undefined;
+      if (entry.credential.kind !== 'api-key') {
+        throw new Error(`credentialRef '${ref}' must hold an api-key credential for ${cfg.provider}`);
+      }
+      return entry.credential;
+    };
 
-    // Dispatch on what the config asked for. This is the part that was the library's
-    // and is now yours, and it is why a secret no longer travels through a framework type.
     const provider = (() => {
       switch (cfg.provider) {
         case 'openai':
-          return new OpenAIProvider({ credential: needsKey(), model: cfg.model! });
+          return new OpenAIProvider({ credential: apiKey(), model: cfg.model! });
         case 'anthropic':
-          return new AnthropicProvider({ credential: needsKey(), model: cfg.model! });
+          return new AnthropicProvider({ credential: apiKey(), model: cfg.model! });
         case 'deepseek':
-          return new DeepSeekProvider({ credential: needsKey(), model: cfg.model! });
-        case 'ollama':
-          // Ollama extends the OpenAI provider and accepts a key today
-          // (`providers.ts:204`), which a gateway in front of it may require. So the
-          // credential is passed when the entry has one, and omitted when it does not.
-          return new OllamaProvider({
-            baseURL: cfg.url,
-            model: cfg.model!,
-            ...(entry.credential ? { credential: entry.credential } : {}),
-          });
+          return new DeepSeekProvider({ credential: apiKey(), model: cfg.model! });
+        case 'ollama': {
+          const c = optionalApiKey();
+          return new OllamaProvider({ baseURL: cfg.url, model: cfg.model!, ...(c ? { credential: c } : {}) });
+        }
         case 'sap-ai-sdk': {
           if (entry.credential?.kind !== 'bearer' || !entry.apiBaseUrl) {
             throw new Error(`credentialRef '${ref}' must hold a bearer credential and an apiBaseUrl`);
           }
-          // From the ENTRY, so two AI Core accounts are two entries — not a second
-          // read of one global env var.
-          return new SapCoreAIProvider({
-            credential: entry.credential,
-            apiBaseUrl: entry.apiBaseUrl,
-            model: cfg.model!,
-          });
+          return new SapCoreAIProvider({ credential: entry.credential, apiBaseUrl: entry.apiBaseUrl, model: cfg.model! });
         }
         default:
           throw new Error(`unknown llm provider '${cfg.provider}'`);
@@ -854,7 +866,12 @@ const deps: BuildAgentDeps = {
 };
 ```
 
-Three things in that example are the model rather than decoration, and an earlier draft of it got each one wrong. A reference resolves to an **entry**, because SAP's service key yields an address as well as a credential and both belong to the same account. An absent reference resolves to the **`default` entry** rather than to `undefined` — the previous version said “the one credential the deployment holds” in prose and then passed `undefined` through a cast, which would have failed at the first request instead of using the default. And the SAP branch reads its credential and address **from the entry**, not from the global environment, which is what makes two AI Core accounts expressible at all.
+Four things in it are the model rather than decoration, and each is where an earlier version went wrong:
+
+- **`credentialFor` is a function, not a `Map` literal.** A literal built every entry at startup, so a DeepSeek-only deployment had to have an `AICORE_SERVICE_KEY` — and `process.env.X!` only hid the `undefined` from the compiler, it did not make the value present. Nothing is read or parsed until a reference asks for it, and `requireEnv` fails with the variable's name when it is missing.
+- **A reference resolves to an *entry*, and the entry admits all three credential kinds.** SAP's service key yields an address as well as a credential, and both belong to the same account — so the SAP branch reads `apiBaseUrl` from the entry rather than re-reading a global env var, which is what makes two AI Core accounts expressible. Admitting `ISecretLoginCredential` is what lets the same registry answer for `rag.user`/`rag.password`; an earlier version typed it to api-key and bearer only, so a PostgreSQL entry could not be added to the registry it was told to use.
+- **Narrowing is explicit, and optional where the target's is.** `apiKey()` refuses anything else for the three providers that need a key; `optionalApiKey()` keeps Ollama's key optional, because `OllamaProvider` accepts one today (`providers.ts:204`) and a gateway in front of it may require it — the design replaces plain keys with typed credentials rather than removing the capability.
+- **The default reference is a name the root chooses**, so a single-account deployment writes no `credentialRef` at all and still resolves. An earlier version said this in prose and then passed `undefined` through a cast, which would have failed at the first request.
 
 `llm-agent-server` carries exactly this switch as the reference implementation — that is what makes it the example (principle 2), and why §11 no longer lists its configuration as out of scope.
 
