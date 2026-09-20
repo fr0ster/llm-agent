@@ -27,6 +27,22 @@ Copied from the spec. Every task's requirements implicitly include this section.
 - **Interfaces is published before llm-agent adopts it.** An acceptor cannot merge a dependency on an unpublished version (§8).
 - **One PR per repository.** Phase A is one PR in `mcp-abap-adt-interfaces`; Phase B is one PR in llm-agent covering both remaining workstreams (§10).
 - **The user publishes to npm.** Never run `npm publish`; the account has 2FA.
+- **A `@ts-expect-error` in a test file asserts nothing in this repository unless you make it.** Measured: 14 of the 17 packages set `exclude: ["**/__tests__/**", "**/*.test.ts"]`, only the three vector stores include tests, and the one `tsconfig.test.json` that exists lists a single file and **no script runs it** — while 39 such directives already sit in tests across the repo. The runner is tsx, which strips types without checking them, so an unchecked directive is silent whether it holds or not. This is interfaces decision 28 at repository scale: a check that has never failed is an assumption.
+
+  So a task that writes a compile assertion **also type-checks the file it wrote**, using the idiom the repo already has:
+
+  ```bash
+  # ADD the new test to that package's tsconfig.test.json — create it if absent, and
+  # append to `files` rather than replacing it: llm-agent's already lists
+  # src/interfaces/__tests__/pipeline-plugin.test.ts, and replacing the array would
+  # quietly stop checking that one
+  cat packages/<pkg>/tsconfig.test.json
+  # { "extends": "./tsconfig.json", "compilerOptions": { "noEmit": true },
+  #   "files": ["src/…/__tests__/<your>.test.ts"] }
+  npx tsc --noEmit -p packages/<pkg>/tsconfig.test.json; echo "TYPES=$?"
+  ```
+
+  Scope it to the file you added, as the existing config does — including a package's whole test tree would surface unrelated pre-existing errors and is not this workstream's job. And prove the directive can fail: weaken the one thing it guards and confirm `error TS2578: Unused '@ts-expect-error' directive`. Where a behavioural assertion will do instead, prefer it — `assert.throws` runs under tsx and needs none of this.
 
 ---
 
@@ -311,8 +327,8 @@ The smallest change that makes every later task expressible: the contracts stop 
 
 ```ts
 // packages/llm-agent/src/credentials/__tests__/static.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { staticApiKey, staticLogin } from '../../index.js';
 
 describe('the static conversions', () => {
@@ -444,8 +460,8 @@ The `TokenProvider` already caches, tracks expiry and refreshes inside a window;
 
 ```ts
 // packages/sap-aicore-auth/src/__tests__/service-key-credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { serviceKeyCredential } from '../index.js';
 
 const key = JSON.stringify({
@@ -603,8 +619,8 @@ Record per provider whether the secret enters through our own header assembly (r
 
 ```ts
 // packages/openai-llm/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import { OpenAIProvider } from '../index.js';
@@ -680,6 +696,12 @@ Ollama's stays `credential?: IApiKeyCredential`, and its header is set only when
 for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
   npm test -w "packages/$p"; npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
+
+# the compile assertion in each credential.test.ts is silent unless checked
+# (Global Constraints): add the file to that package's tsconfig.test.json and
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
+  npx tsc --noEmit -p "packages/$p/tsconfig.test.json"; echo "$p types=$?"
+done
 ```
 
 - [ ] **Step 6: commit**
@@ -711,8 +733,8 @@ Ollama's stays optional, because it accepts a key today and a gateway may requir
 
 ```ts
 // packages/openai-embedder/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import { OpenAiEmbedder } from '../openai-embedder.js';
 
@@ -791,6 +813,9 @@ Both header sites (`:48`, `:109`) already sit inside `await fetch(…)`, so `Aut
 ```bash
 npm test -w packages/openai-embedder
 npx tsc --noEmit -p packages/openai-embedder/tsconfig.json; echo "EXIT=$?"
+# the no-credential case is asserted by assert.throws, which runs — but the
+# @ts-expect-error beside it does not, unless the file is checked (Global Constraints)
+npx tsc --noEmit -p packages/openai-embedder/tsconfig.test.json; echo "TYPES=$?"
 ```
 
 - [ ] **Step 5: commit**
@@ -822,8 +847,8 @@ ollama-embedder is deliberately untouched: it sends Content-Type and nothing els
 
 ```ts
 // packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { buildDestination } from '../sap-core-ai-provider.js';
 
@@ -919,8 +944,8 @@ credential (Task B10)."
 
 ```ts
 // packages/pg-vector-rag/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { staticLogin } from '@mcp-abap-adt/llm-agent';
 import { resolvePgConnectArgs } from '../connection.js';
 
@@ -1044,8 +1069,8 @@ Both classes take the client factory as a constructor argument, defaulting to `c
 
 ```ts
 // packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type { McpClientFactoryResult, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
 import type {
   IApiKeyCredential,
@@ -1485,6 +1510,10 @@ Neither duplicates `client.ts`'s transport branching: `createDefaultMcpClient` a
 ```bash
 node --import tsx/esm --test packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
 npx tsc --noEmit -p packages/llm-agent-mcp/tsconfig.json; echo "EXIT=$?"
+# This task's two strongest assertions are compile-only — that a bearer credential is
+# refused where a header key is declared, and that a credential with nowhere to go is
+# unconstructible. Both are silent unless the file is checked (Global Constraints):
+npx tsc --noEmit -p packages/llm-agent-mcp/tsconfig.test.json; echo "TYPES=$?"
 npx biome check packages/llm-agent-mcp/src
 ```
 
@@ -1522,8 +1551,8 @@ The single largest removal, and the one that makes the rest true: while a librar
 
 ```ts
 // packages/llm-agent-libs/src/__tests__/no-provider-dispatch.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import * as libs from '../index.js';
 
 describe('llm-agent-libs no longer dispatches providers', () => {
@@ -1605,8 +1634,8 @@ BREAKING: makeLlm, makeDefaultLlm, MakeLlmConfig and DefaultModelResolver are re
 
 ```ts
 // packages/llm-agent-server-libs/src/__tests__/credential-ref.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { loadYamlConfig } from '../smart-agent/yaml-loader.js';   // confirm the name in Step 2
 import { SmartServer } from '../smart-agent/smart-server.js';
 
@@ -1840,8 +1869,8 @@ A provider is handed the **store** name, not the logical one: `SimpleRagRegistry
 
 ```ts
 // packages/llm-agent/src/__tests__/rag-collection-record.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type {
   IRagProvider,
   RagCallerIdentity,
@@ -1965,6 +1994,9 @@ and widen `createCollection`'s `opts` with `collectionName?: string`, `attribute
 
 ```bash
 node --import tsx/esm --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
+# `providerName is not optional on a record` is a compile assertion, silent unless the
+# file is checked (Global Constraints):
+npx tsc --noEmit -p packages/llm-agent/tsconfig.test.json; echo "TYPES=$?"
 for p in llm-agent qdrant-rag pg-vector-rag hana-vector-rag llm-agent-rag; do
   npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
@@ -2005,8 +2037,8 @@ type breaks every implementation."
 
 ```ts
 // packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { CatalogRecordDeleteError } from '../corrections/errors.js';
 import { CollectionNotFoundError } from '../corrections/errors.js';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
@@ -2118,8 +2150,8 @@ The same change twice, so one task and one diff. **These packages own the backen
 
 ```ts
 // packages/pg-vector-rag/src/__tests__/catalog.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 
@@ -2316,8 +2348,8 @@ The same four behaviours as Task B13, against a `fetch` fake rather than a SQL c
 
 ```ts
 // packages/qdrant-rag/src/__tests__/catalog.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 
@@ -2420,8 +2452,8 @@ CatalogRecordDeleteError without touching the collection."
 
 ```ts
 // packages/llm-agent/src/rag/__tests__/adopt.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
 
 const rag = { query: async () => ({ ok: true, value: [] }) } as never;
@@ -2579,8 +2611,8 @@ The security change, and the largest behavioural one. Five of the seven handlers
 
 ```ts
 // packages/llm-agent/src/rag/__tests__/tool-identity.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
 
 const identity = { sessionId: 's-1', userId: 'u-1' };
@@ -2759,6 +2791,10 @@ Then: all seven handlers take `_ctx` and use `identity`; `rag_create_collection`
 ```bash
 node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -8
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
+# `identity is required` is the task's central assertion and it is compile-only, so it is
+# silent unless the file is checked (Global Constraints). Prove it can fail too: make
+# `identity` optional and confirm TS2578 on that directive.
+npx tsc --noEmit -p packages/llm-agent/tsconfig.test.json; echo "TYPES=$?"
 ```
 
 - [ ] **Step 5: commit**
@@ -2799,8 +2835,8 @@ index signature absorbs them — but a reader of one must change."
 
 ```ts
 // packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { SessionGraphFactory } from '../session/session-graph-factory.js';
 
 const sharedRegistry = () => {
