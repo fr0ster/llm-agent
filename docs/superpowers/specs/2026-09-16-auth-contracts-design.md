@@ -323,9 +323,17 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    | **serializable app configuration** — `SmartServerLlmConfig`, `PipelineLlmProviderConfig`, the YAML | what a file can express: `provider`, `model`, `temperature`, `classifierTemperature`, `url`, and a **`credentialRef`** | **no secret, no instance** |
    | **runtime injection** — `BuildAgentDeps.makeLlm`, which already exists | `(cfg) => Promise<ILlm>`, supplied by the app, closing over the credentials it holds | **construction, done by the app** |
 
-   **The seam is not new, and that is the point.** `BuildAgentDeps.makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>` is already there (`smart-server.ts:360`), already optional, and already the right shape: a factory handed the *serializable* config, returning a constructed `ILlm`. Nothing needs inventing and no precedence has to be settled — what changes is only that it stops being an override of a library default, because the default is what leaves. A deployment that supplies none has no LLM, which the config validator can say plainly at startup. Its siblings already work this way: `resolveEmbedder`, `connectMcp`, `buildSkillHost` (`:361`, `:371`, `:366`).
+   **The seam is not new, and that is the point.** `BuildAgentDeps.makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>` is already there (`smart-server.ts:360`), already optional, and already the right shape: a factory handed the *serializable* config, returning a constructed `ILlm`. Its siblings already work this way: `resolveEmbedder`, `connectMcp`, `buildSkillHost` (`:361`, `:371`, `:366`).
 
-   Per role, the role travels in the config: the YAML `llm:` map has `main`, `classifier` and `helper` entries, each a config of its own (`yaml-loader.ts:68-81`), so `makeLlm` is called once per role with that role's config. `IModelResolver` stays the separate, already-optional seam for `PUT /v1/config` switching (`:334`).
+   **But it stops being optional in practice, and that is a runtime break of its own.** `SmartServer` supplies a default today — `makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg))` (`smart-server.ts:954`) — so a consumer that never touched the DI seam relies on it, and removing the default means such a deployment **stops starting**, not merely stops compiling. §8 lists it and the migration shows the call; the validator should refuse at startup with a message naming the seam rather than failing later.
+
+   **And the role does not travel in the config — an earlier draft of this paragraph said it does.** `main`, `classifier` and `helper` are keys of the outer YAML map (`yaml-loader.ts:68-81`); what reaches the factory is a `SmartServerLlmConfig`, which contains no role (`:359-360`). So the seam widens by one parameter:
+
+   ```ts
+   makeLlm?: (cfg: SmartServerLlmConfig, role: 'main' | 'classifier' | 'helper') => Promise<ILlm>;
+   ```
+
+   Measured rather than assumed: a consumer's existing one-parameter factory still satisfies the two-parameter type — checked against this repository's tsc, which accepts `(cfg) => …` where `(cfg, role) => …` is expected. So the widening is additive for anyone who already injects, and it lets a factory do role-aware defaults or auditing. Credential selection does **not** need it, because `credentialRef` is in the config. `IModelResolver` stays the separate, already-optional seam for `PUT /v1/config` switching (`:334`).
 
    **`apiKey` leaves the YAML, but a non-secret `credentialRef` replaces it — an earlier draft removed both and lost something real.** Today each role may carry its own `apiKey: ${ENV_VAR}`, so one deployment can put `main` on one account and `classifier` on another. Remove the field with nothing in its place and `{ provider, model, … }` can no longer say **which** credential a role or an endpoint is meant to use; “the app reads the environment” only works when there is one thing to read.
 
@@ -682,6 +690,7 @@ Read this rather than deriving it. Every row was checked against the packages, n
 **Release shape.** **New capability** arrives as optional seams a consumer may decline, and none of those changes an existing path's behaviour. That is the whole of what is additive here, and an earlier draft of this paragraph said it about the release as a whole — which the rest of this section then contradicted. What is **not** declinable: exported LLM factories and `DefaultModelResolver` are removed (§4.6.2), the SAP providers stop reading `AICORE_SERVICE_KEY`, a connection string carrying credentials is refused where it used to be used, and §5.1's identity changes land. Every seam that *is* declinable — including the safer teardown order, which arrives as the optional `closePipeline` hook (§3.4). Two things are not declinable, both from §5.1's single-identity rule:
 
 - **A required input.** `buildRagCollectionToolEntries` now takes an `identity`, so the old one-field call stops compiling. Deliberate, and §5.1 says why no overload without it is kept: an optional `identity?` would mean “do not narrow”, which is an unnarrowed address space reached by forgetting a field.
+- **A library default that is no longer supplied.** `SmartServer` fills `BuildAgentDeps.makeLlm` with `_makeLlmDefault` today (`smart-server.ts:954`), so a deployment that never injected one **stops starting** once the default goes — a runtime break, not only a source one. The validator refuses at startup and names the seam; migration item 4 shows the call.
 - **Two contract removals.** `LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` go (§4.6.2): a contract carries what an acceptor *needs*, and a plain key is one way of *obtaining* it. `staticApiKey(key)` converts a call site in one line. The concrete providers replace their own fields the same way, and a connection string that carries credentials is refused at construction rather than silently outranked.
 - **A removal, measured rather than assumed.** `RagToolContext` loses its declared `sessionId?`/`userId?`. Against the repository's own tsc (6.0.3), a call site passing those keys still compiles — the type declares `[key: string]: unknown`, which absorbs them — while a *reader* of one gets `error TS2322: Type 'unknown' is not assignable to type 'string | undefined'`. That is workstream 4's read-side class (§7), and no reader exists today because nothing mounts these tools.
 
@@ -689,7 +698,7 @@ The deprecations — `mcpClientFactory`, `mcpClientFactoryWithDescriptors`, `bui
 
 ### Migration — what a consumer on the old contract must do
 
-Six changes need an edit, and none of them is optional — nothing here is deprecated-but-working, because §4.6.2 removes rather than deprecates. Everything *else* is declinable as usual: a consumer that leaves a new seam unused keeps today’s behaviour.
+Seven changes need an edit, and none of them is optional — nothing here is deprecated-but-working, because §4.6.2 removes rather than deprecates. Everything *else* is declinable as usual: a consumer that leaves a new seam unused keeps today’s behaviour.
 
 **1. Replace a plain key with a credential** (§4.6.2). `apiKey` is gone from `LLMProviderConfig`, from `EmbedderFactoryConfig` and from the concrete providers' own configs; a static key is already a credential, and core ships the conversion.
 
@@ -745,7 +754,50 @@ import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 
 That function is the package's existing `TokenProvider` and `parseServiceKey` moved out with their tests, so behaviour is unchanged for a deployment that sets the same env var — it is now read one level up, by you.
 
-**4. Build the RAG collection tools with an identity** (§5.1). The identity is the caller the pipeline is being built for — the same one whose collections the instance may address.
+**4. Supply `BuildAgentDeps.makeLlm`, and move `apiKey` to `credentialRef`** (§4.6.2). The library no longer defaults this seam, so a server that never injected one must now do so — without it there is no LLM and startup refuses.
+
+```yaml
+  llm:
+    main:
+-     provider: deepseek
+-     apiKey: ${DEEPSEEK_API_KEY}
++     provider: deepseek
++     credentialRef: DEEPSEEK_API_KEY     # a NAME; the value never enters the loaded config
+      model: deepseek-chat
+    classifier:
+      provider: openai
++     credentialRef: OPENAI_KEY_CHEAP     # a different account, if you want one
+      model: gpt-4o-mini
+```
+
+```ts
+// your composition root: one place that turns a reference into a credential
+const credentials = new Map<string, IApiKeyCredential>([
+  ['DEEPSEEK_API_KEY', staticApiKey(process.env.DEEPSEEK_API_KEY!)],
+  ['OPENAI_KEY_CHEAP', staticApiKey(process.env.OPENAI_KEY_CHEAP!)],
+]);
+
+const deps: BuildAgentDeps = {
+  async makeLlm(cfg, role) {
+    const credential = cfg.credentialRef
+      ? credentials.get(cfg.credentialRef)
+      : theOnlyCredentialIHold;
+    // An unknown reference is a configuration error, and it fails here, at startup,
+    // naming the reference — not later, as an authentication failure.
+    if (!credential) {
+      throw new Error(
+        `llm.${role}.credentialRef '${cfg.credentialRef}' has no credential configured`,
+      );
+    }
+    const provider = new OpenAIProvider({ credential, model: cfg.model! });
+    return new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model });
+  },
+};
+```
+
+`credentialRef` is optional: omit it and the factory uses the one credential the deployment holds, which is what a single-account setup wants.
+
+**5. Build the RAG collection tools with an identity** (§5.1). The identity is the caller the pipeline is being built for — the same one whose collections the instance may address.
 
 ```ts
 // before
@@ -754,7 +806,7 @@ const entries = buildRagCollectionToolEntries({ registry });
 const entries = buildRagCollectionToolEntries({ registry, identity });
 ```
 
-**5. Stop reading identity from the tool context** (§5.1). A handler no longer needs to: the entries were built for one caller, so the owner keys come from the bound identity. Call sites that *pass* `sessionId`/`userId` keep compiling and can be left alone — the values simply stop being read — but code that *reads* them must change.
+**6. Stop reading identity from the tool context** (§5.1). A handler no longer needs to: the entries were built for one caller, so the owner keys come from the bound identity. Call sites that *pass* `sessionId`/`userId` keep compiling and can be left alone — the values simply stop being read — but code that *reads* them must change.
 
 ```ts
 // before: the field was typed, and authoritative
@@ -762,7 +814,7 @@ const owner = ctx.userId;                  // string | undefined
 // after: TS2339/TS2322 — there is no such declared field, and no need for one
 ```
 
-**6. Narrow a widened logger option before reading it** (§7). Six readable option properties accept `ILogger | ITextLogger`, so a consumer that *reads* one must narrow first; a consumer that only *passes* a logger is unaffected. The guarded form is the one that compiles — the property is optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
+**7. Narrow a widened logger option before reading it** (§7). Six readable option properties accept `ILogger | ITextLogger`, so a consumer that *reads* one must narrow first; a consumer that only *passes* a logger is unaffected. The guarded form is the one that compiles — the property is optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
 
 ```ts
 // before
@@ -817,6 +869,7 @@ Workstreams 1 and 4 are already merged, each as its own PR, before this rule was
 ## 11. Out of scope
 
 - Writing a contract nobody is specified to accept. Decision 11 asks who calls a thing; it does not ask the acceptor to exist first, and it cannot — an acceptor in another repository cannot depend on an unpublished contract. The criterion is §4.4’s: a contract may be written once a concrete accepting change has been specified and checked against the acceptor’s actual API, and it is published before that change adopts it.
-- Any consumer's implementation: cloud-llm-hub's per-session graph and XSUAA-backed check, and `llm-agent-server`'s configuration, are theirs.
+- **cloud-llm-hub's** own implementation — its per-session graph and XSUAA-backed check — is theirs.
+- `llm-agent-server`'s configuration **is no longer out of scope**, and an earlier draft of this list said it was. §10 requires it to become the composition root: env resolution, credential construction, provider dispatch and the `IModelResolver` implementation behind `PUT /v1/config`. It is the reference every other consumer copies, which is principle 2's whole point.
 - **Anything that judges an incoming caller.** No admission step, no access-check contract, no per-request authorization, and nothing that wraps a server (§1.4). A consumer that needs those builds them where the request actually arrives, and §5 says what we hand it to decide with.
 - llm-agent issue #304 (network-mode isolation), which this design is the prerequisite for.
