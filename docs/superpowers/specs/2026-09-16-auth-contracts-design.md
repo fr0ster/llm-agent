@@ -884,7 +884,7 @@ Four things in it are the model rather than decoration, and each is where an ear
 
 `llm-agent-server` carries exactly this switch as the reference implementation — that is what makes it the example (principle 2), and why §11 no longer lists its configuration as out of scope.
 
-`credentialRef` is optional: omit it and the lookup resolves to the `default` entry, which is what a single-account setup wants. The same swap applies to the store configs — `rag.apiKey`, `rag.user`/`rag.password` and a qdrant skill store's `apiKey` all become `credentialRef`, resolved by the same map, and the store constructors take the credential (§4.5).
+`credentialRef` is optional: omit it and the lookup falls back to `DEFAULT_REF` — the one name your root nominates, `'PRIMARY'` above — which is what a single-account setup wants. The same swap applies to the store configs: `rag.apiKey`, `rag.user`/`rag.password` and a qdrant skill store's `apiKey` all become `credentialRef`, resolved through the **same `credentialFor`** as the LLM entries, which is why its entry type admits `ISecretLoginCredential` (the `RAG_PG` case above). The store constructors then take the credential itself (§4.5).
 
 **5. Build the RAG collection tools with an identity** (§5.1). The identity is the caller the pipeline is being built for — the same one whose collections the instance may address.
 
