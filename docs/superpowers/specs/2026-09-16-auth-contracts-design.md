@@ -293,7 +293,36 @@ cloud-llm-hub shows what a **server** does with those facts — and what happens
 
 Both workarounds exist because identity had to be recovered rather than passed. Passing it is what §6.3's typed keys and `CallOptions` are for; deciding with it stays the hub's.
 
-**What llm-agent contributes:** `buildRagCollectionToolEntries({ registry })` returns entries whose handler takes `RagToolContext { sessionId?, userId? }` and has no consumer today (§9.7).
+### 5.1 Authorization happens at construction, and the instance *is* the enforcement point
+
+§5 says admission is the consumer's. Read alone, that invites a fair objection: the consumer authorizes an arriving HTTP request, but *which* collection and *which* operation are chosen later, when the model calls a tool. If nothing judges at that moment, what stops a caller's tool call from naming someone else's collection?
+
+The answer is that nothing needs to judge at that moment, because **the instance the tool operates through was built for one caller**. One external user, one session, one pipeline, its own instances (§4.1). Authorization is performed once, when that pipeline is constructed, by deciding *what the instance can reach at all*. By the time the model names a collection, the only names that resolve are that caller's own and the globals; another caller's collection is not refused, it is **absent**.
+
+**The line this must not cross.** Narrowing what is addressable is the framework reading its own typed owner keys — the same keys it already reads to name a store and end a session (§6.3). That is addressing. Deciding whether an addressable thing *may* be read or written is policy, and policy does not enter a client (§1.4). So the tool entries are built with the caller's **identity**, never with a check:
+
+```ts
+buildRagCollectionToolEntries({ registry, identity })   // identity narrows the address space
+buildRagCollectionToolEntries({ registry, check })      // rejected: a policy inside a client
+```
+
+The difference from the `createFor(identity, check)` that §6.2 deletes is exactly the second argument. Binding identity at construction was never the mistake; binding a decision was.
+
+**The gap this closes is real and present today**, and workstream 3 exists to close it. Measured in `packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts`:
+
+| tool | identity today | what a shared registry lets it reach |
+|---|---|---|
+| `rag_add`, `rag_correct`, `rag_deprecate` | `_ctx` — ignored (`:61`, `:87`, `:128`) | writes any collection resolvable by name |
+| `rag_list_collections` | `_ctx` — ignored (`:155`) | returns every registered collection's metadata, other users' included |
+| `rag_describe_collection` | `_ctx` — ignored (`:171`) | any collection by name |
+| `rag_create_collection` | uses `ctx` for the owner keys (`:266`) | correct |
+| `rag_delete_collection` | compares owner keys (`:200`, `:208`) | correct, and for the right reason |
+
+Five of seven ignore the context they are handed. `rag_delete_collection` is the one that shows the intended shape — and note *what* it does: it compares owner keys, which is addressing, and it refuses global deletes outright rather than deciding who may.
+
+**Where addressing genuinely cannot answer, the framework declines instead of deciding.** A `global` collection with `authorization: 'role'` (§6.1) is addressable by everyone by construction, so narrowing says nothing about who may write it. The framework's own tools therefore do not serve that case at all: they operate where addressing settles the question — the caller's `session` and `user` collections, and `public` globals — and refuse a `role`-authorized global exactly as `rag_delete_collection` already refuses global deletes. Refusing is not policy; it is declining to act with no basis, which is §1.2. A consumer that wants that case mounts its own tool, with its own check, on its own side of the boundary.
+
+**What llm-agent contributes:** `buildRagCollectionToolEntries` returns entries whose handler takes `RagToolContext { sessionId?, userId? }`. It has no consumer today (§9.7), which is why five handlers could ignore it without anyone noticing.
 
 ---
 
@@ -362,6 +391,27 @@ createCollection(name, {
 - **A collection created before the catalog existed hands back `undefined`.** The provider does not invent attributes for it, and what an absent value means is the consumer's check to decide, outside this framework — which holds no opinion (§1.2, §5).
 - `supportedScopes` keeps its meaning — what a provider can make *outlive* — which is lifetime, not permission.
 
+**Persisting them is half a contract; reading them back is the other half.** As written above this section promised survival across a restart and specified only the write. Measured, there is no path back: `IRagProvider.listCollections?()` returns `Promise<Result<string[], RagError>>` — names and nothing else (`interfaces/rag.ts:219`) — and `IRagRegistry.list()` returns `readonly RagCollectionMeta[]` from memory (`:173`), which after a restart is empty. So the guarantee was unimplementable as specified. The read contract is therefore part of this design, not of the plan:
+
+```ts
+type RagCollectionRecord = {
+  readonly name: string;
+  readonly scope?: RagCollectionScope;
+  readonly sessionId?: string;        // owner key, typed (as above)
+  readonly userId?: string;           // owner key, typed
+  readonly attributes?: unknown;      // opaque, returned exactly as stored
+};
+
+// NEW and optional, on IRagProvider — never a widening of listCollections()
+describeCollections?(): Promise<Result<readonly RagCollectionRecord[], RagError>>;
+```
+
+A **new** optional member rather than a wider `listCollections`, for the reason §4.6.2 gives: a provider is something consumers *implement*, so widening a return type breaks every implementation, while an optional addition breaks none. A provider without a catalog simply does not declare it.
+
+**Hydration is explicit, consumer-triggered, and per caller — never automatic.** The framework does not repopulate a registry at startup, for two reasons. When to do it depends on the assembly, and choosing a moment would install a privileged topology (§1.3). More importantly, hydrating one shared registry with every collection the catalog holds would hand every caller an address space containing everyone else's collections — precisely the widening §5.1 exists to prevent. So the consumer reads the catalog and registers what belongs to the caller whose pipeline it is building, which is the same construction-time act as §5.1: the registry a caller reaches contains that caller's collections because that is what was put in it.
+
+Until something hydrates, the registry answers exactly as it does today, and a collection whose `attributes` were never written hands back `undefined` — which the bullet above already covers.
+
 Who writes `attributes`: the component that knows the caller — the tool handler from its `RagToolContext`, or the consumer calling `createCollection` directly. The registry passes them through and never invents them (§9.5).
 
 ### 6.4 Where the registry stands
@@ -406,11 +456,11 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation plus the optional `describeCollections()` catalog read (§6.3); the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory | additive at runtime; `SessionGraphFactoryOptions.logger` widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
-| `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes` and hand them back unread. **No check is asked here** (§5) | additive — measured, not assumed (§4.6.1): the connection resolvers are absent from both barrels and unreachable through a closed `exports` map, and their only caller is already `async`. The credential outranks both the connection string and the discrete fields |
+| `llm-agent-rag`, `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | optional credentials in constructors; persist `attributes` in a catalog of their own and hand them back unread through the new optional `describeCollections()` (§6.3). **No check is asked here** (§5) | additive — measured, not assumed (§4.6.1): the connection resolvers are absent from both barrels and unreachable through a closed `exports` map, and their only caller is already `async`. The credential outranks both the connection string and the discrete fields |
 | LLM and embedder providers | credential contracts beside `apiKey?: string`, keeping the AI Core env fallback (§9.2) | additive |
 | `@mcp-abap-adt/interfaces-auth` | gains the three credential contracts — and **not** `AccessCheck`, which has no acceptor here (§5) | minor |
 | cloud-llm-hub, `llm-agent-server` | **may** adopt the seams; neither is required to | their own work |
@@ -450,7 +500,7 @@ Numbering is load-bearing — other sections cite these by number, so an answere
 4. **The registry and `createFor`** — a provider obtained for one caller cannot live in a registry that outlives it. Per-caller registry, or a shared registry holding the `IRagProviderSource` and resolving per call (§6.4). **Dissolved rather than answered** (§6.4): what made a provider caller-bound was the check, and the check has left the design. The registry needs no change.
 5. **Who writes `attributes` at creation** — tool handler, consumer, or both; and the final signatures of `IRagRegistry.createCollection` / `IRagProvider.createCollection` (§6.3). **Answered in §6.3: whoever knows the caller** — the tool handler from its `RagToolContext`, or a consumer calling `createCollection` directly — with the registry passing them through and never inventing them. What remains is the two signatures, which is plan work rather than a design question.
 6. **An optional marker on authenticated clients.** A seam *may* declare that it accepts only clients a factory produced, making "forgot the caller's credentials" a compile error. It must stay opt-in: mandatory, it would dictate policy. Precedent for the risk: cloud-llm-hub PR #236 (`fix(security): stop caching MCP tool results across callers`, open) — a `ToolCache` shared by every caller returned one user's ABAP result to another within 30 s, below the role check and below their own SAP connection. **Not blocking, and deliberately not in this release:** it must stay opt-in, and an opt-in marker nobody has asked for is a contract without an acceptor (§11).
-7. **`buildRagCollectionToolEntries`** — mounted by a consumer, or deleted. **Not blocking.** It has no consumer today (§5), so leaving it untouched changes nothing for anyone; deciding its fate needs a consumer to argue from, and this release supplies none.
+7. **`buildRagCollectionToolEntries`** — mounted by a consumer, or deleted. **Answered: it stays, and workstream 3 narrows it** (§5.1). Deleting it would hand the problem to every consumer; leaving it as written would ship five handlers that ignore the identity they are given. It gains the caller's identity at construction, the five handlers start using it, and a `role`-authorized global is refused rather than judged. That it has no consumer today (§5) is why the defect went unnoticed, not a reason to keep it.
 8. **The server's YAML `mcp:` block.** Injection already outranks it. It belongs to the `llm-agent-server` assembly, not to the library — but stdio genuinely requires spawning, so "the library never starts anything" is not an option. **Not blocking.** Workstream 1 merged without touching it, which is the evidence: injection already outranks it, so the question belongs to the `llm-agent-server` assembly and not to any contract here.
 9. **One logger name, at the next major.** This release keeps `ILogger` (the event sink, handed out through `PipelineContext` and `IPipelinePlugin`) and adds `ITextLogger`. Converging them means renaming what consumers' plugins are typed by, which breaks them — so it is a major, scheduled, not silently deferred. Until then llm-agent carries two names for one job, and §7's own argument stands against it.
 
@@ -466,7 +516,7 @@ Workstreams 1 and 4 are already merged, each as its own PR, before this rule was
 
 1. **MCP lifetime and identity** — `IMcpServer`, `withMcpServers`, optional `mcpServerFactory`, the optional `closePipeline` hook with `stop()` last (§3.4), stdio `env`.
 2. **Credential contracts** — write them where §4 settles, adopt them beside the existing fields.
-3. **RAG identity and attributes** — persisted opaque `attributes`, the two axes, the typed owner keys, and optional credentials on the store constructors. No source union, no registry rewiring, and no check (§5, §6.2, §6.4).
+3. **RAG identity and attributes** — persisted opaque `attributes` **and the `describeCollections()` read that makes persisting them mean something** (§6.3); the two axes; the typed owner keys; the caller's identity bound into the collection tool entries, closing the five handlers that ignore it (§5.1); optional credentials on the store constructors. No source union, no registry rewiring, and no check (§5, §6.2, §6.4).
 4. **Text-logger acceptance** — `ITextLogger`, the boundary adapter and its levels (§7). Convergence to one name is deferred to the next major (§9.9).
 
 ---

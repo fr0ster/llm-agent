@@ -66,6 +66,35 @@ that is the responsibility of the RAG store implementation used in production.
 
 ---
 
+### AS-6: Cross-caller access through the RAG collection tools
+
+**Threat:** A caller's model names another caller's collection in a RAG collection tool and reads
+or writes it. Distinct from AS-4, which is about records returned by `query`: this is about the
+collection-management tools themselves.
+
+**State: latent, not live.** `buildRagCollectionToolEntries` has no consumer — it is exported
+from the barrel (`packages/llm-agent/src/rag/mcp-tools/index.ts`) and mounted by nothing in this
+monorepo, and cloud-llm-hub does not use it either (it has its own `dispatchRagTool`). Nothing
+exposes these handlers to a model today, so there is no exploitable path in any shipped assembly.
+It is recorded because mounting them as they stand would create one.
+
+**What is wrong as written** (`packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts`):
+five of seven handlers take the `RagToolContext` they are given and ignore it — `rag_add`
+(`:61`), `rag_correct` (`:87`), `rag_deprecate` (`:128`), `rag_list_collections` (`:155`) and
+`rag_describe_collection` (`:171`). They resolve any name against the registry they were built
+with, so against a shared registry they reach every registered collection. `rag_create_collection`
+(`:266`) and `rag_delete_collection` (`:200`, `:208`) do use the owner keys, and the latter also
+refuses global deletes outright — that pair is the intended shape.
+
+**Planned mitigation — construction, not a check.** Per architecture principle 8, the tool
+entries are built with the caller's identity bound in, so the only collections they can address
+are that caller's own and the globals; another caller's collection is absent rather than refused.
+No access check enters the framework. Where addressing cannot answer — a `role`-authorized
+global — the tools refuse, and a consumer that wants that case mounts its own.
+Design: `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` §5.1; workstream 3 (§10).
+
+---
+
 ### AS-5: Denial-of-service via runaway tool loops
 
 **Threat:** A malicious or buggy LLM repeatedly calls tools in an infinite loop, exhausting
@@ -85,6 +114,7 @@ server resources.
 | Namespace is consumer-supplied and not authenticated | Low–Medium | Consumer: enforce namespace derivation from authenticated session |
 | `smartAgentEnabled=false` is not cryptographically enforced — a second instance can be created with `enabled=true` | Low | Consumer: do not instantiate SmartAgent when disabled |
 | No rate limiting or request authentication at the library level | Medium | Consumer / API gateway |
+| RAG collection tools ignore their `RagToolContext` (AS-6) — latent: nothing mounts them | Medium if mounted | Library: workstream 3 binds identity at construction |
 
 ---
 

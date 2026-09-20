@@ -27,6 +27,20 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    put new logic in a small focused module and consume it, rather than appending to a
    god-object.
 7. **Don't break components.** Extend additively and backward-compatibly.
+8. **This framework is the client side, and authorization happens at construction.** Every
+   provider here — LLM, embedder, RAG store, foreign MCP — is a *client* of something outside.
+   A client proves who it is (a credential) and judges nobody, because nothing calls it. So no
+   component in this monorepo authorizes at request time, and none accepts a policy function such
+   as an access check: that belongs to the assembly where a caller's request actually arrives.
+   What the framework does instead is **narrow what an instance can reach**, once, when that
+   instance is built for one caller — using the typed owner keys it already reads to address a
+   store and to end a session. Narrowing an address space is *addressing*; deciding who may is
+   *policy*. A credential is therefore a constructor argument and never a per-call one: a
+   forgotten per-call credential does not fail, it proceeds as somebody else.
+   *Corollary:* where addressing cannot settle the question — a `global` collection whose
+   authorization is `role` — the framework's own tools **refuse** rather than decide. Declining
+   with no basis is honest; inventing a default permits on someone's behalf.
+   See `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` §1.4, §4.1 and §5.1.
 
 > See also **Current Technical Debt** at the end of this document for the residual
 > composition-root files (e.g. `smart-server.ts`) left large by design after the
