@@ -48,12 +48,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `EmbedderResolutionOptions.logger` and `RagResolutionOptions.logger` in
   `@mcp-abap-adt/llm-agent-rag`, and `SessionLifecycleOptions.logger`,
   `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` in
-  `@mcp-abap-adt/llm-agent-server-libs`. Two more take either shape by
-  inheritance rather than by declaration: `MakeConnectionStrategyOptions`
-  extends `ConnectionStrategyOptions`, so `makeConnectionStrategy` accepts one,
-  and so does `PeriodicConnectionStrategy`'s constructor. A consumer that
-  already has a logger no longer has to write a `LogEvent` adapter before it can
-  pass one.
+  `@mcp-abap-adt/llm-agent-server-libs`. Anything that takes one of those option
+  types accepts either shape as well, which follows from the types rather than
+  from a separate decision: `LazyConnectionStrategy` and
+  `PeriodicConnectionStrategy`'s constructors and `makeConnectionStrategy` (whose
+  `MakeConnectionStrategyOptions` extends `ConnectionStrategyOptions`) in
+  `@mcp-abap-adt/llm-agent-mcp`, and `SessionGraphFactory`'s constructor in
+  `@mcp-abap-adt/llm-agent-libs`. A consumer that already has a logger no longer
+  has to write a `LogEvent` adapter before it can pass one.
 - **`normaliseLogger(logger)`, the `AnyLogger` union, and the `isTextLogger(logger)`
   type guard are exported** for the seams that deliberately keep the event
   shape. `IPipelineContext.logger` and
@@ -84,8 +86,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   is unaffected, but a consumer that *reads* one — `options.logger?.log(event)`
   on `ConnectionStrategyOptions`, `ComposeResilienceOptions` or
   `SessionGraphFactoryOptions` — no longer compiles, because the property is now
-  `AnyLogger`: `Property 'log' does not exist on type 'AnyLogger'`. Call
-  `normaliseLogger(options.logger)` first, or narrow with `isTextLogger`.
+  `AnyLogger`: `Property 'log' does not exist on type 'AnyLogger'`. These
+  properties are optional and `normaliseLogger` takes a non-optional
+  `AnyLogger`, so `normaliseLogger(options.logger)` on its own does not compile
+  either. What does, measured:
+  `if (options.logger) normaliseLogger(options.logger).log(event);`
   Nothing changes at runtime.
 
 ### Deprecated
