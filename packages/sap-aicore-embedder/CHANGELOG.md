@@ -1,5 +1,23 @@
 # @mcp-abap-adt/sap-aicore-embedder
 
+## [Unreleased]
+
+**BREAKING:** `FoundationModelsEmbedderConfig.credentials` and
+`SapAiCoreEmbedderConfig.credentials` (the client-id/secret/tokenUrl/apiBaseUrl
+shape) are gone, and so is the `AICORE_SERVICE_KEY` environment-variable
+fallback — for both the `foundation-models` and the `orchestration` scenario.
+`credential` (a typed `IBearerCredential` from `@mcp-abap-adt/interfaces-auth`)
+and `apiBaseUrl` replace them, both required, resolved fresh on every
+`embed()`/`embedBatch()` call — never cached at construction.
+`OrchestrationScenarioEmbedder` now builds the SDK's constructed-destination
+from them explicitly, rather than letting the SDK fall back to its own
+ambient `AICORE_SERVICE_KEY` resolution.
+
+Migration: `new SapAiCoreEmbedder({ model, credentials: { clientId, clientSecret, tokenUrl, apiBaseUrl } })`
+(or no `credentials` at all, relying on `AICORE_SERVICE_KEY`) becomes
+`new SapAiCoreEmbedder({ model, ...serviceKeyCredential(rawServiceKeyJson) })`
+(`serviceKeyCredential` is exported from `@mcp-abap-adt/sap-aicore-auth`).
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

@@ -1,5 +1,22 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## [Unreleased]
+
+**BREAKING:** `SapCoreAIConfig.credentials` (the `SapAICoreCredentials` OAuth2
+shape, which held the service URL alongside the client secret) is gone, and so
+is the `AICORE_SERVICE_KEY` environment-variable fallback that ran when
+`credentials` was absent. `credential` (a typed `IBearerCredential` from
+`@mcp-abap-adt/interfaces-auth`) and `apiBaseUrl` replace it, both required:
+the address is not a credential, so it is its own field. Both are resolved
+fresh on every `chat()`/`streamChat()` call — including each retry attempt —
+via the newly exported `buildDestination`, instead of a destination object
+built once at construction time.
+
+Migration: `new SapCoreAIProvider({ model, credentials: { clientId, clientSecret, tokenServiceUrl, servicUrl } })`
+(or no `credentials`, relying on `AICORE_SERVICE_KEY`) becomes
+`new SapCoreAIProvider({ model, ...serviceKeyCredential(rawServiceKeyJson) })`
+(`serviceKeyCredential` is exported from `@mcp-abap-adt/sap-aicore-auth`).
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

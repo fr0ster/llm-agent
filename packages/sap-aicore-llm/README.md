@@ -8,8 +8,31 @@ SAP AI Core LLM provider for @mcp-abap-adt/llm-agent / @mcp-abap-adt/llm-agent-l
 Exports:
 - `SapCoreAIProvider` — implements ILlm, calls SAP AI Core orchestration API.
 - `SapCoreAIConfig` — configuration type.
+- `buildDestination` — builds the SDK's constructed-destination shape from a
+  `credential` + `apiBaseUrl`; exported mainly for tests.
 
 Optional peer dependency. Install when smart-server.yaml names `sap-ai-sdk` as LLM provider, or when constructing SapCoreAIProvider programmatically.
+
+## Usage
+
+`SapCoreAIConfig.credential` (an `IBearerCredential` from
+`@mcp-abap-adt/interfaces-auth`) and `.apiBaseUrl` are required — this package
+reads no environment variable itself. Build them from a raw SAP AI Core
+service-key JSON string with `serviceKeyCredential`:
+
+```ts
+import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
+
+const provider = new SapCoreAIProvider({
+  model: 'gpt-4o',
+  ...serviceKeyCredential(process.env.AICORE_SERVICE_KEY!),
+});
+```
+
+`credential.token()` is asked fresh on every `chat()`/`streamChat()` call —
+including each retry attempt — never cached on the provider instance, so a
+rotating token keeps rotating.
 
 ## License
 
