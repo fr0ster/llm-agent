@@ -316,7 +316,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive — nothing a consumer implements or receives changes |
+| `@mcp-abap-adt/llm-agent` | `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` on collection creation; `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; `IRagProviderSource`; registry wiring (§9.4) | additive |
 | `@mcp-abap-adt/llm-agent-server-libs` | consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted | additive |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
