@@ -18,7 +18,8 @@ Copied verbatim from the spec. Every task's requirements implicitly include this
 
 - **The framework is the client side.** No component authorizes at request time; none accepts a policy function such as an access check. Authorization is performed at construction, by narrowing what an instance can address (§1.4, §5, and `docs/ARCHITECTURE.md` binding principle 8).
 - **A credential is a constructor argument, never a per-call one.** A forgotten per-call credential does not fail — it proceeds as somebody else (§4.1).
-- **Add a property; never widen an existing one.** `apiKey?: string`, `password?: string` and the SAP credential objects stay exactly as they are, and the credential arrives beside them. Widening a readable property breaks every reader: #306 measured `error TS2339: Property 'log' does not exist on type 'AnyLogger'` (§4.6.2).
+- **Add a property; never widen an existing one.** The credential arrives beside `apiKey?: string`, `password?: string` and the SAP credential objects, which are not touched.
+- **But every one of those is `@deprecated` on arrival, and removed at the next major** (§4.6.2, §9.11). A static key *is* a credential, so carrying both is two ways to do one job — what §7 is written against. Keeping them is compatibility, not design; every snippet below marks them, and core ships `staticApiKey` / `staticLogin` so a consumer's migration is one line. Widening a readable property breaks every reader: #306 measured `error TS2339: Property 'log' does not exist on type 'AnyLogger'` (§4.6.2).
 - **An explicit credential outranks both the connection string and the discrete fields.** It is the only one of the three passed deliberately for this purpose. Each package keeps its existing relationship between string and discrete fields; this plan does not reconcile that (§4.6.1).
 - **An address is not a credential.** Service URLs and `apiBaseUrl` keep the home they have; `IBearerCredential` carries the token and nothing else (§4.6.3).
 - **Imports from the interfaces packages are `import type`** so nothing enters the runtime graph, while the package is a regular `dependencies` entry so the types resolve in every consumer's `tsc` (§1).
@@ -488,6 +489,20 @@ Expected: `resolveProviderSecret` is not exported, and the provider test fails o
 // provider package can import it; none of them depends on llm-agent-libs.
 import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 
+/**
+ * A key that does not rotate is still a credential. This exists so no config
+ * needs a second way to carry a secret — see §4.6.2: the plain fields are
+ * deprecated on arrival and gone at the next major, and this is the one-line
+ * conversion that makes that removal cheap for a consumer.
+ */
+export function staticApiKey(secret: string): IApiKeyCredential {
+  return { kind: 'api-key', secret: async () => secret };
+}
+
+export function staticLogin(principal: string, secret: string): ISecretLoginCredential {
+  return { kind: 'secret-login', principal, secret: async () => secret };
+}
+
 /** The secret to present, credential first. `undefined` means neither was given. */
 export async function resolveProviderSecret(cfg: {
   apiKey?: string;
@@ -506,6 +521,7 @@ export async function resolveProviderSecret(cfg: {
 // packages/llm-agent/src/types.ts — beside the existing apiKey, NOT replacing it
 export interface LLMProviderConfig {
   // … existing fields unchanged, including:
+  /** @deprecated Pass `credential: staticApiKey(key)` instead. Removed at the next major (§9.11). */
   apiKey?: string;
   /**
    * Where the secret comes from, when it is not a constant. Outranks `apiKey`:
@@ -642,6 +658,7 @@ Expected: a type error on `credential` — the property does not exist on `Embed
 // packages/llm-agent/src/interfaces/rag.ts — beside apiKey, not replacing it
 export interface EmbedderFactoryConfig {
   url?: string;
+  /** @deprecated Pass `credential: staticApiKey(key)` instead. Removed at the next major (§9.11). */
   apiKey?: string;
   model?: string;
   timeoutMs?: number;
@@ -721,6 +738,7 @@ describe('OpenAiEmbedder credential', () => {
 
 ```ts
 export interface OpenAiEmbedderConfig {
+  /** @deprecated Pass `credential: staticApiKey(key)` instead. Removed at the next major (§9.11). */
   apiKey?: string;                       // was: apiKey: string (required)
   credential?: IApiKeyCredential | IBearerCredential;
   baseURL?: string;
@@ -2703,6 +2721,19 @@ optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`:
 - options.logger.log(event);
 + if (options.logger) normaliseLogger(options.logger).log(event);
 ```
+
+**4. Move off the plain key fields — they are deprecated now and gone next major.**
+A static key is a credential, so carrying both is two ways to do one job (§4.6.2,
+§9.11). Each call site is one line:
+
+```ts
+- new OpenAiEmbedder({ model: 'text-embedding-3-small', apiKey: key });
++ new OpenAiEmbedder({ model: 'text-embedding-3-small', credential: staticApiKey(key) });
+```
+
+The same for `apiKey` on the LLM providers and `qdrant-rag`, and `staticLogin(user, pw)`
+for `pg-vector-rag` and `hana-vector-rag`. Nothing breaks in this release if you do
+not: the fields still work, and only warn.
 
 **Not a migration:** hydrating collections after a restart is new and optional.
 A consumer that does not hydrate behaves exactly as today — an empty registry,
