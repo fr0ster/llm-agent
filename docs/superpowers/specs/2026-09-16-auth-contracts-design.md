@@ -357,6 +357,51 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    ```
 
    **And the rule is general, not an LLM rule — two more DTOs carry the same passenger.** *(Both of those two are RAG shapes, and §4.6.4 below shows why one `credentialRef` on either is not enough — read the two together.)* `PipelineRagStoreConfig.apiKey` is a plain secret, documented as “API key (for openai type or Qdrant auth)” (`pipeline.ts:32`); `SmartServerRagConfig` — the **exported** YAML DTO, and the one a PostgreSQL or HANA deployment actually fills — carries `user?: string` and `password?: string` (`smart-server.ts:167-168`); and `SkillPluginsConfig`'s store variant is `{ type: 'qdrant'; url: string; apiKey?: string }` (`skill-plugins-config.ts:19`, threaded at `skill-plugins-host-factory.ts:271`, `:310` and `controller-skill-pipeline-builder.ts:16`, `:47`). Both are YAML DTOs, and by this section's test both fail it the same way: remove the key and a complete store configuration remains. Two earlier drafts narrowed this: the first applied `credentialRef` to the LLM configs alone, the second added the pipeline and skill stores but missed `SmartServerRagConfig` — which is the one carrying `user`/`password`, so the rule would have held everywhere except the PostgreSQL and HANA path it matters most on.
+    ### 4.6.6 A usage contract carries neither authorization nor the means to obtain it
+
+    §4.6.5 asks that a provider be constructed once, and asking is not a mechanism. The mechanism is
+    structural: **the contract through which an object is *used* must not mention authorization, and must
+    not offer any way to get an authorized object either.** Then a step further down cannot send
+    credentials on every call, because nothing in its reach accepts them and nothing in its reach
+    constructs. Authorization lives in a **separate** contract — §4's three credentials — consumed by the
+    **constructor** of the implementation of the usage contract, and nowhere else. This is principle 10
+    applied to a lifetime rather than to a value: enforce it in the type, not in a rule someone must
+    remember.
+
+    **The usage contracts already pass this test, which is why it is worth stating for the rest.**
+    `ILlm.chat`/`streamChat` take `LLMCallOptions`, whose entire content is `model`, `temperature`,
+    `maxTokens`, `topP`, `stop` and `signal` — behaviour knobs, all of them, and `model` being one of them
+    matters below. `IEmbedder.embed`, `IRag.query` and the MCP call surface are the same: the job, and
+    nothing auth-shaped.
+
+    **The pipeline's own context contract fails it, and fails it in the licensed way rather than by
+    accident.** `IServerPipelineContext` (`pipelines/server-context.ts:22`) — the object handed to every
+    step — declares, beside the correctly-resolved `mainLlm: ILlm`, `helperLlm?: ILlm` and
+    `embedder?: IEmbedder`:
+
+    - `makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>` — a **constructor**, taking the serializable
+      config, which after §4.6.4 carries a `credentialRef`. Used at `pipelines/controller.ts:336` to build
+      the three subagent role LLMs and threaded onward at `pipelines/dag.ts:49`, so construction is
+      reachable from inside a running pipeline.
+    - `llmMap?: NormalizedLlmMap` and `pipelineFallback?: SmartServerLlmConfig` — the **configs
+      themselves**, references included, handed to every step.
+
+    So the contract holds both shapes at once: instances, which are right, and configuration plus a
+    factory, which is the per-step authorization path §4.6.5 measured. `IRoleLlmResolver` has the same
+    defect for the same reason, declaring `makeLlm(lc)` beside `resolve(role)`.
+
+    **What replaces them, and why nothing is lost.** The context exposes `resolveRole(role: string): ILlm`
+    — a lookup in a map the composition root filled at build time — and loses `makeLlm`, `llmMap` and
+    `pipelineFallback`. A step that wants a **different model** does not need a different provider: `model`
+    is already a per-call option on the usage contract, which is the distinction §4.6.2 drew between a
+    behaviour knob and an identity. A step that wants a **different role** asks for that role's instance,
+    which exists because the root built it. The only capability actually removed is the ability to
+    authorize something mid-pipeline, which is the capability that should not exist.
+
+    An earlier draft of this design would have left all of this in place, because it reasoned about where a
+    credential is *declared* and never about who can *obtain* one. The two questions have different
+    answers, and only the second one closes the hole.
+
     ### 4.6.5 Authorization is established once, which is a statement about lifetime
 
     §5 says construction is the authorization: once the object exists it is authorized, and every method
