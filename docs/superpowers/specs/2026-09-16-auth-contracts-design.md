@@ -722,8 +722,31 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
      be discovered, and the alternative was a generic untyped dependency channel — which is the
      `Record<string, unknown>` bag of §4.6.3 rebuilt in a new place, and refused for the same reason.
 
+   **An external plugin is runtime information, so the check belongs to the loader — and the loader is where
+   it belongs rather than an exception to §4.6.3.** An imported module is `unknown` until something inspects
+   it: no compiler was present at that boundary, which is exactly the case principle 10 reserves a runtime
+   check for. So the rule is not "validate somewhere" but *the loader validates what it loads, and reports
+   what it refuses*.
+
+   Measured against that, today's loader is **inconsistent with itself**
+   (`llm-agent-libs/src/plugins/types.ts:109-124`). For a duplicate plugin name it does the right thing: it
+   pushes an entry into `result.errors` naming both the new source and the one that already held the name,
+   and keeps the first. But for a **malformed** plugin it checks `typeof plugin.build !== 'function'` and then
+   silently `continue`s — no error, no mention — so a mistyped export vanishes and the deployment starts
+   without that pipeline, which is the same "quietly less" failure direction as §4.6.4's silent auth
+   downgrade. It also checks `build` while never checking `name`, and casts with `as IPipelinePlugin` on the
+   strength of that one probe.
+
+   So: the loader checks the members the contract actually requires — `name` a string and `build` a function
+   for an instance export, and a function for a `pipelinePluginFactories` entry — and every rejection becomes
+   an `errors` entry naming the module, the key and what was missing, exactly as the duplicate case already
+   does. A cast at that boundary is only honest after the check that justifies it. What the loader must **not**
+   do is inspect a plugin's own configuration: that shape is the plugin's, parsed inside its factory, and the
+   loader has no business knowing it — which is the same division §4.6.7 draws everywhere else.
+
    **The cost, stated because it is a framework contract and this is where such things get argued.** It is
-   source-breaking for plugin authors: `parseConfig` goes, `build` loses a parameter, a configurable plugin
+   source-breaking for plugin authors: `parseConfig` goes, the loader begins **reporting** malformed
+   exports it used to skip in silence, `build` loses a parameter, a configurable plugin
    exports a factory instead of an instance, and the five shipped plugins are migrated with it. Startup validation is not lost, it moves — the consumer parses and
    validates when it constructs, which is where the YAML already is. And the registry the server holds
    becomes what every other registry in this design became: a map of **constructed** things.
