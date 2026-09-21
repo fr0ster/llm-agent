@@ -405,7 +405,9 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
     | `resolveEmbedder` | the embedder section with its own ref | the registry, and the narrowing per provider | the config; the app resolves, narrows and constructs |
     | `makeRag` | the store section with its own ref, plus an `IEmbedder` it obtained from the seam above | the registry | both of those; the app resolves and constructs |
 
-    Two of the three mistakes above were signatures chosen before this table existed. Two parameters made the keyword-only path inexpressible: a `store.type: in-memory` with no `rag.embedder` has no `IEmbedder` to pass, while every call site was to go through this seam. In the union the embedder sits on the arms that need one — required on `qdrant`, `pg-vector` and `hana-vector`, **optional on `in-memory`**, which is also how `SkillPluginsStoreConfig` has long expressed the same thing (`{ type: 'in-memory' }` carries no fields at all). So the compiler demands an embedder exactly where a store cannot work without one, and the app resolves one only then: a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
+    Two of the three mistakes above were signatures chosen before this table existed.
+
+    **And two rules the adapters must obey, both of which an earlier draft of them broke.** First, **the reference ends in the root**: it is destructured out before anything is spread onward, because `{ ...cfg }` carries `credentialRef` into a runtime object and TypeScript will not stop it — excess property checking does not apply to a spread. A non-secret reference leaking into `llm-agent-rag` and on into a provider config is not a security problem, it is the two-layer separation the whole design rests on quietly failing. Second, **"optional" means the reference may be omitted, never that a named reference may fail to resolve.** An earlier draft treated an unknown or wrong-kind entry as "no credential", so `credentialRef: QDRNAT` would have opened an **unauthenticated** connection instead of reporting a typo — a silent downgrade from authenticated to anonymous, which is the worst direction for a mistake to fail in. A ref that was named must resolve, and must hold the right kind; falling back to no credential is legitimate only where none was asked for and the target genuinely permits it. Two parameters made the keyword-only path inexpressible: a `store.type: in-memory` with no `rag.embedder` has no `IEmbedder` to pass, while every call site was to go through this seam. In the union the embedder sits on the arms that need one — required on `qdrant`, `pg-vector` and `hana-vector`, **optional on `in-memory`**, which is also how `SkillPluginsStoreConfig` has long expressed the same thing (`{ type: 'in-memory' }` carries no fields at all). So the compiler demands an embedder exactly where a store cannot work without one, and the app resolves one only then: a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
 
    So they take `credentialRef` as well, resolved the same way, and the embedder and store construction moves to the app with the provider dispatch. The RAG stores' own constructors take the credential (§4.5), so nothing new is needed below.
 
@@ -907,42 +909,31 @@ function requireEnv(name: string): string {
 
 const deps: BuildAgentDeps = {
   async makeLlm(cfg) {
-    const ref = cfg.credentialRef ?? DEFAULT_LLM_REF;
-    const entry = credentialFor(ref);
-    if (!entry) throw new Error(`credentialRef '${ref}' has no entry configured`);
-
-    const apiKey = (): IApiKeyCredential => {
-      if (entry.credential?.kind !== 'api-key') {
-        throw new Error(`credentialRef '${ref}' must hold an api-key credential for ${cfg.provider}`);
-      }
-      return entry.credential;
-    };
-    const optionalApiKey = (): IApiKeyCredential | undefined => {
-      if (!entry.credential) return undefined;
-      if (entry.credential.kind !== 'api-key') {
-        throw new Error(`credentialRef '${ref}' must hold an api-key credential for ${cfg.provider}`);
-      }
-      return entry.credential;
-    };
+    // One helper for all three seams (defined below), so one rule about what a named
+    // ref must resolve to. Note that every provider config is built from NAMED fields:
+    // nothing spreads cfg, so credentialRef cannot ride along into a provider.
+    const entry = lookup(cfg.credentialRef, DEFAULT_LLM_REF, cfg.provider);
 
     const provider = (() => {
       switch (cfg.provider) {
         case 'openai':
-          return new OpenAIProvider({ credential: apiKey(), model: cfg.model! });
+          return new OpenAIProvider({ credential: entry.require('api-key'), model: cfg.model! });
         case 'anthropic':
-          return new AnthropicProvider({ credential: apiKey(), model: cfg.model! });
+          return new AnthropicProvider({ credential: entry.require('api-key'), model: cfg.model! });
         case 'deepseek':
-          return new DeepSeekProvider({ credential: apiKey(), model: cfg.model! });
-        case 'ollama': {
-          const c = optionalApiKey();
-          return new OllamaProvider({ baseURL: cfg.url, model: cfg.model!, ...(c ? { credential: c } : {}) });
-        }
-        case 'sap-ai-sdk': {
-          if (entry.credential?.kind !== 'bearer' || !entry.apiBaseUrl) {
-            throw new Error(`credentialRef '${ref}' must hold a bearer credential and an apiBaseUrl`);
-          }
-          return new SapCoreAIProvider({ credential: entry.credential, apiBaseUrl: entry.apiBaseUrl, model: cfg.model! });
-        }
+          return new DeepSeekProvider({ credential: entry.require('api-key'), model: cfg.model! });
+        case 'ollama':
+          // optional, because a bare Ollama needs none — but a ref NAMED here must
+          // still resolve, or a typo would quietly send no Authorization to a gateway
+          return new OllamaProvider({
+            baseURL: cfg.url, model: cfg.model!, ...entry.optional('api-key'),
+          });
+        case 'sap-ai-sdk':
+          return new SapCoreAIProvider({
+            credential: entry.require('bearer'),
+            apiBaseUrl: entry.requireApiBaseUrl(),
+            model: cfg.model!,
+          });
         default:
           throw new Error(`unknown llm provider '${cfg.provider}'`);
       }
@@ -968,36 +959,30 @@ Four things in it are the model rather than decoration, and each is where an ear
 
 ```ts
 const deps: BuildAgentDeps = {
-  async makeLlm(cfg) { /* as above */ },
+  async makeLlm(cfg) { /* as above — same lookup helper */ },
 
   // The embedder's own account. Spreading the entry's credential in unnarrowed
   // would let an OpenAI embedder receive a login, so this dispatches on the
   // provider and narrows to the kind that provider can actually use — the same
   // shape as makeLlm above, for the same reason.
   resolveEmbedder(cfg, options) {
-    const ref = cfg.credentialRef ?? DEFAULT_EMBEDDER_REF;
-    const entry = credentialFor(ref);
+    // The ref ends HERE: destructured out, so no spread can carry it onward into a
+    // runtime object. `rest` holds only what the embedder itself needs.
+    const { credentialRef, ...rest } = cfg;
+    const entry = lookup(credentialRef, DEFAULT_EMBEDDER_REF, cfg.provider);
     switch (cfg.provider) {
-      case 'openai': {
-        const credential = entry?.credential;
-        if (credential?.kind !== 'api-key') {
-          throw new Error(`credentialRef '${ref}' must hold an api-key credential for openai`);
-        }
-        return resolveEmbedder({ ...cfg, credential }, options);
-      }
-      case 'sap-ai-core': {
-        const credential = entry?.credential;
-        if (credential?.kind !== 'bearer') {
-          throw new Error(`credentialRef '${ref}' must hold a bearer credential for sap-ai-core`);
-        }
-        if (!entry?.apiBaseUrl) {
-          throw new Error(`credentialRef '${ref}' must carry an apiBaseUrl for sap-ai-core`);
-        }
-        return resolveEmbedder({ ...cfg, credential, apiBaseUrl: entry.apiBaseUrl }, options);
-      }
+      case 'openai':
+        return resolveEmbedder({ ...rest, credential: entry.require('api-key') }, options);
+      case 'sap-ai-core':
+        return resolveEmbedder(
+          { ...rest, credential: entry.require('bearer'), apiBaseUrl: entry.requireApiBaseUrl() },
+          options,
+        );
       default:
-        // ollama sends nothing on the wire; a credential here would be a member nobody calls
-        return resolveEmbedder(cfg, options);
+        // ollama sends nothing on the wire, so a credential here would be a member
+        // nobody calls — and naming one explicitly is a misconfiguration, not a hint
+        entry.refuseAny();
+        return resolveEmbedder(rest, options);
     }
   },
 
@@ -1005,29 +990,71 @@ const deps: BuildAgentDeps = {
   // plus the embedder resolved above, and this body is the conversion: resolve
   // the ref, narrow to what the backend speaks, then build the typed arm.
   async makeRag({ store, embedder }) {
-    const ref = store.credentialRef ?? DEFAULT_STORE_REF;
-    const entry = credentialFor(ref);
-    const login = (): ISecretLoginCredential => {
-      if (entry?.credential?.kind !== 'secret-login') {
-        throw new Error(`credentialRef '${ref}' must hold a secret-login credential for ${store.type}`);
-      }
-      return entry.credential;
-    };
-    switch (store.type) {
+    // Same two rules as above: the ref is destructured out so nothing spreads it
+    // onward, and a ref that WAS named must resolve.
+    const { credentialRef, ...address } = store;
+    const entry = lookup(credentialRef, DEFAULT_STORE_REF, store.type);
+    switch (address.type) {
       case 'in-memory':
-        return makeRag({ type: 'in-memory', ...(embedder ? { embedder } : {}) });
+        entry.refuseAny();
+        return makeRag({ ...address, ...(embedder ? { embedder } : {}) });
       case 'qdrant':
-        return makeRag({
-          ...store, embedder,
-          ...(entry?.credential?.kind === 'api-key' ? { credential: entry.credential } : {}),
-        });
+        return makeRag({ ...address, embedder, ...entry.optional('api-key') });
       case 'pg-vector':
-        return makeRag({ ...store, embedder, ...(entry?.credential ? { credential: login() } : {}) });
+        return makeRag({ ...address, embedder, ...entry.optional('secret-login') });
       case 'hana-vector':
-        return makeRag({ ...store, embedder, credential: login() });  // HANA's is required
+        return makeRag({ ...address, embedder, credential: entry.require('secret-login') });
     }
   },
 };
+
+// The lookup that makes "optional" mean what it says. Optional means the ref may be
+// OMITTED — never that a ref you named may fail to resolve, which is the difference
+// between a deployment that chose anonymous access and one with a typo in it.
+function lookup(ref: string | undefined, roleDefault: string, target: string) {
+  const named = ref !== undefined;
+  const key = ref ?? roleDefault;
+  const entry = credentialFor(key);
+  if (named && !entry) {
+    throw new Error(`credentialRef '${key}' for ${target} has no entry configured`);
+  }
+  const wrongKind = (kind: string): never => {
+    throw new Error(
+      `credentialRef '${key}' must hold a ${kind} credential for ${target}, ` +
+        `got ${entry?.credential?.kind ?? 'none'}`,
+    );
+  };
+  return {
+    // a target that cannot work without one
+    require<K extends AnyCredential['kind']>(kind: K) {
+      const c = entry?.credential;
+      if (c?.kind !== kind) wrongKind(kind);
+      return c as Extract<AnyCredential, { kind: K }>;
+    },
+    // a target that can work without one — but only when none was asked for
+    optional<K extends AnyCredential['kind']>(kind: K) {
+      const c = entry?.credential;
+      if (!c) {
+        if (named) wrongKind(kind);   // named, resolved, and empty is a misconfiguration
+        return {};                    // omitted and undefined: anonymous, on purpose
+      }
+      if (c.kind !== kind) wrongKind(kind);   // configured wrongly is never "ignore it"
+      return { credential: c as Extract<AnyCredential, { kind: K }> };
+    },
+    requireApiBaseUrl() {
+      if (!entry?.apiBaseUrl) {
+        throw new Error(`credentialRef '${key}' must carry an apiBaseUrl for ${target}`);
+      }
+      return entry.apiBaseUrl;
+    },
+    // a target that sends nothing: naming a ref for it is a mistake worth reporting
+    refuseAny() {
+      if (named) {
+        throw new Error(`${target} takes no credential, so credentialRef '${key}' cannot apply`);
+      }
+    },
+  };
+}
 ```
 
 A deployment that authenticates nothing — Ollama embeddings into an in-memory store — still writes these three, and that is the price of the library never holding construction. Both `resolveEmbedder` and `makeRag` remain the library's functions; what changes is who calls them and who owns the credential when they do.
