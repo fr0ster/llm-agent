@@ -10,7 +10,7 @@
 - **MCP lifetime and identity are today app-local glue**, written once in `llm-agent-server-libs` and differently in cloud-llm-hub. The seam moves to `SmartAgentBuilder`, where every assembly already passes.
 - **Collections have two axes**: `scope` (`session`/`user`/`global`) and `authorization` (`public`/`owner`/`role`). Scope and the owner keys stay typed; only role and policy become opaque.
 - **One contract per job.** `ILogger` is the counter-example we pay for today.
-- **New capability is additive and declinable; what breaks is source-level and listed.** Every new seam is optional — the safer teardown order arrives through a new hook rather than a changed one (§3.4) — and no existing path changes behaviour by itself. **What does break**, all of it deliberate and all of it in §8's migration note: §4.6.2 removes `apiKey` from `LLMProviderConfig` and `EmbedderFactoryConfig`, removes `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` from `llm-agent-libs`, strips the secret fields from `SmartServerLlmConfig` and `PipelineLlmProviderConfig`, stops the SAP providers reading `AICORE_SERVICE_KEY` (a new `sap-aicore-auth` package holds the exchange instead), and makes a connection string carrying credentials a construction-time error; §4.6.3 makes `BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag` **required**, so passing `{}` as `deps` stops compiling; §4.6.4 **splits** `SmartServerRagConfig` and `PipelineRagStoreConfig` into `store` and `embedder`, each with its own `credentialRef`, and adds `makeRag` to `BuildAgentDeps`; §4.6.6 removes `makeLlm`, `llmMap` and `pipelineFallback` from `IServerPipelineContext` and `makeLlm(lc)` from `IRoleLlmResolver`, leaving the framework's own `resolveLlm(role)` as the only way in — a usage-side contract may not construct; §4.6.7 removes `IPipelinePlugin.parseConfig` and the `config` parameter of `build`, a plugin's own configuration moving into its constructor; §5.1 removes `RagToolContext`'s declared `sessionId?`/`userId?` and requires `identity` on `buildRagCollectionToolEntries`; §7 widens six readable option properties. `IModelResolver`, `ILogger` and every other contract keep their shape. What version carries the set is §10's to state — it is a major.
+- **New capability is additive and declinable; what breaks is source-level and listed.** Every new seam is optional — the safer teardown order arrives through a new hook rather than a changed one (§3.4) — and no existing path changes behaviour by itself. **What does break**, all of it deliberate and all of it in §8's migration note: §4.6.2 removes `apiKey` from `LLMProviderConfig` and `EmbedderFactoryConfig`, removes `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` from `llm-agent-libs`, strips the secret fields from `SmartServerLlmConfig` and `PipelineLlmProviderConfig`, stops the SAP providers reading `AICORE_SERVICE_KEY` (a new `sap-aicore-auth` package holds the exchange instead), and makes a connection string carrying credentials a construction-time error; §4.6.3 makes `BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag` **required**, so passing `{}` as `deps` stops compiling; §4.6.4 **splits** `SmartServerRagConfig` and `PipelineRagStoreConfig` into `store` and `embedder`, each with its own `credentialRef`, and adds `makeRag` to `BuildAgentDeps`; §4.6.6 removes `makeLlm`, `llmMap` and `pipelineFallback` from `IServerPipelineContext` and `makeLlm(lc)` from `IRoleLlmResolver`, leaving the framework's own `resolveLlm(role)` as the only way in — a usage-side contract may not construct; §4.6.7 removes `IPipelinePlugin.parseConfig` and the `config` parameter of `build`, a plugin's own configuration moving into its constructor and a configurable plugin exporting a **factory** rather than an instance; §5.1 removes `RagToolContext`'s declared `sessionId?`/`userId?` and requires `identity` on `buildRagCollectionToolEntries`; §7 widens six readable option properties. `IModelResolver`, `ILogger` and every other contract keep their shape. What version carries the set is §10's to state — it is a major.
 - Umbrella: four workstreams (§10), **one plan**, and **one PR per repository**. Two of the four are already merged; the rest land together.
 
 ---
@@ -689,9 +689,42 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    of named capabilities the framework can honestly provide, and gains no credential lookup, because a
    credential lookup on a usage contract is the thing §4.6.6 exists to forbid.
 
+   **Two things that decision got wrong, and they were found by asking who calls the constructor — the same
+   question that has settled most of this section.** First, it only works for plugins the app constructs
+   itself. A dynamically loaded module exports **already-constructed instances** — `PluginExports`'s
+   `pipelinePlugins?: Record<string, IPipelinePlugin>` — and the loader merely imports and registers them
+   (`llm-agent-libs/src/plugins/types.ts:110-122`, a plain `.set(name, plugin)`). The app never sees the
+   constructor or the plugin's schema, so `new Plugin(parsedConfig, dep)` is not something it can do, and
+   `parseConfig(raw)` is the only channel such a plugin has ever had for its own section. Removing it without
+   a replacement would delete configurability for third-party plugins, which the draft did not acknowledge.
+
+   So the export gains a **factory** beside the instance: a module may export
+   `pipelinePluginFactories?: Record<string, (raw: unknown) => IPipelinePlugin>`, and the app calls it with
+   that plugin's section. The plugin still parses its own shape — inside its factory, where the framework
+   never sees it — the usage contract still reduces to `name` and `build(ctx)`, and construction still
+   happens where construction belongs. Exporting an instance stays valid for a plugin that needs no
+   configuration, which is four of the five shipped ones.
+
+   **Second, a constructor-injected dependency cannot be the caller's if the registry is process-wide.** The
+   draft said a plugin may be handed "a client, a credential, a whole backend" while also describing one
+   shared registry of stateless instances — and those together make any such dependency deployment-scoped
+   and shared across sessions, which §4.6.5 forbids for anything a caller's credential authorized. The line,
+   drawn rather than patched:
+
+   - A plugin whose dependencies are the **deployment's** is created once and registered process-wide, which
+     is what the factory above is for.
+   - A plugin holding something authorized by a **caller's** credential is **not a dynamically-loaded-module
+     case at all**: it is registered by the app, which holds that credential, created per session, and
+     disposed with the session — the registry being scoped exactly as the role map is (§4.6.6), by the app's
+     policy and not by a lifetime the framework enforces.
+   - A **third-party** plugin therefore cannot have its own authenticated per-caller backend. It reaches
+     authorized objects through `ctx` or not at all. That is a capability limit, stated rather than left to
+     be discovered, and the alternative was a generic untyped dependency channel — which is the
+     `Record<string, unknown>` bag of §4.6.3 rebuilt in a new place, and refused for the same reason.
+
    **The cost, stated because it is a framework contract and this is where such things get argued.** It is
-   source-breaking for plugin authors: `parseConfig` goes, `build` loses a parameter, and the five shipped
-   plugins are migrated with it. Startup validation is not lost, it moves — the consumer parses and
+   source-breaking for plugin authors: `parseConfig` goes, `build` loses a parameter, a configurable plugin
+   exports a factory instead of an instance, and the five shipped plugins are migrated with it. Startup validation is not lost, it moves — the consumer parses and
    validates when it constructs, which is where the YAML already is. And the registry the server holds
    becomes what every other registry in this design became: a map of **constructed** things.
 
@@ -961,7 +994,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter (§4.6.7)** — what a plugin needs goes into its constructor, so nothing travels through its usage contract; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3) — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter, and `PluginExports` gains `pipelinePluginFactories` (§4.6.7)** — what a plugin needs goes into its constructor, so nothing travels through its usage contract, and a configurable third-party plugin is exported as a factory the app calls; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3) — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` removed** (§4.6.2), `MakeLlmConfig` with them, and `DefaultModelResolver` with them — `IModelResolver` itself is **unchanged** (`model-resolver.ts:7`), since what held a config was the implementation; optional `ragRegistryFactory(identity)` with session-owned disposal (§6.4) | **breaking**: exported functions and `DefaultModelResolver` are removed; the `IModelResolver` contract is untouched. Also additive at runtime for the MCP and RAG seams, and `SessionGraphFactoryOptions.logger` is widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | **`IServerPipelineContext` loses `makeLlm`, `llmMap` and `pipelineFallback` and keeps the framework's existing `resolveLlm(role)` as the only way in — whose key space stays the consumer's, and `IRoleLlmResolver` loses `makeLlm(lc)` (§4.6.6) — a usage-side contract may not construct, so the per-step authorization path closes by type**; the resolver becomes **scoped**, deployment-wide and per-session, with disposal following the identity (§4.6.5, §4.6.6); consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted; **and it constructs providers the way the library used to** — `makeLlm({…})` at `build-dag-coordinator-deps.ts:89` — and its `SmartServerLlmConfig.apiKey` (`:129`) and `PipelineLlmProviderConfig` secrets (`pipeline.ts:14-26`) are passengers too, so they go while those DTOs stay **serializable**, gaining a non-secret `credentialRef` so a role can still name its account — construction goes through `BuildAgentDeps.makeLlm`, which already exists (`:360`) and becomes **non-optional** so a missing seam is a build error rather than a deployment that stops starting (§4.6.3), because a YAML file holds neither an object nor a function (§4.6.2). The loader, env substitution and schema validation stay here; only the rule requiring `AICORE_SERVICE_KEY` (`config-validator.ts:72`) leaves with the credential | **breaking**: two exported DTOs lose secret fields, one required. `modelResolver?` stays optional (`:334`), and the dispatch and the resolver implementation land in `llm-agent-server`, the app |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
@@ -1354,8 +1387,10 @@ const owner = ctx.userId;                  // string | undefined
 `IPipelinePlugin`, the contract is now `name` and `build(ctx)`. Whatever your plugin used to receive as
 `config` — a YAML section, a client, a credential — you pass to its **constructor** instead, which is where
 you already have it: you parse and validate your own section when you register the plugin, rather than
-handing the framework a parser. A plugin that needs nothing keeps a bare constructor, as four of the five
-shipped ones do; a plugin whose behaviour varies takes that variation at construction, as
+handing the framework a parser. If your plugin is loaded dynamically and needs configuration, export a **factory** under
+`pipelinePluginFactories` instead of an instance — `(raw: unknown) => IPipelinePlugin`, parsing your own
+shape inside it — since the app cannot call a constructor it has never seen. A plugin that needs nothing
+keeps a bare constructor and a plain instance export, as four of the five shipped ones do; a plugin whose behaviour varies takes that variation at construction, as
 `new ControllerPipelinePlugin('controller')` already did. Authorized objects still come from `ctx` —
 `resolveLlm`, `toolsRag`, `mcpClients`, `callMcp` — never from anything you parsed.
 
