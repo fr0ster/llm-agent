@@ -260,6 +260,8 @@ What each database speaks, as checked on 2026-09-15:
 
 ### 4.6 The three that blocked a plan, and what settled them
 
+   **Every change to a contract in this section carries its argument, and that is a requirement rather than a courtesy.** "Otherwise the configured path does not work" describes a difficulty, not a justification — and a contract changed without one is a contract the next reader cannot defend or revert. Several of the decisions below were reversed once precisely because the first version had only a difficulty behind it, and each now states what it buys, what it costs and what was rejected. If a member cannot be argued for in one sentence, it is not ready to be added.
+
 Each was measured in the packages on 2026-09-20, not reasoned about. Two of the three turned out to be additive, which the earlier wording of this section and of §8 denied.
 
 1. **Passwords in connection strings: additive, and nothing needs forbidding.** The worry assumed a credential has to displace the connection string. It does not, because the code that reads either one is not public. `resolvePgConnectArgs` and `resolveHanaConnectArgs` are absent from their package barrels — `index.ts` exports only the config type and the class — and both packages declare a **closed `exports` map with only `"."`**, so `dist/connection.js` ships in `files` but Node refuses the subpath. Each resolver has exactly one production caller and it is **already `async`**: `private async createDriverClient` (`pg-vector-rag.ts:62`, `hana-vector-rag.ts:54`). Awaiting `secret()` there costs no signature anyone can see, and the config interfaces gain one optional property.
@@ -357,134 +359,6 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    ```
 
    **And the rule is general, not an LLM rule — two more DTOs carry the same passenger.** *(Both of those two are RAG shapes, and §4.6.4 below shows why one `credentialRef` on either is not enough — read the two together.)* `PipelineRagStoreConfig.apiKey` is a plain secret, documented as “API key (for openai type or Qdrant auth)” (`pipeline.ts:32`); `SmartServerRagConfig` — the **exported** YAML DTO, and the one a PostgreSQL or HANA deployment actually fills — carries `user?: string` and `password?: string` (`smart-server.ts:167-168`); and `SkillPluginsConfig`'s store variant is `{ type: 'qdrant'; url: string; apiKey?: string }` (`skill-plugins-config.ts:19`, threaded at `skill-plugins-host-factory.ts:271`, `:310` and `controller-skill-pipeline-builder.ts:16`, `:47`). Both are YAML DTOs, and by this section's test both fail it the same way: remove the key and a complete store configuration remains. Two earlier drafts narrowed this: the first applied `credentialRef` to the LLM configs alone, the second added the pipeline and skill stores but missed `SmartServerRagConfig` — which is the one carrying `user`/`password`, so the rule would have held everywhere except the PostgreSQL and HANA path it matters most on.
-    ### 4.6.6 A usage contract carries neither authorization nor the means to obtain it
-
-    §4.6.5 asks that a provider be constructed once, and asking is not a mechanism. The mechanism is
-    structural: **the contract through which an object is *used* must not mention authorization, and must
-    not offer any way to get an authorized object either.** Then a step further down cannot send
-    credentials on every call, because nothing in its reach accepts them and nothing in its reach
-    constructs. Authorization lives in a **separate** contract — §4's three credentials — consumed by the
-    **constructor** of the implementation of the usage contract, and nowhere else. This is principle 10
-    applied to a lifetime rather than to a value: enforce it in the type, not in a rule someone must
-    remember.
-
-    **The usage contracts already pass this test, which is why it is worth stating for the rest.**
-    `ILlm.chat`/`streamChat` take `LLMCallOptions`, whose entire content is `model`, `temperature`,
-    `maxTokens`, `topP`, `stop` and `signal` — behaviour knobs, all of them, and `model` being one of them
-    matters below. `IEmbedder.embed`, `IRag.query` and the MCP call surface are the same: the job, and
-    nothing auth-shaped.
-
-    **The pipeline's own context contract fails it, and fails it in the licensed way rather than by
-    accident.** `IServerPipelineContext` (`pipelines/server-context.ts:22`) — the object handed to every
-    step — declares, beside the correctly-resolved `mainLlm: ILlm`, `helperLlm?: ILlm` and
-    `embedder?: IEmbedder`:
-
-    - `makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>` — a **constructor**, taking the serializable
-      config, which after §4.6.4 carries a `credentialRef`. Used at `pipelines/controller.ts:336` to build
-      the three subagent role LLMs and threaded onward at `pipelines/dag.ts:49`, so construction is
-      reachable from inside a running pipeline.
-    - `llmMap?: NormalizedLlmMap` and `pipelineFallback?: SmartServerLlmConfig` — the **configs
-      themselves**, references included, handed to every step.
-
-    So the contract holds both shapes at once: instances, which are right, and configuration plus a
-    factory, which is the per-step authorization path §4.6.5 measured. `IRoleLlmResolver` has the same
-    defect for the same reason, declaring `makeLlm(lc)` beside `resolve(role)`.
-
-    **What replaces them, and why nothing is lost.** The context exposes `resolveRole(role: string): ILlm`
-    — a lookup in a map the composition root filled at build time — and loses `makeLlm`, `llmMap` and
-    `pipelineFallback`. A step that wants a **different model** does not need a different provider: `model`
-    is already a per-call option on the usage contract, which is the distinction §4.6.2 drew between a
-    behaviour knob and an identity. A step that wants a **different role** asks for that role's instance,
-    which exists because the root built it. The only capability actually removed is the ability to
-    authorize something mid-pipeline, which is the capability that should not exist.
-
-    An earlier draft of this design would have left all of this in place, because it reasoned about where a
-    credential is *declared* and never about who can *obtain* one. The two questions have different
-    answers, and only the second one closes the hole.
-
-    ### 4.6.5 Authorization is established once, which is a statement about lifetime
-
-    §5 says construction is the authorization: once the object exists it is authorized, and every method
-    on the contract is just the job. That is a claim about **how often construction happens**, and a
-    constructor that takes a credential but runs on every request has moved the work rather than removed
-    it. So the requirement is two-part, and the second part had been left implicit: *authorization is
-    passed **once**, when the provider instance is built, and that instance is then reused.*
-
-    **It is measurable, not stylistic, because the quota gate depends on it.** §4.6.2's rate limiting keys
-    a 429 bucket on the credential **object's identity** — deliberately, since deriving a key from the
-    secret would put the secret in a cache key. Two consequences follow, and the reference implementation
-    broke both before this section existed:
-
-    - **The registry must hand back the same object for the same reference.** A `credentialFor` that calls
-      `staticApiKey(requireEnv(…))` on each lookup returns a new object every time, so one account gets a
-      fresh quota bucket per construction and the gate stops gating — a defect no single-request test can
-      show. Memoize per reference, keeping the laziness that made it a function rather than a literal:
-      parse on the first ask, reuse afterwards.
-    - **A resolver must not construct per resolution.** `RoleLlmResolver.resolve(role)` returns held
-      instances for `main`, `helper` and `classifier`, and for any **other** configured role falls through
-      to `deps.makeLlm(cfg)` — constructing a provider, and resolving a credential, on every call. The
-      three common roles hid it. A role's instance is built once and cached by the resolver, on the same
-      argument that gives the three their fields; a config reload replaces the instance, which is the one
-      event that should.
-
-    The same holds for every object the pipeline embeds, not only LLMs: an `IMcpServer` whose constructor
-    demands a credential per §3.3, an embedder, a store. If any of them is constructed per request, its
-    authorization is per request too, whatever the constructor's signature says. **The test to apply to a
-    seam is not "does the constructor take a credential" but "how many times is this constructor
-    called"** — and if the answer is per request, the seam is a factory in the wrong place.
-
-    ### 4.6.4 One `credentialRef` is not enough for RAG, and the app has no seam to build a store through
-
-    Two blockers found reviewing this design against the code, and they are one structural problem seen from two sides: **the serializable RAG config describes two independently authenticated targets at once, and the composition root has no way to construct either.**
-
-    **The config conflates a store and an embedder.** `SmartServerRagConfig` (`smart-server.ts:150`) is one flat shape holding the store's `connectionString`, `host`, `port`, `user`, `password`, `database`, `schema`, `poolMax`, `connectTimeout`, `dimension` and `autoCreateSchema` **beside** the embedder's `embedder`, `model`, `resourceGroup`, `scenario` and `maxBatchSize` — and two members are outright ambiguous: `url` is Qdrant's address or Ollama's depending on its neighbours, and `model` is the embedding model while the store has none. So a single `credentialRef` cannot say what it refers to. Qdrant with OpenAI embeddings needs **two** api keys; Qdrant with SAP AI Core needs an api key **and** a bearer credential with an `apiBaseUrl`. An earlier draft of §4.6.2 added one `credentialRef` to this DTO and to `PipelineRagStoreConfig`, which would have been unable to express either deployment.
-
-    **So the shape splits, along the line the implementation had already drawn.** §4.6.3's item 4 left `makeRag` taking a built `IEmbedder` rather than a name, which means store construction and embedder construction are already two steps in code; the serializable side mirrors that instead of contradicting it:
-
-    ```yaml
-    rag:
-      store:                      # what the vector store needs, and its own account
-        type: qdrant
-        url: http://localhost:6333
-        collectionName: docs
-        credentialRef: QDRANT
-      embedder:                   # what the embedder needs, and its own account
-        provider: sap-ai-core
-        model: text-embedding-3-small
-        credentialRef: AICORE
-        apiBaseUrl: https://api.ai.example
-      dedupThreshold: 0.95        # search knobs, belonging to neither target
-    ```
-
-    Each nested shape carries **its own** `credentialRef`, which is what makes two accounts expressible; the ambiguous `url` and `model` land on the target that actually owns each; and the search knobs stop sitting among connection settings. `PipelineRagStoreConfig` splits the same way. **`SkillPluginsStoreConfig` does not**, and an earlier draft of this paragraph was wrong to say it should: it is already a discriminated union — `{ type: 'in-memory' } | { type: 'qdrant'; url; apiKey?; collection? }` — describing persistence only, with no embedder target in it to separate. Its qdrant arm simply gains its own `credentialRef?`. And it is worth noticing why that config needed no rescuing: `SkillPluginsConfig` **already** keeps its embedder in a separate `embedder` member, read at `skill-plugins-host-factory.ts:240`. The split asked of `SmartServerRagConfig` is therefore not an invention of this section — it is the shape a sibling config in the same package has been using all along. This is a **breaking** change to a YAML shape, and §8's migration note carries the before/after — it is a rename plus a nesting, mechanical for a consumer to apply.
-
-    **And the app needs a seam to construct a store, which it does not have.** `BuildAgentDeps` offers `makeLlm`, `resolveEmbedder`, `buildSkillHost`, `connectMcp` and more — but **nothing for a store**. `SmartServer` imports `makeRag` from the library and calls it directly at `smart-server.ts:1271`, `:1272`, `:1915` and `:1923`. So with secrets gone from YAML, those four call sites have no credential to pass and the composition root never participates: the design's whole claim, that construction belongs to the app, has an LLM seam and no store seam. An earlier draft did not notice because it reasoned about the DTOs and never about who calls the constructor.
-
-    So `BuildAgentDeps` gains `makeRag`, **required** for the same reason `makeLlm` is (§4.6.3 item 3). What it takes had to be corrected twice, and the second correction is the instructive one. The first draft said `(storeConfig, embedder: IEmbedder)`; the second said `(cfg: RagResolution)` — the library's runtime union. Both were wrong, in opposite directions, and for one reason: **neither end of the seam holds what it was being asked for.** `SmartServer` cannot build a `RagResolution`, because that union carries a `credential` and the credential is precisely what the library must not hold. The app's factory cannot receive a `RagResolution` either, because it would then never see the `credentialRef` it is supposed to resolve. The seam's job **is** that conversion, so its input is what the caller genuinely has — the serializable store section and, when the store needs one, a resolved embedder — and its body is where the app turns those into the typed union:
-
-    ```ts
-    // paired, so the compiler demands an embedder exactly where a store cannot work without one
-    type MakeRagInput =
-      | { store: InMemoryStoreConfig; embedder?: IEmbedder }
-      | { store: QdrantStoreConfig | PgVectorStoreConfig | HanaVectorStoreConfig; embedder: IEmbedder };
-
-    makeRag: (input: MakeRagInput) => Promise<IRag>;
-    ```
-
-    The pairing is a discriminated union rather than an optional second parameter, because `SmartServerRagStoreConfig` is itself discriminated by `type` once §4.6.4's split has happened — so the requirement travels with the arm instead of being asserted about it. `SmartServer` narrows at the YAML boundary, which is where narrowing belongs (§4.6.3), and after that its four call sites type-check.
-
-    **The discipline this section was missing, stated so the next seam does not need three drafts.** For every seam, write down what each side holds before choosing the signature:
-
-    | seam | the library holds | the app holds | so the seam carries |
-    |---|---|---|---|
-    | `makeLlm` | `SmartServerLlmConfig` with a `credentialRef` | the credential registry | the config; the app resolves and constructs |
-    | `resolveEmbedder` | the embedder section with its own ref | the registry, and the narrowing per provider | the config; the app resolves, narrows and constructs |
-    | `makeRag` | the store section with its own ref, plus an `IEmbedder` it obtained from the seam above | the registry | both of those; the app resolves and constructs |
-
-    Two of the three mistakes above were signatures chosen before this table existed.
-
-    **And two rules the adapters must obey, both of which an earlier draft of them broke.** First, **the reference ends in the root**: it is destructured out before anything is spread onward, because `{ ...cfg }` carries `credentialRef` into a runtime object and TypeScript will not stop it — excess property checking does not apply to a spread. A non-secret reference leaking into `llm-agent-rag` and on into a provider config is not a security problem, it is the two-layer separation the whole design rests on quietly failing. Second, **"optional" means the reference may be omitted, never that a named reference may fail to resolve.** An earlier draft treated an unknown or wrong-kind entry as "no credential", so `credentialRef: QDRNAT` would have opened an **unauthenticated** connection instead of reporting a typo — a silent downgrade from authenticated to anonymous, which is the worst direction for a mistake to fail in. A ref that was named must resolve, and must hold the right kind; falling back to no credential is legitimate only where none was asked for and the target genuinely permits it. Two parameters made the keyword-only path inexpressible: a `store.type: in-memory` with no `rag.embedder` has no `IEmbedder` to pass, while every call site was to go through this seam. In the union the embedder sits on the arms that need one — required on `qdrant`, `pg-vector` and `hana-vector`, **optional on `in-memory`**, which is also how `SkillPluginsStoreConfig` has long expressed the same thing (`{ type: 'in-memory' }` carries no fields at all). So the compiler demands an embedder exactly where a store cannot work without one, and the app resolves one only then: a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
-
    So they take `credentialRef` as well, resolved the same way, and the embedder and store construction moves to the app with the provider dispatch. The RAG stores' own constructors take the credential (§4.5), so nothing new is needed below.
 
    A reference is not a passenger by this section's test: remove it and the configuration can no longer address the right account, so it is something the config genuinely needs. And it is not a secret — the value never enters the loaded object, which is precisely what `${…}` substitution did wrong. The app maps a `credentialRef` to a credential however it likes: an env var of that name, a vault lookup, a fixed table. Absent, it means “the one credential I hold”, so a single-account deployment writes nothing.
@@ -521,22 +395,6 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
     **What makes that safe is the same thing that makes it necessary: the parameter is typed by the credential contract.** A file cannot produce an `IApiKeyCredential` — `${VAR}` substitution yields a string, and `secret()` is a function — so a member of that type can only be filled by code that holds the credential. The **type**, not a convention or a review habit, is what keeps the serializable layer secret-free. That is why `credentialRef: string` and `credential: IApiKeyCredential` are two members of two different layers rather than two spellings of one: the first is what a file can say, the second is what only a holder can supply, and an object that reaches a constructor may carry the second precisely because no YAML can.
 
     **Two consequences, and the second is easy to get wrong.** The resolution input in `llm-agent-rag` carries `credential`, because its built-ins have no other way to be authorized — and it carries it as a **typed arm of a discriminated union**, not as a member of an untyped bag: the contracts exist so a type is not lost anywhere along the path, so the place that passes a credential on is also the place that must keep it checkable (principle 10). But a consumer-registered `extraFactories` entry keeps the narrow `EmbedderFactoryConfig`: the framework may hold a credential for a constructor **it owns**, and must not promise to carry one for a factory the consumer wrote — that is the paragraph above, and widening this seam would reintroduce exactly the secret-handling it removes.
-    ### 4.6.3 Where the check belongs — principle 10 applied to this design
-
-    **The rule.** *Prefer a check the compiler makes over a check that runs.* A guard reports a mistake to whoever is unlucky enough to hit it; a type refuses it in front of whoever wrote it. So a runtime check keeps one job — the **boundary** where input arrives that no compiler ever saw — and everywhere else the type is the mechanism. Recorded as binding principle 10 in `docs/ARCHITECTURE.md`. It was stated after three items of this design had already been written the other way round, so this section says what each of them becomes, rather than leaving the rule to be applied by whoever reads it next.
-
-    **The tell is always a cast, and the question is which one.** A name held in a variable, `await import(pkg)` with a non-literal specifier, `as new (opts: Record<string, unknown>) => T` — each turns a compile-time question into a runtime one and then invites a guard to answer it. Before adding a guard, ask which cast made it necessary and whether that cast was load-bearing. In this design, three times out of three, it was not.
-
-    **1. The store dispatch (settled, see the `llm-agent-rag` row in §8).** A discriminated union whose arms carry what each backend's constructor demands, dispatched over literal import specifiers. The wrong credential kind, a missing required one and a leftover `apiKey`/`user`/`password` become build errors; the bag, the casts and the name maps are deleted.
-
-    **2. The embedder dispatch — the same treatment, and it is required rather than eventual.** The embedder half of that package has the identical shape: `EmbedderFactoryOpts = Record<string, unknown>` reaching a cast constructor, a whitelist copied field by field, and a `kind` guard answering what the compiler could. Leaving it is not a smaller version of the same defect, it is the same defect, and an earlier draft of this design shipped a guard there for exactly the reason principle 10 rejects. It is equally convertible: `@mcp-abap-adt/openai-embedder`, `-ollama-embedder` and `-sap-aicore-embedder` are declared in **both** `peerDependencies` and `devDependencies`, so a literal specifier type-resolves while each stays an optional peer. What must not change with it is the narrow consumer-facing `EmbedderFactoryConfig` on `extraFactories`: a factory the consumer wrote closes over its own credential, and the framework must not promise to carry one for it.
-
-    **3. `BuildAgentDeps.makeLlm` becomes required in the type, not merely un-defaulted.** §4.6.2 removes `SmartServer`'s `deps.makeLlm ?? _makeLlmDefault` so the seam is genuinely supplied by the app, and an earlier draft of that item stopped there, adding that *"the validator should refuse at startup with a message naming the seam"*. That is the runtime answer to a question the type can settle: the member is optional today (`smart-server.ts:360`), so removing the default without making it required turns a build error into a deployment that stops starting. It becomes non-optional. The cost is real and is the migration: `BuildAgentDeps`'s doc comment promises that passing `{}` preserves current behaviour, and it no longer can, so every call site — tests included — names the seam. That is a smaller price than a fleet of deployments discovering it at boot, and §8's migration note carries it. The startup refusal stays for callers with no types to check.
-
-    **4. `makeRag` takes a built embedder, not the name of one — a calling-contract change this section owes an explicit statement.** It emerged from implementing item 1 rather than from designing it: once each union arm carries `embedder: IEmbedder`, there is nothing left for `makeRag` to resolve by name, and an earlier draft of the task text asked for both at once — arms typed to an instance and a `resolveEmbedder(cfg as EmbedderResolutionConfig)` call inside `makeRag` — which cannot compile together. The instance wins, and it is the right half to keep: a name is a string that any typo satisfies, an `IEmbedder` is checked. So a caller composes the two — `resolveEmbedder` first, then `makeRag` — and three consequences follow, each of which belongs to a task rather than to a surprise: the name-resolution path leaves `makeRag` entirely; `llm-agent-server-libs`' four call sites must resolve before calling, which is **Task B9's** work and is why that suite is red between the two tasks; and `InMemoryRag` without an embedder is no longer reachable through `makeRag`, so a caller wanting keyword-only in-memory constructs it directly, as it still exports.
-
-    **And one runtime check that is correct and must not be "fixed".** A connection string carrying credentials is refused at construction (§4.6.1). Whether a string contains `user:pass@` is a property of its **value**, not of its type, and it arrives from a file — so this is the boundary doing exactly its job. The same holds for a missing optional peer, which no type can answer, and for a legacy secret field arriving from YAML, since a loaded object is not a fresh literal and no excess-property check ever sees it. The distinction to keep is not runtime-versus-compile-time as a matter of taste: it is whether the value ever passed a compiler.
-
    **One plain-string convenience exists, not two, and it goes rather than gaining a credential.** `makeDefaultLlm(apiKey: string, model: string, temperature: number)` (`providers.ts:302`) is a one-line wrapper over `makeLlm` with `provider: 'deepseek'` hardcoded, so it leaves with it. An earlier draft of this item also named a `createDeepSeek` — **there is no such symbol anywhere in the repository**; I carried it in from a summary and it should never have reached a spec.
 
    **And it removes the precedence rules instead of ranking them.** §4.6.1 had to decide whether a credential outranks a connection string and the discrete fields, and §4.6.2 whether it outranks `apiKey`. Both questions exist only while a config carries several sources; with one source, “did this object get authorized?” has one answer, checkable at construction, and there is nothing to rank. A connection string therefore carries the **address** only — a string with a password in it is refused at construction, loudly, rather than silently losing to the credential.
@@ -555,6 +413,156 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
 3. **Where the endpoint goes: a field of its own on the provider's config, named `apiBaseUrl`.** An earlier draft said it “keeps the home it has” — but for `sap-aicore-llm` that home was *inside* the credential object being removed (`sap-core-ai-provider.ts:29`), so there is nothing to keep. It becomes a top-level `apiBaseUrl`, matching what `parseServiceKey` returns (`service-key.ts:7`) and what `sap-aicore-embedder` already calls it (`foundation-embedder.ts:8`). An address is not a credential by this section's own rule, so `IBearerCredential` carries the token and nothing else, and the service URL keeps the home it has — `sap-aicore-llm`'s provider config (`sap-core-ai-provider.ts:29`, read at `:164`) and `sap-aicore-embedder`'s `apiBaseUrl` (`foundation-embedder.ts:8`). What changes is only that the two stop being one object: today the URL sits in the same structure as the OAuth input, and the credential replaces that input's half of it. §9.2's measurement shows the resulting shape exactly — a constructed destination `{ url, authentication: 'NoAuthentication', headers: { Authorization } }`, where `url` comes from config and the header from `token()`.
 
 ---
+
+   ### 4.6.3 Where the check belongs — principle 10 applied to this design
+
+   **The rule.** *Prefer a check the compiler makes over a check that runs.* A guard reports a mistake to whoever is unlucky enough to hit it; a type refuses it in front of whoever wrote it. So a runtime check keeps one job — the **boundary** where input arrives that no compiler ever saw — and everywhere else the type is the mechanism. Recorded as binding principle 10 in `docs/ARCHITECTURE.md`. It was stated after three items of this design had already been written the other way round, so this section says what each of them becomes, rather than leaving the rule to be applied by whoever reads it next.
+
+   **The tell is always a cast, and the question is which one.** A name held in a variable, `await import(pkg)` with a non-literal specifier, `as new (opts: Record<string, unknown>) => T` — each turns a compile-time question into a runtime one and then invites a guard to answer it. Before adding a guard, ask which cast made it necessary and whether that cast was load-bearing. In this design, three times out of three, it was not.
+
+   **1. The store dispatch (settled, see the `llm-agent-rag` row in §8).** A discriminated union whose arms carry what each backend's constructor demands, dispatched over literal import specifiers. The wrong credential kind, a missing required one and a leftover `apiKey`/`user`/`password` become build errors; the bag, the casts and the name maps are deleted.
+
+   **2. The embedder dispatch — the same treatment, and it is required rather than eventual.** The embedder half of that package has the identical shape: `EmbedderFactoryOpts = Record<string, unknown>` reaching a cast constructor, a whitelist copied field by field, and a `kind` guard answering what the compiler could. Leaving it is not a smaller version of the same defect, it is the same defect, and an earlier draft of this design shipped a guard there for exactly the reason principle 10 rejects. It is equally convertible: `@mcp-abap-adt/openai-embedder`, `-ollama-embedder` and `-sap-aicore-embedder` are declared in **both** `peerDependencies` and `devDependencies`, so a literal specifier type-resolves while each stays an optional peer. What must not change with it is the narrow consumer-facing `EmbedderFactoryConfig` on `extraFactories`: a factory the consumer wrote closes over its own credential, and the framework must not promise to carry one for it.
+
+   **3. `BuildAgentDeps.makeLlm` becomes required in the type, not merely un-defaulted.** §4.6.2 removes `SmartServer`'s `deps.makeLlm ?? _makeLlmDefault` so the seam is genuinely supplied by the app, and an earlier draft of that item stopped there, adding that *"the validator should refuse at startup with a message naming the seam"*. That is the runtime answer to a question the type can settle: the member is optional today (`smart-server.ts:360`), so removing the default without making it required turns a build error into a deployment that stops starting. It becomes non-optional. The cost is real and is the migration: `BuildAgentDeps`'s doc comment promises that passing `{}` preserves current behaviour, and it no longer can, so every call site — tests included — names the seam. That is a smaller price than a fleet of deployments discovering it at boot, and §8's migration note carries it. The startup refusal stays for callers with no types to check.
+
+   **4. `makeRag` takes a built embedder, not the name of one — a calling-contract change this section owes an explicit statement.** It emerged from implementing item 1 rather than from designing it: once each union arm carries `embedder: IEmbedder`, there is nothing left for `makeRag` to resolve by name, and an earlier draft of the task text asked for both at once — arms typed to an instance and a `resolveEmbedder(cfg as EmbedderResolutionConfig)` call inside `makeRag` — which cannot compile together. The instance wins, and it is the right half to keep: a name is a string that any typo satisfies, an `IEmbedder` is checked. So a caller composes the two — `resolveEmbedder` first, then `makeRag` — and three consequences follow, each of which belongs to a task rather than to a surprise: the name-resolution path leaves `makeRag` entirely; `llm-agent-server-libs`' four call sites must resolve before calling, which is **Task B9's** work and is why that suite is red between the two tasks; and `InMemoryRag` without an embedder is no longer reachable through `makeRag`, so a caller wanting keyword-only in-memory constructs it directly, as it still exports.
+
+   **And one runtime check that is correct and must not be "fixed".** A connection string carrying credentials is refused at construction (§4.6.1). Whether a string contains `user:pass@` is a property of its **value**, not of its type, and it arrives from a file — so this is the boundary doing exactly its job. The same holds for a missing optional peer, which no type can answer, and for a legacy secret field arriving from YAML, since a loaded object is not a fresh literal and no excess-property check ever sees it. The distinction to keep is not runtime-versus-compile-time as a matter of taste: it is whether the value ever passed a compiler.
+
+
+   ### 4.6.4 One `credentialRef` is not enough for RAG, and the app has no seam to build a store through
+
+   Two blockers found reviewing this design against the code, and they are one structural problem seen from two sides: **the serializable RAG config describes two independently authenticated targets at once, and the composition root has no way to construct either.**
+
+   **The config conflates a store and an embedder.** `SmartServerRagConfig` (`smart-server.ts:150`) is one flat shape holding the store's `connectionString`, `host`, `port`, `user`, `password`, `database`, `schema`, `poolMax`, `connectTimeout`, `dimension` and `autoCreateSchema` **beside** the embedder's `embedder`, `model`, `resourceGroup`, `scenario` and `maxBatchSize` — and two members are outright ambiguous: `url` is Qdrant's address or Ollama's depending on its neighbours, and `model` is the embedding model while the store has none. So a single `credentialRef` cannot say what it refers to. Qdrant with OpenAI embeddings needs **two** api keys; Qdrant with SAP AI Core needs an api key **and** a bearer credential with an `apiBaseUrl`. An earlier draft of §4.6.2 added one `credentialRef` to this DTO and to `PipelineRagStoreConfig`, which would have been unable to express either deployment.
+
+   **So the shape splits, along the line the implementation had already drawn.** §4.6.3's item 4 left `makeRag` taking a built `IEmbedder` rather than a name, which means store construction and embedder construction are already two steps in code; the serializable side mirrors that instead of contradicting it:
+
+   ```yaml
+   rag:
+     store:                      # what the vector store needs, and its own account
+       type: qdrant
+       url: http://localhost:6333
+       collectionName: docs
+       credentialRef: QDRANT
+     embedder:                   # what the embedder needs, and its own account
+       provider: sap-ai-core
+       model: text-embedding-3-small
+       credentialRef: AICORE
+       apiBaseUrl: https://api.ai.example
+     dedupThreshold: 0.95        # search knobs, belonging to neither target
+   ```
+
+   Each nested shape carries **its own** `credentialRef`, which is what makes two accounts expressible; the ambiguous `url` and `model` land on the target that actually owns each; and the search knobs stop sitting among connection settings. `PipelineRagStoreConfig` splits the same way. **`SkillPluginsStoreConfig` does not**, and an earlier draft of this paragraph was wrong to say it should: it is already a discriminated union — `{ type: 'in-memory' } | { type: 'qdrant'; url; apiKey?; collection? }` — describing persistence only, with no embedder target in it to separate. Its qdrant arm simply gains its own `credentialRef?`. And it is worth noticing why that config needed no rescuing: `SkillPluginsConfig` **already** keeps its embedder in a separate `embedder` member, read at `skill-plugins-host-factory.ts:240`. The split asked of `SmartServerRagConfig` is therefore not an invention of this section — it is the shape a sibling config in the same package has been using all along. This is a **breaking** change to a YAML shape, and §8's migration note carries the before/after — it is a rename plus a nesting, mechanical for a consumer to apply.
+
+   **And the app needs a seam to construct a store, which it does not have.** `BuildAgentDeps` offers `makeLlm`, `resolveEmbedder`, `buildSkillHost`, `connectMcp` and more — but **nothing for a store**. `SmartServer` imports `makeRag` from the library and calls it directly at `smart-server.ts:1271`, `:1272`, `:1915` and `:1923`. So with secrets gone from YAML, those four call sites have no credential to pass and the composition root never participates: the design's whole claim, that construction belongs to the app, has an LLM seam and no store seam. An earlier draft did not notice because it reasoned about the DTOs and never about who calls the constructor.
+
+   So `BuildAgentDeps` gains `makeRag`, **required** for the same reason `makeLlm` is (§4.6.3 item 3). What it takes had to be corrected twice, and the second correction is the instructive one. The first draft said `(storeConfig, embedder: IEmbedder)`; the second said `(cfg: RagResolution)` — the library's runtime union. Both were wrong, in opposite directions, and for one reason: **neither end of the seam holds what it was being asked for.** `SmartServer` cannot build a `RagResolution`, because that union carries a `credential` and the credential is precisely what the library must not hold. The app's factory cannot receive a `RagResolution` either, because it would then never see the `credentialRef` it is supposed to resolve. The seam's job **is** that conversion, so its input is what the caller genuinely has — the serializable store section and, when the store needs one, a resolved embedder — and its body is where the app turns those into the typed union:
+
+   ```ts
+   // paired, so the compiler demands an embedder exactly where a store cannot work without one
+   type MakeRagInput =
+     | { store: InMemoryStoreConfig; embedder?: IEmbedder }
+     | { store: QdrantStoreConfig | PgVectorStoreConfig | HanaVectorStoreConfig; embedder: IEmbedder };
+
+   makeRag: (input: MakeRagInput) => Promise<IRag>;
+   ```
+
+   The pairing is a discriminated union rather than an optional second parameter, because `SmartServerRagStoreConfig` is itself discriminated by `type` once §4.6.4's split has happened — so the requirement travels with the arm instead of being asserted about it. `SmartServer` narrows at the YAML boundary, which is where narrowing belongs (§4.6.3), and after that its four call sites type-check.
+
+   **The discipline this section was missing, stated so the next seam does not need three drafts.** For every seam, write down what each side holds before choosing the signature:
+
+   | seam | the library holds | the app holds | so the seam carries |
+   |---|---|---|---|
+   | `makeLlm` | `SmartServerLlmConfig` with a `credentialRef` | the credential registry | the config; the app resolves and constructs |
+   | `resolveEmbedder` | the embedder section with its own ref | the registry, and the narrowing per provider | the config; the app resolves, narrows and constructs |
+   | `makeRag` | the store section with its own ref, plus an `IEmbedder` it obtained from the seam above | the registry | both of those; the app resolves and constructs |
+
+   Two of the three mistakes above were signatures chosen before this table existed.
+
+   **And two rules the adapters must obey, both of which an earlier draft of them broke.** First, **the reference ends in the root**: it is destructured out before anything is spread onward, because `{ ...cfg }` carries `credentialRef` into a runtime object and TypeScript will not stop it — excess property checking does not apply to a spread. A non-secret reference leaking into `llm-agent-rag` and on into a provider config is not a security problem, it is the two-layer separation the whole design rests on quietly failing. Second, **"optional" means the reference may be omitted, never that a named reference may fail to resolve.** An earlier draft treated an unknown or wrong-kind entry as "no credential", so `credentialRef: QDRNAT` would have opened an **unauthenticated** connection instead of reporting a typo — a silent downgrade from authenticated to anonymous, which is the worst direction for a mistake to fail in. A ref that was named must resolve, and must hold the right kind; falling back to no credential is legitimate only where none was asked for and the target genuinely permits it. Two parameters made the keyword-only path inexpressible: a `store.type: in-memory` with no `rag.embedder` has no `IEmbedder` to pass, while every call site was to go through this seam. In the union the embedder sits on the arms that need one — required on `qdrant`, `pg-vector` and `hana-vector`, **optional on `in-memory`**, which is also how `SkillPluginsStoreConfig` has long expressed the same thing (`{ type: 'in-memory' }` carries no fields at all). So the compiler demands an embedder exactly where a store cannot work without one, and the app resolves one only then: a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
+
+
+   ### 4.6.5 Authorization is established once, which is a statement about lifetime
+
+   §5 says construction is the authorization: once the object exists it is authorized, and every method
+   on the contract is just the job. That is a claim about **how often construction happens**, and a
+   constructor that takes a credential but runs on every request has moved the work rather than removed
+   it. So the requirement is two-part, and the second part had been left implicit: *authorization is
+   passed **once**, when the provider instance is built, and that instance is then reused.*
+
+   **It is measurable, not stylistic, because the quota gate depends on it.** §4.6.2's rate limiting keys
+   a 429 bucket on the credential **object's identity** — deliberately, since deriving a key from the
+   secret would put the secret in a cache key. Two consequences follow, and the reference implementation
+   broke both before this section existed:
+
+   - **The registry must hand back the same object for the same reference.** A `credentialFor` that calls
+     `staticApiKey(requireEnv(…))` on each lookup returns a new object every time, so one account gets a
+     fresh quota bucket per construction and the gate stops gating — a defect no single-request test can
+     show. Memoize per reference, keeping the laziness that made it a function rather than a literal:
+     parse on the first ask, reuse afterwards.
+   - **A resolver must not construct per resolution.** `RoleLlmResolver.resolve(role)` returns held
+     instances for `main`, `helper` and `classifier`, and for any **other** configured role falls through
+     to `deps.makeLlm(cfg)` — constructing a provider, and resolving a credential, on every call. The
+     three common roles hid it. A role's instance is built once and cached by the resolver, on the same
+     argument that gives the three their fields; a config reload replaces the instance, which is the one
+     event that should.
+
+   The same holds for every object the pipeline embeds, not only LLMs: an `IMcpServer` whose constructor
+   demands a credential per §3.3, an embedder, a store. If any of them is constructed per request, its
+   authorization is per request too, whatever the constructor's signature says. **The test to apply to a
+   seam is not "does the constructor take a credential" but "how many times is this constructor
+   called"** — and if the answer is per request, the seam is a factory in the wrong place.
+
+   **And "once" needs its unit named, or the rule fails in the other direction.** Once means once per the **scope of the identity being authorized** — process-wide for a deployment's own account, and **per session** where the credential is the session's, which is the case a per-user ABAP login or a per-tenant store falls into. Never per request and never per step. The opposite error is as real and worse: caching an instance built from one session's credential and handing it to another session shares an authorization across callers, which is a cross-caller leak rather than a missed optimisation (§5.1 and AS-6 in the threat model). So the lifetime of the instance is the lifetime of the identity it was built for, and a per-session object is disposed with its session.
+
+
+   ### 4.6.6 A usage contract carries neither authorization nor the means to obtain it
+
+   §4.6.5 asks that a provider be constructed once, and asking is not a mechanism. The mechanism is
+   structural: **the contract through which an object is *used* must not mention authorization, and must
+   not offer any way to get an authorized object either.** Then a step further down cannot send
+   credentials on every call, because nothing in its reach accepts them and nothing in its reach
+   constructs. Authorization lives in a **separate** contract — §4's three credentials — consumed by the
+   **constructor** of the implementation of the usage contract, and nowhere else. This is principle 10
+   applied to a lifetime rather than to a value: enforce it in the type, not in a rule someone must
+   remember.
+
+   **The usage contracts already pass this test, which is why it is worth stating for the rest.**
+   `ILlm.chat`/`streamChat` take `LLMCallOptions`, whose entire content is `model`, `temperature`,
+   `maxTokens`, `topP`, `stop` and `signal` — behaviour knobs, all of them, and `model` being one of them
+   matters below. `IEmbedder.embed`, `IRag.query` and the MCP call surface are the same: the job, and
+   nothing auth-shaped.
+
+   **The pipeline's own context contract fails it, and fails it in the licensed way rather than by
+   accident.** `IServerPipelineContext` (`pipelines/server-context.ts:22`) — the object handed to every
+   step — declares, beside the correctly-resolved `mainLlm: ILlm`, `helperLlm?: ILlm` and
+   `embedder?: IEmbedder`:
+
+   - `makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>` — a **constructor**, taking the serializable
+     config, which after §4.6.4 carries a `credentialRef`. Used at `pipelines/controller.ts:336` to build
+     the three subagent role LLMs and threaded onward at `pipelines/dag.ts:49`, so construction is
+     reachable from inside a running pipeline.
+   - `llmMap?: NormalizedLlmMap` and `pipelineFallback?: SmartServerLlmConfig` — the **configs
+     themselves**, references included, handed to every step.
+
+   So the contract holds both shapes at once: instances, which are right, and configuration plus a
+   factory, which is the per-step authorization path §4.6.5 measured. `IRoleLlmResolver` has the same
+   defect for the same reason, declaring `makeLlm(lc)` beside `resolve(role)`.
+
+   **What replaces them, and why nothing is lost.** The context exposes `resolveRole(role: string): ILlm`
+   — a lookup in a map the composition root filled at build time — and loses `makeLlm`, `llmMap` and
+   `pipelineFallback`. A step that wants a **different model** does not need a different provider: `model`
+   is already a per-call option on the usage contract, which is the distinction §4.6.2 drew between a
+   behaviour knob and an identity. A step that wants a **different role** asks for that role's instance,
+   which exists because the root built it. The only capability actually removed is the ability to
+   authorize something mid-pipeline, which is the capability that should not exist.
+
+   An earlier draft of this design would have left all of this in place, because it reasoned about where a
+   credential is *declared* and never about who can *obtain* one. The two questions have different
+   answers, and only the second one closes the hole.
+
 
 ## 5. Admission is the consumer's, and none of it is ours
 
