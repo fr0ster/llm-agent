@@ -1279,152 +1279,225 @@ declare a closed exports map with only ".", and each resolver's one production c
 is already async."
 ```
 
-### Task B6b: the store bridge carries credentials, and checks the kind before constructing
+### Task B6b: the store path keeps its types end to end — the bag and the guard go
 
-The other half of the bridge, and it waited for Task B6 to give the three stores their `credential`. The hazard is the one B6a measured on the embedder side, doubled: `resolveRag` reaches the store constructor through `type RagCtor = new (opts: Record<string, unknown>) => IRag` and then casts again — `new Cls(opts as unknown as Record<string, unknown>)` (`rag-factories.ts:80`, `:95`) — and `makeRag` copies a hand-picked whitelist per store rather than spreading its input. So B6's removal of `apiKey` from qdrant and of `user`/`password` from pg and hana produces **no error in this package**, and a credential passed in would be dropped in silence exactly as the embedder's was. Read B6a's finding before starting: there the same shape was proven, not feared.
+**This task was rewritten.** Its first version typed the options bag and added a runtime `kind` guard,
+and that was the wrong mechanism: binding principle 10 asks for the check the compiler makes, and the
+credential contracts exist so that a type is **not lost anywhere** along the path. A guard here was
+never a design decision — it was the consequence of one, three casts upstream.
+
+**What throws the types away today, precisely.** `resolveRag` loads the store through a **variable**
+specifier (`PACKAGE_BY_NAME[name]`), then casts twice: `mod[exportName] as RagCtor`, where
+`RagCtor = new (opts: Record<string, unknown>) => IRag`, then
+`new Cls(opts as unknown as Record<string, unknown>)`. `makeRag` copies a hand-picked whitelist per
+store into `RagFactoryOpts`. So Task B6's removal of `apiKey`, `user` and `password` from the three
+store configs produced **no compile error here at all** — the measured fact that put this file in the
+plan.
+
+**What makes the static version possible, verified rather than assumed.** The three store packages are
+declared in **both** `peerDependencies` and `devDependencies`, so `await import('@mcp-abap-adt/qdrant-rag')`
+with a **literal** specifier type-resolves at compile time while the package stays an optional peer at
+runtime. And `resolveRag` and `RagFactoryOpts` have **no consumer outside this package** — checked
+across every `src` — so they can go rather than be improved. `prefetchRagFactories` does have one
+(`llm-agent-server/src/smart-agent/cli.ts:300`), and what that caller needs is only a fail-fast on a
+missing peer at startup, not a module handed back: the ES loader caches, so a later `await import` of
+the same literal costs nothing.
 
 **Files:**
-- Modify: `packages/llm-agent-rag/src/rag-factories.ts` — `RagFactoryOpts` (`:27`), `resolveRag` (`:84`), `RagResolutionConfig` (`:201`), and the three `makeRag` branches (qdrant `:303`, hana-vector, pg-vector)
-- Modify: `packages/llm-agent-rag/src/credential-guard.ts` — add `RAG_CREDENTIALS`; `assertCredentialKind` itself is unchanged, B6a wrote it
-- Modify: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts` — add the store cases to the file B6a created
+- Modify: `packages/llm-agent-rag/src/rag-factories.ts` — `makeRag` becomes a `switch` over a
+  discriminated union with literal imports; **delete** `RagFactoryOpts`, `RagCtor`, `resolveRag`,
+  `PACKAGE_BY_NAME`, `EXPORT_BY_NAME`, the prefetched map's role as a module store, and
+  `_resetPrefetchedRagForTests` if nothing still needs it
+- Modify: `packages/llm-agent-rag/src/credential-guard.ts` — **no** `RAG_CREDENTIALS`. The store side
+  needs no rule table, because each arm's constructor states the rule
+- Modify: `packages/llm-agent-rag/src/index.ts` — the barrel loses what the file lost
+- Modify: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts` — the store cases become
+  compile-time assertions plus the boundary tests below
 - Modify: `packages/llm-agent-rag/CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: `IApiKeyCredential`, `ISecretLoginCredential` (B1); `credential` on `QdrantRagConfig`, `PgVectorRagConfig`, `HanaVectorRagConfig` (B6); `assertCredentialKind` (B6a).
-- Produces: `credential` on `RagFactoryOpts` and `RagResolutionConfig`; `RAG_CREDENTIALS`. Task B10 resolves a `credentialRef` into a credential and needs a typed field here to put it in.
+- Consumes: `credential` on `QdrantRagConfig`, `PgVectorRagConfig`, `HanaVectorRagConfig` (Task B6),
+  with HANA's **required**; `IApiKeyCredential`, `ISecretLoginCredential` (B1).
+- Produces: `RagResolution`, a discriminated union on `type`, replacing `RagResolutionConfig`'s flat
+  bag. Task B9 narrows the YAML DTO to it at the validation boundary and owns every call site that
+  breaks.
 
-- [ ] **Step 1: write the failing tests**
+- [ ] **Step 1: write the failing tests — one compile-time, three at the boundary**
 
-The guard throws before any constructor runs, which is what makes this testable without a live backend — and is also the only place a mismatch can be caught, since the construction site casts twice.
+The typed path is proven by the compiler, so its assertion belongs in a file the typecheck list runs.
+The boundary is proven by behaviour.
 
 ```ts
-// append to packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts
-import type { ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
-import { resolveRag } from '../rag-factories.js';
+// packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts — add to tsconfig.typecheck.json
+import type { IApiKeyCredential, ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
+import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { RagResolution } from '../rag-factories.js';
 
-const login: ISecretLoginCredential = {
-  kind: 'secret-login',
-  principal: 'u',
-  secret: async () => 'p',
+declare const embedder: IEmbedder;
+declare const apiKey: IApiKeyCredential;
+declare const login: ISecretLoginCredential;
+
+// a login cannot authenticate Qdrant, and the compiler must be the one to say so
+// @ts-expect-error — qdrant takes an api-key credential
+const _wrongKind: RagResolution = {
+  type: 'qdrant', embedder, collectionName: 'c', url: 'http://localhost:6333', credential: login,
 };
 
-describe('the store bridge and credentials', () => {
-  it('checks the store credential before it reaches a constructor', () => {
-    assert.throws(
-      () =>
-        resolveRag('pg-vector', {
-          embedder: stubEmbedder,
-          collectionName: 'c',
-          credential: apiKey,
-        }),
-      /pg-vector.*secret-login.*api-key/i,
-      'the double cast at the construction site means only this guard can catch it',
-    );
-    assert.throws(
-      () =>
-        resolveRag('qdrant', {
-          embedder: stubEmbedder,
-          collectionName: 'c',
-          url: 'http://localhost:6333',
-          credential: login,
-        }),
-      /qdrant.*api-key.*secret-login/i,
-    );
-  });
+// HANA has no anonymous login, so omitting it is a build error, not a connect-time throw
+// @ts-expect-error — hana-vector requires a credential
+const _missing: RagResolution = { type: 'hana-vector', embedder, collectionName: 'c' };
 
-  it('lets a credential-less store through, because both kinds are optional', () => {
-    assert.doesNotThrow(() =>
-      assertCredentialKind('qdrant', undefined, RAG_CREDENTIALS.qdrant),
-    );
-    assert.doesNotThrow(() =>
-      assertCredentialKind('pg-vector', undefined, RAG_CREDENTIALS['pg-vector']),
-    );
-  });
+// the fields Task B6 removed cannot come back through this door either
+// @ts-expect-error — apiKey is not a member of any arm
+const _legacy: RagResolution = {
+  type: 'qdrant', embedder, collectionName: 'c', url: 'http://localhost:6333', apiKey: 'k',
+};
 
-  it('forwards the credential object itself to the named store', () => {
-    // makeRag's branches copy field by field; this asserts the copy includes it
-    const opts = ragOptsFor({
-      type: 'pg-vector',
-      collectionName: 'c',
-      credential: login,
-      host: 'db.example',
-    });
-    assert.equal(opts.credential, login);
-    assert.ok(!('user' in opts) && !('password' in opts));
-  });
-});
+// and the good cases must compile
+const _ok: readonly RagResolution[] = [
+  { type: 'qdrant', embedder, collectionName: 'c', url: 'http://localhost:6333', credential: apiKey },
+  { type: 'pg-vector', embedder, collectionName: 'c', host: 'db', credential: login },
+  { type: 'hana-vector', embedder, collectionName: 'c', host: 'h', credential: login },
+];
 ```
 
-`ragOptsFor` does not exist yet — Step 1 of this task is also to decide how to observe what `makeRag` copies. Two honest options, pick one and say why in the report: export a small internal helper that builds the per-store opts (and have `makeRag` call it), or assert through `resolveRag` with a stub module registered via `_resetPrefetchedRagForTests` plus a prefetch of the real workspace package. Prefer the first: it makes the whitelist a named, testable thing rather than an inline literal, which is what let this defect hide twice.
+Then the boundary, where a value arrives that no compiler saw:
+
+```ts
+// packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts — added to the store section
+it('refuses a legacy secret field arriving from an untyped source', async () => {
+  for (const field of ['apiKey', 'user', 'password'] as const) {
+    const fromYaml = {
+      type: 'qdrant', embedder: stubEmbedder, collectionName: 'c',
+      url: 'http://localhost:6333', [field]: 'leftover',
+    } as unknown as RagResolution;
+    await assert.rejects(
+      () => makeRag(fromYaml),
+      new RegExp(`${field}.*credential`, 'i'),
+      `a loaded object is not a fresh literal, so only this can catch ${field}`,
+    );
+  }
+});
+```
 
 - [ ] **Step 2: run them and watch them fail**
 
 ```bash
 cd ~/prj/llm-agent
+find packages -name '*.tsbuildinfo' -delete
 npm run build
+npm run typecheck          # the four @ts-expect-error directives must be UNUSED here, i.e. errors
 npm test -w packages/llm-agent-rag
 ```
 
-- [ ] **Step 3: type the store bag**
+Expected before the change: `npm run typecheck` reports `TS2578` (unused `@ts-expect-error`) for each
+directive, because the flat bag accepts all four objects — that unused directive **is** the defect,
+stated by the compiler. The boundary test fails because nothing refuses a legacy field.
 
-`RagFactoryOpts` and `RagResolutionConfig` each lose `apiKey?`, `user?` and `password?`, and gain:
-
-```ts
-  credential?: IApiKeyCredential | ISecretLoginCredential;
-```
-
-A union here is honest rather than a widening: this bag is dispatched by store name and handed to a constructor through two casts, so the narrow type lives on each store's own config (B6) and the bridge's job is to check the kind before handing it over.
-
-- [ ] **Step 4: forward it through all three branches, and leave the address alone**
-
-Replace `apiKey: cfg.apiKey` in the qdrant branch and `user: cfg.user, password: cfg.password` in the hana and pg branches with `credential: cfg.credential`. Leave `connectionString`, `host`, `port`, `database` and `schema` exactly as they are: B6 made the resolvers refuse a connection string that carries credentials, and this task must not hand one a second way in.
-
-- [ ] **Step 5: add the store rules to the guard B6a created**
+- [ ] **Step 3: replace the bag with the union**
 
 ```ts
-// packages/llm-agent-rag/src/credential-guard.ts — added, not replacing EMBEDDER_CREDENTIALS
-export const RAG_CREDENTIALS: Record<string, CredentialRule> = {
-  qdrant: { kinds: ['api-key'], required: false },
-  'pg-vector': { kinds: ['secret-login'], required: false },
-  'hana-vector': { kinds: ['secret-login'], required: true },
-};
+/** What a caller must state to get a store. One arm per backend, each carrying exactly what that
+ *  backend's own constructor demands — so a wrong credential kind, a missing required one, or a
+ *  field Task B6 removed is a build error rather than something a guard has to notice. */
+export type RagResolution =
+  | { type: 'in-memory'; embedder: IEmbedder; collectionName?: string; maxBatchSize?: number }
+  | {
+      type: 'qdrant'; embedder: IEmbedder; collectionName: string; url: string;
+      credential?: IApiKeyCredential; timeoutMs?: number; maxBatchSize?: number;
+    }
+  | {
+      type: 'pg-vector'; embedder: IEmbedder; collectionName: string;
+      credential?: ISecretLoginCredential; connectionString?: string; host?: string; port?: number;
+      database?: string; schema?: string; poolMax?: number; connectTimeout?: number;
+      dimension?: number; autoCreateSchema?: boolean; maxBatchSize?: number;
+    }
+  | {
+      type: 'hana-vector'; embedder: IEmbedder; collectionName: string;
+      credential: ISecretLoginCredential; connectionString?: string; host?: string; port?: number;
+      schema?: string; poolMax?: number; connectTimeout?: number;
+      dimension?: number; autoCreateSchema?: boolean; maxBatchSize?: number;
+    };
 ```
 
-`resolveRag` calls `assertCredentialKind(name, opts.credential, RAG_CREDENTIALS[name])` before `new Cls(opts)`. The three differ, and the difference is the point: **optionality is a claim that a working credential-free configuration exists**, so it was read per target rather than ruled once (§4.6.1). Qdrant is `required: false` — an unauthenticated Qdrant is a real deployment. pg is `required: false` — trust authentication and the driver's own `PGUSER`/`PGPASSWORD` are paths this guard must not refuse. HANA is **`required: true`** — `resolveHanaConnectArgs` throws unconditionally when the login does not resolve, and the one credential-free-looking HANA config was a connection string with credentials embedded, which Task B6 closed; its config's `credential` is non-optional, so a guard saying otherwise here would be the looser of two statements about the same thing.
+Copy each arm's members from that store's own config rather than inventing them, and say in the report
+which config you read for each. The embedder resolution members (`embedder?: string`, `url`, `model`,
+`credential`, `apiBaseUrl`, `resourceGroup`, `scenario`) stay where Task B6a put them — do not fold them
+into these arms; a caller composes the two.
 
-- [ ] **Step 6: verify**
+- [ ] **Step 4: dispatch over literal specifiers, and delete what the casts were for**
+
+```ts
+export async function makeRag(cfg: RagResolution, options?: RagResolutionOptions): Promise<IRag> {
+  refuseLegacySecretFields(cfg);           // the boundary, for input no compiler saw
+  const embedder = resolveEmbedder(cfg as EmbedderResolutionConfig, options);
+  switch (cfg.type) {
+    case 'qdrant': {
+      const { QdrantRag } = await importPeer('@mcp-abap-adt/qdrant-rag', 'qdrant');
+      return new QdrantRag({ ...cfg, embedder });   // checked against QdrantRagConfig
+    }
+    // …one arm per backend, each with its own literal specifier
+  }
+}
+```
+
+`importPeer` wraps `await import('<literal>')` in the existing `try`/`catch` that raises
+`MissingProviderError` — that failure is genuinely a runtime one, a package either installed or not.
+Keep `prefetchRagFactories`'s exported signature: its caller (`cli.ts:300`) wants a fail-fast at
+startup, which a switch over the same literals still gives, and the ES loader's cache makes the later
+import free. **Delete** `RagFactoryOpts`, `RagCtor`, `resolveRag`, both name maps, and the store half of
+the guard — no `RAG_CREDENTIALS`. If deleting `resolveRag` leaves a test that only existed to exercise
+it, delete that too and say so.
+
+- [ ] **Step 5: verify, and expect breakage you do not own**
 
 ```bash
 cd ~/prj/llm-agent
-npm run build                       # count "Found N errors"
+find packages -name '*.tsbuildinfo' -delete
+npm run build               # count "Found N errors"; ANSI colour defeats grep -c "error TS"
+npm run typecheck           # exit 0, and NO TS2578 — every directive above must now be used
 npm test -w packages/llm-agent-rag
-timeout 900 npm test -w packages/llm-agent-server-libs   # it defaults deps.resolveEmbedder to this package
+timeout 900 npm test -w packages/llm-agent-server-libs
 ```
 
-- [ ] **Step 7: commit**
+The union will break `llm-agent-server-libs`, which feeds YAML-shaped config into `makeRag` from four
+call sites (`smart-server.ts:1271`, `:1272`, `:1915`, `:1922`). **Those are Task B9's** — it narrows the
+DTO at the validation boundary. Do not edit them, do not cast, do not skip a suite to hide them. Report
+the exact new `Found N errors` with every file and line, and which suites went red; a failure you
+report is sequencing, a failure you hide is a defect.
+
+- [ ] **Step 6: commit**
 
 ```bash
 cd ~/prj/llm-agent
 git add packages/llm-agent-rag
 git commit -m "$(cat <<'MSG'
-feat(llm-agent-rag): the store bridge carries a credential, not a key or a login
+refactor(llm-agent-rag)!: the store path keeps its types, so the guard is gone
 
-The per-store whitelists copied apiKey, user and password into a bag that
-reaches the constructor through two casts, so Task B6's removals left this
-package forwarding fields that no longer exist with nothing able to catch
-it. The bag now declares credential, each branch forwards the object, and
-the kind is checked against what the named store accepts before the
-constructor runs. The connection-string path is untouched, so a credential
-still has exactly one way in.
+makeRag copied a whitelist into an untyped bag and reached each store
+through two casts, so removing apiKey, user and password from the three
+configs produced no error here and the only check left was one that runs.
+The bag, the casts and the name maps are deleted: makeRag takes a
+discriminated union and dispatches over literal import specifiers, so each
+store's own constructor states the rule and the compiler enforces it — a
+wrong credential kind, HANA's missing required credential, and a leftover
+legacy field are now build errors.
+
+What remains at runtime is what belongs there: a missing optional peer,
+and a refusal of a legacy secret field arriving from an untyped source,
+since a loaded object is not a fresh literal and no excess-property check
+ever sees it.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
 
-Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`: `apiKey`, `user` and `password` are gone from `RagFactoryOpts` and `RagResolutionConfig`, replaced by `credential`; and a credential of the wrong kind for the named store throws at resolution instead of reaching a constructor that cannot use it.
-
----
+Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
+`makeRag` takes `RagResolution`, a discriminated union, in place of the flat `RagResolutionConfig`;
+`resolveRag` and `RagFactoryOpts` are removed as unused outside the package; `apiKey`, `user` and
+`password` are gone from every arm, replaced by `credential` typed for the backend; and a legacy field
+arriving from an untyped source is refused at resolution with both it and `credential` named.
 
 ### Task B7: two typed `IMcpServer` implementations, each demanding its own credential
 
