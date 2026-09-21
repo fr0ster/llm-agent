@@ -357,6 +357,34 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    ```
 
    **And the rule is general, not an LLM rule — two more DTOs carry the same passenger.** `PipelineRagStoreConfig.apiKey` is a plain secret, documented as “API key (for openai type or Qdrant auth)” (`pipeline.ts:32`); `SmartServerRagConfig` — the **exported** YAML DTO, and the one a PostgreSQL or HANA deployment actually fills — carries `user?: string` and `password?: string` (`smart-server.ts:167-168`); and `SkillPluginsConfig`'s store variant is `{ type: 'qdrant'; url: string; apiKey?: string }` (`skill-plugins-config.ts:19`, threaded at `skill-plugins-host-factory.ts:271`, `:310` and `controller-skill-pipeline-builder.ts:16`, `:47`). Both are YAML DTOs, and by this section's test both fail it the same way: remove the key and a complete store configuration remains. Two earlier drafts narrowed this: the first applied `credentialRef` to the LLM configs alone, the second added the pipeline and skill stores but missed `SmartServerRagConfig` — which is the one carrying `user`/`password`, so the rule would have held everywhere except the PostgreSQL and HANA path it matters most on.
+    ### 4.6.4 One `credentialRef` is not enough for RAG, and the app has no seam to build a store through
+
+    Two blockers found reviewing this design against the code, and they are one structural problem seen from two sides: **the serializable RAG config describes two independently authenticated targets at once, and the composition root has no way to construct either.**
+
+    **The config conflates a store and an embedder.** `SmartServerRagConfig` (`smart-server.ts:150`) is one flat shape holding the store's `connectionString`, `host`, `port`, `user`, `password`, `database`, `schema`, `poolMax`, `connectTimeout`, `dimension` and `autoCreateSchema` **beside** the embedder's `embedder`, `model`, `resourceGroup`, `scenario` and `maxBatchSize` — and two members are outright ambiguous: `url` is Qdrant's address or Ollama's depending on its neighbours, and `model` is the embedding model while the store has none. So a single `credentialRef` cannot say what it refers to. Qdrant with OpenAI embeddings needs **two** api keys; Qdrant with SAP AI Core needs an api key **and** a bearer credential with an `apiBaseUrl`. An earlier draft of §4.6.2 added one `credentialRef` to this DTO and to `PipelineRagStoreConfig`, which would have been unable to express either deployment.
+
+    **So the shape splits, along the line the implementation had already drawn.** §4.6.3's item 4 left `makeRag` taking a built `IEmbedder` rather than a name, which means store construction and embedder construction are already two steps in code; the serializable side mirrors that instead of contradicting it:
+
+    ```yaml
+    rag:
+      store:                      # what the vector store needs, and its own account
+        type: qdrant
+        url: http://localhost:6333
+        collectionName: docs
+        credentialRef: QDRANT
+      embedder:                   # what the embedder needs, and its own account
+        provider: sap-ai-core
+        model: text-embedding-3-small
+        credentialRef: AICORE
+        apiBaseUrl: https://api.ai.example
+      dedupThreshold: 0.95        # search knobs, belonging to neither target
+    ```
+
+    Each nested shape carries **its own** `credentialRef`, which is what makes two accounts expressible; the ambiguous `url` and `model` land on the target that actually owns each; and the search knobs stop sitting among connection settings. `PipelineRagStoreConfig` and `SkillPluginsConfig`'s qdrant store split the same way. This is a **breaking** change to a YAML shape, and §8's migration note carries the before/after — it is a rename plus a nesting, mechanical for a consumer to apply.
+
+    **And the app needs a seam to construct a store, which it does not have.** `BuildAgentDeps` offers `makeLlm`, `resolveEmbedder`, `buildSkillHost`, `connectMcp` and more — but **nothing for a store**. `SmartServer` imports `makeRag` from the library and calls it directly at `smart-server.ts:1271`, `:1272`, `:1915` and `:1923`. So with secrets gone from YAML, those four call sites have no credential to pass and the composition root never participates: the design's whole claim, that construction belongs to the app, has an LLM seam and no store seam. An earlier draft did not notice because it reasoned about the DTOs and never about who calls the constructor.
+
+    So `BuildAgentDeps` gains `makeRag: (cfg: SmartServerRagStoreConfig, embedder: IEmbedder) => Promise<IRag>`, **required** for the same reason `makeLlm` is (§4.6.3 item 3): a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
 
    So they take `credentialRef` as well, resolved the same way, and the embedder and store construction moves to the app with the provider dispatch. The RAG stores' own constructors take the credential (§4.5), so nothing new is needed below.
 
