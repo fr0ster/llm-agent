@@ -7,10 +7,15 @@ export interface PgVectorRagConfig {
   port?: number;
   database?: string;
   /**
-   * Asked for fresh on every connect — never cached — so a rotating
-   * credential rotates and a resolved-once secret is never frozen for this
-   * object's lifetime. Optional: a target that accepts trust/peer auth (or
-   * PGUSER/PGPASSWORD from the environment) works today without one.
+   * The password half is handed to `pg` as a function (see
+   * `resolvePgConnectArgs` below), not resolved to a string here — a
+   * `PgVectorRag`'s pool reuses one config object for every physical
+   * connection it opens over its lifetime, so a string resolved once would
+   * freeze a rotating credential for as long as the pool lives. `principal`
+   * (the identity) is read once: it does not rotate.
+   *
+   * Optional: a target that accepts trust/peer auth (or PGUSER/PGPASSWORD
+   * from the environment) works today without one.
    */
   credential?: ISecretLoginCredential;
   schema?: string;
@@ -26,7 +31,16 @@ export interface PgPoolConfig {
   host?: string;
   port?: number;
   user?: string;
-  password?: string;
+  /**
+   * A function, not a resolved string, when a `credential` was given: `pg`
+   * (both the published types, `@types/pg`'s
+   * `password?: string | (() => string | Promise<string>)`, and the
+   * installed runtime, which checks `typeof this.password === 'function'`
+   * per client in `lib/client.js`) calls this once per physical connection
+   * it opens — which is what makes a rotating credential actually rotate
+   * across the pool's lifetime, not just across pool *construction*.
+   */
+  password?: string | (() => string | Promise<string>);
   database?: string;
   max: number;
   connectionTimeoutMillis: number;
@@ -45,8 +59,14 @@ export async function resolvePgConnectArgs(
     );
   }
 
-  const user = cfg.credential?.principal;
-  const password = cfg.credential ? await cfg.credential.secret() : undefined;
+  const credential = cfg.credential;
+  const user = credential?.principal;
+  // Handed to `pg` as the function itself, deliberately not awaited here —
+  // resolving it now would bake today's value into the pool's config object,
+  // which `pg` then reuses for every physical connection it opens for as
+  // long as the pool lives. Passing the function lets `pg` call it fresh
+  // per connection, so a rotating credential actually rotates.
+  const password = credential ? () => credential.secret() : undefined;
 
   if (cfg.connectionString) {
     return {

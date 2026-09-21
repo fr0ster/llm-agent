@@ -25,7 +25,8 @@ describe('resolvePgConnectArgs', () => {
     assert.equal(a.host, 'h');
     assert.equal(a.port, 6543);
     assert.equal(a.user, 'u');
-    assert.equal(a.password, 'p');
+    assert.equal(typeof a.password, 'function');
+    assert.equal(await (a.password as () => Promise<string>)(), 'p');
     assert.equal(a.database, 'db');
     assert.equal(a.max, 3);
   });
