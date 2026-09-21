@@ -380,11 +380,11 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
       dedupThreshold: 0.95        # search knobs, belonging to neither target
     ```
 
-    Each nested shape carries **its own** `credentialRef`, which is what makes two accounts expressible; the ambiguous `url` and `model` land on the target that actually owns each; and the search knobs stop sitting among connection settings. `PipelineRagStoreConfig` and `SkillPluginsConfig`'s qdrant store split the same way. This is a **breaking** change to a YAML shape, and §8's migration note carries the before/after — it is a rename plus a nesting, mechanical for a consumer to apply.
+    Each nested shape carries **its own** `credentialRef`, which is what makes two accounts expressible; the ambiguous `url` and `model` land on the target that actually owns each; and the search knobs stop sitting among connection settings. `PipelineRagStoreConfig` splits the same way. **`SkillPluginsStoreConfig` does not**, and an earlier draft of this paragraph was wrong to say it should: it is already a discriminated union — `{ type: 'in-memory' } | { type: 'qdrant'; url; apiKey?; collection? }` — describing persistence only, with no embedder target in it to separate. Its qdrant arm simply gains its own `credentialRef?`. And it is worth noticing why that config needed no rescuing: `SkillPluginsConfig` **already** keeps its embedder in a separate `embedder` member, read at `skill-plugins-host-factory.ts:240`. The split asked of `SmartServerRagConfig` is therefore not an invention of this section — it is the shape a sibling config in the same package has been using all along. This is a **breaking** change to a YAML shape, and §8's migration note carries the before/after — it is a rename plus a nesting, mechanical for a consumer to apply.
 
     **And the app needs a seam to construct a store, which it does not have.** `BuildAgentDeps` offers `makeLlm`, `resolveEmbedder`, `buildSkillHost`, `connectMcp` and more — but **nothing for a store**. `SmartServer` imports `makeRag` from the library and calls it directly at `smart-server.ts:1271`, `:1272`, `:1915` and `:1923`. So with secrets gone from YAML, those four call sites have no credential to pass and the composition root never participates: the design's whole claim, that construction belongs to the app, has an LLM seam and no store seam. An earlier draft did not notice because it reasoned about the DTOs and never about who calls the constructor.
 
-    So `BuildAgentDeps` gains `makeRag: (cfg: SmartServerRagStoreConfig, embedder: IEmbedder) => Promise<IRag>`, **required** for the same reason `makeLlm` is (§4.6.3 item 3): a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
+    So `BuildAgentDeps` gains `makeRag: (cfg: RagResolution) => Promise<IRag>`, **required** for the same reason `makeLlm` is (§4.6.3 item 3) — **one** parameter, the library's own discriminated union, and not `(storeConfig, embedder)` as an earlier draft of this paragraph had it. Two parameters made the keyword-only path inexpressible: a `store.type: in-memory` with no `rag.embedder` has no `IEmbedder` to pass, while every call site was to go through this seam. In the union the embedder sits on the arms that need one — required on `qdrant`, `pg-vector` and `hana-vector`, **optional on `in-memory`**, which is also how `SkillPluginsStoreConfig` has long expressed the same thing (`{ type: 'in-memory' }` carries no fields at all). So the compiler demands an embedder exactly where a store cannot work without one, and the app resolves one only then: a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
 
    So they take `credentialRef` as well, resolved the same way, and the embedder and store construction moves to the app with the provider dispatch. The RAG stores' own constructors take the credential (§4.5), so nothing new is needed below.
 
@@ -815,7 +815,7 @@ import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 
 That function is the package's existing `TokenProvider` and `parseServiceKey` moved out with their tests, so behaviour is unchanged for a deployment that sets the same env var — it is now read one level up, by you.
 
-**4. Supply `BuildAgentDeps.makeLlm`, and move `apiKey` to `credentialRef`** (§4.6.2). The library no longer defaults this seam, so a server that never injected one must now do so — without it there is no LLM and startup refuses.
+**4. Supply all three construction seams, and move your secrets to `credentialRef`** (§4.6.2, §4.6.3, §4.6.4). An earlier version of this item asked only for `makeLlm`; it is three. The library no longer defaults this seam, so a server that never injected one must now do so — without it there is no LLM and startup refuses.
 
 ```yaml
   llm:
@@ -936,7 +936,62 @@ Four things in it are the model rather than decoration, and each is where an ear
 
 `llm-agent-server` carries exactly this switch as the reference implementation — that is what makes it the example (principle 2), and why §11 no longer lists its configuration as out of scope.
 
-`credentialRef` is optional: omit it and the lookup falls back to `DEFAULT_REF` — the one name your root nominates, `'PRIMARY'` above — which is what a single-account setup wants. The same swap applies to the store configs: `rag.apiKey`, `rag.user`/`rag.password` and a qdrant skill store's `apiKey` all become `credentialRef`, resolved through the **same `credentialFor`** as the LLM entries, which is why its entry type admits `ISecretLoginCredential` (the `RAG_PG` case above). The store constructors then take the credential itself (§4.5).
+`credentialRef` is optional **in each section independently**: omit it and that lookup falls back to `DEFAULT_REF` — the one name your root nominates, `'PRIMARY'` above — so a deployment whose store and embedder share one account names it nowhere, while one that does not names it twice. This is what a single-account setup wants. The same swap applies to the store configs: `rag.apiKey`, `rag.user`/`rag.password` and a qdrant skill store's `apiKey` all become `credentialRef`, resolved through the **same `credentialFor`** as the LLM entries, which is why its entry type admits `ISecretLoginCredential` (the `RAG_PG` case above). The store constructors then take the credential itself (§4.5).
+
+**The same `deps` object carries the other two seams, and both are now required** (§4.6.3 item 3, §4.6.4). `resolveEmbedder` and `makeRag` stop being defaulted for the same reason `makeLlm` did: a library that may not construct an authenticated LLM from configuration may not construct an authenticated embedder or store from it either. `BuildAgentDeps`'s doc comment used to promise that passing `{}` preserved existing behaviour, and it no longer can — every call site, tests included, names the seams:
+
+```ts
+const deps: BuildAgentDeps = {
+  async makeLlm(cfg) { /* as above */ },
+
+  // the embedder's own account, from the embedder section's own ref
+  resolveEmbedder(cfg, options) {
+    const entry = credentialFor(cfg.credentialRef ?? DEFAULT_REF);
+    return resolveEmbedder(
+      { ...cfg, ...(entry?.credential ? { credential: entry.credential } : {}),
+        ...(entry?.apiBaseUrl ? { apiBaseUrl: entry.apiBaseUrl } : {}) },
+      options,
+    );
+  },
+
+  // the store's own account, from the store section's own ref — one argument,
+  // and the embedder is a member of the arms that need one
+  async makeRag(cfg) {
+    return makeRag(cfg);
+  },
+};
+```
+
+A deployment that authenticates nothing — Ollama embeddings into an in-memory store — still writes these three, and that is the price of the library never holding construction. Both `resolveEmbedder` and `makeRag` remain the library's functions; what changes is who calls them and who owns the credential when they do.
+
+**Split your `rag:` section in two, because it described two accounts as one** (§4.6.4). The old shape held a store's connection settings beside an embedder's, with `url` meaning Qdrant's address or Ollama's depending on its neighbours — so one `credentialRef` could not have said which target it named. Mechanical to apply, and a rename plus a nesting:
+
+```yaml
+# before — one flat section, two targets, and no way to name two accounts
+rag:
+  type: qdrant
+  url: http://localhost:6333          # the store's
+  collectionName: docs
+  apiKey: ${QDRANT_API_KEY}           # which target? the YAML could not say
+  embedder: openai
+  model: text-embedding-3-small
+  dedupThreshold: 0.95
+
+# after — each target states its own address, its own model, its own account
+rag:
+  store:
+    type: qdrant
+    url: http://localhost:6333
+    collectionName: docs
+    credentialRef: QDRANT
+  embedder:
+    provider: openai
+    model: text-embedding-3-small
+    credentialRef: OPENAI
+  dedupThreshold: 0.95                # a search knob, belonging to neither
+```
+
+`PipelineRagStoreConfig` moves the same way. `SkillPluginsConfig`'s store does **not** split — it already keeps its embedder separately and describes persistence only, so its qdrant entry just gains `credentialRef`. A keyword-only deployment writes `store: { type: in-memory }` with no `embedder:` section at all, and the seam's union accepts that arm without one.
 
 **5. Build the RAG collection tools with an identity** (§5.1). The identity is the caller the pipeline is being built for — the same one whose collections the instance may address.
 
