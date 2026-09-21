@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { QueryEmbedding } from '@mcp-abap-adt/llm-agent';
+import { QueryEmbedding, staticApiKey } from '@mcp-abap-adt/llm-agent';
 import { QdrantRag } from './qdrant-rag.js';
 
 // ---------------------------------------------------------------------------
@@ -260,12 +260,12 @@ describe('QdrantRag', () => {
 
   it('passes api-key header when configured', async () => {
     state.collections.set('test-auth', []);
-    // This just tests that the constructor accepts apiKey without error
+    // This just tests that the constructor accepts a credential without error
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-auth',
       embedder: makeEmbedder(),
-      apiKey: 'test-secret',
+      credential: staticApiKey('test-secret'),
     });
     const result = await rag.healthCheck();
     assert.ok(result.ok);

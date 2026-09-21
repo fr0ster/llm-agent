@@ -1,3 +1,4 @@
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IEmbedder,
   IQueryEmbedding,
@@ -29,7 +30,13 @@ export interface QdrantRagConfig {
   url: string;
   collectionName: string;
   embedder: IEmbedder;
-  apiKey?: string;
+  /**
+   * Asked for fresh on every request — never cached — so a rotating key
+   * rotates and a resolved-once secret is never frozen for this object's
+   * lifetime. Optional: an unauthenticated Qdrant deployment works today
+   * without one.
+   */
+  credential?: IApiKeyCredential;
   /**
    * Per-request timeout in ms. **No default** — unset, a request is bounded
    * only by the caller's own signal.
@@ -41,7 +48,7 @@ export class QdrantRag implements IRag {
   private readonly url: string;
   private readonly collectionName: string;
   private readonly embedder: IEmbedder;
-  private readonly apiKey?: string;
+  private readonly credential?: IApiKeyCredential;
   private readonly timeoutMs: number | undefined;
   private collectionEnsured = false;
 
@@ -49,13 +56,13 @@ export class QdrantRag implements IRag {
     this.url = config.url.replace(/\/+$/, '');
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
-    this.apiKey = config.apiKey;
+    this.credential = config.credential;
     this.timeoutMs = config.timeoutMs;
   }
 
-  private _headers(): Record<string, string> {
+  private async _headers(): Promise<Record<string, string>> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.apiKey) h['api-key'] = this.apiKey;
+    if (this.credential) h['api-key'] = await this.credential.secret();
     return h;
   }
 
@@ -82,7 +89,7 @@ export class QdrantRag implements IRag {
       return await fetch(`${this.url}${path}`, {
         ...init,
         signal: ctrl.signal,
-        headers: { ...this._headers(), ...(init.headers ?? {}) },
+        headers: { ...(await this._headers()), ...(init.headers ?? {}) },
       });
     } finally {
       if (timer) clearTimeout(timer);

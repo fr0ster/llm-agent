@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { staticLogin } from '@mcp-abap-adt/llm-agent';
 import type { PgClient } from '../pg-vector-rag.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 
@@ -40,8 +41,7 @@ describe('PgVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
         database: 'd',
       },
       defaultDimension: 3,
@@ -65,8 +65,7 @@ describe('PgVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
         database: 'd',
       },
       defaultDimension: 3,
@@ -86,8 +85,7 @@ describe('PgVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
         database: 'd',
       },
       clientFactory: () => client,
@@ -108,8 +106,7 @@ describe('PgVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
         database: 'd',
       },
       clientFactory: () => client,
@@ -128,8 +125,7 @@ describe('PgVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
         database: 'd',
       },
       clientFactory: () => client,

@@ -60,7 +60,7 @@ export class PgVectorRag implements IRag {
   }
 
   private async createDriverClient(cfg: PgVectorRagConfig): Promise<PgClient> {
-    const args = resolvePgConnectArgs(cfg);
+    const args = await resolvePgConnectArgs(cfg);
     const mod = (await import('pg')) as unknown as {
       default?: {
         Pool: new (

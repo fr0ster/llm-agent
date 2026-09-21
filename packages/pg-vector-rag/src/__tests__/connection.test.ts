@@ -1,23 +1,23 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { staticLogin } from '@mcp-abap-adt/llm-agent';
 import { resolvePgConnectArgs } from '../connection.js';
 
 describe('resolvePgConnectArgs', () => {
-  it('parses postgres:// URL', () => {
-    const a = resolvePgConnectArgs({
-      connectionString: 'postgres://u:p@host:5432/db',
+  it('parses postgres:// URL carrying the address only', async () => {
+    const a = await resolvePgConnectArgs({
+      connectionString: 'postgres://host:5432/db',
       collectionName: 't',
     });
-    assert.equal(a.connectionString, 'postgres://u:p@host:5432/db');
+    assert.equal(a.connectionString, 'postgres://host:5432/db');
     assert.equal(a.max, 10);
   });
 
-  it('uses explicit fields', () => {
-    const a = resolvePgConnectArgs({
+  it('uses explicit fields', async () => {
+    const a = await resolvePgConnectArgs({
       host: 'h',
       port: 6543,
-      user: 'u',
-      password: 'p',
+      credential: staticLogin('u', 'p'),
       database: 'db',
       poolMax: 3,
       collectionName: 't',
@@ -30,10 +30,13 @@ describe('resolvePgConnectArgs', () => {
     assert.equal(a.max, 3);
   });
 
-  it('rejects missing host and connectionString', () => {
-    assert.throws(
+  it('rejects missing host and connectionString', async () => {
+    await assert.rejects(
       () =>
-        resolvePgConnectArgs({ user: 'u', password: 'p', collectionName: 't' }),
+        resolvePgConnectArgs({
+          credential: staticLogin('u', 'p'),
+          collectionName: 't',
+        }),
       /host|connectionString/i,
     );
   });

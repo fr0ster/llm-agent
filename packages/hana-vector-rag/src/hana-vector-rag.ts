@@ -54,7 +54,7 @@ export class HanaVectorRag implements IRag {
   private async createDriverClient(
     cfg: HanaVectorRagConfig,
   ): Promise<HanaClient> {
-    const args = resolveHanaConnectArgs(cfg);
+    const args = await resolveHanaConnectArgs(cfg);
     const mod = (await import('@sap/hana-client')) as unknown as {
       createConnection: () => {
         connect: (opts: unknown, cb: (err: Error | null) => void) => void;

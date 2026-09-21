@@ -1,3 +1,4 @@
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IEmbedder,
   IIdStrategy,
@@ -15,7 +16,12 @@ import { QdrantRag } from './qdrant-rag.js';
 export interface QdrantRagProviderConfig {
   name: string;
   url: string;
-  apiKey?: string;
+  /**
+   * Asked for fresh on every request — never cached — so a rotating key
+   * rotates. Optional: an unauthenticated Qdrant deployment works today
+   * without one.
+   */
+  credential?: IApiKeyCredential;
   embedder: IEmbedder;
   editable?: boolean;
   timeoutMs?: number;
@@ -34,7 +40,7 @@ export class QdrantRagProvider extends BaseRagProvider {
   readonly supportedScopes: readonly RagCollectionScope[];
 
   private readonly url: string;
-  private readonly apiKey?: string;
+  private readonly credential?: IApiKeyCredential;
   private readonly embedder: IEmbedder;
   private readonly timeoutMs?: number;
 
@@ -42,7 +48,7 @@ export class QdrantRagProvider extends BaseRagProvider {
     super();
     this.name = cfg.name;
     this.url = cfg.url.replace(/\/+$/, '');
-    this.apiKey = cfg.apiKey;
+    this.credential = cfg.credential;
     this.embedder = cfg.embedder;
     this.timeoutMs = cfg.timeoutMs;
     this.editable = cfg.editable ?? true;
@@ -62,7 +68,7 @@ export class QdrantRagProvider extends BaseRagProvider {
     if (!scopeCheck.ok) return scopeCheck;
     const rag = new QdrantRag({
       url: this.url,
-      apiKey: this.apiKey,
+      credential: this.credential,
       embedder: this.embedder,
       collectionName: name,
       timeoutMs: this.timeoutMs,
@@ -76,7 +82,7 @@ export class QdrantRagProvider extends BaseRagProvider {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
-      if (this.apiKey) headers['api-key'] = this.apiKey;
+      if (this.credential) headers['api-key'] = await this.credential.secret();
       const res = await fetch(`${this.url}/collections/${name}`, {
         method: 'DELETE',
         headers,
@@ -105,7 +111,7 @@ export class QdrantRagProvider extends BaseRagProvider {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
-      if (this.apiKey) headers['api-key'] = this.apiKey;
+      if (this.credential) headers['api-key'] = await this.credential.secret();
       const res = await fetch(`${this.url}/collections`, { headers });
       if (!res.ok) {
         const body = await res.text();
