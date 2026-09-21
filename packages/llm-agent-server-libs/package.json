@@ -63,7 +63,7 @@
     "@mcp-abap-adt/llm-agent-mcp": "^26.0.0",
     "@mcp-abap-adt/llm-agent-rag": "^26.0.0",
     "pg": "^8.23.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.1"
   },
   "peerDependencies": {
     "@mcp-abap-adt/sap-aicore-llm": "^26.0.0"
