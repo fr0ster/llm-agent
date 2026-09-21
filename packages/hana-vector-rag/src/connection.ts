@@ -6,13 +6,26 @@ export interface HanaVectorRagConfig {
   host?: string;
   port?: number;
   /**
-   * Asked for fresh on every connect — never cached — so a rotating
-   * credential rotates and a resolved-once secret is never frozen for this
-   * object's lifetime. Optional in the type, matching the discrete fields it
-   * replaces, but the resolver below still requires a user and a password at
-   * connect time — HANA has no anonymous login.
+   * Resolved once, at the one connect this instance ever does — a
+   * `HanaVectorRag` opens exactly one physical connection, not a pool, so
+   * "once" and "per connection" are the same thing here (contrast
+   * `pg-vector-rag`, where a pool reuses one resolved value across many
+   * physical connections unless the secret is handed over as a function).
+   *
+   * **Required**, unlike qdrant's and pg's `credential`. An unauthenticated
+   * Qdrant is a real deployment, and Postgres falls back to trust auth or
+   * `PGUSER`/`PGPASSWORD` — optional is correct for both. HANA has no
+   * anonymous login: `resolveHanaConnectArgs` below throws unconditionally
+   * when a user/password does not resolve, before and after this field
+   * existed. The one HANA configuration that used to work without a discrete
+   * `user`/`password` was a connection string carrying them
+   * (`hdbsql://u:p@host`), and that path is refused on purpose (see
+   * `connectionString` above) — so there is no longer a real, working HANA
+   * configuration a required field here would refuse. Making it optional
+   * would only move that same, unavoidable failure from a compile error to a
+   * connect-time throw.
    */
-  credential?: ISecretLoginCredential;
+  credential: ISecretLoginCredential;
   schema?: string;
   collectionName: string;
   dimension?: number;
@@ -54,8 +67,8 @@ export async function resolveHanaConnectArgs(
   if (!host)
     throw new Error('HANA host is required (host or connectionString)');
 
-  const user = cfg.credential?.principal;
-  const password = cfg.credential ? await cfg.credential.secret() : undefined;
+  const user = cfg.credential.principal;
+  const password = await cfg.credential.secret();
 
   if (!user) throw new Error('HANA user is required');
   if (!password) throw new Error('HANA password is required');

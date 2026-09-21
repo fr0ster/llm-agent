@@ -14,6 +14,12 @@ import { dropTableSql } from './schema.js';
 export interface HanaVectorRagProviderConfig {
   name: string;
   embedder: IEmbedder;
+  /**
+   * The `string` shorthand is address-only convenience for an unauthenticated
+   * target — HANA has none, so it always throws (see `normalizeConnection`
+   * below). Pass `{ connectionString, credential: staticLogin(user, password) }`
+   * instead.
+   */
   connection: HanaVectorRagConfig | string;
   defaultDimension?: number;
   autoCreateSchema?: boolean;
@@ -37,7 +43,15 @@ function normalizeConnection(
   c: HanaVectorRagConfig | string,
 ): HanaVectorRagConfig {
   if (typeof c === 'string') {
-    return { connectionString: c, collectionName: '__unused' };
+    // A bare string cannot carry a credential, and HANA's credential is
+    // required (no anonymous login) — refuse loudly rather than build a
+    // config that would only fail later, deeper in the stack, with a less
+    // specific message.
+    throw new Error(
+      'HanaVectorRagProviderConfig.connection as a bare string is not supported: ' +
+        'it cannot carry a credential, and HANA requires one. Pass ' +
+        '{ connectionString, credential: staticLogin(user, password) } instead.',
+    );
   }
   return c;
 }

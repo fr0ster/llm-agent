@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { staticLogin } from '@mcp-abap-adt/llm-agent';
 import { type HanaClient, HanaVectorRag } from '../hana-vector-rag.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
@@ -44,7 +45,12 @@ describe('HanaVectorRag', () => {
   it('ensureSchema runs CREATE TABLE only once', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
       client,
     );
     await rag.ensureSchema();
@@ -59,7 +65,12 @@ describe('HanaVectorRag', () => {
     ];
     const client = makeFakeClient(rows);
     const rag = new HanaVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
       client,
     );
     const res = await rag.query(
@@ -76,7 +87,12 @@ describe('HanaVectorRag', () => {
   it('upsertRaw issues UPSERT with vector literal', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
       client,
     );
     const r = await rag.writer().upsertRaw('id1', 'text', { namespace: 'n' });
@@ -88,7 +104,12 @@ describe('HanaVectorRag', () => {
   it('deleteByIdRaw issues DELETE', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
       client,
     );
     const r = await rag.writer().deleteByIdRaw('id1');
@@ -109,7 +130,12 @@ describe('HanaVectorRag', () => {
       async close() {},
     };
     const rag = new HanaVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
       client,
     );
     const r = await rag.writer().deleteByIdRaw('missing');
@@ -121,7 +147,12 @@ describe('HanaVectorRag', () => {
   it('clearAll issues TRUNCATE', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
       client,
     );
     const writer = rag.writer();
@@ -134,7 +165,12 @@ describe('HanaVectorRag', () => {
   it('healthCheck runs SELECT 1 FROM DUMMY', async () => {
     const client = makeFakeClient([{ '1': 1 }]);
     const rag = new HanaVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
       client,
     );
     const r = await rag.healthCheck();
@@ -146,7 +182,11 @@ describe('HanaVectorRag', () => {
     assert.throws(
       () =>
         new HanaVectorRag(
-          { collectionName: "bad'; DROP", embedder: makeEmbedder() },
+          {
+            collectionName: "bad'; DROP",
+            embedder: makeEmbedder(),
+            credential: staticLogin('u', 'p'),
+          },
           makeFakeClient(),
         ),
       (err: Error & { code?: string }) =>
