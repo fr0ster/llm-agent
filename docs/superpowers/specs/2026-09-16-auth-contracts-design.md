@@ -357,6 +357,37 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    ```
 
    **And the rule is general, not an LLM rule — two more DTOs carry the same passenger.** *(Both of those two are RAG shapes, and §4.6.4 below shows why one `credentialRef` on either is not enough — read the two together.)* `PipelineRagStoreConfig.apiKey` is a plain secret, documented as “API key (for openai type or Qdrant auth)” (`pipeline.ts:32`); `SmartServerRagConfig` — the **exported** YAML DTO, and the one a PostgreSQL or HANA deployment actually fills — carries `user?: string` and `password?: string` (`smart-server.ts:167-168`); and `SkillPluginsConfig`'s store variant is `{ type: 'qdrant'; url: string; apiKey?: string }` (`skill-plugins-config.ts:19`, threaded at `skill-plugins-host-factory.ts:271`, `:310` and `controller-skill-pipeline-builder.ts:16`, `:47`). Both are YAML DTOs, and by this section's test both fail it the same way: remove the key and a complete store configuration remains. Two earlier drafts narrowed this: the first applied `credentialRef` to the LLM configs alone, the second added the pipeline and skill stores but missed `SmartServerRagConfig` — which is the one carrying `user`/`password`, so the rule would have held everywhere except the PostgreSQL and HANA path it matters most on.
+    ### 4.6.5 Authorization is established once, which is a statement about lifetime
+
+    §5 says construction is the authorization: once the object exists it is authorized, and every method
+    on the contract is just the job. That is a claim about **how often construction happens**, and a
+    constructor that takes a credential but runs on every request has moved the work rather than removed
+    it. So the requirement is two-part, and the second part had been left implicit: *authorization is
+    passed **once**, when the provider instance is built, and that instance is then reused.*
+
+    **It is measurable, not stylistic, because the quota gate depends on it.** §4.6.2's rate limiting keys
+    a 429 bucket on the credential **object's identity** — deliberately, since deriving a key from the
+    secret would put the secret in a cache key. Two consequences follow, and the reference implementation
+    broke both before this section existed:
+
+    - **The registry must hand back the same object for the same reference.** A `credentialFor` that calls
+      `staticApiKey(requireEnv(…))` on each lookup returns a new object every time, so one account gets a
+      fresh quota bucket per construction and the gate stops gating — a defect no single-request test can
+      show. Memoize per reference, keeping the laziness that made it a function rather than a literal:
+      parse on the first ask, reuse afterwards.
+    - **A resolver must not construct per resolution.** `RoleLlmResolver.resolve(role)` returns held
+      instances for `main`, `helper` and `classifier`, and for any **other** configured role falls through
+      to `deps.makeLlm(cfg)` — constructing a provider, and resolving a credential, on every call. The
+      three common roles hid it. A role's instance is built once and cached by the resolver, on the same
+      argument that gives the three their fields; a config reload replaces the instance, which is the one
+      event that should.
+
+    The same holds for every object the pipeline embeds, not only LLMs: an `IMcpServer` whose constructor
+    demands a credential per §3.3, an embedder, a store. If any of them is constructed per request, its
+    authorization is per request too, whatever the constructor's signature says. **The test to apply to a
+    seam is not "does the constructor take a credential" but "how many times is this constructor
+    called"** — and if the answer is per request, the seam is a factory in the wrong place.
+
     ### 4.6.4 One `credentialRef` is not enough for RAG, and the app has no seam to build a store through
 
     Two blockers found reviewing this design against the code, and they are one structural problem seen from two sides: **the serializable RAG config describes two independently authenticated targets at once, and the composition root has no way to construct either.**
@@ -880,8 +911,22 @@ const DEFAULT_LLM_REF = 'PRIMARY';
 const DEFAULT_STORE_REF = 'PRIMARY';
 const DEFAULT_EMBEDDER_REF = 'PRIMARY';
 
-/** A function, not a Map literal, so nothing is read or parsed until it is asked for. */
+/**
+ * A function, not a Map literal, so nothing is read or parsed until it is asked for —
+ * and memoized, so the same reference always hands back the SAME credential object.
+ * That identity is load-bearing, not tidiness: the 429 gate keys a quota bucket on it
+ * (§4.6.5), so building a fresh one per lookup would give one account a new bucket
+ * every time and quietly stop the gate gating.
+ */
+const entries = new Map<string, CredentialEntry | undefined>();
 function credentialFor(ref: string): CredentialEntry | undefined {
+  if (entries.has(ref)) return entries.get(ref);
+  const entry = buildEntry(ref);
+  entries.set(ref, entry);
+  return entry;
+}
+
+function buildEntry(ref: string): CredentialEntry | undefined {
   switch (ref) {
     case 'PRIMARY':
       // This deployment's one account. Whatever it is — here, an api key.
