@@ -6,7 +6,12 @@
     "composite": true
   },
   "include": ["src/**/*"],
-  "exclude": ["dist", "node_modules", "**/__tests__/**"],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "**/__tests__/**",
+    "**/__typechecks__/**"
+  ],
   "references": [
     { "path": "../llm-agent" },
     { "path": "../openai-embedder" },
