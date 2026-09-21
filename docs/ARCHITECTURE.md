@@ -71,6 +71,22 @@ and at review time (before approving); a violation is a blocking issue, not a ni
 > composition-root files (e.g. `smart-server.ts`) left large by design after the
 > monolith-hunt extractions, and the one optional decomposition still open.
 
+10. **Prefer a check the compiler makes over a check that runs.** A guard that fires at runtime
+    reports a mistake to whoever is unlucky enough to hit it; a type that refuses the same mistake
+    reports it to whoever wrote it, before anything shipped. So when both are possible, the type is
+    the mechanism and the guard is not a second opinion — it is a **boundary** for input no compiler
+    ever saw: a YAML file, an untyped JavaScript caller, a request body. Say which is which in the
+    code, because a runtime check sitting where a type would do reads like diligence and is actually
+    a lost type.
+    *Most of the time the runtime check exists because a type was thrown away earlier.* The pattern to
+    look for is a cast that erases a constructor: a name held in a variable, `await import(pkg)` with a
+    non-literal specifier, `as new (opts: Record<string, unknown>) => T`. Each of those turns a
+    compile-time question into a runtime one and then invites a guard to answer it. A dispatch over
+    **literal** specifiers keeps every arm's real type — the imported class stays optional at runtime
+    while the compiler still checks what is passed to it — and a discriminated union on the incoming
+    config lets the caller's own mistake be a build error rather than a thrown `Error`. Before adding a
+    guard, ask which cast made it necessary and whether that cast was load-bearing.
+
 ## Scope
 
 The codebase is split across **six npm packages**:

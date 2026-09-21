@@ -27,6 +27,21 @@ Copied from the spec. Every task's requirements implicitly include this section.
 - **Interfaces is published before llm-agent adopts it.** An acceptor cannot merge a dependency on an unpublished version (§8).
 - **One PR per repository.** Phase A is one PR in `mcp-abap-adt-interfaces`; Phase B is one PR in llm-agent covering both remaining workstreams (§10).
 - **The user publishes to npm.** Never run `npm publish`; the account has 2FA.
+- **A `@ts-expect-error` in a test file asserts nothing here unless you add the file to the repo's own typecheck list.** The mechanism exists and this plan's first draft of this constraint named the wrong one. It is the root `tsconfig.typecheck.json`, run by `npm run typecheck`, and its own comment says why it is narrow:
+
+  > *This list is deliberately narrow, not a stand-in for a repo-wide "typecheck every test" config: pointing tsc at every test in llm-agent / llm-agent-libs surfaces **315 pre-existing errors** in tests nothing has ever type-checked, which is a separate workstream. A new test added to either package that needs type-checking in CI must be added to this list by hand.*
+
+  So a task that writes a compile assertion adds its file to that `include` array — **appending**, never replacing — and runs the check:
+
+  ```bash
+  npm run typecheck        # tsc -p tsconfig.typecheck.json
+  ```
+
+  Then prove the directive can fail: weaken the one thing it guards and confirm `error TS2578: Unused '@ts-expect-error' directive`. A directive that still errors after its guard is weakened is pinning something else.
+
+  Do **not** reach for a per-package `tsconfig.test.json`: one exists in `llm-agent`, lists a single file, and no script runs it. Where a behavioural assertion will do instead, prefer it — `assert.throws` runs under tsx and needs none of this.
+
+- **`tsc` is not the test suite, and this bit once already.** Task B1 was licensed to leave the build red; it also left five tests red in three packages, and nothing noticed because `tsc` excludes test files and tsx strips types without checking them. Every task's verification runs **both**: `npm run build` for the compile state, and `npm test --workspaces` (or the touched packages' own `npm test -w`) for the runtime one. A task that knowingly leaves a test red quarantines it with `{ skip: '<why, and which task fixes it>' }` rather than leaving it to be discovered.
 
 ---
 
@@ -79,6 +94,8 @@ Copied from the spec. Every task's requirements implicitly include this section.
 | `packages/openai-embedder/src/openai-embedder.ts` | same, and `apiKey` stops being required |
 | `packages/sap-aicore-{llm,embedder}/src/**` | `credential: IBearerCredential` + `apiBaseUrl`; stop reading `AICORE_SERVICE_KEY` |
 | `packages/{qdrant,pg-vector,hana-vector}-rag/src/**` | credential replacing `apiKey`/`user`/`password`; connection string address-only; catalog + record-first delete |
+| `packages/llm-agent-rag/src/embedder-factories.ts` | typed bag carrying `credential` and `apiBaseUrl`, plus a `kind` guard (B6a) — the whitelist dropped credentials in silence |
+| `packages/llm-agent-rag/src/rag-factories.ts` | the same for the three stores (B6b), after B6 gives them a `credential` |
 | `packages/llm-agent-mcp/src/servers/*.ts` (**new**) | typed `IMcpServer` implementations demanding a credential |
 | `packages/llm-agent-libs/src/providers.ts` | `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver` and the five dynamic-import shims **deleted** |
 | `packages/llm-agent-libs/src/session/session-graph-factory.ts` | `ragRegistryFactory?`, session-owned registry and its disposal |
@@ -311,8 +328,8 @@ The smallest change that makes every later task expressible: the contracts stop 
 
 ```ts
 // packages/llm-agent/src/credentials/__tests__/static.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { staticApiKey, staticLogin } from '../../index.js';
 
 describe('the static conversions', () => {
@@ -444,8 +461,8 @@ The `TokenProvider` already caches, tracks expiry and refreshes inside a window;
 
 ```ts
 // packages/sap-aicore-auth/src/__tests__/service-key-credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { serviceKeyCredential } from '../index.js';
 
 const key = JSON.stringify({
@@ -603,8 +620,8 @@ Record per provider whether the secret enters through our own header assembly (r
 
 ```ts
 // packages/openai-llm/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import { OpenAIProvider } from '../index.js';
@@ -680,6 +697,12 @@ Ollama's stays `credential?: IApiKeyCredential`, and its header is set only when
 for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do
   npm test -w "packages/$p"; npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
+
+# the compile assertion in each credential.test.ts is silent unless the file is in
+# the repo's typecheck list (Global Constraints) — append all four, then:
+npm run typecheck; echo "TYPES=$?"
+# and the runtime suites, because tsc is not the test suite:
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm; do npm test -w "packages/$p"; done
 ```
 
 - [ ] **Step 6: commit**
@@ -711,8 +734,8 @@ Ollama's stays optional, because it accepts a key today and a gateway may requir
 
 ```ts
 // packages/openai-embedder/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import { OpenAiEmbedder } from '../openai-embedder.js';
 
@@ -791,6 +814,9 @@ Both header sites (`:48`, `:109`) already sit inside `await fetch(…)`, so `Aut
 ```bash
 npm test -w packages/openai-embedder
 npx tsc --noEmit -p packages/openai-embedder/tsconfig.json; echo "EXIT=$?"
+# the no-credential case is asserted by assert.throws, which runs — but the
+# @ts-expect-error beside it does not, unless the file is in the typecheck list
+npm run typecheck; echo "TYPES=$?"
 ```
 
 - [ ] **Step 5: commit**
@@ -822,8 +848,8 @@ ollama-embedder is deliberately untouched: it sends Content-Type and nothing els
 
 ```ts
 // packages/sap-aicore-llm/src/__tests__/bearer-credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { buildDestination } from '../sap-core-ai-provider.js';
 
@@ -904,6 +930,238 @@ no credential has two sources again; the composition root reads it and builds th
 credential (Task B10)."
 ```
 
+### Task B6a: the embedder bridge carries credentials, and cannot drop one silently
+
+This task exists because the re-derivation missed a file, and the miss has a failure mode worse than a compile error. `packages/llm-agent-rag` is the bridge every configured embedder and store is built through, and it hides removals twice over. Its embedder bag is `EmbedderFactoryOpts = Record<string, unknown>` reaching a cast constructor (`embedder-factories.ts:4`, `:59`); its store constructor is reached through `type RagCtor = new (opts: Record<string, unknown>) => IRag` and a second `new Cls(opts as unknown as Record<string, unknown>)` (`rag-factories.ts:80`, `:95`). And underneath the casts, `resolveEmbedder` and `makeRag` do not spread their input — they copy a **hand-picked whitelist** of fields, so a member the whitelist omits is dropped in silence whatever the types say.
+
+Measured, not predicted: after Task B4 made `OpenAiEmbedderConfig.credential` required, passing a credential into `makeRag` did **not** reach the embedder, because `resolveEmbedder`'s whitelist is `url, apiKey, model, resourceGroup, scenario`. The constructor throws on every call, the build stays at its expected error count, and `llm-agent-rag`'s own test stayed green because its `catch` asserted only "not `MissingProviderError`". That test is now skipped with its owner named (`753181c5`), and un-skipping it is part of this task.
+
+This is the production path, not a legacy corner: `smart-server.ts:955` defaults `deps.resolveEmbedder` to this package's resolver, and the agent RAG, the tool store, the skill-plugin host (`skill-plugins-host-factory.ts:240`) and plan analysis (`plan-analysis.ts:294`) all arrive through it.
+
+**Why this is two tasks, B6a and B6b.** The embedder half must land as soon as both embedder targets have migrated — openai in B4 and the SAP embedder in B5 — because until it does, those two cannot be constructed from configuration at all. The store half cannot land before B6 gives the three stores their `credential`. Splitting keeps each half landing the moment it is both necessary and possible, instead of leaving a dead path across four tasks. They share `credential-guard.ts`: B6a creates it with the embedder rules, B6b adds the store rules.
+
+**Numbering:** B6a and B6b rather than renumbering B7-B18, whose numbers every generated brief and the execution ledger already reference.
+
+**Files:**
+- Modify: `packages/llm-agent-rag/src/embedder-factories.ts` — `EmbedderFactoryOpts` (`:4`), the constructor cast (`:59`), `builtInEmbedderFactories` (`:66`)
+- Modify: `packages/llm-agent-rag/src/rag-factories.ts` — `EmbedderResolutionConfig` (`:111`) and the `opts` whitelist in `resolveEmbedder` (`:170`). **Leave `RagFactoryOpts`, `resolveRag`, `RagResolutionConfig` and the `makeRag` branches alone** — they are B6b's, after B6.
+- Create: `packages/llm-agent-rag/src/credential-guard.ts` with the **embedder** rules only
+- Modify: `packages/llm-agent-rag/package.json` — add `"@mcp-abap-adt/interfaces-auth": "^1.1.0"`. Task B1 listed every package that imported a contract and this one did not yet; it does now.
+- Modify: `packages/llm-agent-rag/src/__tests__/rag-factories.test.ts` — **un-skip** `makeRag in-memory+openai embedder …` and keep the tightened `catch` that refuses a construction failure
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts:294` — the eval harness calls this resolver through `as never`, passing `apiKey: process.env.OPENAI_API_KEY`. The cast means it will not break, it will quietly resolve an unauthenticated embedder. It is a harness the user runs by hand, so reading the environment there is legitimate: wrap the value in `staticApiKey` and drop the cast. Note in the report that it also passes `provider:` where the resolver reads `embedder:`, so its live path has always fallen back to ollama — leave that defect alone, it is not this task's.
+- Test: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts`
+- Modify: `packages/llm-agent-rag/CHANGELOG.md`
+
+**Interfaces:**
+- Consumes: `IApiKeyCredential`, `IBearerCredential` (B1); `OpenAiEmbedderConfig.credential`, required (B4); the SAP embedder's bearer credential and `apiBaseUrl`, with no environment fallback left (B5).
+- Produces: `credential` and `apiBaseUrl` on `EmbedderResolutionConfig` and `EmbedderFactoryOpts`; `assertCredentialKind` and `EMBEDDER_CREDENTIALS` from `credential-guard.ts`. B6b adds `RAG_CREDENTIALS` to that same file; B10 resolves a `credentialRef` into a credential and needs a typed field here to put it in.
+
+- [ ] **Step 1: write the failing tests**
+
+The seam that makes this testable without a live backend is `extraFactories`: it receives the same `opts` bag the built-ins receive, so a capturing factory proves what the bridge forwards.
+
+```ts
+// packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { EmbedderFactoryOpts } from '../embedder-factories.js';
+import { resolveEmbedder } from '../rag-factories.js';
+
+const apiKey: IApiKeyCredential = { kind: 'api-key', secret: async () => 'k' };
+const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
+
+const stubEmbedder: IEmbedder = {
+  embed: async () => [0],
+  embedBatch: async (texts: string[]) => texts.map(() => [0]),
+};
+
+describe('the embedder bridge and credentials', () => {
+  it('forwards the credential object itself, not a copy of a secret', () => {
+    let seen: EmbedderFactoryOpts | undefined;
+    resolveEmbedder(
+      { embedder: 'capture', credential: apiKey, apiBaseUrl: 'https://aicore.example' },
+      { extraFactories: { capture: (opts) => ((seen = opts), stubEmbedder) } },
+    );
+    assert.equal(seen?.credential, apiKey, 'the same object must arrive, so quota identity survives');
+    assert.equal(seen?.apiBaseUrl, 'https://aicore.example');
+  });
+
+  it('no longer carries an apiKey field for anything to read', () => {
+    let seen: EmbedderFactoryOpts | undefined;
+    resolveEmbedder(
+      { embedder: 'capture', apiKey: 'leftover' } as unknown as Parameters<typeof resolveEmbedder>[0],
+      { extraFactories: { capture: (opts) => ((seen = opts), stubEmbedder) } },
+    );
+    assert.ok(seen && !('apiKey' in seen), 'a stale apiKey must not reach a factory');
+  });
+
+  it('refuses a named embedder that cannot work without a credential', () => {
+    assert.throws(
+      () => resolveEmbedder({ embedder: 'openai' }),
+      /openai.*credential/i,
+      'a missing credential must name itself, not produce an unauthenticated embedder',
+    );
+  });
+
+  it('refuses the wrong kind of credential for the target', () => {
+    assert.throws(() => resolveEmbedder({ embedder: 'openai', credential: bearer }), /openai.*api-key.*bearer/i);
+    assert.throws(
+      () => resolveEmbedder({ embedder: 'sap-ai-core', credential: apiKey, apiBaseUrl: 'https://x' }),
+      /sap-ai-core.*bearer.*api-key/i,
+    );
+  });
+
+  it('refuses a credential for a target that sends none', () => {
+    assert.throws(
+      () => resolveEmbedder({ embedder: 'ollama', credential: apiKey }),
+      /ollama.*no credential/i,
+      'silently ignoring it would hide a misconfigured deployment',
+    );
+  });
+});
+```
+
+- [ ] **Step 2: run them and watch them fail**
+
+```bash
+cd ~/prj/llm-agent
+npm run build
+npm test -w packages/llm-agent-rag
+```
+
+Expected: the credential cases fail, because `credential` and `apiBaseUrl` are neither declared nor forwarded and no guard exists. Note which fail by producing `undefined` rather than by throwing — that silence is the bug.
+
+- [ ] **Step 3: type the bag, and forward what it now carries**
+
+```ts
+// packages/llm-agent-rag/src/embedder-factories.ts
+import type { IApiKeyCredential, IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+
+/**
+ * What a named embedder factory receives. Declared rather than
+ * `Record<string, unknown>`: the constructor it reaches is cast, so a field
+ * this type omits is a field the build cannot miss on removal.
+ */
+export interface EmbedderFactoryOpts {
+  url?: string;
+  model?: string;
+  credential?: IApiKeyCredential | IBearerCredential;
+  /** Where the credential is valid — the SAP targets take it instead of reading the environment. */
+  apiBaseUrl?: string;
+  resourceGroup?: string;
+  scenario?: 'orchestration' | 'foundation-models';
+}
+```
+
+`EmbedderResolutionConfig` loses `apiKey?: string` and gains the same two members, and the whitelist at `:170` forwards them — this line is the whole bug, so change it deliberately:
+
+```ts
+  const opts: EmbedderFactoryOpts = {
+    url: cfg.url,
+    model: cfg.model,
+    credential: cfg.credential,
+    apiBaseUrl: cfg.apiBaseUrl,
+    resourceGroup: cfg.resourceGroup,
+    scenario: cfg.scenario,
+  };
+  assertCredentialKind(name, cfg.credential, EMBEDDER_CREDENTIALS[name]);
+```
+
+Keep `extraFactories` typed `(opts: EmbedderFactoryOpts) => IEmbedder` so a consumer's own factory sees the same bag.
+
+- [ ] **Step 4: add the guard, with each target's requirement stated once**
+
+```ts
+// packages/llm-agent-rag/src/credential-guard.ts
+import type {
+  IApiKeyCredential,
+  IBearerCredential,
+  ISecretLoginCredential,
+} from '@mcp-abap-adt/interfaces-auth';
+
+type AnyCredential = IApiKeyCredential | IBearerCredential | ISecretLoginCredential;
+type Kind = AnyCredential['kind'];
+
+/** What each named target accepts. `kinds: []` means it authenticates with nothing. */
+export interface CredentialRule {
+  kinds: readonly Kind[];
+  required: boolean;
+}
+
+export const EMBEDDER_CREDENTIALS: Record<string, CredentialRule> = {
+  openai: { kinds: ['api-key'], required: true },
+  ollama: { kinds: [], required: false },
+  'sap-ai-core': { kinds: ['bearer'], required: true },
+  'sap-aicore': { kinds: ['bearer'], required: true },
+};
+
+
+export function assertCredentialKind(
+  target: string,
+  credential: AnyCredential | undefined,
+  rule: CredentialRule | undefined,
+): void {
+  if (!rule) return; // an unknown name is the caller's error to report, not ours
+  if (!credential) {
+    if (rule.required) {
+      throw new Error(
+        `${target} needs a credential: pass credential (${rule.kinds.join(' or ')}). ` +
+          'Build one with staticApiKey / staticLogin, or resolve it in your composition root.',
+      );
+    }
+    return;
+  }
+  if (rule.kinds.length === 0) {
+    throw new Error(
+      `${target} takes no credential — it sends none on the wire. Remove credential from its configuration.`,
+    );
+  }
+  if (!rule.kinds.includes(credential.kind)) {
+    throw new Error(
+      `${target} needs a ${rule.kinds.join(' or ')} credential, got ${credential.kind}.`,
+    );
+  }
+}
+```
+
+`resolveEmbedder` calls it with `EMBEDDER_CREDENTIALS[name]` **before** the built-in lookup, so a missing credential names itself instead of surfacing as `MissingProviderError`. Ollama's empty `kinds` makes a supplied credential an error rather than something quietly dropped: a credential nobody sends is a misconfigured deployment and should say so. `RAG_CREDENTIALS` belongs to B6b — do not add it here.
+
+- [ ] **Step 5: verify, including the test this unblocks**
+
+```bash
+cd ~/prj/llm-agent
+npm run build                      # count "Found N errors"; ANSI colour defeats grep -c "error TS"
+npm test -w packages/llm-agent-rag  # the un-skipped openai case must now PASS, not skip
+timeout 900 npm test -w packages/llm-agent-server-libs
+```
+
+The un-skipped case passing is this task's real proof: it is the one that was green over a broken path.
+
+- [ ] **Step 6: commit**
+
+```bash
+cd ~/prj/llm-agent
+git add packages/llm-agent-rag packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts
+git commit -m "$(cat <<'MSG'
+feat(llm-agent-rag): the embedder bridge carries a credential, not a key
+
+resolveEmbedder copied a hand-picked whitelist into an untyped bag, so
+removing apiKey from the embedders left this package dropping the
+credential in silence — with a green build and a green test. The bag is
+now declared, the credential object itself is forwarded so quota identity
+survives, and each target's requirement is checked before construction.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+MSG
+)"
+```
+
+Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`: `apiKey` is gone from `EmbedderResolutionConfig` and `EmbedderFactoryOpts`, replaced by `credential` (and `apiBaseUrl` for the SAP targets); a consumer's own `extraFactories` entry now receives the typed bag; and an unusable combination — none where one is needed, the wrong kind, or one supplied to ollama — throws at resolution instead of producing an embedder that cannot authenticate.
+
+---
+
 ### Task B6: the vector stores take a credential, and a connection string carries the address only
 
 **Files:**
@@ -919,8 +1177,8 @@ credential (Task B10)."
 
 ```ts
 // packages/pg-vector-rag/src/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { staticLogin } from '@mcp-abap-adt/llm-agent';
 import { resolvePgConnectArgs } from '../connection.js';
 
@@ -1021,6 +1279,226 @@ declare a closed exports map with only ".", and each resolver's one production c
 is already async."
 ```
 
+### Task B6b: the store path keeps its types end to end — the bag and the guard go
+
+**This task was rewritten.** Its first version typed the options bag and added a runtime `kind` guard,
+and that was the wrong mechanism: binding principle 10 asks for the check the compiler makes, and the
+credential contracts exist so that a type is **not lost anywhere** along the path. A guard here was
+never a design decision — it was the consequence of one, three casts upstream.
+
+**What throws the types away today, precisely.** `resolveRag` loads the store through a **variable**
+specifier (`PACKAGE_BY_NAME[name]`), then casts twice: `mod[exportName] as RagCtor`, where
+`RagCtor = new (opts: Record<string, unknown>) => IRag`, then
+`new Cls(opts as unknown as Record<string, unknown>)`. `makeRag` copies a hand-picked whitelist per
+store into `RagFactoryOpts`. So Task B6's removal of `apiKey`, `user` and `password` from the three
+store configs produced **no compile error here at all** — the measured fact that put this file in the
+plan.
+
+**What makes the static version possible, verified rather than assumed.** The three store packages are
+declared in **both** `peerDependencies` and `devDependencies`, so `await import('@mcp-abap-adt/qdrant-rag')`
+with a **literal** specifier type-resolves at compile time while the package stays an optional peer at
+runtime. And `resolveRag` and `RagFactoryOpts` have **no consumer outside this package** — checked
+across every `src` — so they can go rather than be improved. `prefetchRagFactories` does have one
+(`llm-agent-server/src/smart-agent/cli.ts:300`), and what that caller needs is only a fail-fast on a
+missing peer at startup, not a module handed back: the ES loader caches, so a later `await import` of
+the same literal costs nothing.
+
+**Files:**
+- Modify: `packages/llm-agent-rag/src/rag-factories.ts` — `makeRag` becomes a `switch` over a
+  discriminated union with literal imports; **delete** `RagFactoryOpts`, `RagCtor`, `resolveRag`,
+  `PACKAGE_BY_NAME`, `EXPORT_BY_NAME`, the prefetched map's role as a module store, and
+  `_resetPrefetchedRagForTests` if nothing still needs it
+- Modify: `packages/llm-agent-rag/src/credential-guard.ts` — **no** `RAG_CREDENTIALS`. The store side
+  needs no rule table, because each arm's constructor states the rule
+- Modify: `packages/llm-agent-rag/src/index.ts` — the barrel loses what the file lost
+- Modify: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts` — the store cases become
+  compile-time assertions plus the boundary tests below
+- Modify: `packages/llm-agent-rag/CHANGELOG.md`
+
+**Interfaces:**
+- Consumes: `credential` on `QdrantRagConfig`, `PgVectorRagConfig`, `HanaVectorRagConfig` (Task B6),
+  with HANA's **required**; `IApiKeyCredential`, `ISecretLoginCredential` (B1).
+- Produces: `RagResolution`, a discriminated union on `type`, replacing `RagResolutionConfig`'s flat
+  bag. Task B9 narrows the YAML DTO to it at the validation boundary and owns every call site that
+  breaks.
+
+- [ ] **Step 1: write the failing tests — one compile-time, three at the boundary**
+
+The typed path is proven by the compiler, so its assertion belongs in a file the typecheck list runs.
+The boundary is proven by behaviour.
+
+```ts
+// packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts — add to tsconfig.typecheck.json
+import type { IApiKeyCredential, ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
+import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { RagResolution } from '../rag-factories.js';
+
+declare const embedder: IEmbedder;
+declare const apiKey: IApiKeyCredential;
+declare const login: ISecretLoginCredential;
+
+// a login cannot authenticate Qdrant, and the compiler must be the one to say so
+// @ts-expect-error — qdrant takes an api-key credential
+const _wrongKind: RagResolution = {
+  type: 'qdrant', embedder, collectionName: 'c', url: 'http://localhost:6333', credential: login,
+};
+
+// HANA has no anonymous login, so omitting it is a build error, not a connect-time throw
+// @ts-expect-error — hana-vector requires a credential
+const _missing: RagResolution = { type: 'hana-vector', embedder, collectionName: 'c' };
+
+// the fields Task B6 removed cannot come back through this door either
+// @ts-expect-error — apiKey is not a member of any arm
+const _legacy: RagResolution = {
+  type: 'qdrant', embedder, collectionName: 'c', url: 'http://localhost:6333', apiKey: 'k',
+};
+
+// and the good cases must compile
+const _ok: readonly RagResolution[] = [
+  { type: 'qdrant', embedder, collectionName: 'c', url: 'http://localhost:6333', credential: apiKey },
+  { type: 'pg-vector', embedder, collectionName: 'c', host: 'db', credential: login },
+  { type: 'hana-vector', embedder, collectionName: 'c', host: 'h', credential: login },
+];
+```
+
+Then the boundary, where a value arrives that no compiler saw:
+
+```ts
+// packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts — added to the store section
+it('refuses a legacy secret field arriving from an untyped source', async () => {
+  for (const field of ['apiKey', 'user', 'password'] as const) {
+    const fromYaml = {
+      type: 'qdrant', embedder: stubEmbedder, collectionName: 'c',
+      url: 'http://localhost:6333', [field]: 'leftover',
+    } as unknown as RagResolution;
+    await assert.rejects(
+      () => makeRag(fromYaml),
+      new RegExp(`${field}.*credential`, 'i'),
+      `a loaded object is not a fresh literal, so only this can catch ${field}`,
+    );
+  }
+});
+```
+
+- [ ] **Step 2: run them and watch them fail**
+
+```bash
+cd ~/prj/llm-agent
+find packages -name '*.tsbuildinfo' -delete
+npm run build
+npm run typecheck          # the four @ts-expect-error directives must be UNUSED here, i.e. errors
+npm test -w packages/llm-agent-rag
+```
+
+Expected before the change: `npm run typecheck` reports `TS2578` (unused `@ts-expect-error`) for each
+directive, because the flat bag accepts all four objects — that unused directive **is** the defect,
+stated by the compiler. The boundary test fails because nothing refuses a legacy field.
+
+- [ ] **Step 3: replace the bag with the union**
+
+```ts
+/** What a caller must state to get a store. One arm per backend, each carrying exactly what that
+ *  backend's own constructor demands — so a wrong credential kind, a missing required one, or a
+ *  field Task B6 removed is a build error rather than something a guard has to notice. */
+export type RagResolution =
+  | { type: 'in-memory'; embedder: IEmbedder; collectionName?: string; maxBatchSize?: number }
+  | {
+      type: 'qdrant'; embedder: IEmbedder; collectionName: string; url: string;
+      credential?: IApiKeyCredential; timeoutMs?: number; maxBatchSize?: number;
+    }
+  | {
+      type: 'pg-vector'; embedder: IEmbedder; collectionName: string;
+      credential?: ISecretLoginCredential; connectionString?: string; host?: string; port?: number;
+      database?: string; schema?: string; poolMax?: number; connectTimeout?: number;
+      dimension?: number; autoCreateSchema?: boolean; maxBatchSize?: number;
+    }
+  | {
+      type: 'hana-vector'; embedder: IEmbedder; collectionName: string;
+      credential: ISecretLoginCredential; connectionString?: string; host?: string; port?: number;
+      schema?: string; poolMax?: number; connectTimeout?: number;
+      dimension?: number; autoCreateSchema?: boolean; maxBatchSize?: number;
+    };
+```
+
+Copy each arm's members from that store's own config rather than inventing them, and say in the report
+which config you read for each. The embedder resolution members (`embedder?: string`, `url`, `model`,
+`credential`, `apiBaseUrl`, `resourceGroup`, `scenario`) stay where Task B6a put them — do not fold them
+into these arms; a caller composes the two.
+
+- [ ] **Step 4: dispatch over literal specifiers, and delete what the casts were for**
+
+```ts
+export async function makeRag(cfg: RagResolution, options?: RagResolutionOptions): Promise<IRag> {
+  refuseLegacySecretFields(cfg);           // the boundary, for input no compiler saw
+  const embedder = resolveEmbedder(cfg as EmbedderResolutionConfig, options);
+  switch (cfg.type) {
+    case 'qdrant': {
+      const { QdrantRag } = await importPeer('@mcp-abap-adt/qdrant-rag', 'qdrant');
+      return new QdrantRag({ ...cfg, embedder });   // checked against QdrantRagConfig
+    }
+    // …one arm per backend, each with its own literal specifier
+  }
+}
+```
+
+`importPeer` wraps `await import('<literal>')` in the existing `try`/`catch` that raises
+`MissingProviderError` — that failure is genuinely a runtime one, a package either installed or not.
+Keep `prefetchRagFactories`'s exported signature: its caller (`cli.ts:300`) wants a fail-fast at
+startup, which a switch over the same literals still gives, and the ES loader's cache makes the later
+import free. **Delete** `RagFactoryOpts`, `RagCtor`, `resolveRag`, both name maps, and the store half of
+the guard — no `RAG_CREDENTIALS`. If deleting `resolveRag` leaves a test that only existed to exercise
+it, delete that too and say so.
+
+- [ ] **Step 5: verify, and expect breakage you do not own**
+
+```bash
+cd ~/prj/llm-agent
+find packages -name '*.tsbuildinfo' -delete
+npm run build               # count "Found N errors"; ANSI colour defeats grep -c "error TS"
+npm run typecheck           # exit 0, and NO TS2578 — every directive above must now be used
+npm test -w packages/llm-agent-rag
+timeout 900 npm test -w packages/llm-agent-server-libs
+```
+
+The union will break `llm-agent-server-libs`, which feeds YAML-shaped config into `makeRag` from four
+call sites (`smart-server.ts:1271`, `:1272`, `:1915`, `:1922`). **Those are Task B9's** — it narrows the
+DTO at the validation boundary. Do not edit them, do not cast, do not skip a suite to hide them. Report
+the exact new `Found N errors` with every file and line, and which suites went red; a failure you
+report is sequencing, a failure you hide is a defect.
+
+- [ ] **Step 6: commit**
+
+```bash
+cd ~/prj/llm-agent
+git add packages/llm-agent-rag
+git commit -m "$(cat <<'MSG'
+refactor(llm-agent-rag)!: the store path keeps its types, so the guard is gone
+
+makeRag copied a whitelist into an untyped bag and reached each store
+through two casts, so removing apiKey, user and password from the three
+configs produced no error here and the only check left was one that runs.
+The bag, the casts and the name maps are deleted: makeRag takes a
+discriminated union and dispatches over literal import specifiers, so each
+store's own constructor states the rule and the compiler enforces it — a
+wrong credential kind, HANA's missing required credential, and a leftover
+legacy field are now build errors.
+
+What remains at runtime is what belongs there: a missing optional peer,
+and a refusal of a legacy secret field arriving from an untyped source,
+since a loaded object is not a fresh literal and no excess-property check
+ever sees it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+MSG
+)"
+```
+
+Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
+`makeRag` takes `RagResolution`, a discriminated union, in place of the flat `RagResolutionConfig`;
+`resolveRag` and `RagFactoryOpts` are removed as unused outside the package; `apiKey`, `user` and
+`password` are gone from every arm, replaced by `credential` typed for the backend; and a legacy field
+arriving from an untyped source is refused at resolution with both it and `credential` named.
+
 ### Task B7: two typed `IMcpServer` implementations, each demanding its own credential
 
 **These classes do not exist yet.** `IMcpServer` is declared in `@mcp-abap-adt/llm-agent` (workstream 1) and the name appears nowhere in `llm-agent-mcp`; what exists is `MCPClientWrapper` in `client.ts`, whose `connect()` branches on transport and builds `StdioClientTransport({ command, args, env })` (~`:320`) or `StreamableHTTPClientTransport(new URL(url), buildHttpTransportOptions({ headers, sessionId, requestHeadersStrategy }))` (~`:348`). So this task **creates** the two typed implementations on top of that, which is what §8 means by "the typed implementations land with the credential contracts".
@@ -1044,8 +1522,8 @@ Both classes take the client factory as a constructor argument, defaulting to `c
 
 ```ts
 // packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type { McpClientFactoryResult, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
 import type {
   IApiKeyCredential,
@@ -1485,6 +1963,10 @@ Neither duplicates `client.ts`'s transport branching: `createDefaultMcpClient` a
 ```bash
 node --import tsx/esm --test packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts
 npx tsc --noEmit -p packages/llm-agent-mcp/tsconfig.json; echo "EXIT=$?"
+# This task's two strongest assertions are compile-only — that a bearer credential is
+# refused where a header key is declared, and that a credential with nowhere to go is
+# unconstructible. Both are silent unless this file is in the typecheck list:
+npm run typecheck; echo "TYPES=$?"
 npx biome check packages/llm-agent-mcp/src
 ```
 
@@ -1522,8 +2004,8 @@ The single largest removal, and the one that makes the rest true: while a librar
 
 ```ts
 // packages/llm-agent-libs/src/__tests__/no-provider-dispatch.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import * as libs from '../index.js';
 
 describe('llm-agent-libs no longer dispatches providers', () => {
@@ -1605,8 +2087,8 @@ BREAKING: makeLlm, makeDefaultLlm, MakeLlmConfig and DefaultModelResolver are re
 
 ```ts
 // packages/llm-agent-server-libs/src/__tests__/credential-ref.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { loadYamlConfig } from '../smart-agent/yaml-loader.js';   // confirm the name in Step 2
 import { SmartServer } from '../smart-agent/smart-server.js';
 
@@ -1840,8 +2322,8 @@ A provider is handed the **store** name, not the logical one: `SimpleRagRegistry
 
 ```ts
 // packages/llm-agent/src/__tests__/rag-collection-record.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import type {
   IRagProvider,
   RagCallerIdentity,
@@ -1965,6 +2447,9 @@ and widen `createCollection`'s `opts` with `collectionName?: string`, `attribute
 
 ```bash
 node --import tsx/esm --test packages/llm-agent/src/__tests__/rag-collection-record.test.ts
+# `providerName is not optional on a record` is a compile assertion, silent unless this
+# file is in the typecheck list:
+npm run typecheck; echo "TYPES=$?"
 for p in llm-agent qdrant-rag pg-vector-rag hana-vector-rag llm-agent-rag; do
   npx tsc --noEmit -p "packages/$p/tsconfig.json"; echo "$p=$?"
 done
@@ -2005,8 +2490,8 @@ type breaks every implementation."
 
 ```ts
 // packages/llm-agent/src/rag/__tests__/catalog-record-delete-error.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { CatalogRecordDeleteError } from '../corrections/errors.js';
 import { CollectionNotFoundError } from '../corrections/errors.js';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
@@ -2118,8 +2603,8 @@ The same change twice, so one task and one diff. **These packages own the backen
 
 ```ts
 // packages/pg-vector-rag/src/__tests__/catalog.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 
@@ -2316,8 +2801,8 @@ The same four behaviours as Task B13, against a `fetch` fake rather than a SQL c
 
 ```ts
 // packages/qdrant-rag/src/__tests__/catalog.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 
@@ -2420,8 +2905,8 @@ CatalogRecordDeleteError without touching the collection."
 
 ```ts
 // packages/llm-agent/src/rag/__tests__/adopt.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
 
 const rag = { query: async () => ({ ok: true, value: [] }) } as never;
@@ -2579,8 +3064,8 @@ The security change, and the largest behavioural one. Five of the seven handlers
 
 ```ts
 // packages/llm-agent/src/rag/__tests__/tool-identity.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
 
 const identity = { sessionId: 's-1', userId: 'u-1' };
@@ -2759,6 +3244,10 @@ Then: all seven handlers take `_ctx` and use `identity`; `rag_create_collection`
 ```bash
 node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/ 2>&1 | tail -8
 npx tsc --noEmit -p packages/llm-agent/tsconfig.json; echo "EXIT=$?"
+# `identity is required` is the task's central assertion and it is compile-only, so it is
+# silent unless this file is in the typecheck list. Prove it can fail too: make `identity`
+# optional and confirm TS2578 on that directive.
+npm run typecheck; echo "TYPES=$?"
 ```
 
 - [ ] **Step 5: commit**
@@ -2799,8 +3288,8 @@ index signature absorbs them — but a reader of one must change."
 
 ```ts
 // packages/llm-agent-libs/src/__tests__/session-registry-factory.test.ts
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { SessionGraphFactory } from '../session/session-graph-factory.js';
 
 const sharedRegistry = () => {
