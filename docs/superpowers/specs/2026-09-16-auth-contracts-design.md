@@ -617,6 +617,41 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    answers, and only the second one closes the hole.
 
 
+   ### 4.6.7 The plugin path, checked on the same question — and it already holds
+
+   Asked whether the plugin map has the defect the role map had. It does not, and saying so is worth as much
+   as the corrections above, because it shows what the right shape looks like when nobody had to be told.
+
+   **What a plugin module hands over is already built, or is the consumer's own factory.** `LoadedPlugins`
+   (`llm-agent/src/interfaces/plugin.ts:147`) carries `mcpClients: IMcpClient[]` — clients the consumer
+   connected and therefore authorized at construction, per §3.3 — `stageHandlers`, `apiAdapters`, and
+   `embedderFactories: Record<string, EmbedderFactory>`. That last one is the **narrow** consumer-facing
+   type, which is exactly the conclusion §4.6.3 reached for `extraFactories`: a factory the consumer wrote
+   closes over the credential it already holds, so the framework must not promise to carry one to it. Two
+   independent sites, the same answer, one of them written long before this design — which is the strongest
+   evidence available that the rule is the codebase's and not this document's invention.
+
+   **What a plugin receives is a lookup or an instance, never a credential.** `IPipelineContext` gives it
+   `resolveLlm(role)`, `toolsRag`, `ragRegistry?`, `mcpClients?`, `toolClientMap?`, `callMcp(…)` and
+   `knowledgeRagFor(sessionId)`, plus `subagents` as **metadata only** — names and descriptions, no
+   handles. Nothing auth-shaped, and `knowledgeRagFor` is keyed by a **session**, not by a credential,
+   which is the legitimate form of the session-scoped access §4.6.5 describes: the identity is the key, and
+   whoever supplied the function closed over the credential.
+
+   **And the registry is in the right layer for the right reason.** `SmartServer` holds
+   `_pipelineRegistry: Map<string, IPipelinePlugin>` (`:881`, filled `:1127`) — plugin *implementations*,
+   stateless, holding no credentials. It serves every pipeline, so by the reasoning that moved the role map
+   it belongs above them, which is where it is.
+
+   **One gap, and it is a rule rather than a change.** `IPipelinePlugin.parseConfig(raw: unknown): Config`
+   means a plugin's own configuration is a serializable shape the framework never inspects — so it is
+   precisely where a plugin author would put an `apiKey`, and nothing currently says not to. The passenger
+   test applies to a plugin's config like any other (§4.6.2): it carries a **`credentialRef`**, never a
+   secret, and a plugin obtains authorized objects **only** through `ctx`, never by constructing them from
+   its own config. Stated with a baseline, so the rule can be checked rather than assumed: none of the five
+   shipped plugins — `flat`, `linear`, `stepper`, `dag`, `controller` — carries a secret in its config
+   today.
+
 ## 5. Admission is the consumer's, and none of it is ours
 
 Job B needs one decision-maker, built with the caller's identity, asked wherever the answer matters. That is not in dispute. What §1.4 settles is **where it lives**: the component that receives a caller's request is the only one that can judge it, and nothing in this framework receives one. Every provider here is a client of something outside.
