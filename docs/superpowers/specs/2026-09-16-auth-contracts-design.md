@@ -384,7 +384,28 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
 
     **And the app needs a seam to construct a store, which it does not have.** `BuildAgentDeps` offers `makeLlm`, `resolveEmbedder`, `buildSkillHost`, `connectMcp` and more — but **nothing for a store**. `SmartServer` imports `makeRag` from the library and calls it directly at `smart-server.ts:1271`, `:1272`, `:1915` and `:1923`. So with secrets gone from YAML, those four call sites have no credential to pass and the composition root never participates: the design's whole claim, that construction belongs to the app, has an LLM seam and no store seam. An earlier draft did not notice because it reasoned about the DTOs and never about who calls the constructor.
 
-    So `BuildAgentDeps` gains `makeRag: (cfg: RagResolution) => Promise<IRag>`, **required** for the same reason `makeLlm` is (§4.6.3 item 3) — **one** parameter, the library's own discriminated union, and not `(storeConfig, embedder)` as an earlier draft of this paragraph had it. Two parameters made the keyword-only path inexpressible: a `store.type: in-memory` with no `rag.embedder` has no `IEmbedder` to pass, while every call site was to go through this seam. In the union the embedder sits on the arms that need one — required on `qdrant`, `pg-vector` and `hana-vector`, **optional on `in-memory`**, which is also how `SkillPluginsStoreConfig` has long expressed the same thing (`{ type: 'in-memory' }` carries no fields at all). So the compiler demands an embedder exactly where a store cannot work without one, and the app resolves one only then: a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
+    So `BuildAgentDeps` gains `makeRag`, **required** for the same reason `makeLlm` is (§4.6.3 item 3). What it takes had to be corrected twice, and the second correction is the instructive one. The first draft said `(storeConfig, embedder: IEmbedder)`; the second said `(cfg: RagResolution)` — the library's runtime union. Both were wrong, in opposite directions, and for one reason: **neither end of the seam holds what it was being asked for.** `SmartServer` cannot build a `RagResolution`, because that union carries a `credential` and the credential is precisely what the library must not hold. The app's factory cannot receive a `RagResolution` either, because it would then never see the `credentialRef` it is supposed to resolve. The seam's job **is** that conversion, so its input is what the caller genuinely has — the serializable store section and, when the store needs one, a resolved embedder — and its body is where the app turns those into the typed union:
+
+    ```ts
+    // paired, so the compiler demands an embedder exactly where a store cannot work without one
+    type MakeRagInput =
+      | { store: InMemoryStoreConfig; embedder?: IEmbedder }
+      | { store: QdrantStoreConfig | PgVectorStoreConfig | HanaVectorStoreConfig; embedder: IEmbedder };
+
+    makeRag: (input: MakeRagInput) => Promise<IRag>;
+    ```
+
+    The pairing is a discriminated union rather than an optional second parameter, because `SmartServerRagStoreConfig` is itself discriminated by `type` once §4.6.4's split has happened — so the requirement travels with the arm instead of being asserted about it. `SmartServer` narrows at the YAML boundary, which is where narrowing belongs (§4.6.3), and after that its four call sites type-check.
+
+    **The discipline this section was missing, stated so the next seam does not need three drafts.** For every seam, write down what each side holds before choosing the signature:
+
+    | seam | the library holds | the app holds | so the seam carries |
+    |---|---|---|---|
+    | `makeLlm` | `SmartServerLlmConfig` with a `credentialRef` | the credential registry | the config; the app resolves and constructs |
+    | `resolveEmbedder` | the embedder section with its own ref | the registry, and the narrowing per provider | the config; the app resolves, narrows and constructs |
+    | `makeRag` | the store section with its own ref, plus an `IEmbedder` it obtained from the seam above | the registry | both of those; the app resolves and constructs |
+
+    Two of the three mistakes above were signatures chosen before this table existed. Two parameters made the keyword-only path inexpressible: a `store.type: in-memory` with no `rag.embedder` has no `IEmbedder` to pass, while every call site was to go through this seam. In the union the embedder sits on the arms that need one — required on `qdrant`, `pg-vector` and `hana-vector`, **optional on `in-memory`**, which is also how `SkillPluginsStoreConfig` has long expressed the same thing (`{ type: 'in-memory' }` carries no fields at all). So the compiler demands an embedder exactly where a store cannot work without one, and the app resolves one only then: a library that may not construct an authenticated LLM from configuration may not construct an authenticated store from it either. `resolveEmbedder` becomes required on the same argument, since an embedder is the third authenticated thing. The cost, stated rather than discovered: a deployment using only Ollama and an in-memory store needs no credential at all and must still supply three factory lines, and passing `{}` as `deps` stops compiling. The alternative — keeping the seams optional and defaulting them when the config names no credential — was rejected: it is a runtime condition deciding who constructs, which is principle 10 inverted, and it leaves the library holding construction for exactly the deployments least likely to review it.
 
    So they take `credentialRef` as well, resolved the same way, and the embedder and store construction moves to the app with the provider dispatch. The RAG stores' own constructors take the credential (§4.5), so nothing new is needed below.
 
@@ -850,7 +871,12 @@ type CredentialEntry = {
 /** What an entry with no `credentialRef` resolves to. One per deployment, and the
  *  root's own choice — NOT a provider's. An OpenAI-only deployment points it at its
  *  OpenAI key, a SAP-only one at its service key, a keyless one at `{}`. */
-const DEFAULT_REF = 'PRIMARY';
+// One default per role, because an entry holds one credential and a store's kind
+// need not match an embedder's. All three may name the same entry when they truly
+// are one account — that is this line, not anything in YAML.
+const DEFAULT_LLM_REF = 'PRIMARY';
+const DEFAULT_STORE_REF = 'PRIMARY';
+const DEFAULT_EMBEDDER_REF = 'PRIMARY';
 
 /** A function, not a Map literal, so nothing is read or parsed until it is asked for. */
 function credentialFor(ref: string): CredentialEntry | undefined {
@@ -881,7 +907,7 @@ function requireEnv(name: string): string {
 
 const deps: BuildAgentDeps = {
   async makeLlm(cfg) {
-    const ref = cfg.credentialRef ?? DEFAULT_REF;
+    const ref = cfg.credentialRef ?? DEFAULT_LLM_REF;
     const entry = credentialFor(ref);
     if (!entry) throw new Error(`credentialRef '${ref}' has no entry configured`);
 
@@ -932,11 +958,11 @@ Four things in it are the model rather than decoration, and each is where an ear
 - **`credentialFor` is a function, not a `Map` literal.** A literal built every entry at startup, so a DeepSeek-only deployment had to have an `AICORE_SERVICE_KEY` — and `process.env.X!` only hid the `undefined` from the compiler, it did not make the value present. Nothing is read or parsed until a reference asks for it, and `requireEnv` fails with the variable's name when it is missing.
 - **A reference resolves to an *entry*, and the entry admits all three credential kinds.** SAP's service key yields an address as well as a credential, and both belong to the same account — so the SAP branch reads `apiBaseUrl` from the entry rather than re-reading a global env var, which is what makes two AI Core accounts expressible. Admitting `ISecretLoginCredential` is what lets the same registry answer for `rag.user`/`rag.password`; an earlier version typed it to api-key and bearer only, so a PostgreSQL entry could not be added to the registry it was told to use.
 - **Narrowing is explicit, and optional where the target's is.** `apiKey()` refuses anything else for the three providers that need a key; `optionalApiKey()` keeps Ollama's key optional, because `OllamaProvider` accepts one today (`providers.ts:204`) and a gateway in front of it may require it — the design replaces plain keys with typed credentials rather than removing the capability.
-- **The default reference is a name the root chooses — `DEFAULT_REF`, not a provider's.** Two earlier versions failed this differently: the first said so in prose and passed `undefined` through a cast, which would have failed at the first request; the second hardcoded the fallback to `'DEEPSEEK_API_KEY'`, so an OpenAI-only, SAP-only or keyless deployment that omitted the reference would have been made to produce a DeepSeek variable. One named default entry per deployment, pointed at whatever that deployment actually holds — an api key, a service key, or `{}`.
+- **The default reference is a name the root chooses — and one per role, not a provider's and not one globally.** Two earlier versions failed this differently: the first said so in prose and passed `undefined` through a cast, which would have failed at the first request; the second hardcoded the fallback to `'DEEPSEEK_API_KEY'`, so an OpenAI-only, SAP-only or keyless deployment that omitted the reference would have been made to produce a DeepSeek variable. One named default entry per deployment, pointed at whatever that deployment actually holds — an api key, a service key, or `{}`.
 
 `llm-agent-server` carries exactly this switch as the reference implementation — that is what makes it the example (principle 2), and why §11 no longer lists its configuration as out of scope.
 
-`credentialRef` is optional **in each section independently**: omit it and that lookup falls back to `DEFAULT_REF` — the one name your root nominates, `'PRIMARY'` above — so a deployment whose store and embedder share one account names it nowhere, while one that does not names it twice. This is what a single-account setup wants. The same swap applies to the store configs: `rag.apiKey`, `rag.user`/`rag.password` and a qdrant skill store's `apiKey` all become `credentialRef`, resolved through the **same `credentialFor`** as the LLM entries, which is why its entry type admits `ISecretLoginCredential` (the `RAG_PG` case above). The store constructors then take the credential itself (§4.5).
+`credentialRef` is optional **in each section independently** — and the fallback is therefore **per role**, not one global name. An earlier version of this paragraph said `DEFAULT_REF` for all of them, which cannot work: an entry holds **one** credential, so the same default cannot be an `ISecretLoginCredential` for a PostgreSQL store and an `IApiKeyCredential` for an OpenAI embedder at once. The root nominates one default per role — `DEFAULT_LLM_REF`, `DEFAULT_STORE_REF`, `DEFAULT_EMBEDDER_REF` — and a deployment where all three genuinely are one account points all three names at the same entry, which is a line in the root rather than anything in YAML. Omitting a ref means "that role's default", and a deployment whose targets want different credential kinds names them explicitly. This is what a single-account setup wants. The same swap applies to the store configs: `rag.apiKey`, `rag.user`/`rag.password` and a qdrant skill store's `apiKey` all become `credentialRef`, resolved through the **same `credentialFor`** as the LLM entries, which is why its entry type admits `ISecretLoginCredential` (the `RAG_PG` case above). The store constructors then take the credential itself (§4.5).
 
 **The same `deps` object carries the other two seams, and both are now required** (§4.6.3 item 3, §4.6.4). `resolveEmbedder` and `makeRag` stop being defaulted for the same reason `makeLlm` did: a library that may not construct an authenticated LLM from configuration may not construct an authenticated embedder or store from it either. `BuildAgentDeps`'s doc comment used to promise that passing `{}` preserved existing behaviour, and it no longer can — every call site, tests included, names the seams:
 
@@ -944,20 +970,62 @@ Four things in it are the model rather than decoration, and each is where an ear
 const deps: BuildAgentDeps = {
   async makeLlm(cfg) { /* as above */ },
 
-  // the embedder's own account, from the embedder section's own ref
+  // The embedder's own account. Spreading the entry's credential in unnarrowed
+  // would let an OpenAI embedder receive a login, so this dispatches on the
+  // provider and narrows to the kind that provider can actually use — the same
+  // shape as makeLlm above, for the same reason.
   resolveEmbedder(cfg, options) {
-    const entry = credentialFor(cfg.credentialRef ?? DEFAULT_REF);
-    return resolveEmbedder(
-      { ...cfg, ...(entry?.credential ? { credential: entry.credential } : {}),
-        ...(entry?.apiBaseUrl ? { apiBaseUrl: entry.apiBaseUrl } : {}) },
-      options,
-    );
+    const ref = cfg.credentialRef ?? DEFAULT_EMBEDDER_REF;
+    const entry = credentialFor(ref);
+    switch (cfg.provider) {
+      case 'openai': {
+        const credential = entry?.credential;
+        if (credential?.kind !== 'api-key') {
+          throw new Error(`credentialRef '${ref}' must hold an api-key credential for openai`);
+        }
+        return resolveEmbedder({ ...cfg, credential }, options);
+      }
+      case 'sap-ai-core': {
+        const credential = entry?.credential;
+        if (credential?.kind !== 'bearer') {
+          throw new Error(`credentialRef '${ref}' must hold a bearer credential for sap-ai-core`);
+        }
+        if (!entry?.apiBaseUrl) {
+          throw new Error(`credentialRef '${ref}' must carry an apiBaseUrl for sap-ai-core`);
+        }
+        return resolveEmbedder({ ...cfg, credential, apiBaseUrl: entry.apiBaseUrl }, options);
+      }
+      default:
+        // ollama sends nothing on the wire; a credential here would be a member nobody calls
+        return resolveEmbedder(cfg, options);
+    }
   },
 
-  // the store's own account, from the store section's own ref — one argument,
-  // and the embedder is a member of the arms that need one
-  async makeRag(cfg) {
-    return makeRag(cfg);
+  // The store's own account. The seam receives the SERIALIZABLE store section
+  // plus the embedder resolved above, and this body is the conversion: resolve
+  // the ref, narrow to what the backend speaks, then build the typed arm.
+  async makeRag({ store, embedder }) {
+    const ref = store.credentialRef ?? DEFAULT_STORE_REF;
+    const entry = credentialFor(ref);
+    const login = (): ISecretLoginCredential => {
+      if (entry?.credential?.kind !== 'secret-login') {
+        throw new Error(`credentialRef '${ref}' must hold a secret-login credential for ${store.type}`);
+      }
+      return entry.credential;
+    };
+    switch (store.type) {
+      case 'in-memory':
+        return makeRag({ type: 'in-memory', ...(embedder ? { embedder } : {}) });
+      case 'qdrant':
+        return makeRag({
+          ...store, embedder,
+          ...(entry?.credential?.kind === 'api-key' ? { credential: entry.credential } : {}),
+        });
+      case 'pg-vector':
+        return makeRag({ ...store, embedder, ...(entry?.credential ? { credential: login() } : {}) });
+      case 'hana-vector':
+        return makeRag({ ...store, embedder, credential: login() });  // HANA's is required
+    }
   },
 };
 ```
