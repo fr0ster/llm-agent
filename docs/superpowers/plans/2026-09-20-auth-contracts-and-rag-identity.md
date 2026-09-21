@@ -1386,11 +1386,11 @@ Replace `apiKey: cfg.apiKey` in the qdrant branch and `user: cfg.user, password:
 export const RAG_CREDENTIALS: Record<string, CredentialRule> = {
   qdrant: { kinds: ['api-key'], required: false },
   'pg-vector': { kinds: ['secret-login'], required: false },
-  'hana-vector': { kinds: ['secret-login'], required: false },
+  'hana-vector': { kinds: ['secret-login'], required: true },
 };
 ```
 
-`resolveRag` calls `assertCredentialKind(name, opts.credential, RAG_CREDENTIALS[name])` before `new Cls(opts)`. All three are `required: false` deliberately: qdrant's key was optional and pg's and hana's logins have `connectionString` as an alternative, so requiring one here would refuse a working configuration.
+`resolveRag` calls `assertCredentialKind(name, opts.credential, RAG_CREDENTIALS[name])` before `new Cls(opts)`. The three differ, and the difference is the point: **optionality is a claim that a working credential-free configuration exists**, so it was read per target rather than ruled once (§4.6.1). Qdrant is `required: false` — an unauthenticated Qdrant is a real deployment. pg is `required: false` — trust authentication and the driver's own `PGUSER`/`PGPASSWORD` are paths this guard must not refuse. HANA is **`required: true`** — `resolveHanaConnectArgs` throws unconditionally when the login does not resolve, and the one credential-free-looking HANA config was a connection string with credentials embedded, which Task B6 closed; its config's `credential` is non-optional, so a guard saying otherwise here would be the looser of two statements about the same thing.
 
 - [ ] **Step 6: verify**
 
