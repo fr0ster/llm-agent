@@ -573,11 +573,17 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    weaker than it**, and they go — an earlier draft of this paragraph proposed a new `resolveRole`, which
    was that same mistake a third time. The remaining two pipelines use what the other two already use,
    and the context loses
-   `llmMap` and `pipelineFallback`. A step that wants a **different model** does not need a different provider: `model`
-   is already a per-call option on the usage contract, which is the distinction §4.6.2 drew between a
-   behaviour knob and an identity. A step that wants a **different role** asks for that role's instance,
-   which exists because the root built it. The only capability actually removed is the ability to
-   authorize something mid-pipeline, which is the capability that should not exist.
+   `llmMap` and `pipelineFallback`. **The replacement is the role, not a per-call option, and an earlier draft
+   of this paragraph got that backwards against an argument this document had already made.** It said a step
+   wanting a different model could pass `model` in `LLMCallOptions` — but §4.6.2 established the opposite
+   twelve pages earlier, from `CallOptions`' own docstring: the override does not reach the reviewer, the
+   finalizer, the planner or the evaluator. Those are precisely the roles the controller and DAG paths build,
+   so for them a per-call option changes nothing and the migration would have silently kept the old model on
+   every auxiliary call while appearing to work on the main one. What replaces `ctx.makeLlm(cfg)` is
+   `ctx.resolveLlm(role)` — a **registered instance**, which is what roles exist for. A per-call `model`
+   remains valid where the call site genuinely carries `CallOptions` through, which is the main path and not
+   the auxiliary ones. The only capability removed is the ability to authorize something mid-pipeline, which
+   is the capability that should not exist.
 
    **And the map is not the framework's to own, which settles where the scoping lives.** Four pipelines
    consume role resolution — `linear`, `stepper`, `controller`, `dag` — and the resolver is held above all
@@ -670,6 +676,18 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    part at construction — `new ControllerPipelinePlugin('controller…')`. `parseConfig` exists only because
    the **server** holds the YAML and hands each plugin its section, which is the server performing the
    app's job through a framework contract.
+
+   **And there is deliberately no credential lookup on `ctx`, which is the point rather than a gap.** A
+   review of the earlier draft asked the right question of it: if a plugin's config carries a
+   `credentialRef`, what resolves it? `IPipelineContext` offers specific lookups and instances —
+   `resolveLlm`, `toolsRag`, `mcpClients`, `callMcp`, `knowledgeRagFor` — and no credential registry, no
+   generic factory. Under that draft a plugin with its own authenticated backend was stuck, and the
+   composition root could not help it either, since `parseConfig(raw)` hands back a shape only the plugin
+   understands. Moving the configuration into the constructor dissolves the question instead of answering
+   it: **there is no reference for a plugin to resolve, because the consumer hands it the already-authorized
+   dependency** — a client, a credential, a whole backend — when it constructs the plugin. `ctx` stays a set
+   of named capabilities the framework can honestly provide, and gains no credential lookup, because a
+   credential lookup on a usage contract is the thing §4.6.6 exists to forbid.
 
    **The cost, stated because it is a framework contract and this is where such things get argued.** It is
    source-breaking for plugin authors: `parseConfig` goes, `build` loses a parameter, and the five shipped
@@ -1305,8 +1323,10 @@ rag:
 **5. Stop constructing inside the pipeline, and resolve a role instead** (§4.6.6). If you implement a
 pipeline or a step against `IServerPipelineContext`, three members are gone: `makeLlm`, `llmMap` and
 `pipelineFallback`. A step that called `ctx.makeLlm(someConfig)` calls `ctx.resolveLlm(role)` and receives
-an instance the resolver already built — and a step that was constructing in order to use a **different
-model** passes `model` in `LLMCallOptions` instead, which the usage contract has always accepted per call.
+an instance the resolver already built. **Register the model you need as a role and resolve it; do not
+reach for a per-call `model`** — by `CallOptions`' own contract that override does not reach the reviewer,
+finalizer, planner or evaluator (§4.6.2), which are exactly the roles a controller or DAG path builds, so it
+would leave those calls on the old model while the main path looked migrated.
 `IRoleLlmResolver` loses `makeLlm(lc)` for the same reason. If you were relying on constructing a provider
 mid-pipeline from a config you assembled at runtime, that is the capability this release removes on purpose:
 build it in your composition root, register it under a role, and resolve it. And if the credential is the
