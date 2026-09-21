@@ -4,12 +4,17 @@
 
 **BREAKING:** `user`/`password` are gone from `PgVectorRagConfig`, replaced
 by an optional `credential` (an `ISecretLoginCredential` from
-`@mcp-abap-adt/interfaces-auth`). `resolvePgConnectArgs` is now `async` and
-resolves the identity and secret from the credential on every connect —
-never once at construction, so a rotating credential rotates. It now also
-applies the credential when `connectionString` is set, closing the gap where
-a discrete `user`/`password` used to be silently ignored once a connection
-string was provided. A `connectionString` carrying embedded credentials
+`@mcp-abap-adt/interfaces-auth`). `resolvePgConnectArgs` is now `async`.
+`user` (the identity) is resolved once, since a principal does not rotate.
+The password is handed to the `pg` pool **as a function**, not resolved to a
+string here — `pg` calls it once per physical connection it opens over the
+pool's lifetime (`@types/pg`: `password?: string | (() => string |
+Promise<string>)`; the runtime checks `typeof this.password === 'function'`
+per client), so a rotating credential genuinely rotates across the pool's
+life, not only across pool construction. The resolver now also applies the
+credential when `connectionString` is set, closing the gap where a discrete
+`user`/`password` used to be silently ignored once a connection string was
+provided. A `connectionString` carrying embedded credentials
 (`postgres://user:pass@host/db`) is now refused at construction, naming
 `staticLogin` in the message — silently ignoring the embedded password is
 the failure this replaces.
@@ -17,7 +22,8 @@ the failure this replaces.
 Migration: `resolvePgConnectArgs({ host, user, password })` becomes
 `await resolvePgConnectArgs({ host, credential: staticLogin(user, password) })`
 (`staticLogin` is exported from `@mcp-abap-adt/llm-agent`); a caller's own
-`connectionString` must now carry the address only.
+`connectionString` must now carry the address only. A caller reading
+`PgPoolConfig.password` directly must now handle it being a function.
 
 ## 26.0.0
 

@@ -3,23 +3,37 @@
 ## [Unreleased]
 
 **BREAKING:** `user`/`password` are gone from `HanaVectorRagConfig`, replaced
-by an optional `credential` (an `ISecretLoginCredential` from
-`@mcp-abap-adt/interfaces-auth`). `resolveHanaConnectArgs` is now `async` and
-resolves the identity and secret from the credential on every connect —
-never once at construction, so a rotating credential rotates. A
+by a **required** `credential` (an `ISecretLoginCredential` from
+`@mcp-abap-adt/interfaces-auth`) — required, unlike `qdrant-rag`'s and
+`pg-vector-rag`'s `credential`, both of which stay optional: an
+unauthenticated Qdrant and Postgres trust/`PGUSER`/`PGPASSWORD` auth are real
+working configurations a required field would refuse, but HANA has no
+anonymous login, so `resolveHanaConnectArgs` throws unconditionally when a
+user/password does not resolve — before and after this change. The one HANA
+configuration that used to work without discrete `user`/`password` was a
+connection string carrying them, and that path is refused on purpose (below);
+optional typing here would only move an unavoidable failure from a compile
+error to a connect-time throw. `resolveHanaConnectArgs` is now `async` and
+resolves the identity and secret from the credential once, at the one
+connect a `HanaVectorRag` instance ever does — it opens a single physical
+connection, not a pool, so "once" and "per connection" coincide here (unlike
+`pg-vector-rag`, whose pool needed the secret handed over as a function to
+get the same guarantee across many physical connections). A
 `connectionString` carrying embedded credentials
 (`hdbsql://user:pass@host:443`) is now refused at construction, naming
 `staticLogin` in the message — the resolver used to fill `user`/`password`
 gaps from the URL with `??=`, silently accepting an embedded password; that
-is the failure this replaces. `resolveHanaConnectArgs` still throws "HANA
-user is required" / "HANA password is required" at connect time when no
-credential resolves one — HANA has no anonymous login, so the field is
-optional in the type but effectively required at runtime, same as before.
+is the failure this replaces. `HanaVectorRagProviderConfig.connection` as a
+bare `string` shorthand is no longer supported for the same reason: it
+cannot carry a credential, and one is now required — it throws instead of
+silently building a config missing one.
 
 Migration: `resolveHanaConnectArgs({ host, user, password })` becomes
 `await resolveHanaConnectArgs({ host, credential: staticLogin(user, password) })`
 (`staticLogin` is exported from `@mcp-abap-adt/llm-agent`); a caller's own
-`connectionString` must now carry the address only.
+`connectionString` must now carry the address only; a caller passing
+`HanaVectorRagProviderConfig.connection` as a bare string must switch to
+`{ connectionString, credential: staticLogin(user, password) }`.
 
 ## 26.0.0
 
