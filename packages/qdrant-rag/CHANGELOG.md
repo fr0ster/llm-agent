@@ -1,5 +1,19 @@
 # @mcp-abap-adt/qdrant-rag
 
+## [Unreleased]
+
+**BREAKING:** `apiKey` is gone from `QdrantRagConfig` and
+`QdrantRagProviderConfig`, replaced by an optional `credential` (an
+`IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`). The `api-key`
+header is now built by asking the credential for its secret on every
+request — inside `_fetch`'s header builder and in `deleteCollection`/
+`listCollections` — never once at construction, so a rotating key rotates.
+
+Migration: `new QdrantRag({ ..., apiKey })` becomes
+`new QdrantRag({ ..., credential: staticApiKey(apiKey) })` (`staticApiKey`
+is exported from `@mcp-abap-adt/llm-agent`); same for
+`QdrantRagProviderConfig`.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

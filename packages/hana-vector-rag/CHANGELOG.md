@@ -1,5 +1,26 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## [Unreleased]
+
+**BREAKING:** `user`/`password` are gone from `HanaVectorRagConfig`, replaced
+by an optional `credential` (an `ISecretLoginCredential` from
+`@mcp-abap-adt/interfaces-auth`). `resolveHanaConnectArgs` is now `async` and
+resolves the identity and secret from the credential on every connect —
+never once at construction, so a rotating credential rotates. A
+`connectionString` carrying embedded credentials
+(`hdbsql://user:pass@host:443`) is now refused at construction, naming
+`staticLogin` in the message — the resolver used to fill `user`/`password`
+gaps from the URL with `??=`, silently accepting an embedded password; that
+is the failure this replaces. `resolveHanaConnectArgs` still throws "HANA
+user is required" / "HANA password is required" at connect time when no
+credential resolves one — HANA has no anonymous login, so the field is
+optional in the type but effectively required at runtime, same as before.
+
+Migration: `resolveHanaConnectArgs({ host, user, password })` becomes
+`await resolveHanaConnectArgs({ host, credential: staticLogin(user, password) })`
+(`staticLogin` is exported from `@mcp-abap-adt/llm-agent`); a caller's own
+`connectionString` must now carry the address only.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

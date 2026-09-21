@@ -1,5 +1,24 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## [Unreleased]
+
+**BREAKING:** `user`/`password` are gone from `PgVectorRagConfig`, replaced
+by an optional `credential` (an `ISecretLoginCredential` from
+`@mcp-abap-adt/interfaces-auth`). `resolvePgConnectArgs` is now `async` and
+resolves the identity and secret from the credential on every connect —
+never once at construction, so a rotating credential rotates. It now also
+applies the credential when `connectionString` is set, closing the gap where
+a discrete `user`/`password` used to be silently ignored once a connection
+string was provided. A `connectionString` carrying embedded credentials
+(`postgres://user:pass@host/db`) is now refused at construction, naming
+`staticLogin` in the message — silently ignoring the embedded password is
+the failure this replaces.
+
+Migration: `resolvePgConnectArgs({ host, user, password })` becomes
+`await resolvePgConnectArgs({ host, credential: staticLogin(user, password) })`
+(`staticLogin` is exported from `@mcp-abap-adt/llm-agent`); a caller's own
+`connectionString` must now carry the address only.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).
