@@ -652,14 +652,33 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    stateless, holding no credentials. It serves every pipeline, so by the reasoning that moved the role map
    it belongs above them, which is where it is.
 
-   **One gap, and it is a rule rather than a change.** `IPipelinePlugin.parseConfig(raw: unknown): Config`
-   means a plugin's own configuration is a serializable shape the framework never inspects — so it is
-   precisely where a plugin author would put an `apiKey`, and nothing currently says not to. The passenger
-   test applies to a plugin's config like any other (§4.6.2): it carries a **`credentialRef`**, never a
-   secret, and a plugin obtains authorized objects **only** through `ctx`, never by constructing them from
-   its own config. Stated with a baseline, so the rule can be checked rather than assumed: none of the five
-   shipped plugins — `flat`, `linear`, `stepper`, `dag`, `controller` — carries a secret in its config
-   today.
+   **One gap, and an earlier draft answered it with a rule where the structure answers it better.** That
+   draft said a plugin's config must carry a `credentialRef` and never a secret — true, and the weaker
+   answer. The stronger one is §4.6.6 applied here: **a plugin's configuration has no business in the
+   plugin's usage contract at all.** `IPipelinePlugin` today is `name`, `parseConfig(raw: unknown): Config`
+   and `build(config: Config, ctx)`, and the server duly does
+   `const cfg = plugin.parseConfig(…); return plugin.build(cfg, ctx)` (`smart-server.ts:2350`). So the
+   config travels *through* the contract, at build time, which is what makes a rule about its contents
+   necessary in the first place.
+
+   Put it where it belongs and the rule disappears: **whatever a plugin needs — its parsed section, a
+   client, a credential — goes into its constructor**, where the consumer puts it, and the contract reduces
+   to `name` and `build(ctx)`. Then nothing can be smuggled through a parameter that does not exist, and
+   nobody has to remember what a plugin config may contain. The codebase already demonstrates the pattern:
+   the five shipped plugins are constructed with **no** config at all (`new FlatPipelinePlugin()`,
+   `new LinearPipelinePlugin()`, … at `smart-server.ts:1129`), and the one that does vary takes its variable
+   part at construction — `new ControllerPipelinePlugin('controller…')`. `parseConfig` exists only because
+   the **server** holds the YAML and hands each plugin its section, which is the server performing the
+   app's job through a framework contract.
+
+   **The cost, stated because it is a framework contract and this is where such things get argued.** It is
+   source-breaking for plugin authors: `parseConfig` goes, `build` loses a parameter, and the five shipped
+   plugins are migrated with it. Startup validation is not lost, it moves — the consumer parses and
+   validates when it constructs, which is where the YAML already is. And the registry the server holds
+   becomes what every other registry in this design became: a map of **constructed** things.
+
+   A baseline, so the change can be checked rather than assumed: none of the five shipped plugins carries a
+   secret in its config today, so no deployment's secret moves as part of this.
 
 ## 5. Admission is the consumer's, and none of it is ours
 
