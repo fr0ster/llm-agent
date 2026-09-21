@@ -15,12 +15,16 @@ export interface HanaVectorRagProviderConfig {
   name: string;
   embedder: IEmbedder;
   /**
-   * The `string` shorthand is address-only convenience for an unauthenticated
-   * target — HANA has none, so it always throws (see `normalizeConnection`
-   * below). Pass `{ connectionString, credential: staticLogin(user, password) }`
-   * instead.
+   * No `string` shorthand here, unlike pg-vector: that shorthand is
+   * address-only, HANA has no anonymous login, and a type arm that can only
+   * throw is a lie in the type. `pg-vector` keeps its shorthand because a
+   * credential is genuinely optional there (trust authentication,
+   * `PGUSER`/`PGPASSWORD`); HANA's `credential` is required, so the compiler
+   * refuses the shorthand rather than a connect-time throw reporting it.
+   * `normalizeConnection` still rejects a string at runtime, for callers with
+   * no types to check.
    */
-  connection: HanaVectorRagConfig | string;
+  connection: HanaVectorRagConfig;
   defaultDimension?: number;
   autoCreateSchema?: boolean;
   editable?: boolean;
