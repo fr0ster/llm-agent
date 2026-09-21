@@ -148,7 +148,14 @@ export interface EmbedderResolutionOptions {
    * bag the built-ins receive — a consumer's own factory sees `credential`
    * and `apiBaseUrl` too, not the narrower upstream `EmbedderFactoryConfig`.
    */
-  extraFactories?: Record<string, (opts: EmbedderFactoryOpts) => IEmbedder>;
+  /**
+   * Additional embedder factories (merged with built-ins). Deliberately the
+   * NARROW `EmbedderFactory`: a factory the consumer wrote closes over the
+   * credential it already holds, so the framework must not promise to carry
+   * one for it (spec §4.6.2). The built-ins are the other case — they have no
+   * closure, which is why the bag itself carries `credential`.
+   */
+  extraFactories?: Record<string, EmbedderFactory>;
   /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
   logger?: AnyLogger;
 }
