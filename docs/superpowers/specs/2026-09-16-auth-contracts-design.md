@@ -458,14 +458,14 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    ```ts
    type InMemoryStoreConfig = {
      type: 'in-memory';
-     collectionName?: string;   // → VectorRag's namespace; InMemoryRag has always been built without one
+     collectionName?: string;   // → VectorRag's namespace — new on this branch; main built neither store with one
      dedupThreshold?: number;
      vectorWeight?: number;     // hybrid scoring — read only when an embedder is present
      keywordWeight?: number;
    };
    ```
 
-   A flat config that set them beside a Qdrant store was setting values nothing read, and the migration note says so rather than moving them to a new place where they would still do nothing. `PipelineRagStoreConfig` splits the same way. **`SkillPluginsStoreConfig` does not**, and an earlier draft of this paragraph was wrong to say it should: it is already a discriminated union — `{ type: 'in-memory' } | { type: 'qdrant'; url; apiKey?; collection? }` — describing persistence only, with no embedder target in it to separate. Its qdrant arm simply gains its own `credentialRef?`. And it is worth noticing why that config needed no rescuing: `SkillPluginsConfig` **already** keeps its embedder in a separate `embedder` member, read at `skill-plugins-host-factory.ts:240`. The split asked of `SmartServerRagConfig` is therefore not an invention of this section — it is the shape a sibling config in the same package has been using all along. This is a **breaking** change to a YAML shape, and §8's migration note carries the before/after — it is a rename plus a nesting, mechanical for a consumer to apply.
+   A flat config that set them beside a Qdrant store was setting values nothing read, and the migration note says so rather than moving them to a new place where they would still do nothing. Two readers move with them, or hot reload of the weights silently stops: the config watcher reads `rag.vectorWeight`/`rag.keywordWeight` and applies them to live stores through `updateWeights` (`llm-agent-libs/src/config/config-watcher.ts:141-144`, `config-reload-watcher.ts:117-129` — only `VectorRag` implements it), and the section resolver defaults all three at `rag.` level (`resolve-config-sections.ts:199-201`, 0.92 / 0.7 / 0.3). Both read `rag.store` instead, and only when its `type` is `in-memory`. Two things the in-memory arm now does differently, stated rather than hidden: `collectionName` reaches `VectorRag` as its `namespace`, where `main` built it without one; and the keyword-only `InMemoryRag` in the reference below gets `dedupThreshold` alone — `main` also passed `queryPreprocessors`/`documentEnrichers`, which are programmatic objects no YAML can carry, so nothing a file configured is lost. `PipelineRagStoreConfig` splits the same way. **`SkillPluginsStoreConfig` does not**, and an earlier draft of this paragraph was wrong to say it should: it is already a discriminated union — `{ type: 'in-memory' } | { type: 'qdrant'; url; apiKey?; collection? }` — describing persistence only, with no embedder target in it to separate. Its qdrant arm simply gains its own `credentialRef?`. And it is worth noticing why that config needed no rescuing: `SkillPluginsConfig` **already** keeps its embedder in a separate `embedder` member, read at `skill-plugins-host-factory.ts:240`. The split asked of `SmartServerRagConfig` is therefore not an invention of this section — it is the shape a sibling config in the same package has been using all along. This is a **breaking** change to a YAML shape, and §8's migration note carries the before/after — it is a rename plus a nesting, mechanical for a consumer to apply.
 
    **And the app needs a seam to construct a store, which it does not have.** `BuildAgentDeps` offers `makeLlm`, `resolveEmbedder`, `buildSkillHost`, `connectMcp` and more — but **nothing for a store**. `SmartServer` imports `makeRag` from the library and calls it directly at `smart-server.ts:1271`, `:1272`, `:1915` and `:1923`. So with secrets gone from YAML, those four call sites have no credential to pass and the composition root never participates: the design's whole claim, that construction belongs to the app, has an LLM seam and no store seam. An earlier draft did not notice because it reasoned about the DTOs and never about who calls the constructor.
 
@@ -715,12 +715,14 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    its workers, and the worker registry is built per session (`buildServerCtx` → `buildWorkerRegistry`,
    `smart-server.ts:2431`), each worker carrying that session's logger, RAG registry and MCP clients.
 
-   The rule therefore reads: **a component never receives configuration; it receives typed values at
-   construction and instances from whoever can supply them at the time they exist** — its constructor for
-   what the assembler builds once and never swaps, `ctx` for what is per session or swappable. The
-   instances `IPipelineContext` already hands over (`stepExecutionControl`, `runExecutionControl`,
-   `waitStrategy`, `toolLoopContextStrategyFactory`, `mcpFailureClassifier`, and on the server context
-   `embedder` and `stepperKnowledgeBackend`) are instances, not configuration, and stay where they are.
+   The rule therefore reads: **a component never receives configuration; its constructor takes typed
+   settings, and every instance it uses reaches it through `ctx`.** One channel for instances, not two:
+   the registry constructs each plugin once, process-wide (below), so anything handed to a constructor would
+   be deployment-scoped and frozen, and the question "is this instance per session, or swappable?" would
+   have to be answered by the plugin author instead of by the server that knows. The instances
+   `IPipelineContext` already hands over (`stepExecutionControl`, `runExecutionControl`, `waitStrategy`,
+   `toolLoopContextStrategyFactory`, `mcpFailureClassifier`, and on the server context `embedder` and
+   `stepperKnowledgeBackend`) are that channel working as intended, and stay where they are.
 
    What that means for each piece:
 
@@ -741,25 +743,52 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
      is absent costs nothing. `controller` and `controller-weak` stay two entries over one class, as today
      (`smart-server.ts:1131-1132`); the class keeps its `(name, plannerKind)` arguments
      (`controller.ts:74`) and gains its settings.
+   - **A role's model is a key, and an omitted key means the role's own name.** Every plugin resolves a
+     role's model with `ctx.resolveLlm(key)`; a settings field that names a key is optional, and when it is
+     absent the plugin asks for the role's own name — `'planner'`, `'executor'`, `'evaluator'`,
+     `'reviewer'`, `'finalizer'` — which is what `linear` and `stepper` already do
+     (`build-stepper-root.ts:265-289`). One default for every pipeline, and it is the server's resolver
+     that decides what a name means (§4.6.6: an `llm:` entry of that name, else `main`, with `planner`
+     read as `helper`). An earlier revision of this bullet made an omitted key mean `main` for `controller`
+     alone, which would have given a controller's planner `main` and a stepper's planner `helper` for the
+     same YAML.
    - **`controller`'s subagents name `llm:` keys.** Each of `subagents.evaluator`, `planner`, `executor` —
-     still required, `{}` allowed — carries `llm: <key>` beside its `hint`, and an omitted `llm` means
-     `main`. `reviewer` and `finalizer` stay optional and, when their **block** is absent, use the
-     planner's key, which is what an absent block means today (`controller/types.ts:207`). A per-role
-     temperature, which each subagent's inline `SmartServerLlmConfig` could carry, belongs to the `llm:`
-     entry like every other property of a model: a role that wants a colder planner names a colder entry.
+     still required, `{}` allowed — carries an optional `llm: <key>` beside its `hint`. `reviewer` and
+     `finalizer` stay optional and, when their **block** is absent, use the planner's key — or the
+     planner's default, if it named none — which is what an absent block means today
+     (`controller/types.ts:207`). A per-role temperature, which each subagent's inline
+     `SmartServerLlmConfig` could carry, belongs to the `llm:` entry like every other property of a model:
+     a role that wants a colder planner names a colder entry.
    - **`dag` keeps assembling its dependencies in `build(ctx)`.** Its settings — planner, reviewer and
      finalizer keys, and its static knobs — arrive in the constructor; `buildDagCoordinatorDeps` still runs
      per session, reads the workers from `ctx.workerRegistry`, and resolves the three keys through
      `ctx.resolveLlm` instead of receiving `llmMap` and a `makeLlm`.
-   - **The DAG workers name keys too.** The main file lists workers as `subagents: [{ name, config }]`,
-     where `config` points at the worker's own YAML (`yaml-loader.ts:106-111`), and that file carries a full
-     `llm:` section of its own, normalized and built separately (`smart-server.ts:1839-1840`,
-     `:1872-1895`). Under the same rule the worker's `llm` becomes a key of the **main** file's `llm:` map.
-     The worker file keeps its other settings — prompts, its flat `rag:` — so merging worker files into the
-     main one is a separate question this design does not take up (§11). With that, **the file configures each model in exactly one
-     place, the main file's `llm:` map**, and every role naming a key resolves to the instance built for it. (Credentials
-     are a different matter: `rag.store`, `rag.embedder` and the skill store keep their own `credentialRef`,
-     §4.6.4, because they are not models.)
+   - **The DAG workers name keys too, which changes how a worker file is resolved.** The main file lists
+     workers as `subagents: [{ name, config }]`; `parseSubAgents` (`config.ts:97-173`) loads each worker file
+     and resolves it **on its own** as a complete `SmartServerConfig` (`resolveSmartServerConfig`,
+     `config.ts:170`), validated like the main file (`config.ts:257`). So the worker file's `llm:` is a whole
+     map today — `main`, from which `main` and `classifier` are built at two temperatures, and its own
+     `helper` (`smart-server.ts:1849`, `:1866-1895`) — and those instances are built by `makeLlm` and cached
+     per worker name, never through the resolver (`resolveWorkerLlmSet`, `workers/worker-registry.ts:117-131`).
+     Under the rule:
+     - a worker file's `llm` becomes **keys of the main file's `llm:` map** — a string, shorthand for
+       `{ main: <key> }`, or a map of the worker's roles to keys, `{ main: <key>, helper: <key> }`; its
+       classifier comes from its `main` entry's `classifierTemperature`, exactly as the main file's does. An
+       inline LLM configuration in a worker file is refused, naming the main map;
+     - `parseSubAgents` therefore resolves a worker file **with the main file's map in scope**, and its
+       validation and the worker's config type change with it — `SmartServerConfig.llm`
+       (`smart-server.ts:264`) stays the main file's shape, and the worker file gets its own;
+     - a worker's instances come from the **same resolver** as the pipeline's, per session, so a worker
+       naming `main` shares the main instance and observes a `PUT /v1/config` swap like every other role;
+       the per-worker-name cache gives way to the resolver's per-key instances.
+
+     The worker file keeps its other settings — prompts, and its `rag:`, which splits into `store` and
+     `embedder` with their own `credentialRef` exactly like the main file's, since its store goes through
+     the same `makeRag` call sites (`smart-server.ts:1915`, `:1923`) §4.6.4 counts. Whether a worker needs a
+     file of its own at all is a separate question this design does not take up (§11). With that, **every
+     model is configured in exactly one place, the main file's `llm:` map**, and every role naming a key
+     resolves to the instance built for it. (Credentials are a different matter: `rag.store`, `rag.embedder`
+     and the skill store keep their own `credentialRef`, §4.6.4, because they are not models.)
 
    **A dynamically loaded plugin is the one place the builder cannot parse, and its factory is builder
    code.** A module exports **already-constructed instances** — `PluginExports`'s
@@ -779,31 +808,22 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    must not inspect a plugin's section, and `${…}` substitution runs over the whole file in `-libs`
    (§4.6.2), so nothing *prevents* a section from writing `apiKey: ${X}` and handing its factory a secret as
    a string. The convention is that a section carries no secret and no `credentialRef` — nothing on the
-   server would resolve one for it — and the consequence is a capability limit: **a third-party plugin
-   cannot have its own authenticated backend configured from the file**, whether per caller or per
-   deployment. It reaches authorized objects through `ctx`, or the app registers it in code with the
-   dependency already built.
+   server would resolve one for it.
 
-   **A constructor-injected dependency cannot be the caller's if the registry is process-wide.** A server
-   holding one registry of constructed plugins makes any dependency handed to their constructors
-   deployment-scoped and shared across sessions, which §4.6.5 forbids for anything a caller's credential
-   authorized. The line, drawn rather than patched:
-
-   - A plugin whose dependencies are the **deployment's** is constructed once and registered process-wide —
-     a built-in by the server, a dynamic one through its factory.
-   - A plugin holding something authorized by a **caller's** credential is **not a dynamically-loaded-module
-     case at all**: it is registered by the app, which holds that credential, created per session and
-     disposed with the session — scoped exactly as the role map is (§4.6.6), by the app's policy and not by
-     a lifetime the framework enforces.
-   - A **third-party** plugin therefore cannot have its own authenticated per-caller backend. It reaches
-     authorized objects through `ctx` or not at all. That is a capability limit, stated rather than left to
-     be discovered, and the alternative was a generic untyped dependency channel — which is the
-     `Record<string, unknown>` bag of §4.6.3 rebuilt in a new place, and refused for the same reason.
+   **Every authorized object reaches a plugin through `ctx`, whoever registered the plugin — and that is a
+   stated capability limit.** Because the registry constructs each plugin once and process-wide, a
+   constructor cannot carry anything a caller's credential authorized (§4.6.5), and under this section's
+   rule it carries no instance at all. So a per-caller backend reaches a plugin the way a per-caller LLM
+   does: through a `ctx` member backed by the session-scoped resolver, disposed with the session (§4.6.6).
+   A plugin — the app's own or a third party's — that needs an authorized object `ctx` does not offer has
+   no channel for it, and the remedy is a **named, typed** `ctx` capability added where it is needed, not a
+   constructor dependency and not a generic dependency bag — which would be the `Record<string, unknown>`
+   of §4.6.3 rebuilt in a new place, and is refused for the same reason.
 
    **And there is deliberately no credential lookup on `ctx`.** `IPipelineContext` offers specific lookups
    and instances and no credential registry, no generic factory; a credential lookup on a usage contract is
    the thing §4.6.6 exists to forbid. Under this section's rule the question it would answer does not
-   arise: nothing a plugin is given holds a reference to resolve.
+   arise: a plugin is given model keys to resolve, but never a **credential** reference.
 
    **An external plugin is runtime information, so the check belongs to the loader — and the loader is where
    it belongs rather than an exception to §4.6.3.** An imported module is `unknown` until something inspects
@@ -1104,7 +1124,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter, and `PluginExports` gains `pipelinePluginFactories` (§4.6.7)** — what a plugin needs goes into its constructor, so nothing travels through its usage contract, and a configurable third-party plugin is exported as a factory the server calls; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3) — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter, and `PluginExports` gains `pipelinePluginFactories` (§4.6.7)** — a plugin's constructor takes typed settings and its instances arrive through `ctx`, so no configuration travels through its usage contract, and a configurable third-party plugin is exported as a factory the server calls; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3) — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | **the plugin loader validates what it loads and records what it refuses (§4.6.7)** — it checked `build` and then silently skipped, while recording an error for a duplicate name, so it was inconsistent with itself; `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` removed** (§4.6.2), `MakeLlmConfig` with them, and `DefaultModelResolver` with them — `IModelResolver` itself is **unchanged** (`model-resolver.ts:7`), since what held a config was the implementation; optional `ragRegistryFactory(identity)` with session-owned disposal (§6.4) | **breaking**: exported functions and `DefaultModelResolver` are removed; the `IModelResolver` contract is untouched. Also additive at runtime for the MCP and RAG seams, and `SessionGraphFactoryOptions.logger` is widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | **`IServerPipelineContext` loses `makeLlm`, `llmMap` and `pipelineFallback` (the last already dead) and keeps the framework's existing `resolveLlm(role)` as the only way an LLM reaches a pipeline — whose key space stays the consumer's, and `IRoleLlmResolver` loses `makeLlm(lc)` (§4.6.6) — a usage-side contract may not construct, so the per-step authorization path closes by type**; **the four shipped plugins with a dialect (`linear`, `stepper`, `dag`, `controller`) lose their parsers to the server, which parses the selected section in `start()` and constructs that plugin with typed settings through a registry of factories, and `controller`'s `subagents.<role>` and a DAG worker's own config file name a key of the main file's `llm:` map instead of holding an LLM configuration (§4.6.7)**; the resolver becomes **scoped**, deployment-wide and per-session, with disposal following the identity (§4.6.5, §4.6.6); consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted; **and it constructs providers the way the library used to** — `makeLlm({…})` at `build-dag-coordinator-deps.ts:89` — and its `SmartServerLlmConfig.apiKey` (`:129`) and `PipelineLlmProviderConfig` secrets (`pipeline.ts:14-26`) are passengers too, so they go while those DTOs stay **serializable**, gaining a non-secret `credentialRef` so a role can still name its account — and **`SmartServerRagConfig` and `PipelineRagStoreConfig` split into `store` and `embedder`, each with its own `credentialRef` (§4.6.4)**, because one flat shape described two independently authenticated targets and `url` meant either one's address depending on its neighbours — construction goes through `BuildAgentDeps.makeLlm`, which already exists (`:360`) and becomes **non-optional** so a missing seam is a build error rather than a deployment that stops starting (§4.6.3), because a YAML file holds neither an object nor a function (§4.6.2). The loader, env substitution and schema validation stay here; only the rule requiring `AICORE_SERVICE_KEY` (`config-validator.ts:72`) leaves with the credential | **breaking**: two exported DTOs lose secret fields, one required. `modelResolver?` stays optional (`:334`), and the dispatch and the resolver implementation land in `llm-agent-server`, the app |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
@@ -1377,7 +1397,7 @@ const deps: BuildAgentDeps = {
         // block passed makeRag an arm without one, which does not compile
         return embedder
           ? makeRag({ ...address, embedder })
-          // no namespace, as before this design: InMemoryRag was never given one
+          // no namespace, as on main; preprocessors/enrichers are not YAML fields
           : new InMemoryRag({ dedupThreshold: address.dedupThreshold });
       case 'qdrant':
         return makeRag({ ...address, embedder, ...entry.optional('api-key') });
@@ -1513,17 +1533,20 @@ instance — `(raw: unknown) => IPipelinePlugin`, parsing your own shape inside 
 call a constructor it has never seen; that factory is assembly code you ship beside the plugin, and by
 convention your section carries no secret and no `credentialRef`, because nothing on the server resolves one
 for it. A plugin that needs no settings keeps a plain instance export, which among the shipped ones is `flat`
-alone. And if your plugin needs a backend authorized by a credential — the caller's or the deployment's — it
-cannot get one from the file: register it yourself with the dependency already built, and for a caller's
-credential construct it per session and dispose it with that session (§4.6.5); `ctx` offers no credential
-lookup by design.
+alone. Every instance your plugin uses arrives through `ctx`, never through its constructor — the registry
+constructs it once, process-wide, so a constructor argument would be shared by every session and frozen
+against a model swap. If your plugin needs an authorized backend `ctx` does not offer — the caller's or the
+deployment's — it cannot get one from the file or from its constructor: the remedy is a named, typed `ctx`
+capability backed by the session-scoped resolver (§4.6.5), and `ctx` offers no credential lookup by design.
 
 The YAML changes shape in two places, both the same rule: a subagent names a key of the top-level `llm:`
 map instead of carrying an LLM configuration, so the file configures each model in one place and every role
-that names a key shares its instance. In `controller`'s section an omitted `llm` means `main`, and an absent
-`reviewer` or `finalizer` block keeps meaning "the planner's", now the planner's key; `hint` stays where it
+that names a key shares its instance. An omitted `llm` means the role's own name — `planner`, `executor`, … —
+resolved like any key, which is what `linear` and `stepper` already do; an absent `reviewer` or `finalizer`
+block keeps meaning "the planner's"; `hint` stays where it
 was, and a per-role temperature moves onto the `llm:` entry — a role that wants a colder model names a colder
-entry. A DAG worker's own config file names a key of the main file's `llm:` map the same way.
+entry. A DAG worker's own config file names keys of the main file's `llm:` map the same way — a string for
+its `main`, or `{ main, helper }` — and an inline LLM configuration there is refused.
 
 ```yaml
 # before — a full LLM configuration per subagent, inside the plugin's section
@@ -1544,7 +1567,7 @@ pipeline:
   config:
     subagents:
       planner:   { llm: cheap, hint: … }
-      executor:  {}                  # main
+      executor:  {}                  # the role's own name: llm.executor if present, else main
       evaluator: { llm: cheap }      # the same instance the planner uses
 
 # a DAG worker's own file (./agents/sap-reader.yaml), the same rule
@@ -1614,4 +1637,4 @@ Workstreams 1 and 4 are already merged, each as its own PR, before this rule was
 - `llm-agent-server`'s configuration **is no longer out of scope**, and an earlier draft of this list said it was. §10 requires it to become the composition root: env resolution, credential construction, provider dispatch and the `IModelResolver` implementation behind `PUT /v1/config`. It is the reference every other consumer copies, which is principle 2's whole point.
 - **Anything that judges an incoming caller.** No admission step, no access-check contract, no per-request authorization, and nothing that wraps a server (§1.4). A consumer that needs those builds them where the request actually arrives, and §5 says what we hand it to decide with.
 - llm-agent issue #304 (network-mode isolation), which this design is the prerequisite for.
-- **Merging DAG worker config files into the main one.** §4.6.7 moves a worker's model to a key of the main file's `llm:` map, so every model is configured in one place; the worker file keeps its prompts and flat `rag:`. Whether a worker needs a file of its own at all is a configuration-shape question, not an authentication one.
+- **Merging DAG worker config files into the main one.** §4.6.7 moves a worker's model to a key of the main file's `llm:` map, so every model is configured in one place; the worker file keeps its prompts and its `rag:`, split like the main file's. Whether a worker needs a file of its own at all is a configuration-shape question, not an authentication one.
