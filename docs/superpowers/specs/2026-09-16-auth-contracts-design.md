@@ -754,18 +754,28 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
      is absent costs nothing. `controller` and `controller-weak` stay two entries over one class, as today
      (`smart-server.ts:1131-1132`); the class keeps its `(name, plannerKind)` arguments
      (`controller.ts:74`) and gains its settings.
-   - **A role's model is a key, and an omitted key means the role's own name.** Every plugin resolves a
-     role's model with `ctx.resolveLlm(key)`; a settings field that names a key is optional, and when it is
-     absent the plugin asks for the role's own name — `'planner'`, `'executor'`, `'evaluator'`,
+   - **A role's model is a key, and an omitted key means the role's own name — and the two are asked for
+     differently.** A settings field that names a key is optional. When it is **present**, the plugin resolves
+     it with `ctx.resolveNamedLlm(key)`, which answers only from an `llm:` entry of exactly that name and
+     throws, naming the key, when there is none — no alias, no fallback. When it is **absent**, the plugin
+     calls `ctx.resolveLlm(role)` with the role's own name — `'planner'`, `'executor'`, `'evaluator'`,
      `'reviewer'`, `'finalizer'` — which is what `linear` and `stepper` already do
      (`build-stepper-root.ts:265-289`). One default for every pipeline, and it is the server's resolver
      that decides what a name means (§4.6.6: `planner` read as `helper`, then an `llm:` entry of that name,
      else the held `main` instance — shared, and swapped by `PUT /v1/config`). That fallback is for a
-     key that was **omitted**, never for one that was **named**: the server parses every section in
-     `start()`, so it refuses there any explicit key — in a plugin's settings or a worker file — that has
-     no `llm:` entry. `llm: cheep` is a startup error naming the key, not a planner silently on `main`;
-     it is §4.6.4's rule for a `credentialRef` — optional means omittable, never unresolvable — applied to
-     a model key. Two temperatures change with the default, stated: a role with no entry used to get a
+     key that was **omitted**, never for one that was **named**, and the distinction lives in which method
+     is called rather than in a rule a plugin author must remember: the resolver cannot tell `'planner'`
+     asked as a default from `'cheep'` asked by mistake, so the caller says which it is. It is §4.6.4's
+     rule for a `credentialRef` — optional means omittable, never unresolvable — applied to a model key.
+     **When** a misspelled key fails depends on who can see it. The server parses the sections of the
+     built-ins and the worker files, so it refuses a named key with no entry in `start()`: `llm: cheep`
+     there is a startup error. A dynamic plugin's settings are opaque to the server — its factory takes
+     `raw` and the loader must not inspect the section — so for it the same key fails at the first session
+     build, loudly, from `resolveNamedLlm`, rather than at startup. An earlier revision of this bullet
+     promised startup validation for every plugin, which the server cannot do for a class it has never seen;
+     what it can guarantee for all of them is that a named key is never silently answered by `main`.
+     Startup refusal for dynamic plugins would need the factory to be handed the set of `llm:` keys, and is
+     left until a plugin needs it. Two temperatures change with the default, stated: a role with no entry used to get a
      fresh build of `llm.main`'s configuration as written, and now shares the `main` instance, built at
      `temperature ?? 0.7` (`smart-server.ts:1034-1037`); and `dag`, which gave an entry without a
      temperature its `mainTemp` (`build-dag-coordinator-deps.ts`, `resolveRoleLlm`), now gets the entry as
@@ -831,7 +841,8 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    not an exception to the rule but the rule applied to a class the builder has never seen: the factory is
    **the plugin author's piece of the assembler**, shipped beside the plugin, and the class it constructs
    takes typed settings like any other. It reaches models the same way the built-ins do, by naming `llm:`
-   keys and resolving them through `ctx`. Exporting an instance stays valid for a plugin that needs no
+   keys and resolving them through `ctx` — `resolveNamedLlm` for a key its section named, `resolveLlm` for
+   a role's default. Exporting an instance stays valid for a plugin that needs no
    settings; the server registers it as a factory that ignores its argument.
 
    **What a dynamic plugin's section may carry is a convention, and the gap it leaves is named.** The loader
@@ -1181,7 +1192,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter, and `PluginExports` gains `pipelinePluginFactories` (§4.6.7)** — a plugin's constructor takes typed settings and its instances arrive through `ctx`, so no configuration travels through its usage contract, and a configurable third-party plugin is exported as a factory the server calls; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3) — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter, and `PluginExports` gains `pipelinePluginFactories` (§4.6.7)** — a plugin's constructor takes typed settings and its instances arrive through `ctx`, so no configuration travels through its usage contract, and a configurable third-party plugin is exported as a factory the server calls; **`IPipelineContext` gains `resolveNamedLlm(key)`**, the strict lookup for a key a plugin's settings named, beside `resolveLlm(role)`'s defaulting one, so a misspelled key is an error rather than `main` (§4.6.7) — additive for a plugin, but a consumer that *implements* `IPipelineContext` must add it; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3) — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | additive at runtime; a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | **the plugin loader validates what it loads and records what it refuses (§4.6.7)** — it checked `build` and then silently skipped, while recording an error for a duplicate name, so it was inconsistent with itself; `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` removed** (§4.6.2), `MakeLlmConfig` with them, and `DefaultModelResolver` with them — `IModelResolver` itself is **unchanged** (`model-resolver.ts:7`), since what held a config was the implementation; optional `ragRegistryFactory(identity)` with session-owned disposal (§6.4) | **breaking**: exported functions and `DefaultModelResolver` are removed; the `IModelResolver` contract is untouched. Also additive at runtime for the MCP and RAG seams, and `SessionGraphFactoryOptions.logger` is widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | **`IServerPipelineContext` loses `makeLlm`, `llmMap` and `pipelineFallback` (the last already dead) and keeps the framework's existing `resolveLlm(role)` as the only way an LLM reaches a pipeline — whose key space stays the consumer's, and `IRoleLlmResolver` loses `makeLlm(lc)` (§4.6.6) — a usage-side contract may not construct, so the per-step authorization path closes by type**; **the four shipped plugins with a dialect (`linear`, `stepper`, `dag`, `controller`) lose their parsers to the server, which parses the selected section in `start()` and constructs that plugin with typed settings through a registry of factories, and `controller`'s `subagents.<role>` and a DAG worker's own config file name a key of the main file's `llm:` map instead of holding an LLM configuration (§4.6.7; a worker file resolves with the main map in scope and its three LLM slots come from the resolver, its RAG and MCP slots staying cached per worker; `RoleLlmResolver` answers a key with no `llm:` entry with the held `main` instance instead of a fresh build from `llm.main`; and the in-memory search knobs move under `rag.store`, taking the config watcher and the section defaults with them (§4.6.4, §4.6.6, §4.6.7)**; the resolver becomes **scoped**, deployment-wide and per-session, with disposal following the identity (§4.6.5, §4.6.6); consumes the builder seam; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted; **and it constructs providers the way the library used to** — `makeLlm({…})` at `build-dag-coordinator-deps.ts:89` — and its `SmartServerLlmConfig.apiKey` (`:129`) and `PipelineLlmProviderConfig` secrets (`pipeline.ts:14-26`) are passengers too, so they go while those DTOs stay **serializable**, gaining a non-secret `credentialRef` so a role can still name its account — and **`SmartServerRagConfig` and `PipelineRagStoreConfig` split into `store` and `embedder`, each with its own `credentialRef` (§4.6.4)**, because one flat shape described two independently authenticated targets and `url` meant either one's address depending on its neighbours — construction goes through `BuildAgentDeps.makeLlm`, which already exists (`:360`) and becomes **non-optional** so a missing seam is a build error rather than a deployment that stops starting (§4.6.3), because a YAML file holds neither an object nor a function (§4.6.2). The loader, env substitution and schema validation stay here; only the rule requiring `AICORE_SERVICE_KEY` (`config-validator.ts:72`) leaves with the credential | **breaking**: two exported DTOs lose secret fields, one required. `modelResolver?` stays optional (`:334`), and the dispatch and the resolver implementation land in `llm-agent-server`, the app |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
@@ -1550,7 +1561,10 @@ rag:
 implement a pipeline or a step against `IServerPipelineContext`, three members are gone: `makeLlm`, `llmMap`
 and `pipelineFallback` (the last was already always `undefined`). A step that called
 `ctx.makeLlm(someConfig)` names the model by a key instead — a key of the `llm:` map, arriving in its
-plugin's typed settings — and calls `ctx.resolveLlm(key)` at build time. The instance comes from the server,
+plugin's typed settings — and calls `ctx.resolveNamedLlm(key)` at build time, or `ctx.resolveLlm(role)` with
+the role's own name when no key was given. Use the first for anything a file named: it throws on a key with
+no entry, where the second would quietly answer with `main`. If you implement `IPipelineContext` yourself,
+add `resolveNamedLlm`. The instance comes from the server,
 which decides whether it is the deployment's or the session caller's and hands back the current one after a
 `PUT /v1/config` swap; do not take an `ILlm` in your plugin's constructor, which would freeze both decisions.
 **Do not reach for a per-call `model`** — by `CallOptions`' own contract that override does not reach the
