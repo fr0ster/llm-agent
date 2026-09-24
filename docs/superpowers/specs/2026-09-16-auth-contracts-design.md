@@ -639,7 +639,7 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
 
    So what follows is the **default implementation's** behaviour, offered as an example and not as a
    requirement: `SmartServer` answers `main`, `classifier` and `helper` (and `planner`, read as `helper`
-   and checked **before** any `llm.planner` entry) with the instances it holds, which `PUT /v1/config` swaps;
+   and checked **before** any `llm.planner` entry, when a helper is configured) with the instances it holds, which `PUT /v1/config` swaps;
    any other key names an `llm:` entry, built **once** per key and held (§4.6.5); and a key with no entry
    gets the held **`main` instance** — not, as `RoleLlmResolver.resolve` does today, a fresh instance built
    from `llm.main`'s configuration on every call (`role-llm-resolver.ts:61-66`), which is neither shared nor
@@ -760,7 +760,16 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
      `'reviewer'`, `'finalizer'` — which is what `linear` and `stepper` already do
      (`build-stepper-root.ts:265-289`). One default for every pipeline, and it is the server's resolver
      that decides what a name means (§4.6.6: `planner` read as `helper`, then an `llm:` entry of that name,
-     else the held `main` instance — shared, and swapped by `PUT /v1/config`). An earlier revision of this bullet made an omitted key mean `main` for `controller`
+     else the held `main` instance — shared, and swapped by `PUT /v1/config`). That fallback is for a
+     key that was **omitted**, never for one that was **named**: the server parses every section in
+     `start()`, so it refuses there any explicit key — in a plugin's settings or a worker file — that has
+     no `llm:` entry. `llm: cheep` is a startup error naming the key, not a planner silently on `main`;
+     it is §4.6.4's rule for a `credentialRef` — optional means omittable, never unresolvable — applied to
+     a model key. Two temperatures change with the default, stated: a role with no entry used to get a
+     fresh build of `llm.main`'s configuration as written, and now shares the `main` instance, built at
+     `temperature ?? 0.7` (`smart-server.ts:1034-1037`); and `dag`, which gave an entry without a
+     temperature its `mainTemp` (`build-dag-coordinator-deps.ts`, `resolveRoleLlm`), now gets the entry as
+     written — a model's temperature is a property of its `llm:` entry, here as everywhere. An earlier revision of this bullet made an omitted key mean `main` for `controller`
      alone, which would have given a controller's planner `main` and a stepper's planner `helper` for the
      same YAML.
    - **`controller`'s subagents name `llm:` keys.** Each of `subagents.evaluator`, `planner`, `executor` —
@@ -785,8 +794,10 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
      - a worker file's `llm` becomes **keys of the main file's `llm:` map** — a string, shorthand for
        `{ main: <key> }`, or a map of the worker's roles to keys, `{ main, helper, classifier }`, each optional.
        An omitted `helper` or `classifier` resolves as that name does for the pipeline — the held helper and
-       classifier instances. This is a behaviour change, stated: today a worker derives its classifier from
-       its **own** main entry at `classifierTemperature`, and a variant "this key at that temperature" is
+       classifier instances, or the held `main` where the main file configures no helper. These are
+       behaviour changes, stated: today a worker with no `helper` entry has no helper at all
+       (`worker-registry.ts:122`), and it derives its classifier from its **own** main entry at
+       `classifierTemperature`, and a variant "this key at that temperature" is
        not addressable by one key; a worker that wants its own classifier names an entry for it. An inline
        LLM configuration in a worker file is refused, naming the main map;
      - `parseSubAgents` therefore resolves a worker file **with the main file's map in scope**, and its
