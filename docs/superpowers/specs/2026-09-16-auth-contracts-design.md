@@ -1590,7 +1590,9 @@ instance — `(raw: unknown) => IPipelinePlugin`, parsing your own shape inside 
 call a constructor it has never seen; that factory is assembly code you ship beside the plugin, and by
 convention your section carries no secret and no `credentialRef`, because nothing on the server resolves one
 for it. A plugin that needs no settings keeps a plain instance export, which among the shipped ones is `flat`
-alone. Every instance your plugin uses arrives through `ctx`, never through its constructor — the registry
+alone. Whichever you export, the plugin's `name` must equal the key you export it under — the loader
+refuses an instance whose `name` differs, and startup refuses a factory result that does; until now the two
+were never compared, and a mismatched plugin was selected by one name and reported itself by the other. Every instance your plugin uses arrives through `ctx`, never through its constructor — the registry
 constructs it once, process-wide, so a constructor argument would be shared by every session and frozen
 against a model swap. If your plugin needs an authorized backend `ctx` does not offer — the caller's or the
 deployment's — it cannot get one from the file or from its constructor: the remedy is a named, typed `ctx`
