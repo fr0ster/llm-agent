@@ -1071,7 +1071,7 @@ createCollection(name, {
   scope: RagCollectionScope;      // lifetime and addressing — typed
   sessionId?: string;             // owner key for scope 'session' — typed
   userId?: string;                // owner key for scope 'user' — typed
-  attributes?: unknown;           // role and policy only — opaque, persisted, never interpreted
+  attributes?: RagJsonValue;      // role and policy only — opaque, persisted, never interpreted
 })
 ```
 
@@ -1084,19 +1084,36 @@ createCollection(name, {
 **Persisting them is half a contract; reading them back is the other half.** As written above this section promised survival across a restart and specified only the write. Measured, there is no path back: `IRagProvider.listCollections?()` returns `Promise<Result<string[], RagError>>` — names and nothing else (`interfaces/rag.ts:219`) — and `IRagRegistry.list()` returns `readonly RagCollectionMeta[]` from memory (`:173`), which after a restart is empty. So the guarantee was unimplementable as specified. The read contract is therefore part of this design, not of the plan:
 
 ```ts
-type RagCollectionRecord = {
+/** What a catalog can store and give back unchanged on every backend: JSON, with
+ *  finite numbers only. `unknown` admitted cycles, BigInt, functions and class
+ *  instances, which the three backends cannot round-trip alike. */
+type RagJsonValue =
+  | null | boolean | number | string
+  | readonly RagJsonValue[]
+  | { readonly [key: string]: RagJsonValue };
+
+type RagCollectionRecordBase = {
   /** What the PROVIDER knows the store by — `storeNameFor`'s output. */
   readonly storeName: string;
   /** The LOGICAL name the registry registers it under. Must be persisted; see below. */
   readonly name: string;
-  readonly scope?: RagCollectionScope;
-  readonly sessionId?: string;        // owner key, typed (as above)
-  readonly userId?: string;           // owner key, typed
-  readonly attributes?: unknown;      // opaque, returned exactly as stored
+  readonly attributes?: RagJsonValue; // opaque, returned exactly as stored
 };
 
+/** The scope is required and selects its owner key, so a record says whose it is
+ *  or is not a record at all. */
+type RagCollectionRecord = RagCollectionRecordBase & (
+  | { readonly scope: 'global' }
+  | { readonly scope: 'user'; readonly userId: string }
+  | { readonly scope: 'session'; readonly sessionId: string }
+);
+
 // on IRagProvider — NEW and optional, never a widening of listCollections()
-describeCollections?(): Promise<Result<readonly RagCollectionRecord[], RagError>>;
+describeCollections?(): Promise<Result<{
+  readonly records: readonly RagCollectionRecord[];
+  /** Catalog rows that are not valid records — reported, never returned as records. */
+  readonly rejected: readonly { readonly storeName?: string; readonly reason: string }[];
+}, RagError>>;
 
 // on IRagProvider.createCollection's opts — the logical name and the attributes,
 // because a catalog cannot return what it was never given
@@ -1104,7 +1121,7 @@ createCollection(name: string, opts: {
   scope: RagCollectionScope; sessionId?: string; userId?: string;
   collectionName?: string;           // the logical name; `name` is the store name.
                                      // Absent → the provider records `name` as the logical name too
-  attributes?: unknown;
+  attributes?: RagJsonValue;
   adoptExisting?: boolean;           // take over a store that exists without a record; never create
 }): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
 
@@ -1124,7 +1141,7 @@ createCollection(params: {
   collectionName: string;            // logical — passed on as opts.collectionName
   scope: RagCollectionScope; sessionId?: string; userId?: string;
   displayName?: string; description?: string; tags?: readonly string[];
-  attributes?: unknown;              // NEW — opaque, passed through unchanged
+  attributes?: RagJsonValue;         // NEW — opaque, passed through unchanged
   adoptExisting?: boolean;           // NEW — forwarded to the provider unchanged
 }): Promise<Result<RagCollectionMeta, RagError>>;
 
@@ -1132,6 +1149,10 @@ createCollection(params: {
 // nothing a tool does may depend on a policy value (§5.1). The consumer reads
 // them from describeCollections() when it builds a caller's registry.
 ```
+
+**A record names its scope and its owner, or it is not a record.** Hydration sorts records into a caller's `global`, `user` and `session` collections, and a record without a scope — or a `user` record without a `userId` — cannot be sorted: guessing would put someone's collection in someone else's registry. So `scope` is **required** and selects the owner key it needs, which `createCollection` always has, since it receives both. And because the catalog is storage outside any compiler — rows a previous version, an operator or a damaged write may have left — `describeCollections()` checks each row at that boundary (principle 10's case, the same as the plugin loader's in §4.6.7): a row with no scope, an unknown one, a missing owner key for its scope, no store name or no logical name is **not returned as a record** but listed in `rejected` with its store name where it has one and what was wrong, so the consumer can report it. One malformed row neither fails the call nor slips into a registry.
+
+**`attributes` are JSON, and a value JSON would change is refused.** "Returned exactly as stored" is a promise across three backends, and `unknown` could not keep it: a cycle, a `BigInt`, a function or a class instance has no common stored form. So the type is `RagJsonValue`. What the type still admits and JSON would alter — `NaN` and the infinities, which it turns into `null`, and a cycle reached through an untyped caller — `createCollection` refuses with `RAG_INVALID_ATTRIBUTES` before creating anything, so what comes back is what went in. How a provider stores the value is its own; pg's `JSONB` already takes it as is.
 
 **Two identifiers, because the provider never sees one of them.** `SimpleRagRegistry.createCollection` computes `storeName = storeNameFor(params)` and calls `provider.createCollection(storeName, …)` (`simple-rag-registry.ts:189`, `:193`), so the provider is handed the store name *as* the name. It does already receive the owner keys — `{ scope, sessionId, userId }` are in its signature (`interfaces/rag.ts:209-216`) — and what it never receives is the **logical** `collectionName`.
 
@@ -1157,7 +1178,7 @@ And it cannot derive it. `storeNameFor` (`:31`) returns `${base}_${digest}`, whe
 
 And the accident ends with this very workstream: once `createCollection` also writes a catalog row, calling it to hydrate would rewrite that row, and — since a hydrating caller passes no `attributes`, it is reading them — overwrite what it was trying to recover. So `openCollection?(record)` is separate by necessity, and it is cheap: it is qdrant's existing body, and pg's and hana's minus the `ensureSchema` call — with one requirement on the handles it returns, below.
 
-**The hydration flow, whole:** the consumer calls `describeCollections()`, keeps the records belonging to the caller whose pipeline it is building, calls `openCollection(record)` for each, and `adopt(record, rag, editor)` to register them under their logical names. Nothing in that path creates a store, ensures a schema, or writes a catalog row — which is what "creates nothing" has to mean to be worth saying. The registry it hydrates into is that caller's, not a shared one (§6.4).
+**The hydration flow, whole:** the consumer calls `describeCollections()`, reports what it `rejected`, keeps the `records` belonging to the caller whose pipeline it is building, calls `openCollection(record)` for each, and `adopt(record, rag, editor)` to register them under their logical names. Nothing in that path creates a store, ensures a schema, or writes a catalog row — which is what "creates nothing" has to mean to be worth saying. The registry it hydrates into is that caller's, not a shared one (§6.4).
 
 **Deletion has to reach the catalog, or hydration undoes it.** A record that outlives its collection is not a stale row, it is a resurrection: the next hydration adopts a collection whose data is gone and hands the caller something that looks valid. So the **provider's** `deleteCollection` removes the catalog record too.
 
@@ -1252,7 +1273,7 @@ The text shape is the general one: a structured event fits in `meta`, a closed u
 
 | package | change | breaking |
 |---|---|---|
-| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter, and `PluginExports` gains `pipelinePluginFactories` (§4.6.7)** — a plugin's constructor takes typed settings and its instances arrive through `ctx`, so no configuration travels through its usage contract, and a configurable third-party plugin is exported as a factory the server calls; **`IPipelineContext` gains `resolveNamedLlm(key)`**, the strict lookup for a key a plugin's settings named, beside `resolveLlm(role)`'s defaulting one, so a misspelled key is an error rather than `main` (§4.6.7) — additive for a plugin, but a consumer that *implements* `IPipelineContext` must add it; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3), with `SimpleRagRegistry` keyed by scope and name, its lookups taking an optional `scope` and refusing an ambiguous name with `RAG_AMBIGUOUS_COLLECTION`, the collection tools gaining the same optional `scope` argument, `get`/`getEditor`/`unregister` throwing that code, `closeSession` deleting with `scope: 'session'`, the `ragStores` projection keying globals by bare name and user/session collections as `user/<name>`/`session/<name>`, `adoptExisting?` on `createCollection`, the `user/` and `session/` name prefixes reserved for globals (a runtime refusal on `register` for a name that registers today), the registry reserving a name while it is being deleted and re-registering the entry on that error so the delete retries in place; `attributes?` on `IRagRegistry.createCollection`, forwarded to the provider and not added to `RagCollectionMeta` — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | **breaking** at source level: `IPipelinePlugin` loses a member and a parameter, and `IPipelineContext` **gains a required** `resolveNamedLlm`, so every implementation of it — a consumer's, a test fixture's — must add one (§4.6.7), and an implementation of `IRagRegistry` must accept the new optional `scope` on its lookups (§6.4); otherwise additive at runtime, and a consumer that *reads* a widened option property must narrow first (§7) |
+| `@mcp-abap-adt/llm-agent` | **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter, and `PluginExports` gains `pipelinePluginFactories` (§4.6.7)** — a plugin's constructor takes typed settings and its instances arrive through `ctx`, so no configuration travels through its usage contract, and a configurable third-party plugin is exported as a factory the server calls; **`IPipelineContext` gains `resolveNamedLlm(key)`**, the strict lookup for a key a plugin's settings named, beside `resolveLlm(role)`'s defaulting one, so a misspelled key is an error rather than `main` (§4.6.7) — additive for a plugin, but a consumer that *implements* `IPipelineContext` must add it; **`LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` removed** — a contract carries no secret (§4.6.2) — plus `IMcpServer` (+ `mcpServerFromFactory`); `McpClientFactory` deprecated as a consumer seam; `attributes` and the logical `collectionName` on provider collection creation, the optional `describeCollections()` catalog read — returning valid `records`, each a `RagCollectionRecord` whose required `scope` selects its owner key, and the malformed rows as `rejected` —, `attributes` typed `RagJsonValue` and refused with `RAG_INVALID_ATTRIBUTES` when JSON would change them, the optional `openCollection()` that builds handles for an existing store, the optional `IRagRegistry.adopt()` that registers one, the `CatalogRecordDeleteError` type and the tool that answers `{ ok: false }` to it rather than warning about data (§6.3), with `SimpleRagRegistry` keyed by scope and name, its lookups taking an optional `scope` and refusing an ambiguous name with `RAG_AMBIGUOUS_COLLECTION`, the collection tools gaining the same optional `scope` argument, `get`/`getEditor`/`unregister` throwing that code, `closeSession` deleting with `scope: 'session'`, the `ragStores` projection keying globals by bare name and user/session collections as `user/<name>`/`session/<name>`, `adoptExisting?` on `createCollection`, the `user/` and `session/` name prefixes reserved for globals (a runtime refusal on `register` for a name that registers today), the registry reserving a name while it is being deleted and re-registering the entry on that error so the delete retries in place; `attributes?` on `IRagRegistry.createCollection`, forwarded to the provider and not added to `RagCollectionMeta` — the deletion itself belongs to the providers, below; the caller's identity bound into `buildRagCollectionToolEntries` and used by all seven handlers, with `RagToolContext`'s declared `sessionId?`/`userId?` removed so there is one source (§5.1); `ITextLogger` re-exported from `interfaces-utils`, **exported `ILogger` unchanged** | **breaking** at source level: `IPipelinePlugin` loses a member and a parameter, and `IPipelineContext` **gains a required** `resolveNamedLlm`, so every implementation of it — a consumer's, a test fixture's — must add one (§4.6.7), and an implementation of `IRagRegistry` must accept the new optional `scope` on its lookups (§6.4); otherwise additive at runtime, and a consumer that *reads* a widened option property must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-libs` | **the plugin loader validates what it loads and records what it refuses (§4.6.7)** — it checked `build` and then silently skipped, while recording an error for a duplicate name, so it was inconsistent with itself; `withMcpServers` on the builder; start in `build()`, `stop()` into `closeFns`; optional `mcpServerFactory` on the session factory; **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` removed** (§4.6.2), `MakeLlmConfig` with them, and `DefaultModelResolver` with them — `IModelResolver` itself is **unchanged** (`model-resolver.ts:7`), since what held a config was the implementation; optional `ragRegistryFactory(identity)` with session-owned disposal (§6.4) | **breaking**: exported functions and `DefaultModelResolver` are removed; the `IModelResolver` contract is untouched. Also additive at runtime for the MCP and RAG seams, and `SessionGraphFactoryOptions.logger` is widened, so a consumer that *reads* it must narrow first (§7) |
 | `@mcp-abap-adt/llm-agent-server-libs` | **`IServerPipelineContext` loses `makeLlm`, `llmMap` and `pipelineFallback` (the last already dead) and keeps the framework's existing `resolveLlm(role)` and the new strict `resolveNamedLlm(key)` as the only two ways an LLM reaches a pipeline — whose key space stays the consumer's, and `IRoleLlmResolver` loses `makeLlm(lc)` (§4.6.6) — a usage-side contract may not construct, so the per-step authorization path closes by type**; **the four shipped plugins with a dialect (`linear`, `stepper`, `dag`, `controller`) lose their parsers to the server, which parses the selected section in `start()` and constructs that plugin with typed settings through a registry of factories, and `controller`'s `subagents.<role>` and a DAG worker's own config file name a key of the main file's `llm:` map instead of holding an LLM configuration (§4.6.7; a worker file resolves with the main map in scope and its three LLM slots come from the resolver, its RAG and MCP slots staying cached per worker; `RoleLlmResolver` answers a key with no `llm:` entry with the held `main` instance instead of a fresh build from `llm.main`; and the in-memory search knobs move under `rag.store`, taking the config watcher and the section defaults with them (§4.6.4, §4.6.6, §4.6.7)**; the resolver becomes **scoped**, deployment-wide and per-session, with disposal following the identity (§4.6.5, §4.6.6); consumes the builder seam; **always supplies `ragRegistryFactory`, so each session owns a registry hydrated for its identity instead of sharing `globalRagRegistry` (§6.4)**; `buildPerSessionMcpClients`, `mcpSharedClient`, `closeBySession` deprecated, not deleted; **and it constructs providers the way the library used to** — `makeLlm({…})` at `build-dag-coordinator-deps.ts:89` — and its `SmartServerLlmConfig.apiKey` (`:129`) and `PipelineLlmProviderConfig` secrets (`pipeline.ts:14-26`) are passengers too, so they go while those DTOs stay **serializable**, gaining a non-secret `credentialRef` so a role can still name its account — and **`SmartServerRagConfig` and `PipelineRagStoreConfig` split into `store` and `embedder`, each with its own `credentialRef` (§4.6.4)**, because one flat shape described two independently authenticated targets and `url` meant either one's address depending on its neighbours — construction goes through `BuildAgentDeps.makeLlm`, which already exists (`:360`) and becomes **non-optional** so a missing seam is a build error rather than a deployment that stops starting (§4.6.3), because a YAML file holds neither an object nor a function (§4.6.2). The loader, env substitution and schema validation stay here; only the rule requiring `AICORE_SERVICE_KEY` (`config-validator.ts:72`) leaves with the credential | **breaking**: two exported DTOs lose secret fields, one required. `modelResolver?` stays optional (`:334`), and the dispatch and the resolver implementation land in `llm-agent-server`, the app |
 | `@mcp-abap-adt/llm-agent-mcp` | stdio passes its own `env`. `IMcpServer` arrives here as the generic `mcpServerFromFactory` adapter (workstream 1); the typed implementations, whose constructors demand a credential per §3.3, land with the credential contracts in workstream 2 — **http first** (the main protocol; `start()` holds a connection rather than spawning), stdio beside it for the local case | additive |
