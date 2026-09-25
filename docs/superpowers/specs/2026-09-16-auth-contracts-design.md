@@ -553,8 +553,9 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    and `SmartServer` actually live. The app above them is the composition root. Being the default assembly,
    the server layer may legitimately compose; what it may not do is **widen the framework's pipeline context
    with construction**, because `IServerPipelineContext` is exported, so that capability reaches every
-   pipeline written against it, a consumer's included. And the framework's own contract is already
-   sufficient: two of the four pipelines need nothing beyond `resolveLlm`.
+   pipeline written against it, a consumer's included. And the framework's own contract already covers the
+   default case: two of the four pipelines need nothing beyond `resolveLlm`. It needs one addition, for keys
+   a file names (below and §4.6.7).
 
    **The pipeline's own context contract fails it, and fails it in the licensed way rather than by
    accident.** `IServerPipelineContext` (`pipelines/server-context.ts:22`) — the object handed to every
@@ -572,17 +573,21 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    factory, which is the per-step authorization path §4.6.5 measured. `IRoleLlmResolver` has the same
    defect for the same reason, declaring `makeLlm(lc)` beside `resolve(role)`.
 
-   **What replaces them already exists, and that is the finding.** The **core** pipeline context contract
+   **What replaces them mostly exists, and that is the finding.** The **core** pipeline context contract
    — the framework's, in `llm-agent` — declares `resolveLlm(role: string): Promise<ILlm>`
    (`llm-agent/src/interfaces/pipeline-plugin.ts:48`),
    with its own comment saying why — *"Core-only; the server closes over its own config"*. A role in,
    an instance out: no config, no construction, no credential. So the right shape was designed at the
    start, `smart-server.ts:2462` already supplies it, and **two of the four pipelines already use it** —
    `pipelines/linear.ts:35` and `pipelines/stepper.ts:64` wire `makeRoleLlm: (role) => ctx.resolveLlm(role)`.
-   `controller.ts:335` and `dag.ts:49` reach for `ctx.makeLlm` instead. So nothing needs inventing: the
-   server-libs additions `makeLlm`, `llmMap` and `pipelineFallback` are a **duplicate of a core contract,
-   weaker than it**, and they go — an earlier draft of this paragraph proposed a new `resolveRole`, which
-   was that same mistake a third time. One of the three costs nothing to remove: `pipelineFallback` is
+   `controller.ts:335` and `dag.ts:49` reach for `ctx.makeLlm` instead. So the default-role lookup needs no
+   inventing: the server-libs additions `makeLlm`, `llmMap` and `pipelineFallback` are a **duplicate of a
+   core contract, weaker than it**, and they go — an earlier draft of this paragraph proposed a new
+   `resolveRole`, which was that same mistake a third time. What the core contract does **not** have is a
+   strict lookup, and §4.6.7 adds one, `resolveNamedLlm(key)`, for a key a file named. That is not
+   `resolveRole` again: `resolveRole` restated what `resolveLlm` already answered, while `resolveLlm` cannot
+   answer this question at all — it answers an unknown name with `main`, which is right for a role asked by
+   default and wrong for a key someone typed, and the resolver cannot tell the two apart from the string. One of the three costs nothing to remove: `pipelineFallback` is
    already dead — the `pipeline.llm` block it read was removed with the `pipeline: { name, config }`
    schema (`config-validator.ts:201`), and `SmartServer` now assigns it a constant `undefined`
    (`smart-server.ts:1030`). For the other two, `controller` and `dag` do what `linear` and `stepper`
