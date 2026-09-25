@@ -586,15 +586,17 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    already dead — the `pipeline.llm` block it read was removed with the `pipeline: { name, config }`
    schema (`config-validator.ts:201`), and `SmartServer` now assigns it a constant `undefined`
    (`smart-server.ts:1030`). For the other two, `controller` and `dag` do what `linear` and `stepper`
-   already do: they name a role's model by key and resolve it through `ctx.resolveLlm` — the keys arriving
-   in their typed settings rather than in configuration they parse themselves (§4.6.7). **The replacement is the role, not a per-call option, and an earlier draft
+   already do and ask for a role's model instead of building it — `ctx.resolveNamedLlm(key)` for a key their
+   typed settings name, `ctx.resolveLlm(role)` with the role's own name when none was given — the keys
+   arriving in their typed settings rather than in configuration they parse themselves (§4.6.7). **The replacement is the role, not a per-call option, and an earlier draft
    of this paragraph got that backwards against an argument this document had already made.** It said a step
    wanting a different model could pass `model` in `LLMCallOptions` — but §4.6.2 established the opposite
    twelve pages earlier, from `CallOptions`' own docstring: the override does not reach the reviewer, the
    finalizer, the planner or the evaluator. Those are precisely the roles the controller and DAG paths build,
    so for them a per-call option changes nothing and the migration would have silently kept the old model on
    every auxiliary call while appearing to work on the main one. What replaces `ctx.makeLlm(cfg)` is
-   `ctx.resolveLlm(key)` — an **instance the server built**, which is what roles exist for. The plugin never
+   `ctx.resolveNamedLlm(key)` for a named key, or `ctx.resolveLlm(role)` for a role's default — either way
+   an **instance the server built**, which is what roles exist for. The plugin never
    learns whether that instance is the deployment's or the session caller's, nor whether it was swapped by
    `PUT /v1/config` since the last session; the server's resolver decides both, which is why an instance
    reaches a plugin through `ctx` and not through its constructor (§4.6.7). A per-call `model`
@@ -606,7 +608,7 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    consume role resolution — `linear`, `stepper`, `controller`, `dag` — and the resolver is held above all
    of them by `SmartServer` (`:777`, built at `:1063`). A thing that serves several pipelines is not a
    pipeline's concern, and by principle 5 a variation point the consumer owns is the consumer's: the
-   **app** composes the role map and hands it in, and `resolveLlm` reads it. That also disposes of the
+   **app** composes the role map and hands it in, and `resolveLlm` and `resolveNamedLlm` read it. That also disposes of the
    contradiction an earlier version of this paragraph created by saying "a map the root filled at build
    time", which §4.6.5 forbids outright for a caller's credential — A map built once at startup can only hold instances built
    from the **deployment's own** credentials. A credential that belongs to a caller — a per-user ABAP login,
@@ -709,7 +711,8 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
      and **the keys naming which model each role uses**. A key is a value, not configuration: it says which
      `llm:` entry a role wants, and nothing about how that entry is built or authorized.
    - **Instances, through `ctx`, per session.** At `build(ctx)` the plugin turns each key into an instance
-     with `ctx.resolveLlm(key)`, and takes the other per-session objects — the worker registry, knowledge
+     — `ctx.resolveNamedLlm(key)` for a key its settings named, `ctx.resolveLlm(role)` for a role whose key
+     was omitted — and takes the other per-session objects — the worker registry, knowledge
      RAG, MCP clients — from `ctx` as today.
 
    Instances cannot go in the constructor, for three reasons measured against the code, each sufficient on
@@ -718,7 +721,7 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    signature fixed when the plugin was written cannot know which to demand, while a key resolved by the
    server can mean either. **A model can be swapped at runtime**: `PUT /v1/config` replaces the main,
    classifier and helper instances (`smart-server.ts:3043-3049`), and an `ILlm` handed to a constructor once
-   would be frozen, silently ignoring the swap — §4.6.6's table already promises that the next `resolveLlm`
+   would be frozen, silently ignoring the swap — §4.6.6's table already promises that the next lookup
    observes the new instance. **Some dependencies are per session**: `dag`'s coordinator dependencies include
    its workers, and the worker registry is built per session (`buildServerCtx` → `buildWorkerRegistry`,
    `smart-server.ts:2431`), each worker carrying that session's logger, RAG registry and MCP clients.
@@ -791,8 +794,9 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
      a role that wants a colder planner names a colder entry.
    - **`dag` keeps assembling its dependencies in `build(ctx)`.** Its settings — planner, reviewer and
      finalizer keys, and its static knobs — arrive in the constructor; `buildDagCoordinatorDeps` still runs
-     per session, reads the workers from `ctx.workerRegistry`, and resolves the three keys through
-     `ctx.resolveLlm` instead of receiving `llmMap` and a `makeLlm`.
+     per session, reads the workers from `ctx.workerRegistry`, and resolves each of the three through
+     `ctx.resolveNamedLlm(key)` when its key was named and `ctx.resolveLlm(role)` when it was not, instead of
+     receiving `llmMap` and a `makeLlm`.
    - **The DAG workers name keys too, which changes how a worker file is resolved.** The main file lists
      workers as `subagents: [{ name, config }]`; `parseSubAgents` (`config.ts:97-173`) loads each worker file
      and resolves it **on its own** as a complete `SmartServerConfig` (`resolveSmartServerConfig`,
