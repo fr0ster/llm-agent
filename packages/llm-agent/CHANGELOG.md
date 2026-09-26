@@ -10,6 +10,11 @@ Deprecated: `McpClientFactory` as a consumer-facing seam — pass an `IMcpServer
 (`HttpMcpServer`, `StdioMcpServer`, `mcpServerFromFactory`) to `withMcpServers`. The type
 stays as the default implementation's factory.
 
+Added `PipelinePluginFactory` — builds a pipeline plugin from its `pipeline.config`
+section, for a plugin with settings. `PluginExports.pipelinePluginFactories` and
+`LoadedPlugins.pipelinePluginFactories?` carry it alongside `pipelinePlugins`;
+both are additive.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

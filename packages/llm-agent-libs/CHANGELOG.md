@@ -17,6 +17,16 @@ and only when `rag.store.type` is `in-memory` — the flat `rag:` section split
 into a store and an embedder, and the search knobs live on the store that
 reads them.
 
+**BREAKING:** `mergePluginExports` refuses a pipeline plugin whose `name` differs
+from the key it is registered under, where it used to load under the key silently.
+Every refused pipeline export — a missing `build`, a non-string `name`, a
+non-function factory, a non-object `pipelinePlugins`/`pipelinePluginFactories`
+export — is now reported in `errors` instead of silently skipped. Also accepts
+`pipelinePluginFactories`, sharing one key namespace with `pipelinePlugins`; the
+loader only checks that each entry is a function and never calls it.
+`describePipelinePluginDefect(value, key)` is exported for the same check on a
+factory's result.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

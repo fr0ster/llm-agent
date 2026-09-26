@@ -98,3 +98,8 @@ export interface IPipelinePlugin<Config = unknown> {
   parseConfig(raw: unknown): Config;
   build(config: Config, ctx: IPipelineContext): Promise<IPipelineInstance>;
 }
+
+/** Builds a plugin from its `pipeline.config` section. The server calls only the
+ *  selected factory, once, at startup; what the section holds is the factory's
+ *  business — it is the plugin author's piece of the assembler (§4.6.7). */
+export type PipelinePluginFactory = (section: unknown) => IPipelinePlugin;

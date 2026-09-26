@@ -119,6 +119,7 @@ export type {
   IPipelinePlugin,
   IReconfigurableSmartAgent,
   MaybePromise,
+  PipelinePluginFactory,
 } from './pipeline-plugin.js';
 export type {
   IPlanner,

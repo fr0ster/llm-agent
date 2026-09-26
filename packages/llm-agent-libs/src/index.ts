@@ -162,6 +162,7 @@ export type {
 // Plugins
 // ---------------------------------------------------------------------------
 export {
+  describePipelinePluginDefect,
   emptyLoadedPlugins,
   FileSystemPluginLoader,
   type FileSystemPluginLoaderConfig,

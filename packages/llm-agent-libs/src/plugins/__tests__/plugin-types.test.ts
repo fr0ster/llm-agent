@@ -4,6 +4,7 @@ import type {
   IMcpClient,
   IPipelinePlugin,
   ISkillManager,
+  PluginExports,
 } from '@mcp-abap-adt/llm-agent';
 import type { IStageHandler } from '../../pipeline/stage-handler.js';
 import { emptyLoadedPlugins, mergePluginExports } from '../types.js';
@@ -157,7 +158,111 @@ describe('pipelinePlugins merge', () => {
     assert.equal(r.pipelinePluginSources.get('dag'), 'pkg-a');
   });
 
-  it('rejects a duplicate name: keeps the first, records an error naming both sources', () => {
+  it('rejects a duplicate key: keeps the first, records an error naming both sources', () => {
+    const r = emptyLoadedPlugins();
+    const first = stubPipeline('dag');
+    mergePluginExports(r, { pipelinePlugins: { dag: first } }, 'pkg-a');
+    mergePluginExports(
+      r,
+      { pipelinePlugins: { dag: stubPipeline('dag') } },
+      'pkg-b',
+    );
+    assert.equal(r.pipelinePlugins.get('dag'), first, 'first wins');
+    assert.ok(
+      r.errors.find(
+        (e) =>
+          e.error.includes("'dag'") &&
+          e.error.includes('pkg-a') &&
+          e.error.includes('pkg-b'),
+      ),
+    );
+  });
+
+  for (const [what, value, expected] of [
+    ['a missing build', { name: 'x' }, /'build' must be a function/],
+    [
+      'a non-string name',
+      { name: 7, build: async () => ({}) },
+      /'name' must be a string/,
+    ],
+    ['a non-object', 'x', /expected an object/],
+    ['null', null, /got null/],
+  ] as const) {
+    it(`refuses ${what} and says so, naming the module and the key`, () => {
+      const r = emptyLoadedPlugins();
+      const registered = mergePluginExports(
+        r,
+        { pipelinePlugins: { x: value } } as unknown as PluginExports,
+        'pkg-bad',
+      );
+      assert.equal(registered, false);
+      assert.equal(r.pipelinePlugins.size, 0);
+      assert.equal(
+        r.errors.length,
+        1,
+        'a refusal is reported, never skipped in silence',
+      );
+      assert.equal(r.errors[0].file, 'pkg-bad');
+      assert.match(r.errors[0].error, /'x'/);
+      assert.match(r.errors[0].error, expected);
+    });
+  }
+
+  it('refuses an instance whose name differs from its key', () => {
+    const r = emptyLoadedPlugins();
+    mergePluginExports(
+      r,
+      { pipelinePlugins: { planner2: stubPipeline('planner') } },
+      'pkg-a',
+    );
+    assert.equal(r.pipelinePlugins.has('planner2'), false);
+    assert.match(
+      r.errors[0].error,
+      /name 'planner' differs from the key 'planner2'/,
+    );
+  });
+
+  it('registers a factory without calling it, and records its source', () => {
+    const r = emptyLoadedPlugins();
+    let called = 0;
+    const factory = () => {
+      called++;
+      return stubPipeline('ext');
+    };
+    assert.equal(
+      mergePluginExports(
+        r,
+        { pipelinePluginFactories: { ext: factory } },
+        'pkg-f',
+      ),
+      true,
+    );
+    assert.equal(r.pipelinePluginFactories?.get('ext'), factory);
+    assert.equal(r.pipelinePluginSources.get('ext'), 'pkg-f');
+    assert.equal(
+      called,
+      0,
+      'the loader never calls a factory — only the server does',
+    );
+  });
+
+  it('refuses a factory that is not a function', () => {
+    const r = emptyLoadedPlugins();
+    mergePluginExports(
+      r,
+      {
+        pipelinePluginFactories: { ext: stubPipeline('ext') },
+      } as unknown as PluginExports,
+      'pkg-f',
+    );
+    assert.equal(r.pipelinePluginFactories?.has('ext'), false);
+    assert.match(
+      r.errors[0].error,
+      /factory 'ext' from 'pkg-f' refused: expected a function/,
+    );
+  });
+
+  it('a key is one namespace across instances and factories', () => {
     const r = emptyLoadedPlugins();
     mergePluginExports(
       r,
@@ -166,22 +271,26 @@ describe('pipelinePlugins merge', () => {
     );
     mergePluginExports(
       r,
-      { pipelinePlugins: { dag: stubPipeline('dag-2') } },
+      { pipelinePluginFactories: { dag: () => stubPipeline('dag') } },
       'pkg-b',
     );
-    // first wins
-    assert.equal(r.pipelinePlugins.get('dag')?.name, 'dag');
-    // duplicate recorded with BOTH sources (stable contract: name + both sources,
-    // not a brittle exact phrase)
-    const dupe = r.errors.find(
-      (e) =>
-        e.error.includes("'dag'") &&
-        e.error.includes('pkg-a') &&
-        e.error.includes('pkg-b'),
+    assert.equal(r.pipelinePluginFactories?.has('dag'), false);
+    assert.match(
+      r.errors[0].error,
+      /duplicate pipeline name 'dag' from 'pkg-b'.*'pkg-a'/,
     );
-    assert.ok(
-      dupe,
-      'expected a duplicate error naming the pipeline and both sources',
+  });
+
+  it('refuses a pipelinePlugins export that is not an object', () => {
+    const r = emptyLoadedPlugins();
+    mergePluginExports(
+      r,
+      { pipelinePlugins: [] } as unknown as PluginExports,
+      'pkg-arr',
+    );
+    assert.match(
+      r.errors[0].error,
+      /'pipelinePlugins' from 'pkg-arr' must be an object/,
     );
   });
 });
