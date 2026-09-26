@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IRagEditor, IRagProvider } from '../../interfaces/rag.js';
+import type {
+  IRagEditor,
+  IRagProvider,
+  IRagProviderRegistry,
+} from '../../interfaces/rag.js';
 import { RagError } from '../../interfaces/types.js';
 import {
   CatalogRecordDeleteError,
@@ -341,5 +345,158 @@ describe('deleteCollection — the name is reserved while it runs', () => {
     fail = false;
     assert.ok((await reg.closeSession('S')).ok);
     assert.equal(reg.get('scratch', 'session'), undefined);
+  });
+});
+
+// Fix round 1 (review of 510b5330): a consumer-injected mutationListener or
+// provider registry throwing must never corrupt registry state — the
+// reservation is released (and the entry restored, on a CatalogRecordDeleteError)
+// on every path, regardless.
+describe('deleteCollection — a throwing consumer callback never corrupts state', () => {
+  it('a listener throwing on the removal notification still frees the reservation', async () => {
+    const { reg } = recording();
+    assert.ok(
+      (
+        await reg.createCollection({
+          providerName: 'p',
+          collectionName: 'docs',
+          scope: 'global',
+        } as never)
+      ).ok,
+    );
+
+    const boom = new Error('listener boom on removal');
+    let calls = 0;
+    reg.setMutationListener(() => {
+      calls += 1;
+      if (calls === 1) throw boom;
+    });
+
+    await assert.rejects(
+      () => reg.deleteCollection('docs'),
+      (err: unknown) => err === boom,
+    );
+    assert.equal(reg.get('docs'), undefined, 'the deletion itself completed');
+
+    // The reservation is free, not pinned forever by the listener's throw:
+    // a fresh create of the same key succeeds right away.
+    reg.setMutationListener(() => {});
+    assert.ok(
+      (
+        await reg.createCollection({
+          providerName: 'p',
+          collectionName: 'docs',
+          scope: 'global',
+        } as never)
+      ).ok,
+      'the key was released, not pinned forever',
+    );
+  });
+
+  it('a listener throwing on the restore notification still restores the entry and frees the reservation', async () => {
+    let fail = true;
+    const { reg } = recording(async () =>
+      fail
+        ? {
+            ok: false,
+            error: new CatalogRecordDeleteError(
+              'docs',
+              'catalog write refused',
+            ),
+          }
+        : { ok: true, value: undefined },
+    );
+    assert.ok(
+      (
+        await reg.createCollection({
+          providerName: 'p',
+          collectionName: 'docs',
+          scope: 'user',
+          userId: 'alice',
+        } as never)
+      ).ok,
+    );
+    const rag = reg.get('docs');
+
+    const boom = new Error('listener boom on restore');
+    let calls = 0;
+    reg.setMutationListener(() => {
+      calls += 1;
+      // First call is the removal notification (must not throw here, so the
+      // restore path below is actually exercised); second is the restore.
+      if (calls === 2) throw boom;
+    });
+
+    await assert.rejects(
+      () => reg.deleteCollection('docs'),
+      (err: unknown) => err === boom,
+    );
+    assert.equal(
+      reg.get('docs', 'user'),
+      rag,
+      'restored despite the listener throwing on the restore notification',
+    );
+
+    // The reservation is free, not pinned forever: the same delete can be
+    // retried in place, exactly as when the listener never throws.
+    reg.setMutationListener(() => {});
+    fail = false;
+    assert.ok(
+      (await reg.deleteCollection('docs')).ok,
+      'the same delete, retried in place',
+    );
+    assert.equal(reg.get('docs'), undefined);
+  });
+
+  it('a provider registry whose getProvider throws returns a failed Result, not a rejection, and releases the reservation', async () => {
+    let shouldThrow = false;
+    const provider: IRagProvider = {
+      name: 'p',
+      kind: 'vector',
+      editable: true,
+      supportedScopes: ['global'],
+      createCollection: async () => ({
+        ok: true,
+        value: { rag: new InMemoryRag(), editor: {} as IRagEditor },
+      }),
+    };
+    const providers: IRagProviderRegistry = {
+      getProvider: (name) => {
+        if (shouldThrow) throw new Error('provider registry exploded');
+        return name === 'p' ? provider : undefined;
+      },
+      listProviders: () => ['p'],
+    };
+    const reg = new SimpleRagRegistry();
+    reg.setProviderRegistry(providers);
+    assert.ok(
+      (
+        await reg.createCollection({
+          providerName: 'p',
+          collectionName: 'docs',
+          scope: 'global',
+        } as never)
+      ).ok,
+    );
+
+    shouldThrow = true;
+    const res = await reg.deleteCollection('docs'); // must not reject
+    assert.ok(!res.ok);
+    assert.ok(res.error instanceof RagError);
+    assert.equal(reg.get('docs'), undefined);
+
+    // The reservation is free: a fresh create of the same key succeeds once
+    // the provider registry stops throwing.
+    shouldThrow = false;
+    assert.ok(
+      (
+        await reg.createCollection({
+          providerName: 'p',
+          collectionName: 'docs',
+          scope: 'global',
+        } as never)
+      ).ok,
+      'the key was released, not pinned forever',
+    );
   });
 });

@@ -356,16 +356,24 @@ export class SimpleRagRegistry implements IRagRegistry {
    * It is unregistered first and its key reserved, so nothing reaches it and
    * nothing takes its name while it is being deleted. Then its data goes: a
    * collection a provider created is deleted by that provider's
-   * `deleteCollection` — which removes its catalog record before its data — or,
-   * where the provider has none, emptied through its store's
-   * `writer().clearAll()`. A collection registered without a provider is only
-   * unregistered. Nothing is retried.
+   * `deleteCollection` (which cannot throw — see deleteData) — which removes
+   * its catalog record before its data — or, where the provider has none,
+   * emptied through its store's `writer().clearAll()`. A collection
+   * registered without a provider is only unregistered. Nothing is retried.
    *
    * On CatalogRecordDeleteError nothing was deleted: record and data are both
    * intact, so the same entry is registered again before the reservation ends,
    * and the same call can be retried in place. Any other failure comes back as
    * the error with the collection unregistered; its data may remain under a
    * store name no other session or user is given (see storeNameFor).
+   *
+   * The reservation is released — and the entry restored first, if this was a
+   * CatalogRecordDeleteError — on every path, including a throwing
+   * `mutationListener`: that listener is consumer-injected and its own
+   * exception must never pin the key in `deleting` forever, nor skip the
+   * restore. Once state is settled, a listener exception is rethrown (so the
+   * caller sees it — never silently dropped); the delete's own Result is
+   * returned only when notifying succeeded.
    */
   async deleteCollection(
     name: string,
@@ -379,28 +387,45 @@ export class SimpleRagRegistry implements IRagRegistry {
     const { key, entry } = f.found;
     this.entries.delete(key);
     this.deleting.add(key);
-    this.fireMutation();
-
-    let result: Result<void, RagError>;
+    let notifyFailed = false;
+    let notifyError: unknown;
     try {
-      result = await this.deleteData(name, entry);
-    } catch (err) {
-      result = {
-        ok: false,
-        error:
-          err instanceof RagError
-            ? err
-            : new RagError(String(err), 'RAG_DELETE_ERROR'),
-      };
-    }
-    if (!result.ok && result.error instanceof CatalogRecordDeleteError) {
-      // Restored while the key is still reserved, so nothing slips in between.
-      this.entries.set(key, entry);
-      this.deleting.delete(key);
       this.fireMutation();
-      return result;
+    } catch (err) {
+      notifyFailed = true;
+      notifyError = err;
     }
-    this.deleting.delete(key);
+
+    // deleteData never throws (its own try/catch turns everything, including
+    // an injected provider registry throwing, into a Result), so this await
+    // cannot reject.
+    const result = await this.deleteData(name, entry);
+
+    const restoring =
+      !result.ok && result.error instanceof CatalogRecordDeleteError;
+    try {
+      if (restoring) {
+        // Restored while the key is still reserved, so nothing slips in
+        // between.
+        this.entries.set(key, entry);
+      }
+    } finally {
+      // Released on every path — success, any other failure, or a restore —
+      // whatever the mutation listener above did.
+      this.deleting.delete(key);
+    }
+    if (restoring) {
+      try {
+        this.fireMutation();
+      } catch (err) {
+        if (!notifyFailed) {
+          notifyFailed = true;
+          notifyError = err;
+        }
+      }
+    }
+
+    if (notifyFailed) throw notifyError;
     return result;
   }
 
@@ -410,17 +435,19 @@ export class SimpleRagRegistry implements IRagRegistry {
   ): Promise<Result<void, RagError>> {
     const providerName = entry.meta.providerName;
     if (!providerName) return { ok: true, value: undefined };
-    const provider = this.providerRegistry?.getProvider(providerName);
-    if (!provider) {
-      return {
-        ok: false,
-        error: new DeleteUnsupportedError(
-          name,
-          `provider '${providerName}' is not registered`,
-        ),
-      };
-    }
     try {
+      // getProvider is an injected registry's call, not ours — it belongs
+      // inside this try along with everything else that can throw.
+      const provider = this.providerRegistry?.getProvider(providerName);
+      if (!provider) {
+        return {
+          ok: false,
+          error: new DeleteUnsupportedError(
+            name,
+            `provider '${providerName}' is not registered`,
+          ),
+        };
+      }
       if (provider.deleteCollection) {
         return await provider.deleteCollection(entry.storeName);
       }

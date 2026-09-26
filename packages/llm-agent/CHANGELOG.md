@@ -15,7 +15,8 @@ back after a restart; a creation during a running deletion of the same
 (scope, name) is refused with `DuplicateCollectionError` instead of waiting
 for it; on `CatalogRecordDeleteError` the registry re-registers the entry, so
 the same delete or `closeSession` can be retried; `createCollection` forwards
-`attributes`/`adoptExisting` to the provider only when given.
+`attributes` to the provider only when given, and `adoptExisting` only when
+`true`.
 
 **BREAKING:** both `createCollection` inputs take `RagCollectionOwner` — the
 scope with the key it selects — instead of `scope` beside optional
