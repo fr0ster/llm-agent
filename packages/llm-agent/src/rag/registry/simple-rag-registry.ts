@@ -6,9 +6,16 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
   RagCollectionMeta,
+  RagCollectionOwner,
   RagCollectionScope,
+  RagRegistryCreateCollectionParams,
 } from '../../interfaces/rag.js';
 import { RagError, type Result } from '../../interfaces/types.js';
+import {
+  ragOwnerKeys,
+  validateRagAttributes,
+  validateRagOwner,
+} from '../catalog/validation.js';
 import {
   CollectionNotFoundError,
   DeleteUnsupportedError,
@@ -130,16 +137,16 @@ export class SimpleRagRegistry implements IRagRegistry {
     return Array.from(this.entries.values()).map((e) => e.meta);
   }
 
-  async createCollection(params: {
-    providerName: string;
-    collectionName: string;
-    scope: RagCollectionScope;
-    sessionId?: string;
-    userId?: string;
-    displayName?: string;
-    description?: string;
-    tags?: readonly string[];
-  }): Promise<Result<RagCollectionMeta, RagError>> {
+  async createCollection(
+    params: RagRegistryCreateCollectionParams,
+  ): Promise<Result<RagCollectionMeta, RagError>> {
+    // Checked before anything else: an untyped caller's owner without its key
+    // would digest to a store every such caller shares (storeNameFor), and
+    // attributes JSON would change could not come back as given (§6.3).
+    const owner = validateRagOwner(params);
+    if (!owner.ok) return owner;
+    const attributes = validateRagAttributes(params.attributes);
+    if (!attributes.ok) return attributes;
     if (!this.providerRegistry) {
       return {
         ok: false,
@@ -174,7 +181,7 @@ export class SimpleRagRegistry implements IRagRegistry {
 
     this.creating.add(params.collectionName);
     try {
-      return await this.createUnder(provider, params);
+      return await this.createUnder(provider, params, owner.value);
     } finally {
       this.creating.delete(params.collectionName);
     }
@@ -182,21 +189,27 @@ export class SimpleRagRegistry implements IRagRegistry {
 
   private async createUnder(
     provider: IRagProvider,
-    params: Parameters<IRagRegistry['createCollection']>[0],
+    params: RagRegistryCreateCollectionParams,
+    owner: RagCollectionOwner,
   ): Promise<Result<RagCollectionMeta, RagError>> {
     // A provider that keeps stores by name (Qdrant, a database) opens whatever
     // is there, so each owner gets a store name of its own; see storeNameFor.
-    const storeName = storeNameFor(params);
+    const storeName = storeNameFor({
+      collectionName: params.collectionName,
+      ...owner,
+    });
     // Released only when a deletion under it has finished; see deletions.
     await this.deletions.get(storeName);
 
     const created = await provider.createCollection(storeName, {
-      scope: params.scope,
-      sessionId: params.sessionId,
-      userId: params.userId,
+      ...owner,
+      collectionName: params.collectionName,
+      attributes: params.attributes,
+      adoptExisting: params.adoptExisting,
     });
     if (!created.ok) return created;
 
+    const { sessionId, userId } = ragOwnerKeys(owner);
     try {
       this.register(
         params.collectionName,
@@ -205,9 +218,9 @@ export class SimpleRagRegistry implements IRagRegistry {
         {
           displayName: params.displayName ?? params.collectionName,
           description: params.description,
-          scope: params.scope,
-          sessionId: params.sessionId,
-          userId: params.userId,
+          scope: owner.scope,
+          sessionId,
+          userId,
           providerName: params.providerName,
           tags: params.tags,
         },

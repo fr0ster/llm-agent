@@ -150,8 +150,14 @@ export type {
   IRagProvider,
   IRagProviderRegistry,
   IRagRegistry,
+  RagCatalogDescription,
   RagCollectionMeta,
+  RagCollectionOwner,
+  RagCollectionRecord,
   RagCollectionScope,
+  RagJsonValue,
+  RagProviderCreateCollectionOptions,
+  RagRegistryCreateCollectionParams,
 } from './rag.js';
 export { isBatchEmbedder, isBatchSizeLimited } from './rag.js';
 export type { ILlmRateLimiter } from './rate-limiter.js';

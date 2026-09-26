@@ -3,9 +3,15 @@ import type {
   IRag,
   IRagEditor,
   IRagProvider,
+  RagCollectionOwner,
   RagCollectionScope,
+  RagProviderCreateCollectionOptions,
 } from '../../interfaces/rag.js';
 import type { RagError, Result } from '../../interfaces/types.js';
+import {
+  validateRagAttributes,
+  validateRagOwner,
+} from '../catalog/validation.js';
 import { UnsupportedScopeError } from '../corrections/errors.js';
 import {
   DirectEditStrategy,
@@ -30,11 +36,7 @@ export abstract class AbstractRagProvider implements IRagProvider {
 
   abstract createCollection(
     name: string,
-    opts: {
-      scope: RagCollectionScope;
-      sessionId?: string;
-      userId?: string;
-    },
+    opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
 
   protected checkScope(scope: RagCollectionScope): Result<void, RagError> {
@@ -42,6 +44,23 @@ export abstract class AbstractRagProvider implements IRagProvider {
       return { ok: false, error: new UnsupportedScopeError(this.name, scope) };
     }
     return { ok: true, value: undefined };
+  }
+
+  /**
+   * The owner, the scope and the attributes, checked before any backend is
+   * touched — for callers no compiler saw (§6.3). Returns the owner with only
+   * the key its scope selects.
+   */
+  protected checkCreateOptions(
+    opts: RagProviderCreateCollectionOptions,
+  ): Result<RagCollectionOwner, RagError> {
+    const owner = validateRagOwner(opts);
+    if (!owner.ok) return owner;
+    const scope = this.checkScope(owner.value.scope);
+    if (!scope.ok) return scope;
+    const attributes = validateRagAttributes(opts.attributes);
+    if (!attributes.ok) return attributes;
+    return owner;
   }
 
   protected pickIdStrategy(opts: {

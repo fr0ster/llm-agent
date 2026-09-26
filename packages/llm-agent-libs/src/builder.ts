@@ -64,7 +64,7 @@ import {
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
-  type RagCollectionScope,
+  type RagRegistryCreateCollectionParams,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -221,16 +221,7 @@ export class SmartAgentBuilder {
      *  Ordinary callers leave this unset → duplicate names still fail loud. */
     idempotent?: boolean;
   }> = [];
-  private _pendingDynamicCollections: Array<{
-    providerName: string;
-    collectionName: string;
-    scope: RagCollectionScope;
-    sessionId?: string;
-    userId?: string;
-    displayName?: string;
-    description?: string;
-    tags?: readonly string[];
-  }> = [];
+  private _pendingDynamicCollections: RagRegistryCreateCollectionParams[] = [];
   private _ragRegistry?: IRagRegistry;
   private _ragProviderRegistry?: IRagProviderRegistry;
 
@@ -306,16 +297,7 @@ export class SmartAgentBuilder {
   }
 
   /** Queue a dynamic collection to be created via a provider during build(). */
-  createRagCollection(params: {
-    providerName: string;
-    collectionName: string;
-    scope: RagCollectionScope;
-    sessionId?: string;
-    userId?: string;
-    displayName?: string;
-    description?: string;
-    tags?: readonly string[];
-  }): this {
+  createRagCollection(params: RagRegistryCreateCollectionParams): this {
     this._pendingDynamicCollections.push(params);
     return this;
   }

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**BREAKING:** both `createCollection` inputs take `RagCollectionOwner` — the
+scope with the key it selects — instead of `scope` beside optional
+`sessionId`/`userId`, so a `user` or `session` owner without its key is a
+build error, and at runtime `RAG_INVALID_OWNER`; `attributes?: RagJsonValue`
+and `adoptExisting?` are accepted by both and NaN/±Infinity/cycles are
+refused with `RAG_INVALID_ATTRIBUTES` before anything is created;
+`IRagProvider` gains optional `describeCollections` and `openCollection`,
+`IRagRegistry` optional `adopt(record, rag, editor?, providerName?)`; new
+exported errors (`InvalidOwnerError`, `InvalidAttributesError`,
+`DuplicateCollectionError`, `OrphanStoreError`, `AmbiguousCollectionError`,
+`CatalogRecordDeleteError`, `ReservedCollectionNameError`) and the catalog
+validators.
+
 **BREAKING:** `IPipelinePlugin` is `name` + `build(ctx)`: it loses `parseConfig`
 and `build`'s config parameter. A plugin reads no configuration — whoever
 assembles the pipeline parses its section and constructs it with typed

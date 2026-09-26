@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type {
   IRagProviderRegistry,
   IRagRegistry,
+  RagCollectionOwner,
+  RagCollectionScope,
 } from '../../interfaces/rag.js';
 import { CollectionNotFoundError } from '../corrections/errors.js';
 import {
@@ -259,12 +261,21 @@ export function buildRagCollectionToolEntries(opts: {
             error: `RAG provider '${providerName}' is not registered`,
           };
         }
+        // The owner this handler can state today; Task B27 replaces
+        // the per-call context with the identity bound at construction. An
+        // absent key becomes '' and is refused by the registry with
+        // RAG_INVALID_OWNER instead of digesting to a shared store.
+        const scope = args.scope as RagCollectionScope;
+        const owner: RagCollectionOwner =
+          scope === 'session'
+            ? { scope, sessionId: ctx.sessionId ?? '' }
+            : scope === 'user'
+              ? { scope, userId: ctx.userId ?? '' }
+              : { scope: 'global' };
         const res = await registry.createCollection({
           providerName,
           collectionName: String(args.name),
-          scope: args.scope as 'session' | 'user' | 'global',
-          sessionId: ctx.sessionId,
-          userId: ctx.userId,
+          ...owner,
           displayName: args.displayName as string | undefined,
           description: args.description as string | undefined,
           tags: args.tags as string[] | undefined,

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+**BREAKING:** `createRagCollection` takes `RagRegistryCreateCollectionParams`
+(from `@mcp-abap-adt/llm-agent`) in place of its own inline `{ scope;
+sessionId?; userId? }` shape.
+
 **BREAKING:** `makeQdrantReader`/`makeQdrantClient` take `credential?:
 IApiKeyCredential` instead of `apiKey?: string`. The credential is asked on
 every request, never cached, so a rotating key rotates — matching
