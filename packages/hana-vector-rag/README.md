@@ -28,6 +28,23 @@ rag:
 
 See the monorepo root README for full configuration surface.
 
+## Catalog and the rights it needs
+
+`HanaVectorRagProvider` keeps one record per collection in a catalog table of its own
+(`rag_collection_catalog` by default, `catalogTable` to rename it), in the configured schema or the
+connection's current one. `createCollection` creates the collection's table and then writes its
+record; `deleteCollection` deletes the record first, then drops the table; `describeCollections`
+reads the catalog back. The database user the connection uses needs:
+
+| with `autoCreateSchema` | rights |
+|---|---|
+| `true` (default) | `CREATE ANY` on the schema (the catalog table on first use, one table per collection); `SELECT`, `INSERT`, `DELETE` on the catalog; `DROP` on the collection tables (it owns those it created); `SELECT` on `SYS.TABLES` (granted to `PUBLIC` by default) |
+| `false` | no creating DDL is issued: the operator creates the catalog with `createCatalogTableSql(table)` (exported) and each collection table. The user needs `SELECT`, `INSERT`, `DELETE` on the catalog, `SELECT`, `INSERT`, `UPDATE`, `DELETE` on the collection tables, and `DROP` on them — the flag governs creation only, and `deleteCollection` still drops the table |
+
+Without those rights `createCollection` fails where it used to succeed. A collection created before
+this release has a table and no record: take it over once with
+`createCollection(..., { adoptExisting: true })`.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

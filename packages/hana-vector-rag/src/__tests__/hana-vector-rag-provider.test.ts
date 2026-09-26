@@ -134,7 +134,10 @@ describe('HanaVectorRagProvider', () => {
       clientFactory: () => client,
       supportedScopes: ['global'],
     });
-    const r = await provider.createCollection('docs', { scope: 'session' });
+    const r = await provider.createCollection('docs', {
+      scope: 'session',
+      sessionId: 's1',
+    });
     assert.equal(r.ok, false);
   });
 });

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**BREAKING:** the provider keeps a catalog table (`rag_collection_catalog`, configurable as
+`catalogTable`), which the connection's account must be able to create and write (the README's new
+section lists the rights); `createCollection` refuses a collection whose record exists
+(`RAG_DUPLICATE_COLLECTION`) and a table that exists without one (`RAG_ORPHAN_STORE`) unless
+`adoptExisting: true`; re-creating a collection no longer reattaches it — hydrate through
+`describeCollections`/`openCollection`; `deleteCollection` can fail with `CatalogRecordDeleteError`
+(nothing deleted, retry); with `autoCreateSchema: false` the operator also creates the catalog
+(`createCatalogTableSql`), and the flag governs creation only — `deleteCollection` still drops the
+table; without `clientFactory`, catalog work runs on a connection the provider opens itself (delete
+and list no longer throw for its absence).
+
 **BREAKING:** `user`/`password` are gone from `HanaVectorRagConfig`, replaced
 by a **required** `credential` (an `ISecretLoginCredential` from
 `@mcp-abap-adt/interfaces-auth`) — required, unlike `qdrant-rag`'s and

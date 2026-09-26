@@ -24,6 +24,56 @@ export interface HanaClient {
   close(): Promise<void>;
 }
 
+export async function createHanaClient(
+  cfg: HanaVectorRagConfig,
+): Promise<HanaClient> {
+  const args = await resolveHanaConnectArgs(cfg);
+  const mod = (await import('@sap/hana-client')) as unknown as {
+    createConnection: () => {
+      connect: (opts: unknown, cb: (err: Error | null) => void) => void;
+      exec: (
+        sql: string,
+        params: unknown[],
+        cb: (err: Error | null, rows: unknown) => void,
+      ) => void;
+      disconnect: (cb: (err: Error | null) => void) => void;
+    };
+  };
+  const conn = mod.createConnection();
+  await new Promise<void>((resolve, reject) =>
+    conn.connect(args, (err) => (err ? reject(err) : resolve())),
+  );
+  return {
+    exec: (sql, params = []) =>
+      new Promise((resolve, reject) =>
+        conn.exec(sql, params as unknown[], (err, result) =>
+          err
+            ? reject(err)
+            : resolve({
+                rowCount:
+                  typeof result === 'number'
+                    ? result
+                    : Array.isArray(result)
+                      ? result.length
+                      : 0,
+              }),
+        ),
+      ),
+    query: (sql, params = []) =>
+      new Promise((resolve, reject) =>
+        conn.exec(sql, params as unknown[], (err, rows) =>
+          err
+            ? reject(err)
+            : resolve((rows as Array<Record<string, unknown>>) ?? []),
+        ),
+      ),
+    close: () =>
+      new Promise((resolve, reject) =>
+        conn.disconnect((err) => (err ? reject(err) : resolve())),
+      ),
+  };
+}
+
 export class HanaVectorRag implements IRag {
   private readonly collectionName: string;
   private readonly dimension: number;
@@ -46,59 +96,9 @@ export class HanaVectorRag implements IRag {
     // The rejection is re-thrown when clientPromise is actually awaited.
     const driverPromise = injectedClient
       ? Promise.resolve(injectedClient)
-      : this.createDriverClient(config);
+      : createHanaClient(config);
     driverPromise.catch(() => {});
     this.clientPromise = driverPromise;
-  }
-
-  private async createDriverClient(
-    cfg: HanaVectorRagConfig,
-  ): Promise<HanaClient> {
-    const args = await resolveHanaConnectArgs(cfg);
-    const mod = (await import('@sap/hana-client')) as unknown as {
-      createConnection: () => {
-        connect: (opts: unknown, cb: (err: Error | null) => void) => void;
-        exec: (
-          sql: string,
-          params: unknown[],
-          cb: (err: Error | null, rows: unknown) => void,
-        ) => void;
-        disconnect: (cb: (err: Error | null) => void) => void;
-      };
-    };
-    const conn = mod.createConnection();
-    await new Promise<void>((resolve, reject) =>
-      conn.connect(args, (err) => (err ? reject(err) : resolve())),
-    );
-    return {
-      exec: (sql, params = []) =>
-        new Promise((resolve, reject) =>
-          conn.exec(sql, params as unknown[], (err, result) =>
-            err
-              ? reject(err)
-              : resolve({
-                  rowCount:
-                    typeof result === 'number'
-                      ? result
-                      : Array.isArray(result)
-                        ? result.length
-                        : 0,
-                }),
-          ),
-        ),
-      query: (sql, params = []) =>
-        new Promise((resolve, reject) =>
-          conn.exec(sql, params as unknown[], (err, rows) =>
-            err
-              ? reject(err)
-              : resolve((rows as Array<Record<string, unknown>>) ?? []),
-          ),
-        ),
-      close: () =>
-        new Promise((resolve, reject) =>
-          conn.disconnect((err) => (err ? reject(err) : resolve())),
-        ),
-    };
   }
 
   /**
