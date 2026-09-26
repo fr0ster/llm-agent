@@ -229,7 +229,7 @@ export interface ControllerConfig {
     maxFinalizeRetries?: number;
     /** In-process re-ask budget for judge (reviewer) provider/malformed failures. */
     maxReviewRetries?: number;
-    /** Board render budget (§B). Defaulted in parseConfig; validated at load. */
+    /** Board render budget (§B). Defaulted in parseControllerSettings; validated at load. */
     maxDigestChars?: number;
     maxIntentChars?: number;
     maxActiveSteps?: number;

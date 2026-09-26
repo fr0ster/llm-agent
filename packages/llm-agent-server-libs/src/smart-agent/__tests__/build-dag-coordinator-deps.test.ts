@@ -11,6 +11,7 @@ import {
   type BuildDagCoordinatorDepsInput,
   buildDagCoordinatorDeps,
 } from '../build-dag-coordinator-deps.js';
+import { parseDagSettings } from '../pipeline-settings.js';
 
 const stubLlm = {
   name: 'stub',
@@ -39,13 +40,13 @@ function agent(name: string): ISubAgent {
 /** Records every lookup as `role:<name>` or `key:<name>`, so a test states which
  *  of the two questions answered each role. */
 function input(
-  coordCfg: Record<string, unknown> | undefined,
+  section: Record<string, unknown>,
   over: Partial<BuildDagCoordinatorDepsInput> = {},
 ): BuildDagCoordinatorDepsInput & { asked: string[] } {
   const asked: string[] = [];
   return {
     asked,
-    coordCfg,
+    settings: parseDagSettings(section, () => {}),
     registry: new Map([['w', agent('w')]]),
     resolveLlm: async (role) => {
       asked.push(`role:${role}`);
@@ -55,7 +56,6 @@ function input(
       asked.push(`key:${key}`);
       return stubLlm;
     },
-    warn: () => {},
     ...over,
   };
 }
@@ -64,24 +64,24 @@ test('default finalizer is PassthroughFinalizer', async () => {
   const deps = await buildDagCoordinatorDeps(
     input({ planner: { type: 'llm' } }),
   );
-  assert.ok(deps?.finalizer instanceof PassthroughFinalizer);
-  assert.equal(deps?.stateOracle, undefined);
-  assert.equal(deps?.reviewer, undefined);
-  assert.equal(deps?.workers.size, 1);
+  assert.ok(deps.finalizer instanceof PassthroughFinalizer);
+  assert.equal(deps.stateOracle, undefined);
+  assert.equal(deps.reviewer, undefined);
+  assert.equal(deps.workers.size, 1);
 });
 
 test('type=llm finalizer yields LlmFinalizer', async () => {
   const deps = await buildDagCoordinatorDeps(
     input({ planner: { type: 'llm' }, finalizer: { type: 'llm' } }),
   );
-  assert.ok(deps?.finalizer instanceof LlmFinalizer);
+  assert.ok(deps.finalizer instanceof LlmFinalizer);
 });
 
 test('type=template finalizer yields TemplateFinalizer', async () => {
   const deps = await buildDagCoordinatorDeps(
     input({ planner: { type: 'llm' }, finalizer: { type: 'template' } }),
   );
-  assert.ok(deps?.finalizer instanceof TemplateFinalizer);
+  assert.ok(deps.finalizer instanceof TemplateFinalizer);
 });
 
 test('stateOracle resolves, is wrapped, and leaves the worker set', async () => {
@@ -96,31 +96,9 @@ test('stateOracle resolves, is wrapped, and leaves the worker set', async () => 
       },
     ),
   );
-  assert.ok(deps?.stateOracle instanceof SubAgentStateOracle);
-  assert.equal(deps?.workers.has('inspector'), false);
-  assert.equal(deps?.workers.has('w'), true);
-});
-
-test('returns undefined when the planner block is absent', async () => {
-  assert.equal(
-    await buildDagCoordinatorDeps(input({ stateOracle: 'inspector' })),
-    undefined,
-  );
-});
-
-test('reviewer alias plannerLlm still warns', async () => {
-  const warnings: string[] = [];
-  await buildDagCoordinatorDeps(
-    input(
-      {
-        planner: { type: 'llm' },
-        reviewer: { type: 'llm', plannerLlm: 'main' },
-      },
-      { warn: (m) => warnings.push(m) },
-    ),
-  );
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /plannerLlm.*deprecated/i);
+  assert.ok(deps.stateOracle instanceof SubAgentStateOracle);
+  assert.equal(deps.workers.has('inspector'), false);
+  assert.equal(deps.workers.has('w'), true);
 });
 
 test('an omitted key asks resolveLlm with the role name', async () => {

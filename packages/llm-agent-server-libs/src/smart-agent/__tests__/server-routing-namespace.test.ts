@@ -40,6 +40,7 @@ import { fakeControllerServerCtx } from '../../pipelines/__tests__/fixtures.js';
 import { ControllerPipelinePlugin } from '../../pipelines/controller.js';
 import type { IServerPipelineContext } from '../../pipelines/server-context.js';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
+import { parseControllerSettings } from '../pipeline-settings.js';
 import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 
@@ -160,7 +161,7 @@ const SEARCH_TOOL = (name: string): LlmTool =>
   }) as unknown as LlmTool;
 
 async function runController(
-  ctx: Parameters<ControllerPipelinePlugin['build']>[1],
+  ctx: Parameters<ControllerPipelinePlugin['build']>[0],
   calledToolName: string,
 ): Promise<void> {
   const byModel: Record<string, ILlm> = {
@@ -181,22 +182,25 @@ async function runController(
     ]),
   };
 
-  const plugin = new ControllerPipelinePlugin('controller', 'smart-executor');
-  const cfg = plugin.parseConfig({
-    subagents: {
-      evaluator: { provider: 'openai', model: 'm-eval' },
-      planner: { provider: 'openai', model: 'm-plan' },
-      executor: { provider: 'openai', model: 'm-exec' },
-    },
-  });
+  const plugin = new ControllerPipelinePlugin(
+    'controller',
+    'smart-executor',
+    parseControllerSettings({
+      subagents: {
+        evaluator: { provider: 'openai', model: 'm-eval' },
+        planner: { provider: 'openai', model: 'm-plan' },
+        executor: { provider: 'openai', model: 'm-exec' },
+      },
+    }),
+  );
 
   const fullCtx = {
     ...ctx,
     makeLlm: async (c: { model?: string }) =>
       byModel[c.model ?? ''] ?? (ctx as { mainLlm: ILlm }).mainLlm,
-  } as unknown as Parameters<typeof plugin.build>[1];
+  } as unknown as Parameters<typeof plugin.build>[0];
 
-  const inst = await plugin.build(cfg, fullCtx);
+  const inst = await plugin.build(fullCtx);
   try {
     for await (const chunk of inst.agent.streamProcess('search stuff')) {
       void chunk;
@@ -263,7 +267,7 @@ test('controller session-local: s1__Search routes to the SESSION client-1 instan
   };
 
   await runController(
-    ctx as unknown as Parameters<ControllerPipelinePlugin['build']>[1],
+    ctx as unknown as Parameters<ControllerPipelinePlugin['build']>[0],
     's1__Search',
   );
 

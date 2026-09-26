@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { ControllerPipelinePlugin } from '../controller.js';
-import { fakeControllerServerCtx } from './fixtures.js';
+import { parseControllerSettings } from '../../smart-agent/pipeline-settings.js';
+import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
 describe('ControllerPipelinePlugin', () => {
-  it('parseConfig defaults budgets/targetState/sessionMemory and requires subagents', () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
+  it('parseControllerSettings defaults budgets/targetState/sessionMemory and requires subagents', () => {
+    const cfg = parseControllerSettings({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
@@ -20,9 +19,8 @@ describe('ControllerPipelinePlugin', () => {
     assert.equal(cfg.sessionMemory.collection, 'session-memory');
   });
 
-  it('parseConfig merges provided overrides over defaults', () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
+  it('parseControllerSettings merges provided overrides over defaults', () => {
+    const cfg = parseControllerSettings({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
@@ -36,18 +34,14 @@ describe('ControllerPipelinePlugin', () => {
     assert.equal(cfg.targetState.strategy, 'semantic-distance');
   });
 
-  it('parseConfig rejects missing subagents', () => {
-    assert.throws(
-      () => new ControllerPipelinePlugin().parseConfig({}),
-      /subagents/,
-    );
+  it('parseControllerSettings rejects missing subagents', () => {
+    assert.throws(() => parseControllerSettings({}), /subagents/);
   });
 
-  it('parseConfig rejects a removed planner: key with a migration message', () => {
-    const plugin = new ControllerPipelinePlugin();
+  it('parseControllerSettings rejects a removed planner: key with a migration message', () => {
     assert.throws(
       () =>
-        plugin.parseConfig({
+        parseControllerSettings({
           subagents: {
             evaluator: { provider: 'openai' },
             planner: { provider: 'openai' },
@@ -59,9 +53,8 @@ describe('ControllerPipelinePlugin', () => {
     );
   });
 
-  it('parseConfig accepts a controller config with no planner key', () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
+  it('parseControllerSettings accepts a controller config with no planner key', () => {
+    const cfg = parseControllerSettings({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
@@ -72,9 +65,8 @@ describe('ControllerPipelinePlugin', () => {
     assert.ok(!('planner' in cfg));
   });
 
-  it('parseConfig defaults the board-budget knobs', () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
+  it('parseControllerSettings defaults the board-budget knobs', () => {
+    const cfg = parseControllerSettings({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
@@ -86,9 +78,8 @@ describe('ControllerPipelinePlugin', () => {
     assert.equal(cfg.budgets.keepRecentDigests, 8);
   });
 
-  it('parseConfig lets explicit budgets override board defaults', () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
+  it('parseControllerSettings lets explicit budgets override board defaults', () => {
+    const cfg = parseControllerSettings({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
@@ -100,9 +91,8 @@ describe('ControllerPipelinePlugin', () => {
     assert.equal(cfg.budgets.maxDigestChars, 500); // untouched default
   });
 
-  it('parseConfig defaults the wait knobs', () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
+  it('parseControllerSettings defaults the wait knobs', () => {
+    const cfg = parseControllerSettings({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
@@ -113,9 +103,8 @@ describe('ControllerPipelinePlugin', () => {
     assert.equal(cfg.budgets.maxTotalWaitMs, 1_800_000);
   });
 
-  it('parseConfig honours explicit wait knobs', () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
+  it('parseControllerSettings honours explicit wait knobs', () => {
+    const cfg = parseControllerSettings({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
@@ -128,11 +117,10 @@ describe('ControllerPipelinePlugin', () => {
   });
 
   for (const bad of ['600000', Number.NaN, -1, 0, 1.5]) {
-    it(`parseConfig throws for maxWaitMs=${String(bad)}`, () => {
-      const plugin = new ControllerPipelinePlugin();
+    it(`parseControllerSettings throws for maxWaitMs=${String(bad)}`, () => {
       assert.throws(
         () =>
-          plugin.parseConfig({
+          parseControllerSettings({
             subagents: {
               evaluator: { provider: 'openai' },
               planner: { provider: 'openai' },
@@ -146,11 +134,10 @@ describe('ControllerPipelinePlugin', () => {
   }
 
   for (const bad of ['1800000', Number.NaN, -1, 1.5]) {
-    it(`parseConfig throws for maxTotalWaitMs=${String(bad)}`, () => {
-      const plugin = new ControllerPipelinePlugin();
+    it(`parseControllerSettings throws for maxTotalWaitMs=${String(bad)}`, () => {
       assert.throws(
         () =>
-          plugin.parseConfig({
+          parseControllerSettings({
             subagents: {
               evaluator: { provider: 'openai' },
               planner: { provider: 'openai' },
@@ -164,15 +151,7 @@ describe('ControllerPipelinePlugin', () => {
   }
 
   it('build returns an instance with agent + close', async () => {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
-      subagents: {
-        evaluator: { provider: 'openai' },
-        planner: { provider: 'openai' },
-        executor: { provider: 'openai' },
-      },
-    });
-    const inst = await plugin.build(cfg, fakeControllerServerCtx());
+    const inst = await controllerPlugin().build(fakeControllerServerCtx());
     assert.ok(inst.agent);
     assert.equal(typeof inst.close, 'function');
     await inst.close();

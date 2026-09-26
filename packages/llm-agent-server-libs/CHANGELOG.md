@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**BREAKING:** the built-in pipeline plugins take settings in their
+constructors instead of reading a `parseConfig(raw)`/`build(cfg, ctx)` pair —
+`FlatPipelinePlugin()`, `LinearPipelinePlugin(settings)`,
+`StepperPipelinePlugin(settings)`, `DagPipelinePlugin(settings)`,
+`ControllerPipelinePlugin(name, plannerKind, settings)`. The four dialects
+move to `pipeline-settings.ts` and are exported: `parseLinearSettings`,
+`parseDagSettings`, `parseStepperSettings`, `parseControllerSettings`,
+`dagNamedLlmKeys`, `assertNamedLlmKeys`. `SmartServer`'s registry is now a map
+of `PipelinePluginFactory`; the selected one is constructed once at startup
+(not per session) and its result is checked where it is called, naming the
+module and the key. A `dag` section naming an `llm:` key with no entry, and an
+unknown pipeline name, now fail at startup instead of at the first session.
+`buildDagCoordinatorDeps` takes `{ settings: DagPipelineSettings, ... }`
+instead of a raw `coordCfg`, and never returns `undefined` (the settings are
+already validated to have a planner).
+
 **BREAKING:** `IServerPipelineContext` loses `llmMap` and `pipelineFallback`;
 `IRoleLlmResolver` loses `makeLlm` and gains `resolveNamed` (a declared
 `main`/`classifier`/`helper` key answers with the held instance `PUT

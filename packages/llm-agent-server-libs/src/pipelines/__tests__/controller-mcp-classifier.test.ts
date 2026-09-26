@@ -28,8 +28,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
-import { ControllerPipelinePlugin } from '../controller.js';
-import { fakeControllerServerCtx } from './fixtures.js';
+import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
 // Non-zero constant embedder so goal/prompt semantic distance is 0 (target-state
 // established, not the ambiguity gate): the fixture's dim-1 [0] embedder yields
@@ -112,8 +111,7 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       ]),
     };
 
-    const plugin = new ControllerPipelinePlugin('controller', 'smart-executor');
-    const cfg = plugin.parseConfig({
+    const plugin = controllerPlugin('controller', 'smart-executor', {
       subagents: {
         evaluator: { provider: 'openai', model: 'm-eval' },
         planner: { provider: 'openai', model: 'm-plan' },
@@ -147,9 +145,9 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       },
       mcpClients: [fakeClient],
       mcpFailureClassifier: spyClassifier,
-    } as unknown as Parameters<typeof plugin.build>[1];
+    } as unknown as Parameters<typeof plugin.build>[0];
 
-    const inst = await plugin.build(cfg, ctx);
+    const inst = await plugin.build(ctx);
 
     const captured: string[] = [];
     for await (const chunk of inst.agent.streamProcess('do the thing')) {

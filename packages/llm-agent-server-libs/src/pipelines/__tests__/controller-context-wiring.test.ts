@@ -9,8 +9,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { RagRecallContextStrategy } from '@mcp-abap-adt/llm-agent-libs';
 import { ControllerFactory } from '../../factories/controller-factory.js';
-import { ControllerPipelinePlugin } from '../controller.js';
-import { fakeControllerServerCtx } from './fixtures.js';
+import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
 // The RagRecall factory is constructed inside ControllerPipelinePlugin.build and
 // handed to the ControllerFactory (→ handler) as `deps.toolLoopContextStrategyFactory`.
@@ -32,15 +31,7 @@ async function buildAndCaptureFactory(
     return orig.call(this, cfg, deps, kind);
   } as typeof orig;
   try {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
-      subagents: {
-        evaluator: { provider: 'openai' },
-        planner: { provider: 'openai' },
-        executor: { provider: 'openai' },
-      },
-    });
-    const inst = await plugin.build(cfg, {
+    const inst = await controllerPlugin().build({
       ...fakeControllerServerCtx(),
       ...ctxOverride,
     });

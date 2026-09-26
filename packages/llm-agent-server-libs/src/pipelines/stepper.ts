@@ -9,10 +9,7 @@ import {
   type StepperFactoryConfig,
   type StepperFactoryDeps,
 } from '../factories/index.js';
-import {
-  parseStepperCoordinatorConfig,
-  type StepperCoordinatorConfig,
-} from './parsers.js';
+import type { StepperCoordinatorConfig } from '../smart-agent/stepper-config.js';
 import type { IServerPipelineContext } from './server-context.js';
 
 /**
@@ -29,21 +26,13 @@ import type { IServerPipelineContext } from './server-context.js';
  * flow, so do not migrate a `stepper` config onto it. May be removed in a future
  * major.
  */
-export class StepperPipelinePlugin
-  implements IPipelinePlugin<StepperCoordinatorConfig>
-{
+export class StepperPipelinePlugin implements IPipelinePlugin {
   readonly name = 'stepper';
 
-  parseConfig(raw: unknown): StepperCoordinatorConfig {
-    return parseStepperCoordinatorConfig(
-      (raw ?? {}) as Record<string, unknown>,
-    );
-  }
+  constructor(private readonly settings: StepperCoordinatorConfig) {}
 
-  async build(
-    cfg: StepperCoordinatorConfig,
-    ctx: IServerPipelineContext,
-  ): Promise<IPipelineInstance> {
+  async build(ctx: IServerPipelineContext): Promise<IPipelineInstance> {
+    const cfg = this.settings;
     const spec: StepperFactoryConfig = {
       granularity: cfg.flow.granularity,
       finalizer: cfg.flow.finalizer,

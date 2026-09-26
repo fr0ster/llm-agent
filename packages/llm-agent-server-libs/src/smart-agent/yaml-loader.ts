@@ -115,7 +115,7 @@ log: smart-server.log                 # path to log file; omit for stdout
 
 # pipeline:                           # Optional: select the request pipeline.
 #   name: flat                        # flat (default) | linear | dag | stepper | controller | controller-weak | <plugin>
-#   config:                           # Opaque per-pipeline dialect (validated by the plugin)
+#   config:                           # The selected pipeline's section (parsed at startup by the server, or by a dynamic plugin's factory)
 #     mode: planned-react             # e.g. stepper: cyclic-react | planned-react | deep-stepper
 #     knowledgeSeed: []               # stepper: deployment-supplied tool guidance
 #

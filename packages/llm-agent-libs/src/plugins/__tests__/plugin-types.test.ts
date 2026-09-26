@@ -133,7 +133,6 @@ describe('mergePluginExports — mcpClients', () => {
 function stubPipeline(name: string): IPipelinePlugin {
   return {
     name,
-    parseConfig: (r) => r,
     build: async () => ({ agent: {} as never, close: async () => {} }),
   };
 }

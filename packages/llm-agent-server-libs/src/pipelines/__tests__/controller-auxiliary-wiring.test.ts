@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DefaultAuxiliaryMcpTools } from '@mcp-abap-adt/llm-agent-mcp';
 import { ControllerFactory } from '../../factories/controller-factory.js';
-import { ControllerPipelinePlugin } from '../controller.js';
-import { fakeControllerServerCtx } from './fixtures.js';
+import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
 // Reuse the ControllerFactoryDeps-capturing harness from
 // controller-step-control-wiring.test.ts (same dir): build the controller
@@ -36,15 +35,7 @@ async function buildAndCaptureControllerDeps(
     return orig.call(this, cfg, deps, kind);
   } as typeof orig;
   try {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
-      subagents: {
-        evaluator: { provider: 'openai' },
-        planner: { provider: 'openai' },
-        executor: { provider: 'openai' },
-      },
-    });
-    const inst = await plugin.build(cfg, {
+    const inst = await controllerPlugin().build({
       ...fakeControllerServerCtx(),
       ...ctxOverride,
     });

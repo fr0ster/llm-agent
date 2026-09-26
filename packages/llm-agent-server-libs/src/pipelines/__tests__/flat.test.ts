@@ -6,8 +6,7 @@ import { fakeServerCtx } from './fixtures.js';
 describe('FlatPipelinePlugin', () => {
   it('builds an instance with no coordinator, streams, and closes', async () => {
     const plugin = new FlatPipelinePlugin();
-    const cfg = plugin.parseConfig({});
-    const inst = await plugin.build(cfg, fakeServerCtx());
+    const inst = await plugin.build(fakeServerCtx());
     assert.equal(typeof inst.agent.streamProcess, 'function');
     await inst.close();
   });

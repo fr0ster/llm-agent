@@ -223,12 +223,16 @@ Each built-in plugin has a subpath export (`./flat`, `./linear`, `./dag`,
 `./stepper`, `./controller`). Two ways to use a pipeline without YAML:
 
 ```ts
-// (a) Use the plugin programmatically — parse a config object, build against a
-//     server pipeline context (createServerPipelineContext wires the infra).
+// (a) Use the plugin programmatically — parse the section with the server's own
+//     parser, construct the plugin with the typed settings, and build against a
+//     server pipeline context (createServerPipelineContext wires the infra). A
+//     plugin reads no configuration: parsing is the caller's job, same as the
+//     server's registry does it.
+import { parseControllerSettings } from '@mcp-abap-adt/llm-agent-server-libs';
 import { ControllerPipelinePlugin } from '@mcp-abap-adt/llm-agent-server-libs/controller';
-const plugin = new ControllerPipelinePlugin();
-const cfg = plugin.parseConfig({ subagents: { evaluator, planner, executor } });
-const { agent, close } = await plugin.build(cfg, serverCtx);
+const settings = parseControllerSettings({ subagents: { evaluator, planner, executor } });
+const plugin = new ControllerPipelinePlugin('controller', 'smart-executor', settings);
+const { agent, close } = await plugin.build(serverCtx);
 
 // (b) Compose the coordinator onto your own SmartAgentBuilder via the
 //     ControllerFactory — an IPipelineFactory (kind 'controller'), the

@@ -64,3 +64,29 @@ export function fakeControllerServerCtx(): IControllerServerPipelineContext {
     embedder: stubEmbedder,
   };
 }
+
+import type { PlannerKind } from '../../smart-agent/controller/types.js';
+import { parseControllerSettings } from '../../smart-agent/pipeline-settings.js';
+import { ControllerPipelinePlugin } from '../controller.js';
+
+/** The smallest valid controller section. Task B15 changes its subagent shape here. */
+export const MIN_CONTROLLER_SECTION = {
+  subagents: {
+    evaluator: { provider: 'openai' },
+    planner: { provider: 'openai' },
+    executor: { provider: 'openai' },
+  },
+};
+
+/** A controller plugin constructed the way SmartServer's registry constructs it. */
+export function controllerPlugin(
+  name = 'controller',
+  kind: PlannerKind = 'smart-executor',
+  section: unknown = MIN_CONTROLLER_SECTION,
+): ControllerPipelinePlugin {
+  return new ControllerPipelinePlugin(
+    name,
+    kind,
+    parseControllerSettings(section),
+  );
+}

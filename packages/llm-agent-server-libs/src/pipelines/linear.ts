@@ -2,38 +2,44 @@ import type {
   IPipelineInstance,
   IPipelinePlugin,
 } from '@mcp-abap-adt/llm-agent';
+import type { CoordinatorHandlerDeps } from '@mcp-abap-adt/llm-agent-libs';
 import { LinearFactory } from '../factories/index.js';
-import { parseLinearConfig } from './parsers.js';
+import type { LinearPipelineSettings } from '../smart-agent/pipeline-settings.js';
+import {
+  resolveCoordinatorDispatch,
+  resolveCoordinatorDispatchKind,
+  resolveCoordinatorPlanning,
+} from './coordinator-resolvers.js';
 import { registerSkillSources } from './register-skill-sources.js';
 import type { IServerPipelineContext } from './server-context.js';
 
-/** Config = the raw `coordinator:` (linear) YAML block. */
-export type LinearPipelineConfig = Record<string, unknown>;
-
 /**
- * Built-in `linear` pipeline plugin. The raw config is resolved into
- * {@link CoordinatorHandlerDeps} (via {@link parseLinearConfig}) at build time
- * (it needs `ctx` to resolve LLMs), wrapped by {@link LinearFactory} into a
- * {@link CoordinatorHandler}, registered on a fresh agent builder, and returned
- * as a runnable agent plus a disposal hook.
+ * Built-in `linear` pipeline plugin. Constructed with settings the server parsed
+ * (`parseLinearSettings`); the planner's LLM is a lookup, so it happens here, per
+ * session, through `ctx`.
  */
-export class LinearPipelinePlugin
-  implements IPipelinePlugin<LinearPipelineConfig>
-{
+export class LinearPipelinePlugin implements IPipelinePlugin {
   readonly name = 'linear';
 
-  parseConfig(raw: unknown): LinearPipelineConfig {
-    return (raw ?? {}) as Record<string, unknown>;
-  }
+  constructor(private readonly settings: LinearPipelineSettings) {}
 
-  async build(
-    cfg: LinearPipelineConfig,
-    ctx: IServerPipelineContext,
-  ): Promise<IPipelineInstance> {
-    const deps = await parseLinearConfig(cfg, ctx);
+  async build(ctx: IServerPipelineContext): Promise<IPipelineInstance> {
+    const s = this.settings;
+    const plannerLlm = await ctx.resolveLlm('planner');
+    const deps: CoordinatorHandlerDeps = {
+      planning: resolveCoordinatorPlanning(s.planning, plannerLlm),
+      dispatch: resolveCoordinatorDispatch(
+        resolveCoordinatorDispatchKind(s.dispatch),
+        plannerLlm,
+        undefined,
+      ),
+      maxSteps: s.maxSteps,
+      maxRetriesPerStep: s.maxRetriesPerStep,
+      failPolicy: s.failPolicy,
+    };
     const { handler } = await new LinearFactory().build(deps, {
       makeRoleLlm: (role) => ctx.resolveLlm(role),
-      callMcp: (n, a, s) => ctx.callMcp(n, a, s),
+      callMcp: (n, a, sig) => ctx.callMcp(n, a, sig),
     });
     const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
     const handle = await builder.withStepperCoordinator(handler).build();

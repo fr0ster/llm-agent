@@ -34,6 +34,7 @@ import type {
   McpCallResult,
   McpClientDescriptor,
   NamespaceClientInput,
+  PipelinePluginFactory,
   PluginExports,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -232,10 +233,12 @@ export interface SmartServerConfig {
   prompts?: SmartServerPromptsConfig;
   mode?: SmartServerMode;
   /**
-   * Pipeline selection: which pipeline plugin runs the agent, plus its
-   * plugin-specific config dialect (validated by the plugin's `parseConfig`).
-   * Built-in names: `flat` | `linear` | `dag` | `stepper`. Plugins may register
-   * additional names. When omitted, defaults to `flat`.
+   * Pipeline selection: which pipeline plugin runs the agent, plus its section
+   * (`config`), parsed by the server for a built-in or by the plugin's factory
+   * for a dynamic plugin; a plugin reads no configuration (§4.6.7). Built-in
+   * names: `flat` | `linear` | `dag` | `stepper` | `controller` |
+   * `controller-weak`. Plugins may register additional names. When omitted,
+   * defaults to `flat`.
    *
    * NOTE: this REPLACES the legacy `pipeline:` block (mcp/rag/stages/llm
    * overrides). Top-level `mcp:`, `rag:`, and `llm:` now own those concerns.
@@ -484,6 +487,15 @@ import {
   rebindProvenanceToClients,
 } from './mcp/namespaced-bridge.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
+import {
+  assertNamedLlmKeys,
+  dagNamedLlmKeys,
+  parseControllerSettings,
+  parseDagSettings,
+  parseLinearSettings,
+  parseStepperSettings,
+} from './pipeline-settings.js';
+import { selectPipelinePlugin } from './select-pipeline-plugin.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
@@ -873,12 +885,12 @@ export class SmartServer {
   private readonly _sessionMetaStore: ISessionMetaStore =
     new InMemorySessionMetaStore();
   /**
-   * Pipeline-plugin registry, populated in `start()` after plugins load: the 6
-   * built-ins (flat/linear/dag/stepper/controller/controller-weak) plus any
-   * `plugins.pipelinePlugins`, fail-fast on name collision.
-   * `buildPipelineInstance` selects by `cfg.pipeline.name` (default 'flat').
+   * The ONE pipeline plugin this server runs: its factory was selected by
+   * `cfg.pipeline.name` (default 'flat') and called once in `_buildInfra`, with
+   * `cfg.pipeline.config` parsed by the server (built-ins) or by the plugin author's
+   * factory (dynamic). `buildPipelineInstance` only builds it per session.
    */
-  private _pipelineRegistry!: Map<string, IPipelinePlugin>;
+  private _pipelinePlugin!: IPipelinePlugin;
   /**
    * Per-session `IPipelineInstance.close()` hooks, keyed by sessionId. Populated
    * by `buildPipelineInstance` (via `buildSessionAgent`) and invoked from the
@@ -1121,36 +1133,79 @@ export class SmartServer {
       log({ event: 'plugin_specifier_loaded', spec, registered });
     }
 
-    // ---- Pipeline-plugin registry (sub-goal C) ---------------------------
-    // The 6 built-ins are STATIC; plugin-supplied pipelines are merged on top.
-    // Fail-fast on a name collision so a plugin cannot silently shadow a
-    // built-in (or another plugin). `buildPipelineInstance` selects by
-    // `cfg.pipeline.name` (default 'flat') at session-build time.
-    const pipelineRegistry = new Map<string, IPipelinePlugin>();
-    for (const builtin of [
-      new FlatPipelinePlugin(),
-      new LinearPipelinePlugin(),
-      new DagPipelinePlugin(),
-      new StepperPipelinePlugin(),
-      new ControllerPipelinePlugin('controller', 'smart-executor'),
-      new ControllerPipelinePlugin('controller-weak', 'weak-executor'),
-    ]) {
-      pipelineRegistry.set(builtin.name, builtin);
-    }
-    for (const [name, plugin] of plugins.pipelinePlugins) {
+    // ---- Pipeline-plugin registry: factories (§4.6.7) -------------------
+    // Built-ins are server code — parse, validate, construct with typed settings.
+    // A dynamic instance export is registered as a factory that ignores its
+    // section; a dynamic factory is the plugin author's parser. Only the selected
+    // entry is ever called, once, below.
+    const warn = (m: string) => this.warn(m);
+    const pipelineRegistry = new Map<string, PipelinePluginFactory>([
+      ['flat', () => new FlatPipelinePlugin()],
+      ['linear', (s) => new LinearPipelinePlugin(parseLinearSettings(s))],
+      [
+        'dag',
+        (s) => {
+          const settings = parseDagSettings(s, warn);
+          assertNamedLlmKeys(
+            dagNamedLlmKeys(settings),
+            this._llmMap,
+            "pipeline 'dag'",
+          );
+          return new DagPipelinePlugin(settings);
+        },
+      ],
+      ['stepper', (s) => new StepperPipelinePlugin(parseStepperSettings(s))],
+      [
+        'controller',
+        (s) =>
+          new ControllerPipelinePlugin(
+            'controller',
+            'smart-executor',
+            parseControllerSettings(s),
+          ),
+      ],
+      [
+        'controller-weak',
+        (s) =>
+          new ControllerPipelinePlugin(
+            'controller-weak',
+            'weak-executor',
+            parseControllerSettings(s),
+          ),
+      ],
+    ]);
+    const pipelineSources = new Map<string, string>(
+      [...pipelineRegistry.keys()].map((k) => [k, 'built-in']),
+    );
+    const registerPipeline = (
+      name: string,
+      factory: PipelinePluginFactory,
+    ): void => {
+      const source = plugins.pipelinePluginSources.get(name) ?? 'unknown';
       if (pipelineRegistry.has(name)) {
         throw new Error(
           `pipeline plugin name collision: '${name}' is already registered ` +
-            '(built-in or another plugin)',
+            `(built-in or another plugin) — '${source}' against '${pipelineSources.get(name)}'`,
         );
       }
-      pipelineRegistry.set(name, plugin);
+      pipelineRegistry.set(name, factory);
+      pipelineSources.set(name, source);
+    };
+    for (const [name, plugin] of plugins.pipelinePlugins)
+      registerPipeline(name, () => plugin);
+    for (const [name, factory] of plugins.pipelinePluginFactories ?? []) {
+      registerPipeline(name, factory);
     }
-    this._pipelineRegistry = pipelineRegistry;
     log({
       event: 'pipeline_registry_loaded',
       pipelines: [...pipelineRegistry.keys()],
     });
+    this._pipelinePlugin = selectPipelinePlugin(
+      pipelineRegistry,
+      pipelineSources,
+      this.cfg.pipeline?.name ?? 'flat',
+      this.cfg.pipeline?.config ?? {},
+    );
 
     // Merge plugin embedder factories with config-provided ones
     const mergedEmbedderFactories = {
@@ -2332,27 +2387,16 @@ export class SmartServer {
   }
 
   /**
-   * Build the per-session pipeline instance from the registry. Selects the
-   * plugin by `cfg.pipeline.name` (default 'flat'), parses its config dialect,
-   * and builds it against a session-scoped pipeline context. The returned
-   * `IPipelineInstance` carries `{ agent, close }` — the session consumes
-   * `agent`; `buildSessionAgent` registers `close` into the session-dispose path.
+   * Build the per-session pipeline instance from the plugin selected at startup,
+   * against a session-scoped pipeline context. The returned `IPipelineInstance`
+   * carries `{ agent, close }`; `buildSessionAgent` registers `close` into the
+   * session-dispose path.
    */
   private async buildPipelineInstance(scope: {
     sessionId: string;
     parts: SessionAgentParts;
   }): Promise<IPipelineInstance> {
-    const name = this.cfg.pipeline?.name ?? 'flat';
-    const plugin = this._pipelineRegistry.get(name);
-    if (!plugin) {
-      throw new Error(
-        `unknown pipeline '${name}'; available: ${[
-          ...this._pipelineRegistry.keys(),
-        ].join(', ')}`,
-      );
-    }
-    const cfg = plugin.parseConfig(this.cfg.pipeline?.config ?? {});
-    return plugin.build(cfg, await this.buildServerCtx(scope));
+    return this._pipelinePlugin.build(await this.buildServerCtx(scope));
   }
 
   private warn(msg: string): void {

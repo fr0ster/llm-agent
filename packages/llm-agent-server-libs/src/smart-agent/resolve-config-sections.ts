@@ -573,9 +573,9 @@ export function resolvePipelineSelection(yaml: YamlConfig): {
   pipeline?: SmartServerConfig['pipeline'];
 } {
   // Pipeline selection: `pipeline: { name, config }`. `name` is required;
-  // `config` is the plugin's opaque dialect (validated by the plugin's
-  // parseConfig at build time). A bare string (`pipeline: stepper`) is
-  // accepted as shorthand for `{ name: <string> }`.
+  // `config` is the selected plugin's section, parsed at startup by the server
+  // (built-ins) or by the plugin's factory (dynamic). A bare string
+  // (`pipeline: stepper`) is accepted as shorthand for `{ name: <string> }`.
   const raw = (yaml as { pipeline?: unknown }).pipeline;
   if (raw === undefined || raw === null) return {};
   if (typeof raw === 'string') return { pipeline: { name: raw } };

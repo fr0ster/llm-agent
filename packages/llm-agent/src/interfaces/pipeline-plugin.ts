@@ -91,12 +91,13 @@ export interface IPipelineContext {
   waitStrategy?: IWaitStrategy;
 }
 
-/** A pipeline plugin = the implementation of an agent variant. It names itself,
- *  validates its own config dialect, and builds the agent. */
-export interface IPipelinePlugin<Config = unknown> {
+/** A pipeline plugin = the implementation of an agent variant. It names itself and
+ *  builds the agent. It reads no configuration: whoever assembles the pipeline
+ *  parses its section and constructs it with typed settings, and every assembled or
+ *  authorized instance it uses reaches it through `ctx` (§4.6.7). */
+export interface IPipelinePlugin {
   readonly name: string;
-  parseConfig(raw: unknown): Config;
-  build(config: Config, ctx: IPipelineContext): Promise<IPipelineInstance>;
+  build(ctx: IPipelineContext): Promise<IPipelineInstance>;
 }
 
 /** Builds a plugin from its `pipeline.config` section. The server calls only the

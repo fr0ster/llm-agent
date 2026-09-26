@@ -9,8 +9,7 @@ import type {
 import { ControllerFactory } from '../../factories/controller-factory.js';
 import { DefaultStepExecutionControl } from '../../smart-agent/controller/default-step-execution-control.js';
 import { NoopRunExecutionControl } from '../../smart-agent/controller/noop-run-execution-control.js';
-import { ControllerPipelinePlugin } from '../controller.js';
-import { fakeControllerServerCtx } from './fixtures.js';
+import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
 // Spy on ControllerFactory.prototype.build to capture the handler deps injected
 // by ControllerPipelinePlugin.build — mirrors controller-context-wiring.test.ts.
@@ -43,15 +42,7 @@ async function buildAndCaptureDeps(
     return orig.call(this, cfg, deps, kind);
   } as typeof orig;
   try {
-    const plugin = new ControllerPipelinePlugin();
-    const cfg = plugin.parseConfig({
-      subagents: {
-        evaluator: { provider: 'openai' },
-        planner: { provider: 'openai' },
-        executor: { provider: 'openai' },
-      },
-    });
-    const inst = await plugin.build(cfg, {
+    const inst = await controllerPlugin().build({
       ...fakeControllerServerCtx(),
       ...ctxOverride,
     });

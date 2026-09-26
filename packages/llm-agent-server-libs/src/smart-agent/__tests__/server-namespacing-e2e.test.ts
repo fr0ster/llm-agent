@@ -69,6 +69,7 @@ import { buildStepperRoot } from '../build-stepper-root.js';
 import { makeKnowledgeSemanticIndex } from '../embedder-knowledge-index.js';
 import { buildSessionMcpClients } from '../mcp/build-session-mcp-clients.js';
 import { buildNamespacedMcpBridge } from '../mcp/namespaced-bridge.js';
+import { parseControllerSettings } from '../pipeline-settings.js';
 import {
   connectMcpClientsWithDescriptorsFromConfig,
   SmartServer,
@@ -710,14 +711,17 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       ]),
     };
 
-    const plugin = new ControllerPipelinePlugin('controller', 'smart-executor');
-    const cfg = plugin.parseConfig({
-      subagents: {
-        evaluator: { provider: 'openai', model: 'm-eval' },
-        planner: { provider: 'openai', model: 'm-plan' },
-        executor: { provider: 'openai', model: 'm-exec' },
-      },
-    });
+    const plugin = new ControllerPipelinePlugin(
+      'controller',
+      'smart-executor',
+      parseControllerSettings({
+        subagents: {
+          evaluator: { provider: 'openai', model: 'm-eval' },
+          planner: { provider: 'openai', model: 'm-plan' },
+          executor: { provider: 'openai', model: 'm-exec' },
+        },
+      }),
+    );
 
     const base = fakeControllerServerCtx();
     const fullCtx = {
@@ -742,9 +746,9 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       toolClientMap: ctx.toolClientMap,
       makeLlm: async (c: { model?: string }) =>
         byModel[c.model ?? ''] ?? byModel['m-exec'],
-    } as unknown as Parameters<typeof plugin.build>[1];
+    } as unknown as Parameters<typeof plugin.build>[0];
 
-    const inst = await plugin.build(cfg, fullCtx);
+    const inst = await plugin.build(fullCtx);
     try {
       for await (const chunk of inst.agent.streamProcess('search stuff')) {
         void chunk;

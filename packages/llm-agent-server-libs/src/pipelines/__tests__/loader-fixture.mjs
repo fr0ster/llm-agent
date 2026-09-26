@@ -4,7 +4,6 @@
 export const pipelinePlugins = {
   'demo-ext': {
     name: 'demo-ext',
-    parseConfig: (r) => r ?? {},
     build: async () => ({
       agent: {
         process: async () => ({}),

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**BREAKING:** `IPipelinePlugin` is `name` + `build(ctx)`: it loses `parseConfig`
+and `build`'s config parameter. A plugin reads no configuration — whoever
+assembles the pipeline parses its section and constructs it with typed
+settings. A plugin with settings is exported through
+`PluginExports.pipelinePluginFactories`, whose factory takes the raw section
+and constructs itself.
+
 **BREAKING:** `IPipelineContext` gains the required `resolveNamedLlm(key)` — a
 strict lookup that answers only from an `llm:` entry of exactly that name — so
 every implementation must add it.

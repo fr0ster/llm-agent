@@ -4,17 +4,15 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { DagCoordinatorHandler } from '@mcp-abap-adt/llm-agent-libs';
 import { buildDagCoordinatorDeps } from '../smart-agent/build-dag-coordinator-deps.js';
+import type { DagPipelineSettings } from '../smart-agent/pipeline-settings.js';
 import { registerSkillSources } from './register-skill-sources.js';
 import type { IServerPipelineContext } from './server-context.js';
 
-/** Config = the raw `coordinator:` (DAG) YAML block, validated by parseConfig. */
-export type DagPipelineConfig = Record<string, unknown>;
-
 /**
- * Built-in `dag` pipeline plugin. Validates the raw DAG coordinator config
- * (requires a `planner`), assembles the coordinator deps via the shared
- * `buildDagCoordinatorDeps`, registers a `DagCoordinatorHandler` on a fresh
- * agent builder, and returns the runnable agent plus a disposal hook.
+ * Built-in `dag` pipeline plugin. Assembles the coordinator deps via the shared
+ * `buildDagCoordinatorDeps` from the settings the server parsed
+ * (`parseDagSettings`), registers a `DagCoordinatorHandler` on a fresh agent
+ * builder, and returns the runnable agent plus a disposal hook.
  *
  * @deprecated Legacy pipeline. `dag` runs on its own legacy coordinator/step
  * interpreter and stays selectable only for backward compatibility — it is not
@@ -23,33 +21,18 @@ export type DagPipelineConfig = Record<string, unknown>;
  * it. The controller interpreter was not designed to drive the legacy DAG flow,
  * so do not migrate a `dag` config onto it. May be removed in a future major.
  */
-export class DagPipelinePlugin implements IPipelinePlugin<DagPipelineConfig> {
+export class DagPipelinePlugin implements IPipelinePlugin {
   readonly name = 'dag';
 
-  parseConfig(raw: unknown): DagPipelineConfig {
-    const cfg = (raw ?? {}) as Record<string, unknown>;
-    if (cfg.planner === undefined) {
-      throw new Error("pipeline 'dag' requires a 'planner' in its config");
-    }
-    return cfg;
-  }
+  constructor(private readonly settings: DagPipelineSettings) {}
 
-  async build(
-    cfg: DagPipelineConfig,
-    ctx: IServerPipelineContext,
-  ): Promise<IPipelineInstance> {
+  async build(ctx: IServerPipelineContext): Promise<IPipelineInstance> {
     const deps = await buildDagCoordinatorDeps({
-      coordCfg: cfg,
+      settings: this.settings,
       registry: ctx.workerRegistry,
       resolveLlm: (role) => ctx.resolveLlm(role),
       resolveNamedLlm: (key) => ctx.resolveNamedLlm(key),
-      warn: (m) => ctx.warn(m),
     });
-    if (!deps) {
-      throw new Error(
-        "pipeline 'dag': buildDagCoordinatorDeps returned undefined",
-      );
-    }
     const handler = new DagCoordinatorHandler(deps);
     const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
     const handle = await builder.withStepperCoordinator(handler).build();
