@@ -251,7 +251,7 @@ import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controlle
 declare const llms: Record<'evaluator' | 'planner' | 'executor', ILlm>;
 
 const { handler } = await new ControllerFactory().build(config, {
-  makeRoleLlm: (role) => llms[role as 'evaluator' | 'planner' | 'executor'],
+  makeRoleLlm: async (role) => llms[role as 'evaluator' | 'planner' | 'executor'],
   callMcp, backend, knowledgeRagFor, embedder, selectTools,
   // model ids for usage attribution are derived from the resolved LLMs.
 });

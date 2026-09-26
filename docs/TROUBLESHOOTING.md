@@ -92,7 +92,7 @@ For new model families not covered by `^gemini` heuristic, extend `detectFamily`
 
 ```bash
 node --env-file=.env -e "
-const k = JSON.parse(process.env.AICORE_SERVICE_KEY);
+const k = JSON.parse(process.env.LLM_SERVICE_KEY);
 (async () => {
   const t = await fetch(k.url + '/oauth/token', {
     method:'POST',

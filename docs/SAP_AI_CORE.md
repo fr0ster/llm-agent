@@ -350,7 +350,7 @@ Use this endpoint to dynamically discover which embedding model names are valid 
 | `401 Unauthorized` | Invalid or expired credentials | Regenerate service key in BTP cockpit |
 | `Model not found` | Model not deployed | Deploy the model in SAP AI Core Launchpad |
 | `Resource group not found` | Wrong resource group | Check `SAP_AI_RESOURCE_GROUP` value |
-| `OAuth2 token error` | Wrong `tokenServiceUrl` | Verify the URL from service key `uaa.url` |
+| `OAuth2 token error` | Wrong `url` in the service-key JSON | The token endpoint is derived from the service key's own `url` field (`serviceKeyCredential`/`parseServiceKey`), not a separately configured field — verify it matches the BTP service key exactly |
 | `429 Too Many Requests` surviving the retries | Sustained throttling — the per-minute quota for that model is smaller than the traffic | The error carries `throttled` and `retryAfterSeconds`; see [Throttling](#throttling-429). Spread load across resource groups or raise the model's limit |
 | `400 "Either a prompt template or messages must be defined"` | SDK requires `prompt.template` | Fixed in v2.9.0 — upgrade the package |
 | `400 "Unused parameters"` | Using `messagesHistory` instead of `messages` | Fixed in v2.9.0 — upgrade the package |

@@ -37,9 +37,12 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    store and to end a session. Narrowing an address space is *addressing*; deciding who may is
    *policy*. A credential is therefore a constructor argument and never a per-call one: a
    forgotten per-call credential does not fail, it proceeds as somebody else.
-   *Corollary:* where addressing cannot settle the question — a `global` collection whose
-   authorization is `role` — the framework's own tools **refuse** rather than decide. Declining
-   with no basis is honest; inventing a default permits on someone's behalf.
+   *Corollary:* a `global` collection is addressed by every caller whose registry holds it — reading
+   one is never narrowed or refused, because there is no per-collection authorization field to check.
+   What addressing settles instead is who may **change** shared data: the framework's own tools
+   refuse every mutation and deletion of a `global`, always, rather than deciding who is allowed.
+   Role-based access to a shared global is the assembly's job, built by choosing which globals go
+   into a given caller's registry in the first place — not a check inside the framework.
    See [MIGRATION-v27.md](MIGRATION-v27.md) items 6/7.
 9. **A secret belongs in a contract only where the secret IS the contract.** The test is to
    remove it and see what is left. Take `secret()` out of `IApiKeyCredential` and nothing

@@ -114,17 +114,28 @@ Env vars (defaults shown apply when unset):
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `LLM_PROVIDER` | LLM provider for every role | `sap-ai-sdk` |
+| `LLM_PROVIDER` | LLM provider for every top-level role (main/planner/executor/reviewer/finalizer) | `sap-ai-sdk` |
 | `LLM_API_KEY` | API key (deepseek/openai/anthropic) | _(empty; SAP AI Core uses `LLM_SERVICE_KEY`)_ |
 | `LLM_URL` | base URL (Ollama / OpenAI-compatible) | _(empty → provider default)_ |
 | `LLM_MAIN_MODEL` / `LLM_PLANNER_MODEL` / `LLM_EXECUTOR_MODEL` / `LLM_REVIEWER_MODEL` / `LLM_FINALIZER_MODEL` | per-role model | SAP AI Core sonnet/haiku |
 | `EMBEDDER_PROVIDER` | embedder provider | `sap-ai-core` |
 | `RAG_EMBEDDER_API_KEY` / `EMBEDDER_URL` / `EMBEDDING_MODEL` | embedder credentials/model | _(empty / provider default)_ |
+| `AICORE_SERVICE_KEY` | the dispatched worker's LLM + embedder — always `sap-ai-sdk`/`sap-ai-core` via `credentialRef: AICORE` in `worker.yaml`, independent of `LLM_PROVIDER`/`EMBEDDER_PROVIDER` | — (required whenever a config dispatches to `worker.yaml`) |
+
+Three separate service keys can be in play for the SAP default profile, because
+the top-level roles, the top-level embedder and the dispatched worker each
+resolve their own credential ref:
+
+- `LLM_SERVICE_KEY` — `llm.main`/`planner`/`executor`/`reviewer`/`finalizer` (no `credentialRef`, so the `LLM` default applies)
+- `RAG_EMBEDDER_SERVICE_KEY` — `rag.embedder` (no `credentialRef`, so the `RAG_EMBEDDER` default applies)
+- `AICORE_SERVICE_KEY` — `worker`/`worker-classifier`, named explicitly with `credentialRef: AICORE` in every main file and in `worker.yaml` itself, so the worker's account stays fixed to SAP AI Core even when `LLM_PROVIDER` switches the top-level roles to another provider
 
 Profiles (one provider each):
 
 ```bash
-# SAP AI Core (default — nothing to set beyond LLM_SERVICE_KEY)
+# SAP AI Core (default — set LLM_SERVICE_KEY, RAG_EMBEDDER_SERVICE_KEY, and the
+# credentialRef: AICORE ref's AICORE_SERVICE_KEY for the dispatched worker; all
+# three may be the same value)
 
 # DeepSeek LLM + Ollama embedder (DeepSeek has no embedder)
 export LLM_PROVIDER=deepseek LLM_API_KEY=$DEEPSEEK_API_KEY

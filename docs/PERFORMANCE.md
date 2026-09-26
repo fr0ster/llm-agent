@@ -6,7 +6,7 @@ All tunable parameters can be set in `smart-server.yaml` and many support hot-re
 
 ## Embedder Model Selection
 
-The embedder model must be set **explicitly** in `rag.model` — there is no default. A missing `model` is a startup error.
+The embedder model must be set **explicitly** in `rag.embedder.model` — there is no default. A missing `model` is a startup error.
 
 ### Recommended: `bge-m3` (multilingual)
 
@@ -35,7 +35,7 @@ The embedding dimensions are model-specific: `nomic-embed-text` produces 768-dim
 
 ### maxBatchSize — requests vs. request size
 
-`rag.maxBatchSize` caps how many texts go into one `embedBatch` call. It trades the number of requests against the size of each one, and it is the knob that keeps startup tool vectorization inside a provider's limits.
+`rag.embedder.maxBatchSize` caps how many texts go into one `embedBatch` call. It trades the number of requests against the size of each one, and it is the knob that keeps startup tool vectorization inside a provider's limits.
 
 ```yaml
 rag:
@@ -45,7 +45,7 @@ rag:
     maxBatchSize: 250
 ```
 
-Precedence: `rag.maxBatchSize` → the provider's declared cap → **100**.
+Precedence: `rag.embedder.maxBatchSize` → the provider's declared cap → **100**.
 
 A catalog of `N` texts costs `ceil(N / maxBatchSize)` requests. Nothing in the agent is tuned to a particular catalog size — MCP servers add and remove tools, and the cap is a property of the embedding provider, not of the tool set.
 

@@ -16,7 +16,7 @@ Example plugin files for `@mcp-abap-adt/llm-agent`. Copy any of these into your 
 | [`02-content-filter.ts`](02-content-filter.ts) | `outputValidator` | Blocks LLM responses containing passwords, credit cards, private keys, or AWS keys. |
 | [`03-score-reranker.ts`](03-score-reranker.ts) | `reranker` | Boosts RAG results by metadata prefix (tools, state, feedback) and recency. |
 | [`04-rate-limiter.ts`](04-rate-limiter.ts) | `stageHandlers` | Sliding-window rate limiter per session. Configurable max requests and window size. |
-| [`05-custom-embedder.ts`](05-custom-embedder.ts) | `embedderFactories` | Registers a Cohere embedding provider, selectable via `rag.embedder: cohere` in YAML. |
+| [`05-custom-embedder.ts`](05-custom-embedder.ts) | `embedderFactories` | Registers a Cohere embedding provider, selectable via `rag.embedder.factory: cohere` in YAML. |
 | [`06-multi-export.ts`](06-multi-export.ts) | `stageHandlers` + `queryExpander` | Shows how one file can register multiple export types (timer stages + domain synonyms). |
 
 ## Supported exports

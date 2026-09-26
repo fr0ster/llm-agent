@@ -8,7 +8,7 @@
 // docker-compose*.yml are skipped (not SmartServer configs).
 // Usage: node scripts/check-example-configs.mjs [root ...]
 import { readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import {
   loadYamlConfig,
   resolveSmartServerConfig,
@@ -42,6 +42,16 @@ files.sort();
 // resolveSmartServerConfig does internally for a `subagents:` entry
 // (resolveWorkerConfig) — mirror that here so a worker file validates
 // standalone instead of failing on a section only its parent can complete.
+//
+// This shape-check alone is not enough to decide "this is a worker file": a
+// MAIN file that mistakenly wrote `llm: someRole` (instead of a flat config or
+// a named map with `main:`) has the exact same shape, and must still fail.
+// The distinguishing fact is whether some OTHER file's `subagents:` actually
+// references this one via `config:` — only then is `llm:` resolved by a
+// parent rather than required here. So this script first collects every
+// `config:` path any file's `subagents:` list points at, and only treats a
+// file matching the worker llm shape as a worker if it is itself one of
+// those referenced paths.
 const WORKER_LLM_ROLES = new Set(['main', 'helper', 'classifier']);
 function isWorkerLlmShape(rawLlm) {
   if (typeof rawLlm === 'string') return rawLlm.length > 0;
@@ -51,8 +61,27 @@ function isWorkerLlmShape(rawLlm) {
   const entries = Object.entries(rawLlm);
   if (entries.length === 0) return false;
   return entries.every(
-    ([k, v]) => WORKER_LLM_ROLES.has(k) && typeof v === 'string' && v.length > 0,
+    ([k, v]) =>
+      WORKER_LLM_ROLES.has(k) && typeof v === 'string' && v.length > 0,
   );
+}
+
+const referencedConfigPaths = new Set();
+for (const f of files) {
+  let yaml;
+  try {
+    yaml = loadYamlConfig(f);
+  } catch {
+    continue; // reported as SHAPE-FAIL in the main pass below
+  }
+  const subagents = yaml?.subagents;
+  if (!Array.isArray(subagents)) continue;
+  for (const sub of subagents) {
+    const cfg = sub && typeof sub === 'object' ? sub.config : undefined;
+    if (typeof cfg === 'string' && cfg.length > 0) {
+      referencedConfigPaths.add(resolvePath(dirname(f), cfg));
+    }
+  }
 }
 
 let shape = 0;
@@ -60,7 +89,8 @@ for (const f of files) {
   try {
     const yaml = loadYamlConfig(f);
     const { llm: rawLlm, ...rest } = yaml;
-    if (isWorkerLlmShape(rawLlm)) {
+    const isReferencedWorker = referencedConfigPaths.has(resolvePath(f));
+    if (isReferencedWorker && isWorkerLlmShape(rawLlm)) {
       resolveSmartServerConfig({}, rest, process.env, {
         skipProviderRuntimeChecks: true,
         configPath: f,
@@ -75,7 +105,9 @@ for (const f of files) {
   } catch (err) {
     const s = String(err);
     shape++;
-    console.log(`SHAPE-FAIL  ${f}\n        → ${s.split('\n').filter((l) => l.trim())[1] ?? s.split('\n')[0]}`);
+    console.log(
+      `SHAPE-FAIL  ${f}\n        → ${s.split('\n').filter((l) => l.trim())[1] ?? s.split('\n')[0]}`,
+    );
   }
 }
 console.log(`\n${files.length} configs — ${shape} SHAPE-FAIL`);

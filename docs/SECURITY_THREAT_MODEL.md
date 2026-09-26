@@ -82,15 +82,20 @@ were built with, so against a shared registry they reached every registered coll
 `rag_create_collection` (`:266`) and `rag_delete_collection` (`:200`, `:208`) did use the owner
 keys, and the latter also refused global deletes outright — that pair was the intended shape.
 
-**Mitigation — construction, not a check.** Per architecture principle 8, the tool
-entries are built with the caller's identity bound in — **required, not optional**, so that an
-unnarrowed address space cannot be reached by omitting a field, so the only collections they can address
-are that caller's own and the globals; another caller's collection is absent rather than refused.
-No access check enters the framework. Where addressing cannot answer — a `role`-authorized
-global — the tools refuse, and a consumer that wants that case mounts its own.
-Three rules make that mitigation complete, and all are part of it:
+**Mitigation — construction, not a check — for `session`/`user` collections; addressing, not access
+control, for `global`.** Per architecture principle 8, the tool entries are built with the caller's
+identity bound in — **required, not optional**, so that an unnarrowed address space cannot be
+reached by omitting a field. For `session`/`user` scope this settles the whole question: the only
+collections a caller's tools can address are its own; another caller's collection is absent rather
+than refused. For `global` scope it settles only who may **write**: every global a caller's registry
+holds is readable through the tools — there is no per-collection authorization field, so a
+role-restricted read is not something the framework can check, and it does not claim to. Role-based
+read access to a shared global is the assembly's responsibility, built by choosing which globals go
+into a given caller's registry, not a check inside the framework. Three rules make the write/delete
+side of this complete, and all are part of it:
 
-- **No framework tool mutates a `global` collection**, whatever its `authorization` value. `public` says who may reach a global, never who may change one; treating reachable as writable would be us inventing a rule about shared data for every consumer. Reads of a `public` global are allowed because the value itself settles them; a `role` global is refused for reads too, since who holds a role is policy.
+- **No framework tool mutates or deletes a `global` collection, ever.** Deciding who may change
+  shared data is policy for every consumer to set, not a rule this framework invents once.
 - **One source of caller identity.** `RagToolContext`'s declared `sessionId?`/`userId?` are removed, so a per-call value cannot disagree with the identity bound at construction — `rag_create_collection` no longer reads owner keys from that context, which would create a collection owned by an identity the address space was never narrowed to. Its `[key: string]: unknown` index signature keeps existing call sites compiling.
 - **Each session owns its collection registry** (`SmartServer` supplies `ragRegistryFactory`), so two callers' same-named collections never meet in one registry.
 

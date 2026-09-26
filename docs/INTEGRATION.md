@@ -527,6 +527,9 @@ interface IRagProvider {
 | `user` | Persistent across sessions for that user | Same user only | Personal notes, user preferences |
 | `global` | Permanent until explicitly deleted | Nobody via the framework tools — create and delete globals in your own code | Shared knowledge bases, team fact stores |
 
+A collection shared by several users is a `global` with your own role-based access around it —
+`user`/`session` collections belong to one caller, so a registry that holds them serves one caller.
+
 ### Shipped providers
 
 | Provider | Supported scopes | Remarks |
@@ -704,7 +707,8 @@ class MyDbRagProvider extends AbstractRagProvider {
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import { QdrantRagProvider, ImmutableEditStrategy } from '@mcp-abap-adt/llm-agent';
+import { ImmutableEditStrategy, staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
   .withMainLlm(myLlm)
@@ -3513,7 +3517,7 @@ const { handler } = await new DagFactory().build(dagCoordinatorHandlerDeps, base
 `ControllerSkillPipelineBuilder` assembles a ready-to-run controller pipeline
 (with a GitHub skill source) as a single importable component — no HTTP server,
 no hand-built config. Variable parts are set through fluent methods; the
-composition (controller + skill-host + sensible defaults) is baked in. `.build()`
+composition (controller + skill-host + sensible defaults) is baked in. `.build(deps)`
 returns `{ agent, close }` with NO port bound.
 
 ```ts

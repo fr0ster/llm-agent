@@ -29,8 +29,11 @@
  * LIVE MODE (the REAL measurement — the USER runs this, not the agent):
  * ---------------------------------------------------------------------
  *   1. Copy `.env.template` → `.env` at the repo root and fill provider creds
- *      (e.g. LLM_PROVIDER=sap-ai-sdk + AICORE_SERVICE_KEY + SAP_AI_MODEL, or
- *      LLM_PROVIDER=openai + OPENAI_API_KEY, etc.).
+ *      (e.g. LLM_PROVIDER=sap-ai-sdk + LLM_SERVICE_KEY + SAP_AI_MODEL). For
+ *      EVAL_EMBEDDER=1 with provider=openai this harness reads OPENAI_API_KEY
+ *      directly (own read, not the composition root's credentialRef) — add it
+ *      to your `.env` by hand, since the template no longer carries a plain
+ *      per-provider key placeholder for it.
  *   2. (Optional, for the WITH path) clone a local skill set and point at it:
  *        git clone <sap-skills repo> /tmp/sap-skills     # never commit this
  *        export EVAL_SKILLS_DIR=/tmp/sap-skills

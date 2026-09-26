@@ -142,6 +142,8 @@ naming the missing seam.
 - `rag.apiKey`, `rag.user`/`rag.password` and a qdrant `skillPlugins` store's `apiKey` all become
   `credentialRef` too.
 
+### Environment variable names
+
 **The binary reads new environment variable names — BREAKING for YAML-only deployments.** A ref names
 a family of variables: `<REF>_API_KEY` (an API key), `<REF>_SERVICE_KEY` (a SAP AI Core service key) or
 `<REF>_USER` + `<REF>_PASSWORD` (a login). The full contract is in
@@ -162,10 +164,11 @@ a family of variables: `<REF>_API_KEY` (an API key), `<REF>_SERVICE_KEY` (a SAP 
 - Several kinds set for one ref (for example `LLM_API_KEY` and `LLM_SERVICE_KEY`) are refused: an
   entry holds one credential.
 
-**Code (`SmartServer` / `BuildAgentDeps`):** `makeLlm`, `resolveEmbedder` and `makeRag` are all
-required. Passing `{}` as `deps` stops compiling, and every call site, tests included, names the
-seams. `llm-agent-server` carries the reference implementation (`packages/llm-agent-server/src/composition/`).
-Copy it rather than writing your own:
+### Code seams (`SmartServer` / `BuildAgentDeps`)
+
+`makeLlm`, `resolveEmbedder` and `makeRag` are all required. Passing `{}` as `deps` stops compiling,
+and every call site, tests included, names the seams. `llm-agent-server` carries the reference
+implementation (`packages/llm-agent-server/src/composition/`). Copy it rather than writing your own:
 
 - one `credentialFor(ref)`, **memoized**, so a ref always returns the **same** credential object —
   that identity keys the 429 quota bucket;
@@ -180,12 +183,18 @@ Copy it rather than writing your own:
   `baseURL`) and the model listing (`getModels`, which `GET /v1/models` reads) are part of the seam.
 
 A deployment that authenticates nothing (for example Ollama plus in-memory) still writes all three
-seams. `resolveEmbedder` and `makeRag` remain the library's functions; what changes is who calls them
-and who owns the credential. `isInMemoryInput` is the one-line guard `input.store.type === 'in-memory'`,
-exported beside `MakeRagInput`, and `InMemoryStoreConfig` carries `credentialRef?` so that a ref named
-for a store that takes none is refused by name.
+seams:
 
-**Split `rag:` in two.** The old shape held a store's settings beside an embedder's, with `url`
+- `resolveEmbedder` and `makeRag` remain the library's functions; what changes is who calls them and
+  who owns the credential.
+- `isInMemoryInput` is the one-line guard `input.store.type === 'in-memory'`, exported beside
+  `MakeRagInput`.
+- `InMemoryStoreConfig` carries `credentialRef?` so that a ref named for a store that takes none is
+  refused by name.
+
+### Split `rag:` in two
+
+The old shape held a store's settings beside an embedder's, with `url`
 meaning either one's address, so one `credentialRef` could not say which target it named:
 
 ```yaml
@@ -415,9 +424,8 @@ the record **before** the data.
   refused at registration (`RAG_RESERVED_COLLECTION_NAME`) and must be renamed.
 - Collections created before this release read back `attributes` as `undefined`.
 
-A collection **shared by several users** is a `global` collection with role-based access around it —
-`user` and `session` collections belong to one caller, so a registry that holds them serves one
-caller.
+The shared-collection model is the same one item 7 states: a collection several users share is a
+`global`, and a registry holding `user`/`session` collections serves one caller.
 
 ## 11. Reattach collections after a restart by hydrating them, not by creating them again
 
