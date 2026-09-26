@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+**BREAKING:** `buildRagCollectionToolEntries` requires `identity: RagCallerIdentity`
+and resolves every collection inside that caller's address space (its own
+collections and the globals); `RagToolContext` no longer declares
+`sessionId`/`userId` (call sites passing them still compile, nothing reads
+them); the tools that take a collection name take an optional `scope`, and a
+name several scopes hold answers `RAG_AMBIGUOUS_COLLECTION`; no framework
+tool writes or deletes a global, and `rag_create_collection` accepts
+`session | user` only; the attributes of a tool-created collection come from
+the optional `attributesFor` callback, never from the model;
+`rag_delete_collection` answers `{ ok: false }` for `CatalogRecordDeleteError`.
+New exported types `RagCallerIdentity`, `RagCollectionToolOptions`.
+
 `SimpleRagRegistry.replaceRag(name, scope, rag)` swaps an entry's store
 handle in place, keeping its editor, provider name, store name and meta —
 the operation a decorator (such as the builder's circuit-breaker wrap) needs

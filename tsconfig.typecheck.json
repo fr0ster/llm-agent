@@ -32,6 +32,7 @@
     "packages/llm-agent/src/interfaces/__tests__/pipeline-context.typecheck.ts",
     "packages/llm-agent/src/interfaces/__tests__/pipeline-plugin-contract.typecheck.ts",
     "packages/llm-agent-server-libs/src/pipelines/__tests__/server-context-lookups-only.typecheck.ts",
-    "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts"
+    "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts",
+    "packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts"
   ]
 }

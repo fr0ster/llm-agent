@@ -13,6 +13,9 @@ import {
 } from '../strategies/edit/index.js';
 import { GlobalUniqueIdStrategy } from '../strategies/id/index.js';
 
+/** The caller every entry below is built for. */
+const ALICE = { sessionId: 'S', userId: 'alice' };
+
 function makeRegistry() {
   const reg = new SimpleRagRegistry();
   const rag = new InMemoryRag();
@@ -20,17 +23,22 @@ function makeRegistry() {
     'notes',
     rag,
     new DirectEditStrategy(rag.writer(), new GlobalUniqueIdStrategy()),
-    { displayName: 'Notes' },
+    { displayName: 'Notes', scope: 'user', userId: 'alice' },
   );
   reg.register('corp', new InMemoryRag(), new ImmutableEditStrategy('corp'), {
     displayName: 'Corp',
+    scope: 'user',
+    userId: 'alice',
   });
   return reg;
 }
 
 describe('buildRagCollectionToolEntries', () => {
   it('produces rag_add, rag_correct, rag_deprecate, rag_list_collections, rag_describe_collection, rag_delete_collection', () => {
-    const entries = buildRagCollectionToolEntries({ registry: makeRegistry() });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: makeRegistry(),
+    });
     const names = entries.map((e) => e.toolDefinition.name).sort();
     assert.deepEqual(names, [
       'rag_add',
@@ -43,7 +51,10 @@ describe('buildRagCollectionToolEntries', () => {
   });
 
   it('rag_add rejects unknown collection', async () => {
-    const entries = buildRagCollectionToolEntries({ registry: makeRegistry() });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: makeRegistry(),
+    });
     const add = entries.find((e) => e.toolDefinition.name === 'rag_add');
     assert.ok(add);
     const out = (await add.handler(
@@ -59,7 +70,10 @@ describe('buildRagCollectionToolEntries', () => {
   });
 
   it('rag_add rejects read-only collection', async () => {
-    const entries = buildRagCollectionToolEntries({ registry: makeRegistry() });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: makeRegistry(),
+    });
     const add = entries.find((e) => e.toolDefinition.name === 'rag_add');
     assert.ok(add);
     const out = (await add.handler(
@@ -74,7 +88,10 @@ describe('buildRagCollectionToolEntries', () => {
   });
 
   it('rag_add writes into editable collection', async () => {
-    const entries = buildRagCollectionToolEntries({ registry: makeRegistry() });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: makeRegistry(),
+    });
     const add = entries.find((e) => e.toolDefinition.name === 'rag_add');
     assert.ok(add);
     const out = (await add.handler(
@@ -91,7 +108,10 @@ describe('buildRagCollectionToolEntries', () => {
 
   it('rag_deprecate marks record deprecated via upsert', async () => {
     const reg = makeRegistry();
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const dep = entries.find((e) => e.toolDefinition.name === 'rag_deprecate');
     assert.ok(dep);
     const out = (await dep.handler(
@@ -108,7 +128,10 @@ describe('buildRagCollectionToolEntries', () => {
 
   it('rag_correct supersedes and returns both ids', async () => {
     const reg = makeRegistry();
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const cor = entries.find((e) => e.toolDefinition.name === 'rag_correct');
     assert.ok(cor);
     const out = (await cor.handler(
@@ -139,6 +162,7 @@ describe('rag_create_collection', () => {
   it('creates session-scoped collection via provider', async () => {
     const { reg, provReg } = makeFullRegistry();
     const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
       registry: reg,
       providerRegistry: provReg,
     });
@@ -161,7 +185,10 @@ describe('rag_create_collection', () => {
 
   it('is absent when providerRegistry is not supplied', () => {
     const reg = new SimpleRagRegistry();
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     assert.equal(
       entries.find((e) => e.toolDefinition.name === 'rag_create_collection'),
       undefined,
@@ -171,6 +198,7 @@ describe('rag_create_collection', () => {
   it('returns error when provider is unknown', async () => {
     const { reg, provReg } = makeFullRegistry();
     const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
       registry: reg,
       providerRegistry: provReg,
     });
@@ -199,7 +227,10 @@ describe('rag_list_collections', () => {
       scope: 'session',
       sessionId: 'S',
     });
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const list = entries.find(
       (e) => e.toolDefinition.name === 'rag_list_collections',
     );
@@ -223,7 +254,10 @@ describe('rag_list_collections', () => {
       scope: 'session',
       sessionId: 'S',
     });
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const list = entries.find(
       (e) => e.toolDefinition.name === 'rag_list_collections',
     );
@@ -246,7 +280,10 @@ describe('rag_describe_collection', () => {
       displayName: 'A',
       scope: 'global',
     });
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const desc = entries.find(
       (e) => e.toolDefinition.name === 'rag_describe_collection',
     );
@@ -261,7 +298,10 @@ describe('rag_describe_collection', () => {
 
   it('returns error for unknown name', async () => {
     const { reg } = makeFullRegistry();
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const desc = entries.find(
       (e) => e.toolDefinition.name === 'rag_describe_collection',
     );
@@ -281,7 +321,10 @@ describe('rag_delete_collection scope enforcement', () => {
       displayName: 'G',
       scope: 'global',
     });
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const del = entries.find(
       (e) => e.toolDefinition.name === 'rag_delete_collection',
     );
@@ -298,7 +341,10 @@ describe('rag_delete_collection scope enforcement', () => {
       scope: 'session',
       sessionId: 'S',
     });
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const del = entries.find(
       (e) => e.toolDefinition.name === 'rag_delete_collection',
     );
@@ -310,22 +356,24 @@ describe('rag_delete_collection scope enforcement', () => {
     assert.equal(reg.get('s'), undefined);
   });
 
-  it('rejects session deletion when sessionId mismatches', async () => {
+  it('does not reach another session’s collection: it is absent, not refused', async () => {
     const { reg } = makeFullRegistry();
     reg.register('s', new InMemoryRag(), undefined, {
       displayName: 'S',
       scope: 'session',
       sessionId: 'S',
     });
-    const entries = buildRagCollectionToolEntries({ registry: reg });
-    const del = entries.find(
-      (e) => e.toolDefinition.name === 'rag_delete_collection',
-    );
+    const del = buildRagCollectionToolEntries({
+      identity: { sessionId: 'X' },
+      registry: reg,
+    }).find((e) => e.toolDefinition.name === 'rag_delete_collection');
     assert.ok(del);
-    const out = (await del.handler({ sessionId: 'X' }, { name: 's' })) as {
+    const out = (await del.handler({}, { name: 's' })) as {
       ok: boolean;
+      error?: string;
     };
     assert.equal(out.ok, false);
+    assert.match(out.error ?? '', /not found/);
     assert.ok(reg.get('s'));
   });
 
@@ -336,7 +384,10 @@ describe('rag_delete_collection scope enforcement', () => {
       scope: 'user',
       userId: 'alice',
     });
-    const entries = buildRagCollectionToolEntries({ registry: reg });
+    const entries = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    });
     const del = entries.find(
       (e) => e.toolDefinition.name === 'rag_delete_collection',
     );
@@ -374,9 +425,10 @@ describe('rag_delete_collection when the data cannot be deleted', () => {
       sessionId: 'S',
     });
     assert.ok(created.ok);
-    const del = buildRagCollectionToolEntries({ registry: reg }).find(
-      (e) => e.toolDefinition.name === 'rag_delete_collection',
-    );
+    const del = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    }).find((e) => e.toolDefinition.name === 'rag_delete_collection');
     assert.ok(del);
     const out = (await del.handler({ sessionId: 'S' }, { name: 's' })) as {
       ok: boolean;
