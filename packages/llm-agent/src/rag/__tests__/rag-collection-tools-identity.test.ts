@@ -65,7 +65,13 @@ type Answer = {
   error?: string;
   code?: string;
   warning?: string;
-  meta?: { name: string; scope?: string; sessionId?: string; userId?: string };
+  id?: string;
+  meta?: {
+    name: string;
+    scope?: string;
+    sessionId?: string;
+    userId?: string;
+  };
   collections?: Array<{ name: string; scope?: string }>;
 };
 
@@ -108,6 +114,45 @@ describe('the address space is the bound caller’s', () => {
     )) as Answer;
     assert.equal(out.ok, false, 'a per-call identity is not a channel');
   });
+
+  it('an explicit scope does not reach another caller’s collection either', async () => {
+    const { reg } = world();
+    const out = (await tools(reg)('rag_describe_collection').handler(
+      {},
+      { name: 'theirs', scope: 'user' },
+    )) as Answer;
+    assert.equal(out.ok, false);
+    assert.match(out.error ?? '', /not found/);
+  });
+
+  it('a write tool cannot reach another caller’s collection: not found, not refused', async () => {
+    const { reg } = world();
+    for (const name of ['theirs', 'elsewhere']) {
+      const out = (await tools(reg)('rag_add').handler(
+        {},
+        { collection: name, text: 't', canonicalKey: 'k' },
+      )) as Answer;
+      assert.equal(out.ok, false);
+      assert.match(out.error ?? '', /not found/);
+    }
+  });
+
+  it('hides user collections from an identity with no userId', async () => {
+    const { reg } = world();
+    const entries = buildRagCollectionToolEntries({
+      registry: reg,
+      identity: { sessionId: 'S' },
+    });
+    const list = entries.find(
+      (e) => e.toolDefinition.name === 'rag_list_collections',
+    );
+    assert.ok(list);
+    const out = (await list.handler({}, {})) as Answer;
+    const seen = (out.collections ?? [])
+      .map((c) => `${c.scope}:${c.name}`)
+      .sort();
+    assert.deepEqual(seen, ['global:docs', 'global:open', 'session:docs']);
+  });
 });
 
 describe('a name several scopes hold needs a scope', () => {
@@ -142,6 +187,23 @@ describe('a name several scopes hold needs a scope', () => {
       { collection: 'docs', scope: 'session', text: 't', canonicalKey: 'k' },
     )) as Answer;
     assert.equal(out.ok, true);
+    const id = out.id as string;
+    assert.ok(id, 'the add tool returns the written id');
+    const sessionHit = await reg.get('docs', 'session')?.getById(id);
+    assert.ok(
+      sessionHit?.ok && sessionHit.value,
+      'written to the session collection it named',
+    );
+    const userHit = await reg.get('docs', 'user')?.getById(id);
+    assert.ok(
+      userHit?.ok && userHit.value === null,
+      'not written to the user collection of the same name',
+    );
+    const globalHit = await reg.get('docs', 'global')?.getById(id);
+    assert.ok(
+      globalHit?.ok && globalHit.value === null,
+      'not written to the global collection of the same name',
+    );
   });
 
   it('rag_delete_collection deletes the scope it names and leaves the others', async () => {
@@ -154,6 +216,20 @@ describe('a name several scopes hold needs a scope', () => {
     assert.equal(reg.get('docs', 'session'), undefined);
     assert.ok(reg.get('docs', 'user'));
     assert.ok(reg.get('docs', 'global'));
+  });
+
+  it('rag_delete_collection without a scope on an ambiguous name answers RAG_AMBIGUOUS_COLLECTION', async () => {
+    const { reg } = world();
+    const out = (await tools(reg)('rag_delete_collection').handler(
+      {},
+      { name: 'docs' },
+    )) as Answer;
+    assert.equal(out.ok, false);
+    assert.equal(out.code, 'RAG_AMBIGUOUS_COLLECTION');
+    assert.ok(
+      reg.get('docs', 'session'),
+      'ambiguity refuses, it does not pick one to delete',
+    );
   });
 });
 
@@ -174,15 +250,36 @@ describe('framework tools mutate no global', () => {
       'rag_deprecate',
       { collection: 'open', id: '1', canonicalKey: 'k', reason: 'r' },
     ],
-    ['rag_delete_collection', { name: 'open' }],
   ] as const) {
-    it(`${name} refuses a global — reachable licenses reading, never writing`, async () => {
+    it(`${name} refuses a global and writes nothing to its store`, async () => {
       const { reg } = world();
       const out = (await tools(reg)(name).handler({}, args)) as Answer;
       assert.equal(out.ok, false);
-      assert.ok(reg.get('open', 'global'));
+      assert.match(out.error ?? '', /global/i);
+      const store = reg.get('open', 'global');
+      assert.ok(store);
+      const hits = await store?.query(
+        { text: 't', toVector: async () => [] },
+        10,
+      );
+      assert.deepEqual(
+        hits,
+        { ok: true, value: [] },
+        'the global store is still empty',
+      );
     });
   }
+
+  it('rag_delete_collection refuses a global, leaving it registered', async () => {
+    const { reg } = world();
+    const out = (await tools(reg)('rag_delete_collection').handler(
+      {},
+      { name: 'open' },
+    )) as Answer;
+    assert.equal(out.ok, false);
+    assert.match(out.error ?? '', /global/i);
+    assert.ok(reg.get('open', 'global'), 'still registered — not removed');
+  });
 
   it('describes a global — it is readable because the consumer put it there', async () => {
     const { reg } = world();
@@ -222,9 +319,13 @@ describe('rag_create_collection', () => {
 
   it('creates a session collection for the bound session', async () => {
     const { reg, providers, calls } = spied();
-    await tools(reg, { providerRegistry: providers })(
+    const out = (await tools(reg, { providerRegistry: providers })(
       'rag_create_collection',
-    ).handler({}, { provider: 'mem', name: 'scratch', scope: 'session' });
+    ).handler(
+      {},
+      { provider: 'mem', name: 'scratch', scope: 'session' },
+    )) as Answer;
+    assert.equal(out.ok, true);
     assert.equal(calls[0].sessionId, 'S');
   });
 
@@ -273,7 +374,7 @@ describe('rag_create_collection', () => {
   it('records what attributesFor returns, called with the name and the owner', async () => {
     const { reg, providers, calls } = spied();
     const seen: unknown[] = [];
-    await tools(reg, {
+    const out = (await tools(reg, {
       providerRegistry: providers,
       attributesFor: (created: unknown) => {
         seen.push(created);
@@ -287,8 +388,22 @@ describe('rag_create_collection', () => {
         scope: 'user',
         attributes: { authorization: 'public' },
       },
-    );
+    )) as Answer;
+    // The test fails if the create itself failed: a spy on
+    // reg.createCollection records its call arguments unconditionally, so
+    // calls[0] alone cannot tell a successful create from a refused one.
+    assert.equal(out.ok, true);
+    assert.equal(out.meta?.name, 'fresh');
+    assert.equal(out.meta?.scope, 'user');
+    assert.equal(out.meta?.userId, 'alice');
     assert.deepEqual(seen, [{ name: 'fresh', scope: 'user', userId: 'alice' }]);
+    // RagCollectionMeta (what `out.meta` and reg.list()/get() expose) carries
+    // no `attributes` field by design (interfaces/rag.ts, createUnder in
+    // simple-rag-registry.ts) — attributes are forwarded to the provider only,
+    // and InMemoryRagProvider keeps no catalog to read them back from. The
+    // registry's own tests verify this same forwarding the same way
+    // (simple-rag-registry-lifecycle.test.ts): via the create call's
+    // arguments, which is what will be stored.
     assert.deepEqual(
       calls[0].attributes,
       { authorization: 'owner' },
@@ -298,7 +413,7 @@ describe('rag_create_collection', () => {
 
   it('passes no attributes when there is no callback', async () => {
     const { reg, providers, calls } = spied();
-    await tools(reg, { providerRegistry: providers })(
+    const out = (await tools(reg, { providerRegistry: providers })(
       'rag_create_collection',
     ).handler(
       {},
@@ -308,7 +423,8 @@ describe('rag_create_collection', () => {
         scope: 'session',
         attributes: { x: 1 },
       },
-    );
+    )) as Answer;
+    assert.equal(out.ok, true);
     assert.equal('attributes' in calls[0], false);
   });
 
