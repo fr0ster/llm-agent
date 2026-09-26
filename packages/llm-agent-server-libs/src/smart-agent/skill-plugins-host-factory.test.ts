@@ -232,7 +232,10 @@ function namedRefCfg(): SkillPluginsConfig {
       collection: 'skills',
       credentialRef: 'SKILLS_QDRANT',
     },
-    catalog: { type: 'postgres', connectionString: 'postgres://localhost/skills' },
+    catalog: {
+      type: 'postgres',
+      connectionString: 'postgres://localhost/skills',
+    },
     embeddingSpaceId: 'sp-1',
     dimension: 8,
     recallTimeoutMs: 1000,

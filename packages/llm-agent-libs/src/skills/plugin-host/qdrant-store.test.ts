@@ -653,7 +653,9 @@ test('makeQdrantClient asks its credential on every request, so a rotating key r
   const seen: (string | undefined)[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
-    seen.push((init?.headers as Record<string, string> | undefined)?.['api-key']);
+    seen.push(
+      (init?.headers as Record<string, string> | undefined)?.['api-key'],
+    );
     return { ok: true, status: 200 } as Response;
   }) as typeof fetch;
   let n = 0;
@@ -680,7 +682,9 @@ test('makeQdrantClient sends no api-key header without a credential', async () =
   const seen: (string | undefined)[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
-    seen.push((init?.headers as Record<string, string> | undefined)?.['api-key']);
+    seen.push(
+      (init?.headers as Record<string, string> | undefined)?.['api-key'],
+    );
     return { ok: true, status: 200 } as Response;
   }) as typeof fetch;
   try {

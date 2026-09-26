@@ -17,7 +17,12 @@ import { resolveSkillSourceStrategy } from '@mcp-abap-adt/llm-agent-libs';
  *  names its account with `credentialRef` — a name the composition root resolves. */
 export type SkillPluginsStoreConfig =
   | { type: 'in-memory' }
-  | { type: 'qdrant'; url: string; collection?: string; credentialRef?: string };
+  | {
+      type: 'qdrant';
+      url: string;
+      collection?: string;
+      credentialRef?: string;
+    };
 
 /** Normalized catalog selection. A persistent store requires a `postgres` catalog. */
 export type SkillPluginsCatalogConfig =
@@ -143,7 +148,9 @@ function parseStore(raw: unknown): SkillPluginsStoreConfig {
       raw.credentialRef !== undefined &&
       (typeof raw.credentialRef !== 'string' || raw.credentialRef.length === 0)
     ) {
-      fail('store.credentialRef must be a non-empty string naming a credential');
+      fail(
+        'store.credentialRef must be a non-empty string naming a credential',
+      );
     }
     return {
       type: 'qdrant',
