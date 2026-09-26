@@ -52,8 +52,16 @@ is already a credential, and core ships the conversion: `staticApiKey` and `stat
 - new QdrantRag({ url, collectionName, embedder, apiKey: key });
 + new QdrantRag({ url, collectionName, embedder, credential: staticApiKey(key) });
 
-- new PgVectorRagProvider({ connectionString: 'postgres://u:pw@host/db', … });
-+ new PgVectorRagProvider({ connectionString: 'postgres://host/db', credential: staticLogin('u', 'pw'), … });
+- new PgVectorRagProvider({ name, embedder, connection: 'postgres://u:pw@host/db' });
++ new PgVectorRagProvider({
++   name,
++   embedder,
++   connection: {
++     connectionString: 'postgres://host/db',
++     credential: staticLogin('u', 'pw'),
++     collectionName: '_', // required by the type; the provider names each collection's table
++   },
++ });
 ```
 
 - A connection string that carries a user and password is now **refused at construction**, and
@@ -62,6 +70,8 @@ is already a credential, and core ships the conversion: `staticApiKey` and `stat
   `HanaVectorRagProviderConfig.connection` is refused too.
 - Your own embedder factory no longer receives `cfg.apiKey`. Close over the credential you
   already hold — that is why the framework no longer carries one.
+- Your own `BaseLLMProvider` subclass: `validateConfig()` is gone (it only checked `apiKey`).
+  Delete the `this.validateConfig()` call; declare `credential` required on your config instead.
 
 ## 2. Construct your LLM provider yourself, and hand in the instance
 
@@ -476,13 +486,16 @@ export async function hydrate(
 A collection created by v26.x has no record: adopt it once with `createCollection(…, { adoptExisting: true })`
 (item 10), after which it hydrates like any other.
 
-**The shipped `SmartServer` already does this**, per session, through `ragRegistryFactory`. Two limits
-of the shipped server make that smaller than it sounds:
+**Per-session hydration is unreachable in the shipped `SmartServer` today.** It builds each session's
+registry through `ragRegistryFactory`, and that code hydrates — but from a provider registry that is
+private to the server, and no option, YAML key or method registers a provider in it. So there is no
+catalog to read, and each session's registry holds only the deployment's globals. Its sessions also
+carry a `sessionId` and **no `userId`**, so `user` collections would be neither hydrated nor
+creatable through it.
 
-- It registers **no RAG providers** by default. Until your deployment configures one, there is no
-  catalog to hydrate from, and each session's registry holds only the deployment's globals.
-- Its sessions carry a `sessionId` and **no `userId`**, so `user` collections are neither hydrated
-  nor creatable through it.
+To hydrate, wire the providers yourself: call `buildSessionRagRegistry({ identity, globals, providers })`
+from `@mcp-abap-adt/llm-agent-server-libs` with a provider registry you own — in your own
+`SessionLifecycleOptions.ragRegistryFactory` — or run the `hydrate` above.
 
 ---
 

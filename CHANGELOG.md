@@ -17,7 +17,8 @@ Eleven changes need an edit; the guide numbers them and shows each before/after.
    `EmbedderFactoryConfig` and every provider and store config; each concrete provider and store
    takes a typed `credential` instead (`staticApiKey` / `staticLogin` convert a call site).
    A connection string carrying credentials is refused at construction. `hana-vector-rag`'s
-   credential is required.
+   credential is required. `BaseLLMProvider.validateConfig()`, which only checked `apiKey`, is
+   removed.
 2. **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` are removed** from
    `llm-agent-libs`. `IModelResolver` is unchanged.
 3. **SAP AI Core providers no longer read `AICORE_SERVICE_KEY`**, and their `credentials` option and
@@ -154,8 +155,9 @@ builds the classifier.
   Nothing changes at runtime.
 - A 429 quota bucket keys on the credential object's identity, not on the secret.
 - Each `SmartServer` session owns a collection registry hydrated for its identity, instead of
-  sharing `globalRagRegistry`. Two limits of the shipped server: it registers **no RAG providers**
-  by default, so until a deployment configures one there is no catalog to hydrate and a session sees
+  sharing `globalRagRegistry`. Per-session hydration is **unreachable in the shipped server**
+  today: its provider registry is private and nothing registers a provider in it, so there is no
+  catalog to hydrate and a session sees
   only the globals; and its sessions carry **no `userId`**, so `user` collections are neither
   hydrated nor creatable through it.
 - `llm-agent-server` is the composition root: it reads the environment, builds credentials,

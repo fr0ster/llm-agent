@@ -53,9 +53,16 @@ ref and the section uses its role's default.
 | `rag.store`, a qdrant `skillPlugins.store` | `RAG_STORE` | `RAG_STORE_API_KEY` (Qdrant) or `RAG_STORE_USER` + `RAG_STORE_PASSWORD` |
 | `rag.embedder` | `RAG_EMBEDDER` | `RAG_EMBEDDER_API_KEY`, or `RAG_EMBEDDER_SERVICE_KEY` for SAP AI Core |
 
-The two stores share one default, so they share its one credential kind: a pg-vector or HANA `rag.store`
-on the default (a login) beside a qdrant skill store with no ref (an API key) fails at startup with a
-wrong-kind error. Name a ref on one of them — usually the skill store's.
+**The skill store shares `RAG_STORE` with `rag.store`.** A qdrant `skillPlugins.store` with no
+`credentialRef` reads the `RAG_STORE` default too, so the two share its one credential kind:
+
+- A pg-vector or HANA `rag.store` on `RAG_STORE_USER` + `RAG_STORE_PASSWORD`, beside a qdrant skill
+  store you meant to run **anonymously**, fails at startup: the skill store finds a login where it
+  wants an API key (wrong kind). "Anonymous" applies only when the default is unset.
+- Fix it by naming the ref explicitly on the pg/HANA store — `rag.store.credentialRef: PG` with
+  `PG_USER` + `PG_PASSWORD` — and leaving `RAG_STORE_*` unset, so the skill store stays anonymous.
+- If the skill store has a key of its own, name that instead: `skillPlugins.store.credentialRef: SKILLS`
+  with `SKILLS_API_KEY`. A named ref must resolve, so this does not work for an anonymous store.
 
 A default is read only when the target needs a credential. Where a target can work without one (a Qdrant
 without auth, a pg-vector connection that needs no login), an unset default means anonymous.

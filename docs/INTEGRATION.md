@@ -629,10 +629,13 @@ export async function hydrate(
 }
 ```
 
-**The shipped `SmartServer` already does this**, per session, through `ragRegistryFactory`. Two
-limits of the shipped server: it registers **no RAG providers** by default, so until a deployment
-configures one there is no catalog to hydrate from; and its sessions carry a `sessionId` and **no
-`userId`**, so `user` collections are neither hydrated nor creatable through it.
+**Per-session hydration is unreachable in the shipped `SmartServer` today.** Its
+`ragRegistryFactory` hydrates, but from a provider registry private to the server that no option,
+YAML key or method registers a provider in — so there is no catalog to read, and a session's
+registry holds only the globals. Its sessions also carry **no `userId`**, so `user` collections would
+be neither hydrated nor creatable through it. A consumer that needs hydration wires its providers
+itself — `buildSessionRagRegistry({ identity, globals, providers })` from
+`@mcp-abap-adt/llm-agent-server-libs` in its own `ragRegistryFactory`, or the loop above.
 
 ### AbstractRagProvider
 

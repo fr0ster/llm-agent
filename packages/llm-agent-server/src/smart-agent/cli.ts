@@ -25,21 +25,27 @@
  *   --version, -v                Print package version
  *
  * Secrets vs settings:
- *   Secrets (API keys) go in .env / secrets-dir, settings go in YAML config.
- *   Priority: YAML config > env vars > defaults.
+ *   A YAML config carries no secret — only `credentialRef: <REF>` names. This
+ *   binary reads the account from the environment (.env / secrets-dir included)
+ *   by one rule: <REF>_API_KEY, <REF>_SERVICE_KEY (SAP AI Core), or
+ *   <REF>_USER + <REF>_PASSWORD. A section without credentialRef uses its role
+ *   default: LLM (each llm: entry), RAG_STORE (rag.store and a qdrant skill
+ *   store), RAG_EMBEDDER (rag.embedder). See the README's Credentials section.
  *   To disable MCP, omit the `mcp:` block or set `mcp.type: none` in YAML.
  *
  * YAML config example (smart-server.yaml):
  *   port: 4004
  *   llm:
  *     provider: deepseek
- *     apiKey: ${DEEPSEEK_API_KEY}
  *     model: deepseek-chat
+ *     # credentialRef: DEEPSEEK       # omitted: reads LLM_API_KEY
  *   rag:
- *     type: in-memory
- *     embedder: ollama
- *     url: http://localhost:11434
- *     model: bge-m3
+ *     store:
+ *       type: in-memory
+ *     embedder:
+ *       provider: ollama
+ *       url: http://localhost:11434
+ *       model: bge-m3
  *   mcp:
  *     type: http
  *     url: http://localhost:3000/mcp/stream/http
