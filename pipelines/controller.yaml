@@ -10,7 +10,7 @@ mode: smart
 # Base main LLM (flat SmartServerLlmConfig — `provider` required so it is not
 # parsed as a multi-model named map). The LLM provider is the inference backend
 # and is INDEPENDENT of the target domain; SAP AI Core is used here only as the
-# example LLM service. Service key comes from AICORE_SERVICE_KEY in .env.
+# example LLM service. Service key comes from LLM_SERVICE_KEY in .env.
 llm:
   provider: sap-ai-sdk
   model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
@@ -23,9 +23,12 @@ mcp:
 # The controller's evaluator needs an embedder for distance-based target-state
 # strategies (semantic-distance/auto). consumer-confirm needs none.
 rag:
-  type: in-memory
-  embedder: sap-ai-core
-  model: text-embedding-3-small
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: text-embedding-3-small
+    credentialRef: LLM   # the same SAP AI Core account as llm.main
 
 pipeline:
   name: controller

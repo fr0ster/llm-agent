@@ -14,7 +14,7 @@ that drives tool-selection RAG.
   ```ini
   LLM_PROVIDER=sap-ai-sdk
   LLM_MODEL=anthropic--claude-4.6-sonnet
-  AICORE_SERVICE_KEY={"clientid":"…","clientsecret":"…","url":"…","serviceurls":{"AI_API_URL":"…"}}
+  LLM_SERVICE_KEY={"clientid":"…","clientsecret":"…","url":"…","serviceurls":{"AI_API_URL":"…"}}
   ```
 - A running MCP server on the URL referenced by `MCP_SERVER_URL` (default
   `http://localhost:3001/mcp/stream/http`). Typically `mcp-abap-adt`.
@@ -69,7 +69,7 @@ in `docs/PERFORMANCE.md`) — **not** by domain-specific classifier rules. SAP
 queries reach the tools without any `prompts.classifier` override; that is why
 this example no longer ships one.
 
-What *does* matter: the `embedder` under `pipeline.rag.tools`. Without it the
+What *does* matter: `rag.embedder`. Without it the
 in-memory toolsRag stays empty, no tool is within semantic range, and the
 agent falls back to generic SQL-style answers (`DESCRIBE T100`, etc.). The
 embedder is required for tool-calling to fire.

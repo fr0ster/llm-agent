@@ -37,10 +37,10 @@ Client → :20011/chat → llm-agent-compat → llm-agent-core:8010 → SAP AI C
 1. **Set environment variables** (`.env` or export):
 
    ```dotenv
-   AICORE_AUTH_URL=https://your-tenant.authentication.sap.hana.ondemand.com
-   AICORE_CLIENT_ID=your-client-id
-   AICORE_CLIENT_SECRET=your-client-secret
-   AICORE_BASE_URL=https://api.ai.your-region.aws.ml.hana.ondemand.com
+   # The full SAP AI Core service-key JSON from the BTP cockpit. The binary
+   # reads it as LLM_SERVICE_KEY (the default ref for the llm: entry, which has
+   # no credentialRef; the rag.embedder shares it via credentialRef: LLM).
+   LLM_SERVICE_KEY={"clientid":"...","clientsecret":"...","url":"...","serviceurls":{"AI_API_URL":"..."}}
    ```
 
 2. **Start:**

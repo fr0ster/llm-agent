@@ -2,47 +2,37 @@ port: 4004
 host: 0.0.0.0
 mode: smart
 
-pipeline:
-  llm:
-    main:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.7
-      maxTokens: 8192
-    classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
+llm:
+  main:
+    provider: deepseek
+    model: deepseek-chat
+    temperature: 0.7
+    maxTokens: 8192
+  classifier:
+    provider: deepseek
+    model: deepseek-chat
+    temperature: 0.1
+  helper:
+    provider: deepseek
+    model: deepseek-chat
+    temperature: 0.1
 
-  mcp:
-    - type: http
-      url: ${MCP_ENDPOINT:-http://localhost:8080/mcp/stream/http}
-      headers:
-        x-sap-destination: ${SAP_DESTINATION:-S4HANA_E19}
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:8080/mcp/stream/http}
+    headers:
+      x-sap-destination: ${SAP_DESTINATION:-S4HANA_E19}
 
-  rag:
-    facts:
-      type: in-memory
-      embedder: ollama
-      url: http://localhost:11434
-      model: bge-m3
-    feedback:
-      type: in-memory
-      embedder: ollama
-      url: http://localhost:11434
-      model: bge-m3
-    state:
-      type: in-memory
-      embedder: ollama
-      url: http://localhost:11434
-      model: bge-m3
+# The legacy named facts/feedback/state stores (pipeline.rag.{name}) have no
+# current equivalent — a deployment gets one tools store; register extra named
+# stores via a RAG plugin if you need them.
+rag:
+  store:
+    type: in-memory
+  embedder:
+    provider: ollama
+    url: http://localhost:11434
+    model: bge-m3
 
 agent:
   externalToolsValidationMode: permissive

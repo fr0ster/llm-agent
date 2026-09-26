@@ -97,17 +97,18 @@ mode: smart
 
 llm:
   provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
 
 # Ollama embeddings for semantic skill/tool matching.
 # For keyword-only matching without Ollama, omit `embedder` (BM25).
 rag:
-  type: in-memory
-  embedder: ollama
-  url: http://localhost:11434
-  model: bge-m3
+  store:
+    type: in-memory
+  embedder:
+    provider: ollama
+    url: http://localhost:11434
+    model: bge-m3
 
 # MCP is optional — uncomment to enable tool discovery alongside skills.
 # mcp:

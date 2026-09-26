@@ -39,15 +39,18 @@ llm:
 # Embedding models like `gemini-embedding` and `text-embedding-3-small` are typically
 # deployed under the `foundation-models` scenario in SAP AI Core — keep that as default.
 rag:
-  type: ${RAG_TYPE:-in-memory}
-  embedder: ${RAG_EMBEDDER:-sap-ai-core}
-  scenario: ${RAG_SCENARIO:-foundation-models}
-  resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-  url: ${QDRANT_URL:-http://localhost:6333}
-  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-  collectionName: mcp_tools__${EMBEDDING_MODEL:-text-embedding-3-small}
-  vectorWeight: 0.7
-  keywordWeight: 0.3
+  store:
+    type: ${RAG_TYPE:-in-memory}
+    url: ${QDRANT_URL:-http://localhost:6333}
+    collectionName: mcp_tools__${EMBEDDING_MODEL:-text-embedding-3-small}
+    vectorWeight: 0.7
+    keywordWeight: 0.3
+  embedder:
+    provider: ${RAG_EMBEDDER:-sap-ai-core}
+    scenario: ${RAG_SCENARIO:-foundation-models}
+    resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+    model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    credentialRef: LLM   # shares llm.main's SAP AI Core account
 
 # MCP: YAML-based config enables auto-vectorization of tools into RAG.
 mcp:

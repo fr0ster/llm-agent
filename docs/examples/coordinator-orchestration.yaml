@@ -5,7 +5,8 @@
 #
 # Prerequisites:
 #   1. mcp-abap-adt-proxy listening on http://127.0.0.1:3001 (if subagents use MCP).
-#   2. DEEPSEEK_API_KEY and AICORE_SERVICE_KEY env variables set.
+#   2. DEEPSEEK_API_KEY (named by credentialRef: DEEPSEEK) and LLM_SERVICE_KEY
+#      (the SAP AI Core service-key JSON, for llm.main's default LLM ref) env vars set.
 
 port: 4004
 mode: smart

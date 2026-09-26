@@ -30,6 +30,8 @@ export interface PluginExports {
   outputValidator?: IOutputValidator;                 // replaces default
   skillManager?: ISkillManager;                      // replaces default
   mcpClients?: IMcpClient[];                         // accumulated from all plugins
+  pipelinePlugins?: Record<string, IPipelinePlugin>;  // named pipelines needing no settings
+  pipelinePluginFactories?: Record<string, (raw: unknown) => IPipelinePlugin>; // configurable pipelines
 }
 ```
 

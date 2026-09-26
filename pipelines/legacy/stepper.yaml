@@ -12,9 +12,12 @@ mcp:
   url: ${MCP_ENDPOINT}
 
 rag:
-  type: in-memory
-  embedder: sap-ai-core
-  model: text-embedding-3-small
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: text-embedding-3-small
+    credentialRef: LLM   # the same SAP AI Core account as llm.main
 
 pipeline:
   name: stepper

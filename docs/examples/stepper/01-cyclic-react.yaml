@@ -22,41 +22,53 @@ llm:
   main:
     provider: ${LLM_PROVIDER:-sap-ai-sdk}
     model: ${LLM_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
-    apiKey: ${LLM_API_KEY:-}
     url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.5
   executor:
     provider: ${LLM_PROVIDER:-sap-ai-sdk}
     model: ${LLM_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
-    apiKey: ${LLM_API_KEY:-}
     url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.2
   reviewer:
     provider: ${LLM_PROVIDER:-sap-ai-sdk}
     model: ${LLM_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
-    apiKey: ${LLM_API_KEY:-}
     url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0
   finalizer:
     provider: ${LLM_PROVIDER:-sap-ai-sdk}
     model: ${LLM_FINALIZER_MODEL:-anthropic--claude-4.5-haiku}
-    apiKey: ${LLM_API_KEY:-}
     url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.2
+  worker:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    credentialRef: AICORE   # fixed SAP AI Core account for the dispatched worker,
+                            # independent of this file's own LLM_PROVIDER switch
+    temperature: 0.2
+  worker-classifier:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    credentialRef: AICORE
+    temperature: 0.1
 
 # Embedder is a SEPARATE choice (DeepSeek/Anthropic have no embedder → pair with
 # Ollama or OpenAI). Defaults to SAP AI Core.
 rag:
-  type: in-memory
-  embedder: ${EMBEDDER_PROVIDER:-sap-ai-core}
-  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-  apiKey: ${EMBEDDER_API_KEY:-}
-  url: ${EMBEDDER_URL:-}
-  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+  store:
+    type: in-memory
+  embedder:
+    provider: ${EMBEDDER_PROVIDER:-sap-ai-core}
+    model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    url: ${EMBEDDER_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    # credentialRef omitted: reads the RAG_EMBEDDER default (RAG_EMBEDDER_API_KEY /
+    # RAG_EMBEDDER_SERVICE_KEY), independent of whichever LLM_PROVIDER is active
 
 pipeline:
   name: stepper

@@ -10,7 +10,7 @@
 # Prerequisites:
 #   1. mcp-abap-adt-proxy running in background:
 #        mcp-abap-adt-proxy --config ~/.config/mcp-abap-adt/proxy/epam-sap-mcp.yaml
-#   2. AICORE_SERVICE_KEY env variable populated.
+#   2. LLM_SERVICE_KEY (the SAP AI Core service-key JSON) env variable populated.
 #
 # Usage:
 #   npm run dev -- --config docs/examples/subagent-orchestration-sap-aicore.yaml
@@ -46,7 +46,8 @@ llm:
     temperature: 0.1
 
 rag:
-  type: in-memory
+  store:
+    type: in-memory
 
 mcp:
   - type: http

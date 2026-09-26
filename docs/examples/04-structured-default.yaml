@@ -17,7 +17,7 @@
 # To add domain stores or upsert, implement a custom IPipeline.
 #
 # Usage:
-#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/04-structured-default.yaml
+#   LLM_API_KEY=sk-xxx npm run dev -- --config docs/examples/04-structured-default.yaml
 
 port: 4004
 host: 0.0.0.0
@@ -25,15 +25,16 @@ mode: smart
 
 llm:
   provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
 
 rag:
-  type: in-memory
-  embedder: ollama
-  url: http://localhost:11434
-  model: bge-m3
+  store:
+    type: in-memory
+  embedder:
+    provider: ollama
+    url: http://localhost:11434
+    model: bge-m3
 
 mcp:
   type: http

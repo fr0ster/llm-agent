@@ -27,10 +27,13 @@ llm:
     temperature: 0.2
 
 rag:
-  type: in-memory
-  embedder: sap-ai-core
-  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    credentialRef: LLM
 
 pipeline:
   name: dag

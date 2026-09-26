@@ -2,7 +2,7 @@
 # Extends 02-ollama-mcp with all available agent tuning knobs.
 #
 # Usage:
-#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/12-deepseek-mcp.yaml
+#   LLM_API_KEY=sk-xxx npm run dev -- --config docs/examples/12-deepseek-mcp.yaml
 
 port: 4004
 host: 0.0.0.0
@@ -10,20 +10,21 @@ mode: smart
 
 llm:
   provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
   classifierTemperature: 0.1
 
 rag:
-  type: in-memory                     # in-memory | qdrant | hana-vector | pg-vector
-  embedder: ollama                    # Embedder: ollama | openai | sap-ai-core (omit for BM25 keyword-only)
-  url: http://localhost:11434
-  model: bge-m3
-  # collectionName: llm-agent         # Qdrant collection name (qdrant type only)
-  dedupThreshold: 0.92
-  vectorWeight: 0.7                   # Semantic similarity weight (0..1)
-  keywordWeight: 0.3                  # Lexical matching weight (0..1)
+  store:
+    type: in-memory                   # in-memory | qdrant | hana-vector | pg-vector
+    # collectionName: llm-agent       # Qdrant collection name (qdrant type only)
+    dedupThreshold: 0.92
+    vectorWeight: 0.7                 # Semantic similarity weight (0..1)
+    keywordWeight: 0.3                # Lexical matching weight (0..1)
+  embedder:
+    provider: ollama                  # ollama | openai | sap-ai-core (omit `embedder` for BM25 keyword-only)
+    url: http://localhost:11434
+    model: bge-m3
 
 mcp:
   # type: none | http | stdio
@@ -45,38 +46,33 @@ agent:
   # classificationEnabled: true      # Enable/disable intent classification stage
 
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
-# Use this section to assign different models for different internal tasks.
-# pipeline:
-#   llm:
-#     main:
-#       provider: deepseek            # deepseek | openai | anthropic
-#       apiKey: ${DEEPSEEK_API_KEY}
-#       model: deepseek-chat
-#       temperature: 0.7
-#     classifier:                     # optional; if absent, main config is reused
-#       provider: deepseek
-#       apiKey: ${DEEPSEEK_API_KEY}
-#       model: deepseek-chat
-#       temperature: 0.1
-#     helper:                         # optional; if absent, main config is reused
-#       provider: deepseek
-#       apiKey: ${DEEPSEEK_API_KEY}
-#       model: deepseek-chat
-#       temperature: 0.1
+# Use a named llm: map to assign different models for different internal tasks.
+# llm:
+#   main:
+#     provider: deepseek              # deepseek | openai | anthropic
+#     model: deepseek-chat
+#     temperature: 0.7
+#   classifier:                       # optional; if absent, main's entry is reused
+#     provider: deepseek
+#     model: deepseek-chat
+#     temperature: 0.1
+#   helper:                           # optional; if absent, main's entry is reused
+#     provider: deepseek
+#     model: deepseek-chat
+#     temperature: 0.1
 #
-#   rag:
-#     tools:
-#       type: qdrant
-#       url: http://qdrant:6333
-#       embedder: openai              # ollama | openai | <custom registered name>
-#       model: text-embedding-3-small
-#       apiKey: ${OPENAI_API_KEY}
-#     history:
-#       type: in-memory
+# rag:
+#   store:
+#     type: qdrant
+#     url: http://qdrant:6333
+#   embedder:
+#     provider: openai                # ollama | openai | <custom registered name>
+#     model: text-embedding-3-small
+#     credentialRef: OPENAI           # reads OPENAI_API_KEY
 #
-#   mcp:
-#     - type: http
-#       url: http://localhost:3001/mcp/stream/http
+# mcp:
+#   - type: http
+#     url: http://localhost:3001/mcp/stream/http
 
 # --- Structured Pipeline (optional) -------------------------------------------
 # Replaces DefaultPipeline with a YAML-defined stage tree.

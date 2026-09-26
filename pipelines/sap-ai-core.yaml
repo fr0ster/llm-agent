@@ -2,39 +2,35 @@ port: 4004
 host: 0.0.0.0
 mode: smart
 
-pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      temperature: 0.7
-      maxTokens: 32768
-    classifier:
-      provider: sap-ai-sdk
-      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      temperature: 0.1
-    helper:
-      provider: sap-ai-sdk
-      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      temperature: 0.1
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+    temperature: 0.7
+    maxTokens: 32768
+  classifier:
+    provider: sap-ai-sdk
+    model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+    temperature: 0.1
+  helper:
+    provider: sap-ai-sdk
+    model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+    temperature: 0.1
 
-  mcp:
-    - type: http
-      url: ${MCP_ENDPOINT}
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT}
 
-  rag:
-    facts:
-      type: in-memory
-      embedder: sap-ai-core
-      model: text-embedding-3-small
-    feedback:
-      type: in-memory
-      embedder: sap-ai-core
-      model: text-embedding-3-small
-    state:
-      type: in-memory
-      embedder: sap-ai-core
-      model: text-embedding-3-small
+# The legacy named facts/feedback/state stores (pipeline.rag.{name}) have no
+# current equivalent — a deployment gets one tools store; register extra named
+# stores via a RAG plugin if you need them.
+rag:
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: text-embedding-3-small
+    credentialRef: LLM   # the same SAP AI Core account as llm.main
 
 agent:
   externalToolsValidationMode: permissive

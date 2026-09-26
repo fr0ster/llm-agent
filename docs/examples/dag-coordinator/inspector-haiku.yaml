@@ -20,10 +20,13 @@ agent:
 llm: abap-inspector
 
 rag:
-  type: in-memory
-  embedder: sap-ai-core
-  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    credentialRef: LLM
 
 mcp:
   - type: http
