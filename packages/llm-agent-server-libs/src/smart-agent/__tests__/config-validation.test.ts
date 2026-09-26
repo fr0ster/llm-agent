@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parse } from 'yaml';
-import { resolveSmartServerConfig, YAML_TEMPLATE } from '../config.js';
+import { resolveSmartServerConfig } from '../config.js';
 
 describe('resolveSmartServerConfig — flat llm provider/url', () => {
   it('reads provider and url from YAML', () => {
@@ -14,7 +13,6 @@ describe('resolveSmartServerConfig — flat llm provider/url', () => {
           url: 'http://h:11434/v1',
           // dummy apiKey so the legacy 'API key required' guard does not fire
           // (Task 6 replaces that guard with provider-aware validation).
-          apiKey: 'x',
         },
       },
       {},
@@ -27,7 +25,7 @@ describe('resolveSmartServerConfig — flat llm provider/url', () => {
   it('does not invent a deepseek-chat model default', () => {
     const explicit = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' } },
+      { llm: { provider: 'openai', model: 'gpt-4o' } },
       {},
     );
     assert.equal(explicit.llm.model, 'gpt-4o');
@@ -44,14 +42,17 @@ describe('resolveSmartServerConfig — no silent env/default fallbacks', () => {
   it('does not read DEEPSEEK_API_KEY / OLLAMA_URL / MCP_ENDPOINT from env', () => {
     const cfg = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' } },
+      { llm: { provider: 'openai', model: 'gpt-4o', credentialRef: 'OPENAI' } },
       {
         DEEPSEEK_API_KEY: 'env-key',
         OLLAMA_URL: 'http://env-host:11434',
         MCP_ENDPOINT: 'http://env-mcp/mcp',
       } as NodeJS.ProcessEnv,
     );
-    assert.equal(cfg.llm.apiKey, 'sk-x'); // not 'env-key'
+    assert.equal(
+      (cfg.llm as { credentialRef?: string }).credentialRef,
+      'OPENAI',
+    ); // not an env value
     assert.equal(cfg.rag?.url, undefined); // not the env value
     assert.equal(cfg.mcp?.url, undefined); // no mcp block in YAML → env ignored
   });
@@ -62,7 +63,7 @@ describe('config validation — fail loud, human-readable', () => {
 
   it('flat schema requires explicit provider', () => {
     assert.throws(
-      () => resolveSmartServerConfig({}, base({ apiKey: 'k', model: 'm' }), {}),
+      () => resolveSmartServerConfig({}, base({ model: 'm' }), {}),
       /provider.*required|one of: openai, anthropic, deepseek, sap-ai-sdk, ollama/i,
     );
   });
@@ -79,15 +80,13 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
-  it('openai requires a resolvable apiKey', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          base({ provider: 'openai', model: 'gpt-4o' }),
-          {},
-        ),
-      /openai requires.*apiKey/i,
+  it('openai needs no key in configuration', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        base({ provider: 'openai', model: 'gpt-4o' }),
+        {},
+      ),
     );
   });
 
@@ -100,15 +99,13 @@ describe('config validation — fail loud, human-readable', () => {
     assert.equal(cfg.llm.provider, 'ollama');
   });
 
-  it('sap-ai-sdk requires AICORE_SERVICE_KEY', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          base({ provider: 'sap-ai-sdk', model: 'gpt-4o' }),
-          {},
-        ),
-      /sap-ai-sdk requires.*AICORE_SERVICE_KEY/i,
+  it('sap-ai-sdk needs no AICORE_SERVICE_KEY here — only the composition root reads it', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        base({ provider: 'sap-ai-sdk', model: 'gpt-4o' }),
+        {},
+      ),
     );
   });
 
@@ -262,7 +259,7 @@ describe('config validation — fail loud, human-readable', () => {
     const cfg = resolveSmartServerConfig(
       {},
       {
-        llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+        llm: { provider: 'openai', model: 'gpt-4o' },
         pipeline: 'stepper',
       },
       {},
@@ -274,7 +271,7 @@ describe('config validation — fail loud, human-readable', () => {
     const cfg = resolveSmartServerConfig(
       {},
       {
-        llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+        llm: { provider: 'openai', model: 'gpt-4o' },
         pipeline: { name: 'dag', config: { planner: { type: 'dag' } } },
       },
       {},
@@ -289,7 +286,7 @@ describe('config validation — fail loud, human-readable', () => {
         resolveSmartServerConfig(
           {},
           {
-            llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+            llm: { provider: 'openai', model: 'gpt-4o' },
             pipeline: { config: { foo: 1 } },
           },
           {},
@@ -375,23 +372,13 @@ describe('config validation — fail loud, human-readable', () => {
   });
 });
 
-describe('first-run YAML template', () => {
-  it('passes validation once the apiKey env is filled', () => {
-    // Mirrors first-run UX: template is generated, user fills DEEPSEEK_API_KEY.
-    const filled = YAML_TEMPLATE.replace(/\$\{DEEPSEEK_API_KEY\}/g, 'sk-test');
-    const cfg = resolveSmartServerConfig({}, parse(filled), {});
-    assert.equal(cfg.llm.provider, 'deepseek');
-    assert.ok(cfg.llm.apiKey);
-  });
-});
-
 describe('validateResolvedConfig — llm map shape', () => {
   it('flat llm config still validates (backward-compat)', () => {
     assert.doesNotThrow(() =>
       resolveSmartServerConfig(
         {},
         {
-          llm: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+          llm: { provider: 'deepseek', model: 'm' },
           mode: 'agent',
         },
         {},
@@ -405,8 +392,8 @@ describe('validateResolvedConfig — llm map shape', () => {
         {},
         {
           llm: {
-            main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
-            planner: { provider: 'openai', apiKey: 'k2', model: 'gpt' },
+            main: { provider: 'deepseek', model: 'm' },
+            planner: { provider: 'openai', model: 'gpt' },
           },
           mode: 'agent',
         },
@@ -422,7 +409,7 @@ describe('validateResolvedConfig — llm map shape', () => {
           {},
           {
             llm: {
-              planner: { provider: 'openai', apiKey: 'k', model: 'gpt' },
+              planner: { provider: 'openai', model: 'gpt' },
             },
             mode: 'agent',
           },
@@ -439,8 +426,8 @@ describe('validateResolvedConfig — llm map shape', () => {
           {},
           {
             llm: {
-              main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
-              planner: { apiKey: 'k', model: 'gpt' },
+              main: { provider: 'deepseek', model: 'm' },
+              planner: { model: 'gpt' },
             },
             mode: 'agent',
           },
@@ -458,7 +445,7 @@ describe('validateResolvedConfig — llm map shape', () => {
 
 describe('resolveSmartServerConfig — top-level mcp: array form', () => {
   const base = {
-    llm: { provider: 'ollama', model: 'qwen2', apiKey: 'x' },
+    llm: { provider: 'ollama', model: 'qwen2' },
   };
 
   it('preserves array mcp: as cfg.mcp (not silently undefined)', () => {
@@ -517,7 +504,6 @@ describe('legacy coordinator:/pipeline: migration guard (clean break)', () => {
     provider: 'ollama',
     model: 'm',
     url: 'http://h',
-    apiKey: 'x',
   };
 
   it('throws on a legacy coordinator: block', () => {
@@ -668,10 +654,7 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
       llm: { main: { provider: 'sap-ai-sdk' } },
       rag: { type: 'in-memory', embedder: 'sap-ai-core' },
     };
-    assert.throws(
-      () => resolveSmartServerConfig({}, yaml, {}, {}),
-      /AICORE_SERVICE_KEY|model/,
-    );
+    assert.throws(() => resolveSmartServerConfig({}, yaml, {}, {}), /model/);
   });
 
   it('still enforces STRUCTURAL validation', () => {

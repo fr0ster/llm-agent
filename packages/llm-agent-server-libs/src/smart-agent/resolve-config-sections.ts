@@ -18,10 +18,7 @@ import type {
 import type { YamlConfig } from './yaml-loader.js';
 import { get } from './yaml-loader.js';
 
-export function resolveLlmSection(
-  yaml: YamlConfig,
-  apiKey: string,
-): SmartServerConfig['llm'] {
+export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
   return get(yaml, 'llm')
     ? typeof get(yaml, 'llm', 'provider') === 'string'
       ? {
@@ -32,7 +29,11 @@ export function resolveLlmSection(
             | 'sap-ai-sdk'
             | 'ollama'
             | undefined,
-          apiKey,
+          // A name the composition root resolves — never a value. Its shape is
+          // checked by the validator, which reads the raw YAML.
+          ...(typeof get(yaml, 'llm', 'credentialRef') === 'string'
+            ? { credentialRef: get(yaml, 'llm', 'credentialRef') as string }
+            : {}),
           url: get(yaml, 'llm', 'url') as string | undefined,
           model: get(yaml, 'llm', 'model') as string | undefined,
           temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),

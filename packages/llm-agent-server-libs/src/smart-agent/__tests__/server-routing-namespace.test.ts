@@ -41,6 +41,7 @@ import { ControllerPipelinePlugin } from '../../pipelines/controller.js';
 import type { IServerPipelineContext } from '../../pipelines/server-context.js';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -103,7 +104,10 @@ interface ServerInternals {
 }
 
 function makeBareServer(): ServerInternals {
-  const server = new SmartServer({}) as unknown as ServerInternals;
+  const server = new SmartServer(
+    {},
+    constructionSeams,
+  ) as unknown as ServerInternals;
   server._workers = { build: async () => new Map() };
   server._stepperKnowledgeBackend = new InMemoryKnowledgeBackend();
   return server;

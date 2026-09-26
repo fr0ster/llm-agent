@@ -31,10 +31,11 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 // ── Minimal server config (no LLM creds needed — no start() call) ─────────────
 const MINIMAL_CFG = {
-  llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+  llm: { main: { provider: 'openai', model: 'gpt-4o' } },
 } as unknown as SmartServerConfig;
 
 // ── Sentinel factories ─────────────────────────────────────────────────────────
@@ -109,7 +110,10 @@ async function callBuildServerCtx(
 
 test('(a) YES injection: buildServerCtx ctx carries consumer-injected stepExecutionControl', async () => {
   const custom = sentinelStepControl();
-  const server = new SmartServer(MINIMAL_CFG, { stepExecutionControl: custom });
+  const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
+    stepExecutionControl: custom,
+  });
   const ctx = await callBuildServerCtx(server);
   assert.strictEqual(
     ctx.stepExecutionControl,
@@ -121,6 +125,7 @@ test('(a) YES injection: buildServerCtx ctx carries consumer-injected stepExecut
 test('(a) YES injection: buildServerCtx ctx carries consumer-injected runExecutionControl', async () => {
   const customRun = sentinelRunControl();
   const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
     runExecutionControl: customRun,
   });
   const ctx = await callBuildServerCtx(server);
@@ -132,7 +137,7 @@ test('(a) YES injection: buildServerCtx ctx carries consumer-injected runExecuti
 });
 
 test('(a) NO injection: buildServerCtx ctx omits stepExecutionControl and runExecutionControl', async () => {
-  const server = new SmartServer(MINIMAL_CFG);
+  const server = new SmartServer(MINIMAL_CFG, constructionSeams);
   const ctx = await callBuildServerCtx(server);
   assert.equal(
     ctx.stepExecutionControl,
@@ -150,6 +155,7 @@ test('(a) sanity: injected sentinels are distinct from each other (referential i
   const step = sentinelStepControl();
   const run = sentinelRunControl();
   const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
     stepExecutionControl: step,
     runExecutionControl: run,
   });
@@ -163,7 +169,10 @@ test('(a) sanity: injected sentinels are distinct from each other (referential i
 
 test('(a) YES injection: buildServerCtx ctx carries consumer-injected waitStrategy', async () => {
   const custom = sentinelWaitStrategy();
-  const server = new SmartServer(MINIMAL_CFG, { waitStrategy: custom });
+  const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
+    waitStrategy: custom,
+  });
   const ctx = await callBuildServerCtx(server);
   assert.strictEqual(
     ctx.waitStrategy,
@@ -173,7 +182,7 @@ test('(a) YES injection: buildServerCtx ctx carries consumer-injected waitStrate
 });
 
 test('(a) NO injection: buildServerCtx ctx omits waitStrategy', async () => {
-  const server = new SmartServer(MINIMAL_CFG);
+  const server = new SmartServer(MINIMAL_CFG, constructionSeams);
   const ctx = await callBuildServerCtx(server);
   assert.equal(
     ctx.waitStrategy,

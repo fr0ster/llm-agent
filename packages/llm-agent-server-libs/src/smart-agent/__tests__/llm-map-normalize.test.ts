@@ -18,7 +18,7 @@ test('normalizeLlmConfig: undefined input returns undefined', () => {
 });
 
 test('normalizeLlmConfig: flat shape is wrapped as { main: flat }', () => {
-  const flat = { provider: 'deepseek', apiKey: 'k', model: 'm' } as never;
+  const flat = { provider: 'deepseek', model: 'm' } as never;
   const out = normalizeLlmConfig(flat);
   assert.ok(out);
   assert.equal(out?.main, flat);
@@ -28,7 +28,7 @@ test('normalizeLlmConfig: map without main throws', () => {
   assert.throws(
     () =>
       normalizeLlmConfig({
-        planner: { provider: 'openai', apiKey: 'k' },
+        planner: { provider: 'openai' },
       } as never),
     /must include a 'main' key/,
   );
@@ -36,7 +36,7 @@ test('normalizeLlmConfig: map without main throws', () => {
 
 test('normalizeLlmConfig: map with main is returned as-is', () => {
   const map = {
-    main: { provider: 'deepseek', apiKey: 'k' },
+    main: { provider: 'deepseek' },
     planner: { provider: 'sap-ai-sdk', model: 'sonnet' },
   } as never;
   const out = normalizeLlmConfig(map);
@@ -48,38 +48,38 @@ test('resolveLlmConfig: undefined map + no fallback returns undefined', () => {
 });
 
 test('resolveLlmConfig: undefined map but pipeline fallback returns the fallback', () => {
-  const fallback = { provider: 'deepseek', apiKey: 'k' } as never;
+  const fallback = { provider: 'deepseek' } as never;
   assert.equal(resolveLlmConfig(undefined, 'planner', fallback), fallback);
 });
 
 test('resolveLlmConfig: omitted name resolves to main', () => {
-  const map = { main: { provider: 'deepseek', apiKey: 'k' } } as never;
+  const map = { main: { provider: 'deepseek' } } as never;
   assert.equal(resolveLlmConfig(map), map.main);
 });
 
 test("resolveLlmConfig: name='main' resolves to main", () => {
-  const map = { main: { provider: 'deepseek', apiKey: 'k' } } as never;
+  const map = { main: { provider: 'deepseek' } } as never;
   assert.equal(resolveLlmConfig(map, 'main'), map.main);
 });
 
 test('resolveLlmConfig: named key resolves to its config', () => {
   const map = {
-    main: { provider: 'deepseek', apiKey: 'k' },
+    main: { provider: 'deepseek' },
     planner: { provider: 'sap-ai-sdk', model: 's' },
   } as never;
   assert.equal(resolveLlmConfig(map, 'planner'), map.planner);
 });
 
 test('resolveLlmConfig: unknown name falls back to main', () => {
-  const map = { main: { provider: 'deepseek', apiKey: 'k' } } as never;
+  const map = { main: { provider: 'deepseek' } } as never;
   assert.equal(resolveLlmConfig(map, 'nope'), map.main);
 });
 
 test('resolveLlmConfig: map without the named key prefers main over pipeline fallback', () => {
   // The chain is: map[name] → map.main → fallback. If map.main exists,
   // pipeline fallback is NOT used.
-  const map = { main: { provider: 'deepseek', apiKey: 'k' } } as never;
-  const fallback = { provider: 'openai', apiKey: 'k' } as never;
+  const map = { main: { provider: 'deepseek' } } as never;
+  const fallback = { provider: 'openai' } as never;
   assert.equal(resolveLlmConfig(map, 'planner', fallback), map.main);
 });
 
@@ -154,8 +154,8 @@ test('buildFinalizer: type=template returns TemplateFinalizer', async () => {
 test('buildFinalizer: type=llm uses resolved LLM from llm map (named override)', async () => {
   let askedFor: string | undefined;
   const map = normalizeLlmConfig({
-    main: { provider: 'deepseek', apiKey: 'k' },
-    finalizer: { provider: 'sap-ai-sdk', apiKey: 'k', model: 'sonnet' },
+    main: { provider: 'deepseek' },
+    finalizer: { provider: 'sap-ai-sdk', model: 'sonnet' },
   } as never);
   assert.ok(map);
   const f = await buildFinalizer(
@@ -173,7 +173,7 @@ test('buildFinalizer: type=llm uses resolved LLM from llm map (named override)',
 
 test('buildFinalizer: type=llm falls back to llm.main when finalizerLlm omitted', async () => {
   const map = normalizeLlmConfig({
-    main: { provider: 'deepseek', apiKey: 'k' },
+    main: { provider: 'deepseek' },
   } as never);
   assert.ok(map);
   let askedFor: string | undefined;
@@ -193,7 +193,6 @@ test('buildFinalizer: type=llm falls back to llm.main when finalizerLlm omitted'
 test('buildFinalizer: type=llm uses pipeline.llm.main fallback when no top-level llm map', async () => {
   const pipelineFallback = {
     provider: 'openai',
-    apiKey: 'k',
     model: 'gpt-x',
   } as never;
   let askedFor: string | undefined;
@@ -239,9 +238,14 @@ test('normalizeLlmConfig: flat sap-ai-sdk config (no apiKey) is detected as flat
   assert.equal(out?.main, flat);
 });
 
+test('normalizeLlmConfig: a flat block with only credentialRef + provider is flat', () => {
+  const flat = { provider: 'openai', credentialRef: 'OPENAI' } as never;
+  assert.equal(normalizeLlmConfig(flat)?.main, flat);
+});
+
 test('resolveLlmConfigStrict: returns undefined when name missing (no main fallback)', () => {
   const map = normalizeLlmConfig({
-    main: { provider: 'x', apiKey: 'k' },
+    main: { provider: 'x' },
   } as never);
   assert.equal(resolveLlmConfigStrict(map, 'helper'), undefined);
   assert.equal(resolveLlmConfigStrict(map, 'main'), map?.main);
@@ -249,10 +253,10 @@ test('resolveLlmConfigStrict: returns undefined when name missing (no main fallb
 
 test('subagent llm: map shape with main is honored (regression for finding #2)', () => {
   const sub = {
-    main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+    main: { provider: 'deepseek', credentialRef: 'K', model: 'm' },
   } as never;
   const out = normalizeLlmConfig(sub);
   assert.ok(out);
-  assert.equal(out.main.apiKey, 'k');
+  assert.equal(out.main.credentialRef, 'K');
   assert.equal(out.main.model, 'm');
 });

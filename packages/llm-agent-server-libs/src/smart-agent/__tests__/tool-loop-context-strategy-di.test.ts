@@ -20,9 +20,10 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 const MINIMAL_CFG = {
-  llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+  llm: { main: { provider: 'openai', model: 'gpt-4o' } },
 } as unknown as SmartServerConfig;
 
 const stubLlm: ILlm = {
@@ -67,7 +68,7 @@ async function captureBuilderFactory(
 }
 
 test('NO injection: non-controller path receives a Window factory (server default)', async () => {
-  const server = new SmartServer(MINIMAL_CFG);
+  const server = new SmartServer(MINIMAL_CFG, constructionSeams);
   const factory = await captureBuilderFactory(server);
   assert.ok(
     factory,
@@ -87,6 +88,7 @@ test('YES injection: non-controller path receives the CONSUMER factory (override
   const consumerFactory: ToolLoopContextStrategyFactory = () =>
     sentinel as never;
   const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
     toolLoopContextStrategyFactory: consumerFactory,
   });
   const factory = await captureBuilderFactory(server);
@@ -102,7 +104,7 @@ test('YES injection: non-controller path receives the CONSUMER factory (override
 });
 
 test('ctx seam carries ONLY the consumer factory (undefined when not injected) â€” no Window leak to controller', () => {
-  const noInject = new SmartServer(MINIMAL_CFG);
+  const noInject = new SmartServer(MINIMAL_CFG, constructionSeams);
   assert.equal(
     (
       noInject as unknown as {
@@ -115,6 +117,7 @@ test('ctx seam carries ONLY the consumer factory (undefined when not injected) â
 
   const consumerFactory: ToolLoopContextStrategyFactory = () => ({}) as never;
   const injected = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
     toolLoopContextStrategyFactory: consumerFactory,
   });
   assert.strictEqual(

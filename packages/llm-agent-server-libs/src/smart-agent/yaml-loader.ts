@@ -14,7 +14,8 @@ mode: smart
 
 llm:
   provider: deepseek                  # deepseek | openai | anthropic | sap-ai-sdk | ollama
-  apiKey: \${DEEPSEEK_API_KEY}        # not required for ollama / sap-ai-sdk
+  # No secret here: your composition root holds the credential. To use an account
+  # other than its default, name it:  credentialRef: <NAME>
   model: deepseek-chat
   temperature: 0.7
   classifierTemperature: 0.1
@@ -71,17 +72,15 @@ agent:
 # llm:
 #   main:
 #     provider: deepseek              # deepseek | openai | anthropic | sap-ai-sdk
-#     apiKey: \${DEEPSEEK_API_KEY}
 #     model: deepseek-chat
 #     temperature: 0.7
 #   classifier:                       # optional; if absent, main config is reused
-#     provider: deepseek
-#     apiKey: \${DEEPSEEK_API_KEY}
-#     model: deepseek-chat
+#     provider: openai
+#     credentialRef: OPENAI_KEY_CHEAP # a second account, named — resolved by your composition root
+#     model: gpt-4o-mini
 #     temperature: 0.1
 #   helper:                           # optional; if absent, main config is reused
 #     provider: deepseek
-#     apiKey: \${DEEPSEEK_API_KEY}
 #     model: deepseek-chat
 #     temperature: 0.1
 

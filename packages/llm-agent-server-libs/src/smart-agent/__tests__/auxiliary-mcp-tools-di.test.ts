@@ -18,10 +18,11 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 // ── Minimal server config (no LLM creds needed — no start() call) ─────────────
 const MINIMAL_CFG = {
-  llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+  llm: { main: { provider: 'openai', model: 'gpt-4o' } },
 } as unknown as SmartServerConfig;
 
 // ── Sentinel ───────────────────────────────────────────────────────────────────
@@ -76,13 +77,16 @@ async function callBuildServerCtx(
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 test('(a) YES injection: buildServerCtx ctx carries consumer-injected auxiliaryMcpTools', async () => {
-  const server = new SmartServer(MINIMAL_CFG, { auxiliaryMcpTools: sentinel });
+  const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
+    auxiliaryMcpTools: sentinel,
+  });
   const ctx = await callBuildServerCtx(server);
   assert.equal(ctx.auxiliaryMcpTools, sentinel);
 });
 
 test('(b) NO injection: ctx.auxiliaryMcpTools is undefined (pipeline resolves its own default)', async () => {
-  const server = new SmartServer(MINIMAL_CFG, {});
+  const server = new SmartServer(MINIMAL_CFG, constructionSeams);
   const ctx = await callBuildServerCtx(server);
   assert.equal(ctx.auxiliaryMcpTools, undefined);
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IEmbedder, ILlm } from '@mcp-abap-adt/llm-agent';
 import { buildAgent, type SmartServerConfig } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 const cannedLlm = {
   chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),
@@ -17,7 +18,7 @@ test('without an injected makeLlm the server refuses, naming the seam', async ()
       buildAgent(
         {
           skipModelValidation: true,
-          llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+          llm: { main: { provider: 'openai', model: 'gpt-4o' } },
         } as unknown as SmartServerConfig,
         { embedder: stubEmbedder, mcpClients: [] },
       ),
@@ -31,17 +32,18 @@ test('a subagent worker builds its LLMs through the injected makeLlm', async () 
   const { close } = await buildAgent(
     {
       skipModelValidation: true,
-      llm: { main: { provider: 'openai', apiKey: 'x', model: 'parent-model' } },
+      llm: { main: { provider: 'openai', model: 'parent-model' } },
       subAgentConfigs: [
         {
           name: 'worker',
           config: {
-            llm: { provider: 'openai', apiKey: 'x', model: 'worker-model' },
+            llm: { provider: 'openai', model: 'worker-model' },
           },
         },
       ],
     } as unknown as SmartServerConfig,
     {
+      ...constructionSeams,
       makeLlm: async (cfg) => {
         models.push(cfg.model);
         return cannedLlm;

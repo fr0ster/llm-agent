@@ -28,6 +28,7 @@ import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 // ---------------------------------------------------------------------------
 // Minimal in-process MCP streamable-HTTP server (hermetic — no SDK, no spawn).
@@ -162,18 +163,21 @@ test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects
 }, async (t) => {
   const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
   if (!stub) return;
-  const server = new SmartServer({
-    port: 0,
-    llm: { apiKey: 'test', model: 'test-model' },
-    skipModelValidation: true,
-    mode: 'smart',
-    // In-memory store needs no embedder — it hashes text internally. The
-    // builder seeds `tool:<name>` docs via `toolsRag.writer().upsertRaw`.
-    rag: { type: 'in-memory' },
-    // YAML-only MCP: no `mcpClients` DI ⇒ the startup builder owns the
-    // connection ⇒ it vectorizes.
-    mcp: { type: 'http', url: stub.url },
-  });
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      mode: 'smart',
+      // In-memory store needs no embedder — it hashes text internally. The
+      // builder seeds `tool:<name>` docs via `toolsRag.writer().upsertRaw`.
+      rag: { type: 'in-memory' },
+      // YAML-only MCP: no `mcpClients` DI ⇒ the startup builder owns the
+      // connection ⇒ it vectorizes.
+      mcp: { type: 'http', url: stub.url },
+    },
+    constructionSeams,
+  );
 
   let handle: Awaited<ReturnType<SmartServer['start']>> | undefined;
   try {
@@ -220,16 +224,19 @@ test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no con
   // presence-vs-length check.
   const stub = await startStubOrSkip(t, ['EchoTool']);
   if (!stub) return;
-  const server = new SmartServer({
-    port: 0,
-    llm: { apiKey: 'test', model: 'test-model' },
-    skipModelValidation: true,
-    mode: 'smart',
-    rag: { type: 'in-memory' },
-    // Explicit empty DI set ⇒ MCP disabled, even though a YAML mcp: is present.
-    mcpClients: [],
-    mcp: { type: 'http', url: stub.url },
-  });
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      mode: 'smart',
+      rag: { type: 'in-memory' },
+      // Explicit empty DI set ⇒ MCP disabled, even though a YAML mcp: is present.
+      mcpClients: [],
+      mcp: { type: 'http', url: stub.url },
+    },
+    constructionSeams,
+  );
 
   let handle: Awaited<ReturnType<SmartServer['start']>> | undefined;
   try {

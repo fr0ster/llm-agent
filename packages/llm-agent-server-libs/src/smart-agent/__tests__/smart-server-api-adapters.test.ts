@@ -14,9 +14,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
-/** Every test here builds a real SmartServer; the seam replaces the deleted default. */
+/** Every test here builds a real SmartServer; the seams are required now. */
 const llmDeps = {
+  ...constructionSeams,
   makeLlm: async (cfg: { model?: string }) => ({
     ...makeTestLlm([{ content: 'ok' }]),
     model: cfg.model ?? 'stub',
@@ -105,7 +107,6 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
         port: 0,
         llm: {
           provider: 'deepseek',
-          apiKey: 'test-key',
           model: 'deepseek-chat',
         },
         skipModelValidation: true,
@@ -135,7 +136,6 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
         port: 0,
         llm: {
           provider: 'deepseek',
-          apiKey: 'test-key',
           model: 'deepseek-chat',
         },
         skipModelValidation: true,
@@ -195,7 +195,6 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
         port: 0,
         llm: {
           provider: 'deepseek',
-          apiKey: 'test-key',
           model: 'deepseek-chat',
         },
         skipModelValidation: true,

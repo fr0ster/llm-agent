@@ -9,10 +9,12 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs/testing';
 import type { BuildAgentDeps } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
-/** Every test here builds a real SmartServer; the seam replaces the deleted default. */
-function makeLlmDeps(): Pick<BuildAgentDeps, 'makeLlm'> {
+/** Every test here builds a real SmartServer; the seams are required now. */
+function makeLlmDeps(): Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder'> {
   return {
+    ...constructionSeams,
     makeLlm: async (cfg) => ({
       ...makeTestLlm([{ content: 'ok' }]),
       model: cfg.model ?? 'stub',
@@ -120,7 +122,7 @@ describe('GET /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         agent: { maxIterations: 8 },
       },
@@ -144,7 +146,7 @@ describe('GET /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
       },
       makeLlmDeps(),
@@ -164,7 +166,7 @@ describe('GET /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         agent: { maxIterations: 5, timeoutMs: 9999, tokenLimit: 4096 },
       },
@@ -190,7 +192,7 @@ describe('PUT /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         agent: { maxIterations: 10 },
       },
@@ -215,7 +217,7 @@ describe('PUT /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
       },
       makeLlmDeps(),
@@ -235,7 +237,7 @@ describe('PUT /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
       },
       makeLlmDeps(),
@@ -289,7 +291,7 @@ describe('PUT /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
       },
       makeLlmDeps(),
@@ -307,7 +309,7 @@ describe('PUT /v1/config', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         agent: { maxIterations: 10 },
       },
@@ -336,7 +338,7 @@ describe('PUT /v1/config — models', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         modelResolver: resolver,
       },
@@ -360,7 +362,7 @@ describe('PUT /v1/config — models', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
       },
       makeLlmDeps(),
@@ -389,7 +391,7 @@ describe('PUT /v1/config — models', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         modelResolver: resolver,
       },
@@ -415,7 +417,7 @@ describe('PUT /v1/config — models', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         modelResolver: resolver,
       },
@@ -448,7 +450,7 @@ describe('PUT /v1/config — models', () => {
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         modelResolver: resolver,
         agent: { maxIterations: 10 },

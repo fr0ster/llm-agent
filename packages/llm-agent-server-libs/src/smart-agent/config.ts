@@ -59,7 +59,6 @@ export {
 export interface ResolveConfigArgs {
   port?: string | boolean;
   host?: string | boolean;
-  'llm-api-key'?: string | boolean;
   'llm-model'?: string | boolean;
   'llm-temperature'?: string | boolean;
   'rag-type'?: string | boolean;
@@ -68,7 +67,6 @@ export interface ResolveConfigArgs {
   'rag-collection-name'?: string | boolean;
   'rag-vector-weight'?: string | boolean;
   'rag-keyword-weight'?: string | boolean;
-  'qdrant-api-key'?: string | boolean;
   'mcp-type'?: string | boolean;
   'mcp-url'?: string | boolean;
   'mcp-command'?: string | boolean;
@@ -184,10 +182,9 @@ export interface ResolveSmartServerConfigOptions {
    */
   configPath?: string;
 
-  /** When true, SKIP provider-runtime validation — credential checks
-   *  (apiKey / AICORE_SERVICE_KEY) and `*.model` required — keeping STRUCTURAL
-   *  checks. Set by embeddable callers that inject their own makeLlm + embedder.
-   *  Default false → server behaviour unchanged. */
+  /** When true, SKIP provider-runtime validation — `*.model` required — keeping
+   *  STRUCTURAL checks, which include refusing a secret field. Set by embeddable
+   *  callers that inject their own embedder. Default false. */
   skipProviderRuntimeChecks?: boolean;
 }
 
@@ -202,16 +199,12 @@ export function resolveSmartServerConfig(
   // rather than the generic "pipeline requires a name" diagnostic.
   assertNoLegacyPipelineConfig(yaml);
 
-  // API key derives solely from the top-level `llm:` block now (the legacy
-  // `pipeline.llm.main.apiKey` override was removed with the schema migration).
-  const apiKey = (get(yaml, 'llm', 'apiKey') as string) ?? '';
-
   const resolved: Omit<SmartServerConfig, 'log'> = {
     port: Number(
       (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
     ),
     host: (args.host as string) ?? get(yaml, 'host') ?? '0.0.0.0',
-    llm: resolveLlmSection(yaml, apiKey),
+    llm: resolveLlmSection(yaml),
     rag: resolveRagSection(yaml, args as Record<string, unknown>),
     mcp: resolveMcpSection(yaml, args as Record<string, unknown>),
     agent: resolveAgentSection(yaml, args as Record<string, unknown>),

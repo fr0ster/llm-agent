@@ -23,6 +23,7 @@ import type {
   LlmTool,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 function fakeMcpClient(tools: string[]): IMcpClient {
   return {
@@ -59,7 +60,7 @@ type Internals = {
 
 test('F1: DI/plugin clients are shared verbatim — _sharedMcpClients is the SAME instance fed to the builder', async () => {
   const di = [fakeMcpClient(['ReadProgram'])];
-  const server = new SmartServer({}) as unknown as Internals;
+  const server = new SmartServer({}, constructionSeams) as unknown as Internals;
 
   await server.buildSharedPipelineInfra({
     toolsRag: undefined,
@@ -82,7 +83,7 @@ test('F1: YAML-only path (no DI clients, no mcp config) yields an empty shared s
   // mapping turns an empty shared set into `undefined` (no withMcpClients call),
   // and with no `cfg.mcp` the builder also has nothing to connect ⇒ zero
   // connections total.
-  const server = new SmartServer({}) as unknown as Internals;
+  const server = new SmartServer({}, constructionSeams) as unknown as Internals;
 
   await server.buildSharedPipelineInfra({
     toolsRag: undefined,
@@ -103,7 +104,7 @@ test('F1: YAML-only path (no DI clients, no mcp config) yields an empty shared s
 
 test('F2: toolsRag.lookup(name) returns the schema BEFORE any query() (eager catalog)', async () => {
   const di = [fakeMcpClient(['ReadProgram', 'GetTable'])];
-  const server = new SmartServer({}) as unknown as Internals;
+  const server = new SmartServer({}, constructionSeams) as unknown as Internals;
 
   await server.buildSharedPipelineInfra({
     toolsRag: undefined,

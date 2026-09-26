@@ -141,7 +141,7 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
   // checked: a misspelling failed where a config error is least visible.
   const mapYaml = (main: Record<string, unknown>) => ({
     llm: {
-      main: { provider: 'ollama', model: 'qwen2.5', apiKey: '', ...main },
+      main: { provider: 'ollama', model: 'qwen2.5', ...main },
     },
   });
 

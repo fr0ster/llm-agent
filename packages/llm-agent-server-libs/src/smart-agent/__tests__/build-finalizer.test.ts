@@ -12,7 +12,7 @@ const stubLlm = {
   model: 'stub',
 };
 
-const stubLlmConfig = { provider: 'openai' as const, apiKey: 'k', model: 'm' };
+const stubLlmConfig = { provider: 'openai' as const, model: 'm' };
 
 test('buildFinalizer: absent block returns PassthroughFinalizer', async () => {
   const f = await buildFinalizer(

@@ -74,9 +74,11 @@ import {
   SmartServer,
   type SmartServerMcpConfig,
 } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
-/** Every real-boot SmartServer in this file needs the seam; the deleted default no longer supplies one. */
+/** Every real-boot SmartServer in this file needs the seams; the library defaults none of them. */
 const llmDeps = {
+  ...constructionSeams,
   makeLlm: async (cfg: { model?: string }) => ({
     ...makeTestLlm([{ content: 'ok' }]),
     model: cfg.model ?? 'stub',
@@ -267,7 +269,7 @@ async function bootTwoServerSmartServer(t: {
   const server = new SmartServer(
     {
       port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
+      llm: { model: 'test-model' },
       skipModelValidation: true,
       mcp: mcpCfg,
     },
@@ -507,7 +509,7 @@ test('mcp[].name labels — yaml-builder path (real boot) yields label__Search a
   const server = new SmartServer(
     {
       port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
+      llm: { model: 'test-model' },
       skipModelValidation: true,
       mcp: [
         { type: 'http', url: stubPrimary.url, name: 'primary' },
@@ -618,7 +620,7 @@ test('bare custom connectMcp seam (no descriptors) falls back to s0__Search and 
 
   const server = new SmartServer(
     {
-      llm: { apiKey: 'test', model: 'test-model' },
+      llm: { model: 'test-model' },
       skipModelValidation: true,
       mcp: { type: 'http', url: 'http://127.0.0.1:9/unused' },
     },

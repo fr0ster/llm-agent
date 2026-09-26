@@ -110,21 +110,18 @@ function makeRecordingMakeLlm() {
 }
 
 const perRoleLlmMap = {
-  main: { provider: 'openai' as const, apiKey: 'k', model: 'main-model' },
-  planner: { provider: 'openai' as const, apiKey: 'k', model: 'planner-model' },
+  main: { provider: 'openai' as const, model: 'main-model' },
+  planner: { provider: 'openai' as const, model: 'planner-model' },
   executor: {
     provider: 'openai' as const,
-    apiKey: 'k',
     model: 'executor-model',
   },
   finalizer: {
     provider: 'openai' as const,
-    apiKey: 'k',
     model: 'finalizer-model',
   },
   reviewer: {
     provider: 'openai' as const,
-    apiKey: 'k',
     model: 'reviewer-model',
   },
 };
@@ -240,10 +237,9 @@ test('per-role map: absent role falls back to main', async () => {
 
   // Only main + planner defined; executor/finalizer/reviewer must fall back to main.
   const partialMap = {
-    main: { provider: 'openai' as const, apiKey: 'k', model: 'main-model' },
+    main: { provider: 'openai' as const, model: 'main-model' },
     planner: {
       provider: 'openai' as const,
-      apiKey: 'k',
       model: 'planner-model',
     },
   };
@@ -296,7 +292,6 @@ test('pipelineFallback is used when llmMap is absent', async () => {
 
   const pipelineFallback = {
     provider: 'openai' as const,
-    apiKey: 'k',
     model: 'pipeline-model',
   };
 

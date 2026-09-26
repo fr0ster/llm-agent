@@ -78,13 +78,12 @@ import {
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import type {
-  EmbedderResolutionConfig,
+  EmbedderResolution,
   EmbedderResolutionOptions,
 } from '@mcp-abap-adt/llm-agent-rag';
 import {
   makeRag,
   prefetchEmbedderFactories,
-  resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { ConfigReloadWatcher } from './config-reload-watcher.js';
@@ -127,7 +126,12 @@ export { writeNotReady } from './http/response-helpers.js';
 export interface SmartServerLlmConfig {
   /** Provider id for the flat schema. Required when no pipeline.llm.main is set. */
   provider?: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
-  apiKey: string;
+  /**
+   * Names the account this role uses; the composition root resolves it to a
+   * credential. Omit it and the root's default entry applies. Never a secret:
+   * the value never enters this object, which is what `${VAR}` got wrong (§4.6.2).
+   */
+  credentialRef?: string;
   /** Custom base URL (OpenAI-compatible endpoints: Ollama, Azure, vLLM). */
   url?: string;
   model?: string;
@@ -349,15 +353,18 @@ export interface SmartServerConfig {
 
 /**
  * DI seam for SmartServer's LLM / embedder / skill-host / MCP construction.
- * Every member is optional and defaults to the real implementation, so omitting
- * `deps` (or passing `{}`) preserves the original behaviour exactly. Used by
- * tests (and a future no-listen `buildAgent()`) to substitute canned
- * implementations without network or port I/O.
+ *
+ * `makeLlm` and `resolveEmbedder` are REQUIRED (spec §4.6.3 item 3): the library
+ * constructs no authenticated provider from configuration, so the composition root
+ * supplies them. `makeLlm` receives the SERIALIZABLE section, whose `credentialRef`
+ * the root resolves. Passing `{}` no longer compiles, and an untyped caller that
+ * omits one is refused at construction. Every other member is optional and defaults
+ * to the real implementation; tests substitute canned ones the same way.
  */
 export interface BuildAgentDeps {
-  makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
-  resolveEmbedder?: (
-    cfg: EmbedderResolutionConfig,
+  makeLlm: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
+  resolveEmbedder: (
+    cfg: EmbedderResolution,
     options?: EmbedderResolutionOptions,
   ) => IEmbedder;
   prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
@@ -723,6 +730,26 @@ export function buildMcpBridge(
   };
 }
 
+/**
+ * The seams the library no longer defaults. The type already makes them required;
+ * this runs for callers with no types to check, so a plain-JS embedder of
+ * SmartServer is told at construction instead of starting without an LLM.
+ */
+const REQUIRED_CONSTRUCTION_SEAMS = ['makeLlm', 'resolveEmbedder'] as const;
+
+function assertConstructionSeams(deps: BuildAgentDeps | undefined): void {
+  const missing = REQUIRED_CONSTRUCTION_SEAMS.filter(
+    (k) => typeof deps?.[k] !== 'function',
+  );
+  if (missing.length === 0) return;
+  throw new Error(
+    `${missing.map((k) => `BuildAgentDeps.${k}`).join(', ')} ` +
+      `${missing.length > 1 ? 'are' : 'is'} required: the library constructs no ` +
+      'LLM, embedder or store from configuration, because doing so meant carrying ' +
+      'a secret through a framework config. Supply them from your composition root.',
+  );
+}
+
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
@@ -925,7 +952,8 @@ export class SmartServer {
       'skillHost' | 'embedder' | 'mcpClients' | 'connectMcpWithDescriptors'
     >;
 
-  constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
+  constructor(config: SmartServerConfig, deps: BuildAgentDeps) {
+    assertConstructionSeams(deps);
     this.cfg = config;
     this._mcpSeamInjected =
       deps.mcpClients !== undefined ||
@@ -949,20 +977,8 @@ export class SmartServer {
     this._waitStrategy = deps.waitStrategy;
     this._toolNamespace = deps.toolNamespace ?? defaultToolNamespace;
     this._deps = {
-      // No default: the library no longer constructs providers (spec §4.6.2),
-      // so a server built without the seam is refused the first time it needs
-      // an LLM, with the seam named — not handed a provider built from YAML.
-      makeLlm:
-        deps.makeLlm ??
-        (() =>
-          Promise.reject(
-            new Error(
-              'BuildAgentDeps.makeLlm is not set: SmartServer no longer constructs LLM ' +
-                'providers itself. Pass makeLlm in the deps — the composition root that ' +
-                'holds your credentials builds the ILlm (see the migration note).',
-            ),
-          )),
-      resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
+      makeLlm: deps.makeLlm,
+      resolveEmbedder: deps.resolveEmbedder,
       prefetchEmbedderFactories:
         deps.prefetchEmbedderFactories ?? prefetchEmbedderFactories,
       buildSkillHost: deps.buildSkillHost ?? buildSkillHostFromConfig,
@@ -1843,17 +1859,15 @@ export class SmartServer {
       embedder?: IEmbedder;
     },
   ): Promise<SmartAgent> {
-    // Normalize subagent llm: either flat { provider, apiKey, ... } or a map
-    // { main: {...}, planner: {...} }. normalizeLlmConfig wraps flat shape as
+    // Normalize subagent llm: either flat { provider, credentialRef?, ... } or a
+    // map { main: {...}, planner: {...} }. normalizeLlmConfig wraps flat shape as
     // { main: flat } so downstream code always reads from .main.
     const subLlmMap = normalizeLlmConfig(subCfg.llm);
     const subLlmMain = subLlmMap?.main;
-    if (
-      !subLlmMain?.apiKey &&
-      subLlmMain?.provider !== 'sap-ai-sdk' &&
-      subLlmMain?.provider !== 'ollama'
-    ) {
-      throw new Error(`subagent '${name}': LLM API key is required`);
+    if (!subLlmMain) {
+      throw new Error(
+        `subagent '${name}': llm is required (a flat llm block or llm.main)`,
+      );
     }
     // The subagent's helper role derives from its own top-level `llm:` map.
     const subHelperCfg = resolveLlmConfigStrict(subLlmMap, 'helper');
@@ -1875,11 +1889,6 @@ export class SmartServer {
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
     const subFlatLlm = subLlmMain;
-    if (!subFlatLlm) {
-      // Unreachable: the key guard above throws when no main entry exists.
-      // Stated so the seam below receives a defined config.
-      throw new Error(`subagent '${name}': no llm configured`);
-    }
     const mainTemp = Number(subFlatLlm.temperature ?? 0.7);
     const classifierTemp = Number(subFlatLlm.classifierTemperature ?? 0.1);
     const cached = await resolveWorkerLlmSet({
@@ -3054,7 +3063,7 @@ export class SmartServer {
  *  `SmartServer.start()` is the default impl that adds HTTP `listen` on top. */
 export async function buildAgent(
   cfg: SmartServerConfig,
-  deps?: BuildAgentDeps,
+  deps: BuildAgentDeps,
 ): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
   const server = new SmartServer(cfg, deps);
   const built = await server._buildEmbeddedAgent();

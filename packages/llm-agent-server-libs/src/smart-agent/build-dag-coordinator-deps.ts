@@ -27,7 +27,7 @@ export interface BuildDagCoordinatorDepsInput {
   coordCfg: Record<string, unknown> | undefined;
   llmMap: NormalizedLlmMap | undefined;
   /** Adapted from `pipeline.llm.main` (already shape-normalized to
-   *  SmartServerLlmConfig: `{ provider, apiKey, url: baseURL, model,
+   *  SmartServerLlmConfig: `{ provider, credentialRef, url, model,
    *  temperature }`). When set, used as the final fallback in the
    *  role-resolution chain map[name] → map.main → pipelineFallback. */
   pipelineFallback: SmartServerLlmConfig | undefined;

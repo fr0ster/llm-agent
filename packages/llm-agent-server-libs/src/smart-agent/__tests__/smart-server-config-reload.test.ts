@@ -18,9 +18,11 @@ import { describe, it } from 'node:test';
 import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
-/** Every test here builds a real SmartServer; the seam replaces the deleted default. */
+/** Every test here builds a real SmartServer; the seams are required now. */
 const llmDeps = {
+  ...constructionSeams,
   makeLlm: async (cfg: { model?: string }) => ({
     ...makeTestLlm([{ content: 'ok' }]),
     model: cfg.model ?? 'stub',
@@ -89,7 +91,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         agent: { maxIterations: 10 },
       },
@@ -148,7 +150,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         modelResolver: resolver,
       },
@@ -190,13 +192,13 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         subAgentConfigs: [
           {
             name: 'worker1',
             config: {
-              llm: { apiKey: 'test', model: 'test-model' },
+              llm: { model: 'test-model' },
               skipModelValidation: true,
             },
           },
@@ -255,7 +257,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     const server = new SmartServer(
       {
         port: 0,
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         agent: { maxIterations: 10, maxToolCalls: 5 },
       },

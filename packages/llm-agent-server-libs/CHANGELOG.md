@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**BREAKING:** `SmartServerLlmConfig.apiKey` is removed, and `credentialRef`
+names the account instead. A YAML that still carries `apiKey` is refused with
+`credentialRef` in the message. `PipelineLlmProviderConfig` is deleted, with
+the `llm` member of the legacy `PipelineConfig`; nothing read either.
+`BuildAgentDeps.makeLlm` and `resolveEmbedder` are required, and
+`resolveEmbedder` is typed with `EmbedderResolution` from
+`@mcp-abap-adt/llm-agent-rag`. `SmartServer`, `buildAgent` and
+`ControllerSkillPipelineBuilder#build` require `deps`. The validator no longer
+asks for an api key or `AICORE_SERVICE_KEY`. `BuilderLlmInput.apiKey` becomes
+`credentialRef`, and the builder reads no environment variable.
+
 `SmartServer` no longer defaults `BuildAgentDeps.makeLlm`: build without it and
 the server refuses on first use, naming the seam. Subagent workers now build
 their LLMs through the same injected seam the top-level roles already used, so

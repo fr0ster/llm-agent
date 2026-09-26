@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import type { IEmbedder, ILlm, IRagRegistry } from '@mcp-abap-adt/llm-agent';
 import type { SessionAgentParts } from '@mcp-abap-adt/llm-agent-libs';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 const cannedLlm = {
   chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),
@@ -21,7 +22,7 @@ const stubEmbedder = {
 
 const cfg = {
   skipModelValidation: true,
-  llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+  llm: { main: { provider: 'openai', model: 'gpt-4o' } },
 } as unknown as SmartServerConfig;
 
 interface Internals {
@@ -37,6 +38,7 @@ test('_embeddedSessionParts result carries mcpClientDescriptors/configuredSlotCo
     { slotIndex: 1, label: 'b' },
   ];
   const server = new SmartServer(cfg, {
+    ...constructionSeams,
     makeLlm: async () => cannedLlm,
     embedder: stubEmbedder,
     connectMcpWithDescriptors: async () => ({

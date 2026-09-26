@@ -31,9 +31,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
-/** Every real-boot test here needs the seam; the deleted default no longer supplies one. */
+/** Every real-boot test here needs the seams; the library defaults none of them. */
 const llmDeps = {
+  ...constructionSeams,
   makeLlm: async (cfg: { model?: string }) => ({
     ...makeTestLlm([{ content: 'ok' }]),
     model: cfg.model ?? 'stub',
@@ -200,7 +202,7 @@ test('yaml path: startup-builder-owned MCP connect → server harvests the handl
   try {
     const server = new SmartServer(
       {
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         // Two colliding "Search" servers, YAML-only (no ready clients, no
         // injected seam) ⇒ the startup builder owns the connect + the
@@ -251,6 +253,7 @@ test('seam path: connectMcpWithDescriptors colliding Search clients, no builder 
   const server = new SmartServer(
     {},
     {
+      ...constructionSeams,
       connectMcpWithDescriptors: async () => ({
         clients: [c0, c1],
         clientDescriptors: [{ slotIndex: 0 }, { slotIndex: 1 }],
@@ -290,7 +293,7 @@ test('custom BuildAgentDeps.toolNamespace reaches the yaml-builder snapshot (ass
     };
     const server = new SmartServer(
       {
-        llm: { apiKey: 'test', model: 'test-model' },
+        llm: { model: 'test-model' },
         skipModelValidation: true,
         mcp: { type: 'http', url: stub.url },
       },
@@ -324,7 +327,7 @@ test('fallback build: middle-client listTools() failure keeps the surviving thir
   const c0 = fakeMcpClient(['A']);
   const c1 = fakeMcpClient(['Broken'], { fail: true });
   const c2 = fakeMcpClient(['B']);
-  const server = new SmartServer({}) as unknown as Internals;
+  const server = new SmartServer({}, constructionSeams) as unknown as Internals;
 
   await server.buildSharedPipelineInfra({
     toolsRag: undefined,
@@ -353,9 +356,12 @@ test('fallback build: a middle-client listTools() failure emits ONE aggregated c
   const c1 = fakeMcpClient(['Broken'], { fail: true });
   const c2 = fakeMcpClient(['B']);
   const events: Record<string, unknown>[] = [];
-  const server = new SmartServer({
-    log: (e) => events.push(e),
-  }) as unknown as Internals;
+  const server = new SmartServer(
+    {
+      log: (e) => events.push(e),
+    },
+    constructionSeams,
+  ) as unknown as Internals;
 
   await server.buildSharedPipelineInfra({
     toolsRag: undefined,

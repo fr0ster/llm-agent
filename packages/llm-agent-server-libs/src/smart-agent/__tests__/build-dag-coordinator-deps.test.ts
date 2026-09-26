@@ -50,7 +50,7 @@ test('buildDagCoordinatorDeps: default finalizer is PassthroughFinalizer', async
   const deps = await buildDagCoordinatorDeps({
     coordCfg: { planner: { type: 'llm' } },
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k' },
+      main: { provider: 'deepseek' },
     } as never),
     pipelineFallback: undefined,
     mainLlm: stubLlm as never,
@@ -76,7 +76,7 @@ test('buildDagCoordinatorDeps: type=llm finalizer yields LlmFinalizer', async ()
       finalizer: { type: 'llm' },
     },
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k' },
+      main: { provider: 'deepseek' },
     } as never),
     pipelineFallback: undefined,
     mainLlm: stubLlm as never,
@@ -100,7 +100,7 @@ test('buildDagCoordinatorDeps: type=template finalizer yields TemplateFinalizer'
       finalizer: { type: 'template' },
     },
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k' },
+      main: { provider: 'deepseek' },
     } as never),
     pipelineFallback: undefined,
     mainLlm: stubLlm as never,
@@ -122,7 +122,7 @@ test('buildDagCoordinatorDeps: stateOracle name resolves and is wrapped in SubAg
   const deps = await buildDagCoordinatorDeps({
     coordCfg: { planner: { type: 'llm' }, stateOracle: 'inspector' },
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k' },
+      main: { provider: 'deepseek' },
     } as never),
     pipelineFallback: undefined,
     mainLlm: stubLlm as never,
@@ -144,7 +144,7 @@ test('buildDagCoordinatorDeps: returns undefined when planner block is absent (n
   const deps = await buildDagCoordinatorDeps({
     coordCfg: { stateOracle: 'inspector' }, // no planner
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k' },
+      main: { provider: 'deepseek' },
     } as never),
     pipelineFallback: undefined,
     mainLlm: stubLlm as never,
@@ -166,7 +166,7 @@ test('buildDagCoordinatorDeps: reviewer alias plannerLlm emits a warning', async
       reviewer: { type: 'llm', plannerLlm: 'main' },
     },
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k' },
+      main: { provider: 'deepseek' },
     } as never),
     pipelineFallback: undefined,
     mainLlm: stubLlm as never,
@@ -190,7 +190,6 @@ test('buildDagCoordinatorDeps: pipelineFallback enables type=llm finalizer witho
     llmMap: undefined, // no top-level llm: block
     pipelineFallback: {
       provider: 'openai',
-      apiKey: 'k',
       model: 'gpt-x',
     } as never,
     mainLlm: stubLlm as never,
@@ -212,7 +211,6 @@ test('buildDagCoordinatorDeps: plannerLlm=helper uses helperLlm even when pipeli
     llmMap: undefined,
     pipelineFallback: {
       provider: 'openai',
-      apiKey: 'k',
       model: 'GPT-MAIN',
     } as never,
     mainLlm: stubLlm as never,
@@ -242,7 +240,6 @@ test('buildDagCoordinatorDeps: reviewerLlm=planner alias also routes to helperLl
     llmMap: undefined,
     pipelineFallback: {
       provider: 'openai',
-      apiKey: 'k',
       model: 'GPT',
     } as never,
     mainLlm: stubLlm as never,
@@ -271,12 +268,10 @@ test('plannerLlm=helper with FLAT llm: still routes to helperLlm (not main)', as
     // Flat top-level llm: present → normalized to { main: flat }
     llmMap: normalizeLlmConfig({
       provider: 'deepseek',
-      apiKey: 'k',
       model: 'main-m',
     } as never),
     pipelineFallback: {
       provider: 'openai',
-      apiKey: 'k',
       model: 'GPT-MAIN',
     } as never,
     mainLlm: stubLlm as never,
@@ -304,7 +299,7 @@ test('plannerLlm=helper with MAP without explicit helper entry still routes to h
   await buildDagCoordinatorDeps({
     coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k', model: 'main-m' },
+      main: { provider: 'deepseek', model: 'main-m' },
       // NO 'helper' key — should alias to helperLlm, not silently use main.
     } as never),
     pipelineFallback: undefined,
@@ -329,8 +324,8 @@ test('explicit map[helper] WINS over alias (advanced users can override)', async
   await buildDagCoordinatorDeps({
     coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
     llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', apiKey: 'k', model: 'main-m' },
-      helper: { provider: 'openai', apiKey: 'k', model: 'EXPLICIT-HELPER' },
+      main: { provider: 'deepseek', model: 'main-m' },
+      helper: { provider: 'openai', model: 'EXPLICIT-HELPER' },
     } as never),
     pipelineFallback: undefined,
     mainLlm: stubLlm as never,

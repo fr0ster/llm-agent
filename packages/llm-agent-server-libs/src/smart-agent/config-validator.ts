@@ -28,14 +28,38 @@ export class ConfigValidationError extends Error {
   }
 }
 
+function checkCredentialRef(
+  label: string,
+  value: unknown,
+  issues: string[],
+): void {
+  if (
+    value !== undefined &&
+    (typeof value !== 'string' || value.length === 0)
+  ) {
+    issues.push(
+      `${label}.credentialRef: must be a non-empty string naming a credential (omit it for the default)`,
+    );
+  }
+}
+
 function checkLlmRole(
   label: string,
-  role: { provider?: unknown; apiKey?: unknown; model?: unknown } | undefined,
+  role: Record<string, unknown> | undefined,
   requireModel: boolean,
-  env: NodeJS.ProcessEnv,
   issues: string[],
   skipRuntime = false,
 ): void {
+  // A secret arriving from the file is refused, not ignored: a key silently dropped
+  // would leave an operator believing it was used. A loaded object is not a fresh
+  // literal, so no excess-property check ever sees it — this boundary is the only
+  // place it can be caught (§4.6.3).
+  if (role?.apiKey !== undefined) {
+    issues.push(
+      `${label}.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with ${label}.credentialRef (your composition root resolves the name).`,
+    );
+  }
+  checkCredentialRef(label, role?.credentialRef, issues);
   const provider = role?.provider as string | undefined;
   if (!provider) {
     issues.push(
@@ -51,31 +75,13 @@ function checkLlmRole(
     );
     return;
   }
-  // Structural checks above always run. The credential + model-required checks
-  // below are provider-runtime concerns; skip them when the caller injects its
-  // own makeLlm/embedder (embeddable path).
   if (skipRuntime) return;
   if (requireModel && !role?.model) {
     issues.push(`${label}.model: required (string)`);
   }
-  if (
-    provider === 'openai' ||
-    provider === 'anthropic' ||
-    provider === 'deepseek'
-  ) {
-    if (!role?.apiKey) {
-      issues.push(
-        `${provider} requires ${label}.apiKey to resolve to a non-empty value (typically via \${${provider.toUpperCase()}_API_KEY} env reference).`,
-      );
-    }
-  } else if (provider === 'sap-ai-sdk') {
-    if (!env.AICORE_SERVICE_KEY) {
-      issues.push(
-        'sap-ai-sdk requires the AICORE_SERVICE_KEY env var to be set with the SAP AI Core service-key JSON content. None found.',
-      );
-    }
-  }
-  // ollama: no credential check.
+  // No credential check. Whether a key or a service key is held is known only to
+  // the composition root, which resolves credentialRef — the api-key and
+  // AICORE_SERVICE_KEY rules left with the credential (§4.6.2).
 }
 
 function checkRagStore(
@@ -143,13 +149,12 @@ function checkRagStore(
 
 function validateLlmEntry(
   label: string,
-  cfg: { provider?: unknown; apiKey?: unknown; model?: unknown } | undefined,
+  cfg: Record<string, unknown> | undefined,
   required: boolean,
-  env: NodeJS.ProcessEnv,
   issues: string[],
   skipRuntime = false,
 ): void {
-  checkLlmRole(label, cfg, required, env, issues, skipRuntime);
+  checkLlmRole(label, cfg, required, issues, skipRuntime);
 }
 
 /**
@@ -191,47 +196,40 @@ export function assertNoLegacyPipelineConfig(yaml: YamlConfig): void {
 export function validateResolvedConfig(
   _resolved: Omit<SmartServerConfig, 'log'>,
   yaml: YamlConfig,
-  env: NodeJS.ProcessEnv,
+  _env: NodeJS.ProcessEnv,
   opts: { skipProviderRuntimeChecks?: boolean } = {},
 ): void {
   const issues: string[] = [];
   const skip = opts.skipProviderRuntimeChecks === true;
 
-  // LLM is always sourced from the top-level `llm:` block now — the legacy
-  // `pipeline.llm.*` override has been removed with the `pipeline: {name,config}`
-  // migration. Read from the raw YAML so we can distinguish flat vs map shape.
-  // `resolved.llm` is always constructed as a flat object by
-  // resolveSmartServerConfig, so it cannot be used to detect the map shape.
-  const rawLlm = get(yaml, 'llm') as
-    | { provider?: unknown; apiKey?: unknown; model?: unknown }
-    | Record<string, { provider?: unknown; apiKey?: unknown; model?: unknown }>
-    | undefined;
+  const rawLlm = get(yaml, 'llm') as Record<string, unknown> | undefined;
   if (rawLlm === undefined) {
     issues.push('llm: required (top-level llm.main or a flat llm block)');
-  } else if (typeof (rawLlm as { provider?: unknown }).provider === 'string') {
-    // Flat shape — existing behaviour.
-    validateLlmEntry(
-      'llm',
-      rawLlm as { provider?: unknown; apiKey?: unknown; model?: unknown },
-      true,
-      env,
-      issues,
-      skip,
-    );
   } else {
-    // Map shape — llm.main is required; every named entry is validated.
-    const map = rawLlm as Record<
-      string,
-      { provider?: unknown; apiKey?: unknown; model?: unknown }
-    >;
-    if (!map.main) {
-      issues.push("llm.main: required when 'llm' is a named map");
-    } else {
-      validateLlmEntry('llm.main', map.main, true, env, issues, skip);
+    // Checked before the shape is decided: a flat block that lost its provider
+    // is read as a map below, and would otherwise report `llm.apiKey.provider`.
+    if (rawLlm.apiKey !== undefined) {
+      checkLlmRole(
+        'llm',
+        { apiKey: rawLlm.apiKey, provider: 'openai' },
+        false,
+        issues,
+        true,
+      );
     }
-    for (const [name, entry] of Object.entries(map)) {
-      if (name === 'main') continue;
-      validateLlmEntry(`llm.${name}`, entry, true, env, issues, skip);
+    if (typeof rawLlm.provider === 'string') {
+      validateLlmEntry('llm', rawLlm, true, issues, skip);
+    } else {
+      const map = rawLlm as Record<string, Record<string, unknown> | undefined>;
+      if (!map.main) {
+        issues.push("llm.main: required when 'llm' is a named map");
+      } else {
+        validateLlmEntry('llm.main', map.main, true, issues, skip);
+      }
+      for (const [name, entry] of Object.entries(map)) {
+        if (name === 'main' || name === 'apiKey') continue;
+        validateLlmEntry(`llm.${name}`, entry, true, issues, skip);
+      }
     }
   }
 
