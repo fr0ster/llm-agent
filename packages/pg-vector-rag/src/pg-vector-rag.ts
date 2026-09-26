@@ -32,6 +32,30 @@ function vectorLiteral(vec: number[]): string {
   return `'[${vec.join(',')}]'::vector`;
 }
 
+/** Opens the pool a handle, or a provider's catalog work, talks through. */
+export async function createPgClient(
+  cfg: PgVectorRagConfig,
+): Promise<PgClient> {
+  const args = await resolvePgConnectArgs(cfg);
+  const mod = (await import('pg')) as unknown as {
+    default?: {
+      Pool: new (
+        a: unknown,
+      ) => { query: PgClient['query']; end: () => Promise<void> };
+    };
+    Pool?: new (
+      a: unknown,
+    ) => { query: PgClient['query']; end: () => Promise<void> };
+  };
+  const PoolCtor = mod.Pool ?? mod.default?.Pool;
+  if (!PoolCtor) throw new Error('pg module did not expose Pool');
+  const pool = new PoolCtor(args);
+  return {
+    query: (sql, params = []) => pool.query(sql, params as unknown[]),
+    end: () => pool.end(),
+  };
+}
+
 export class PgVectorRag implements IRag {
   private readonly collectionName: string;
   private readonly dimension: number;
@@ -54,30 +78,9 @@ export class PgVectorRag implements IRag {
     // The rejection is re-thrown when clientPromise is actually awaited.
     const driverPromise = injectedClient
       ? Promise.resolve(injectedClient)
-      : this.createDriverClient(config);
+      : createPgClient(config);
     driverPromise.catch(() => {});
     this.clientPromise = driverPromise;
-  }
-
-  private async createDriverClient(cfg: PgVectorRagConfig): Promise<PgClient> {
-    const args = await resolvePgConnectArgs(cfg);
-    const mod = (await import('pg')) as unknown as {
-      default?: {
-        Pool: new (
-          a: unknown,
-        ) => { query: PgClient['query']; end: () => Promise<void> };
-      };
-      Pool?: new (
-        a: unknown,
-      ) => { query: PgClient['query']; end: () => Promise<void> };
-    };
-    const PoolCtor = mod.Pool ?? mod.default?.Pool;
-    if (!PoolCtor) throw new Error('pg module did not expose Pool');
-    const pool = new PoolCtor(args);
-    return {
-      query: (sql, params = []) => pool.query(sql, params as unknown[]),
-      end: () => pool.end(),
-    };
   }
 
   async ensureSchema(): Promise<void> {
