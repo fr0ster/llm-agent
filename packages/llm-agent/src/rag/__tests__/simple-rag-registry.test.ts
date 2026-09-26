@@ -129,7 +129,11 @@ describe('SimpleRagRegistry.createCollection', () => {
     provReg.registerProvider(new InMemoryRagProvider({ name: 'mem' }));
     reg.setProviderRegistry(provReg);
 
-    reg.register('dup', new InMemoryRag(), undefined, { displayName: 'Dup' });
+    reg.register('dup', new InMemoryRag(), undefined, {
+      displayName: 'Dup',
+      scope: 'session',
+      sessionId: 'S',
+    });
     const res = await reg.createCollection({
       providerName: 'mem',
       collectionName: 'dup',

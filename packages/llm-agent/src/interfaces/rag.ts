@@ -227,15 +227,29 @@ export interface RagCollectionMeta {
 }
 
 export interface IRagRegistry {
+  /**
+   * Throws `DuplicateCollectionError` when its scope (default `'global'`)
+   * already holds `name`, and `ReservedCollectionNameError` for a global named
+   * `user/…` or `session/…`.
+   */
   register(
     name: string,
     rag: IRag,
     editor?: IRagEditor,
     meta?: Omit<RagCollectionMeta, 'name' | 'editable'>,
   ): void;
-  unregister(name: string): boolean;
-  get(name: string): IRag | undefined;
-  getEditor(name: string): IRagEditor | undefined;
+  /**
+   * Entries are keyed by scope and name (§6.4): a caller may hold a global, a
+   * user and a session collection of one name. `scope` selects the entry. When
+   * it is omitted the name must be held by exactly one scope; a name several
+   * hold fails with AmbiguousCollectionError (RAG_AMBIGUOUS_COLLECTION, naming
+   * them in `.scopes`) — thrown by `unregister`, `get` and `getEditor`, whose
+   * return values cannot tell "ambiguous" from "absent", and returned by
+   * `deleteCollection`.
+   */
+  unregister(name: string, scope?: RagCollectionScope): boolean;
+  get(name: string, scope?: RagCollectionScope): IRag | undefined;
+  getEditor(name: string, scope?: RagCollectionScope): IRagEditor | undefined;
   list(): readonly RagCollectionMeta[];
 
   /** Create a collection via a provider and register it atomically. */
@@ -267,7 +281,10 @@ export interface IRagRegistry {
    * provider that created it. A failure is returned with the collection
    * already unregistered.
    */
-  deleteCollection(name: string): Promise<Result<void, RagError>>;
+  deleteCollection(
+    name: string,
+    scope?: RagCollectionScope,
+  ): Promise<Result<void, RagError>>;
 
   /**
    * Delete every session-scoped collection with the given sessionId, going

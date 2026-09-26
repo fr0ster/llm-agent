@@ -15,6 +15,18 @@ exported errors (`InvalidOwnerError`, `InvalidAttributesError`,
 `CatalogRecordDeleteError`, `ReservedCollectionNameError`) and the catalog
 validators.
 
+**BREAKING:** `SimpleRagRegistry` is keyed by scope and name, so one name may
+be held once per scope; `get`, `getEditor`, `unregister` and
+`deleteCollection` take an optional `scope`, and a name several scopes hold
+without one fails with `AmbiguousCollectionError` (`RAG_AMBIGUOUS_COLLECTION`)
+— thrown by the three synchronous ones, returned by `deleteCollection`; an
+`IRagRegistry` implementation must accept that `scope`; `register` throws
+`DuplicateCollectionError` (a `RagError`) instead of a plain `Error`, and
+refuses a global named `user/…` or `session/…` with
+`ReservedCollectionNameError` (`RAG_RESERVED_COLLECTION_NAME`), which
+`createCollection` returns too; `closeSession` deletes with
+`scope: 'session'`; new export `ragStoreKey`.
+
 **BREAKING:** `IPipelinePlugin` is `name` + `build(ctx)`: it loses `parseConfig`
 and `build`'s config parameter. A plugin reads no configuration — whoever
 assembles the pipeline parses its section and constructs it with typed

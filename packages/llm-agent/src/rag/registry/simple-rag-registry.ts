@@ -17,12 +17,15 @@ import {
   validateRagOwner,
 } from '../catalog/validation.js';
 import {
+  AmbiguousCollectionError,
   CollectionNotFoundError,
   DeleteUnsupportedError,
+  DuplicateCollectionError,
   ProviderNotFoundError,
   SessionCloseIncompleteError,
 } from '../corrections/errors.js';
 import { ImmutableEditStrategy } from '../strategies/edit/immutable.js';
+import { reservedGlobalNameError } from './store-key.js';
 
 /**
  * The name a provider keeps a collection's data under.
@@ -64,7 +67,19 @@ interface Entry {
   storeName: string;
 }
 
+/** A collection is its scope and its name (§6.4); the owner is the registry's own. */
+function keyOf(scope: RagCollectionScope, name: string): string {
+  return JSON.stringify([scope, name]);
+}
+
+const SCOPES: readonly RagCollectionScope[] = ['global', 'user', 'session'];
+
+type Found =
+  | { ok: true; found?: { key: string; entry: Entry } }
+  | { ok: false; error: AmbiguousCollectionError };
+
 export class SimpleRagRegistry implements IRagRegistry {
+  /** Keyed by keyOf(scope, name). */
   protected readonly entries = new Map<string, Entry>();
   /**
    * Store names whose deletion is still running, with that deletion. A store
@@ -72,7 +87,7 @@ export class SimpleRagRegistry implements IRagRegistry {
    * under it meanwhile waits, so the deletion cannot remove what it writes.
    */
   protected readonly deletions = new Map<string, Promise<unknown>>();
-  /** Collection names being created, held until registered or refused. */
+  /** Keys (scope, name) being created, held until inserted or refused. */
   protected readonly creating = new Set<string>();
   protected providerRegistry?: IRagProviderRegistry;
   protected mutationListener?: () => void;
@@ -89,18 +104,65 @@ export class SimpleRagRegistry implements IRagRegistry {
     this.mutationListener?.();
   }
 
+  /**
+   * The entry `name` addresses: with a scope, that scope's; without one, the
+   * entry of the one scope holding it — or AmbiguousCollectionError naming
+   * every scope that does. Never a silent precedence between scopes.
+   */
+  protected find(name: string, scope?: RagCollectionScope): Found {
+    if (scope) {
+      const key = keyOf(scope, name);
+      const entry = this.entries.get(key);
+      return { ok: true, found: entry ? { key, entry } : undefined };
+    }
+    const held = SCOPES.filter((s) => this.entries.has(keyOf(s, name)));
+    if (held.length > 1) {
+      return { ok: false, error: new AmbiguousCollectionError(name, held) };
+    }
+    if (held.length === 0) return { ok: true };
+    const key = keyOf(held[0], name);
+    const entry = this.entries.get(key) as Entry;
+    return { ok: true, found: { key, entry } };
+  }
+
+  private findOrThrow(
+    name: string,
+    scope?: RagCollectionScope,
+  ): { key: string; entry: Entry } | undefined {
+    const f = this.find(name, scope);
+    if (!f.ok) throw f.error;
+    return f.found;
+  }
+
+  /** A key is taken while an entry holds it or a creation of it is running. */
+  protected isTaken(key: string): boolean {
+    return this.entries.has(key) || this.creating.has(key);
+  }
+
+  private insert(key: string, entry: Entry): void {
+    this.entries.set(key, entry);
+    this.fireMutation();
+  }
+
   register(
     name: string,
     rag: IRag,
     editor?: IRagEditor,
     meta?: Omit<RagCollectionMeta, 'name' | 'editable'>,
   ): void {
-    if (this.entries.has(name)) {
-      throw new Error(`Collection '${name}' is already registered`);
+    const scope = meta?.scope ?? 'global';
+    const reserved = reservedGlobalNameError(scope, name);
+    if (reserved) throw reserved;
+    const key = keyOf(scope, name);
+    if (this.isTaken(key)) {
+      throw new DuplicateCollectionError(
+        name,
+        `already registered in scope '${scope}'`,
+      );
     }
     const editable =
       Boolean(editor) && !(editor instanceof ImmutableEditStrategy);
-    this.entries.set(name, {
+    this.insert(key, {
       rag,
       editor,
       storeName: name,
@@ -109,28 +171,29 @@ export class SimpleRagRegistry implements IRagRegistry {
         displayName: meta?.displayName ?? name,
         description: meta?.description,
         editable,
-        scope: meta?.scope ?? 'global',
+        scope,
         sessionId: meta?.sessionId,
         userId: meta?.userId,
         providerName: meta?.providerName,
         tags: meta?.tags,
       },
     });
+  }
+
+  unregister(name: string, scope?: RagCollectionScope): boolean {
+    const found = this.findOrThrow(name, scope);
+    if (!found) return false;
+    this.entries.delete(found.key);
     this.fireMutation();
+    return true;
   }
 
-  unregister(name: string): boolean {
-    const existed = this.entries.delete(name);
-    if (existed) this.fireMutation();
-    return existed;
+  get(name: string, scope?: RagCollectionScope): IRag | undefined {
+    return this.findOrThrow(name, scope)?.entry.rag;
   }
 
-  get(name: string): IRag | undefined {
-    return this.entries.get(name)?.rag;
-  }
-
-  getEditor(name: string): IRagEditor | undefined {
-    return this.entries.get(name)?.editor;
+  getEditor(name: string, scope?: RagCollectionScope): IRagEditor | undefined {
+    return this.findOrThrow(name, scope)?.entry.editor;
   }
 
   list(): readonly RagCollectionMeta[] {
@@ -147,6 +210,12 @@ export class SimpleRagRegistry implements IRagRegistry {
     if (!owner.ok) return owner;
     const attributes = validateRagAttributes(params.attributes);
     if (!attributes.ok) return attributes;
+    const reserved = reservedGlobalNameError(
+      owner.value.scope,
+      params.collectionName,
+    );
+    if (reserved) return { ok: false, error: reserved };
+
     if (!this.providerRegistry) {
       return {
         ok: false,
@@ -164,31 +233,30 @@ export class SimpleRagRegistry implements IRagRegistry {
       };
     }
 
-    // Preflight duplicate-name check, counting creations still running: two at
-    // once would share one store, and the loser's rollback would delete it.
-    if (
-      this.entries.has(params.collectionName) ||
-      this.creating.has(params.collectionName)
-    ) {
+    // Preflight duplicate check, counting creations still running: two at
+    // once would share one store.
+    const key = keyOf(owner.value.scope, params.collectionName);
+    if (this.isTaken(key)) {
       return {
         ok: false,
-        error: new RagError(
-          `Collection '${params.collectionName}' already exists`,
-          'RAG_DUPLICATE_COLLECTION',
+        error: new DuplicateCollectionError(
+          params.collectionName,
+          `the name is taken in scope '${owner.value.scope}'`,
         ),
       };
     }
 
-    this.creating.add(params.collectionName);
+    this.creating.add(key);
     try {
-      return await this.createUnder(provider, params, owner.value);
+      return await this.createUnder(provider, key, params, owner.value);
     } finally {
-      this.creating.delete(params.collectionName);
+      this.creating.delete(key);
     }
   }
 
   private async createUnder(
     provider: IRagProvider,
+    key: string,
     params: RagRegistryCreateCollectionParams,
     owner: RagCollectionOwner,
   ): Promise<Result<RagCollectionMeta, RagError>> {
@@ -209,49 +277,28 @@ export class SimpleRagRegistry implements IRagRegistry {
     });
     if (!created.ok) return created;
 
-    const { sessionId, userId } = ragOwnerKeys(owner);
-    try {
-      this.register(
-        params.collectionName,
-        created.value.rag,
-        created.value.editor,
-        {
-          displayName: params.displayName ?? params.collectionName,
-          description: params.description,
-          scope: owner.scope,
-          sessionId,
-          userId,
-          providerName: params.providerName,
-          tags: params.tags,
-        },
-      );
-    } catch (err) {
-      // Defense-in-depth rollback: the preflight check should prevent this,
-      // but if register throws anyway (subclass or race), roll the backend back.
-      if (provider.deleteCollection) {
-        await provider.deleteCollection(storeName).catch(() => {});
-      }
-      return {
-        ok: false,
-        error:
-          err instanceof RagError
-            ? err
-            : new RagError(String(err), 'RAG_REGISTER_FAILED'),
-      };
-    }
-
-    const registered = this.entries.get(params.collectionName);
-    if (!registered) {
-      return {
-        ok: false,
-        error: new RagError(
-          `Collection '${params.collectionName}' vanished after registration`,
-          'RAG_REGISTER_FAILED',
-        ),
-      };
-    }
-    registered.storeName = storeName;
-    return { ok: true, value: registered.meta };
+    // Inserted directly: the key has been held in `creating` since the
+    // preflight, so nothing can have taken it, and there is nothing to roll
+    // back — a rollback would delete a store whose catalog record the provider
+    // has just committed (§6.3).
+    const editor = created.value.editor;
+    const entry: Entry = {
+      rag: created.value.rag,
+      editor,
+      storeName,
+      meta: {
+        name: params.collectionName,
+        displayName: params.displayName ?? params.collectionName,
+        description: params.description,
+        editable: Boolean(editor) && !(editor instanceof ImmutableEditStrategy),
+        scope: owner.scope,
+        ...ragOwnerKeys(owner),
+        providerName: params.providerName,
+        tags: params.tags,
+      },
+    };
+    this.insert(key, entry);
+    return { ok: true, value: entry.meta };
   }
 
   /**
@@ -268,12 +315,18 @@ export class SimpleRagRegistry implements IRagRegistry {
    * The store name itself is held until the deletion has finished (see
    * deletions).
    */
-  async deleteCollection(name: string): Promise<Result<void, RagError>> {
-    const entry = this.entries.get(name);
-    if (!entry) {
+  async deleteCollection(
+    name: string,
+    scope?: RagCollectionScope,
+  ): Promise<Result<void, RagError>> {
+    const f = this.find(name, scope);
+    if (!f.ok) return { ok: false, error: f.error };
+    if (!f.found) {
       return { ok: false, error: new CollectionNotFoundError(name) };
     }
-    this.unregister(name);
+    const { key, entry } = f.found;
+    this.entries.delete(key);
+    this.fireMutation();
     const deletion: Promise<Result<void, RagError>> = this.deleteData(
       name,
       entry,
@@ -342,7 +395,7 @@ export class SimpleRagRegistry implements IRagRegistry {
       .map((e) => e.meta.name);
     const failures: Array<{ name: string; error: RagError }> = [];
     for (const name of victims) {
-      const res = await this.deleteCollection(name);
+      const res = await this.deleteCollection(name, 'session');
       if (!res.ok) failures.push({ name, error: res.error });
     }
     if (failures.length > 0) {
