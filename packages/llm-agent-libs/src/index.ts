@@ -169,15 +169,6 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './plugins/index.js';
-// ---------------------------------------------------------------------------
-// Providers (LLM)
-// ---------------------------------------------------------------------------
-export {
-  DefaultModelResolver,
-  type MakeLlmConfig,
-  makeDefaultLlm,
-  makeLlm,
-} from './providers.js';
 export {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,

@@ -67,11 +67,10 @@ import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import {
   buildIngestResult,
   makeInMemoryStoreProvider,
-  makeLlm,
   makeSkillPluginHost,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeControllerPlanner } from './planner.js';
-import { type ISubagentClient, makeSubagentClient } from './subagent-client.js';
+import type { ISubagentClient } from './subagent-client.js';
 import type { PlannerKind, SessionBundle, SubagentResult } from './types.js';
 
 const MAX_STEPS = 12;
@@ -470,19 +469,16 @@ async function main(): Promise<void> {
     `\nplan-analysis harness — mode=${live ? 'LIVE (real LLM from .env)' : 'STUB (no network)'}\n`,
   );
 
-  let client: ISubagentClient;
   const probe: StubProbe = { sawSkillsBlock: false, calls: 0 };
   if (live) {
-    const provider = process.env.LLM_PROVIDER ?? 'sap-ai-sdk';
-    const model = process.env.SAP_AI_MODEL ?? process.env.LLM_MODEL;
-    const llm = await makeLlm(
-      { provider, ...(model ? { model } : {}) } as never,
-      0.7,
+    // makeLlm left llm-agent-libs (§4.6.2): building a provider needs a
+    // credential, which only a composition root holds. LIVE mode needs one.
+    throw new Error(
+      'plan-analysis: LIVE mode needs an ILlm from a composition root; ' +
+        'makeLlm was removed from @mcp-abap-adt/llm-agent-libs',
     );
-    client = makeSubagentClient(llm);
-  } else {
-    client = makeStubClient(probe);
   }
+  const client: ISubagentClient = makeStubClient(probe);
 
   console.log(
     'Building WITH-skills recall hook (in-memory skill plugin-host)...',

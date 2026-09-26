@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
+import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
 
 // Reuses the same credential-free construction as readiness-gate.test.ts: a
@@ -10,12 +11,20 @@ let handle: { port: number; close: () => Promise<void> };
 let base: string;
 
 before(async () => {
-  const server = new SmartServer({
-    port: 0,
-    llm: { apiKey: 'test', model: 'test-model' },
-    skipModelValidation: true,
-    mcp: { type: 'http', url: 'http://127.0.0.1:7779/mcp/stream/http' },
-  });
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      mcp: { type: 'http', url: 'http://127.0.0.1:7779/mcp/stream/http' },
+    },
+    {
+      makeLlm: async (cfg) => ({
+        ...makeTestLlm([{ content: 'ok' }]),
+        model: cfg.model ?? 'stub',
+      }),
+    },
+  );
   handle = await server.start();
   base = `http://127.0.0.1:${handle.port}`;
 });

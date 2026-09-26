@@ -29,7 +29,16 @@ import type {
   IToolsRagHandle,
   McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
+import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
+
+/** Every real-boot test here needs the seam; the deleted default no longer supplies one. */
+const llmDeps = {
+  makeLlm: async (cfg: { model?: string }) => ({
+    ...makeTestLlm([{ content: 'ok' }]),
+    model: cfg.model ?? 'stub',
+  }),
+};
 
 // ---------------------------------------------------------------------------
 // Minimal in-process MCP streamable-HTTP stub (hermetic — no SDK, no spawn).
@@ -189,17 +198,20 @@ test('yaml path: startup-builder-owned MCP connect → server harvests the handl
   if (!stub0) return;
   const stub1 = await startMcpStub(['Search']);
   try {
-    const server = new SmartServer({
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      // Two colliding "Search" servers, YAML-only (no ready clients, no
-      // injected seam) ⇒ the startup builder owns the connect + the
-      // namespaced-snapshot build itself.
-      mcp: [
-        { type: 'http', url: stub0.url },
-        { type: 'http', url: stub1.url },
-      ],
-    }) as unknown as Internals;
+    const server = new SmartServer(
+      {
+        llm: { apiKey: 'test', model: 'test-model' },
+        skipModelValidation: true,
+        // Two colliding "Search" servers, YAML-only (no ready clients, no
+        // injected seam) ⇒ the startup builder owns the connect + the
+        // namespaced-snapshot build itself.
+        mcp: [
+          { type: 'http', url: stub0.url },
+          { type: 'http', url: stub1.url },
+        ],
+      },
+      llmDeps,
+    ) as unknown as Internals;
 
     const built = await server._buildEmbeddedAgent();
     try {
@@ -282,7 +294,7 @@ test('custom BuildAgentDeps.toolNamespace reaches the yaml-builder snapshot (ass
         skipModelValidation: true,
         mcp: { type: 'http', url: stub.url },
       },
-      { toolNamespace: primaryNamespace },
+      { toolNamespace: primaryNamespace, ...llmDeps },
     ) as unknown as Internals;
 
     const built = await server._buildEmbeddedAgent();

@@ -61,6 +61,7 @@ import {
   type SessionAgentParts,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { fakeControllerServerCtx } from '../../pipelines/__tests__/fixtures.js';
 import { ControllerPipelinePlugin } from '../../pipelines/controller.js';
 import type { IServerPipelineContext } from '../../pipelines/server-context.js';
@@ -73,6 +74,14 @@ import {
   SmartServer,
   type SmartServerMcpConfig,
 } from '../smart-server.js';
+
+/** Every real-boot SmartServer in this file needs the seam; the deleted default no longer supplies one. */
+const llmDeps = {
+  makeLlm: async (cfg: { model?: string }) => ({
+    ...makeTestLlm([{ content: 'ok' }]),
+    model: cfg.model ?? 'stub',
+  }),
+};
 
 // ---------------------------------------------------------------------------
 // A REAL in-process MCP streamable-HTTP stub (hermetic — no SDK, no spawn).
@@ -255,12 +264,15 @@ async function bootTwoServerSmartServer(t: {
     { type: 'http', url: stub0.url },
     { type: 'http', url: stub1.url },
   ];
-  const server = new SmartServer({
-    port: 0,
-    llm: { apiKey: 'test', model: 'test-model' },
-    skipModelValidation: true,
-    mcp: mcpCfg,
-  });
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      mcp: mcpCfg,
+    },
+    llmDeps,
+  );
   const handle = await server.start();
   return {
     server,
@@ -492,15 +504,18 @@ test('mcp[].name labels — yaml-builder path (real boot) yields label__Search a
   const stubPrimary = await startStubOrSkip(t, ['Search'], 'primary-result');
   if (!stubPrimary) return;
   const stubSecondary = await startMcpStub(['Search'], 'secondary-result');
-  const server = new SmartServer({
-    port: 0,
-    llm: { apiKey: 'test', model: 'test-model' },
-    skipModelValidation: true,
-    mcp: [
-      { type: 'http', url: stubPrimary.url, name: 'primary' },
-      { type: 'http', url: stubSecondary.url, name: 'secondary' },
-    ],
-  });
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      mcp: [
+        { type: 'http', url: stubPrimary.url, name: 'primary' },
+        { type: 'http', url: stubSecondary.url, name: 'secondary' },
+      ],
+    },
+    llmDeps,
+  );
   const handle = await server.start();
   const internals = server as unknown as Internals;
   try {
@@ -609,6 +624,7 @@ test('bare custom connectMcp seam (no descriptors) falls back to s0__Search and 
     },
     {
       connectMcp: async () => [fakeClient('c0'), fakeClient('c1')],
+      ...llmDeps,
     },
   );
   const internals = server as unknown as Internals;

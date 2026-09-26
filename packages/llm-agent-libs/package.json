@@ -41,37 +41,6 @@
     "yaml": "^2.9.0",
     "zod": "^4.5.4"
   },
-  "peerDependencies": {
-    "@mcp-abap-adt/anthropic-llm": "^26.0.0",
-    "@mcp-abap-adt/deepseek-llm": "^26.0.0",
-    "@mcp-abap-adt/ollama-llm": "^26.0.0",
-    "@mcp-abap-adt/openai-llm": "^26.0.0",
-    "@mcp-abap-adt/sap-aicore-llm": "^26.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@mcp-abap-adt/openai-llm": {
-      "optional": true
-    },
-    "@mcp-abap-adt/anthropic-llm": {
-      "optional": true
-    },
-    "@mcp-abap-adt/deepseek-llm": {
-      "optional": true
-    },
-    "@mcp-abap-adt/ollama-llm": {
-      "optional": true
-    },
-    "@mcp-abap-adt/sap-aicore-llm": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@mcp-abap-adt/anthropic-llm": "^26.0.0",
-    "@mcp-abap-adt/deepseek-llm": "^26.0.0",
-    "@mcp-abap-adt/ollama-llm": "^26.0.0",
-    "@mcp-abap-adt/openai-llm": "^26.0.0",
-    "@mcp-abap-adt/sap-aicore-llm": "^26.0.0"
-  },
   "publishConfig": {
     "access": "public"
   },

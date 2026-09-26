@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it, test } from 'node:test';
+import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer, writeNotReady } from '../smart-server.js';
 
 function httpRequest(
@@ -53,13 +54,21 @@ test('writeNotReady writes a 503 service_unavailable JSON error', () => {
 
 describe('readiness gate — MCP unreachable ⇒ NOT_READY', () => {
   it('GET /health → 503 ready:false and POST /v1/chat/completions → 503 (pre-dispatch)', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      // Unreachable MCP → the connection strategy never connects → not ready.
-      mcp: { type: 'http', url: 'http://127.0.0.1:7779/mcp/stream/http' },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { apiKey: 'test', model: 'test-model' },
+        skipModelValidation: true,
+        // Unreachable MCP → the connection strategy never connects → not ready.
+        mcp: { type: 'http', url: 'http://127.0.0.1:7779/mcp/stream/http' },
+      },
+      {
+        makeLlm: async (cfg) => ({
+          ...makeTestLlm([{ content: 'ok' }]),
+          model: cfg.model ?? 'stub',
+        }),
+      },
+    );
     const handle = await server.start();
     try {
       const health = await httpRequest(handle.port, 'GET', '/health');

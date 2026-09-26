@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## [Unreleased]
+
+**BREAKING:** `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver`
+are removed. Construct the provider in your composition root and pass the resulting
+`ILlm` to `withMainLlm` / `agent.reconfigure`. `IModelResolver` is unchanged. The five
+`*-llm` packages are no longer optional peers of this package.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

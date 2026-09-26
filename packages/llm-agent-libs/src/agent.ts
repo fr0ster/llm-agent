@@ -341,7 +341,8 @@ export class SmartAgent {
    *
    * @example
    * ```typescript
-   * const newLlm = makeLlm({ provider: 'openai', model: 'gpt-5.4-pro', ... });
+   * // built by your composition root, e.g. new LlmAdapter(new LlmProviderBridge(provider))
+   * const newLlm: ILlm = await myComposition.makeLlm({ model: 'gpt-5.4-pro' });
    * handle.agent.reconfigure({ mainLlm: newLlm });
    * // handle.chat() and handle.streamChat() now use the new LLM
    * ```

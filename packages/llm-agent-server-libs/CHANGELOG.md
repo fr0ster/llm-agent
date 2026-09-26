@@ -1,5 +1,18 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## [Unreleased]
+
+`SmartServer` no longer defaults `BuildAgentDeps.makeLlm`: build without it and
+the server refuses on first use, naming the seam. Subagent workers now build
+their LLMs through the same injected seam the top-level roles already used, so
+`maxTokens` and `whenThrottled` — previously dropped by a hand-copied field
+list — now reach them too. `makeDefaultRoleLlm` is removed.
+
+Behaviour change: an `llm:` entry built for a role other than the held
+main/classifier/helper now reaches `makeLlm` exactly as written — without a
+`temperature` of its own it no longer inherits main's, a fallback only the
+removed default applied (an injected `makeLlm` never received it).
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

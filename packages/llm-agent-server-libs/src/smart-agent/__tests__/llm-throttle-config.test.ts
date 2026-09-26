@@ -1,18 +1,16 @@
 /**
  * Regression (#285, server path): the 22.2.0 rate-limit policy is declared on
  * the provider config, but a server config reaches a provider through two hand
- * written field lists — the flat `llm:` allow-list in resolveLlmSection, and the
- * object makeDefaultRoleLlm builds for makeLlm. A key missing from either is
- * dropped without a word, and the default budget applies in silence.
+ * written field lists — the flat `llm:` allow-list in resolveLlmSection. A key
+ * missing from it is dropped without a word, and the default budget applies
+ * in silence.
  *
  * `llm.maxTokens` is covered here too: it was declared on SmartServerLlmConfig
  * and read by neither, which is the same defect already in flight.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import { resolveSmartServerConfig } from '../config.js';
-import { makeDefaultRoleLlm } from '../llm/role-llm-resolver.js';
 
 /** Minimal YAML that passes validateResolvedConfig, plus the llm keys under test. */
 function yamlWith(llm: Record<string, unknown>) {
@@ -228,39 +226,5 @@ describe('llm.maxTokens from YAML', () => {
         `expected a config error for ${JSON.stringify(bad)}`,
       );
     }
-  });
-});
-
-describe('makeDefaultRoleLlm', () => {
-  /** The provider sits behind the bridge the adapter holds; `private` is compile-time only. */
-  const configOf = (llm: unknown) =>
-    ((llm as { agent?: unknown }).agent as { provider?: { config?: unknown } })
-      ?.provider?.config as Record<string, unknown> | undefined;
-
-  it('carries the policy and the token cap all the way to the provider', async () => {
-    const llm = await makeDefaultRoleLlm(
-      {
-        provider: 'openai',
-        apiKey: 'sk-test',
-        model: 'gpt-4o',
-        maxTokens: 8192,
-        whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
-      },
-      0.1,
-    );
-    const config = configOf(llm);
-    assert.equal(
-      (config?.whenThrottled as { name?: string })?.name,
-      'wait-as-told',
-    );
-    assert.equal(config?.maxTokens, 8192);
-  });
-
-  it('leaves the provider on its defaults when neither is set', async () => {
-    const llm = await makeDefaultRoleLlm(
-      { provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o' },
-      0.1,
-    );
-    assert.equal(configOf(llm)?.whenThrottled, undefined);
   });
 });

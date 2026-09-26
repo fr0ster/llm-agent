@@ -65,7 +65,6 @@ import {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
   KnowledgeRag,
-  makeLlm,
   mergePluginExports,
   SessionRequestLogger,
   SmartAgentBuilder,
@@ -114,7 +113,6 @@ import {
 import { handleUsageRoute } from './http/usage-route-handler.js';
 import {
   type IRoleLlmResolver,
-  makeDefaultRoleLlm,
   RoleLlmResolver,
 } from './llm/role-llm-resolver.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
@@ -951,7 +949,19 @@ export class SmartServer {
     this._waitStrategy = deps.waitStrategy;
     this._toolNamespace = deps.toolNamespace ?? defaultToolNamespace;
     this._deps = {
-      makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
+      // No default: the library no longer constructs providers (spec §4.6.2),
+      // so a server built without the seam is refused the first time it needs
+      // an LLM, with the seam named — not handed a provider built from YAML.
+      makeLlm:
+        deps.makeLlm ??
+        (() =>
+          Promise.reject(
+            new Error(
+              'BuildAgentDeps.makeLlm is not set: SmartServer no longer constructs LLM ' +
+                'providers itself. Pass makeLlm in the deps — the composition root that ' +
+                'holds your credentials builds the ILlm (see the migration note).',
+            ),
+          )),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
       prefetchEmbedderFactories:
         deps.prefetchEmbedderFactories ?? prefetchEmbedderFactories,
@@ -1865,47 +1875,30 @@ export class SmartServer {
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
     const subFlatLlm = subLlmMain;
-    const mainTemp = Number(subFlatLlm?.temperature ?? 0.7);
-    const classifierTemp = Number(subFlatLlm?.classifierTemperature ?? 0.1);
+    if (!subFlatLlm) {
+      // Unreachable: the key guard above throws when no main entry exists.
+      // Stated so the seam below receives a defined config.
+      throw new Error(`subagent '${name}': no llm configured`);
+    }
+    const mainTemp = Number(subFlatLlm.temperature ?? 0.7);
+    const classifierTemp = Number(subFlatLlm.classifierTemperature ?? 0.1);
     const cached = await resolveWorkerLlmSet({
       name,
       cache: this._workers.cache,
-      // Preserve the existing makeLlm derivation exactly.
+      // Through the injected seam, exactly as _buildInfra builds the top-level
+      // roles (:1036-1056). The whole config travels, so maxTokens and
+      // whenThrottled — which the hand-copied list dropped — now arrive too.
       makeMain: () =>
-        makeLlm(
-          {
-            // ?? 'deepseek' is a TS type-narrowing net only; the config
-            // validator rejects a missing flat-schema provider before
-            // this runs.
-            provider: subFlatLlm?.provider ?? 'deepseek',
-            apiKey: subFlatLlm?.apiKey ?? '',
-            baseURL: subFlatLlm?.url,
-            model: subFlatLlm?.model,
-          },
-          mainTemp,
-        ),
+        this._deps.makeLlm({ ...subFlatLlm, temperature: mainTemp }),
       makeClassifier: () =>
-        makeLlm(
-          {
-            provider: subFlatLlm?.provider ?? 'deepseek',
-            apiKey: subFlatLlm?.apiKey ?? '',
-            baseURL: subFlatLlm?.url,
-            model: subFlatLlm?.model,
-          },
-          classifierTemp,
-        ),
+        this._deps.makeLlm({ ...subFlatLlm, temperature: classifierTemp }),
       makeHelper: subHelperCfg
         ? (
             (h) => () =>
-              makeLlm(
-                {
-                  provider: h.provider ?? 'deepseek',
-                  apiKey: h.apiKey,
-                  baseURL: h.url,
-                  model: h.model,
-                },
-                Number(h.temperature ?? 0.1),
-              )
+              this._deps.makeLlm({
+                ...h,
+                temperature: Number(h.temperature ?? 0.1),
+              })
           )(subHelperCfg)
         : undefined,
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
@@ -2018,11 +2011,6 @@ export class SmartServer {
    *  the real builder. */
   private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
     return this._deps.makeLlm(lc);
-  }
-
-  /** The real `makeLlm`-backed construction (the seam's default). */
-  private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
-    return makeDefaultRoleLlm(lc, this._mainTemp);
   }
 
   /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.

@@ -19,6 +19,14 @@ import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
 
+/** Every test here builds a real SmartServer; the seam replaces the deleted default. */
+const llmDeps = {
+  makeLlm: async (cfg: { model?: string }) => ({
+    ...makeTestLlm([{ content: 'ok' }]),
+    model: cfg.model ?? 'stub',
+  }),
+};
+
 interface ServerInternals {
   _workers: { cache: Map<string, unknown>; drain(): Promise<void> };
   _lifecycle?: { registry: { size: number } };
@@ -78,12 +86,15 @@ function httpRequest(
 
 describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)', () => {
   it('clears _workers.cache and disposes session graphs after agent update', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      agent: { maxIterations: 10 },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { apiKey: 'test', model: 'test-model' },
+        skipModelValidation: true,
+        agent: { maxIterations: 10 },
+      },
+      llmDeps,
+    );
     const handle = await server.start();
     const internals = server as unknown as ServerInternals;
     try {
@@ -134,12 +145,15 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
         throw new Error(`Unknown model: ${name}`);
       },
     };
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      modelResolver: resolver,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { apiKey: 'test', model: 'test-model' },
+        skipModelValidation: true,
+        modelResolver: resolver,
+      },
+      llmDeps,
+    );
     const handle = await server.start();
     const internals = server as unknown as ServerInternals;
     try {
@@ -173,20 +187,23 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     // '<name>'" on the next session build after PUT cleared the cache.
     // The fix routes through `resolveWorkerLlmSet` (build-on-miss) so the
     // cleared cache lazily repopulates.
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      subAgentConfigs: [
-        {
-          name: 'worker1',
-          config: {
-            llm: { apiKey: 'test', model: 'test-model' },
-            skipModelValidation: true,
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { apiKey: 'test', model: 'test-model' },
+        skipModelValidation: true,
+        subAgentConfigs: [
+          {
+            name: 'worker1',
+            config: {
+              llm: { apiKey: 'test', model: 'test-model' },
+              skipModelValidation: true,
+            },
           },
-        },
-      ],
-    });
+        ],
+      },
+      llmDeps,
+    );
     const handle = await server.start();
     const internals = server as unknown as ServerInternals & {
       buildSessionAgent: (parts: unknown) => Promise<unknown>;
@@ -235,12 +252,15 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
   });
 
   it('Fix #17: PUT /v1/config patches this.cfg.agent so next buildSessionAgent sees the update', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      agent: { maxIterations: 10, maxToolCalls: 5 },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { apiKey: 'test', model: 'test-model' },
+        skipModelValidation: true,
+        agent: { maxIterations: 10, maxToolCalls: 5 },
+      },
+      llmDeps,
+    );
     const handle = await server.start();
     const internals = server as unknown as ServerInternals;
     try {
