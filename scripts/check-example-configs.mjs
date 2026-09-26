@@ -4,10 +4,15 @@
 // SHAPE errors (removed/renamed keys, legacy pipeline shape).
 // Credentials are not checked here: a config carries only credentialRef names, which
 // llm-agent-server's composition root resolves at startup, and this script does not run it.
-// Every failure is a SHAPE-FAIL.
+// An example may read an environment variable (`${MCP_ENDPOINT}`); unset, it
+// substitutes '' and a required field reads as missing. That is the checking
+// machine's environment, not the config's shape, so a file that fails with unset
+// variables is re-checked with a placeholder for each: passing then, it is
+// reported as ENV-MISSING (naming the variables) and does not fail the run;
+// failing still, it is a SHAPE-FAIL. Every other failure is a SHAPE-FAIL.
 // docker-compose*.yml are skipped (not SmartServer configs).
 // Usage: node scripts/check-example-configs.mjs [root ...]
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import {
   loadYamlConfig,
@@ -84,31 +89,74 @@ for (const f of files) {
   }
 }
 
-let shape = 0;
-for (const f of files) {
-  try {
-    const yaml = loadYamlConfig(f);
-    const { llm: rawLlm, ...rest } = yaml;
-    const isReferencedWorker = referencedConfigPaths.has(resolvePath(f));
-    if (isReferencedWorker && isWorkerLlmShape(rawLlm)) {
-      resolveSmartServerConfig({}, rest, process.env, {
-        skipProviderRuntimeChecks: true,
-        configPath: f,
-        requireLlmSection: false,
-      });
-    } else {
-      resolveSmartServerConfig({}, yaml, process.env, {
-        skipProviderRuntimeChecks: true,
-        configPath: f,
-      });
-    }
-  } catch (err) {
-    const s = String(err);
-    shape++;
-    console.log(
-      `SHAPE-FAIL  ${f}\n        → ${s.split('\n').filter((l) => l.trim())[1] ?? s.split('\n')[0]}`,
-    );
+// The variables a file reads WITHOUT a `:-default` that the environment leaves
+// unset (a commented-out one is harmless: it only widens the placeholder env).
+function unsetVariables(f) {
+  const names = new Set();
+  for (const m of readFileSync(f, 'utf8').matchAll(/\$\{([^}:]+)\}/g)) {
+    if (!process.env[m[1]]) names.add(m[1]);
+  }
+  return names;
+}
+
+// The real environment with `placeholder` for each of `names`.
+function placeholderEnv(names, placeholder) {
+  const env = { ...process.env };
+  for (const n of names) env[n] = placeholder;
+  return env;
+}
+
+function check(f, env) {
+  const yaml = loadYamlConfig(f, env);
+  const { llm: rawLlm, ...rest } = yaml;
+  const isReferencedWorker = referencedConfigPaths.has(resolvePath(f));
+  if (isReferencedWorker && isWorkerLlmShape(rawLlm)) {
+    resolveSmartServerConfig({}, rest, process.env, {
+      skipProviderRuntimeChecks: true,
+      configPath: f,
+      requireLlmSection: false,
+    });
+  } else {
+    resolveSmartServerConfig({}, yaml, process.env, {
+      skipProviderRuntimeChecks: true,
+      configPath: f,
+    });
   }
 }
-console.log(`\n${files.length} configs — ${shape} SHAPE-FAIL`);
+
+const firstLine = (err) => {
+  const s = String(err);
+  return s.split('\n').filter((l) => l.trim())[1] ?? s.split('\n')[0];
+};
+
+let shape = 0;
+let envMissing = 0;
+for (const f of files) {
+  const missing = unsetVariables(f);
+  try {
+    check(f, process.env);
+  } catch (err) {
+    let failure = err;
+    if (missing.size > 0) {
+      try {
+        check(f, placeholderEnv(missing, 'http://env-placeholder.invalid'));
+        failure = undefined;
+      } catch (placeholderErr) {
+        failure = placeholderErr;
+      }
+    }
+    if (failure === undefined) {
+      envMissing++;
+      console.log(
+        `ENV-MISSING ${f}\n        → unset: ${[...missing].join(', ')}`,
+      );
+    } else {
+      shape++;
+      console.log(`SHAPE-FAIL  ${f}\n        → ${firstLine(failure)}`);
+    }
+  }
+}
+console.log(
+  `\n${files.length} configs — ${shape} SHAPE-FAIL, ${envMissing} ENV-MISSING`,
+);
 process.exit(shape > 0 ? 1 : 0);
