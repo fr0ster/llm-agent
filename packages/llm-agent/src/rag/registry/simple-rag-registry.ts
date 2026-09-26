@@ -19,6 +19,7 @@ import {
 } from '../catalog/validation.js';
 import {
   AmbiguousCollectionError,
+  CatalogRecordDeleteError,
   CollectionNotFoundError,
   DeleteUnsupportedError,
   DuplicateCollectionError,
@@ -33,23 +34,24 @@ import { reservedGlobalNameError } from './store-key.js';
  *
  * The collection name and a digest of its scope, its owner (the session for a
  * session collection, the user for a user one) and the name. The same
- * collection of the same owner gets the same store, so a user or global
- * collection finds its data again after a restart; another session or user
- * gets another one, so none opens a store someone else's deletion left. It fits
- * the strictest provider rules: letters, digits and underscores, not starting
- * with a digit, at most 63 characters (PostgreSQL, HANA).
+ * collection of the same owner always names the same store; another session or
+ * user names another one, so none opens a store someone else left. Because the
+ * name is deterministic, a second creation of a collection that exists is
+ * refused by the provider (RAG_DUPLICATE_COLLECTION when it has a record,
+ * RAG_ORPHAN_STORE when only its store is there) — a restart reattaches a
+ * collection by hydration (describeCollections, openCollection, adopt), never
+ * by creating it again (§6.3). It fits the strictest provider rules: letters,
+ * digits and underscores, not starting with a digit, at most 63 characters
+ * (PostgreSQL, HANA).
  */
-function storeNameFor(params: {
-  collectionName: string;
-  scope: RagCollectionScope;
-  sessionId?: string;
-  userId?: string;
-}): string {
+function storeNameFor(
+  params: { readonly collectionName: string } & RagCollectionOwner,
+): string {
   const owner =
     params.scope === 'session'
-      ? (params.sessionId ?? '')
+      ? params.sessionId
       : params.scope === 'user'
-        ? (params.userId ?? '')
+        ? params.userId
         : '';
   const digest = createHash('sha256')
     .update(JSON.stringify([params.scope, owner, params.collectionName]))
@@ -83,11 +85,13 @@ export class SimpleRagRegistry implements IRagRegistry {
   /** Keyed by keyOf(scope, name). */
   protected readonly entries = new Map<string, Entry>();
   /**
-   * Store names whose deletion is still running, with that deletion. A store
-   * name is released only once its deletion has finished: a collection created
-   * under it meanwhile waits, so the deletion cannot remove what it writes.
+   * Keys (scope, name) whose deletion is running. Absent to get, getEditor and
+   * list, so nothing reaches the collection; taken for createCollection,
+   * register and adopt, which refuse it — a taken name is refused, not queued
+   * (§6.3). The reservation is what lets a failed record deletion restore the
+   * entry: without it a creation could take the key in between.
    */
-  protected readonly deletions = new Map<string, Promise<unknown>>();
+  protected readonly deleting = new Set<string>();
   /** Keys (scope, name) being created, held until inserted or refused. */
   protected readonly creating = new Set<string>();
   protected providerRegistry?: IRagProviderRegistry;
@@ -135,9 +139,11 @@ export class SimpleRagRegistry implements IRagRegistry {
     return f.found;
   }
 
-  /** A key is taken while an entry holds it or a creation of it is running. */
+  /** A key is taken while an entry holds it, or a creation or deletion runs. */
   protected isTaken(key: string): boolean {
-    return this.entries.has(key) || this.creating.has(key);
+    return (
+      this.entries.has(key) || this.creating.has(key) || this.deleting.has(key)
+    );
   }
 
   private insert(key: string, entry: Entry): void {
@@ -302,20 +308,21 @@ export class SimpleRagRegistry implements IRagRegistry {
     params: RagRegistryCreateCollectionParams,
     owner: RagCollectionOwner,
   ): Promise<Result<RagCollectionMeta, RagError>> {
-    // A provider that keeps stores by name (Qdrant, a database) opens whatever
-    // is there, so each owner gets a store name of its own; see storeNameFor.
+    // A provider that keeps stores by name gets one per owner; see storeNameFor.
     const storeName = storeNameFor({
       collectionName: params.collectionName,
       ...owner,
     });
-    // Released only when a deletion under it has finished; see deletions.
-    await this.deletions.get(storeName);
-
+    // The logical name and the attributes go to the provider, because its
+    // catalog cannot return what it was never given (§6.3). Passed unread, and
+    // only when given, so `'attributes' in opts` reads the caller's intent.
     const created = await provider.createCollection(storeName, {
       ...owner,
       collectionName: params.collectionName,
-      attributes: params.attributes,
-      adoptExisting: params.adoptExisting,
+      ...(params.attributes !== undefined
+        ? { attributes: params.attributes }
+        : {}),
+      ...(params.adoptExisting ? { adoptExisting: true } : {}),
     });
     if (!created.ok) return created;
 
@@ -346,16 +353,19 @@ export class SimpleRagRegistry implements IRagRegistry {
   /**
    * Delete a collection.
    *
-   * It is unregistered first, whatever follows, so nothing can reach it again.
-   * Then its data goes: a collection a provider created is deleted by that
-   * provider's `deleteCollection` or, where the provider has none, emptied
-   * through its store's `writer().clearAll()`. A collection registered directly,
-   * with no provider, is only unregistered — its store belongs to whoever
-   * registered it. Nothing is retried. A failure comes back as the error, with
-   * the collection already unregistered; its data may remain in the backend,
-   * under a store name no other session or user is given (see storeNameFor).
-   * The store name itself is held until the deletion has finished (see
-   * deletions).
+   * It is unregistered first and its key reserved, so nothing reaches it and
+   * nothing takes its name while it is being deleted. Then its data goes: a
+   * collection a provider created is deleted by that provider's
+   * `deleteCollection` — which removes its catalog record before its data — or,
+   * where the provider has none, emptied through its store's
+   * `writer().clearAll()`. A collection registered without a provider is only
+   * unregistered. Nothing is retried.
+   *
+   * On CatalogRecordDeleteError nothing was deleted: record and data are both
+   * intact, so the same entry is registered again before the reservation ends,
+   * and the same call can be retried in place. Any other failure comes back as
+   * the error with the collection unregistered; its data may remain under a
+   * store name no other session or user is given (see storeNameFor).
    */
   async deleteCollection(
     name: string,
@@ -368,17 +378,30 @@ export class SimpleRagRegistry implements IRagRegistry {
     }
     const { key, entry } = f.found;
     this.entries.delete(key);
+    this.deleting.add(key);
     this.fireMutation();
-    const deletion: Promise<Result<void, RagError>> = this.deleteData(
-      name,
-      entry,
-    ).finally(() => {
-      if (this.deletions.get(entry.storeName) === deletion) {
-        this.deletions.delete(entry.storeName);
-      }
-    });
-    this.deletions.set(entry.storeName, deletion);
-    return deletion;
+
+    let result: Result<void, RagError>;
+    try {
+      result = await this.deleteData(name, entry);
+    } catch (err) {
+      result = {
+        ok: false,
+        error:
+          err instanceof RagError
+            ? err
+            : new RagError(String(err), 'RAG_DELETE_ERROR'),
+      };
+    }
+    if (!result.ok && result.error instanceof CatalogRecordDeleteError) {
+      // Restored while the key is still reserved, so nothing slips in between.
+      this.entries.set(key, entry);
+      this.deleting.delete(key);
+      this.fireMutation();
+      return result;
+    }
+    this.deleting.delete(key);
+    return result;
   }
 
   private async deleteData(

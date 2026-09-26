@@ -8,6 +8,15 @@ nothing; with `providerName` a later delete reaches that provider, without it
 the entry is a reference; it throws `InvalidOwnerError`,
 `ReservedCollectionNameError` or `DuplicateCollectionError`.
 
+**BREAKING:** a collection that exists is no longer reattached by creating it
+again — the provider refuses it (`DuplicateCollectionError` / `OrphanStoreError`)
+and hydration (`describeCollections`, `openCollection`, `adopt`) is the way
+back after a restart; a creation during a running deletion of the same
+(scope, name) is refused with `DuplicateCollectionError` instead of waiting
+for it; on `CatalogRecordDeleteError` the registry re-registers the entry, so
+the same delete or `closeSession` can be retried; `createCollection` forwards
+`attributes`/`adoptExisting` to the provider only when given.
+
 **BREAKING:** both `createCollection` inputs take `RagCollectionOwner` — the
 scope with the key it selects — instead of `scope` beside optional
 `sessionId`/`userId`, so a `user` or `session` owner without its key is a

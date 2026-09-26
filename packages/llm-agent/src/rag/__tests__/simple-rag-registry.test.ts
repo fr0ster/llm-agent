@@ -5,6 +5,7 @@ import { RagError } from '../../interfaces/types.js';
 import {
   CollectionNotFoundError,
   DeleteUnsupportedError,
+  OrphanStoreError,
   ProviderNotFoundError,
   SessionCloseIncompleteError,
 } from '../corrections/errors.js';
@@ -470,14 +471,36 @@ describe('SimpleRagRegistry — no session or user opens a store someone else le
       kind: 'vector',
       editable: true,
       supportedScopes: ['session', 'user', 'global'],
-      createCollection: async (name) => {
+      createCollection: async (name, opts) => {
         created.push(name);
-        let rag = stores.get(name);
-        if (!rag) {
-          rag = new InMemoryRag();
-          stores.set(name, rag);
+        const existing = stores.get(name);
+        if (existing && !opts.adoptExisting) {
+          return {
+            ok: false,
+            error: new OrphanStoreError(name, 'it exists without a record'),
+          };
         }
+        if (!existing && opts.adoptExisting) {
+          return {
+            ok: false,
+            error: new RagError(
+              `Store '${name}' does not exist`,
+              'RAG_COLLECTION_NOT_FOUND',
+            ),
+          };
+        }
+        const rag = existing ?? new InMemoryRag();
+        stores.set(name, rag);
         return { ok: true, value: { rag, editor: {} as IRagEditor } };
+      },
+      openCollection: async (record) => {
+        const rag = stores.get(record.storeName);
+        return rag
+          ? { ok: true, value: { rag, editor: {} as IRagEditor } }
+          : {
+              ok: false,
+              error: new RagError(`Store '${record.storeName}' is gone`),
+            };
       },
       deleteCollection: async (name) => {
         deleted.push(name);
@@ -489,7 +512,7 @@ describe('SimpleRagRegistry — no session or user opens a store someone else le
         return { ok: true, value: undefined };
       },
     };
-    return { provider, created, deleted, release };
+    return { provider, stores, created, deleted, release };
   }
 
   async function write(rag: IRag | undefined): Promise<void> {
@@ -532,7 +555,7 @@ describe('SimpleRagRegistry — no session or user opens a store someone else le
     assert.deepEqual(kept.deleted, [first]);
   });
 
-  it('the same user gets the same store again, so a user collection finds its data after a restart', async () => {
+  it('after a restart the same user is refused a re-creation, and reaches its data by hydration', async () => {
     const kept = storesByName();
     const before = registryWith(kept.provider);
     assert.ok((await createUser(before, 'mine', 'alice')).ok);
@@ -540,56 +563,81 @@ describe('SimpleRagRegistry — no session or user opens a store someone else le
 
     // A new process: a fresh registry over the same backend.
     const after = registryWith(kept.provider);
-    assert.ok((await createUser(after, 'mine', 'alice')).ok);
+    const again = await createUser(after, 'mine', 'alice');
+    assert.ok(!again.ok);
+    assert.equal(
+      again.error.code,
+      'RAG_ORPHAN_STORE',
+      'this stub keeps no catalog, so it sees a store without a record',
+    );
+    assert.equal(
+      kept.created[0],
+      kept.created[1],
+      'the same identity still names the same store',
+    );
+
+    const record = {
+      storeName: kept.created[0],
+      name: 'mine',
+      scope: 'user',
+      userId: 'alice',
+    } as const;
+    const opened = await kept.provider.openCollection?.(record);
+    assert.ok(opened?.ok);
+    after.adopt(record, opened.value.rag, opened.value.editor, 'kept');
     assert.equal(await holds(after.get('mine')), true);
-    assert.equal(kept.created[0], kept.created[1]);
   });
 
-  it('another user creating the same name while a deletion is still running does not open its store', async () => {
+  it('another user creating the same name while a deletion is still running is refused', async () => {
     const kept = storesByName();
     const reg = registryWith(kept.provider);
     assert.ok((await createUser(reg, 'shared', 'alice')).ok);
     await write(reg.get('shared'));
 
     const deletion = reg.deleteCollection('shared');
-    assert.ok((await createUser(reg, 'shared', 'bob')).ok);
-    assert.equal(await holds(reg.get('shared')), false);
+    const bob = await createUser(reg, 'shared', 'bob');
+    assert.ok(!bob.ok);
+    assert.equal(
+      bob.error.code,
+      'RAG_DUPLICATE_COLLECTION',
+      'a shared registry reserves by scope and name, not owner (§6.4)',
+    );
+    assert.equal(
+      reg.get('shared'),
+      undefined,
+      'and the reserved name is absent to get',
+    );
+    assert.equal(kept.created.length, 1, 'the refusal reached no provider');
 
     kept.release();
     assert.ok(!(await deletion).ok);
-    assert.equal(await holds(reg.get('shared')), false);
   });
 
-  it('the same owner creating the collection while its deletion runs waits for it, and keeps what it writes', async () => {
+  it('the same owner creating the collection while its deletion runs is refused, then free', async () => {
     const kept = storesByName('deletes');
     const reg = registryWith(kept.provider);
     assert.ok((await createUser(reg, 'mine', 'alice')).ok);
     await write(reg.get('mine'));
 
     const deletion = reg.deleteCollection('mine');
-    let settled = false;
-    const creation = createUser(reg, 'mine', 'alice').then((res) => {
-      settled = true;
-      return res;
-    });
-    await new Promise((r) => setImmediate(r));
-    assert.equal(settled, false, 'the creation waits for the deletion');
+    const again = await createUser(reg, 'mine', 'alice');
+    assert.ok(!again.ok);
+    assert.equal(
+      again.error.code,
+      'RAG_DUPLICATE_COLLECTION',
+      'refused, not queued',
+    );
 
     kept.release();
     assert.ok((await deletion).ok);
-    assert.ok((await creation).ok);
-    const rag = reg.get('mine');
-    assert.equal(
-      await holds(rag),
-      false,
-      'the old data went with the deletion',
+    assert.ok(
+      (await createUser(reg, 'mine', 'alice')).ok,
+      'once the deletion has finished',
     );
-    await write(rag);
-    await new Promise((r) => setImmediate(r));
     assert.equal(
-      await holds(rag),
-      true,
-      'the deletion did not reach the new data',
+      await holds(reg.get('mine')),
+      false,
+      'and the old data went with it',
     );
   });
 
