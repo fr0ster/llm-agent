@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (strict), Node 22, npm workspaces. Tests are `node:test` per package, **run through the tsx loader** — every package's own script is `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`, and a bare `node --test file.ts` fails with `ERR_MODULE_NOT_FOUND` because a `.ts` test's `.js` imports do not resolve without it (verified against an existing test). Each command below uses the loader for that reason; `npm test -w packages/<name>` is equivalent. Biome for lint and format.
 
-**Spec:** `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` (this repository), review-clean as of `ee531735`. Read it before starting a task — the plan argues from it and every task cites the section it implements. **Tasks A1–A3 and B1–B6b are done** (on `feat/credentials-and-rag-identity`); **B6c–B30 were re-derived on 2026-09-26** from the spec after §4.6.3–§4.6.7, §5.1, §6.3 and §6.4 were rewritten, replacing the previous B7–B18, which are in git history. Every `file:line` in B6c–B30 was checked against the branch's working tree when drafted; a task whose citation has drifted by execution time re-finds it and says so in its report.
+**Spec:** `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` (this repository), review-clean as of `2543821d`. Read it before starting a task — the plan argues from it and every task cites the section it implements. **Tasks A1–A3 and B1–B6b are done** (on `feat/credentials-and-rag-identity`); **B6c–B30 were re-derived on 2026-09-26** from the spec after §4.6.3–§4.6.7, §5.1, §6.3 and §6.4 were rewritten, replacing the previous B7–B18, which are in git history. Every `file:line` in B6c–B30 was checked against the branch's working tree when drafted; a task whose citation has drifted by execution time re-finds it and says so in its report.
 
 ---
 
@@ -1505,6 +1505,7 @@ DI seam and the skill host type it `=> IEmbedder` — so a prefetch step stays, 
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts:289-307` — `makeRealEmbedder` (excluded from `tsc`, so no later task's compiler would ever name it)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:42-46`, `:81-91` — the two injected-embedder calls go through `composeEmbedder`. They pass an instance the consumer built, which `injectedEmbedder` carried; left as they are, every `SmartServer` built with `deps.embedder` would fall through to the ollama default and throw `MissingProviderError`
 - Modify (quarantine only, no body change): `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-agent-embedder.test.ts:39`, `:83`; `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts:119`, `:157`, `:192`, `:232`, `:270`; `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts:160`, `:211`
+- Modify: `packages/llm-agent-libs/src/__tests__/hana-pg-integration.test.ts` (whole file) — red since Task B6b, claimed by nobody until now: it imports the removed `resolveRag` and `_resetPrefetchedRagForTests` and passes the flat `makeRag` shape with `injectedEmbedder`
 - Modify: `tsconfig.typecheck.json` — append the new typecheck file
 - Create: `packages/llm-agent-rag/src/__typechecks__/embedder-resolution.ts`
 - Test: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts` (embedder section, `:1-107`), `packages/llm-agent-rag/src/__tests__/embedder-factories.test.ts` (whole file), `packages/llm-agent-rag/src/__tests__/resolve-embedder-resilience.test.ts` (whole file)
@@ -2453,6 +2454,80 @@ bodies, so every task from here on gates on a green suite:
   `smart-agent/__tests__/mcp-yaml-vectorization.test.ts:160`, `:211` —
   `test('<same name>', { skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag' }, async (…) => {…})`
 
+One more test has been red since Task B6b, in `llm-agent-libs`, and it is rewritten here rather than
+quarantined, because this task owns the resolution API it exercises: `src/__tests__/hana-pg-integration.test.ts`
+imports `resolveRag` and `_resetPrefetchedRagForTests`, which B6b removed, and passes the flat `makeRag`
+shape with `injectedEmbedder`. Its first case tested `resolveRag`'s missing-peer error; that function
+is gone, and B6b's own boundary tests cover a missing peer, so the case goes. The other two keep their
+intent against `RagResolution`:
+
+```ts
+// packages/llm-agent-libs/src/__tests__/hana-pg-integration.test.ts
+import assert from 'node:assert/strict';
+import { after, before, describe, it } from 'node:test';
+import { type IEmbedder, staticLogin } from '@mcp-abap-adt/llm-agent';
+import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
+
+/**
+ * HanaVectorRag and PgVectorRag create a `clientPromise` in their constructor
+ * that imports the native driver; in a test environment that rejects in the
+ * background. Only the sync shape (`ensureSchema` is a function) is verified,
+ * so those expected background rejections are absorbed for this block.
+ */
+function suppressDriverInitErrors(_reason: unknown) {
+  /* intentionally absorbed — background driver-init failure is expected */
+}
+
+const embedder: IEmbedder = {
+  async embed() {
+    return { vector: [0, 0, 0] };
+  },
+};
+
+describe('hana-vector / pg-vector server integration', () => {
+  before(() => {
+    process.on('unhandledRejection', suppressDriverInitErrors);
+  });
+  after(() => {
+    process.off('unhandledRejection', suppressDriverInitErrors);
+  });
+
+  it('makeRag exposes ensureSchema() for hana-vector', async () => {
+    const rag = (await makeRag({
+      type: 'hana-vector',
+      embedder,
+      host: 'h',
+      credential: staticLogin('u', 'p'),
+      collectionName: 'direct_docs',
+      dimension: 3,
+      autoCreateSchema: true,
+    })) as unknown as { ensureSchema: () => Promise<void> };
+    assert.equal(typeof rag.ensureSchema, 'function');
+  });
+
+  it('makeRag exposes ensureSchema() for pg-vector', async () => {
+    const rag = (await makeRag({
+      type: 'pg-vector',
+      embedder,
+      host: 'h',
+      database: 'd',
+      credential: staticLogin('u', 'p'),
+      collectionName: 'direct_docs',
+      dimension: 3,
+      autoCreateSchema: true,
+    })) as unknown as { ensureSchema: () => Promise<void> };
+    assert.equal(typeof rag.ensureSchema, 'function');
+  });
+});
+```
+
+Verify `staticLogin`'s parameter order at `llm-agent/src/credentials/static.ts:15` and the two arms'
+field names against B6b's `RagResolution` before running, then:
+
+```bash
+npm test -w packages/llm-agent-libs   # # fail 0
+```
+
 Rerun `timeout 900 npm test -w packages/llm-agent-server-libs`: it must pass with these nine skipped and
 the suite's pre-existing skips. Any other red test is a finding — report it with its message rather than
 quarantining it. Not broken: `llm-agent-server/src/smart-agent/cli.ts:277` and `smart-server.ts:1206`
@@ -2477,7 +2552,8 @@ git add packages/llm-agent-rag tsconfig.typecheck.json \
   packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts \
   packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-agent-embedder.test.ts \
   packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts \
-  packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
+  packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts \
+  packages/llm-agent-libs/src/__tests__/hana-pg-integration.test.ts
 git commit -m "$(cat <<'MSG'
 refactor(llm-agent-rag)!: the embedder path keeps its types, so the guard is gone
 
@@ -7111,7 +7187,11 @@ test('PUT /v1/config swaps main and classifier for the next lookup, strict or de
       swappedClassifier,
       'a worker naming the classifier key reaches the instance PUT swapped (§4.6.6)',
     );
-    assert.equal(built.includes('m-classifier'), false, 'the classifier entry is never built as a second instance');
+    assert.equal(
+      built.filter((m) => m === 'm-classifier').length,
+      1,
+      'a declared llm.classifier builds the held classifier, once — not main at classifierTemperature (§4.6.6)',
+    );
 
     const r1 = await ctx.resolveLlm('reviewer');
     const r2 = await ctx.resolveNamedLlm('reviewer');
@@ -7509,6 +7589,26 @@ export class RoleLlmResolver implements IRoleLlmResolver {
       const llmMap = normalizeLlmConfig(this.cfg.llm);
       const topMain = resolveLlmConfig(llmMap, 'main');
   ```
+
+- `:1041-1046` — the held classifier. Today it is always `llm.main` at `classifierTemperature`, so a
+  declared `classifier` entry — its model and its `credentialRef`, the spec's second-account example —
+  was validated and ignored, and `resolveNamed('classifier')` returning the held instance would make
+  that permanent. Build it from the entry when one is declared (§4.6.6, spec "Also changed"):
+
+  ```ts
+      const classifierEntry = resolveLlmConfigStrict(llmMap, 'classifier');
+      const classifierTemp = Number(topMain?.classifierTemperature ?? 0.1);
+      const classifierLlm = classifierEntry
+        ? await this._deps.makeLlm(classifierEntry)
+        : topMain
+          ? await this._deps.makeLlm({ ...topMain, temperature: classifierTemp })
+          : (() => {
+              throw new Error('no LLM configured: provide top-level llm.main');
+            })();
+  ```
+
+  An entry's own `temperature` applies as written; `classifierTemperature` stays the knob for the
+  main-derived classifier only.
 
 - `:1060-1070` — before: `this._llmMap = llmMap;` … `makeLlm: (lc) => this._deps.makeLlm(lc),\n    });`;
   after — `_pipelineFallback` goes, and each entry reaches the seam as written:
@@ -11467,6 +11567,25 @@ describe('createModelResolver (PUT /v1/config)', () => {
     );
   });
 
+  it('a declared classifier entry is the classifier role\'s own, on its own account', async () => {
+    const seen: SmartServerLlmConfig[] = [];
+    const makeLlm = async (cfg: SmartServerLlmConfig) => {
+      seen.push(cfg);
+      return { model: cfg.model } as unknown as ILlm;
+    };
+    const llm = {
+      main: { provider: 'openai', model: 'a', credentialRef: 'OPENAI' },
+      classifier: { provider: 'openai', model: 'c', temperature: 0.2, credentialRef: 'OPENAI_KEY_CHEAP' },
+    } as unknown as SmartServerConfig['llm'];
+    const resolver = createModelResolver(makeLlm, llm);
+    assert.ok(resolver);
+    await resolver.resolve('gpt-mini', 'classifier');
+    assert.deepEqual(
+      seen.map((c) => [c.model, c.temperature, c.credentialRef]),
+      [['gpt-mini', 0.2, 'OPENAI_KEY_CHEAP']],
+    );
+  });
+
   it('no llm: section → no resolver, so model updates stay refused', () => {
     assert.equal(createModelResolver(async () => ({}) as ILlm, undefined), undefined);
   });
@@ -12023,11 +12142,16 @@ export function createModelResolver(
   if (!map) return undefined;
   return {
     resolve(modelName, role) {
-      const base = role === 'helper' ? (map.helper ?? map.main) : map.main;
+      // The same entries SmartServer builds the held instances from (B12): a
+      // declared classifier entry is the classifier's own; otherwise it derives
+      // from main at classifierTemperature.
+      const own =
+        role === 'helper' ? map.helper : role === 'classifier' ? map.classifier : undefined;
+      const base = own ?? map.main;
       const temperature =
         role === 'main'
           ? Number(map.main.temperature ?? 0.7)
-          : role === 'classifier'
+          : role === 'classifier' && !own
             ? Number(map.main.classifierTemperature ?? 0.1)
             : Number(base.temperature ?? 0.1);
       return makeLlm({ ...base, model: modelName, temperature });
@@ -12108,6 +12232,10 @@ ref and the section uses its role's default.
 |---|---|---|
 | each `llm:` entry | `LLM` | `LLM_API_KEY`, or `LLM_SERVICE_KEY` for SAP AI Core |
 | `rag.store`, a qdrant `skillPlugins.store` | `RAG_STORE` | `RAG_STORE_API_KEY` (Qdrant) or `RAG_STORE_USER` + `RAG_STORE_PASSWORD` |
+
+The two stores share one default, so they share its one credential kind: a pg-vector or HANA `rag.store`
+on the default (a login) beside a qdrant skill store with no ref (an API key) fails at startup with a
+wrong-kind error. Name a ref on one of them — usually the skill store's.
 | `rag.embedder` | `RAG_EMBEDDER` | `RAG_EMBEDDER_API_KEY`, or `RAG_EMBEDDER_SERVICE_KEY` for SAP AI Core |
 
 A default is read only when the target needs a credential. Where a target can work without one (a Qdrant
@@ -12200,6 +12328,7 @@ contract. The task ends on the repository-wide gate that proves workstream 2 com
 - Modify: `packages/llm-agent-server/src/smart-agent/cli.ts:53-64` (imports), `:307` — construct through the root
 - Modify: `packages/llm-agent-server/src/smoke-adapters.ts:104-107` — `credential: staticApiKey(…)`
 - Delete: `packages/llm-agent-server/scripts/start-smart-server.{ts,js,d.ts,js.map,d.ts.map}` (git-tracked build leftovers included)
+- Delete: `packages/llm-agent-server/scripts/e2e-rag-search.{ts,js,d.ts,js.map,d.ts.map}` — equally dead: outside `include`, and it imports `makeDefaultLlm` from a `providers.js` that does not exist (`e2e-rag-search.ts:20`)
 - Modify: `packages/llm-agent-server/CHANGELOG.md`
 - Test: `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts` (one case added)
 
@@ -12302,6 +12431,11 @@ git rm packages/llm-agent-server/scripts/start-smart-server.ts \
   packages/llm-agent-server/scripts/start-smart-server.d.ts \
   packages/llm-agent-server/scripts/start-smart-server.js.map \
   packages/llm-agent-server/scripts/start-smart-server.d.ts.map
+git rm packages/llm-agent-server/scripts/e2e-rag-search.ts \
+  packages/llm-agent-server/scripts/e2e-rag-search.js \
+  packages/llm-agent-server/scripts/e2e-rag-search.d.ts \
+  packages/llm-agent-server/scripts/e2e-rag-search.js.map \
+  packages/llm-agent-server/scripts/e2e-rag-search.d.ts.map
 grep -rn "start-smart-server" packages docs README.md --include='*.md' --include='*.json' --include='*.ts' \
   | grep -v '^docs/superpowers/'
 ```
@@ -14597,9 +14731,9 @@ extension to create; the catalog's attribute column is `NCLOB`, whose value the 
 as a `Buffer`, so it is decoded before the shared row check. Column aliases are quoted
 (`AS "storeName"`), because HANA upper-cases unquoted identifiers. The two decisions of B20 hold here
 (no creating DDL under `autoCreateSchema: false`, while `deleteCollection` still drops the table —
-`hana-vector-rag-provider.ts:98-108` does today; a connection of the provider's own when no
+`hana-vector-rag-provider.ts:116-127` (the `DROP` at `:119`) does today; a connection of the provider's own when no
 `clientFactory`, since `deleteCollection`/`listCollections` throw without one today,
-`hana-vector-rag-provider.ts:126-133`, and `createCollection` now needs one for its record), for the
+`hana-vector-rag-provider.ts:144-151` (`requireClient`), and `createCollection` now needs one for its record), for the
 same reasons.
 
 **Files:**
@@ -19707,9 +19841,14 @@ session's registry holds only the deployment's globals; and its sessions carry a
 `userId`** (`llm-agent-libs/src/session/session-registry.ts:91` builds them from `{ sessionId }`), so
 `user` collections are neither hydrated nor creatable through it. The per-session registry is still the
 right shape to ship — it removes the shared registry the leak depends on. This task states both limits
-in a code comment at the wiring, in a `warning` log line at startup when no provider is registered,
-and in the `llm-agent-server-libs` CHANGELOG entry; carrying a caller's `userId` into `SmartServer`'s
-sessions is a separate change.
+in a code comment at the wiring and in the `llm-agent-server-libs` CHANGELOG entry; carrying a caller's `userId` into `SmartServer`'s
+sessions is a separate change. It does **not** log them: in today's default deployment a startup
+warning would fire at every start, and an expected warning trains readers to skip the real ones.
+
+Any future path that registers a RAG provider into the server's shared provider registry registers it
+**once**, at startup — `build()` registers each builder's own providers into the registry it is given
+(`builder.ts:889`) and throws on a duplicate name, so registering per build would fail on the second
+session.
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` —
@@ -21060,6 +21199,9 @@ of the shipped server make that smaller than it sounds:
 - **An `llm:` entry without a `temperature` no longer inherits main's.** Role entries reach the
   composition root as written; main and classifier keep `temperature`/`classifierTemperature`. Set a
   `temperature` on any other entry that relied on inheriting it.
+- **A declared `llm.classifier` is now used.** The held classifier was always built from `llm.main` at
+  `classifierTemperature`, so a `classifier` entry — its model and its `credentialRef` — was validated and
+  ignored. It is now built from that entry when declared.
 - **`PUT /v1/config` model switching works in the shipped server.** It needs an `IModelResolver`,
   which the binary never set, so the route answered 400. The composition root now supplies one.
 - **Each `SmartServer` session owns its collection registry** (`ragRegistryFactory`), instead of
@@ -21082,7 +21224,7 @@ grep -c '^\*\*[0-9]\+\. ' docs/superpowers/specs/2026-09-16-auth-contracts-desig
 
 If the counts differ, the spec moved, so fix the guide and not the spec. Then compare the guide with
 spec §8 item by item: every sentence of each spec item must have its fact in the guide's item of the
-same number, and the "Also changed" section must carry all four of the spec's bullets. Report any item
+same number, and the "Also changed" section must carry every one of the spec's bullets (six at `2543821d`: dag planner key, embedder URL, llm-agent-rag typed API, temperature no longer inherited, a declared classifier used, `PUT /v1/config`). Report any item
 you shortened and why.
 
 Compile-check the TypeScript snippets against the real signatures:
@@ -21161,7 +21303,7 @@ Eleven changes need an edit; the guide numbers them and shows each before/after.
 Also changed, no edit of their own: a `dag` planner key must exist, and an omitted one resolves as
 `planner` (the helper when configured); a configured embedder URL now reaches the embedder; the
 `llm-agent-rag` resolution inputs are discriminated unions (`RagResolution`, and `EmbedderResolution`
-on `provider`, formerly `embedder`); `PUT /v1/config` model switching works in the shipped server; an `llm:` entry without its own `temperature` no longer inherits main's.
+on `provider`, formerly `embedder`); `PUT /v1/config` model switching works in the shipped server; an `llm:` entry without its own `temperature` no longer inherits main's; a declared `llm.classifier` now builds the classifier.
 
 ### Added
 
