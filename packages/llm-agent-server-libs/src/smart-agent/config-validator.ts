@@ -1,3 +1,4 @@
+import { isBuiltInEmbedderProvider } from './rag-config.js';
 import type { SmartServerConfig } from './smart-server.js';
 import type { YamlConfig } from './yaml-loader.js';
 import { get } from './yaml-loader.js';
@@ -84,65 +85,126 @@ function checkLlmRole(
   // AICORE_SERVICE_KEY rules left with the credential (§4.6.2).
 }
 
-function checkRagStore(
-  label: string,
-  store:
-    | {
-        type?: unknown;
-        url?: unknown;
-        collectionName?: unknown;
-        embedder?: unknown;
-        model?: unknown;
-      }
-    | undefined,
+const IN_MEMORY_ONLY_KEYS = [
+  'dedupThreshold',
+  'vectorWeight',
+  'keywordWeight',
+] as const;
+
+function checkRag(
+  rag: Record<string, unknown>,
   issues: string[],
   skipRuntime = false,
 ): void {
-  if (!store) return;
-  const ragType = store.type as string | undefined;
+  for (const key of Object.keys(rag)) {
+    if (key !== 'store' && key !== 'embedder') {
+      issues.push(`rag.${key}: unknown key — rag holds store: and embedder:`);
+    }
+  }
+  const store = rag.store;
+  if (
+    store === undefined ||
+    store === null ||
+    typeof store !== 'object' ||
+    Array.isArray(store)
+  ) {
+    issues.push(
+      'rag.store: required (a mapping with type: in-memory | qdrant | hana-vector | pg-vector)',
+    );
+    return;
+  }
+  const s = store as Record<string, unknown>;
+  const ragType = s.type as string | undefined;
   if (!ragType) {
     issues.push(
-      `${label}.type: required (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+      'rag.store.type: required (one of: in-memory, qdrant, hana-vector, pg-vector)',
     );
   } else if (ragType === 'ollama' || ragType === 'openai') {
     issues.push(
-      `${label}.type: "${ragType}" is an embedder, not a store — use \`type: in-memory\` with \`embedder: ${ragType}\` (or a real store: qdrant, hana-vector, pg-vector)`,
+      `rag.store.type: "${ragType}" is an embedder, not a store — use \`store: { type: in-memory }\` with \`embedder: { provider: ${ragType} }\` (or a real store: qdrant, hana-vector, pg-vector)`,
     );
   } else if (!(VALID_RAG_TYPES as readonly string[]).includes(ragType)) {
     issues.push(
-      `${label}.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+      `rag.store.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
     );
   } else {
-    if (ragType === 'qdrant' && !store.url) {
-      issues.push(`${label}.url: required for ${label}.type qdrant`);
+    if (ragType === 'qdrant' && !s.url) {
+      issues.push('rag.store.url: required for rag.store.type qdrant');
     }
     if (
       (ragType === 'hana-vector' || ragType === 'pg-vector') &&
-      !store.collectionName
+      !s.collectionName
     ) {
       issues.push(
-        `${label}.collectionName: required for ${label}.type ${ragType}`,
+        `rag.store.collectionName: required for rag.store.type ${ragType}`,
       );
     }
+    if (ragType !== 'in-memory') {
+      for (const k of IN_MEMORY_ONLY_KEYS) {
+        if (s[k] !== undefined) {
+          issues.push(
+            `rag.store.${k}: read only by the in-memory store — remove it (a ${ragType} store never read it)`,
+          );
+        }
+      }
+    }
   }
-  // Blocklist (NOT allowlist): consumers can register custom embedder
-  // factories, so only known embedder-less providers are hard-rejected here.
-  const embedder = store.embedder as string | undefined;
-  if (embedder === 'deepseek' || embedder === 'anthropic') {
+  checkCredentialRef('rag.store', s.credentialRef, issues);
+
+  const rawEmbedder = rag.embedder;
+  if (
+    rawEmbedder !== undefined &&
+    (rawEmbedder === null ||
+      typeof rawEmbedder !== 'object' ||
+      Array.isArray(rawEmbedder))
+  ) {
+    issues.push('rag.embedder: must be a mapping (provider, model, …)');
+    return;
+  }
+  const e = rawEmbedder as Record<string, unknown> | undefined;
+  const provider = e?.provider as string | undefined;
+  const factory = e?.factory;
+  if (provider !== undefined && factory !== undefined) {
     issues.push(
-      `${label}.embedder: "${embedder}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+      'rag.embedder: name either provider (a built-in) or factory (one you registered), not both',
+    );
+  } else if (factory !== undefined) {
+    if (typeof factory !== 'string' || factory.length === 0) {
+      issues.push(
+        'rag.embedder.factory: must be a non-empty string naming a registered factory',
+      );
+    }
+    // A consumer factory receives EmbedderFactoryConfig only (url, model, timeoutMs) and
+    // closes over its own credential, so these would be dropped without a word.
+    for (const k of ['credentialRef', 'resourceGroup', 'scenario'] as const) {
+      if (e?.[k] !== undefined) {
+        issues.push(
+          `rag.embedder.${k}: not read for a factory — a consumer factory closes over its own ` +
+            'configuration and credential; remove it',
+        );
+      }
+    }
+  } else if (provider === 'deepseek' || provider === 'anthropic') {
+    issues.push(
+      `rag.embedder.provider: "${provider}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+    );
+  } else if (provider !== undefined && !isBuiltInEmbedderProvider(provider)) {
+    issues.push(
+      `rag.embedder.provider: "${provider}" is not a built-in embedder (openai, sap-ai-core, sap-aicore, ollama) — ` +
+        'an embedder you registered in extraFactories is named with rag.embedder.factory',
     );
   }
-  // Require model when an embedder is used: vector stores always use an
-  // embedder; in-memory uses one only when embedder is explicitly set.
+  if (e && factory === undefined)
+    checkCredentialRef('rag.embedder', e.credentialRef, issues);
   const usesEmbedder =
     ragType === 'qdrant' ||
     ragType === 'hana-vector' ||
     ragType === 'pg-vector' ||
-    (ragType === 'in-memory' && embedder != null);
-  if (!skipRuntime && usesEmbedder && !store.model) {
+    (ragType === 'in-memory' && e !== undefined);
+  // Every built-in constructor requires a model; a factory decides for itself.
+  if (!skipRuntime && usesEmbedder && factory === undefined && !e?.model) {
     issues.push(
-      `${label}.model: required when an embedder is used (e.g. bge-m3 for ollama)`,
+      'rag.embedder.model: required when an embedder is used (e.g. bge-m3 for ollama)',
     );
   }
 }
@@ -189,6 +251,88 @@ export function assertNoLegacyPipelineConfig(yaml: YamlConfig): void {
         'Migrate to: pipeline: { name: <flat|linear|dag|stepper>, config: { ... } }. ' +
         "(Stepper's knowledgeSeed moves under pipeline.config.knowledgeSeed.) " +
         'Pin a version <= 18 for the old behavior.',
+    );
+  }
+}
+
+/** Keys of the flat `rag:` shape this major removed (the `embedder: <name>` string
+ *  form is caught separately — `embedder` is also the new section's name). */
+const LEGACY_FLAT_RAG_KEYS = [
+  'type',
+  'url',
+  'model',
+  'collectionName',
+  'dedupThreshold',
+  'vectorWeight',
+  'keywordWeight',
+  'connectionString',
+  'host',
+  'port',
+  'database',
+  'schema',
+  'dimension',
+  'autoCreateSchema',
+  'poolMax',
+  'connectTimeout',
+  'maxBatchSize',
+  'resourceGroup',
+  'scenario',
+  'timeoutMs',
+  'apiKey',
+  'user',
+  'password',
+] as const;
+
+const SECRET_FIELDS = ['apiKey', 'user', 'password'] as const;
+
+/**
+ * Fail-loud migration guard for the store/embedder split (spec §4.6.4). A flat key
+ * silently dropped would leave a store the operator believes configured, and a
+ * secret silently dropped would leave one they believe authenticated.
+ */
+export function assertNoLegacyRagShape(yaml: YamlConfig): void {
+  const rag = (yaml as { rag?: unknown }).rag;
+  if (rag === null || typeof rag !== 'object' || Array.isArray(rag)) return;
+  const r = rag as Record<string, unknown>;
+  const flat: string[] = LEGACY_FLAT_RAG_KEYS.filter((k) => r[k] !== undefined);
+  if (typeof r.embedder === 'string') flat.push('embedder: <name>');
+  if (flat.length > 0) {
+    throw new Error(
+      `The flat 'rag:' section is no longer supported (found: ${flat.join(', ')}). ` +
+        'It described two independently authenticated targets as one, so it splits: ' +
+        'rag.store holds type, url, collectionName, connectionString/host/port/database/schema ' +
+        'and the pool/schema settings — plus dedupThreshold, vectorWeight and keywordWeight, ' +
+        'for type in-memory only; rag.embedder holds provider (a built-in: openai, sap-ai-core, ' +
+        'ollama — was rag.embedder) or factory (a consumer-registered embedder), model, url, ' +
+        'resourceGroup, scenario and maxBatchSize. apiKey, user and password do not move: remove ' +
+        'them and name the account with rag.store.credentialRef or rag.embedder.credentialRef.',
+    );
+  }
+  for (const section of ['store', 'embedder'] as const) {
+    const s = r[section];
+    if (s === null || typeof s !== 'object' || Array.isArray(s)) continue;
+    const secrets = SECRET_FIELDS.filter(
+      (k) => (s as Record<string, unknown>)[k] !== undefined,
+    );
+    if (secrets.length > 0) {
+      throw new Error(
+        `${secrets.map((k) => `rag.${section}.${k}`).join(', ')}: secrets are no longer read ` +
+          `from configuration — remove ${secrets.length > 1 ? 'them' : 'it'} and name the ` +
+          `account with rag.${section}.credentialRef (your composition root resolves the name).`,
+      );
+    }
+  }
+  const embedder = r.embedder;
+  if (
+    embedder !== null &&
+    typeof embedder === 'object' &&
+    (embedder as Record<string, unknown>).apiBaseUrl !== undefined
+  ) {
+    throw new Error(
+      "rag.embedder.apiBaseUrl: SAP AI Core's address comes from the credential entry — the same " +
+        'service key (<REF>_SERVICE_KEY in the shipped server) that holds the credential — and is ' +
+        'never also written in YAML. Remove it; name the account with rag.embedder.credentialRef ' +
+        'if it is not the default one.',
     );
   }
 }
@@ -271,13 +415,15 @@ export function validateResolvedConfig(
     });
   }
 
-  if (get(yaml, 'rag')) {
-    checkRagStore(
-      'rag',
-      get(yaml, 'rag') as Record<string, unknown>,
-      issues,
-      skip,
-    );
+  const rawRag = get(yaml, 'rag');
+  if (rawRag !== undefined && rawRag !== null) {
+    if (typeof rawRag !== 'object' || Array.isArray(rawRag)) {
+      issues.push(
+        'rag: must be a mapping with store: and, optionally, embedder:',
+      );
+    } else {
+      checkRag(rawRag as Record<string, unknown>, issues, skip);
+    }
   }
   // NOTE: the legacy `pipeline.rag.{name}` multistore was removed with the
   // `pipeline: {name,config}` migration; the top-level `rag:` block is the sole

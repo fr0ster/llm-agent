@@ -31,6 +31,8 @@ export interface BuilderEmbedderInput {
   model?: string;
   scenario?: string;
   resourceGroup?: string;
+  /** Names the embedder's account; omit for the root's default. */
+  credentialRef?: string;
 }
 type Role = 'evaluator' | 'planner' | 'executor';
 
@@ -151,15 +153,20 @@ export class ControllerSkillPipelineBuilder {
         },
       },
       rag: {
-        type: 'in-memory',
-        embedder: this._embedder.provider,
-        ...(this._embedder.model ? { model: this._embedder.model } : {}),
-        ...(this._embedder.scenario
-          ? { scenario: this._embedder.scenario }
-          : {}),
-        ...(this._embedder.resourceGroup
-          ? { resourceGroup: this._embedder.resourceGroup }
-          : {}),
+        store: { type: 'in-memory' },
+        embedder: {
+          provider: this._embedder.provider,
+          ...(this._embedder.model ? { model: this._embedder.model } : {}),
+          ...(this._embedder.scenario
+            ? { scenario: this._embedder.scenario }
+            : {}),
+          ...(this._embedder.resourceGroup
+            ? { resourceGroup: this._embedder.resourceGroup }
+            : {}),
+          ...(this._embedder.credentialRef
+            ? { credentialRef: this._embedder.credentialRef }
+            : {}),
+        },
       },
       ...(this._mcp.length ? { mcp: this._mcp } : {}),
       skillPlugins: {

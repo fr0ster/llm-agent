@@ -51,10 +51,10 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
     (cfg as any).skillPlugins.sources[0].strategyConfig.collection,
     'sap',
   );
-  assert.equal((cfg as any).rag.embedder, 'sap-ai-core');
+  assert.equal((cfg as any).rag.embedder.provider, 'sap-ai-core');
 });
 
-test('embedder scenario/resourceGroup land on rag; skillPlugins.embedder is omitted (reuse the rag embedder)', () => {
+test('embedder scenario/resourceGroup land on rag.embedder; skillPlugins.embedder is omitted (reuse the rag embedder)', () => {
   const cfg = new ControllerSkillPipelineBuilder()
     .withLlm({ provider: 'sap-ai-sdk', model: 'm' })
     .withSkillSource({ github: 'a/b', enabled: ['x'], collection: 'sap' })
@@ -66,8 +66,8 @@ test('embedder scenario/resourceGroup land on rag; skillPlugins.embedder is omit
     })
     .toConfig();
   // Full embedder config (incl. scenario/resourceGroup) lives on rag…
-  assert.equal((cfg as any).rag.scenario, 'foundation-models');
-  assert.equal((cfg as any).rag.resourceGroup, 'default');
+  assert.equal((cfg as any).rag.embedder.scenario, 'foundation-models');
+  assert.equal((cfg as any).rag.embedder.resourceGroup, 'default');
   // …and skillPlugins carries NO embedder, so SmartServer reuses the resolved
   // agent-RAG embedder (which has scenario/resourceGroup) — review P1: setting it
   // would build a separate skill-host embedder from provider/model only.
@@ -117,9 +117,7 @@ test('build() throws when no embedder was set (skills need one)', () => {
   );
 });
 
-test('build(deps): normalized skill config reaches buildSkillHost (P1a), injected embedder covers all paths (P1b), no I/O', {
-  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
-}, async () => {
+test('build(deps): normalized skill config reaches buildSkillHost (P1a), injected embedder covers all paths (P1b), no I/O', async () => {
   const cannedLlm = {
     chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
     model: 'stub',
@@ -158,9 +156,7 @@ test('build(deps): normalized skill config reaches buildSkillHost (P1a), injecte
   await close();
 });
 
-test('build(deps) with a prebuilt skillHost still routes through load/validate (P2)', {
-  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
-}, async () => {
+test('build(deps) with a prebuilt skillHost still routes through load/validate (P2)', async () => {
   const cannedLlm = {
     chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
     model: 'stub',
@@ -196,9 +192,7 @@ test('build(deps) with a prebuilt skillHost still routes through load/validate (
   await close();
 });
 
-test('build(): .withMcpClients forwards clients into deps (no connect runs)', {
-  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
-}, async () => {
+test('build(): .withMcpClients forwards clients into deps (no connect runs)', async () => {
   const cannedLlm = {
     chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
     model: 'stub',
@@ -239,9 +233,7 @@ test('build(): .withMcpClients forwards clients into deps (no connect runs)', {
   await close();
 });
 
-test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provider-runtime checks skipped)', {
-  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
-}, async () => {
+test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provider-runtime checks skipped)', async () => {
   const prev = process.env.AICORE_SERVICE_KEY;
   delete process.env.AICORE_SERVICE_KEY;
   try {
@@ -280,9 +272,7 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
   }
 });
 
-test('build(deps) with a keyed provider reads no key from the environment', {
-  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
-}, async () => {
+test('build(deps) with a keyed provider reads no key from the environment', async () => {
   const prevOpenai = process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_API_KEY;
   try {

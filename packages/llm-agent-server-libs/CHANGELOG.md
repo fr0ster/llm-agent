@@ -24,6 +24,24 @@ main/classifier/helper now reaches `makeLlm` exactly as written — without a
 `temperature` of its own it no longer inherits main's, a fallback only the
 removed default applied (an injected `makeLlm` never received it).
 
+**BREAKING:** `SmartServerRagConfig` is now `{ store, embedder? }`. The store
+is discriminated by `type`, and the store and the embedder each carry
+`credentialRef`. The embedder section, `SmartServerEmbedderConfig`, names a
+built-in with `provider` (`openai`, `sap-ai-core`/`sap-aicore`, `ollama`, the
+default) or an embedder registered in `extraFactories` with `factory`, which
+carries no `credentialRef`. A custom name under `provider` is refused,
+pointing at `factory`. `apiBaseUrl` is not part of it and is refused in YAML:
+SAP AI Core's address comes from the credential entry (the same service key).
+`PipelineRagStoreConfig` is deleted, with the `rag` member of the legacy
+`PipelineConfig`; nothing read either. The search knobs live on the in-memory
+store. A flat `rag:` is refused with the new shape in the message. A secret
+inside either section is refused with that section's `credentialRef` named.
+`BuildAgentDeps.makeRag` is required, and `resolveEmbedder` receives the
+embedder section. An injected embedder is composed (`composeEmbedder`), never
+resolved. `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` take the
+embedder seam as a new parameter. `isInMemoryInput` narrows a `MakeRagInput`.
+YAML pg-vector and HANA address fields are now actually read.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

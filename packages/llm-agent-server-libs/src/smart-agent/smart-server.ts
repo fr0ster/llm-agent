@@ -77,14 +77,8 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
-import type {
-  EmbedderResolution,
-  EmbedderResolutionOptions,
-} from '@mcp-abap-adt/llm-agent-rag';
-import {
-  makeRag,
-  prefetchEmbedderFactories,
-} from '@mcp-abap-adt/llm-agent-rag';
+import type { EmbedderResolutionOptions } from '@mcp-abap-adt/llm-agent-rag';
+import { prefetchEmbedderFactories } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { ConfigReloadWatcher } from './config-reload-watcher.js';
 import { handleAdapterRequest } from './http/adapter-route-handler.js';
@@ -114,6 +108,14 @@ import {
   type IRoleLlmResolver,
   RoleLlmResolver,
 } from './llm/role-llm-resolver.js';
+import {
+  assertRagConfigShape,
+  embedderSectionFor,
+  type MakeRagInput,
+  type SmartServerEmbedderConfig,
+  type SmartServerRagConfig,
+  toMakeRagInput,
+} from './rag-config.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
 
@@ -147,46 +149,6 @@ export interface SmartServerLlmConfig {
    * waiting at the other end, which this library cannot see.
    */
   whenThrottled?: IThrottleStrategy;
-}
-
-export interface SmartServerRagConfig {
-  type?: 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector';
-  /**
-   * Embedder name — resolved from the embedder factory registry.
-   * Built-in: 'ollama', 'openai', 'sap-ai-core'. Consumers can register custom factories.
-   * When omitted, defaults to 'ollama' for stores that require one.
-   */
-  embedder?: string;
-  url?: string;
-  model?: string;
-  collectionName?: string;
-  dedupThreshold?: number;
-  vectorWeight?: number;
-  keywordWeight?: number;
-  connectionString?: string;
-  host?: string;
-  port?: number;
-  user?: string;
-  password?: string;
-  database?: string;
-  schema?: string;
-  dimension?: number;
-  autoCreateSchema?: boolean;
-  poolMax?: number;
-  connectTimeout?: number;
-  /**
-   * Cap on texts per embedBatch call. Precedence: this value → the provider's
-   * declared cap → the library default (100). Set it when the tenant's real
-   * limit is lower than the model's documented one.
-   */
-  maxBatchSize?: number;
-  /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
-  resourceGroup?: string;
-  /**
-   * SAP AI Core scenario for the embedding model deployment.
-   * `'orchestration'` (default) uses the SAP SDK; `'foundation-models'` calls the REST inference API.
-   */
-  scenario?: 'orchestration' | 'foundation-models';
 }
 
 export interface SmartServerMcpConfig {
@@ -363,10 +325,20 @@ export interface SmartServerConfig {
  */
 export interface BuildAgentDeps {
   makeLlm: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
+  /**
+   * Receives the serializable embedder section; the root resolves its credentialRef
+   * and turns the section into the library's `EmbedderResolution`.
+   */
   resolveEmbedder: (
-    cfg: EmbedderResolution,
+    cfg: SmartServerEmbedderConfig,
     options?: EmbedderResolutionOptions,
   ) => IEmbedder;
+  /**
+   * Builds a store from its serializable section and, where it needs one, the
+   * embedder `resolveEmbedder` built. Required (§4.6.4): the library constructs no
+   * authenticated store from configuration any more than an authenticated LLM.
+   */
+  makeRag: (input: MakeRagInput) => Promise<IRag>;
   prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
   buildSkillHost?: (
     cfg: SkillPluginsConfig,
@@ -735,7 +707,11 @@ export function buildMcpBridge(
  * this runs for callers with no types to check, so a plain-JS embedder of
  * SmartServer is told at construction instead of starting without an LLM.
  */
-const REQUIRED_CONSTRUCTION_SEAMS = ['makeLlm', 'resolveEmbedder'] as const;
+const REQUIRED_CONSTRUCTION_SEAMS = [
+  'makeLlm',
+  'resolveEmbedder',
+  'makeRag',
+] as const;
 
 function assertConstructionSeams(deps: BuildAgentDeps | undefined): void {
   const missing = REQUIRED_CONSTRUCTION_SEAMS.filter(
@@ -942,6 +918,7 @@ export class SmartServer {
       BuildAgentDeps,
       | 'makeLlm'
       | 'resolveEmbedder'
+      | 'makeRag'
       | 'prefetchEmbedderFactories'
       | 'buildSkillHost'
       | 'connectMcp'
@@ -955,6 +932,10 @@ export class SmartServer {
   constructor(config: SmartServerConfig, deps: BuildAgentDeps) {
     assertConstructionSeams(deps);
     this.cfg = config;
+    assertRagConfigShape(config.rag, 'rag');
+    for (const sub of config.subAgentConfigs ?? []) {
+      assertRagConfigShape(sub.config.rag, `subagent '${sub.name}' rag`);
+    }
     this._mcpSeamInjected =
       deps.mcpClients !== undefined ||
       deps.connectMcp !== undefined ||
@@ -979,6 +960,7 @@ export class SmartServer {
     this._deps = {
       makeLlm: deps.makeLlm,
       resolveEmbedder: deps.resolveEmbedder,
+      makeRag: deps.makeRag,
       prefetchEmbedderFactories:
         deps.prefetchEmbedderFactories ?? prefetchEmbedderFactories,
       buildSkillHost: deps.buildSkillHost ?? buildSkillHostFromConfig,
@@ -1206,6 +1188,7 @@ export class SmartServer {
     const resolvedEmbedder = await resolveAgentEmbedder(
       this.cfg.rag,
       this._deps.embedder ?? this.cfg.embedder,
+      this._deps.resolveEmbedder,
       mergedEmbedderFactories,
       this._fileLogger,
     );
@@ -1229,9 +1212,10 @@ export class SmartServer {
       // Prefetch the named embedder factory only when we will actually build a
       // dedicated one (the agent embedder is already prefetched + wrapped).
       if (!reuseAgentEmbedder) {
-        await this._deps.prefetchEmbedderFactories([
-          skillCfg.embedder?.provider ?? 'ollama',
-        ]);
+        const section = embedderSectionFor(skillCfg.embedder?.provider);
+        if (section.factory === undefined) {
+          await this._deps.prefetchEmbedderFactories([section.provider]);
+        }
       }
       // Build → load → validate as one fail-fast unit. If ANY step throws, the
       // captured pg pools are ended INSIDE initSkillHost (the later closeFns
@@ -1244,9 +1228,10 @@ export class SmartServer {
               resolveEmbedder: (ec) =>
                 reuseAgentEmbedder
                   ? ((injectedEmbedder ?? resolvedEmbedder) as IEmbedder)
-                  : this._deps.resolveEmbedder(ec, {
-                      extraFactories: mergedEmbedderFactories,
-                    }),
+                  : this._deps.resolveEmbedder(
+                      embedderSectionFor(ec.embedder, ec.model),
+                      { extraFactories: mergedEmbedderFactories },
+                    ),
               // Real pg `Pool` provider for a `postgres` catalog (qdrant
               // deployment). Lazily imports `pg` and ensures the catalog table
               // exists on first use; pass the configured table so the DDL targets
@@ -1290,12 +1275,12 @@ export class SmartServer {
       meta: { displayName: string; scope: 'global' };
     }> = [];
     if (this.cfg.rag) {
-      const ragOptions = {
-        injectedEmbedder: resolvedEmbedder,
-        extraFactories: mergedEmbedderFactories,
-      };
-      toolsRag = await makeRag(this.cfg.rag, ragOptions);
-      historyRag = await makeRag({ ...this.cfg.rag }, ragOptions);
+      // The embedder was resolved through the seam above; the store is built
+      // through its own. Two calls, two stores — the history store never shared
+      // the tools store's instance.
+      const input = toMakeRagInput(this.cfg.rag.store, resolvedEmbedder, 'rag');
+      toolsRag = await this._deps.makeRag(input);
+      historyRag = await this._deps.makeRag(input);
     }
     // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
     // (and white-box vectorization assertions). See field doc.
@@ -1879,9 +1864,8 @@ export class SmartServer {
     // instances.
     // Note: a per-worker embedder slot is carried in WorkerLlmSet and the
     // injected record for forward-compat with Task A8/A10 per-session wiring.
-    // Today's buildSubAgent does not separately resolve an embedder here —
-    // embedders are carried by the worker's own store via makeRag's
-    // `injectedEmbedder` — so we ignore the embedder field below.
+    // The worker's embedder is resolved through `BuildAgentDeps.resolveEmbedder`
+    // inside the factories below (`_workerRagInput`), not separately here.
     // Resolve (build-once or load from cache) the worker's own LLMs +
     // toolsRag/historyRag/mcpClients. The cache is keyed by worker name; the
     // primary build() populates it (no `injected` arg), and per-session
@@ -1913,20 +1897,25 @@ export class SmartServer {
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
       // re-wired per-session by reference — never re-vectorized.
       makeToolsRag: subCfg.rag
-        ? () =>
-            makeRag(subCfg.rag as SmartServerRagConfig, {
-              injectedEmbedder: subCfg.embedder,
-              extraFactories: embedderFactories,
-            })
+        ? async () =>
+            this._deps.makeRag(
+              await this._workerRagInput(
+                name,
+                subCfg.rag as SmartServerRagConfig,
+                subCfg.embedder,
+                embedderFactories,
+              ),
+            )
         : undefined,
       makeHistoryRag: subCfg.rag
-        ? () =>
-            makeRag(
-              { ...(subCfg.rag as SmartServerRagConfig) },
-              {
-                injectedEmbedder: subCfg.embedder,
-                extraFactories: embedderFactories,
-              },
+        ? async () =>
+            this._deps.makeRag(
+              await this._workerRagInput(
+                name,
+                subCfg.rag as SmartServerRagConfig,
+                subCfg.embedder,
+                embedderFactories,
+              ),
             )
         : undefined,
       // Worker-OWN MCP clients. DI list (subCfg.mcpClients) wins; otherwise
@@ -2020,6 +2009,23 @@ export class SmartServer {
    *  the real builder. */
   private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
     return this._deps.makeLlm(lc);
+  }
+
+  /** A worker's own store input: its embedder through the seam, then paired. */
+  private async _workerRagInput(
+    name: string,
+    rag: SmartServerRagConfig,
+    diEmbedder: IEmbedder | undefined,
+    extraFactories: Record<string, EmbedderFactory>,
+  ): Promise<MakeRagInput> {
+    const embedder = await resolveAgentEmbedder(
+      rag,
+      diEmbedder,
+      this._deps.resolveEmbedder,
+      extraFactories,
+      this._fileLogger,
+    );
+    return toMakeRagInput(rag.store, embedder, `subagent '${name}' rag`);
   }
 
   /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.

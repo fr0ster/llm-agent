@@ -158,9 +158,7 @@ async function startStubOrSkip(
 
 // ---------------------------------------------------------------------------
 
-test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects exactly once', {
-  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
-}, async (t) => {
+test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects exactly once', async (t) => {
   const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
   if (!stub) return;
   const server = new SmartServer(
@@ -171,7 +169,7 @@ test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects
       mode: 'smart',
       // In-memory store needs no embedder — it hashes text internally. The
       // builder seeds `tool:<name>` docs via `toolsRag.writer().upsertRaw`.
-      rag: { type: 'in-memory' },
+      rag: { store: { type: 'in-memory' } },
       // YAML-only MCP: no `mcpClients` DI ⇒ the startup builder owns the
       // connection ⇒ it vectorizes.
       mcp: { type: 'http', url: stub.url },
@@ -214,9 +212,7 @@ test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects
   }
 });
 
-test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no connect)', {
-  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
-}, async (t) => {
+test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no connect)', async (t) => {
   // DI precedence: an explicitly-provided client set — even an EMPTY array — must
   // override the YAML `mcp:` block. `mcpClients: []` is a deliberate "disable MCP"
   // signal; the startup builder must receive withMcpClients([]) (short-circuit) and
@@ -230,7 +226,7 @@ test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no con
       llm: { model: 'test-model' },
       skipModelValidation: true,
       mode: 'smart',
-      rag: { type: 'in-memory' },
+      rag: { store: { type: 'in-memory' } },
       // Explicit empty DI set ⇒ MCP disabled, even though a YAML mcp: is present.
       mcpClients: [],
       mcp: { type: 'http', url: stub.url },

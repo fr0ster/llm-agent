@@ -94,17 +94,17 @@ function extractModelsFromYaml(yamlPath: string): YamlModelEntry[] {
       // biome-ignore lint/suspicious/noExplicitAny: yaml
       any,
     ][]) {
-      if (cfg?.model) {
+      if (cfg?.embedder?.model) {
         entries.push({
           role: `embedder:${store}`,
-          model: resolveEnv(String(cfg.model)),
+          model: resolveEnv(String(cfg.embedder.model)),
         });
       }
     }
-  } else if (yaml.rag?.model) {
+  } else if (yaml.rag?.embedder?.model) {
     entries.push({
       role: 'embedder',
-      model: resolveEnv(String(yaml.rag.model)),
+      model: resolveEnv(String(yaml.rag.embedder.model)),
     });
   }
 

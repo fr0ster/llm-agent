@@ -7,6 +7,11 @@ are removed. Construct the provider in your composition root and pass the result
 `ILlm` to `withMainLlm` / `agent.reconfigure`. `IModelResolver` is unchanged. The five
 `*-llm` packages are no longer optional peers of this package.
 
+The config watcher now reads `vectorWeight`/`keywordWeight` from `rag.store`,
+and only when `rag.store.type` is `in-memory` — the flat `rag:` section split
+into a store and an embedder, and the search knobs live on the store that
+reads them.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

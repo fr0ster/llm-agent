@@ -10,6 +10,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import type {
+  BuiltInEmbedderProvider,
+  SmartServerEmbedderConfig,
+  SmartServerRagStoreConfig,
+} from './rag-config.js';
+import type {
   SmartServerAgentConfig,
   SmartServerConfig,
   SmartServerLlmConfig,
@@ -178,46 +183,140 @@ function whenThrottledOption(
   return { whenThrottled: named(raw.strategy, options) };
 }
 
+const has = (v: unknown): boolean => v !== undefined && v !== null;
+
+/**
+ * Project `rag.store` per arm. A value substituted from `${VAR}` arrives as a string,
+ * so numbers are coerced here rather than handed on typed as what they are not. A
+ * missing or unknown `type` is passed through untouched for validateResolvedConfig
+ * to report beside every other issue.
+ */
+function resolveRagStore(
+  raw: unknown,
+  args: Record<string, unknown>,
+): SmartServerRagStoreConfig {
+  const s = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  const collectionName =
+    (args['rag-collection-name'] as string | undefined) ??
+    (has(s.collectionName) ? String(s.collectionName) : undefined);
+  const ref =
+    typeof s.credentialRef === 'string'
+      ? { credentialRef: s.credentialRef }
+      : {};
+  const address = {
+    ...(has(s.connectionString)
+      ? { connectionString: String(s.connectionString) }
+      : {}),
+    ...(has(s.host) ? { host: String(s.host) } : {}),
+    ...(has(s.port) ? { port: Number(s.port) } : {}),
+    ...(has(s.schema) ? { schema: String(s.schema) } : {}),
+    ...(has(s.poolMax) ? { poolMax: Number(s.poolMax) } : {}),
+    ...(has(s.connectTimeout)
+      ? { connectTimeout: Number(s.connectTimeout) }
+      : {}),
+    ...(has(s.dimension) ? { dimension: Number(s.dimension) } : {}),
+    ...(has(s.autoCreateSchema)
+      ? {
+          autoCreateSchema:
+            s.autoCreateSchema === true || s.autoCreateSchema === 'true',
+        }
+      : {}),
+  };
+  switch (s.type) {
+    case 'in-memory':
+      return {
+        type: 'in-memory',
+        ...(collectionName !== undefined ? { collectionName } : {}),
+        dedupThreshold: Number(s.dedupThreshold ?? 0.92),
+        vectorWeight: Number(s.vectorWeight ?? 0.7),
+        keywordWeight: Number(s.keywordWeight ?? 0.3),
+        ...ref,
+      };
+    case 'qdrant':
+      return {
+        type: 'qdrant',
+        url: String(s.url ?? ''),
+        // main's makeRag defaulted this; the typed arm requires it, so the default
+        // lives at the boundary that fills the arm
+        collectionName: collectionName ?? 'llm-agent',
+        ...(has(s.timeoutMs) ? { timeoutMs: Number(s.timeoutMs) } : {}),
+        ...ref,
+      };
+    case 'pg-vector':
+      return {
+        type: 'pg-vector',
+        collectionName: collectionName ?? '',
+        ...address,
+        ...(has(s.database) ? { database: String(s.database) } : {}),
+        ...ref,
+      };
+    case 'hana-vector':
+      return {
+        type: 'hana-vector',
+        collectionName: collectionName ?? '',
+        ...address,
+        ...ref,
+      };
+    default:
+      return s as unknown as SmartServerRagStoreConfig;
+  }
+}
+
+function resolveRagEmbedder(
+  raw: Record<string, unknown>,
+): SmartServerEmbedderConfig {
+  const common = {
+    ...(has(raw.model) ? { model: String(raw.model) } : {}),
+    ...(has(raw.url) ? { url: String(raw.url) } : {}),
+    // Left absent when unset so the provider's declared cap wins; see
+    // composeResilientEmbedder's precedence (YAML → provider → default).
+    ...positiveIntOption(raw.maxBatchSize, 'rag.embedder.maxBatchSize'),
+  };
+  if (has(raw.factory)) {
+    // credentialRef/resourceGroup/scenario beside a factory are refused by checkRag.
+    return { factory: String(raw.factory), ...common };
+  }
+  return {
+    // No provider means ollama, the default this section always had. An unknown
+    // name is refused by checkRag in the same resolveSmartServerConfig call, before
+    // anything reads the value — as `resolveRagStore`'s pass-through default is.
+    provider: (has(raw.provider)
+      ? String(raw.provider)
+      : 'ollama') as BuiltInEmbedderProvider,
+    ...common,
+    ...(has(raw.resourceGroup)
+      ? { resourceGroup: String(raw.resourceGroup) }
+      : {}),
+    ...(has(raw.scenario)
+      ? {
+          scenario: String(raw.scenario) as
+            | 'orchestration'
+            | 'foundation-models',
+        }
+      : {}),
+    ...(typeof raw.credentialRef === 'string'
+      ? { credentialRef: raw.credentialRef }
+      : {}),
+  };
+}
+
 export function resolveRagSection(
   yaml: YamlConfig,
   args: Record<string, unknown>,
 ): SmartServerConfig['rag'] {
-  return get(yaml, 'rag')
-    ? {
-        type: get(yaml, 'rag', 'type') as
-          | 'in-memory'
-          | 'qdrant'
-          | 'hana-vector'
-          | 'pg-vector'
-          | undefined,
-        embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
-        url: get(yaml, 'rag', 'url') as string | undefined,
-        model: get(yaml, 'rag', 'model') as string | undefined,
-        collectionName:
-          (args['rag-collection-name'] as string) ??
-          get(yaml, 'rag', 'collectionName') ??
-          undefined,
-        dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
-        vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
-        keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
-        // Left absent when unset so the provider's declared cap wins; see
-        // composeResilientEmbedder's precedence (YAML → provider → default).
-        ...positiveIntOption(
-          get(yaml, 'rag', 'maxBatchSize'),
-          'rag.maxBatchSize',
-        ),
-        ...(get(yaml, 'rag', 'resourceGroup') !== undefined
-          ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
-          : {}),
-        ...(get(yaml, 'rag', 'scenario') !== undefined
-          ? {
-              scenario: String(get(yaml, 'rag', 'scenario')) as
-                | 'orchestration'
-                | 'foundation-models',
-            }
-          : {}),
-      }
-    : undefined;
+  if (!get(yaml, 'rag')) return undefined;
+  const embedder = get(yaml, 'rag', 'embedder');
+  return {
+    store: resolveRagStore(get(yaml, 'rag', 'store'), args),
+    ...(embedder !== null &&
+    typeof embedder === 'object' &&
+    !Array.isArray(embedder)
+      ? { embedder: resolveRagEmbedder(embedder as Record<string, unknown>) }
+      : {}),
+  };
 }
 
 /** Namespace-prefix label charset — mirrors IToolNamespace's exposed-name

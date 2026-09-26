@@ -27,6 +27,7 @@
     "packages/openai-embedder/src/__tests__/credential.test.ts",
     "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts",
     "packages/llm-agent-rag/src/__typechecks__/embedder-resolution.ts",
-    "packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts"
+    "packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts",
+    "packages/llm-agent-server-libs/src/__typechecks__/construction-seams.ts"
   ]
 }

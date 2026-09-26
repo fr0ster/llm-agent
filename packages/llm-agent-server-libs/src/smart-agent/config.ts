@@ -5,6 +5,7 @@
 import path from 'node:path';
 import {
   assertNoLegacyPipelineConfig,
+  assertNoLegacyRagShape,
   validateResolvedConfig,
 } from './config-validator.js';
 import {
@@ -38,6 +39,7 @@ export {
 } from '../pipelines/coordinator-resolvers.js';
 export {
   assertNoLegacyPipelineConfig,
+  assertNoLegacyRagShape,
   ConfigValidationError,
 } from './config-validator.js';
 export type { LlmConfigMap, NormalizedLlmMap } from './llm-config-map.js';
@@ -198,6 +200,7 @@ export function resolveSmartServerConfig(
   // legacy `coordinator:`/`pipeline:` config gets the actionable migration error
   // rather than the generic "pipeline requires a name" diagnostic.
   assertNoLegacyPipelineConfig(yaml);
+  assertNoLegacyRagShape(yaml);
 
   const resolved: Omit<SmartServerConfig, 'log'> = {
     port: Number(

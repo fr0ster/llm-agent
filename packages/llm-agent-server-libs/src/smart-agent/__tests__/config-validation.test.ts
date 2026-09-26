@@ -53,7 +53,7 @@ describe('resolveSmartServerConfig — no silent env/default fallbacks', () => {
       (cfg.llm as { credentialRef?: string }).credentialRef,
       'OPENAI',
     ); // not an env value
-    assert.equal(cfg.rag?.url, undefined); // not the env value
+    assert.equal(cfg.rag, undefined); // no rag block in YAML
     assert.equal(cfg.mcp?.url, undefined); // no mcp block in YAML → env ignored
   });
 });
@@ -145,108 +145,138 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
-  it('rag block requires rag.type', () => {
+  it('rag block requires rag.store', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          { llm: { provider: 'ollama', model: 'm' }, rag: { url: 'http://x' } },
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { store: { url: 'http://x' } },
+          },
           {},
         ),
-      /rag\.type.*required/i,
+      /rag\.store\.type.*required/i,
     );
-  });
-
-  it('rag.type ollama is rejected with a migration hint', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'ollama' } },
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { embedder: { provider: 'ollama', model: 'm' } },
+          },
           {},
         ),
-      /rag\.type.*embedder, not a store/i,
+      /rag\.store: required/,
     );
   });
 
-  it('rag.type qdrant requires url', () => {
+  it('rag.store.type ollama is rejected with a migration hint', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'qdrant' } },
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { store: { type: 'ollama' } },
+          },
           {},
         ),
-      /rag\.url.*required.*qdrant/i,
+      /rag\.store\.type.*embedder, not a store/i,
     );
   });
 
-  it('rag.type in-memory needs nothing', () => {
+  it('rag.store.type qdrant requires url', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { store: { type: 'qdrant' } },
+          },
+          {},
+        ),
+      /rag\.store\.url.*required.*qdrant/i,
+    );
+  });
+
+  it('rag.store.type in-memory needs nothing', () => {
     const cfg = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'in-memory' } },
+      {
+        llm: { provider: 'ollama', model: 'm' },
+        rag: { store: { type: 'in-memory' } },
+      },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
-  it('rag.embedder deepseek is rejected (no embedder)', () => {
+  it('rag.embedder.provider deepseek is rejected (no embedder)', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'in-memory', embedder: 'deepseek' },
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { provider: 'deepseek' },
+            },
           },
           {},
         ),
-      /rag\.embedder.*no embedder/i,
+      /rag\.embedder\.provider.*no embedder/i,
     );
   });
 
-  it('rag.type hana-vector requires collectionName', () => {
+  it('rag.store.type hana-vector requires collectionName', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'hana-vector' },
+            rag: { store: { type: 'hana-vector' } },
           },
           {},
         ),
-      /rag\.collectionName.*required.*hana-vector/i,
+      /rag\.store\.collectionName.*required.*(hana|pg)-vector/i,
     );
   });
 
-  it('rag.type pg-vector requires collectionName', () => {
+  it('rag.store.type pg-vector requires collectionName', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'pg-vector' },
+            rag: { store: { type: 'pg-vector' } },
           },
           {},
         ),
-      /rag\.collectionName.*required.*pg-vector/i,
+      /rag\.store\.collectionName.*required.*(hana|pg)-vector/i,
     );
   });
 
-  it('rag.embedder anthropic is rejected (no embedder)', () => {
+  it('rag.embedder.provider anthropic is rejected (no embedder)', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'in-memory', embedder: 'anthropic' },
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { provider: 'anthropic' },
+            },
           },
           {},
         ),
-      /rag\.embedder.*no embedder/i,
+      /rag\.embedder\.provider.*no embedder/i,
     );
   });
 
@@ -307,10 +337,13 @@ describe('config validation — fail loud, human-readable', () => {
   it('a present rag block is still resolved', () => {
     const cfg = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'in-memory' } },
+      {
+        llm: { provider: 'ollama', model: 'm' },
+        rag: { store: { type: 'in-memory' } },
+      },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
   it('rag block with embedder but no model is rejected', () => {
@@ -320,11 +353,14 @@ describe('config validation — fail loud, human-readable', () => {
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'in-memory', embedder: 'ollama' },
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { provider: 'ollama' },
+            },
           },
           {},
         ),
-      /rag\.model.*required/i,
+      /rag\.embedder\.model.*required/i,
     );
   });
 
@@ -333,11 +369,14 @@ describe('config validation — fail loud, human-readable', () => {
       {},
       {
         llm: { provider: 'ollama', model: 'm' },
-        rag: { type: 'in-memory', embedder: 'ollama', model: 'bge-m3' },
+        rag: {
+          store: { type: 'in-memory' },
+          embedder: { provider: 'ollama', model: 'bge-m3' },
+        },
       },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
   it('bare in-memory rag (no embedder, no model) still passes (BM25)', () => {
@@ -345,11 +384,11 @@ describe('config validation — fail loud, human-readable', () => {
       {},
       {
         llm: { provider: 'ollama', model: 'm' },
-        rag: { type: 'in-memory' },
+        rag: { store: { type: 'in-memory' } },
       },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
   it('qdrant rag without model is rejected', () => {
@@ -360,14 +399,16 @@ describe('config validation — fail loud, human-readable', () => {
           {
             llm: { provider: 'ollama', model: 'm' },
             rag: {
-              type: 'qdrant',
-              url: 'http://localhost:6333',
-              collectionName: 'test',
+              store: {
+                type: 'qdrant',
+                url: 'http://localhost:6333',
+                collectionName: 'test',
+              },
             },
           },
           {},
         ),
-      /rag\.model.*required/i,
+      /rag\.embedder\.model.*required/i,
     );
   });
 });
@@ -635,7 +676,10 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
           },
         },
       },
-      rag: { type: 'in-memory', embedder: 'sap-ai-core' },
+      rag: {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'sap-ai-core' },
+      },
     };
     assert.doesNotThrow(() =>
       resolveSmartServerConfig(
@@ -652,7 +696,10 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
   it('WITHOUT the flag, the same config throws (server path unchanged)', () => {
     const yaml = {
       llm: { main: { provider: 'sap-ai-sdk' } },
-      rag: { type: 'in-memory', embedder: 'sap-ai-core' },
+      rag: {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'sap-ai-core' },
+      },
     };
     assert.throws(() => resolveSmartServerConfig({}, yaml, {}, {}), /model/);
   });
@@ -660,7 +707,7 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
   it('still enforces STRUCTURAL validation', () => {
     const yaml = {
       llm: { main: { provider: 'bogus-provider' } },
-      rag: { type: 'in-memory' },
+      rag: { store: { type: 'in-memory' } },
     };
     assert.throws(
       () =>

@@ -253,26 +253,16 @@ const config: SmartServerConfig = {
 // ---------------------------------------------------------------------------
 
 {
+  // Only a built-in embedder has a peer package; a `factory` is the consumer's own,
+  // registered in extraFactories rather than imported. A vector store with no
+  // embedder section uses the ollama default, so its peer is needed too.
   const ragCfg = baseConfig.rag;
   const embedderNames = new Set<string>();
-  const pushEmbedderFor = (cfg: { type?: string; embedder?: string }): void => {
-    if (cfg.type && cfg.type !== 'in-memory') {
-      embedderNames.add(cfg.embedder ?? 'ollama');
-    } else if (cfg.embedder) {
-      // in-memory + explicit embedder upgrades to VectorRag — still needs the peer
-      embedderNames.add(cfg.embedder);
-    }
-  };
-  if (ragCfg) pushEmbedderFor(ragCfg);
-  // Pipeline mode: each `pipeline.rag.{name}` entry can declare its own embedder
-  const pipelineRag = (
-    baseConfig as { pipeline?: { rag?: Record<string, unknown> } }
-  ).pipeline?.rag;
-  if (pipelineRag) {
-    for (const cfg of Object.values(pipelineRag)) {
-      if (cfg && typeof cfg === 'object')
-        pushEmbedderFor(cfg as { type?: string; embedder?: string });
-    }
+  if (ragCfg?.embedder) {
+    if (ragCfg.embedder.factory === undefined)
+      embedderNames.add(ragCfg.embedder.provider);
+  } else if (ragCfg && ragCfg.store.type !== 'in-memory') {
+    embedderNames.add('ollama');
   }
   await prefetchEmbedderFactories([...embedderNames]);
 }
@@ -282,22 +272,14 @@ const config: SmartServerConfig = {
 // ---------------------------------------------------------------------------
 
 {
-  const ragCfg = baseConfig.rag;
-  const ragBackendNames = new Set<string>();
-  const peerBackend = (t: string | undefined): t is string =>
-    t === 'qdrant' || t === 'hana-vector' || t === 'pg-vector';
-  if (ragCfg && peerBackend(ragCfg.type)) ragBackendNames.add(ragCfg.type);
-  const pipelineRag = (
-    baseConfig as {
-      pipeline?: { rag?: Record<string, { type?: string }> };
-    }
-  ).pipeline?.rag;
-  if (pipelineRag) {
-    for (const cfg of Object.values(pipelineRag)) {
-      if (cfg?.type && peerBackend(cfg.type)) ragBackendNames.add(cfg.type);
-    }
-  }
-  await prefetchRagFactories([...ragBackendNames]);
+  const storeType = baseConfig.rag?.store.type;
+  const ragBackendNames =
+    storeType === 'qdrant' ||
+    storeType === 'hana-vector' ||
+    storeType === 'pg-vector'
+      ? [storeType]
+      : [];
+  await prefetchRagFactories(ragBackendNames);
 }
 
 // ---------------------------------------------------------------------------

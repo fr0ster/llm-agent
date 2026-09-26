@@ -21,16 +21,20 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: in-memory                     # in-memory | qdrant | hana-vector | pg-vector
-  embedder: ollama                    # Embedder to use: ollama | openai | sap-ai-core | <custom>
-  url: http://localhost:11434
-  model: bge-m3
-  # resourceGroup: default            # SAP AI Core resource group (sap-ai-core embedder)
-  # scenario: orchestration           # SAP AI Core scenario: orchestration (default) | foundation-models
-  # collectionName: llm-agent         # Collection/table name (qdrant | hana-vector | pg-vector)
-  dedupThreshold: 0.92
-  vectorWeight: 0.7                   # Semantic similarity weight (0..1)
-  keywordWeight: 0.3                  # Lexical matching weight (0..1)
+  store:                              # the vector store: its own address and account
+    type: in-memory                   # in-memory | qdrant | hana-vector | pg-vector
+    # collectionName: llm-agent       # qdrant (default llm-agent) | hana-vector | pg-vector (required)
+    # credentialRef: QDRANT           # the store's account, resolved by your composition root
+    dedupThreshold: 0.92              # in-memory only
+    vectorWeight: 0.7                 # in-memory only: semantic similarity weight (0..1)
+    keywordWeight: 0.3                # in-memory only: lexical matching weight (0..1)
+  embedder:                           # omit for a keyword-only in-memory store
+    provider: ollama                  # ollama | openai | sap-ai-core | <custom>
+    url: http://localhost:11434
+    model: bge-m3
+    # resourceGroup: default          # SAP AI Core resource group (sap-ai-core)
+    # scenario: orchestration         # SAP AI Core scenario: orchestration (default) | foundation-models
+    # credentialRef: AICORE           # the embedder's own account
 
 mcp:
   # type: none | http | stdio
