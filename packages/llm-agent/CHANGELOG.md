@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## [Unreleased]
+
+Deprecated: `McpClientFactory` as a consumer-facing seam — pass an `IMcpServer`
+(`HttpMcpServer`, `StdioMcpServer`, `mcpServerFromFactory`) to `withMcpServers`. The type
+stays as the default implementation's factory.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

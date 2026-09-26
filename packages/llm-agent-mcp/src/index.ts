@@ -15,6 +15,16 @@ export { DefaultMcpFailureClassifier } from './default-mcp-failure-classifier.js
 export { createDefaultMcpClient } from './factory.js';
 export { NoopMcpRequestHeadersStrategy } from './no-op-request-headers-strategy.js';
 export {
+  type HttpMcpAuth,
+  HttpMcpServer,
+  type HttpMcpServerConfig,
+} from './servers/http-mcp-server.js';
+export {
+  type StdioMcpAuth,
+  StdioMcpServer,
+  type StdioMcpServerConfig,
+} from './servers/stdio-mcp-server.js';
+export {
   LazyConnectionStrategy,
   type MakeConnectionStrategyOptions,
   makeConnectionStrategy,
