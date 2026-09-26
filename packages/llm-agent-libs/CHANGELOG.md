@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+`SessionGraphFactoryOptions` gains the optional async `ragRegistryFactory(identity)`;
+the registry it returns is the session's own — handed to `buildAgent` and closed by
+`dispose()` in place of the shared one. **BREAKING** for a consumer that *reads* the
+options: `SessionGraphFactoryOptions.ragRegistry` is now optional (`IRagRegistry |
+undefined`), and `build()` rejects when neither it nor `ragRegistryFactory` is given.
+
 **BREAKING:** the `ragStores` projection keys a global by its bare name and a
 user or session collection `user/<name>` / `session/<name>`, so a stage
 configuration that named an owned collection by its bare name now names the

@@ -90,8 +90,24 @@ export interface SessionGraphFactoryOptions {
   };
   /** GLOBAL vectorized tools-catalog RAG — injected by reference, never re-vectorized. */
   readonly toolsRag: IRag | undefined;
-  /** GLOBAL RAG provider/registry — shared; the per-call scope filter isolates. */
-  readonly ragRegistry: IRagRegistry;
+  /**
+   * One RAG registry shared by every session, when `ragRegistryFactory` is
+   * absent. Its collections are addressed by name, so every session sees
+   * every collection it holds — the per-call filter is the only isolation.
+   * Supply exactly one of this or `ragRegistryFactory`.
+   */
+  readonly ragRegistry?: IRagRegistry;
+  /**
+   * Builds the registry THIS session owns (§6.4): handed to `buildAgent`, and
+   * the one `dispose()` closes — the shared `ragRegistry` is then neither used
+   * nor closed. Receives the full identity, which a build callback cannot
+   * (`SessionAgentParts` has no userId), and is awaited, because hydration is
+   * asynchronous (describeCollections, openCollection). Called before any MCP
+   * server starts, so a rejection leaves nothing to stop.
+   */
+  readonly ragRegistryFactory?: (
+    identity: SessionGraphIdentity,
+  ) => Promise<IRagRegistry>;
   /**
    * Builds the per-session SmartAgent + FRESH per-session workers from `parts`.
    * Production wiring runs a `SmartAgentBuilder.build()` with the injected globals
@@ -163,6 +179,18 @@ export class SessionGraphFactory {
       : (opts as NormalisedSessionGraphFactoryOptions);
   }
 
+  private async resolveRagRegistry(
+    identity: SessionGraphIdentity,
+  ): Promise<IRagRegistry> {
+    if (this.opts.ragRegistryFactory) {
+      return this.opts.ragRegistryFactory(identity);
+    }
+    if (this.opts.ragRegistry) return this.opts.ragRegistry;
+    throw new Error(
+      'SessionGraphFactory needs one of ragRegistryFactory or ragRegistry',
+    );
+  }
+
   async build(identity: SessionGraphIdentity): Promise<SessionGraph> {
     if (
       !this.opts.mcpServerFactory &&
@@ -172,6 +200,9 @@ export class SessionGraphFactory {
       throw new Error(
         'SessionGraphFactory needs one of mcpServerFactory, mcpClientFactoryWithDescriptors or mcpClientFactory',
       );
+
+    // Before any MCP server starts: a factory that rejects leaves nothing to stop.
+    const ragRegistry = await this.resolveRagRegistry(identity);
 
     const logger = new SessionRequestLogger();
     const toolAvailability = new ToolAvailabilityRegistry();
@@ -225,7 +256,7 @@ export class SessionGraphFactory {
         mcpClientDescriptors,
         configuredSlotCount,
         toolsRag: this.opts.toolsRag,
-        ragRegistry: this.opts.ragRegistry,
+        ragRegistry,
         logger,
       });
 
@@ -235,11 +266,12 @@ export class SessionGraphFactory {
         pendingToolResults,
         logger,
         agent,
-        // Reuse the EXISTING registry teardown — closes scope:session collections
-        // for this sessionId; global/user collections survive (spec A.4). The
-        // Result<void, RagError> is INSPECTED here — a failed close is surfaced
-        // via the optional logger (or console.warn fallback), never silently
-        // dropped (review MEDIUM #2).
+        // Closes this session's collections in the registry it was built with
+        // — its own when `ragRegistryFactory` supplied one, the shared one
+        // otherwise; global and user collections survive. The Result<void,
+        // RagError> is INSPECTED here — a failed close is surfaced via the
+        // optional logger (or console.warn fallback), never silently dropped
+        // (review MEDIUM #2).
         dispose: async (sessionId) => {
           // Single sink for every best-effort teardown failure below: routes to
           // the configured logger, or console.warn when there is none. Each call
@@ -277,7 +309,7 @@ export class SessionGraphFactory {
           // cases route through the same two message strings — unchanged —
           // since the pre-existing teardown tests assert on them.
           try {
-            const res = await this.opts.ragRegistry.closeSession(sessionId);
+            const res = await ragRegistry.closeSession(sessionId);
             if (!res.ok) {
               const message = res.error?.message ?? String(res.error);
               warn(
