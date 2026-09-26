@@ -21,6 +21,7 @@
  * Startup lifecycle (`await host.load()` + ctx exposure) is owned by SmartServer.
  */
 
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   CallOptions,
   IEmbedder,
@@ -79,6 +80,14 @@ export interface BuildSkillHostDeps {
    * a stub returning a deterministic-vector embedder.
    */
   resolveEmbedder: (cfg: SkillHostEmbedderConfig) => IEmbedder;
+  /**
+   * The qdrant store's credential, resolved by the composition root from
+   * `store.credentialRef` (or its default store entry). The library holds no
+   * credential registry, so it cannot resolve a name itself: a deployment whose
+   * skill store needs one injects `BuildAgentDeps.buildSkillHost`, wrapping this
+   * function and passing the credential here.
+   */
+  storeCredential?: IApiKeyCredential;
   /**
    * OPTIONAL pg `Pool` provider for a `postgres` catalog. The repo keeps `pg`
    * out of its hard dependency set, so this MUST be injected when a deployment
@@ -237,6 +246,20 @@ export async function buildSkillHostFromConfig(
   cfg: SkillPluginsConfig,
   deps: BuildSkillHostDeps,
 ): Promise<ISkillPluginHost> {
+  if (
+    cfg.store.type === 'qdrant' &&
+    cfg.store.credentialRef !== undefined &&
+    deps.storeCredential === undefined
+  ) {
+    throw new Error(
+      `skillPlugins.store.credentialRef '${cfg.store.credentialRef}' names an account, but nothing resolved it: ` +
+        'inject BuildAgentDeps.buildSkillHost from your composition root and pass the resolved ' +
+        'credential as storeCredential — a named account is never sent anonymously.',
+    );
+  }
+  const qdrantAuth = deps.storeCredential
+    ? { credential: deps.storeCredential }
+    : {};
   const embedder = deps.resolveEmbedder({
     ...(cfg.embedder?.provider !== undefined
       ? { embedder: cfg.embedder.provider }
@@ -268,9 +291,7 @@ export async function buildSkillHostFromConfig(
       makeQdrantBackendProvider({
         reader: makeQdrantReader({
           url: cfg.store.url,
-          ...(cfg.store.apiKey !== undefined
-            ? { apiKey: cfg.store.apiKey }
-            : {}),
+          ...qdrantAuth,
           collection,
         }),
         catalogReader: makePgCatalogReader({
@@ -307,9 +328,7 @@ export async function buildSkillHostFromConfig(
       : makeQdrantStoreProvider({
           client: makeQdrantClient({
             url: cfg.store.url,
-            ...(cfg.store.apiKey !== undefined
-              ? { apiKey: cfg.store.apiKey }
-              : {}),
+            ...qdrantAuth,
             collection: cfg.store.collection ?? 'skills',
           }),
           collection: cfg.store.collection ?? 'skills',

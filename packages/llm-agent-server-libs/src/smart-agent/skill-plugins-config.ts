@@ -13,10 +13,11 @@
 
 import { resolveSkillSourceStrategy } from '@mcp-abap-adt/llm-agent-libs';
 
-/** Normalized store selection. A persistent (`qdrant`) store carries its URL/auth. */
+/** Normalized store selection. A persistent (`qdrant`) store carries its URL, and
+ *  names its account with `credentialRef` — a name the composition root resolves. */
 export type SkillPluginsStoreConfig =
   | { type: 'in-memory' }
-  | { type: 'qdrant'; url: string; apiKey?: string; collection?: string };
+  | { type: 'qdrant'; url: string; collection?: string; credentialRef?: string };
 
 /** Normalized catalog selection. A persistent store requires a `postgres` catalog. */
 export type SkillPluginsCatalogConfig =
@@ -131,12 +132,27 @@ function parseStore(raw: unknown): SkillPluginsStoreConfig {
     if (typeof raw.url !== 'string' || raw.url.length === 0) {
       fail('store.url is required for store.type qdrant');
     }
+    // A secret arriving from the file is refused, not ignored (§4.6.3): a key
+    // silently dropped would leave a store the operator believes authenticated.
+    if (raw.apiKey !== undefined) {
+      fail(
+        'store.apiKey: secrets are no longer read from configuration — remove it and name the account with store.credentialRef (your composition root resolves the name)',
+      );
+    }
+    if (
+      raw.credentialRef !== undefined &&
+      (typeof raw.credentialRef !== 'string' || raw.credentialRef.length === 0)
+    ) {
+      fail('store.credentialRef must be a non-empty string naming a credential');
+    }
     return {
       type: 'qdrant',
       url: raw.url,
-      ...(typeof raw.apiKey === 'string' ? { apiKey: raw.apiKey } : {}),
       ...(typeof raw.collection === 'string'
         ? { collection: raw.collection }
+        : {}),
+      ...(typeof raw.credentialRef === 'string'
+        ? { credentialRef: raw.credentialRef }
         : {}),
     };
   }

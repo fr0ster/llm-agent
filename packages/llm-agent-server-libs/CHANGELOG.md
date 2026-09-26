@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+**BREAKING:** the skill store's `apiKey` becomes `credentialRef`.
+`SkillPluginsStoreConfig`'s `qdrant` arm loses `apiKey` and gains
+`credentialRef?: string`; a leftover `apiKey` in config is refused, naming
+`credentialRef`. `BuildSkillHostDeps.storeCredential?: IApiKeyCredential`
+carries the resolved credential; `buildSkillHostFromConfig` stays the default
+`buildSkillHost` and refuses a named `credentialRef` that nothing resolved
+(never sent anonymously) rather than falling back to no auth.
+
 **BREAKING:** `SmartServerLlmConfig.apiKey` is removed, and `credentialRef`
 names the account instead. A YAML that still carries `apiKey` is refused with
 `credentialRef` in the message. `PipelineLlmProviderConfig` is deleted, with

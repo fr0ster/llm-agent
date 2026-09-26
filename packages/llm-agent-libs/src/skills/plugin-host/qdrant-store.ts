@@ -25,6 +25,7 @@
 // talk to Qdrant over global `fetch` and are LIVE-ONLY (no unit test; Phase C smoke).
 
 import { createHash, randomUUID } from 'node:crypto';
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   ActiveSnapshot,
   CallOptions,
@@ -388,7 +389,11 @@ export function makePgCatalogReader(deps: {
 
 interface QdrantRestOptions {
   url: string;
-  apiKey?: string;
+  /**
+   * Asked for on every request — never cached — so a rotating key rotates.
+   * Optional: an unauthenticated Qdrant works without one, as before.
+   */
+  credential?: IApiKeyCredential;
   collection: string;
 }
 
@@ -405,9 +410,11 @@ function toQdrantFilter(filter: Record<string, unknown>): object {
   return { must };
 }
 
-function qdrantHeaders(apiKey?: string): Record<string, string> {
+async function qdrantHeaders(
+  credential?: IApiKeyCredential,
+): Promise<Record<string, string>> {
   const h: Record<string, string> = { 'content-type': 'application/json' };
-  if (apiKey) h['api-key'] = apiKey;
+  if (credential) h['api-key'] = await credential.secret();
   return h;
 }
 
@@ -417,7 +424,7 @@ function makeQdrantReaderImpl(opts: QdrantRestOptions): IQdrantReader {
     async search(filter, vector, k, options) {
       const res = await fetch(`${base}/points/search`, {
         method: 'POST',
-        headers: qdrantHeaders(opts.apiKey),
+        headers: await qdrantHeaders(opts.credential),
         body: JSON.stringify({
           vector,
           limit: k,
@@ -435,7 +442,7 @@ function makeQdrantReaderImpl(opts: QdrantRestOptions): IQdrantReader {
     async scroll(filter, cursor) {
       const res = await fetch(`${base}/points/scroll`, {
         method: 'POST',
-        headers: qdrantHeaders(opts.apiKey),
+        headers: await qdrantHeaders(opts.credential),
         body: JSON.stringify({
           limit: 256,
           with_payload: true,
@@ -482,7 +489,7 @@ export function makeQdrantClient(opts: QdrantRestOptions): IQdrantClient {
       const q = upsertOpts?.wait ? '?wait=true' : '';
       const res = await fetch(`${base}/points${q}`, {
         method: 'PUT',
-        headers: qdrantHeaders(opts.apiKey),
+        headers: await qdrantHeaders(opts.credential),
         body: JSON.stringify({
           points: points.map((p) => ({
             id: p.id,
@@ -496,7 +503,7 @@ export function makeQdrantClient(opts: QdrantRestOptions): IQdrantClient {
     async deleteByFilter(filter) {
       const res = await fetch(`${base}/points/delete`, {
         method: 'POST',
-        headers: qdrantHeaders(opts.apiKey),
+        headers: await qdrantHeaders(opts.credential),
         body: JSON.stringify({
           filter: toQdrantFilter(filter as Record<string, unknown>),
         }),

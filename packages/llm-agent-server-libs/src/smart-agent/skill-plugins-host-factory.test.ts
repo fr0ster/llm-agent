@@ -6,6 +6,7 @@ import {
   type ISkillsStoreProvider,
   type SkillGroupInfo,
   SkillsIncompatibleError,
+  staticApiKey,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   GitHubTransportOptions,
@@ -221,6 +222,43 @@ function makeNoDdlPool(): IPgPool {
     },
   };
 }
+
+function namedRefCfg(): SkillPluginsConfig {
+  return parseSkillPluginsConfig({
+    mode: 'implicit',
+    store: {
+      type: 'qdrant',
+      url: 'http://qdrant:6333',
+      collection: 'skills',
+      credentialRef: 'SKILLS_QDRANT',
+    },
+    catalog: { type: 'postgres', connectionString: 'postgres://localhost/skills' },
+    embeddingSpaceId: 'sp-1',
+    dimension: 8,
+    recallTimeoutMs: 1000,
+    sources: [{ id: 'vendor', records: [{ id: 'v:x#0', group: 'abap' }] }],
+  });
+}
+
+test('a named store credentialRef that nothing resolved is refused, never sent anonymously', async () => {
+  await assert.rejects(
+    () =>
+      buildSkillHostFromConfig(namedRefCfg(), {
+        resolveEmbedder: () => makeStubEmbedder(),
+        makePgPool: () => makeNoDdlPool(),
+      }),
+    /credentialRef 'SKILLS_QDRANT'[\s\S]*buildSkillHost[\s\S]*storeCredential/,
+  );
+});
+
+test('with the credential supplied, the ingest host builds', async () => {
+  const host = await buildSkillHostFromConfig(namedRefCfg(), {
+    resolveEmbedder: () => makeStubEmbedder(),
+    makePgPool: () => makeNoDdlPool(),
+    storeCredential: staticApiKey('k'),
+  });
+  assert.equal(typeof host.load, 'function');
+});
 
 function recallOnlyCfg(): SkillPluginsConfig {
   return parseSkillPluginsConfig({

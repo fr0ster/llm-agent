@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+**BREAKING:** `makeQdrantReader`/`makeQdrantClient` take `credential?:
+IApiKeyCredential` instead of `apiKey?: string`. The credential is asked on
+every request, never cached, so a rotating key rotates — matching
+`qdrant-rag`'s `QdrantRag`.
+
 **BREAKING:** `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver`
 are removed. Construct the provider in your composition root and pass the resulting
 `ILlm` to `withMainLlm` / `agent.reconfigure`. `IModelResolver` is unchanged. The five
