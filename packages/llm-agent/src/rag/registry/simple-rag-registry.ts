@@ -7,6 +7,7 @@ import type {
   IRagRegistry,
   RagCollectionMeta,
   RagCollectionOwner,
+  RagCollectionRecord,
   RagCollectionScope,
   RagRegistryCreateCollectionParams,
 } from '../../interfaces/rag.js';
@@ -176,6 +177,47 @@ export class SimpleRagRegistry implements IRagRegistry {
         userId: meta?.userId,
         providerName: meta?.providerName,
         tags: meta?.tags,
+      },
+    });
+  }
+
+  /**
+   * Register a collection whose store EXISTS, from its catalog record (§6.3):
+   * under its logical name, with the store name the record gives. Creates
+   * nothing and asks no provider for anything. See IRagRegistry.adopt.
+   */
+  adopt(
+    record: RagCollectionRecord,
+    rag: IRag,
+    editor?: IRagEditor,
+    providerName?: string,
+  ): void {
+    // A record may come from a caller no compiler saw: the one owner rule,
+    // and the owner it returns, with only the key its scope selects.
+    const owner = validateRagOwner(record);
+    if (!owner.ok) throw owner.error;
+    const reserved = reservedGlobalNameError(owner.value.scope, record.name);
+    if (reserved) throw reserved;
+    const key = keyOf(owner.value.scope, record.name);
+    if (this.isTaken(key)) {
+      throw new DuplicateCollectionError(
+        record.name,
+        `already registered in scope '${owner.value.scope}'`,
+      );
+    }
+    this.insert(key, {
+      rag,
+      editor,
+      // NOT record.name: the provider knows the store by its own name, and a
+      // deletion addressed to the logical name would miss it.
+      storeName: record.storeName,
+      meta: {
+        name: record.name,
+        displayName: record.name,
+        editable: Boolean(editor) && !(editor instanceof ImmutableEditStrategy),
+        scope: owner.value.scope,
+        ...ragOwnerKeys(owner.value),
+        providerName,
       },
     });
   }

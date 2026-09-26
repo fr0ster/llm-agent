@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+`SimpleRagRegistry.adopt(record, rag, editor?, providerName?)` registers a
+store that exists under its logical name and keeps its store name, creating
+nothing; with `providerName` a later delete reaches that provider, without it
+the entry is a reference; it throws `InvalidOwnerError`,
+`ReservedCollectionNameError` or `DuplicateCollectionError`.
+
 **BREAKING:** both `createCollection` inputs take `RagCollectionOwner` — the
 scope with the key it selects — instead of `scope` beside optional
 `sessionId`/`userId`, so a `user` or `session` owner without its key is a
