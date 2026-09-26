@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+**BREAKING:** `BaseLLMProvider.validateConfig()` is removed. It refused a config with
+no `apiKey`; with no credential field left on the base it had become an empty body,
+kept only for the `openai-llm` and `anthropic-llm` constructors that still called it.
+A subclass that called `this.validateConfig()` deletes the call — each provider's
+required `credential` is now checked by its own type.
+
 **BREAKING:** `LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` are removed — a
 contract carries no secret. `staticApiKey(secret)` and `staticLogin(principal, secret)` are new and
 convert a call site in one line. A 429 gate's quota bucket now keys on the credential object's
@@ -17,7 +23,9 @@ name several scopes hold answers `RAG_AMBIGUOUS_COLLECTION`; no framework
 tool writes or deletes a global, and `rag_create_collection` accepts
 `session | user` only; the attributes of a tool-created collection come from
 the optional `attributesFor` callback, never from the model;
-`rag_delete_collection` answers `{ ok: false }` for `CatalogRecordDeleteError`.
+`rag_delete_collection` answers `{ ok: false }` for `CatalogRecordDeleteError`, and
+`{ ok: false, code: 'RAG_DELETE_UNSUPPORTED' }` for `DeleteUnsupportedError` (its provider is not
+registered or cannot delete, so its record was never touched) instead of `ok: true` with a warning.
 New exported types `RagCallerIdentity`, `RagCollectionToolOptions`.
 
 `SimpleRagRegistry.replaceRag(name, scope, rag)` swaps an entry's store

@@ -37,7 +37,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
   constructor(config: AnthropicConfig) {
     super(config);
-    this.validateConfig();
 
     if (!config.credential) {
       throw new Error("Anthropic provider requires a 'credential'");

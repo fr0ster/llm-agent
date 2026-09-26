@@ -12,6 +12,7 @@ import {
   AmbiguousCollectionError,
   CatalogRecordDeleteError,
   CollectionNotFoundError,
+  DeleteUnsupportedError,
 } from '../corrections/errors.js';
 import {
   buildCorrectionMetadata,
@@ -316,6 +317,13 @@ export function buildRagCollectionToolEntries(
         // intact and the registry has it again. A failed deletion to retry —
         // not a removal with a data problem.
         return { ok: false, error: res.error.message };
+      }
+      if (res.error instanceof DeleteUnsupportedError) {
+        // Nothing could reach the collection's store: its provider is not
+        // registered, or has no way to delete. Its catalog record was never
+        // touched, so the collection is not gone — it comes back on the next
+        // hydration. Reporting ok:true would claim a removal that did not happen.
+        return { ok: false, code: res.error.code, error: res.error.message };
       }
       // The record is gone and the collection unregistered: it is gone for the
       // caller, and the orphaned data is reported as what it is.

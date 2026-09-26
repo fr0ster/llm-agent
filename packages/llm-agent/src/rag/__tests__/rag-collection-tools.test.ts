@@ -439,3 +439,51 @@ describe('rag_delete_collection when the data cannot be deleted', () => {
     assert.equal(reg.get('s'), undefined);
   });
 });
+
+describe('rag_delete_collection when nothing could delete the data', () => {
+  it('answers ok:false with the code when the provider is not registered — its record was never touched', async () => {
+    const reg = new SimpleRagRegistry();
+    const providers = new SimpleRagProviderRegistry();
+    let deletes = 0;
+    providers.registerProvider({
+      name: 'stub',
+      kind: 'vector',
+      editable: true,
+      supportedScopes: ['session'],
+      createCollection: async () => ({
+        ok: true,
+        value: { rag: new InMemoryRag(), editor: {} as IRagEditor },
+      }),
+      deleteCollection: async () => {
+        deletes++;
+        return { ok: true, value: undefined };
+      },
+    });
+    reg.setProviderRegistry(providers);
+    const created = await reg.createCollection({
+      providerName: 'stub',
+      collectionName: 's',
+      scope: 'session',
+      sessionId: 'S',
+    });
+    assert.ok(created.ok);
+    // The provider disappears: nothing can reach the collection's record.
+    reg.setProviderRegistry(new SimpleRagProviderRegistry());
+    const del = buildRagCollectionToolEntries({
+      identity: ALICE,
+      registry: reg,
+    }).find((e) => e.toolDefinition.name === 'rag_delete_collection');
+    assert.ok(del);
+    const out = (await del.handler({ sessionId: 'S' }, { name: 's' })) as {
+      ok: boolean;
+      error?: string;
+      code?: string;
+      warning?: string;
+    };
+    assert.equal(out.ok, false);
+    assert.equal(out.code, 'RAG_DELETE_UNSUPPORTED');
+    assert.match(out.error ?? '', /provider 'stub' is not registered/);
+    assert.equal(out.warning, undefined);
+    assert.equal(deletes, 0);
+  });
+});

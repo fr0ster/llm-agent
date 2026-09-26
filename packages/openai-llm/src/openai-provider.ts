@@ -62,7 +62,6 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
   constructor(config: OpenAIConfig) {
     super(config);
-    this.validateConfig();
 
     if (this.requiresCredential() && !config.credential) {
       throw new Error("OpenAI provider requires a 'credential'");

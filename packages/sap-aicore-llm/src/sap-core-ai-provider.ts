@@ -179,9 +179,8 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
   constructor(config: SapCoreAIConfig) {
     super(config);
-    // Skip validateConfig() — `credential` and `apiBaseUrl` are required fields
-    // on SapCoreAIConfig, so an absent one is a compile error, not a runtime
-    // check. The credential itself is resolved per call (see buildDestination),
+    // `credential` and `apiBaseUrl` are required fields on SapCoreAIConfig, so
+    // an absent one is a compile error, not a runtime check. The credential itself is resolved per call (see buildDestination),
     // never here, so a rotating token keeps rotating.
     if (!config.model) {
       throw new Error("SAP AI Core provider requires a 'model'");

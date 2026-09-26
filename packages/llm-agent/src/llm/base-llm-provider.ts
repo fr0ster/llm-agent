@@ -68,27 +68,6 @@ export abstract class BaseLLMProvider<
     options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse>;
 
-  /**
-   * Validate configuration.
-   *
-   * A no-op here: `LLMProviderConfig` carries no credential field (each provider
-   * declares its own, typed for what that target speaks — a shared base could only
-   * type the union, see `@mcp-abap-adt/interfaces-auth`), so this base class has
-   * nothing generic left to check. A provider that needs a credential present
-   * enforces it at its own construction (a required field, or its own override).
-   */
-  /**
-   * Nothing to assert here any more, and the empty body is deliberate.
-   *
-   * It used to refuse a config with no `apiKey`. The base carries no credential
-   * field now, so the thing it guarded is enforced by each provider's own type —
-   * a required `credential` is a compile error when absent, which is a better
-   * guard than a throw. `anthropic-llm` and `openai-llm` still call it; the calls
-   * go, and this method with them, in the task that gives those two their
-   * credential.
-   */
-  protected validateConfig(): void {}
-
   // --- Rate limiting (issue #282) -----------------------------------------
   //
   // The policy is shared (see `rate-limit.ts`); a provider supplies only the
