@@ -23,7 +23,9 @@ not recognised at all, so the "insert_only" write behaves like a plain upsert
 and overwrites the existing point — on an older server, two concurrent
 creations of one collection are not reliably told apart.
 
-`QdrantRagProvider` keeps a catalog collection (`rag_collection_catalog`,
+`QdrantRagProvider` implements `describeCollections()` and `openCollection(record)`,
+so a fresh registry hydrates its collections from the catalog instead of
+re-creating them. It keeps a catalog collection (`rag_collection_catalog`,
 configurable as `catalogCollection`) the key must be able to create and write
 (the README lists what the key needs); `createCollection` creates the
 collection immediately, spending **one embedding call** to learn the vector

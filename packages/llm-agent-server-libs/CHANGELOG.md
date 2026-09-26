@@ -127,7 +127,8 @@ main/classifier/helper now reaches `makeLlm` exactly as written — without a
 `temperature` of its own it no longer inherits main's, a fallback only the
 removed default applied (an injected `makeLlm` never received it).
 
-**BREAKING:** `SmartServerRagConfig` is now `{ store, embedder? }`. The store
+**BREAKING:** `SmartServerRagConfig` is now `{ store, embedder? }` — `rag.store`
+and `rag.embedder` in YAML. The store
 is discriminated by `type`, and the store and the embedder each carry
 `credentialRef`. The embedder section, `SmartServerEmbedderConfig`, names a
 built-in with `provider` (`openai`, `sap-ai-core`/`sap-aicore`, `ollama`, the

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+**BREAKING:** `LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` are removed — a
+contract carries no secret. `staticApiKey(secret)` and `staticLogin(principal, secret)` are new and
+convert a call site in one line. A 429 gate's quota bucket now keys on the credential object's
+identity, so one account is one bucket however many providers share it. Migration: see
+docs/MIGRATION-v27.md item 1.
+
 **BREAKING:** `buildRagCollectionToolEntries` requires `identity: RagCallerIdentity`
 and resolves every collection inside that caller's address space (its own
 collections and the globals); `RagToolContext` no longer declares
@@ -28,8 +34,8 @@ the entry is a reference; it throws `InvalidOwnerError`,
 
 **BREAKING:** a collection that exists is no longer reattached by creating it
 again — the provider refuses it (`DuplicateCollectionError` / `OrphanStoreError`)
-and hydration (`describeCollections`, `openCollection`, `adopt`) is the way
-back after a restart; a creation during a running deletion of the same
+and hydration (`describeCollections` returning each `RagCollectionRecord`,
+`openCollection`, `adopt`) is the way back after a restart; a creation during a running deletion of the same
 (scope, name) is refused with `DuplicateCollectionError` instead of waiting
 for it; on `CatalogRecordDeleteError` the registry re-registers the entry, so
 the same delete or `closeSession` can be retried; `createCollection` forwards

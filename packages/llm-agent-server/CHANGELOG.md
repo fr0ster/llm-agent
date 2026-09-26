@@ -6,7 +6,9 @@
 reads them from the environment by reference: `<REF>_API_KEY`,
 `<REF>_SERVICE_KEY`, or `<REF>_USER` + `<REF>_PASSWORD`, with `LLM`,
 `RAG_STORE` and `RAG_EMBEDDER` as the refs a section without `credentialRef`
-uses (see the README's Credentials section). `AICORE_SERVICE_KEY` is no
+uses — so an `llm:` entry with no `credentialRef` now reads `LLM_API_KEY` (or
+`LLM_SERVICE_KEY` for `sap-ai-sdk`) (see the README's Credentials section).
+`AICORE_SERVICE_KEY` is no
 longer read — set `LLM_SERVICE_KEY` (or `credentialRef: AICORE`, which reads
 `AICORE_SERVICE_KEY`). An unknown named ref, a wrong kind, and a missing
 `apiBaseUrl` all fail at the first construction that needs them, naming the
