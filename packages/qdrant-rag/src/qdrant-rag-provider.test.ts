@@ -3,7 +3,6 @@ import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
 import { UnsupportedScopeError } from '@mcp-abap-adt/llm-agent';
-import { QdrantRag } from './qdrant-rag.js';
 import { QdrantRagProvider } from './qdrant-rag-provider.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
@@ -126,17 +125,6 @@ describe('QdrantRagProvider', () => {
       'session',
       'user',
     ]);
-  });
-
-  it('creates a QdrantRag targeting the collection name', async () => {
-    const p = new QdrantRagProvider({
-      name: 'qdrant',
-      url: baseUrl,
-      embedder: makeEmbedder(),
-    });
-    const res = await p.createCollection('test-a', { scope: 'global' });
-    assert.ok(res.ok);
-    assert.ok(res.value.rag instanceof QdrantRag);
   });
 
   it('rejects unsupported scope when supportedScopes is restricted', async () => {

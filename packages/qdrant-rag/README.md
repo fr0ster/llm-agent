@@ -7,6 +7,26 @@ QdrantRag vector store and QdrantRagProvider for @mcp-abap-adt/llm-agent.
 
 Provides vector search capabilities using Qdrant as the backend.
 
+## Catalog, rights, and the Qdrant version
+
+`QdrantRagProvider` keeps one record per collection in a catalog collection of its own
+(`rag_collection_catalog` by default, `catalogCollection` to rename it): one point per collection,
+the record in its payload. `createCollection` embeds one probe string to learn the vector size,
+creates the collection, and then writes its record; `deleteCollection` deletes the record first, then
+the collection; `describeCollections` reads the catalog back.
+
+- **Qdrant 1.17 or later is required** for a catalogued store: the record is written with
+  `update_mode: "insert_only"`, which exists from 1.17.
+- **The key must be able to manage collections**: create collections (the catalog on first use, one
+  per collection), write, read and delete points in the catalog, and delete collections. A
+  `read-only-api-key`, or a JWT restricted to named collections, is not enough.
+- A standalone `QdrantRag` (a store configured directly, not through the provider) keeps creating
+  its collection on the first write (`autoCreateCollection`, default `true`); the provider's handles
+  never create theirs.
+
+A collection created before this release has a collection and no record: take it over once with
+`createCollection(..., { adoptExisting: true })`.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

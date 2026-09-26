@@ -14,6 +14,26 @@ Migration: `new QdrantRag({ ..., apiKey })` becomes
 is exported from `@mcp-abap-adt/llm-agent`); same for
 `QdrantRagProviderConfig`.
 
+**BREAKING:** a catalogued `QdrantRagProvider` requires Qdrant 1.17 or later (the
+record is written with `update_mode: "insert_only"`). Verified against real
+servers: on v1.17.0 a repeated `PUT /collections/{name}` is `409` and a second
+`insert_only` write to an existing point id is silently ignored (payload
+unchanged); on v1.12.4 the repeated `PUT` is still `409`, but `update_mode` is
+not recognised at all, so the "insert_only" write behaves like a plain upsert
+and overwrites the existing point — on an older server, two concurrent
+creations of one collection are not reliably told apart.
+
+`QdrantRagProvider` keeps a catalog collection (`rag_collection_catalog`,
+configurable as `catalogCollection`) the key must be able to create and write
+(the README lists what the key needs); `createCollection` creates the
+collection immediately, spending **one embedding call** to learn the vector
+size, instead of on the first write, and refuses a taken name
+(`RAG_DUPLICATE_COLLECTION` / `RAG_ORPHAN_STORE`, the latter lifted by
+`adoptExisting: true`); handles from the provider never create their
+collection; `deleteCollection` removes the record first and can fail with
+`CatalogRecordDeleteError`; `QdrantRag` gains `autoCreateCollection` (default
+`true`).
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

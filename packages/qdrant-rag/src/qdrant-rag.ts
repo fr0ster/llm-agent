@@ -18,7 +18,7 @@ import {
  * Derive a deterministic UUID from a stable string key using SHA-256.
  * The first 16 bytes of the hash are formatted as a UUID v5-style string.
  */
-async function deterministicUUID(key: string): Promise<string> {
+export async function deterministicUUID(key: string): Promise<string> {
   const data = new TextEncoder().encode(key);
   const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', data);
   const bytes = new Uint8Array(hashBuffer, 0, 16);
@@ -42,6 +42,14 @@ export interface QdrantRagConfig {
    * only by the caller's own signal.
    */
   timeoutMs?: number;
+  /**
+   * Create the collection on the first write when it is missing, sized from
+   * that write's vector. Default `true` — a store configured directly relies on
+   * it. `QdrantRagProvider` passes `false`: its collections are created by
+   * `createCollection` only, so a handle whose collection is gone fails instead
+   * of recreating it without a catalog record (§6.3).
+   */
+  autoCreateCollection?: boolean;
 }
 
 export class QdrantRag implements IRag {
@@ -50,6 +58,7 @@ export class QdrantRag implements IRag {
   private readonly embedder: IEmbedder;
   private readonly credential?: IApiKeyCredential;
   private readonly timeoutMs: number | undefined;
+  private readonly autoCreateCollection: boolean;
   private collectionEnsured = false;
 
   constructor(config: QdrantRagConfig) {
@@ -58,6 +67,7 @@ export class QdrantRag implements IRag {
     this.embedder = config.embedder;
     this.credential = config.credential;
     this.timeoutMs = config.timeoutMs;
+    this.autoCreateCollection = config.autoCreateCollection ?? true;
   }
 
   private async _headers(): Promise<Record<string, string>> {
@@ -162,7 +172,9 @@ export class QdrantRag implements IRag {
     options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
-      await this._ensureCollection(vector.length, options?.signal);
+      if (this.autoCreateCollection) {
+        await this._ensureCollection(vector.length, options?.signal);
+      }
 
       const pointId = metadata?.id
         ? await deterministicUUID(metadata.id)
@@ -451,7 +463,12 @@ export class QdrantRag implements IRag {
       upsertManyPrecomputedRaw: async (items, options) => {
         if (items.length === 0) return { ok: true, value: undefined };
         try {
-          await this._ensureCollection(items[0].vector.length, options?.signal);
+          if (this.autoCreateCollection) {
+            await this._ensureCollection(
+              items[0].vector.length,
+              options?.signal,
+            );
+          }
           const points = await Promise.all(
             items.map(async ({ id, text, vector, metadata }) => ({
               id: await deterministicUUID(id),
