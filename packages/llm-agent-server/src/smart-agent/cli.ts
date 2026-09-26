@@ -304,9 +304,9 @@ const config: SmartServerConfig = {
 // Caught here (rather than left to propagate) so a construction-time failure —
 // a bad credentialRef, a missing apiBaseUrl — prints once to stderr and exits
 // 1, matching every other startup failure in this file (see the config-resolve
-// catch above). Left uncaught, a peer SDK pulled in by the LLM provider map
-// (@sap-ai-sdk/orchestration) registers its own process-wide winston
-// exception handler, which intercepts it first and prints to stdout instead.
+// catch above). Left uncaught with provider sap-ai-sdk, the peer SDK that
+// provider loads (@sap-ai-sdk/orchestration) registers its own process-wide
+// winston exception handler, which intercepts it first and prints to stdout.
 let handle: Awaited<ReturnType<SmartServer['start']>>;
 try {
   const deps = buildCompositionDeps(process.env);

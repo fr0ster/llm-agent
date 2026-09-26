@@ -126,7 +126,11 @@ export class HanaVectorRag implements IRag {
       const client = await this.client();
       await client.exec(createTableSql(this.collectionName, this.dimension));
       this.schemaReady = true;
-    })();
+    })().catch((err: unknown) => {
+      // Not kept: like client(), the next use tries again.
+      this.schemaPromise = undefined;
+      throw err;
+    });
     await this.schemaPromise;
   }
 

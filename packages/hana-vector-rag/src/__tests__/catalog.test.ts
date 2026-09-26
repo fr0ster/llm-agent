@@ -6,6 +6,7 @@ import type {
   RagProviderCreateCollectionOptions,
 } from '@mcp-abap-adt/llm-agent';
 import { CatalogRecordDeleteError, staticLogin } from '@mcp-abap-adt/llm-agent';
+import { HanaVectorRag } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
 import { type FakeCatalogRow, type FakeHana, fakeHana } from './fake-hana.js';
 
@@ -245,6 +246,32 @@ describe('hana: a handle connects on first use, never at openCollection', () => 
     assert.equal(reads, 1);
     // A failed connect is not memoized: the next use tries again.
     await opened.value.rag.healthCheck();
+    assert.equal(reads, 2);
+  });
+});
+
+describe('hana: a failed first connect is retried on the schema path too', () => {
+  // A directly configured store (autoCreateSchema defaults to true) reaches the
+  // connection through ensureSchema; a failed bootstrap must not be kept either.
+  it('getById after a failed connect tries to connect again', async () => {
+    let reads = 0;
+    const credential = {
+      ...staticLogin('u', 'pw'),
+      secret: async () => {
+        reads++;
+        throw new Error('no HANA here');
+      },
+    };
+    const rag = new HanaVectorRag({
+      host: 'h',
+      collectionName: 'docs',
+      dimension: 3,
+      embedder,
+      credential,
+    });
+    assert.equal((await rag.getById('x')).ok, false);
+    assert.equal(reads, 1);
+    assert.equal((await rag.getById('x')).ok, false);
     assert.equal(reads, 2);
   });
 });
