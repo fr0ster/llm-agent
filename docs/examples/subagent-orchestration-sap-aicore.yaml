@@ -34,6 +34,16 @@ llm:
     model: ${SAP_AI_MODEL:-gpt-4o}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.1
+  abap-coder:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  code-reviewer:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.1
 
 rag:
   type: in-memory

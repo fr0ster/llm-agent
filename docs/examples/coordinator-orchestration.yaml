@@ -21,8 +21,18 @@ llm:
     temperature: 0.7
   helper:
     provider: deepseek
-    apiKey: ${DEEPSEEK_API_KEY}
+    credentialRef: DEEPSEEK            # the root reads DEEPSEEK_API_KEY, the same variable the removed secret field read
     model: deepseek-chat
+    temperature: 0.1
+  abap-coder:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  code-reviewer:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.1
 
 mcp:

@@ -119,6 +119,7 @@ import {
 } from './rag-config.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
+import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
 export { writeNotReady } from './http/response-helpers.js';
 
@@ -409,10 +410,28 @@ export interface BuildAgentDeps {
   toolNamespace?: IToolNamespace;
 }
 
+/** A DAG worker's own models: keys of the MAIN file's `llm:` map (§4.6.7).
+ *  An omitted role resolves as that name does for the pipeline — the held
+ *  helper/classifier, or the held main where no helper is configured. */
+export interface SmartServerWorkerLlmKeys {
+  main?: string;
+  helper?: string;
+  classifier?: string;
+}
+
+/** A worker file: everything a main file holds except its own `llm:` map and
+ *  nested `subagents:`. Its `llm` names keys of the main file's map — a string
+ *  is shorthand for `{ main: <key> }`. An inline LLM configuration is refused. */
+export type SmartServerWorkerConfig = Omit<
+  SmartServerConfig,
+  'log' | 'llm' | 'subAgentConfigs'
+> & { llm?: string | SmartServerWorkerLlmKeys };
+
 /**
  * A nested sub-agent declared via the top-level `subagents:` YAML block.
- * The `config` field is the resolved `SmartServerConfig` for the sub-agent
- * (without `subagents:` of its own — nested orchestration is not supported).
+ * The `config` field is the resolved `SmartServerWorkerConfig` for the
+ * sub-agent (without `subagents:` of its own — nested orchestration is not
+ * supported).
  */
 export interface SmartServerSubAgentConfig {
   name: string;
@@ -423,7 +442,7 @@ export interface SmartServerSubAgentConfig {
    * routes by name alone.
    */
   description?: string;
-  config: Omit<SmartServerConfig, 'log'>;
+  config: SmartServerWorkerConfig;
 }
 
 export interface SmartServerHandle {
@@ -1084,6 +1103,10 @@ export class SmartServer {
       build: (entry) => this._deps.makeLlm(entry),
     });
 
+    // The programmatic subAgentConfigs path never passed the YAML check, so a
+    // worker's named keys are checked here too (§4.6.7): startup fails loudly.
+    assertWorkerLlmConfig(this.cfg.subAgentConfigs, llmMap);
+
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
       this.cfg.pluginLoader ??
@@ -1226,7 +1249,7 @@ export class SmartServer {
       buildSubAgent: (name, subCfg, parentLogger, factories, injected) =>
         this.buildSubAgent(
           name,
-          subCfg as Omit<SmartServerConfig, 'log'>,
+          subCfg as SmartServerWorkerConfig,
           parentLogger,
           factories,
           injected,
@@ -1880,7 +1903,7 @@ export class SmartServer {
    */
   private async buildSubAgent(
     name: string,
-    subCfg: Omit<SmartServerConfig, 'log'>,
+    subCfg: SmartServerWorkerConfig,
     parentLogger: ILogger,
     embedderFactories: Record<string, EmbedderFactory>,
     injected?: {
@@ -1888,24 +1911,19 @@ export class SmartServer {
       toolsRag: IRag | undefined;
       mcpClients: IMcpClient[];
       requestLogger: IRequestLogger;
-      mainLlm: ILlm;
-      classifierLlm: ILlm;
-      helperLlm?: ILlm;
       embedder?: IEmbedder;
     },
   ): Promise<SmartAgent> {
-    // Normalize subagent llm: either flat { provider, credentialRef?, ... } or a
-    // map { main: {...}, planner: {...} }. normalizeLlmConfig wraps flat shape as
-    // { main: flat } so downstream code always reads from .main.
-    const subLlmMap = normalizeLlmConfig(subCfg.llm);
-    const subLlmMain = subLlmMap?.main;
-    if (!subLlmMain) {
-      throw new Error(
-        `subagent '${name}': llm is required (a flat llm block or llm.main)`,
-      );
-    }
-    // The subagent's helper role derives from its own top-level `llm:` map.
-    const subHelperCfg = resolveLlmConfigStrict(subLlmMap, 'helper');
+    // A worker's three LLM slots come from the SAME resolver as the pipeline's
+    // (§4.6.7): a named key resolves strictly, an omitted role as that name
+    // does for the pipeline. Instances are held by the resolver, so nothing is
+    // built per session and a PUT /v1/config swap reaches workers too.
+    const keys = parseWorkerLlm(name, subCfg.llm);
+    const [mainLlm, classifierLlm, helperLlm] = await Promise.all([
+      this.resolveWorkerRoleLlm(keys.main, 'main'),
+      this.resolveWorkerRoleLlm(keys.classifier, 'classifier'),
+      this.resolveWorkerRoleLlm(keys.helper, 'helper'),
+    ]);
 
     // LLM/embedder clients: when the per-session re-wire injected them, use
     // those cached instances by reference (NEVER reconstruct). Otherwise (the
@@ -1916,34 +1934,15 @@ export class SmartServer {
     // injected record for forward-compat with Task A8/A10 per-session wiring.
     // The worker's embedder is resolved through `BuildAgentDeps.resolveEmbedder`
     // inside the factories below (`_workerRagInput`), not separately here.
-    // Resolve (build-once or load from cache) the worker's own LLMs +
+    // Resolve (build-once or load from cache) the worker's own
     // toolsRag/historyRag/mcpClients. The cache is keyed by worker name; the
     // primary build() populates it (no `injected` arg), and per-session
     // re-wires (`injected` set) read from it via the same call below — the
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
-    const subFlatLlm = subLlmMain;
-    const mainTemp = Number(subFlatLlm.temperature ?? 0.7);
-    const classifierTemp = Number(subFlatLlm.classifierTemperature ?? 0.1);
     const cached = await resolveWorkerLlmSet({
       name,
       cache: this._workers.cache,
-      // Through the injected seam, exactly as _buildInfra builds the top-level
-      // roles (:1036-1056). The whole config travels, so maxTokens and
-      // whenThrottled — which the hand-copied list dropped — now arrive too.
-      makeMain: () =>
-        this._deps.makeLlm({ ...subFlatLlm, temperature: mainTemp }),
-      makeClassifier: () =>
-        this._deps.makeLlm({ ...subFlatLlm, temperature: classifierTemp }),
-      makeHelper: subHelperCfg
-        ? (
-            (h) => () =>
-              this._deps.makeLlm({
-                ...h,
-                temperature: Number(h.temperature ?? 0.1),
-              })
-          )(subHelperCfg)
-        : undefined,
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
       // re-wired per-session by reference — never re-vectorized.
       makeToolsRag: subCfg.rag
@@ -1977,9 +1976,6 @@ export class SmartServer {
           ? async () => subCfg.mcpClients as IMcpClient[]
           : undefined,
     });
-    const mainLlm: ILlm = cached.mainLlm;
-    const classifierLlm: ILlm = cached.classifierLlm;
-    const helperLlm: ILlm | undefined = cached.helperLlm;
 
     let subBuilder = new SmartAgentBuilder({
       mcp: subCfg.mcp,
@@ -1992,9 +1988,7 @@ export class SmartServer {
       .withLogger(parentLogger)
       .withMode(subCfg.mode ?? 'smart');
 
-    if (helperLlm) {
-      subBuilder = subBuilder.withHelperLlm(helperLlm);
-    }
+    subBuilder = subBuilder.withHelperLlm(helperLlm);
 
     // SHARE the parent RAG registry + session logger when injected (per-session
     // worker re-wire). The per-call scope filter isolates by ctx.sessionId.
@@ -2079,6 +2073,17 @@ export class SmartServer {
   /** `ctx.resolveNamedLlm(key)` — strict: an `llm:` entry of exactly that name. */
   private async resolveNamedRoleLlm(key: string): Promise<ILlm> {
     return this.roleLlm().resolveNamed(key);
+  }
+
+  /** A worker role's LLM: its named key strictly, else the role's own name —
+   *  the same resolver the pipeline reads, so instances are shared (§4.6.7). */
+  private async resolveWorkerRoleLlm(
+    key: string | undefined,
+    role: 'main' | 'helper' | 'classifier',
+  ): Promise<ILlm> {
+    return key !== undefined
+      ? this.roleLlm().resolveNamed(key)
+      : this.roleLlm().resolve(role);
   }
 
   private roleLlm(): IRoleLlmResolver {

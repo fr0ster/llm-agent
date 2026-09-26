@@ -13,17 +13,7 @@ agent:
   maxIterations: 3
   ragQueryK: 10
 
-llm:
-  main:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_MODEL:-gpt-4o}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.2
-  classifier:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_MODEL:-gpt-4o}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.1
+llm: abap-coder
 
 rag:
   type: in-memory

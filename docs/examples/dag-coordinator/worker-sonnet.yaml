@@ -8,17 +8,7 @@ agent:
   ragQueryK: 10
   healthTimeoutMs: 15000
 
-llm:
-  main:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.6-sonnet}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.2
-  classifier:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.6-sonnet}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.1
+llm: abap-analyst
 
 rag:
   type: in-memory

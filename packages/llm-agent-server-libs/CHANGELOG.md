@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+**BREAKING:** a DAG worker file's `llm:` is no longer a complete LLM
+configuration resolved on its own — it names keys of the MAIN file's `llm:`
+map: a bare string is shorthand for `{ main: <key> }`, or a worker may spell
+out `{ main?, helper?, classifier? }`. Resolution goes through the server's
+`IRoleLlmResolver`, the same one the pipeline reads, so a worker naming a key
+shares the held instance and observes a `PUT /v1/config` swap — a worker used
+to build its own copy per worker name, which a config swap never reached. An
+inline LLM configuration in a worker file (`provider`, `model`, `apiKey`, …,
+`INLINE_LLM_CONFIG_FIELDS`) is refused at parse, naming the worker and the
+main file's `llm:` map; a named key with no entry in that map is refused at
+parse for a YAML `subagents:` file, and again in `start()` for a programmatic
+`subAgentConfigs` entry — both name the subagent, the role and the key.
+`SmartServerSubAgentConfig.config` is now `SmartServerWorkerConfig` (`Omit<SmartServerConfig,
+'log' | 'llm' | 'subAgentConfigs'> & { llm?: string | SmartServerWorkerLlmKeys }`),
+and `SmartServerWorkerLlmKeys = { main?: string; helper?: string; classifier?:
+string }` is new. `worker-llm.ts` exports `parseWorkerLlm(worker, raw)` and
+`assertWorkerLlmConfig(subs, llmMap)`. `ResolveSmartServerConfigOptions` gains
+`requireLlmSection?: boolean` (false for a worker file, whose `llm:` is
+resolved separately). `WorkerLlmSet` and `resolveWorkerLlmSet` lose their
+`mainLlm`/`classifierLlm`/`helperLlm` members — a worker's LLM slots no longer
+live in the per-worker cache; only its own embedder, tools RAG, history RAG
+and MCP clients still do. Two behaviour changes follow: a worker with no
+declared helper now resolves to the held helper (or `main`, where none is
+configured) instead of having none; a worker with no declared classifier now
+resolves to the held classifier instead of its own `main` at
+`classifierTemperature`. The shipped example worker and main files follow
+this shape, and every `apiKey` their `llm:` blocks carried becomes a
+`credentialRef` naming the same environment variable.
+
 **BREAKING:** a controller subagent (`pipeline.config.subagents.<role>`) is now
 `{ llm?: string; hint?: string }` — `ControllerSubagentConfig` no longer accepts
 `provider`, `model`, `temperature` or any other LLM field inline. An inline LLM

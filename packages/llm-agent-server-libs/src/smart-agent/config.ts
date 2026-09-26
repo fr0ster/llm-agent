@@ -8,6 +8,7 @@ import {
   assertNoLegacyRagShape,
   validateResolvedConfig,
 } from './config-validator.js';
+import { normalizeLlmConfig } from './llm-config-map.js';
 import {
   resolveAgentSection,
   resolveLlmSection,
@@ -21,7 +22,9 @@ import type {
   SmartServerConfig,
   SmartServerMode,
   SmartServerSubAgentConfig,
+  SmartServerWorkerConfig,
 } from './smart-server.js';
+import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 import type { YamlConfig } from './yaml-loader.js';
 import { get, loadYamlConfig } from './yaml-loader.js';
 
@@ -79,6 +82,29 @@ export interface ResolveConfigArgs {
   'log-dir'?: string;
   'plugin-dir'?: string;
   mode?: string | boolean;
+}
+
+/** Resolve a DAG worker file (§4.6.7): its `llm` is read as keys of the main
+ *  file's map, and the rest resolves like a main file minus the llm: section. */
+function resolveWorkerConfig(
+  name: string,
+  args: ResolveConfigArgs,
+  subYaml: YamlConfig,
+  env: NodeJS.ProcessEnv,
+  subConfigPath: string,
+): SmartServerWorkerConfig {
+  const { llm: rawLlm, ...withoutLlm } = subYaml;
+  const llm = parseWorkerLlm(name, rawLlm);
+  const { llm: _none, ...rest } = resolveSmartServerConfig(
+    args,
+    withoutLlm,
+    env,
+    {
+      configPath: subConfigPath,
+      requireLlmSection: false,
+    },
+  );
+  return { ...rest, llm };
 }
 
 /**
@@ -166,11 +192,15 @@ function parseSubAgents(
       );
     }
 
-    // Recursive call — we just verified the sub YAML has no `subagents:`, so
-    // the parseSubAgents call inside will short-circuit to undefined.
-    const subResolved = resolveSmartServerConfig(args, subYaml, env, {
-      configPath: subConfigPath,
-    });
+    // The worker file names keys of THIS file's llm: map (§4.6.7); the key
+    // check runs in resolveSmartServerConfig once this file's map is validated.
+    const subResolved = resolveWorkerConfig(
+      name,
+      args,
+      subYaml,
+      env,
+      subConfigPath,
+    );
     out.push({ name, description, config: subResolved });
   }
   return out;
@@ -188,6 +218,10 @@ export interface ResolveSmartServerConfigOptions {
    *  STRUCTURAL checks, which include refusing a secret field. Set by embeddable
    *  callers that inject their own embedder. Default false. */
   skipProviderRuntimeChecks?: boolean;
+
+  /** When false, a missing `llm:` section is not an error. Set only for a DAG
+   *  worker file, whose models are keys of the main file's map (§4.6.7). */
+  requireLlmSection?: boolean;
 }
 
 export function resolveSmartServerConfig(
@@ -252,7 +286,14 @@ export function resolveSmartServerConfig(
   };
   validateResolvedConfig(resolved, yaml, env, {
     skipProviderRuntimeChecks: options.skipProviderRuntimeChecks,
+    requireLlmSection: options.requireLlmSection,
   });
+  // Worker files named keys of THIS file's llm: map; now that the map is
+  // validated, check every named key has an entry (§4.6.7).
+  assertWorkerLlmConfig(
+    resolved.subAgentConfigs,
+    normalizeLlmConfig(resolved.llm),
+  );
   return resolved;
 }
 

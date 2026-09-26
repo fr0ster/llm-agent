@@ -17,17 +17,7 @@ agent:
   ragQueryK: 5
   healthTimeoutMs: 15000
 
-llm:
-  main:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0
-  classifier:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0
+llm: abap-inspector
 
 rag:
   type: in-memory

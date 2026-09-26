@@ -27,20 +27,16 @@ test('without an injected makeLlm the server refuses, naming the seam', async ()
   );
 });
 
-test('a subagent worker builds its LLMs through the injected makeLlm', async () => {
+test('a subagent worker names a key; its LLM is built once, through the injected makeLlm', async () => {
   const models: Array<string | undefined> = [];
   const { close } = await buildAgent(
     {
       skipModelValidation: true,
-      llm: { main: { provider: 'openai', model: 'parent-model' } },
-      subAgentConfigs: [
-        {
-          name: 'worker',
-          config: {
-            llm: { provider: 'openai', model: 'worker-model' },
-          },
-        },
-      ],
+      llm: {
+        main: { provider: 'openai', model: 'parent-model' },
+        worker: { provider: 'openai', model: 'worker-model' },
+      },
+      subAgentConfigs: [{ name: 'worker', config: { llm: 'worker' } }],
     } as unknown as SmartServerConfig,
     {
       ...constructionSeams,
@@ -53,8 +49,9 @@ test('a subagent worker builds its LLMs through the injected makeLlm', async () 
     },
   );
   await close();
-  assert.ok(
-    models.filter((m) => m === 'worker-model').length >= 2,
-    `the worker's main and classifier must come from the seam; saw ${models.join(', ')}`,
+  assert.equal(
+    models.filter((m) => m === 'worker-model').length,
+    1,
+    `the worker's entry is built once, through the seam, and held (§4.6.5); saw ${models.join(', ')}`,
   );
 });

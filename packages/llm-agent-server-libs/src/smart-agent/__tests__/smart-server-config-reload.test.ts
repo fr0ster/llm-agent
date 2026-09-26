@@ -197,10 +197,7 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
         subAgentConfigs: [
           {
             name: 'worker1',
-            config: {
-              llm: { model: 'test-model' },
-              skipModelValidation: true,
-            },
+            config: { skipModelValidation: true },
           },
         ],
       },

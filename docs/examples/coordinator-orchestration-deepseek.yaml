@@ -6,11 +6,24 @@ port: 4004
 mode: smart
 
 llm:
-  provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
-  url: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
-  model: ${DEEPSEEK_MODEL:-deepseek-chat}
-  temperature: 0.5
+  main:
+    provider: deepseek
+    credentialRef: DEEPSEEK            # the root reads DEEPSEEK_API_KEY, the same variable the removed secret field read
+    url: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
+    model: ${DEEPSEEK_MODEL:-deepseek-chat}
+    temperature: 0.5
+  abap-coder:
+    provider: deepseek
+    credentialRef: DEEPSEEK
+    url: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
+    model: ${DEEPSEEK_MODEL:-deepseek-chat}
+    temperature: 0.2
+  code-reviewer:
+    provider: deepseek
+    credentialRef: DEEPSEEK
+    url: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
+    model: ${DEEPSEEK_MODEL:-deepseek-chat}
+    temperature: 0.1
 
 pipeline:
   name: linear

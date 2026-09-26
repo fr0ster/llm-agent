@@ -341,14 +341,21 @@ export function validateResolvedConfig(
   _resolved: Omit<SmartServerConfig, 'log'>,
   yaml: YamlConfig,
   _env: NodeJS.ProcessEnv,
-  opts: { skipProviderRuntimeChecks?: boolean } = {},
+  opts: {
+    skipProviderRuntimeChecks?: boolean;
+    requireLlmSection?: boolean;
+  } = {},
 ): void {
   const issues: string[] = [];
   const skip = opts.skipProviderRuntimeChecks === true;
 
   const rawLlm = get(yaml, 'llm') as Record<string, unknown> | undefined;
   if (rawLlm === undefined) {
-    issues.push('llm: required (top-level llm.main or a flat llm block)');
+    // A DAG worker file names keys of the MAIN file's llm: map (§4.6.7) and is
+    // resolved with its own llm: stripped, so it has no section to require.
+    if (opts.requireLlmSection !== false) {
+      issues.push('llm: required (top-level llm.main or a flat llm block)');
+    }
   } else {
     // Checked before the shape is decided: a flat block that lost its provider
     // is read as a map below, and would otherwise report `llm.apiKey.provider`.

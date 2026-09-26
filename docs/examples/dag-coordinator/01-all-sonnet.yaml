@@ -17,6 +17,11 @@ llm:
     model: ${SAP_AI_MODEL:-anthropic--claude-4.6-sonnet}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.5
+  abap-analyst:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
 
 rag:
   type: in-memory
