@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+Every `SmartServer` session owns its RAG registry — a fresh one per session,
+holding the deployment's globals by reference and hydrated for the session's
+identity (`describeCollections`, rejected rows logged, the caller's records
+opened and `adopt`ed with their provider's name) — instead of one registry
+shared by every session; hydration is the only way back to a collection after
+a restart. One provider registry is handed to every build. **Two limits,
+stated:** `SmartServer` registers no RAG providers, so there is no catalog to
+hydrate from and a session's registry holds only the globals until a
+deployment registers one; and its sessions carry no `userId`, so `user`
+collections are neither hydrated nor creatable through it. New exports
+`buildSessionRagRegistry`, `SessionRagRegistryInput`; `SessionLifecycleOptions`
+gains `ragRegistryFactory?`, and its `ragRegistry` is optional — a consumer
+that reads it must handle `undefined`.
+
 **BREAKING:** a DAG worker file's `llm:` is no longer a complete LLM
 configuration resolved on its own — it names keys of the MAIN file's `llm:`
 map: a bare string is shorthand for `{ main: <key> }`, or a worker may spell

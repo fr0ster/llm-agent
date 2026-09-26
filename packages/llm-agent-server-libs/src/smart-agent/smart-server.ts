@@ -21,6 +21,7 @@ import type {
   IModelResolver,
   IPipelineInstance,
   IPipelinePlugin,
+  IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
   ISkillManager,
@@ -48,12 +49,14 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
+  SimpleRagProviderRegistry,
   type ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
   SessionAgentParts,
   SessionGraph,
+  SessionGraphIdentity,
   SmartAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -584,6 +587,7 @@ import {
 
 import {
   buildSessionLifecycle,
+  buildSessionRagRegistry,
   recordSessionEnd,
   recordSessionStart,
   resolveSubAgentRagRegistry,
@@ -593,6 +597,7 @@ import {
 
 export {
   buildSessionLifecycle,
+  buildSessionRagRegistry,
   handleDeleteSession,
   handleListSessions,
   handleResumeSession,
@@ -602,6 +607,7 @@ export {
   type SessionLifecycle,
   type SessionLifecycleOptions,
   type SessionListBody,
+  type SessionRagRegistryInput,
   type SessionResumeBody,
   seedSessionKnowledge,
 } from './session-lifecycle/index.js';
@@ -819,6 +825,16 @@ export class SmartServer {
    * (the stepper catalog handle), which falls back to catalog order regardless.
    */
   private _toolsRag?: IRag;
+  /**
+   * The providers every build of this server creates through, and the catalogs
+   * a session registry is hydrated from. One object, handed to every build:
+   * without it each session build replaced the registry's provider registry
+   * with a fresh empty one.
+   */
+  private readonly _ragProviderRegistry: IRagProviderRegistry =
+    new SimpleRagProviderRegistry();
+  /** The deployment's registry, whose globals every session registry holds. */
+  private _globalRagRegistry?: IRagRegistry;
   /**
    * MCP clients connected for the Stepper path from the YAML `mcp:` config
    * block. These are connected ONCE in `start()` (lazily resolved by
@@ -1530,6 +1546,15 @@ export class SmartServer {
     } = agentHandle;
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
+    this._globalRagRegistry = globalRagRegistry;
+    // Two limits of this server, stated rather than fixed (§6.4): it registers
+    // no RAG providers, so no session registry has a catalog to hydrate from —
+    // each holds only the deployment's globals; and its sessions carry a
+    // sessionId and no userId (llm-agent-libs session-registry.ts builds them
+    // from { sessionId }), so user collections are neither hydrated nor
+    // creatable through it. Not logged: in today's default deployment it would
+    // fire at every start, and an expected warning trains readers to skip the
+    // real ones — the limits are stated here, in the CHANGELOG and in the docs.
 
     // ---- Authoritative namespaced snapshot — yaml-builder path (#244) --------
     // The startup builder computes `namespacedTools`/`toolProvenance` (+ the
@@ -1631,7 +1656,13 @@ export class SmartServer {
       // `this._toolsRag` === the `toolsRag` local captured in start(); reference
       // the field as the single source of truth for the tools store.
       toolsRag: this._toolsRag,
-      ragRegistry: globalRagRegistry,
+      // A registry per session, seeded with the deployment's globals and
+      // hydrated for its identity (§6.4). Never the shared one: collections are
+      // addressed by name, so sharing it would put every session's collections
+      // in every session's address space. Hydration finds nothing until a
+      // provider is registered, and no user collection while sessions carry no
+      // userId — see the limits stated above.
+      ragRegistryFactory: (identity) => this._sessionRagRegistry(identity),
       buildAgent: (parts) => this.buildSessionAgent(parts),
       logger: fileLogger,
       // Per-session pipeline teardown: run the IPipelineInstance.close captured
@@ -2653,6 +2684,10 @@ export class SmartServer {
     if (parts.ragRegistry) {
       builder = builder.setRagRegistry(parts.ragRegistry);
     }
+    // The server's one provider registry: without it build() substitutes an
+    // empty one and sets it on the session's registry, and an adopted
+    // collection's delete then reaches no provider.
+    builder = builder.setRagProviderRegistry(this._ragProviderRegistry);
     if (parts.requestLogger) {
       builder = builder.withRequestLogger(parts.requestLogger);
     }
@@ -2752,6 +2787,23 @@ export class SmartServer {
     );
 
     return builder;
+  }
+
+  /** The registry one session owns; see buildSessionRagRegistry. */
+  private _sessionRagRegistry(
+    identity: SessionGraphIdentity,
+  ): Promise<IRagRegistry> {
+    if (!this._globalRagRegistry) {
+      throw new Error(
+        'A session RAG registry was requested before the server infra was built',
+      );
+    }
+    return buildSessionRagRegistry({
+      identity,
+      globals: this._globalRagRegistry,
+      providers: this._ragProviderRegistry,
+      logger: this._fileLogger,
+    });
   }
 
   /**
