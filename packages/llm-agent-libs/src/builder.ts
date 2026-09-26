@@ -65,6 +65,7 @@ import {
   QueryEmbedding,
   type RagCollectionMeta,
   type RagRegistryCreateCollectionParams,
+  ragStoreKey,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -893,19 +894,20 @@ export class SmartAgentBuilder {
     // leave it unset so a genuine name collision still surfaces instead of
     // silently keeping the old RAG/editor/meta.
     for (const c of this._staticCollections) {
-      if (c.idempotent && ragRegistry.get(c.name)) continue;
+      if (c.idempotent && ragRegistry.get(c.name, c.meta?.scope ?? 'global'))
+        continue;
       ragRegistry.register(c.name, c.rag, c.editor, c.meta);
     }
 
     // Mirror the built-in toolsRag / historyRag into the registry so the projection preserves
     // ragStores.tools / ragStores.history behavior that existing handlers rely on.
-    if (toolsRag && !ragRegistry.get('tools')) {
+    if (toolsRag && !ragRegistry.get('tools', 'global')) {
       ragRegistry.register('tools', toolsRag, undefined, {
         displayName: 'tools',
         scope: 'global',
       });
     }
-    if (historyRag && !ragRegistry.get('history')) {
+    if (historyRag && !ragRegistry.get('history', 'global')) {
       ragRegistry.register('history', historyRag, undefined, {
         displayName: 'history',
         scope: 'global',
@@ -922,15 +924,17 @@ export class SmartAgentBuilder {
       }
     }
 
-    // Derive ragStores as a live projection of the registry; keep it in sync via the
-    // registry's mutation listener so existing code paths (assembler, handlers,
-    // addRagStore/removeRagStore) see the same shape.
+    // Derive ragStores as a live projection of the registry, kept in sync by the
+    // registry's mutation listener. A global keeps its bare name — every stage
+    // configuration naming one keeps working — and a user or session collection
+    // is keyed user/<name> or session/<name>, so one name in several scopes gives
+    // several keys and nothing overwrites anything (§6.4).
     const ragStores: SmartAgentRagStores = {};
     const rebuildProjection = () => {
       for (const k of Object.keys(ragStores)) delete ragStores[k];
       for (const m of ragRegistry.list()) {
-        const r = ragRegistry.get(m.name);
-        if (r) ragStores[m.name] = r;
+        const r = ragRegistry.get(m.name, m.scope ?? 'global');
+        if (r) ragStores[ragStoreKey(m)] = r;
       }
     };
     rebuildProjection();
@@ -969,21 +973,36 @@ export class SmartAgentBuilder {
         onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
       });
       circuitBreakers.push(embedderBreaker);
-      for (const [key, store] of Object.entries(ragStores)) {
+      // list() is a snapshot, so changing entries while iterating is safe.
+      for (const meta of ragRegistry.list()) {
+        const scope = meta.scope ?? 'global';
+        const store = ragRegistry.get(meta.name, scope);
+        if (!store) continue;
         const wrapped = new FallbackRag(
           store,
           new InMemoryRag(),
           embedderBreaker,
         );
-        // Update both registry and projection so later lookups (and the mutation-listener
-        // rebuild) see the wrapped store.
-        const existingMeta = ragRegistry.list().find((m) => m.name === key);
-        ragRegistry.unregister(key);
-        ragRegistry.register(key, wrapped, undefined, {
-          displayName: existingMeta?.displayName ?? key,
-          scope: existingMeta?.scope ?? 'global',
+        // Later lookups (and the mutation-listener rebuild) see the wrapped
+        // store. The entry keeps its scope, owner, editor, provider and store
+        // name: without the last two a hydrated collection's delete would reach
+        // no store and its catalog record would bring it back (§6.3).
+        if (ragRegistry instanceof SimpleRagRegistry) {
+          ragRegistry.replaceRag(meta.name, scope, wrapped);
+          continue;
+        }
+        // Another IRagRegistry: re-register with everything register carries.
+        const editor = ragRegistry.getEditor(meta.name, scope);
+        ragRegistry.unregister(meta.name, scope);
+        ragRegistry.register(meta.name, wrapped, editor, {
+          displayName: meta.displayName,
+          description: meta.description,
+          scope,
+          sessionId: meta.sessionId,
+          userId: meta.userId,
+          providerName: meta.providerName,
+          tags: meta.tags,
         });
-        // Projection gets rebuilt by the mutation listener; no direct write to ragStores needed.
       }
     }
 
@@ -1217,7 +1236,7 @@ export class SmartAgentBuilder {
               : undefined,
           );
 
-        if (historyRag && !ragRegistry.get('history')) {
+        if (historyRag && !ragRegistry.get('history', 'global')) {
           ragRegistry.register('history', historyRag, undefined, {
             displayName: 'history',
             scope: 'global',

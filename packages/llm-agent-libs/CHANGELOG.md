@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**BREAKING:** the `ragStores` projection keys a global by its bare name and a
+user or session collection `user/<name>` / `session/<name>`, so a stage
+configuration that named an owned collection by its bare name now names the
+prefixed key. The circuit-breaker wrap keeps each entry's scope, owner,
+editor, provider and store name — it used to re-register every entry as a
+read-only global, which left a hydrated collection undeletable.
+`addRagStore`/`removeRagStore` and the `tools`/`history` probes address the
+`global` scope, which is where those deployment stores live.
+
 **BREAKING:** `createRagCollection` takes `RagRegistryCreateCollectionParams`
 (from `@mcp-abap-adt/llm-agent`) in place of its own inline `{ scope;
 sessionId?; userId? }` shape.

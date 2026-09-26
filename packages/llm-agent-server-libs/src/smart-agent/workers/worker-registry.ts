@@ -16,6 +16,7 @@ import type {
   IRag,
   IRagRegistry,
   IRequestLogger,
+  RagCollectionScope,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -161,7 +162,9 @@ export async function backfillWorkerCacheFromHandle(
   entry: WorkerLlmSet,
   handle: {
     mcpClients?: IMcpClient[];
-    ragRegistry: { get(name: string): IRag | undefined };
+    ragRegistry: {
+      get(name: string, scope?: RagCollectionScope): IRag | undefined;
+    };
     close?: () => Promise<void>;
   },
 ): Promise<void> {
@@ -173,11 +176,11 @@ export async function backfillWorkerCacheFromHandle(
     entry.mcpClients = handle.mcpClients;
   }
   if (!entry.toolsRag) {
-    const t = handle.ragRegistry.get('tools');
+    const t = handle.ragRegistry.get('tools', 'global');
     if (t) entry.toolsRag = t;
   }
   if (!entry.historyRag) {
-    const h = handle.ragRegistry.get('history');
+    const h = handle.ragRegistry.get('history', 'global');
     if (h) entry.historyRag = h;
   }
   // Capture the per-worker shutdown function (Fix #21). If the entry already

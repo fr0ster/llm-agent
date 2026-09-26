@@ -244,6 +244,25 @@ export class SimpleRagRegistry implements IRagRegistry {
     return this.findOrThrow(name, scope)?.entry.editor;
   }
 
+  /**
+   * Swap the store handle of an existing entry, keeping everything else — its
+   * editor, its provider, its store name and its meta — and tell the mutation
+   * listener. For a decorator such as the builder's circuit-breaker
+   * FallbackRag: re-registering would set the store name to the logical name
+   * and drop the provider, so a hydrated collection's delete would miss its
+   * store and its catalog record would come back (§6.3). The scope is
+   * required, so the lookup is never ambiguous. False when the entry is
+   * absent — including one currently reserved by an in-flight deletion (it is
+   * gone from `entries` already); never re-inserts.
+   */
+  replaceRag(name: string, scope: RagCollectionScope, rag: IRag): boolean {
+    const found = this.findOrThrow(name, scope);
+    if (!found) return false;
+    found.entry.rag = rag;
+    this.fireMutation();
+    return true;
+  }
+
   list(): readonly RagCollectionMeta[] {
     return Array.from(this.entries.values()).map((e) => e.meta);
   }

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+`SimpleRagRegistry.replaceRag(name, scope, rag)` swaps an entry's store
+handle in place, keeping its editor, provider name, store name and meta —
+the operation a decorator (such as the builder's circuit-breaker wrap) needs
+to swap the handle without losing what makes a hydrated collection
+deletable; `false` when the entry is absent, never re-inserting.
+
 `SimpleRagRegistry.adopt(record, rag, editor?, providerName?)` registers a
 store that exists under its logical name and keeps its store name, creating
 nothing; with `providerName` a later delete reaches that provider, without it

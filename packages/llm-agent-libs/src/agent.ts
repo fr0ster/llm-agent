@@ -393,9 +393,9 @@ export class SmartAgent {
     }
     if (this.deps.ragRegistry) {
       // Route through registry so the ragStores projection (and any listeners)
-      // see the change.
-      if (this.deps.ragRegistry.get(name)) {
-        this.deps.ragRegistry.unregister(name);
+      // see the change. Deployment stores are globals.
+      if (this.deps.ragRegistry.get(name, 'global')) {
+        this.deps.ragRegistry.unregister(name, 'global');
       }
       this.deps.ragRegistry.register(name, store, undefined, {
         displayName: name,
@@ -425,7 +425,7 @@ export class SmartAgent {
       );
     }
     if (this.deps.ragRegistry) {
-      this.deps.ragRegistry.unregister(name);
+      this.deps.ragRegistry.unregister(name, 'global');
     } else {
       delete this.deps.ragStores[name];
     }
