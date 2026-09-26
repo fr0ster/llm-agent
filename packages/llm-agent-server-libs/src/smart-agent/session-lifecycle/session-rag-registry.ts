@@ -1,5 +1,6 @@
 import {
   type ILogger,
+  type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
   type RagCollectionRecord,
@@ -28,6 +29,10 @@ export interface SessionRagRegistryInput {
  * openCollection and adopt for each record kept (§6.3). This server holds no
  * policy of its own, so every catalogued global is kept; a consumer that
  * decides which globals a caller may reach reads the record's attributes here.
+ *
+ * The globals are copied in ONCE, when the session is created: a global added
+ * to the deployment registry afterwards is not seen by a session already
+ * built (it is seen by the next session `buildSessionRagRegistry` builds).
  */
 export async function buildSessionRagRegistry(
   input: SessionRagRegistryInput,
@@ -61,7 +66,19 @@ export async function buildSessionRagRegistry(
   for (const providerName of providers.listProviders()) {
     const provider = providers.getProvider(providerName);
     if (!provider?.describeCollections || !provider.openCollection) continue;
-    const described = await provider.describeCollections();
+    let described: Awaited<
+      ReturnType<NonNullable<IRagProvider['describeCollections']>>
+    >;
+    try {
+      described = await provider.describeCollections();
+    } catch (err) {
+      warn(
+        `rag_hydration_failed: provider '${providerName}': ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      continue;
+    }
     if (!described.ok) {
       warn(
         `rag_hydration_failed: provider '${providerName}': ${described.error.message}`,
@@ -83,7 +100,19 @@ export async function buildSessionRagRegistry(
         );
         continue;
       }
-      const opened = await provider.openCollection(record);
+      let opened: Awaited<
+        ReturnType<NonNullable<IRagProvider['openCollection']>>
+      >;
+      try {
+        opened = await provider.openCollection(record);
+      } catch (err) {
+        warn(
+          `rag_hydration_open_failed: provider '${providerName}' store '${record.storeName}': ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        continue;
+      }
       if (!opened.ok) {
         warn(
           `rag_hydration_open_failed: provider '${providerName}' store '${record.storeName}': ${opened.error.message}`,
