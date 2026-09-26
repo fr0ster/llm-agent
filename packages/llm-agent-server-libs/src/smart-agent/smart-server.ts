@@ -833,6 +833,12 @@ export class SmartServer {
    */
   private readonly _ragProviderRegistry: IRagProviderRegistry =
     new SimpleRagProviderRegistry();
+  /**
+   * Catalog findings (rejected rows, skipped globals) already logged by one of
+   * this server's sessions, so the next session does not repeat them. One per
+   * server, never module-global: see SessionRagRegistryInput.reported.
+   */
+  private readonly _reportedCatalogFindings = new Set<string>();
   /** The deployment's registry, whose globals every session registry holds. */
   private _globalRagRegistry?: IRagRegistry;
   /**
@@ -2803,6 +2809,7 @@ export class SmartServer {
       globals: this._globalRagRegistry,
       providers: this._ragProviderRegistry,
       logger: this._fileLogger,
+      reported: this._reportedCatalogFindings,
     });
   }
 

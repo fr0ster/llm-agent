@@ -357,3 +357,51 @@ test('the circuit-breaker fallback-wrap on one session’s registry never mutate
     await handleA.close();
   }
 });
+
+test('with a shared `reported` set, a rejected row and a skipped global are logged by the first session only', async () => {
+  const globals = new SimpleRagRegistry();
+  globals.register('kb', new InMemoryRag(), undefined, {
+    displayName: 'kb',
+    scope: 'global',
+  });
+  const pg = catalogued('pg', records.slice(0, 1), [
+    { storeName: 'junk_0000000009', reason: 'no scope' },
+    { reason: 'no store name' },
+  ]);
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(pg.provider);
+  const reported = new Set<string>();
+  const first = logger();
+  await buildSessionRagRegistry({
+    identity: { sessionId: 'S1' },
+    globals,
+    providers,
+    logger: first.log,
+    reported,
+  });
+  const firstAll = first.messages().join('\n');
+  assert.match(firstAll, /rag_catalog_row_rejected.*junk_0000000009/);
+  assert.match(firstAll, /rag_catalog_row_rejected.*no store name/);
+  assert.match(firstAll, /rag_hydration_skipped.*kb/);
+
+  const second = logger();
+  await buildSessionRagRegistry({
+    identity: { sessionId: 'S2' },
+    globals,
+    providers,
+    logger: second.log,
+    reported,
+  });
+  assert.deepEqual(second.messages(), [], 'the same rows again: nothing new');
+
+  // A server of its own (its own set) reports them again: nothing is module-global.
+  const other = logger();
+  await buildSessionRagRegistry({
+    identity: { sessionId: 'S3' },
+    globals,
+    providers,
+    logger: other.log,
+    reported: new Set<string>(),
+  });
+  assert.equal(other.messages().length, 3);
+});

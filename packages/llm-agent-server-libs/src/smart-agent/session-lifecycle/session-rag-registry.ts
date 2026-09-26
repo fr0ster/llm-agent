@@ -19,6 +19,16 @@ export interface SessionRagRegistryInput {
   readonly providers?: IRagProviderRegistry;
   /** Where rejected catalog rows and failed reads are reported. */
   readonly logger?: ILogger;
+  /**
+   * Catalog findings already reported, keyed per provider and row. A rejected
+   * row and a skipped global are facts about the catalog, not about a session,
+   * so every session would repeat them; pass ONE set for the owner's lifetime
+   * (`SmartServer` holds one) and each is logged once. Owned by the caller, so
+   * two unrelated servers in one process never silence each other. Omitted,
+   * every call reports everything. Failures to read or open are not deduped:
+   * they may be transient, and each one matters.
+   */
+  readonly reported?: Set<string>;
 }
 
 /**
@@ -37,13 +47,21 @@ export interface SessionRagRegistryInput {
 export async function buildSessionRagRegistry(
   input: SessionRagRegistryInput,
 ): Promise<IRagRegistry> {
-  const { identity, globals, providers, logger } = input;
+  const { identity, globals, providers, logger, reported } = input;
   const warn = (message: string) =>
     logger?.log({
       type: 'warning',
       traceId: `session:${identity.sessionId}`,
       message,
     });
+  /** Warn about a catalog finding once per `reported` set. */
+  const warnOnce = (key: string, message: string) => {
+    if (reported) {
+      if (reported.has(key)) return;
+      reported.add(key);
+    }
+    warn(message);
+  };
 
   const registry = new SimpleRagRegistry();
   if (providers) registry.setProviderRegistry(providers);
@@ -86,7 +104,8 @@ export async function buildSessionRagRegistry(
       continue;
     }
     for (const row of described.value.rejected) {
-      warn(
+      warnOnce(
+        JSON.stringify(['rejected', providerName, row.storeName, row.reason]),
         `rag_catalog_row_rejected: provider '${providerName}'${
           row.storeName ? ` store '${row.storeName}'` : ''
         }: ${row.reason}`,
@@ -95,7 +114,8 @@ export async function buildSessionRagRegistry(
     for (const record of described.value.records) {
       if (!belongsTo(record, identity)) continue;
       if (record.scope === 'global' && registry.get(record.name, 'global')) {
-        warn(
+        warnOnce(
+          JSON.stringify(['skipped', providerName, record.storeName]),
           `rag_hydration_skipped: provider '${providerName}' global '${record.name}' (store '${record.storeName}') is already configured by the deployment`,
         );
         continue;

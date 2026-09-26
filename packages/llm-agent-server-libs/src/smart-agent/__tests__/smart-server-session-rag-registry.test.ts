@@ -225,6 +225,56 @@ test('wiring: a real session build gets the server’s provider registry, not a 
   }
 });
 
+test('a rejected catalog row is logged by the first session only, not by every session', async () => {
+  const server = new SmartServer(cfg, {
+    ...constructionSeams,
+    embedder: stubEmbedder,
+  });
+  const built = await server._buildEmbeddedAgent();
+  try {
+    const internals = server as unknown as Internals & {
+      _fileLogger?: { log: (e: { message?: string }) => void };
+    };
+    const messages: string[] = [];
+    internals._fileLogger = { log: (e) => messages.push(e.message ?? '') };
+    internals._ragProviderRegistry.registerProvider({
+      name: 'rows',
+      kind: 'vector',
+      editable: true,
+      supportedScopes: ['global'],
+      createCollection: async () => ({
+        ok: false,
+        error: new RagError('not expected'),
+      }),
+      describeCollections: async () => ({
+        ok: true,
+        value: {
+          records: [],
+          rejected: [{ storeName: 'junk_0000000009', reason: 'no scope' }],
+        },
+      }),
+      openCollection: async () => ({
+        ok: false,
+        error: new RagError('not expected'),
+      }),
+    } as unknown as IRagProvider);
+
+    await internals._sessionRagRegistry({ sessionId: 'a' });
+    const afterFirst = messages.filter((m) =>
+      m.includes('rag_catalog_row_rejected'),
+    ).length;
+    assert.equal(afterFirst, 1);
+    await internals._sessionRagRegistry({ sessionId: 'b' });
+    assert.equal(
+      messages.filter((m) => m.includes('rag_catalog_row_rejected')).length,
+      1,
+      'the second session logs nothing new for the same row',
+    );
+  } finally {
+    await built.close();
+  }
+});
+
 // NOTE on the circuit-breaker fallback-wrap isolation concern (B26): SmartServer
 // only calls `builder.withCircuitBreaker(...)` when `applyServerExtras` is true
 // (`buildBaseBuilder`, gated at the `if (parts.applyServerExtras)` block), and

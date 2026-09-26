@@ -26,33 +26,31 @@
  *   hash→vector stub, so the WITH path needs no embedder creds either.
  *
  * ---------------------------------------------------------------------
- * LIVE MODE (the REAL measurement — the USER runs this, not the agent):
+ * LIVE MODE — currently THROWS, by design, until a composition root is wired:
  * ---------------------------------------------------------------------
- *   1. Copy `.env.template` → `.env` at the repo root and fill provider creds
- *      (e.g. LLM_PROVIDER=sap-ai-sdk + LLM_SERVICE_KEY + SAP_AI_MODEL). For
- *      EVAL_EMBEDDER=1 with provider=openai this harness reads OPENAI_API_KEY
- *      directly (own read, not the composition root's credentialRef) — add it
- *      to your `.env` by hand, since the template no longer carries a plain
- *      per-provider key placeholder for it.
- *   2. (Optional, for the WITH path) clone a local skill set and point at it:
- *        git clone <sap-skills repo> /tmp/sap-skills     # never commit this
+ *   `EVAL_LIVE=1` stops at startup with "LIVE mode needs an ILlm from a
+ *   composition root". `makeLlm` left `@mcp-abap-adt/llm-agent-libs`: building a
+ *   provider needs a credential, which only a composition root holds, and this
+ *   harness has none. Making LIVE work means constructing the planner `ILlm`
+ *   here from a credential (see `llm-agent-server`'s `composition/`), then
+ *   replacing the throw in `main()` with a client over it.
+ *
+ *   Independent of LIVE — both work in STUB mode too — the WITH path can read a
+ *   local skill set (never commit it):
+ *        git clone <sap-skills repo> /tmp/sap-skills
  *        export EVAL_SKILLS_DIR=/tmp/sap-skills
- *      EVAL_SKILLS_DIR may be either a directory of `<plugin>/SKILL.md` files or a
- *      directory of `*.md` skill files. When UNSET, the harness uses the small
- *      inline FIXTURE_SKILLS below (generic, NOT GPL sap-skills content).
- *   3. Run with the live flag (from the repo root so `.env` resolves):
- *        EVAL_LIVE=1 node --import tsx/esm \
- *          packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts
- *      Optionally embed the WITH-host with a REAL embedder (LLM provider that has
- *      one, e.g. ollama / openai / sap-ai-core) by setting EVAL_EMBEDDER=1 — else
- *      the deterministic stub embedder is used even in live mode (the live LLM is
- *      what matters for the plan comparison; the embedder only ranks skills).
+ *   EVAL_SKILLS_DIR may be either a directory of `<plugin>/SKILL.md` files or a
+ *   directory of `*.md` skill files. When UNSET, the harness uses the small
+ *   inline FIXTURE_SKILLS below (generic, NOT GPL sap-skills content).
+ *   EVAL_EMBEDDER=1 embeds the WITH-host with a real embedder (LLM_PROVIDER
+ *   openai or ollama); for openai it reads OPENAI_API_KEY directly and refuses
+ *   to start when it is unset or empty.
  *
  * The 5 prompts below include the ABAP review, the CDS-composition, and the
  * compound dependency-chain (compound-create) cases. Adjust freely for your run.
  *
  * Env contract:
- *   EVAL_LIVE=1        → build the real planner LLM from .env (default: stub).
+ *   EVAL_LIVE=1        → LIVE mode; currently throws (see above). Default: stub.
  *   EVAL_SKILLS_DIR    → local skill dir for the WITH path (default: inline fixture).
  *   EVAL_EMBEDDER=1    → use a real embedder for the WITH host (default: stub embed).
  */
@@ -297,13 +295,21 @@ async function makeRealEmbedder(): Promise<IEmbedder> {
   const provider = process.env.LLM_PROVIDER ?? 'ollama';
   const model = process.env.EMBEDDING_MODEL ?? '';
   switch (provider) {
-    case 'openai':
+    case 'openai': {
+      // An empty key would only fail later, at the first embed, as a 401.
+      const key = process.env.OPENAI_API_KEY;
+      if (!key) {
+        throw new Error(
+          'plan-analysis: EVAL_EMBEDDER=1 with LLM_PROVIDER=openai needs OPENAI_API_KEY set and non-empty',
+        );
+      }
       await rag.prefetchEmbedderFactories(['openai']);
       return rag.resolveEmbedder({
         provider: 'openai',
         model,
-        credential: staticApiKey(process.env.OPENAI_API_KEY ?? ''),
+        credential: staticApiKey(key),
       });
+    }
     case 'ollama':
       await rag.prefetchEmbedderFactories(['ollama']);
       return rag.resolveEmbedder({

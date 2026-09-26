@@ -19,6 +19,13 @@ through it. New exports
 gains `ragRegistryFactory?`, and its `ragRegistry` is optional — a consumer
 that reads it must handle `undefined`.
 
+`SessionRagRegistryInput` gains `reported?: Set<string>`: catalog findings
+(`rag_catalog_row_rejected`, `rag_hydration_skipped`) already logged, keyed
+per provider and row, so a caller passing one set logs each once instead of
+once per session. `SmartServer` holds one per server — never module-global, so
+two servers in one process do not silence each other. Read and open failures
+are still logged every time.
+
 **BREAKING:** a DAG worker file's `llm:` is no longer a complete LLM
 configuration resolved on its own — it names keys of the MAIN file's `llm:`
 map: a bare string is shorthand for `{ main: <key> }`, or a worker may spell
