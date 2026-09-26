@@ -17,6 +17,12 @@ a qdrant skill store's `credentialRef` is resolved like every other ref.
 `PUT /v1/config` model switching now works in the CLI — it was refused with
 400 for want of a resolver.
 
+`@mcp-abap-adt/sap-aicore-llm` is now loaded only when an `llm:` entry selects
+`sap-ai-sdk`. It was imported statically by the composition root, and
+`@sap-ai-sdk/orchestration` installs two process `uncaughtException` listeners
+at import time — so every deployment, whatever its provider, survived uncaught
+exceptions and printed them to stdout instead of exiting.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

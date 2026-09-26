@@ -11,14 +11,13 @@ import { LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerLlmConfig } from '@mcp-abap-adt/llm-agent-server-libs';
 import { type OllamaConfig, OllamaProvider } from '@mcp-abap-adt/ollama-llm';
 import { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
-import {
-  type SapCoreAIConfig,
-  SapCoreAIProvider,
-} from '@mcp-abap-adt/sap-aicore-llm';
+import type { SapCoreAIConfig } from '@mcp-abap-adt/sap-aicore-llm';
 import { DEFAULT_LLM_REF } from './credential-for.js';
 import type { Lookup } from './lookup.js';
 
 type ProviderInstance = LLMProvider & { readonly model: string };
+
+type SapCoreAICtor = new (cfg: SapCoreAIConfig) => ProviderInstance;
 
 /** The five constructors, injectable so a test records what each receives. */
 export interface LlmProviderCtors {
@@ -26,7 +25,13 @@ export interface LlmProviderCtors {
   anthropic: new (cfg: AnthropicConfig) => ProviderInstance;
   deepseek: new (cfg: DeepSeekConfig) => ProviderInstance;
   ollama: new (cfg: OllamaConfig) => ProviderInstance;
-  'sap-ai-sdk': new (cfg: SapCoreAIConfig) => ProviderInstance;
+  /**
+   * A loader, not the constructor: `@mcp-abap-adt/sap-aicore-llm` pulls
+   * `@sap-ai-sdk/orchestration`, which installs process `uncaughtException`
+   * listeners at import time. Imported statically, every deployment would survive
+   * uncaught exceptions; loaded here, only one that selects `sap-ai-sdk` pays.
+   */
+  'sap-ai-sdk': () => Promise<SapCoreAICtor>;
 }
 
 export const SHIPPED_LLM_PROVIDERS: LlmProviderCtors = {
@@ -34,7 +39,8 @@ export const SHIPPED_LLM_PROVIDERS: LlmProviderCtors = {
   anthropic: AnthropicProvider,
   deepseek: DeepSeekProvider,
   ollama: OllamaProvider,
-  'sap-ai-sdk': SapCoreAIProvider,
+  'sap-ai-sdk': async () =>
+    (await import('@mcp-abap-adt/sap-aicore-llm')).SapCoreAIProvider,
 };
 
 /**
@@ -60,7 +66,7 @@ export function createMakeLlm(
       maxTokens: cfg.maxTokens,
       whenThrottled: cfg.whenThrottled,
     };
-    const provider: ProviderInstance = (() => {
+    const provider: ProviderInstance = await (async () => {
       switch (cfg.provider) {
         case 'openai':
           return new ctors.openai({
@@ -93,7 +99,7 @@ export function createMakeLlm(
               : entry.optional('api-key')),
           });
         case 'sap-ai-sdk':
-          return new ctors['sap-ai-sdk']({
+          return new (await ctors['sap-ai-sdk']())({
             ...knobs,
             credential: entry.require('bearer'),
             apiBaseUrl: entry.requireApiBaseUrl(),

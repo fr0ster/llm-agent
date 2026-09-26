@@ -31,7 +31,7 @@ function harness(entries: Record<string, CredentialEntry>) {
     anthropic: fake('anthropic'),
     deepseek: fake('deepseek'),
     ollama: fake('ollama'),
-    'sap-ai-sdk': fake('sap-ai-sdk'),
+    'sap-ai-sdk': async () => fake('sap-ai-sdk'),
   } as unknown as LlmProviderCtors;
   const makeLlm = createMakeLlm(
     createLookup(memoizeCredentials((r) => entries[r])),
