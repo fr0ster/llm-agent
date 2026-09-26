@@ -773,7 +773,6 @@ export class SmartServer {
    *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
    *  context factory (mirrors the inline DAG/linear resolution). */
   private _llmMap?: NormalizedLlmMap;
-  private _pipelineFallback?: SmartServerLlmConfig;
   private _mainTemp?: number;
   private _roleLlm?: IRoleLlmResolver;
   private _requestLogger?: IRequestLogger;
@@ -1029,15 +1028,9 @@ export class SmartServer {
 
     // ---- Composition root: resolve config → interfaces --------------------
 
-    // LLM resolution — normalize the flat/map top-level `llm:` block. The legacy
-    // per-pipeline `pipeline.llm.*` override is gone; role LLMs derive entirely
-    // from the top-level map (resolveLlmConfig falls back to map.main), so the
-    // pipelineFallback chain is no longer fed a separate config — it stays
-    // undefined and the map.main fallback in resolveLlmConfig covers it.
+    // LLM resolution — normalize the flat/map top-level `llm:` block.
     const llmMap = normalizeLlmConfig(this.cfg.llm);
-    const pipelineFallback: SmartServerLlmConfig | undefined = undefined;
-
-    const topMain = resolveLlmConfig(llmMap, 'main', pipelineFallback);
+    const topMain = resolveLlmConfig(llmMap, 'main');
 
     const mainTemp = Number(topMain?.temperature ?? 0.7);
     const mainLlm = topMain
@@ -1046,12 +1039,15 @@ export class SmartServer {
           throw new Error('no LLM configured: provide top-level llm.main');
         })();
 
+    const classifierEntry = resolveLlmConfigStrict(llmMap, 'classifier');
     const classifierTemp = Number(topMain?.classifierTemperature ?? 0.1);
-    const classifierLlm = topMain
-      ? await this._deps.makeLlm({ ...topMain, temperature: classifierTemp })
-      : (() => {
-          throw new Error('no LLM configured: provide top-level llm.main');
-        })();
+    const classifierLlm = classifierEntry
+      ? await this._deps.makeLlm(classifierEntry)
+      : topMain
+        ? await this._deps.makeLlm({ ...topMain, temperature: classifierTemp })
+        : (() => {
+            throw new Error('no LLM configured: provide top-level llm.main');
+          })();
 
     // A 'helper' role LLM derives from the top-level `llm:` map when present
     // (built only when an explicit map entry exists).
@@ -1066,15 +1062,13 @@ export class SmartServer {
     this._classifierLlm = classifierLlm;
     this._helperLlm = helperLlm;
     this._llmMap = llmMap;
-    this._pipelineFallback = pipelineFallback;
     this._mainTemp = mainTemp;
     this._roleLlm = new RoleLlmResolver({
       getMain: () => this._mainLlm,
       getHelper: () => this._helperLlm,
       getClassifier: () => this._classifierLlm,
       getLlmMap: () => this._llmMap,
-      getPipelineFallback: () => this._pipelineFallback,
-      makeLlm: (lc) => this._deps.makeLlm(lc),
+      build: (entry) => this._deps.makeLlm(entry),
     });
 
     // ---- Plugin loader -------------------------------------------------------
@@ -2028,16 +2022,23 @@ export class SmartServer {
     return toMakeRagInput(rag.store, embedder, `subagent '${name}' rag`);
   }
 
-  /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.
-   *  'main' returns the captured mainLlm; 'helper'/'classifier' return the
-   *  prebuilt instances when present; otherwise the map/fallback config is built. */
+  /** `ctx.resolveLlm(role)` — the role's default, through the held role map. */
   private async resolveRoleLlm(role: string): Promise<ILlm> {
+    return this.roleLlm().resolve(role);
+  }
+
+  /** `ctx.resolveNamedLlm(key)` — strict: an `llm:` entry of exactly that name. */
+  private async resolveNamedRoleLlm(key: string): Promise<ILlm> {
+    return this.roleLlm().resolveNamed(key);
+  }
+
+  private roleLlm(): IRoleLlmResolver {
     if (!this._roleLlm) {
       throw new Error(
-        'resolveRoleLlm invoked before _buildInfra built the resolver',
+        'role LLM lookup invoked before _buildInfra built the resolver',
       );
     }
-    return this._roleLlm.resolve(role);
+    return this._roleLlm;
   }
 
   /**
@@ -2463,6 +2464,7 @@ export class SmartServer {
       : undefined;
     return createServerPipelineContext({
       resolveLlm: (role) => this.resolveRoleLlm(role),
+      resolveNamedLlm: (key) => this.resolveNamedRoleLlm(key),
       knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),
       // Durable backend + resolved embedder shared with every pipeline; the
       // controller pipeline consumes both (session-bundle persistence +
@@ -2533,8 +2535,6 @@ export class SmartServer {
           this.partsToBaseInput(scope.parts, workerRegistry, extras),
         ),
       makeLlm: (c) => this._makeLlm(c),
-      llmMap: this._llmMap,
-      pipelineFallback: this._pipelineFallback,
       mainLlm: this._mainLlm as ILlm,
       helperLlm: this._helperLlm,
       mainTemp: this._mainTemp ?? 0.7,

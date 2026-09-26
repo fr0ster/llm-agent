@@ -26,6 +26,7 @@ const stubWorker: ISubAgent = {
 export function fakeServerCtx(): IServerPipelineContext {
   return {
     resolveLlm: async () => stubLlm,
+    resolveNamedLlm: async () => stubLlm,
     knowledgeRagFor: () =>
       ({ add: async () => {}, query: async () => [] }) as never,
     toolsRag: { query: async () => [], lookup: () => undefined },

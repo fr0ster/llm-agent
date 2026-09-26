@@ -15,27 +15,18 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   buildFinalizer,
-  type NormalizedLlmMap,
+  type FinalizerYaml,
   resolveCoordinatorActivation,
-  resolveLlmConfig,
-  resolveLlmConfigStrict,
   resolveReviewerLlmName,
 } from './config.js';
-import type { SmartServerLlmConfig } from './smart-server.js';
 
 export interface BuildDagCoordinatorDepsInput {
   coordCfg: Record<string, unknown> | undefined;
-  llmMap: NormalizedLlmMap | undefined;
-  /** Adapted from `pipeline.llm.main` (already shape-normalized to
-   *  SmartServerLlmConfig: `{ provider, credentialRef, url, model,
-   *  temperature }`). When set, used as the final fallback in the
-   *  role-resolution chain map[name] → map.main → pipelineFallback. */
-  pipelineFallback: SmartServerLlmConfig | undefined;
-  mainLlm: ILlm;
-  helperLlm: ILlm | undefined;
-  mainTemp: number;
   registry: ReadonlyMap<string, ISubAgent>;
-  makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>;
+  /** The role's default — asked when the section names no key for it. */
+  resolveLlm: (role: string) => Promise<ILlm>;
+  /** Strict — asked for a key the section named; rejects naming a key with no entry. */
+  resolveNamedLlm: (key: string) => Promise<ILlm>;
   warn: (msg: string) => void;
 }
 
@@ -48,74 +39,26 @@ export type BuiltDagCoordinatorDeps = Omit<
 };
 
 /**
- * Assemble the full deps record for `withDagCoordinator`. Returns
- * `undefined` when the YAML does not declare a DAG coordinator (no
- * `planner` block), so the caller can branch.
+ * Assemble the deps record for `withDagCoordinator`. Returns `undefined` when the
+ * section declares no DAG coordinator (no `planner` block).
  *
- * Roles resolve their LLM via the chain:
- *   resolveLlmConfig(llmMap, name, pipelineFallback)
- *   → top-level llm.<name> → llm.main → pipelineFallback (pipeline.llm.main)
+ * Each role's LLM is ASKED for, never built: a key the section names goes to
+ * `resolveNamedLlm`, an omitted one to `resolveLlm(<role>)` (§4.6.6, §4.6.7).
  */
 export async function buildDagCoordinatorDeps(
   input: BuildDagCoordinatorDepsInput,
 ): Promise<BuiltDagCoordinatorDeps | undefined> {
-  const {
-    coordCfg,
-    llmMap,
-    pipelineFallback,
-    mainLlm,
-    helperLlm,
-    mainTemp,
-    registry,
-    makeLlm,
-    warn,
-  } = input;
-
+  const { coordCfg, registry, resolveLlm, resolveNamedLlm, warn } = input;
   if (!coordCfg || coordCfg.planner === undefined) return undefined;
 
-  // ---- Role LLM resolver -----------------------------------------------
-  // Priority chain:
-  //   1. map[name] — explicit named entry in the top-level llm: block
-  //   2. 'helper' | 'planner' alias — route to the prebuilt helperLlm
-  //   3. pipelineFallback (pipeline.llm.main) — last resort
-  //   4. fallbackPrebuilt (mainLlm) — when nothing else resolves
-  const resolveRoleLlm = async (
-    name: string | undefined,
-    fallbackPrebuilt: ILlm = mainLlm,
-  ): Promise<ILlm> => {
-    // 1. Explicit map[name] — use it (strict: no main fallback here).
-    const strict = resolveLlmConfigStrict(llmMap, name);
-    if (strict) {
-      return makeLlm({
-        ...strict,
-        temperature: Number(strict.temperature ?? mainTemp),
-      });
-    }
-    // 2. 'helper' | 'planner' alias → reuse prebuilt helperLlm.
-    if (name === 'helper' || name === 'planner') {
-      return helperLlm ?? fallbackPrebuilt;
-    }
-    // 3. Unknown name → final fallback chain via resolveLlmConfig (map.main → pipelineFallback).
-    if (name) {
-      const fb = resolveLlmConfig(llmMap, name, pipelineFallback);
-      if (fb) {
-        return makeLlm({
-          ...fb,
-          temperature: Number(fb.temperature ?? mainTemp),
-        });
-      }
-    }
-    // 4. No name at all → fallbackPrebuilt (mainLlm by default).
-    return fallbackPrebuilt;
-  };
+  const llmFor = (key: string | undefined, role: string): Promise<ILlm> =>
+    key ? resolveNamedLlm(key) : resolveLlm(role);
 
   // ---- Planner ----------------------------------------------------------
-  const plannerBlock = coordCfg.planner as {
-    type?: string;
-    plannerLlm?: string;
-  };
-  const plannerLlm = await resolveRoleLlm(plannerBlock?.plannerLlm);
-  const planner = new LlmDagPlanner(plannerLlm);
+  const plannerBlock = coordCfg.planner as { plannerLlm?: string } | undefined;
+  const planner = new LlmDagPlanner(
+    await llmFor(plannerBlock?.plannerLlm, 'planner'),
+  );
 
   // ---- Reviewer (optional) ---------------------------------------------
   let reviewer: IReviewStrategy | undefined;
@@ -125,8 +68,7 @@ export async function buildDagCoordinatorDeps(
       plannerLlm?: string;
     };
     const reviewerName = resolveReviewerLlmName(reviewerBlock, warn);
-    const reviewerLlm = await resolveRoleLlm(reviewerName);
-    reviewer = new LlmReviewStrategy(reviewerLlm);
+    reviewer = new LlmReviewStrategy(await llmFor(reviewerName, 'reviewer'));
   }
 
   // ---- Interpreter, workers, oracle, activation, error strategy --------
@@ -166,23 +108,10 @@ export async function buildDagCoordinatorDeps(
   }
 
   // ---- Finalizer --------------------------------------------------------
-  const finalizer = await buildFinalizer(
-    coordCfg.finalizer as never,
-    llmMap,
-    pipelineFallback,
-    async (lc) =>
-      makeLlm({
-        ...lc,
-        temperature: Number(lc.temperature ?? mainTemp),
-      }),
+  const finalizerBlock = coordCfg.finalizer as FinalizerYaml | undefined;
+  const finalizer = await buildFinalizer(finalizerBlock, () =>
+    llmFor(finalizerBlock?.finalizerLlm, 'finalizer'),
   );
-
-  // ---- Oracle wrap ------------------------------------------------------
-  const stateOracle = rawOracle
-    ? new SubAgentStateOracle(rawOracle)
-    : undefined;
-
-  void mainLlm;
 
   return {
     planner,
@@ -191,7 +120,7 @@ export async function buildDagCoordinatorDeps(
     activation,
     reviewer,
     errorStrategy,
-    stateOracle,
+    stateOracle: rawOracle ? new SubAgentStateOracle(rawOracle) : undefined,
     finalizer,
     maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
     oracleName,

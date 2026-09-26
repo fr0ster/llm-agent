@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+**BREAKING:** `IPipelineContext` gains the required `resolveNamedLlm(key)` — a
+strict lookup that answers only from an `llm:` entry of exactly that name — so
+every implementation must add it.
+
 Deprecated: `McpClientFactory` as a consumer-facing seam — pass an `IMcpServer`
 (`HttpMcpServer`, `StdioMcpServer`, `mcpServerFromFactory`) to `withMcpServers`. The type
 stays as the default implementation's factory.

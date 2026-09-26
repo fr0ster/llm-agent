@@ -44,8 +44,13 @@ export interface IPipelineInstance {
 /** Infra handles the host provides to a pipeline. NOT the flow — the pipeline owns
  *  its flow. Core-only; the server closes over its own config behind resolveLlm. */
 export interface IPipelineContext {
-  /** Opaque per-role LLM. The server closes over SmartServerLlmConfig/llmMap. */
+  /** The DEFAULT LLM for a role. What a name means — an alias, an `llm:` entry,
+   *  a fallback — is the server's decision; right for a role asked by default. */
   resolveLlm(role: string): Promise<ILlm>;
+  /** The STRICT LLM for a key a plugin's settings NAMED: answered only by the
+   *  entry of exactly that name; rejects, naming the key, otherwise — no alias,
+   *  no fallback. Ask `resolveLlm(role)` when no key was named (§4.6.7). */
+  resolveNamedLlm(key: string): Promise<ILlm>;
   /** Session-scoped knowledge RAG handle. MaybePromise: may need async init. */
   knowledgeRagFor(sessionId: string): MaybePromise<IKnowledgeRagHandle>;
   /** Tools RAG handle. Always present: the host supplies an EMPTY handle when no

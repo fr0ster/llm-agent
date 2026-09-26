@@ -10,7 +10,6 @@ import type {
   KnowledgeBackend,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
-import type { NormalizedLlmMap } from '../smart-agent/config.js';
 import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 
 /**
@@ -22,10 +21,13 @@ import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 export interface IServerPipelineContext extends IPipelineContext {
   /** Builder pre-wired with all shared infra EXCEPT the coordinator. */
   createAgentBuilder(): Promise<SmartAgentBuilder>;
-  // Raw materials for buildDagCoordinatorDeps / linear strategy resolution.
+  // Raw materials for the linear/DAG coordinator builders.
+  /**
+   * @deprecated Construction reachable from a step — the capability §4.6.6 removes.
+   * Its one remaining reader is `controller`, whose `subagents.<role>` still hold an
+   * inline LLM configuration; Task B15 makes them name `llm:` keys and deletes this.
+   */
   makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>;
-  llmMap?: NormalizedLlmMap;
-  pipelineFallback?: SmartServerLlmConfig;
   mainLlm: ILlm;
   helperLlm?: ILlm;
   mainTemp: number;

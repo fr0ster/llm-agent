@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+**BREAKING:** `IServerPipelineContext` loses `llmMap` and `pipelineFallback`;
+`IRoleLlmResolver` loses `makeLlm` and gains `resolveNamed` (a declared
+`main`/`classifier`/`helper` key answers with the held instance `PUT
+/v1/config` swaps); a role with no `llm:` entry shares the held `main` instance
+instead of a fresh build per call; every other entry is built once and held
+for the server's lifetime (the deployment scope — `SmartServer` ships no
+per-session resolver); `buildDagCoordinatorDeps` and `buildFinalizer` take
+lookups; a `dag` key with no entry fails rather than falling back; an omitted
+`dag` planner key follows the pipeline-wide default (helper when configured);
+a declared `llm.classifier` now builds the held classifier (it was always
+built from `llm.main`, ignoring the entry and its `credentialRef`).
+`IServerPipelineContext.makeLlm` is deprecated; Task B15 removes it.
+
 **BREAKING:** the skill store's `apiKey` becomes `credentialRef`.
 `SkillPluginsStoreConfig`'s `qdrant` arm loses `apiKey` and gains
 `credentialRef?: string`; a leftover `apiKey` in config is refused, naming

@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ISubAgent } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, ISubAgent } from '@mcp-abap-adt/llm-agent';
 import {
   LlmFinalizer,
   PassthroughFinalizer,
   SubAgentStateOracle,
   TemplateFinalizer,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { buildDagCoordinatorDeps } from '../build-dag-coordinator-deps.js';
-import { normalizeLlmConfig } from '../config.js';
+import {
+  type BuildDagCoordinatorDepsInput,
+  buildDagCoordinatorDeps,
+} from '../build-dag-coordinator-deps.js';
 
 const stubLlm = {
   name: 'stub',
@@ -21,20 +23,9 @@ const stubLlm = {
       },
     };
   },
-};
+} as unknown as ILlm;
 
-function makeOracle(name: string): ISubAgent {
-  return {
-    name,
-    description: 'd',
-    capabilities: { contextPolicy: 'optional' },
-    async run() {
-      return { output: 'X' };
-    },
-  };
-}
-
-function makeWorker(name: string): ISubAgent {
+function agent(name: string): ISubAgent {
   return {
     name,
     description: 'd',
@@ -45,304 +36,130 @@ function makeWorker(name: string): ISubAgent {
   };
 }
 
-test('buildDagCoordinatorDeps: default finalizer is PassthroughFinalizer', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: { planner: { type: 'llm' } },
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek' },
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm: undefined,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => stubLlm as never,
+/** Records every lookup as `role:<name>` or `key:<name>`, so a test states which
+ *  of the two questions answered each role. */
+function input(
+  coordCfg: Record<string, unknown> | undefined,
+  over: Partial<BuildDagCoordinatorDepsInput> = {},
+): BuildDagCoordinatorDepsInput & { asked: string[] } {
+  const asked: string[] = [];
+  return {
+    asked,
+    coordCfg,
+    registry: new Map([['w', agent('w')]]),
+    resolveLlm: async (role) => {
+      asked.push(`role:${role}`);
+      return stubLlm;
+    },
+    resolveNamedLlm: async (key) => {
+      asked.push(`key:${key}`);
+      return stubLlm;
+    },
     warn: () => {},
-  });
-  assert.ok(deps);
+    ...over,
+  };
+}
+
+test('default finalizer is PassthroughFinalizer', async () => {
+  const deps = await buildDagCoordinatorDeps(
+    input({ planner: { type: 'llm' } }),
+  );
   assert.ok(deps?.finalizer instanceof PassthroughFinalizer);
   assert.equal(deps?.stateOracle, undefined);
   assert.equal(deps?.reviewer, undefined);
-  assert.ok(deps?.planner);
   assert.equal(deps?.workers.size, 1);
 });
 
-test('buildDagCoordinatorDeps: type=llm finalizer yields LlmFinalizer', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: {
-      planner: { type: 'llm' },
-      finalizer: { type: 'llm' },
-    },
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek' },
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm: undefined,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => stubLlm as never,
-    warn: () => {},
-  });
-  assert.ok(
-    deps?.finalizer instanceof LlmFinalizer,
-    'type=llm yields LlmFinalizer',
+test('type=llm finalizer yields LlmFinalizer', async () => {
+  const deps = await buildDagCoordinatorDeps(
+    input({ planner: { type: 'llm' }, finalizer: { type: 'llm' } }),
   );
+  assert.ok(deps?.finalizer instanceof LlmFinalizer);
 });
 
-test('buildDagCoordinatorDeps: type=template finalizer yields TemplateFinalizer', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: {
-      planner: { type: 'llm' },
-      finalizer: { type: 'template' },
-    },
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek' },
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm: undefined,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => stubLlm as never,
-    warn: () => {},
-  });
+test('type=template finalizer yields TemplateFinalizer', async () => {
+  const deps = await buildDagCoordinatorDeps(
+    input({ planner: { type: 'llm' }, finalizer: { type: 'template' } }),
+  );
   assert.ok(deps?.finalizer instanceof TemplateFinalizer);
 });
 
-test('buildDagCoordinatorDeps: stateOracle name resolves and is wrapped in SubAgentStateOracle', async () => {
-  const oracle = makeOracle('inspector');
-  const registry = new Map<string, ISubAgent>([
-    ['w', makeWorker('w')],
-    ['inspector', oracle],
-  ]);
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: { planner: { type: 'llm' }, stateOracle: 'inspector' },
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek' },
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm: undefined,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => stubLlm as never,
-    warn: () => {},
-  });
+test('stateOracle resolves, is wrapped, and leaves the worker set', async () => {
+  const deps = await buildDagCoordinatorDeps(
+    input(
+      { planner: { type: 'llm' }, stateOracle: 'inspector' },
+      {
+        registry: new Map([
+          ['w', agent('w')],
+          ['inspector', agent('inspector')],
+        ]),
+      },
+    ),
+  );
   assert.ok(deps?.stateOracle instanceof SubAgentStateOracle);
-  assert.equal(deps?.stateOracle?.name, 'inspector');
-  // Oracle MUST be excluded from the workers set passed to the DAG.
   assert.equal(deps?.workers.has('inspector'), false);
   assert.equal(deps?.workers.has('w'), true);
 });
 
-test('buildDagCoordinatorDeps: returns undefined when planner block is absent (no coordinator)', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: { stateOracle: 'inspector' }, // no planner
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek' },
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm: undefined,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => stubLlm as never,
-    warn: () => {},
-  });
-  assert.equal(deps, undefined);
+test('returns undefined when the planner block is absent', async () => {
+  assert.equal(
+    await buildDagCoordinatorDeps(input({ stateOracle: 'inspector' })),
+    undefined,
+  );
 });
 
-test('buildDagCoordinatorDeps: reviewer alias plannerLlm emits a warning', async () => {
+test('reviewer alias plannerLlm still warns', async () => {
   const warnings: string[] = [];
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  await buildDagCoordinatorDeps({
-    coordCfg: {
-      planner: { type: 'llm' },
-      reviewer: { type: 'llm', plannerLlm: 'main' },
-    },
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek' },
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm: undefined,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => stubLlm as never,
-    warn: (m) => warnings.push(m),
-  });
+  await buildDagCoordinatorDeps(
+    input(
+      {
+        planner: { type: 'llm' },
+        reviewer: { type: 'llm', plannerLlm: 'main' },
+      },
+      { warn: (m) => warnings.push(m) },
+    ),
+  );
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /plannerLlm.*deprecated/i);
 });
 
-test('buildDagCoordinatorDeps: pipelineFallback enables type=llm finalizer without top-level llm map', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: {
-      planner: { type: 'llm' },
-      finalizer: { type: 'llm' },
-    },
-    llmMap: undefined, // no top-level llm: block
-    pipelineFallback: {
-      provider: 'openai',
-      model: 'gpt-x',
-    } as never,
-    mainLlm: stubLlm as never,
-    helperLlm: undefined,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => stubLlm as never,
-    warn: () => {},
+test('an omitted key asks resolveLlm with the role name', async () => {
+  const i = input({
+    planner: { type: 'llm' },
+    reviewer: { type: 'llm' },
+    finalizer: { type: 'llm' },
   });
-  assert.ok(deps?.finalizer instanceof LlmFinalizer);
+  await buildDagCoordinatorDeps(i);
+  assert.deepEqual(i.asked, [
+    'role:planner',
+    'role:reviewer',
+    'role:finalizer',
+  ]);
 });
 
-test('buildDagCoordinatorDeps: plannerLlm=helper uses helperLlm even when pipeline.llm.main fallback exists', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const helperLlm = { ...stubLlm, name: 'HELPER' } as never;
-  let makeLlmCalls = 0;
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
-    llmMap: undefined,
-    pipelineFallback: {
-      provider: 'openai',
-      model: 'GPT-MAIN',
-    } as never,
-    mainLlm: stubLlm as never,
-    helperLlm,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => {
-      makeLlmCalls++;
-      return stubLlm as never;
-    },
-    warn: () => {},
+test('a named key asks resolveNamedLlm, and nothing else', async () => {
+  const i = input({
+    planner: { type: 'llm', plannerLlm: 'helper' },
+    reviewer: { type: 'llm', reviewerLlm: 'planner' },
+    finalizer: { type: 'llm', finalizerLlm: 'cheap' },
   });
-  assert.ok(deps);
-  // helperLlm must be used directly without going through makeLlm
-  assert.equal(makeLlmCalls, 0, 'helperLlm must be reused, not rebuilt');
+  await buildDagCoordinatorDeps(i);
+  assert.deepEqual(i.asked, ['key:helper', 'key:planner', 'key:cheap']);
 });
 
-test('buildDagCoordinatorDeps: reviewerLlm=planner alias also routes to helperLlm', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const helperLlm = { ...stubLlm } as never;
-  let makeLlmCalls = 0;
-  await buildDagCoordinatorDeps({
-    coordCfg: {
-      planner: { type: 'llm' },
-      reviewer: { type: 'llm', reviewerLlm: 'planner' },
-    },
-    llmMap: undefined,
-    pipelineFallback: {
-      provider: 'openai',
-      model: 'GPT',
-    } as never,
-    mainLlm: stubLlm as never,
-    helperLlm,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => {
-      makeLlmCalls++;
-      return stubLlm as never;
-    },
-    warn: () => {},
-  });
-  assert.equal(
-    makeLlmCalls,
-    0,
-    'helperLlm must be reused for reviewer alias too',
-  );
-});
-
-test('plannerLlm=helper with FLAT llm: still routes to helperLlm (not main)', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const helperLlm = { ...stubLlm, name: 'HELPER' } as never;
-  let makeLlmCalls = 0;
-  const deps = await buildDagCoordinatorDeps({
-    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
-    // Flat top-level llm: present → normalized to { main: flat }
-    llmMap: normalizeLlmConfig({
-      provider: 'deepseek',
-      model: 'main-m',
-    } as never),
-    pipelineFallback: {
-      provider: 'openai',
-      model: 'GPT-MAIN',
-    } as never,
-    mainLlm: stubLlm as never,
-    helperLlm,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => {
-      makeLlmCalls++;
-      return stubLlm as never;
-    },
-    warn: () => {},
-  });
-  assert.ok(deps);
-  assert.equal(
-    makeLlmCalls,
-    0,
-    'helperLlm must be reused, not rebuilt from map.main',
-  );
-});
-
-test('plannerLlm=helper with MAP without explicit helper entry still routes to helperLlm', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const helperLlm = { ...stubLlm } as never;
-  let makeLlmCalls = 0;
-  await buildDagCoordinatorDeps({
-    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', model: 'main-m' },
-      // NO 'helper' key — should alias to helperLlm, not silently use main.
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async () => {
-      makeLlmCalls++;
-      return stubLlm as never;
-    },
-    warn: () => {},
-  });
-  assert.equal(makeLlmCalls, 0, 'alias must beat map.main fallback');
-});
-
-test('explicit map[helper] WINS over alias (advanced users can override)', async () => {
-  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
-  const helperLlm = { ...stubLlm } as never;
-  let makeLlmCalls = 0;
-  let askedFor: string | undefined;
-  await buildDagCoordinatorDeps({
-    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
-    llmMap: normalizeLlmConfig({
-      main: { provider: 'deepseek', model: 'main-m' },
-      helper: { provider: 'openai', model: 'EXPLICIT-HELPER' },
-    } as never),
-    pipelineFallback: undefined,
-    mainLlm: stubLlm as never,
-    helperLlm,
-    mainTemp: 0.5,
-    registry,
-    makeLlm: async (cfg) => {
-      makeLlmCalls++;
-      askedFor = (cfg as { model?: string }).model;
-      return stubLlm as never;
-    },
-    warn: () => {},
-  });
-  assert.equal(makeLlmCalls, 1, 'explicit map entry must build a fresh LLM');
-  assert.equal(
-    askedFor,
-    'EXPLICIT-HELPER',
-    'explicit entry beats helperLlm alias',
+test('a named key with no entry fails the build, naming the key', async () => {
+  await assert.rejects(
+    () =>
+      buildDagCoordinatorDeps(
+        input(
+          { planner: { type: 'llm', plannerLlm: 'cheep' } },
+          {
+            resolveNamedLlm: async (key) => {
+              throw new Error(`llm: has no entry named '${key}'`);
+            },
+          },
+        ),
+      ),
+    /'cheep'/,
   );
 });

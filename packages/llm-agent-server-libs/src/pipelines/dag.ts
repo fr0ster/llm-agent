@@ -40,13 +40,9 @@ export class DagPipelinePlugin implements IPipelinePlugin<DagPipelineConfig> {
   ): Promise<IPipelineInstance> {
     const deps = await buildDagCoordinatorDeps({
       coordCfg: cfg,
-      llmMap: ctx.llmMap,
-      pipelineFallback: ctx.pipelineFallback,
-      mainLlm: ctx.mainLlm,
-      helperLlm: ctx.helperLlm,
-      mainTemp: ctx.mainTemp,
       registry: ctx.workerRegistry,
-      makeLlm: (c) => ctx.makeLlm(c),
+      resolveLlm: (role) => ctx.resolveLlm(role),
+      resolveNamedLlm: (key) => ctx.resolveNamedLlm(key),
       warn: (m) => ctx.warn(m),
     });
     if (!deps) {
