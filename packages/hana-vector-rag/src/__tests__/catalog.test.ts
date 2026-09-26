@@ -211,6 +211,44 @@ describe('hana catalog: openCollection', () => {
   });
 });
 
+describe('hana: a handle connects on first use, never at openCollection', () => {
+  // Without clientFactory each handle opens its own connection. Per-session
+  // hydration opens one handle per record per session, so a handle that
+  // connected in its constructor opened a connection nobody used or closed.
+  // Resolving the credential is the first step of a connect, so counting its
+  // reads counts connection attempts without a driver.
+  it('openCollection reads no credential; the first use does', async () => {
+    let reads = 0;
+    const credential = {
+      ...staticLogin('u', 'pw'),
+      secret: async () => {
+        reads++;
+        throw new Error('no HANA here');
+      },
+    };
+    const provider = new HanaVectorRagProvider({
+      name: 'hana',
+      embedder,
+      connection: { host: 'h', collectionName: '__unused', credential },
+    });
+    const opened = await provider.openCollection({
+      storeName: STORE,
+      name: 'n',
+      scope: 'global',
+    });
+    assert.ok(opened.ok);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(reads, 0, 'openCollection must open no connection');
+
+    const first = await opened.value.rag.healthCheck();
+    assert.equal(first.ok, false);
+    assert.equal(reads, 1);
+    // A failed connect is not memoized: the next use tries again.
+    await opened.value.rag.healthCheck();
+    assert.equal(reads, 2);
+  });
+});
+
 describe('hana catalog: deleteCollection', () => {
   const seeded = (): FakeHana => {
     const fake = fakeHana();

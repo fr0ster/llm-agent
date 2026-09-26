@@ -214,6 +214,25 @@ describe('qdrant catalog: no handle creates its collection', () => {
       assert.equal(indexOf(stub, 'PUT', `/collections/${STORE}`), -1);
     }));
 
+  it('openCollection answers a failed Result, never a rejection, when building a handle throws', async () => {
+    const provider = new QdrantRagProvider({
+      name: 'q',
+      url: 'http://127.0.0.1:9', // never contacted: no request is made
+      embedder: new CountingEmbedder(),
+      idStrategyFactory: () => {
+        throw new Error('id strategy refused');
+      },
+    });
+    const opened = await provider.openCollection({
+      storeName: STORE,
+      name: 'n',
+      scope: 'global',
+    });
+    assert.equal(opened.ok, false);
+    assert.ok(!opened.ok && opened.error.code === 'RAG_OPEN_ERROR');
+    assert.match(!opened.ok ? opened.error.message : '', /id strategy refused/);
+  });
+
   it('a handle whose collection was deleted elsewhere fails rather than recreating it', () =>
     withStub(async (stub) => {
       const created = await providerOn(stub).createCollection(

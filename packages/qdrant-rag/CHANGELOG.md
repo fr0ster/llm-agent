@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+`QdrantRagProvider.openCollection` answers a failed `Result`
+(`RAG_OPEN_ERROR`) when building a handle throws — an `idStrategyFactory` that
+throws, for one — instead of rejecting, as the pg and HANA providers do.
+
 **BREAKING:** `apiKey` is gone from `QdrantRagConfig` and
 `QdrantRagProviderConfig`, replaced by an optional `credential` (an
 `IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`). The `api-key`

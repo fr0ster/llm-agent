@@ -51,6 +51,20 @@ Without those rights `createCollection` fails where it used to succeed. A collec
 this release has a table and no record: take it over once with
 `createCollection(..., { adoptExisting: true })`.
 
+## Connections, and `clientFactory` for per-session hydration
+
+`openCollection` builds a collection's handles without a statement and without a connection; a
+handle connects on its first query or write. Without `clientFactory`, each handle then opens a
+connection of its own — one physical connection per collection handle, which nothing closes.
+Per-session hydration opens every one of a caller's catalog records in every session, so a
+deployment that hydrates per session should pass **`clientFactory` returning one shared client**:
+every handle and the provider's own catalog work then run on that client.
+
+```ts
+const shared = await createHanaClient({ host, credential: staticLogin(user, password), collectionName: '_' });
+new HanaVectorRagProvider({ name: 'hana', embedder, connection, clientFactory: () => shared });
+```
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

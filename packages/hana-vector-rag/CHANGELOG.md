@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+A `HanaVectorRag` connects on its first query or write instead of in its
+constructor, so `HanaVectorRagProvider.openCollection` opens no connection;
+before, per-session hydration opened one connection per catalog record per
+session, used or not, and never closed it. A failed connect is no longer kept:
+the next use tries again. Where collections are hydrated per session, pass
+`clientFactory` returning one shared client (README).
+
 **BREAKING:** the provider keeps a catalog table (`rag_collection_catalog`, configurable as
 `catalogTable`), which the connection's account must be able to create and write (the README's new
 section lists the rights); `createCollection` refuses a collection whose record exists

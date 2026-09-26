@@ -80,7 +80,9 @@ export interface HanaVectorRagProviderConfig {
    * Optional factory for the driver client the provider uses for catalog and
    * schema statements and hands each collection handle. Omitted, the provider
    * opens one connection of its own from `connection` for its statements, and
-   * each handle opens its own.
+   * each handle opens its own on first use. Recommended — returning one shared
+   * client — wherever collections are hydrated per session, which opens every
+   * record's handle for every session.
    */
   clientFactory?: () => HanaClient;
   /** The table holding one record per collection. Default `rag_collection_catalog`. */

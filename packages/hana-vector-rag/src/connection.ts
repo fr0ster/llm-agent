@@ -6,9 +6,10 @@ export interface HanaVectorRagConfig {
   host?: string;
   port?: number;
   /**
-   * Resolved once, at the one connect this instance ever does — a
-   * `HanaVectorRag` opens exactly one physical connection, not a pool, so
-   * "once" and "per connection" are the same thing here (contrast
+   * Resolved at connect — a `HanaVectorRag` opens exactly one physical
+   * connection, on first use, not a pool, so "once" and "per connection" are
+   * the same thing here (a failed connect is retried on the next use, and
+   * resolves it again) (contrast
    * `pg-vector-rag`, where a pool reuses one resolved value across many
    * physical connections unless the secret is handed over as a function).
    *

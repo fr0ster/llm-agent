@@ -200,7 +200,11 @@ export class QdrantRagProvider extends BaseRagProvider {
   ): Promise<Result<Handles, RagError>> {
     const owner = validateRagOwner(record);
     if (!owner.ok) return owner;
-    return { ok: true, value: this.handles(record.storeName, owner.value) };
+    try {
+      return { ok: true, value: this.handles(record.storeName, owner.value) };
+    } catch (err) {
+      return { ok: false, error: new RagError(String(err), 'RAG_OPEN_ERROR') };
+    }
   }
 
   /** The record first, then the collection (§6.3). */
