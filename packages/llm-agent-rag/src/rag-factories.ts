@@ -1,6 +1,5 @@
 import type {
   IApiKeyCredential,
-  IBearerCredential,
   ISecretLoginCredential,
 } from '@mcp-abap-adt/interfaces-auth';
 import type {
@@ -20,11 +19,10 @@ import {
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  assertCredentialKind,
-  EMBEDDER_CREDENTIALS,
-} from './credential-guard.js';
-import type { EmbedderFactoryOpts } from './embedder-factories.js';
-import { builtInEmbedderFactories } from './embedder-factories.js';
+  constructBuiltInEmbedder,
+  type EmbedderResolution,
+} from './embedder-factories.js';
+import { importPeer } from './import-peer.js';
 
 // ---------------------------------------------------------------------------
 // Peer-package loading — literal specifiers only
@@ -35,22 +33,6 @@ export const ragBackendNames = Object.freeze([
   'hana-vector',
   'pg-vector',
 ]) as readonly string[];
-
-/**
- * `await import(pkg)` here is a runtime-only lookup — `pkg` is a parameter,
- * so this call itself infers no type (every caller below supplies the type
- * explicitly, e.g. `importPeer<typeof import('@mcp-abap-adt/qdrant-rag')>`,
- * which DOES resolve at compile time because that argument is a literal).
- * `MissingProviderError` is the one runtime check this keeps: a package is
- * either installed or not, and no type can answer that.
- */
-async function importPeer<T>(pkg: string, name: string): Promise<T> {
-  try {
-    return (await import(pkg)) as T;
-  } catch {
-    throw new MissingProviderError(pkg, name);
-  }
-}
 
 /**
  * Verify each named peer imports successfully, so a missing driver fails
@@ -65,13 +47,25 @@ export async function prefetchRagFactories(
   for (const name of names) {
     switch (name) {
       case 'qdrant':
-        await importPeer('@mcp-abap-adt/qdrant-rag', name);
+        await importPeer(
+          () => import('@mcp-abap-adt/qdrant-rag'),
+          '@mcp-abap-adt/qdrant-rag',
+          name,
+        );
         break;
       case 'hana-vector':
-        await importPeer('@mcp-abap-adt/hana-vector-rag', name);
+        await importPeer(
+          () => import('@mcp-abap-adt/hana-vector-rag'),
+          '@mcp-abap-adt/hana-vector-rag',
+          name,
+        );
         break;
       case 'pg-vector':
-        await importPeer('@mcp-abap-adt/pg-vector-rag', name);
+        await importPeer(
+          () => import('@mcp-abap-adt/pg-vector-rag'),
+          '@mcp-abap-adt/pg-vector-rag',
+          name,
+        );
         break;
       default:
         throw new MissingProviderError('(unknown)', name);
@@ -80,41 +74,15 @@ export async function prefetchRagFactories(
 }
 
 // ---------------------------------------------------------------------------
-// High-level async embedder resolution (config-based) — Task B6a's, unchanged
+// Embedder resolution — a discriminated union, not a flat bag
 // ---------------------------------------------------------------------------
 
-export interface EmbedderResolutionConfig {
-  /** Embedder name — looked up in the factory registry. Default: 'ollama' */
-  embedder?: string;
-  url?: string;
-  model?: string;
-  credential?: IApiKeyCredential | IBearerCredential;
-  /** Where the credential is valid — the SAP targets take it instead of reading the environment. */
-  apiBaseUrl?: string;
-  /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
-  resourceGroup?: string;
-  /**
-   * SAP AI Core scenario for the embedding model deployment.
-   * `'orchestration'` (default) uses the SAP SDK; `'foundation-models'` calls the REST inference API.
-   */
-  scenario?: 'orchestration' | 'foundation-models';
-  /**
-   * Cap on texts per embedBatch call. Precedence: this value → the provider's
-   * declared cap (IBatchSizeLimited) → DEFAULT_MAX_BATCH_SIZE. Set it when the
-   * tenant's real limit is lower than the model's documented one.
-   */
-  maxBatchSize?: number;
-}
-
 export interface EmbedderResolutionOptions {
-  /** Pre-built embedder injected by the consumer (takes precedence). */
-  injectedEmbedder?: IEmbedder;
   /**
-   * Additional embedder factories (merged with built-ins). Deliberately the
-   * NARROW `EmbedderFactory`: a factory the consumer wrote closes over the
-   * credential it already holds, so the framework must not promise to carry
-   * one for it (spec §4.6.2). The built-ins are the other case — they have no
-   * closure, which is why the bag itself carries `credential`.
+   * Consumer-registered factories, named by the `factory` arm. Deliberately
+   * the NARROW `EmbedderFactory`: a factory the consumer wrote closes over
+   * the credential it already holds, so the framework must not promise to
+   * carry one for it (spec §4.6.2).
    */
   extraFactories?: Record<string, EmbedderFactory>;
   /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
@@ -122,61 +90,87 @@ export interface EmbedderResolutionOptions {
 }
 
 /**
- * Resolve an IEmbedder from config.
- *
- * Priority:
- *   1. Injected embedder instance (DI)
- *   2. Named factory from registry (YAML `embedder: <name>`)
- *   3. Default: 'ollama'
+ * Chunking and retry are properties of the embedder, applied here — the one
+ * choke point every constructed embedder passes through, and the one a
+ * consumer's injected instance goes through too (an injected embedder would
+ * otherwise bypass chunking entirely). Idempotent.
  */
-export function resolveEmbedder(
-  cfg: EmbedderResolutionConfig,
-  options?: EmbedderResolutionOptions,
+export function composeEmbedder(
+  raw: IEmbedder,
+  opts?: { maxBatchSize?: number; logger?: AnyLogger },
 ): IEmbedder {
-  // Chunking and retry are properties of the embedder, applied HERE — this is
-  // the single choke point every RAG backend goes through, and the instance
-  // startup tool vectorization reaches via the store's private field.
-  const compose = (raw: IEmbedder): IEmbedder =>
-    composeResilientEmbedder(raw, {
-      explicitMaxBatchSize: cfg.maxBatchSize,
-      fallbackMaxBatchSize: isBatchSizeLimited(raw)
-        ? raw.maxBatchSize
-        : DEFAULT_MAX_BATCH_SIZE,
-      logger: options?.logger,
-    });
+  return composeResilientEmbedder(raw, {
+    explicitMaxBatchSize: opts?.maxBatchSize,
+    fallbackMaxBatchSize: isBatchSizeLimited(raw)
+      ? raw.maxBatchSize
+      : DEFAULT_MAX_BATCH_SIZE,
+    logger: opts?.logger,
+  });
+}
 
-  // The injected path is composed too: a consumer's DI'd embedder would
-  // otherwise bypass chunking entirely. composeResilientEmbedder is idempotent.
-  if (options?.injectedEmbedder) return compose(options.injectedEmbedder);
-
-  const name = cfg.embedder ?? 'ollama';
-  const opts: EmbedderFactoryOpts = {
-    url: cfg.url,
-    model: cfg.model,
-    credential: cfg.credential,
-    apiBaseUrl: cfg.apiBaseUrl,
-    resourceGroup: cfg.resourceGroup,
-    scenario: cfg.scenario,
-  };
-  assertCredentialKind(name, cfg.credential, EMBEDDER_CREDENTIALS[name]);
-
-  // Check built-in prefetch-based factories first
-  if (name in builtInEmbedderFactories) {
-    return compose(builtInEmbedderFactories[name](opts));
-  }
-
-  // Fall back to consumer-registered extra factories
-  const extraFactory = options?.extraFactories?.[name];
-  if (!extraFactory) {
-    const known = [
-      ...Object.keys(builtInEmbedderFactories),
-      ...Object.keys(options?.extraFactories ?? {}),
-    ];
+/**
+ * The runtime check left on the embedder side, for a value arriving from an
+ * UNTYPED source: a loaded object is not a fresh literal, so no
+ * excess-property check ever sees a leftover `apiKey` — and the old name
+ * field `embedder` would otherwise fall through to the ollama default in
+ * silence. The typed path is `EmbedderResolution` itself.
+ */
+function refuseLegacyEmbedderFields(cfg: EmbedderResolution): void {
+  const raw = cfg as unknown as Record<string, unknown>;
+  if ('apiKey' in raw) {
     throw new Error(
-      `Unknown embedder "${name}". Register a factory or use: ${known.join(', ')}`,
+      'embedder config still carries "apiKey", which is not a member of any ' +
+        'EmbedderResolution arm — replace it with credential (build one with staticApiKey).',
     );
   }
-  return compose(extraFactory(opts));
+  if ('embedder' in raw) {
+    throw new Error(
+      'embedder config carries "embedder", which was renamed: name a built-in with ' +
+        'provider (openai, ollama, sap-ai-core) or a registered factory with factory.',
+    );
+  }
+}
+
+/**
+ * Resolve an IEmbedder from its configuration. Synchronous: the built-ins
+ * must have been prefetched (`prefetchEmbedderFactories`). A consumer's own
+ * instance does not come through here — pass it to `composeEmbedder`.
+ */
+export function resolveEmbedder(
+  cfg: EmbedderResolution,
+  options?: EmbedderResolutionOptions,
+): IEmbedder {
+  refuseLegacyEmbedderFields(cfg);
+  const raw =
+    cfg.factory !== undefined
+      ? constructFromExtraFactory(cfg, options)
+      : constructBuiltInEmbedder(cfg);
+  return composeEmbedder(raw, {
+    maxBatchSize: cfg.maxBatchSize,
+    logger: options?.logger,
+  });
+}
+
+function constructFromExtraFactory(
+  cfg: Extract<EmbedderResolution, { factory: string }>,
+  options: EmbedderResolutionOptions | undefined,
+): IEmbedder {
+  const factory = options?.extraFactories?.[cfg.factory];
+  if (!factory) {
+    const known = Object.keys(options?.extraFactories ?? {});
+    throw new Error(
+      `Unknown embedder factory "${cfg.factory}". Registered: ` +
+        `${known.length > 0 ? known.join(', ') : '(none)'}. Built-ins are named with ` +
+        'provider: openai, ollama, sap-ai-core.',
+    );
+  }
+  // Exactly EmbedderFactoryConfig, built from named fields — nothing spread,
+  // so nothing the consumer did not ask for can ride along.
+  return factory({
+    ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+    ...(cfg.model !== undefined ? { model: cfg.model } : {}),
+    ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -189,11 +183,9 @@ export function resolveEmbedder(
  * wrong credential kind, a missing required one, or a field Task B6 removed
  * is a build error rather than something a guard has to notice at runtime.
  *
- * `embedder` is an already-built `IEmbedder`, not a factory name: the
- * embedder-resolution members (`embedder?: string`, `url`, `model`,
- * `credential`, `apiBaseUrl`, `resourceGroup`, `scenario`) stay on
- * `EmbedderResolutionConfig`, where Task B6a put them — a caller composes
- * the two, calling `resolveEmbedder` first and handing the result in here.
+ * `embedder` is an already-built `IEmbedder`, not a factory name: a caller
+ * resolves one first — `resolveEmbedder(cfg: EmbedderResolution)`, or
+ * `composeEmbedder` for its own instance — and hands it in here.
  *
  * Field sources, read from each store's own config (not invented):
  *   - qdrant: `QdrantRagConfig` (`packages/qdrant-rag/src/qdrant-rag.ts`) —
@@ -358,17 +350,21 @@ export async function makeRag(
         embedder: _e,
         ...qdrantCfg
       } = cfg;
-      const { QdrantRag } = await importPeer<
-        typeof import('@mcp-abap-adt/qdrant-rag')
-      >('@mcp-abap-adt/qdrant-rag', 'qdrant');
+      const { QdrantRag } = await importPeer(
+        () => import('@mcp-abap-adt/qdrant-rag'),
+        '@mcp-abap-adt/qdrant-rag',
+        'qdrant',
+      );
       return new QdrantRag({ ...qdrantCfg, embedder: compose(cfg.embedder) });
     }
 
     case 'hana-vector': {
       const { type: _type, maxBatchSize: _mbs, embedder: _e, ...hanaCfg } = cfg;
-      const { HanaVectorRag } = await importPeer<
-        typeof import('@mcp-abap-adt/hana-vector-rag')
-      >('@mcp-abap-adt/hana-vector-rag', 'hana-vector');
+      const { HanaVectorRag } = await importPeer(
+        () => import('@mcp-abap-adt/hana-vector-rag'),
+        '@mcp-abap-adt/hana-vector-rag',
+        'hana-vector',
+      );
       return new HanaVectorRag({
         ...hanaCfg,
         embedder: compose(cfg.embedder),
@@ -377,9 +373,11 @@ export async function makeRag(
 
     case 'pg-vector': {
       const { type: _type, maxBatchSize: _mbs, embedder: _e, ...pgCfg } = cfg;
-      const { PgVectorRag } = await importPeer<
-        typeof import('@mcp-abap-adt/pg-vector-rag')
-      >('@mcp-abap-adt/pg-vector-rag', 'pg-vector');
+      const { PgVectorRag } = await importPeer(
+        () => import('@mcp-abap-adt/pg-vector-rag'),
+        '@mcp-abap-adt/pg-vector-rag',
+        'pg-vector',
+      );
       return new PgVectorRag({ ...pgCfg, embedder: compose(cfg.embedder) });
     }
 

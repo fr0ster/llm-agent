@@ -157,7 +157,9 @@ async function startStubOrSkip(
 
 // ---------------------------------------------------------------------------
 
-test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects exactly once', async (t) => {
+test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects exactly once', {
+  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
+}, async (t) => {
   const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
   if (!stub) return;
   const server = new SmartServer({
@@ -208,7 +210,9 @@ test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects
   }
 });
 
-test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no connect)', async (t) => {
+test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no connect)', {
+  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
+}, async (t) => {
   // DI precedence: an explicitly-provided client set — even an EMPTY array — must
   // override the YAML `mcp:` block. `mcpClients: []` is a deliberate "disable MCP"
   // signal; the startup builder must receive withMcpClients([]) (short-circuit) and

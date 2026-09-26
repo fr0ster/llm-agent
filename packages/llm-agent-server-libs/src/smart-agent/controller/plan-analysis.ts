@@ -289,21 +289,31 @@ async function buildSkillsRecall(): Promise<(goal: string) => Promise<string>> {
 
 async function makeRealEmbedder(): Promise<IEmbedder> {
   // Lazy import to keep the stub path free of RAG deps. The user opts in via
-  // EVAL_EMBEDDER=1; provider/model come from .env.
+  // EVAL_EMBEDDER=1; provider/model come from .env. Reading the environment
+  // here is legitimate: this is a harness the user runs by hand.
   const rag = await import('@mcp-abap-adt/llm-agent-rag');
-  rag.prefetchEmbedderFactories?.();
-  // This is a harness the user runs by hand, so reading the environment here
-  // directly (rather than through DI) is legitimate.
-  //
-  // NOTE (pre-existing, not this task's): this passes `provider:`, but
-  // `resolveEmbedder`'s config field is `embedder:` — so this live path has
-  // always silently fallen back to 'ollama'. Left alone.
-  return rag.resolveEmbedder({
-    provider: process.env.LLM_PROVIDER ?? 'ollama',
-    model: process.env.EMBEDDING_MODEL,
-    credential: staticApiKey(process.env.OPENAI_API_KEY ?? ''),
-    url: process.env.OLLAMA_URL,
-  });
+  const provider = process.env.LLM_PROVIDER ?? 'ollama';
+  const model = process.env.EMBEDDING_MODEL ?? '';
+  switch (provider) {
+    case 'openai':
+      await rag.prefetchEmbedderFactories(['openai']);
+      return rag.resolveEmbedder({
+        provider: 'openai',
+        model,
+        credential: staticApiKey(process.env.OPENAI_API_KEY ?? ''),
+      });
+    case 'ollama':
+      await rag.prefetchEmbedderFactories(['ollama']);
+      return rag.resolveEmbedder({
+        provider: 'ollama',
+        model,
+        ...(process.env.OLLAMA_URL ? { url: process.env.OLLAMA_URL } : {}),
+      });
+    default:
+      throw new Error(
+        `plan-analysis: EVAL_EMBEDDER supports openai and ollama, got '${provider}'`,
+      );
+  }
 }
 
 // --------------------------------------------------------------------------

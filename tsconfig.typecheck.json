@@ -25,6 +25,7 @@
     "packages/deepseek-llm/src/__tests__/credential.test.ts",
     "packages/ollama-llm/src/__tests__/credential.test.ts",
     "packages/openai-embedder/src/__tests__/credential.test.ts",
-    "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts"
+    "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts",
+    "packages/llm-agent-rag/src/__typechecks__/embedder-resolution.ts"
   ]
 }

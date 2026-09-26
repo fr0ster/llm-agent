@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+**BREAKING:** `resolveEmbedder` now takes `EmbedderResolution`, a discriminated
+union on `provider` (`openai` requires an `IApiKeyCredential`;
+`sap-ai-core`/`sap-aicore` an `IBearerCredential` and `apiBaseUrl`; `ollama`,
+the default, takes none; a consumer factory is named with `factory` and
+receives only `EmbedderFactoryConfig`); `EmbedderResolutionOptions.injectedEmbedder`
+is replaced by `composeEmbedder`; `EmbedderFactoryOpts`, `resolvePrefetchedEmbedder`,
+`builtInEmbedderFactories`, `EMBEDDER_CREDENTIALS` and `assertCredentialKind` are
+removed; a configured `url` now reaches Ollama (`ollamaUrl`) and OpenAI
+(`baseURL`), where it was dropped before; a leftover `apiKey` or `embedder`
+field from an untyped source is refused naming its replacement.
+
 **BREAKING:** `makeRag` now takes `RagResolution`, a discriminated union on
 `type`, in place of the flat `RagResolutionConfig`. `resolveRag` reached a
 store through a variable-specifier `import()` and two casts (`RagCtor`, then

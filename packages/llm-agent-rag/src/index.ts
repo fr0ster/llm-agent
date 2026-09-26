@@ -1,13 +1,12 @@
 export {
   _resetPrefetchedForTests,
-  builtInEmbedderFactories,
-  type EmbedderFactoryOpts,
+  type BuiltInEmbedderResolution,
+  type EmbedderResolution,
   prefetchEmbedderFactories,
-  resolvePrefetchedEmbedder,
 } from './embedder-factories.js';
 
 export {
-  type EmbedderResolutionConfig,
+  composeEmbedder,
   type EmbedderResolutionOptions,
   makeRag,
   prefetchRagFactories,

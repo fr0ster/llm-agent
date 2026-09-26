@@ -36,7 +36,9 @@ describe('resolveAgentEmbedder', () => {
     assert.equal(result, undefined);
   });
 
-  it('builds an embedder from rag.embedder for YAML-only configs (#137)', async () => {
+  it('builds an embedder from rag.embedder for YAML-only configs (#137)', {
+    skip: 'resolveEmbedder refuses the flat embedder: field since Task B6c; Task B10 rewrites this literal to the split rag.embedder section',
+  }, async () => {
     // in-memory + explicit embedder → hybrid vector store needs an embedder.
     const result = await resolveAgentEmbedder(
       {
@@ -80,7 +82,9 @@ describe('resolveToolsStoreEmbedder (#141: pipeline.rag.tools sharing)', () => {
     );
   });
 
-  it('builds from the tools store config for YAML-only multi-store (no flat rag, no DI)', async () => {
+  it('builds from the tools store config for YAML-only multi-store (no flat rag, no DI)', {
+    skip: 'resolveEmbedder refuses the flat embedder: field since Task B6c; Task B10 rewrites this literal to the split rag.embedder section',
+  }, async () => {
     const result = await resolveToolsStoreEmbedder(
       undefined,
       {

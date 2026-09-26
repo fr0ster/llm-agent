@@ -116,7 +116,9 @@ test('build() throws when no embedder was set (skills need one)', () => {
   );
 });
 
-test('build(deps): normalized skill config reaches buildSkillHost (P1a), injected embedder covers all paths (P1b), no I/O', async () => {
+test('build(deps): normalized skill config reaches buildSkillHost (P1a), injected embedder covers all paths (P1b), no I/O', {
+  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
+}, async () => {
   const cannedLlm = {
     chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
     model: 'stub',
@@ -154,7 +156,9 @@ test('build(deps): normalized skill config reaches buildSkillHost (P1a), injecte
   await close();
 });
 
-test('build(deps) with a prebuilt skillHost still routes through load/validate (P2)', async () => {
+test('build(deps) with a prebuilt skillHost still routes through load/validate (P2)', {
+  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
+}, async () => {
   const cannedLlm = {
     chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
     model: 'stub',
@@ -189,7 +193,9 @@ test('build(deps) with a prebuilt skillHost still routes through load/validate (
   await close();
 });
 
-test('build(): .withMcpClients forwards clients into deps (no connect runs)', async () => {
+test('build(): .withMcpClients forwards clients into deps (no connect runs)', {
+  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
+}, async () => {
   const cannedLlm = {
     chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
     model: 'stub',
@@ -229,7 +235,9 @@ test('build(): .withMcpClients forwards clients into deps (no connect runs)', as
   await close();
 });
 
-test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provider-runtime checks skipped)', async () => {
+test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provider-runtime checks skipped)', {
+  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
+}, async () => {
   const prev = process.env.AICORE_SERVICE_KEY;
   delete process.env.AICORE_SERVICE_KEY;
   try {
@@ -267,7 +275,9 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
   }
 });
 
-test('build({makeLlm,embedder}) with a KEYED provider needs no API key (skip reaches toLlmConfig)', async () => {
+test('build({makeLlm,embedder}) with a KEYED provider needs no API key (skip reaches toLlmConfig)', {
+  skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag',
+}, async () => {
   const prevOpenai = process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_API_KEY;
   try {

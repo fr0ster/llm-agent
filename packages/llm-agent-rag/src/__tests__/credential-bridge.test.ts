@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import type {
   IApiKeyCredential,
-  IBearerCredential,
   ISecretLoginCredential,
 } from '@mcp-abap-adt/interfaces-auth';
-import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import type { EmbedderFactoryOpts } from '../embedder-factories.js';
+import type { EmbedderFactoryConfig, IEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  _resetPrefetchedForTests,
+  type EmbedderResolution,
+  prefetchEmbedderFactories,
+} from '../embedder-factories.js';
 import {
   makeRag,
   type RagResolution,
@@ -14,7 +17,6 @@ import {
 } from '../rag-factories.js';
 
 const apiKey: IApiKeyCredential = { kind: 'api-key', secret: async () => 'k' };
-const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
 const login: ISecretLoginCredential = {
   kind: 'secret-login',
   principal: 'u',
@@ -26,82 +28,145 @@ const stubEmbedder: IEmbedder = {
   embedBatch: async (texts: string[]) => texts.map(() => [0]),
 } as unknown as IEmbedder;
 
+/** Replace fetch for one block: every embedder here talks HTTP through it. */
+async function withFetch(
+  reply: unknown,
+  run: (seen: Array<{ url: string; init?: RequestInit }>) => Promise<void>,
+): Promise<void> {
+  const real = globalThis.fetch;
+  const seen: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    seen.push({ url: String(input), init });
+    return new Response(JSON.stringify(reply), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  try {
+    await run(seen);
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
 describe('the embedder bridge and credentials', () => {
-  it('forwards the credential object itself, not a copy of a secret', () => {
-    let seen: EmbedderFactoryOpts | undefined;
-    resolveEmbedder(
-      {
-        embedder: 'capture',
-        credential: apiKey,
-        apiBaseUrl: 'https://aicore.example',
+  // Wrong kind, missing credential, missing apiBaseUrl, a credential for
+  // ollama or for a consumer factory, and a legacy apiKey on a typed literal
+  // are proven by the compiler — ../__typechecks__/embedder-resolution.ts,
+  // run by `npm run typecheck`. What is tested here is what no compiler sees.
+  afterEach(() => _resetPrefetchedForTests());
+
+  it('asks the very credential object it was given, on each request', async () => {
+    await prefetchEmbedderFactories(['openai']);
+    let asked = 0;
+    const counted: IApiKeyCredential = {
+      kind: 'api-key',
+      secret: async () => {
+        asked += 1;
+        return 'k-live';
       },
+    };
+    const e = resolveEmbedder({
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      credential: counted,
+    });
+    await withFetch({ data: [{ embedding: [1, 2] }] }, async (seen) => {
+      await e.embed('hello');
+      assert.equal(
+        asked,
+        1,
+        'the object itself must arrive — a copied secret would never call back',
+      );
+      const headers = seen[0].init?.headers as Record<string, string>;
+      assert.equal(headers.Authorization, 'Bearer k-live');
+    });
+  });
+
+  it('sends the configured url to the field each embedder actually reads', async () => {
+    await prefetchEmbedderFactories(['ollama', 'openai']);
+    const ollama = resolveEmbedder({
+      provider: 'ollama',
+      model: 'bge-m3',
+      url: 'http://ollama.example:11434',
+    });
+    await withFetch({ embedding: [1] }, async (seen) => {
+      await ollama.embed('x');
+      assert.equal(
+        seen[0].url,
+        'http://ollama.example:11434/api/embeddings',
+        'OllamaEmbedder reads ollamaUrl; the old bag passed url, so this fell back to localhost',
+      );
+    });
+    const openai = resolveEmbedder({
+      provider: 'openai',
+      model: 'm',
+      credential: apiKey,
+      url: 'https://gw.example/v1',
+    });
+    await withFetch({ data: [{ embedding: [1] }] }, async (seen) => {
+      await openai.embed('x');
+      assert.equal(
+        seen[0].url,
+        'https://gw.example/v1/embeddings',
+        'OpenAiEmbedder reads baseURL; the old bag passed url, so this went to api.openai.com',
+      );
+    });
+  });
+
+  it('hands a consumer factory exactly EmbedderFactoryConfig, and never a credential', () => {
+    let seen: EmbedderFactoryConfig | undefined;
+    resolveEmbedder(
+      { factory: 'mine', url: 'http://u', model: 'm', timeoutMs: 5 },
       {
         extraFactories: {
-          capture: (opts) => {
-            seen = opts;
+          mine: (cfg) => {
+            seen = cfg;
             return stubEmbedder;
           },
         },
       },
     );
-    assert.equal(
-      seen?.credential,
-      apiKey,
-      'the same object must arrive, so quota identity survives',
-    );
-    assert.equal(seen?.apiBaseUrl, 'https://aicore.example');
+    assert.deepEqual(seen, { url: 'http://u', model: 'm', timeoutMs: 5 });
   });
 
-  it('no longer carries an apiKey field for anything to read', () => {
-    let seen: EmbedderFactoryOpts | undefined;
-    resolveEmbedder(
-      { embedder: 'capture', apiKey: 'leftover' } as unknown as Parameters<
-        typeof resolveEmbedder
-      >[0],
-      {
-        extraFactories: {
-          capture: (opts) => {
-            seen = opts;
-            return stubEmbedder;
-          },
-        },
-      },
-    );
-    assert.ok(
-      seen && !('apiKey' in seen),
-      'a stale apiKey must not reach a factory',
-    );
-  });
-
-  it('refuses a named embedder that cannot work without a credential', () => {
+  it('names an unregistered factory instead of guessing', () => {
     assert.throws(
-      () => resolveEmbedder({ embedder: 'openai' }),
-      /openai.*credential/i,
-      'a missing credential must name itself, not produce an unauthenticated embedder',
+      () => resolveEmbedder({ factory: 'nope', model: 'm' }),
+      /Unknown embedder factory "nope"/,
     );
   });
 
-  it('refuses the wrong kind of credential for the target', () => {
+  it('refuses a legacy field arriving from an untyped source', () => {
+    const fromYaml = (extra: Record<string, unknown>) =>
+      ({
+        provider: 'ollama',
+        model: 'm',
+        ...extra,
+      }) as unknown as EmbedderResolution;
     assert.throws(
-      () => resolveEmbedder({ embedder: 'openai', credential: bearer }),
-      /openai.*api-key.*bearer/i,
+      () => resolveEmbedder(fromYaml({ apiKey: 'k' })),
+      /apiKey.*credential/,
+      'a loaded object is not a fresh literal, so only this can catch it',
     );
+    assert.throws(
+      () => resolveEmbedder(fromYaml({ embedder: 'openai' })),
+      /embedder.*provider/,
+      'the old name field would otherwise fall through to the ollama default in silence',
+    );
+  });
+
+  it('names an unknown provider arriving from an untyped source', () => {
     assert.throws(
       () =>
         resolveEmbedder({
-          embedder: 'sap-ai-core',
-          credential: apiKey,
-          apiBaseUrl: 'https://x',
-        }),
-      /sap-ai-core.*bearer.*api-key/i,
-    );
-  });
-
-  it('refuses a credential for a target that sends none', () => {
-    assert.throws(
-      () => resolveEmbedder({ embedder: 'ollama', credential: apiKey }),
-      /ollama.*no credential/i,
-      'silently ignoring it would hide a misconfigured deployment',
+          provider: 'deepseek',
+          model: 'm',
+        } as unknown as EmbedderResolution),
+      /Unknown embedder provider "deepseek"/,
     );
   });
 });

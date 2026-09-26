@@ -20,6 +20,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  composeEmbedder,
   prefetchEmbedderFactories,
   resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';
@@ -40,8 +41,10 @@ export async function resolveAgentEmbedder(
   // wrapEmbedder: otherwise a consumer-supplied embedder would bypass batch
   // chunking and retry entirely.
   if (diEmbedder) {
+    // An instance the consumer built is composed, not resolved: chunking and
+    // retry go on, nothing is constructed. rag.maxBatchSize is the YAML cap.
     return wrapEmbedder(
-      resolveEmbedder(rag ?? {}, { injectedEmbedder: diEmbedder, logger }),
+      composeEmbedder(diEmbedder, { maxBatchSize: rag?.maxBatchSize, logger }),
     );
   }
   // No RAG, or a bare in-memory BM25 store → no embedder is used.
@@ -84,9 +87,8 @@ export async function resolveToolsStoreEmbedder(
     // the resolver would wrap a non-resilient `current` and change identity for
     // configs that requested nothing.
     if (toolsStoreCfg.maxBatchSize === undefined) return current;
-    return resolveEmbedder(toolsStoreCfg, {
-      injectedEmbedder: current,
-      extraFactories,
+    return composeEmbedder(current, {
+      maxBatchSize: toolsStoreCfg.maxBatchSize,
       logger,
     });
   }
