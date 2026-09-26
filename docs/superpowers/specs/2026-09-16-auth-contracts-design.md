@@ -1392,7 +1392,7 @@ import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 + new SapCoreAIProvider({ model, credential, apiBaseUrl });
 ```
 
-That function is the package's existing `TokenProvider` and `parseServiceKey` moved out with their tests, so behaviour is unchanged for a deployment that sets the same env var — it is now read one level up, by you. The SAP packages' `credentials` option and its exported `SapAICoreCredentials` shape (`clientId`/`clientSecret`/`tokenServiceUrl`/`servingUrl`) are gone with it: the credential and `apiBaseUrl` above replace them.
+That function is the package's existing `TokenProvider` and `parseServiceKey` moved out with their tests, so behaviour is unchanged for a deployment that sets the same env var — it is now read one level up, by you. The SAP packages' `credentials` option and its exported `SapAICoreCredentials` shape (`clientId`/`clientSecret`/`tokenServiceUrl`/`servicUrl` — the last misspelt in the source, `sap-core-ai-provider.ts:37` on `main`) are gone with it: the credential and `apiBaseUrl` above replace them.
 
 **4. Supply all three construction seams, and move your secrets to `credentialRef`** (§4.6.2, §4.6.3, §4.6.4). An earlier version of this item asked only for `makeLlm`; it is three. The library no longer defaults this seam, so a server that never injected one must now do so — without it there is no LLM and startup refuses.
 
