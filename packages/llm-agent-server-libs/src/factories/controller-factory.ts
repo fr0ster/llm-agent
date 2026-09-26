@@ -3,6 +3,8 @@ import type {
   CallOptions,
   IEmbedder,
   IKnowledgeRagHandle,
+  ILlm,
+  IPipelineContext,
   IPipelineFactory,
   IRunExecutionControl,
   IStepExecutionControl,
@@ -89,16 +91,11 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
  *
  * @example
  * ```ts
- * import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
+ * import { ControllerFactory, makeControllerRoleLlm } from '@mcp-abap-adt/llm-agent-server-libs/controller';
  * const { handler } = await new ControllerFactory().build(config, {
- *   // role is typed as string by the base deps — resolve it explicitly. reviewer/
- *   // finalizer are only requested when their subagent block is present; map them
- *   // to config.subagents.reviewer ?? planner (likewise finalizer) for a 5-role config.
- *   makeRoleLlm: (role) =>
- *     makeLlm(
- *       config.subagents[role as keyof typeof config.subagents] ??
- *         config.subagents.planner,
- *     ),
+ *   // named keys resolve strictly, omitted ones by the role's own name; an
+ *   // absent reviewer/finalizer block is never asked for — it gets the planner's
+ *   makeRoleLlm: makeControllerRoleLlm(config.subagents, ctx),
  *   callMcp, backend, knowledgeRagFor, embedder, selectTools,
  * });
  * const handle = await builder.withStepperCoordinator(handler).build();
@@ -149,9 +146,9 @@ export class ControllerFactory
       deps.makeRoleLlm('planner'),
       deps.makeRoleLlm('executor'),
     ]);
-    // reviewer/finalizer default to the planner's LLM when their subagent config is
-    // absent (3-role config); the factory only resolves a distinct role LLM when the
-    // subagent block is present, so a 3-role config needs no resolver change.
+    // An ABSENT reviewer/finalizer block means the planner's instance — obtained
+    // through the planner's key, or its default when it named none (§4.6.7) — so
+    // the role is not asked for at all. A PRESENT block resolves its own role.
     const reviewerLlm = config.subagents.reviewer
       ? await deps.makeRoleLlm('reviewer')
       : plannerLlm;
@@ -199,4 +196,39 @@ export class ControllerFactory
     });
     return { handler };
   }
+}
+
+const CONTROLLER_ROLES = [
+  'evaluator',
+  'planner',
+  'executor',
+  'reviewer',
+  'finalizer',
+] as const;
+type ControllerRole = (typeof CONTROLLER_ROLES)[number];
+
+function isControllerRole(role: string): role is ControllerRole {
+  return (CONTROLLER_ROLES as readonly string[]).includes(role);
+}
+
+/**
+ * The controller's `makeRoleLlm`: a role whose subagent block NAMES a key
+ * resolves it strictly through `ctx.resolveNamedLlm(key)`; a role whose key was
+ * omitted asks `ctx.resolveLlm(role)` with its own name (§4.6.7). Never the
+ * other way round — `resolveLlm` answers an unknown name with `main`, which
+ * would turn a misspelled key into a silent model change.
+ */
+export function makeControllerRoleLlm(
+  subagents: ControllerConfig['subagents'],
+  ctx: Pick<IPipelineContext, 'resolveLlm' | 'resolveNamedLlm'>,
+): (role: string) => Promise<ILlm> {
+  return (role) => {
+    if (!isControllerRole(role)) {
+      return Promise.reject(
+        new Error(`controller: unknown subagent role '${role}'`),
+      );
+    }
+    const key = subagents[role]?.llm;
+    return key !== undefined ? ctx.resolveNamedLlm(key) : ctx.resolveLlm(role);
+  };
 }

@@ -51,11 +51,7 @@ test('buildAgent returns the controller pipeline agent (coordinator is exercised
       pipeline: {
         name: 'controller',
         config: {
-          subagents: {
-            evaluator: { provider: 'openai', model: 'gpt-4o' },
-            planner: { provider: 'openai', model: 'gpt-4o' },
-            executor: { provider: 'openai', model: 'gpt-4o' },
-          },
+          subagents: { evaluator: {}, planner: {}, executor: {} },
         },
       },
     } as unknown as import('../smart-server.js').SmartServerConfig,

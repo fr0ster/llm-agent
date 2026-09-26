@@ -19,11 +19,11 @@ llm:
 pipeline:
   name: controller
   config:
-    # Each subagent role takes its own LLM config (here all the same).
+    # Each subagent role takes its own name's default (the main llm: entry above).
     subagents:
-      evaluator: { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
-      planner:   { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
-      executor:  { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
+      evaluator: {}
+      planner:   {}
+      executor:  {}
     targetState: { strategy: auto, distanceThreshold: 0.7 }
     budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 30 }
 

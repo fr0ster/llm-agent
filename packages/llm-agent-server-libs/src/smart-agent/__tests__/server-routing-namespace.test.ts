@@ -185,19 +185,25 @@ async function runController(
   const plugin = new ControllerPipelinePlugin(
     'controller',
     'smart-executor',
-    parseControllerSettings({
-      subagents: {
-        evaluator: { provider: 'openai', model: 'm-eval' },
-        planner: { provider: 'openai', model: 'm-plan' },
-        executor: { provider: 'openai', model: 'm-exec' },
+    parseControllerSettings(
+      {
+        subagents: {
+          evaluator: { llm: 'm-eval' },
+          planner: { llm: 'm-plan' },
+          executor: { llm: 'm-exec' },
+        },
       },
-    }),
+      new Set(['main', 'm-eval', 'm-plan', 'm-exec']),
+    ),
   );
 
   const fullCtx = {
     ...ctx,
-    makeLlm: async (c: { model?: string }) =>
-      byModel[c.model ?? ''] ?? (ctx as { mainLlm: ILlm }).mainLlm,
+    resolveNamedLlm: async (key: string) => {
+      const hit = byModel[key];
+      if (!hit) throw new Error(`no llm: entry '${key}'`);
+      return hit;
+    },
   } as unknown as Parameters<typeof plugin.build>[0];
 
   const inst = await plugin.build(fullCtx);

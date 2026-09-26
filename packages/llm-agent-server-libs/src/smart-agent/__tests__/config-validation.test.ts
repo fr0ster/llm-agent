@@ -669,11 +669,7 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
       pipeline: {
         name: 'controller',
         config: {
-          subagents: {
-            evaluator: { provider: 'sap-ai-sdk' },
-            planner: { provider: 'sap-ai-sdk' },
-            executor: { provider: 'sap-ai-sdk' },
-          },
+          subagents: { evaluator: {}, planner: {}, executor: {} },
         },
       },
       rag: {

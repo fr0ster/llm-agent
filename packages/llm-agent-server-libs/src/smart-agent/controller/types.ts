@@ -5,7 +5,6 @@ import type {
   SerializableStrategyState,
   StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
-import type { SmartServerLlmConfig } from '../smart-server.js';
 import type { PlanDecision } from './artifacts.js';
 
 export type SubagentResult =
@@ -186,25 +185,32 @@ export interface SessionBundle {
   writeOrdinal?: number;
 }
 
-/** A controller subagent role: a standalone LLM config plus an OPTIONAL
- *  per-role `hint`. The hint is appended to that role's system prompt and gives
- *  the role extra OPERATIONAL guidance about running within the pipeline — how
- *  to build the plan, how to execute a step, what to be strict about. Its main
- *  purpose is to scaffold WEAKER models: a capable model (Opus / Sonnet) usually
- *  needs none, while a smaller executor/planner model (e.g. gpt-4o-mini) may
- *  need the extra steering. It is NOT a domain description and must NOT prescribe
- *  tool names: the planner plans by intent (it is shown no tool catalog) and the
- *  executor selects the right tool per step; richer per-situation procedures
- *  belong to the skills RAG. Absent hint → the role runs on the bare agnostic
- *  prompt. */
-export type ControllerSubagentConfig = SmartServerLlmConfig & { hint?: string };
+/** A controller subagent role: an OPTIONAL key of the top-level `llm:` map plus
+ *  an OPTIONAL per-role `hint`. A named `llm` resolves through
+ *  `ctx.resolveNamedLlm(key)` — strictly, so a misspelled key is an error; an
+ *  omitted one resolves the role's own name through `ctx.resolveLlm(role)`
+ *  (§4.6.7). A model — its provider, temperature, account — is configured once,
+ *  in `llm:`; a role that wants a colder model names a colder entry.
+ *
+ *  The hint is appended to that role's system prompt and gives the role extra
+ *  OPERATIONAL guidance about running within the pipeline — how to build the
+ *  plan, how to execute a step, what to be strict about. Its main purpose is to
+ *  scaffold WEAKER models: a capable model (Opus / Sonnet) usually needs none,
+ *  while a smaller executor/planner model (e.g. gpt-4o-mini) may need the extra
+ *  steering. It is NOT a domain description and must NOT prescribe tool names:
+ *  the planner plans by intent (it is shown no tool catalog) and the executor
+ *  selects the right tool per step; richer per-situation procedures belong to
+ *  the skills RAG. Absent hint → the role runs on the bare agnostic prompt. */
+export type ControllerSubagentConfig = { llm?: string; hint?: string };
 
 export interface ControllerConfig {
   subagents: {
     evaluator: ControllerSubagentConfig;
     planner: ControllerSubagentConfig;
     executor: ControllerSubagentConfig;
-    /** Optional; default to the planner's config when absent (no breaking change). */
+    /** Optional. An ABSENT block means the planner's instance — the planner's
+     *  key, or the planner's default when it named none (§4.6.7). A PRESENT block
+     *  without `llm` resolves this role's own name. */
     reviewer?: ControllerSubagentConfig;
     finalizer?: ControllerSubagentConfig;
   };

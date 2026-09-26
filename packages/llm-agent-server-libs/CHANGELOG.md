@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+**BREAKING:** a controller subagent (`pipeline.config.subagents.<role>`) is now
+`{ llm?: string; hint?: string }` — `ControllerSubagentConfig` no longer accepts
+`provider`, `model`, `temperature` or any other LLM field inline. An inline LLM
+configuration in a subagent is refused at parse, naming the top-level `llm:`
+map; a named key with no `llm:` entry is refused in `start()`, at startup,
+naming the key and the declared entries. An absent reviewer/finalizer block
+still means the planner's instance — obtained through the planner's key, or
+its default when it named none — so a per-role temperature that used to live
+on the subagent block now moves onto the `llm:` entry it names.
+`makeControllerRoleLlm(subagents, ctx)` is exported (from
+`factories/controller-factory.ts` and re-exported from `pipelines/controller.ts`)
+for code-level composition of the controller's `makeRoleLlm`.
+`ControllerSkillPipelineBuilder.withRoleLlm(role, …)` now emits an `llm.<role>`
+entry that the role names, instead of an inline subagent config.
+`parseControllerSettings(raw, llmKeys)` takes the set of `llm:` keys the
+section may name; `parseControllerSubagents(raw, llmKeys)` and
+`llmKeySet(map)` are new exports (`pipelines/controller-subagents.ts` and
+`smart-agent/llm-config-map.ts`). `IServerPipelineContext.makeLlm` is removed
+(its last reader, `controller`, moved to `resolveNamedLlm`/`resolveLlm`) — a
+step reaches an LLM only through `resolveLlm(role)` or
+`resolveNamedLlm(key)`, so an implementation or test double of the context
+drops the `makeLlm` member.
+
 **BREAKING:** the built-in pipeline plugins take settings in their
 constructors instead of reading a `parseConfig(raw)`/`build(cfg, ctx)` pair —
 `FlatPipelinePlugin()`, `LinearPipelinePlugin(settings)`,

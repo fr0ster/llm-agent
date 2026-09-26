@@ -36,7 +36,6 @@ export function fakeServerCtx(): IServerPipelineContext {
     mintTurnId: () => 't1',
     createAgentBuilder: async () =>
       new SmartAgentBuilder({}).withMainLlm(stubLlm).withMode('smart'),
-    makeLlm: async () => stubLlm,
     mainLlm: stubLlm,
     mainTemp: 0,
     workerRegistry: new Map([['worker', stubWorker]]),
@@ -69,24 +68,22 @@ import type { PlannerKind } from '../../smart-agent/controller/types.js';
 import { parseControllerSettings } from '../../smart-agent/pipeline-settings.js';
 import { ControllerPipelinePlugin } from '../controller.js';
 
-/** The smallest valid controller section. Task B15 changes its subagent shape here. */
+/** The smallest valid controller section: every role takes its own name's default. */
 export const MIN_CONTROLLER_SECTION = {
-  subagents: {
-    evaluator: { provider: 'openai' },
-    planner: { provider: 'openai' },
-    executor: { provider: 'openai' },
-  },
+  subagents: { evaluator: {}, planner: {}, executor: {} },
 };
 
-/** A controller plugin constructed the way SmartServer's registry constructs it. */
+/** A controller plugin constructed the way SmartServer's registry constructs it,
+ *  with the keys of the `llm:` map the section may name. */
 export function controllerPlugin(
   name = 'controller',
   kind: PlannerKind = 'smart-executor',
   section: unknown = MIN_CONTROLLER_SECTION,
+  llmKeys: ReadonlySet<string> = new Set(['main']),
 ): ControllerPipelinePlugin {
   return new ControllerPipelinePlugin(
     name,
     kind,
-    parseControllerSettings(section),
+    parseControllerSettings(section, llmKeys),
   );
 }

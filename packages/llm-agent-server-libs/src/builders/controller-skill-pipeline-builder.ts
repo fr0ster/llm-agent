@@ -122,28 +122,36 @@ export class ControllerSkillPipelineBuilder {
       );
     }
     const base = this._llm ? toLlmConfig(this._llm) : undefined;
-    const roleCfg = (r: Role): SmartServerLlmConfig => {
+    const llm: Record<string, SmartServerLlmConfig> = {};
+    const subagent = (r: Role): { llm?: string } => {
       const ovr = this._roleLlm[r];
-      if (ovr) return toLlmConfig(ovr);
-      if (base) return base;
-      throw new Error(
-        `ControllerSkillPipelineBuilder: no LLM for role '${r}' (set .withLlm() or .withRoleLlm('${r}', …))`,
-      );
+      if (!ovr) {
+        if (!base) {
+          throw new Error(
+            `ControllerSkillPipelineBuilder: no LLM for role '${r}' (set .withLlm() or .withRoleLlm('${r}', …))`,
+          );
+        }
+        return {}; // the role's own name → llm.<role> absent → the main instance
+      }
+      llm[r] = toLlmConfig(ovr);
+      return { llm: r };
     };
+    const subagents = {
+      evaluator: subagent('evaluator'),
+      planner: subagent('planner'),
+      executor: subagent('executor'),
+    };
+    llm.main = base ?? llm.executor;
     const collection = this._skill.collection ?? 'sap';
     return {
-      llm: { main: base ?? roleCfg('executor') },
+      llm,
       pipeline: {
         name:
           this._plannerKind === 'weak-executor'
             ? 'controller-weak'
             : 'controller',
         config: {
-          subagents: {
-            evaluator: roleCfg('evaluator'),
-            planner: roleCfg('planner'),
-            executor: roleCfg('executor'),
-          },
+          subagents,
           ...(Object.keys(this._targetState).length
             ? { targetState: this._targetState }
             : {}),

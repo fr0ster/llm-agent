@@ -476,6 +476,7 @@ import {
   resolveToolSelectionStrategy,
 } from './config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
+import { llmKeySet } from './llm-config-map.js';
 import {
   buildSessionMcpClients,
   serverOwnsMcpConnection,
@@ -1161,7 +1162,7 @@ export class SmartServer {
           new ControllerPipelinePlugin(
             'controller',
             'smart-executor',
-            parseControllerSettings(s),
+            parseControllerSettings(s, llmKeySet(this._llmMap)),
           ),
       ],
       [
@@ -1170,7 +1171,7 @@ export class SmartServer {
           new ControllerPipelinePlugin(
             'controller-weak',
             'weak-executor',
-            parseControllerSettings(s),
+            parseControllerSettings(s, llmKeySet(this._llmMap)),
           ),
       ],
     ]);
@@ -2053,13 +2054,6 @@ export class SmartServer {
   // -- Pipeline-context dep sources (promoted from the inline coordinator-gate
   //    closures; consumed by buildServerCtx, which later tasks call) ----------
 
-  /** Build an LLM from a SmartServerLlmConfig (mirrors stepperMakeLlm/DAG).
-   *  Routes through the BuildAgentDeps seam so an injected `makeLlm` overrides
-   *  the real builder. */
-  private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
-    return this._deps.makeLlm(lc);
-  }
-
   /** A worker's own store input: its embedder through the seam, then paired. */
   private async _workerRagInput(
     name: string,
@@ -2578,7 +2572,6 @@ export class SmartServer {
         this.buildBaseBuilder(
           this.partsToBaseInput(scope.parts, workerRegistry, extras),
         ),
-      makeLlm: (c) => this._makeLlm(c),
       mainLlm: this._mainLlm as ILlm,
       helperLlm: this._helperLlm,
       mainTemp: this._mainTemp ?? 0.7,

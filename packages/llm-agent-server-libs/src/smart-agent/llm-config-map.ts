@@ -94,3 +94,28 @@ export function resolveReviewerLlmName(
   }
   return undefined;
 }
+
+/**
+ * Fields that belong to an LLM configuration and therefore to an `llm:` entry
+ * only. A pipeline section or a worker file that carries one of them is holding
+ * an inline model, which §4.6.7 refuses: the file configures each model once.
+ */
+export const INLINE_LLM_CONFIG_FIELDS: readonly string[] = [
+  'provider',
+  'model',
+  'url',
+  'apiKey',
+  'credentialRef',
+  'temperature',
+  'classifierTemperature',
+  'maxTokens',
+  'whenThrottled',
+  'resourceGroup',
+];
+
+/** The keys a file may name: a flat `llm:` block normalizes to `{ main }`. */
+export function llmKeySet(
+  map: NormalizedLlmMap | undefined,
+): ReadonlySet<string> {
+  return new Set(map ? Object.keys(map) : []);
+}

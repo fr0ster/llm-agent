@@ -14,6 +14,7 @@ import {
 import {
   ControllerFactory,
   type ControllerFactoryDeps,
+  makeControllerRoleLlm,
 } from '../factories/controller-factory.js';
 import {
   assertNoAuxCollision,
@@ -45,6 +46,7 @@ import type { IControllerServerPipelineContext } from './server-context.js';
 export {
   ControllerFactory,
   type ControllerFactoryDeps,
+  makeControllerRoleLlm,
 } from '../factories/controller-factory.js';
 export {
   ControllerCoordinatorHandler,
@@ -263,10 +265,7 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
     // handler. external-tool routing is decided PER-REQUEST inside the handler
     // from `ctx.externalTools`, so we do NOT wire `isExternalTool` here.
     const deps: ControllerFactoryDeps = {
-      makeRoleLlm: (role) =>
-        ctx.makeLlm(
-          cfg.subagents[role as 'evaluator' | 'planner' | 'executor'],
-        ),
+      makeRoleLlm: makeControllerRoleLlm(this.settings.subagents, ctx),
       callMcp: (name, args, signal) => auxCallMcp(name, args, signal),
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),

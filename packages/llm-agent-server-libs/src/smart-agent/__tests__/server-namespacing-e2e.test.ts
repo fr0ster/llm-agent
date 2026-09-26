@@ -714,13 +714,16 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
     const plugin = new ControllerPipelinePlugin(
       'controller',
       'smart-executor',
-      parseControllerSettings({
-        subagents: {
-          evaluator: { provider: 'openai', model: 'm-eval' },
-          planner: { provider: 'openai', model: 'm-plan' },
-          executor: { provider: 'openai', model: 'm-exec' },
+      parseControllerSettings(
+        {
+          subagents: {
+            evaluator: { llm: 'm-eval' },
+            planner: { llm: 'm-plan' },
+            executor: { llm: 'm-exec' },
+          },
         },
-      }),
+        new Set(['main', 'm-eval', 'm-plan', 'm-exec']),
+      ),
     );
 
     const base = fakeControllerServerCtx();
@@ -744,8 +747,11 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       // bridge, never by a correctly-namespaced dispatch.
       mcpClients: internals._sharedMcpClients,
       toolClientMap: ctx.toolClientMap,
-      makeLlm: async (c: { model?: string }) =>
-        byModel[c.model ?? ''] ?? byModel['m-exec'],
+      resolveNamedLlm: async (key: string) => {
+        const hit = byModel[key];
+        if (!hit) throw new Error(`no llm: entry '${key}'`);
+        return hit;
+      },
     } as unknown as Parameters<typeof plugin.build>[0];
 
     const inst = await plugin.build(fullCtx);

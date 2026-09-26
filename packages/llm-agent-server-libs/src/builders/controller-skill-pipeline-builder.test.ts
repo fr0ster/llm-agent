@@ -34,10 +34,11 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
   assert.ok(cfg.pipeline, 'a pipeline must be configured');
   assert.equal(cfg.pipeline.name, 'controller');
   const sub = (cfg.pipeline.config as any).subagents;
-  assert.equal(sub.evaluator.provider, 'sap-ai-sdk');
-  assert.equal(sub.executor.provider, 'sap-ai-sdk');
-  assert.equal(sub.planner.provider, 'openai');
-  assert.equal(sub.planner.credentialRef, 'PLANNER');
+  assert.deepEqual(sub.evaluator, {});
+  assert.deepEqual(sub.executor, {});
+  assert.deepEqual(sub.planner, { llm: 'planner' });
+  assert.equal((cfg as any).llm.planner.provider, 'openai');
+  assert.equal((cfg as any).llm.main.provider, 'sap-ai-sdk');
   assert.equal((cfg.pipeline.config as any).budgets.maxToolCalls, 30);
   assert.deepEqual(cfg.mcp, [
     { type: 'http', url: 'http://localhost:3001/mcp/stream/http' },

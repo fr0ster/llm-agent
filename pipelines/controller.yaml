@@ -30,22 +30,17 @@ rag:
 pipeline:
   name: controller
   config:
-    # Three opaque subagent roles. Each is a standalone LLM endpoint; they can
-    # point at different providers/URLs. No `hint` here — these are capable
-    # models. Add an optional `hint:` under a role to give a WEAKER model extra
+    # Three subagent roles. Each names an optional `llm:` key; an omitted one
+    # resolves the role's own name, which here means the same main instance
+    # (same model for all three). No `hint` here — these are capable models.
+    # Add an optional `hint:` under a role to give a WEAKER model extra
     # operational steering (how to plan/execute); see controller-mixed.yaml. The
     # dynamic counterpart — procedural skills pulled from a RAG collection — is a
     # separate mechanism, not configured via hint.
     subagents:
-      evaluator:
-        provider: sap-ai-sdk
-        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      planner:
-        provider: sap-ai-sdk
-        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      executor:
-        provider: sap-ai-sdk
-        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+      evaluator: {}
+      planner: {}
+      executor: {}
     # planner selection is preset-encoded: `name: controller` = smart-executor.
     # (Removed `planner:` — use `name: controller-weak` for the weak-executor preset.)
     # consumer-confirm | semantic-distance | auto. A generous threshold keeps the

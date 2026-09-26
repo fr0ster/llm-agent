@@ -20,7 +20,6 @@ describe('createServerPipelineContext', () => {
       mintTurnId: () => 't',
       createAgentBuilder: async () =>
         new SmartAgentBuilder({}).withMainLlm(stubLlm),
-      makeLlm: async () => stubLlm,
       mainLlm: stubLlm,
       mainTemp: 0,
       workerRegistry: new Map(),

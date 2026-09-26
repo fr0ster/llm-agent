@@ -1,3 +1,4 @@
+import { parseControllerSubagents } from '../pipelines/controller-subagents.js';
 import type { FinalizerYaml } from '../pipelines/coordinator-resolvers.js';
 import type { ControllerConfig } from './controller/types.js';
 import {
@@ -210,18 +211,13 @@ export function assertNamedLlmKeys(
 // ---- controller ---------------------------------------------------------
 
 /** Moved from `ControllerPipelinePlugin.parseConfig` (`controller.ts:83-150`) with only
- *  the section guard changed. `subagents.<role>` is still an inline LLM configuration;
- *  Task B15 makes it name an `llm:` key. */
-export function parseControllerSettings(raw: unknown): ControllerConfig {
+ *  the section guard changed. `subagents.<role>` names an `llm:` key; a named key
+ *  with no entry is refused here, at startup. */
+export function parseControllerSettings(
+  raw: unknown,
+  llmKeys: ReadonlySet<string>,
+): ControllerConfig {
   const cfg = asSection(raw, 'controller');
-  const subagents = (cfg.subagents ?? {}) as Record<string, unknown>;
-  for (const role of ['evaluator', 'planner', 'executor'] as const) {
-    if (subagents[role] === undefined) {
-      throw new Error(
-        `pipeline 'controller' requires 'subagents.${role}' (each an LLM config with at least a 'provider')`,
-      );
-    }
-  }
 
   const targetStateRaw = (cfg.targetState ?? {}) as Record<string, unknown>;
   const sessionMemoryRaw = (cfg.sessionMemory ?? {}) as Record<string, unknown>;
@@ -253,7 +249,7 @@ export function parseControllerSettings(raw: unknown): ControllerConfig {
   requireInt('maxTotalWaitMs', 0);
 
   return {
-    subagents: subagents as ControllerConfig['subagents'],
+    subagents: parseControllerSubagents(cfg.subagents, llmKeys),
     targetState: {
       strategy: 'auto',
       distanceThreshold: 0.25,
