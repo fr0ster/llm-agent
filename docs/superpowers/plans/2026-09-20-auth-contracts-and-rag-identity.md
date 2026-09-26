@@ -1137,7 +1137,6 @@ credential in silence — with a green build and a green test. The bag is
 now declared, the credential object itself is forwarded so quota identity
 survives, and each target's requirement is checked before construction.
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1472,7 +1471,6 @@ and a refusal of a legacy secret field arriving from an untyped source,
 since a loaded object is not a fresh literal and no excess-property check
 ever sees it.
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1504,7 +1502,9 @@ DI seam and the skill host type it `=> IEmbedder` — so a prefetch step stays, 
 - Delete: `packages/llm-agent-rag/src/credential-guard.ts`
 - Modify: `packages/llm-agent-rag/src/rag-factories.ts:1-180` — imports, `importPeer` moves out, `EmbedderResolutionConfig` → `EmbedderResolution`, `resolveEmbedder` rewritten, `composeEmbedder` added, `injectedEmbedder` leaves `EmbedderResolutionOptions`; `:192-196` doc comment; `:361-363`, `:369-371`, `:380-382` the three `importPeer` calls
 - Modify: `packages/llm-agent-rag/src/index.ts` — barrel follows
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts:290-307` — `makeRealEmbedder` (excluded from `tsc`, so no later task's compiler would ever name it)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts:289-307` — `makeRealEmbedder` (excluded from `tsc`, so no later task's compiler would ever name it)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:42-46`, `:81-91` — the two injected-embedder calls go through `composeEmbedder`. They pass an instance the consumer built, which `injectedEmbedder` carried; left as they are, every `SmartServer` built with `deps.embedder` would fall through to the ollama default and throw `MissingProviderError`
+- Modify (quarantine only, no body change): `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-agent-embedder.test.ts:39`, `:83`; `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts:119`, `:157`, `:192`, `:232`, `:270`; `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts:160`, `:211`
 - Modify: `tsconfig.typecheck.json` — append the new typecheck file
 - Create: `packages/llm-agent-rag/src/__typechecks__/embedder-resolution.ts`
 - Test: `packages/llm-agent-rag/src/__tests__/credential-bridge.test.ts` (embedder section, `:1-107`), `packages/llm-agent-rag/src/__tests__/embedder-factories.test.ts` (whole file), `packages/llm-agent-rag/src/__tests__/resolve-embedder-resilience.test.ts` (whole file)
@@ -1512,7 +1512,7 @@ DI seam and the skill host type it `=> IEmbedder` — so a prefetch step stays, 
 
 **Interfaces:**
 - Consumes: `OpenAiEmbedderConfig` (`openai-embedder/src/openai-embedder.ts:5-16`: `credential: IApiKeyCredential`, `baseURL?`, `model: string`), `OllamaEmbedderConfig` (`ollama-embedder/src/ollama.ts:9-14`: `ollamaUrl?`, `model: string`), `SapAiCoreEmbedderConfig` (`sap-aicore-embedder/src/sap-ai-core-embedder.ts:12-38`: `model`, `resourceGroup?`, `scenario?`, `credential: IBearerCredential`, `apiBaseUrl: string`); `EmbedderFactory`/`EmbedderFactoryConfig` (`llm-agent/src/interfaces/rag.ts:20-33`); B6b's `RagResolution`, `makeRag`, `prefetchRagFactories`.
-- Produces: `EmbedderResolution` (union on `provider`, plus a `factory` arm), `resolveEmbedder(cfg: EmbedderResolution, options?: EmbedderResolutionOptions): IEmbedder`, `EmbedderResolutionOptions = { extraFactories?; logger? }`, `composeEmbedder(raw: IEmbedder, opts?: { maxBatchSize?: number; logger?: AnyLogger }): IEmbedder`, `prefetchEmbedderFactories(names: readonly string[]): Promise<void>` (signature unchanged), `_resetPrefetchedForTests()` (kept). **Removed:** `EmbedderResolutionConfig`, `EmbedderFactoryOpts`, `resolvePrefetchedEmbedder`, `builtInEmbedderFactories`, `EMBEDDER_CREDENTIALS`, `assertCredentialKind`, `CredentialRule`, `EmbedderResolutionOptions.injectedEmbedder`. B10 narrows the YAML `rag.embedder` section to `EmbedderResolution` and owns every server-libs call site this breaks.
+- Produces: `EmbedderResolution` (union on `provider`, plus a `factory` arm), `resolveEmbedder(cfg: EmbedderResolution, options?: EmbedderResolutionOptions): IEmbedder`, `EmbedderResolutionOptions = { extraFactories?; logger? }`, `composeEmbedder(raw: IEmbedder, opts?: { maxBatchSize?: number; logger?: AnyLogger }): IEmbedder`, `prefetchEmbedderFactories(names: readonly string[]): Promise<void>` (signature unchanged), `_resetPrefetchedForTests()` (kept). **Removed:** `EmbedderResolutionConfig`, `EmbedderFactoryOpts`, `resolvePrefetchedEmbedder`, `builtInEmbedderFactories`, `EMBEDDER_CREDENTIALS`, `assertCredentialKind`, `CredentialRule`, `EmbedderResolutionOptions.injectedEmbedder`. This task moves the two server-libs calls that passed `injectedEmbedder` to `composeEmbedder` itself. It leaves two compile errors in `llm-agent-server-libs`, both closed later: `smart-server.ts:82` imports the removed `EmbedderResolutionConfig` (Task B9 retypes `BuildAgentDeps.resolveEmbedder` to `EmbedderResolution`), and `resolve-agent-embedder.ts:54` hands the flat `SmartServerRagConfig` to `resolveEmbedder` (Task B10 splits the section and introduces `SmartServerEmbedderConfig`).
 
 - [ ] **Step 1: write the failing tests — one compile-time file, the rest at the boundary**
 
@@ -1585,10 +1585,10 @@ void _legacy;
 void _ok;
 ```
 
-Append (never replace) to the root `tsconfig.typecheck.json` `include`, after the B6b entry:
+Append (never replace) to the root `tsconfig.typecheck.json` `include`, after the existing
+`rag-resolution.ts` entry (which gains a trailing comma):
 
 ```json
-    "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts",
     "packages/llm-agent-rag/src/__typechecks__/embedder-resolution.ts"
 ```
 
@@ -2343,7 +2343,7 @@ export {
 
 `plan-analysis.ts` is excluded from the build (`llm-agent-server-libs/tsconfig.json` `exclude`) and
 run by hand through tsx, so no compiler will ever tell a later task it broke. Its `makeRealEmbedder`
-(`:290-307`) calls `rag.prefetchEmbedderFactories?.()` with no names and unawaited, and passes
+(`:289-307`) calls `rag.prefetchEmbedderFactories?.()` with no names and unawaited, and passes
 `provider:` where the old field was `embedder:` — its own comment records that it always fell back to
 ollama. Replace the function body:
 
@@ -2378,12 +2378,46 @@ async function makeRealEmbedder(): Promise<IEmbedder> {
 }
 ```
 
-- [ ] **Step 5: verify, and expect breakage you do not own**
+`packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts` — the two calls that passed
+an instance through `injectedEmbedder`. Add `composeEmbedder` to the `@mcp-abap-adt/llm-agent-rag`
+import, then replace the DI branch of `resolveAgentEmbedder` (`:42-46`):
+
+```ts
+  if (diEmbedder) {
+    // An instance the consumer built is composed, not resolved: chunking and
+    // retry go on, nothing is constructed. rag.maxBatchSize is the YAML cap.
+    return wrapEmbedder(
+      composeEmbedder(diEmbedder, { maxBatchSize: rag?.maxBatchSize, logger }),
+    );
+  }
+```
+
+and the `current` branch of `resolveToolsStoreEmbedder` (`:81-91`), keeping its comment:
+
+```ts
+  if (current) {
+    if (toolsStoreCfg.maxBatchSize === undefined) return current;
+    return composeEmbedder(current, {
+      maxBatchSize: toolsStoreCfg.maxBatchSize,
+      logger,
+    });
+  }
+```
+
+Both pass exactly what the old `resolveEmbedder(cfg, { injectedEmbedder })` composed with
+(`explicitMaxBatchSize: cfg.maxBatchSize`, the instance's own cap as fallback, the logger), so the
+behaviour is unchanged. `resolveToolsStoreEmbedder`'s `extraFactories` parameter is still passed on to
+`resolveAgentEmbedder` below, so it stays. The named-embedder call at `:54` is left as it is: it hands
+the flat DTO to `resolveEmbedder`, and only the split in Task B10 gives it a section to hand.
+
+- [ ] **Step 5: verify, quarantine what stays red, and expect breakage you do not own**
 
 ```bash
 cd ~/prj/llm-agent
 find packages -name '*.tsbuildinfo' -delete
-npx biome check --write packages/llm-agent-rag/src packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts
+npx biome check --write packages/llm-agent-rag/src \
+  packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts \
+  packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts
 npm run build               # count "Found N errors"; ANSI colour defeats grep -c "error TS"
 npm run typecheck           # exit 0, and NO TS2578 — every directive in both typecheck files is used
 npm test -w packages/llm-agent-rag
@@ -2394,30 +2428,56 @@ Then prove the new directives can fail: widen the openai arm's `credential` to
 `IApiKeyCredential | IBearerCredential`, rerun `npm run typecheck`, expect `TS2578` on `_wrongKind`, and
 revert.
 
-Expected `npm run build` errors, **all in `llm-agent-server-libs`, all Task B10's** — do not edit them,
-cast, or skip suites to hide them:
-- `smart-agent/smart-server.ts:82` and `:361-364` — `EmbedderResolutionConfig` no longer exists
-  (`BuildAgentDeps.resolveEmbedder`'s parameter type).
-- `smart-agent/smart-server.ts:1218-1223` — the skill host's `ec: SkillHostEmbedderConfig`
-  (`{ embedder?: string; model?: string }`, `skill-plugins-host-factory.ts:69-72`, built at `:240-245`)
-  is not an `EmbedderResolution`.
-- `smart-agent/resolve-agent-embedder.ts:44`, `:54`, `:87` — `injectedEmbedder` left the options
-  (`composeEmbedder` replaces it), and a flat `SmartServerRagConfig` is not an `EmbedderResolution`.
-- plus B6b's already-reported `makeRag` sites (`smart-server.ts:1271`, `:1272`, `:1915`, `:1922`).
+Expected `npm run build` errors, **all in `llm-agent-server-libs`** — do not edit them or cast them away:
+- `smart-agent/smart-server.ts:82` — `EmbedderResolutionConfig` no longer exists. Its uses at `:362` and
+  in the skill-host call at `:1221` resolve to the error type and add no diagnostic of their own; if the
+  compiler reports them anyway, they have the same cause. Task B9 retypes `BuildAgentDeps.resolveEmbedder`
+  to `EmbedderResolution`.
+- `smart-agent/resolve-agent-embedder.ts:54` — a flat `SmartServerRagConfig` is not an
+  `EmbedderResolution`. Task B10.
+- Task B6b's already-reported `makeRag` sites (`smart-server.ts:1271`, `:1272`, `:1915`, `:1923`). Task B10.
 
-At runtime (tsx does not check types), any server-libs test that resolves an embedder from a flat `rag:`
-block now meets either the legacy-`embedder` refusal or the ollama default — expect
-`__tests__/resolve-agent-embedder.test.ts`, `__tests__/resolve-agent-embedder-resilience.test.ts` and
-`__tests__/rag-max-batch-size-config.test.ts` among the red; report every red file. Not broken:
-`llm-agent-server/src/smart-agent/cli.ts:277` and `smart-server.ts:1206` (`prefetchEmbedderFactories`
-keeps its signature).
+At runtime (tsx does not check types), a flat `rag:` block that names its embedder with
+`embedder: '<name>'` now meets the legacy-field refusal. In the server-libs suite that is exactly two
+tests, both in `__tests__/resolve-agent-embedder.test.ts`: `builds an embedder from rag.embedder for
+YAML-only configs (#137)` (`:39`) and `builds from the tools store config for YAML-only multi-store`
+(`:83`). The DI tests in that file and in `resolve-agent-embedder-resilience.test.ts` stay green through
+`composeEmbedder`; `rag-max-batch-size-config.test.ts` only parses configuration and is not affected.
+Seven more tests have been red since Task B6b, which is already in the tree: each feeds the flat YAML DTO
+into `makeRag`, which takes `RagResolution` now. Quarantine all nine here, with no other change to their
+bodies, so every task from here on gates on a green suite:
 
-- [ ] **Step 6: commit**
+- `smart-agent/__tests__/resolve-agent-embedder.test.ts:39`, `:83` —
+  `it('<same name>', { skip: 'resolveEmbedder refuses the flat embedder: field since Task B6c; Task B10 rewrites this literal to the split rag.embedder section' }, async () => {…})`
+- `builders/controller-skill-pipeline-builder.test.ts:119`, `:157`, `:192`, `:232`, `:270` and
+  `smart-agent/__tests__/mcp-yaml-vectorization.test.ts:160`, `:211` —
+  `test('<same name>', { skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag' }, async (…) => {…})`
+
+Rerun `timeout 900 npm test -w packages/llm-agent-server-libs`: it must pass with these nine skipped and
+the suite's pre-existing skips. Any other red test is a finding — report it with its message rather than
+quarantining it. Not broken: `llm-agent-server/src/smart-agent/cli.ts:277` and `smart-server.ts:1206`
+(`prefetchEmbedderFactories` keeps its signature).
+
+- [ ] **Step 6: changelog, then commit**
+
+Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
+`resolveEmbedder` takes `EmbedderResolution`, a discriminated union on `provider` (`openai` requires an
+`IApiKeyCredential`; `sap-ai-core`/`sap-aicore` an `IBearerCredential` and `apiBaseUrl`; `ollama`, the
+default, takes none; a consumer factory is named with `factory` and receives only
+`EmbedderFactoryConfig`); `EmbedderResolutionOptions.injectedEmbedder` is replaced by `composeEmbedder`;
+`EmbedderFactoryOpts`, `resolvePrefetchedEmbedder`, `builtInEmbedderFactories`, `EMBEDDER_CREDENTIALS`
+and `assertCredentialKind` are removed; a configured `url` now reaches Ollama (`ollamaUrl`) and
+OpenAI (`baseURL`), where it was dropped before; a leftover `apiKey` or `embedder` field from an untyped
+source is refused naming its replacement.
 
 ```bash
 cd ~/prj/llm-agent
 git add packages/llm-agent-rag tsconfig.typecheck.json \
-  packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts
+  packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts \
+  packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts \
+  packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-agent-embedder.test.ts \
+  packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts \
+  packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
 git commit -m "$(cat <<'MSG'
 refactor(llm-agent-rag)!: the embedder path keeps its types, so the guard is gone
 
@@ -2436,26 +2496,20 @@ build errors. credential-guard.ts is deleted. extraFactories keeps the narrow
 EmbedderFactoryConfig and now receives exactly that. Resolution stays
 synchronous behind the prefetch step its callers rely on.
 
+An injected instance is not a resolution, so composeEmbedder takes the place
+of injectedEmbedder; the two server-libs calls that passed one move to it,
+unchanged in behaviour. The server-libs tests still feeding the flat rag DTO
+to the library (two here, seven since the store half) are quarantined until
+the rag section splits.
+
 BREAKING: resolveEmbedder takes EmbedderResolution (discriminant provider,
 consumer factories named by factory) in place of EmbedderResolutionConfig;
 injectedEmbedder is replaced by composeEmbedder; EmbedderFactoryOpts,
 resolvePrefetchedEmbedder, builtInEmbedderFactories, EMBEDDER_CREDENTIALS and
 assertCredentialKind are removed.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
-
-Add to `packages/llm-agent-rag/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
-`resolveEmbedder` takes `EmbedderResolution`, a discriminated union on `provider` (`openai` requires an
-`IApiKeyCredential`; `sap-ai-core`/`sap-aicore` an `IBearerCredential` and `apiBaseUrl`; `ollama`, the
-default, takes none; a consumer factory is named with `factory` and receives only
-`EmbedderFactoryConfig`); `EmbedderResolutionOptions.injectedEmbedder` is replaced by `composeEmbedder`;
-`EmbedderFactoryOpts`, `resolvePrefetchedEmbedder`, `builtInEmbedderFactories`, `EMBEDDER_CREDENTIALS`
-and `assertCredentialKind` are removed; a configured `url` now reaches Ollama (`ollamaUrl`) and
-OpenAI (`baseURL`), where it was dropped before; a leftover `apiKey` or `embedder` field from an untyped
-source is refused naming its replacement.
 
 ### Task B7: two typed `IMcpServer` implementations, each demanding its own credential
 
@@ -2470,19 +2524,24 @@ resolved **once per connection**, not per request: `IMcpRequestHeadersStrategy.h
 (`llm-agent/src/interfaces/mcp-request-headers-strategy.ts:7`) and `buildHttpTransportOptions` merges it
 at connect (`llm-agent-mcp/src/client.ts:194-209`) — §3.3 records this boundary. Both are **single-use**,
 matching `mcpServerFromFactory` (`mcp-server-from-factory.ts:40-42`): refreshing a credential means a new
-instance, and reconnection stays `IMcpConnectionStrategy`'s.
+instance, and reconnection stays `IMcpConnectionStrategy`'s. With typed servers in place, the task also
+marks `McpClientFactory` `@deprecated` **as a consumer-facing seam** (the `llm-agent` row of §8 and the
+paragraph after it): the type stays, because it is the default implementation's factory that
+`mcpServerFromFactory` and these two servers consume; what a consumer should hand over is an `IMcpServer`.
 
 **Files:**
 - Create: `packages/llm-agent-mcp/src/servers/http-mcp-server.ts`
 - Create: `packages/llm-agent-mcp/src/servers/stdio-mcp-server.ts`
 - Modify: `packages/llm-agent-mcp/src/index.ts:15` — export both beside `createDefaultMcpClient`
 - Modify: `tsconfig.typecheck.json` — append the test file (its two `@ts-expect-error`s are silent otherwise)
+- Modify: `packages/llm-agent/src/interfaces/mcp-connection-strategy.ts:71-73` — `@deprecated` on `McpClientFactory` as a consumer seam
 - Test: `packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts`
 - Modify: `packages/llm-agent-mcp/CHANGELOG.md` — `## [Unreleased]` above `## 26.0.0`
+- Modify: `packages/llm-agent/CHANGELOG.md` — `## [Unreleased]` above `## 26.0.0` (the file has none yet)
 
 **Interfaces:**
 - Consumes: `IMcpServer`, `IMcpClient`, `McpClientDescriptor`, `McpClientFactory`, `McpConnectionConfig` from `@mcp-abap-adt/llm-agent` (`mcp-connection-strategy.ts:5-73`, `mcp-server.ts:16-24`); `IApiKeyCredential`, `IBearerCredential`, `ISecretLoginCredential` from `@mcp-abap-adt/interfaces-auth` (already a dependency of `llm-agent-mcp`, `package.json:25-29`); `createDefaultMcpClient` (`factory.ts:36-48`).
-- Produces: `HttpMcpServer`, `HttpMcpServerConfig`, `HttpMcpAuth`, `StdioMcpServer`, `StdioMcpServerConfig`, `StdioMcpAuth`. Nothing later in this plan depends on them; `withMcpServers` (workstream 1) accepts them as `IMcpServer`.
+- Produces: `HttpMcpServer`, `HttpMcpServerConfig`, `HttpMcpAuth`, `StdioMcpServer`, `StdioMcpServerConfig`, `StdioMcpAuth`. Nothing later in this plan depends on them; `withMcpServers` (workstream 1) accepts them as `IMcpServer`. `McpClientFactory` gains a `@deprecated` tag; its shape is unchanged.
 
 - [ ] **Step 1: write the failing tests, through the production seam**
 
@@ -3075,12 +3134,39 @@ export {
 } from './servers/stdio-mcp-server.js';
 ```
 
+`packages/llm-agent/src/interfaces/mcp-connection-strategy.ts:71-73` — before:
+
+```ts
+export type McpClientFactory = (
+  config: McpConnectionConfig,
+) => Promise<McpClientFactoryResult>;
+```
+
+after:
+
+```ts
+/**
+ * Builds a connected MCP client from a connection config.
+ *
+ * @deprecated as a CONSUMER seam: hand an `IMcpServer` to `withMcpServers`
+ * instead — `HttpMcpServer` or `StdioMcpServer` from `@mcp-abap-adt/llm-agent-mcp`,
+ * whose `auth` demands the credential the target needs, or
+ * `mcpServerFromFactory` for anything else. The type itself stays: it is the
+ * default implementation's factory, which `mcpServerFromFactory` and those two
+ * servers consume (their optional constructor argument, `createDefaultMcpClient`
+ * by default). Removal of the consumer-facing options is a later major.
+ */
+export type McpClientFactory = (
+  config: McpConnectionConfig,
+) => Promise<McpClientFactoryResult>;
+```
+
 - [ ] **Step 4: run the package suite, the build and the compile assertions**
 
 ```bash
 cd ~/prj/llm-agent
-npx biome check --write packages/llm-agent-mcp/src
-npm run build                     # no new errors in llm-agent-mcp; the count from B6c is unchanged
+npx biome check --write packages/llm-agent-mcp/src packages/llm-agent/src/interfaces/mcp-connection-strategy.ts
+npm run build                     # no new errors; the count B6c left is unchanged
 npm test -w packages/llm-agent-mcp
 npm run typecheck                 # exit 0 and no TS2578
 ```
@@ -3089,11 +3175,21 @@ Prove each directive can fail: change the `'header'` arm's `credential` to
 `IApiKeyCredential | IBearerCredential`, rerun `npm run typecheck`, expect `TS2578` on the http directive;
 make `StdioMcpAuth`'s `variable` optional on `'env-token'`, expect `TS2578` on the stdio one; revert both.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelogs, then commit**
+
+`packages/llm-agent-mcp/CHANGELOG.md`, new `## [Unreleased]` above `## 26.0.0`: *Added `HttpMcpServer`
+and `StdioMcpServer`, typed `IMcpServer` implementations whose `auth` names the scheme and demands the
+credential kind for it (`bearer`, `header` with optional `prefix`, `none`; `env-token`, `env-key`,
+`env-login`, `none`). The http credential is resolved once per connection. Both are single-use.*
+
+`packages/llm-agent/CHANGELOG.md`, new `## [Unreleased]` above `## 26.0.0`: *Deprecated:
+`McpClientFactory` as a consumer-facing seam — pass an `IMcpServer` (`HttpMcpServer`, `StdioMcpServer`,
+`mcpServerFromFactory`) to `withMcpServers`. The type stays as the default implementation's factory.*
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/llm-agent-mcp/src packages/llm-agent-mcp/CHANGELOG.md tsconfig.typecheck.json
+git add packages/llm-agent-mcp/src packages/llm-agent-mcp/CHANGELOG.md tsconfig.typecheck.json \
+  packages/llm-agent/src/interfaces/mcp-connection-strategy.ts packages/llm-agent/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(llm-agent-mcp): typed IMcpServer implementations that demand a credential
 
@@ -3112,15 +3208,12 @@ credential means a new instance and reconnection stays with
 IMcpConnectionStrategy. A static header of the credential's name, in any
 case, is dropped so it cannot join the real one.
 
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+McpClientFactory is marked deprecated as a consumer-facing seam: a consumer
+now hands over an IMcpServer. The type stays, as the default
+implementation's factory these servers and mcpServerFromFactory consume.
 MSG
 )"
 ```
-
-`packages/llm-agent-mcp/CHANGELOG.md`, new `## [Unreleased]` above `## 26.0.0`: *Added `HttpMcpServer`
-and `StdioMcpServer`, typed `IMcpServer` implementations whose `auth` names the scheme and demands the
-credential kind for it (`bearer`, `header` with optional `prefix`, `none`; `env-token`, `env-key`,
-`env-login`, `none`). The http credential is resolved once per connection. Both are single-use.*
 
 ### Task B8: delete the provider dispatch from `llm-agent-libs`
 
@@ -3141,7 +3234,7 @@ already call the injected function and stay; B12 removes `IServerPipelineContext
 **Files:**
 - Delete: `packages/llm-agent-libs/src/providers.ts` (everything in it is removed)
 - Delete: `packages/llm-agent-libs/src/__tests__/make-llm-throttle.test.ts` (tests only the deleted `makeLlm`)
-- Modify: `packages/llm-agent-libs/src/index.ts:171-180` — the "Providers (LLM)" export block goes
+- Modify: `packages/llm-agent-libs/src/index.ts:172-180` — the "Providers (LLM)" export block goes
 - Modify: `packages/llm-agent-libs/src/agent.ts:342-347` — the `reconfigure` example stops calling `makeLlm`
 - Modify: `packages/llm-agent-libs/package.json` — the five LLM providers leave `peerDependencies`, `peerDependenciesMeta` and `devDependencies`; `packages/llm-agent-libs/tsconfig.json` — their five `references` go; `package-lock.json` follows
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:68` (import), `:117` (import), `:954` (default → refusal), `:1867-1911` (worker LLMs through the seam), `:2023-2026` (`_makeLlmDefault` deleted)
@@ -3154,7 +3247,7 @@ already call the injected function and stay; B12 removes `IServerPipelineContext
 
 **Interfaces:**
 - Consumes: `BuildAgentDeps.makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>` (`smart-server.ts:360`, shape unchanged); `buildAgent(cfg, deps?)` (`smart-server.ts:3067`).
-- Produces: nothing new. **Removes** `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver` from `@mcp-abap-adt/llm-agent-libs`, and `makeDefaultRoleLlm` from server-libs. `BuildAgentDeps.makeLlm` stays optional **in the type** here; its absence is refused when first called. Making it required is the task that makes `resolveEmbedder`/`makeRag` required (§4.6.3 item 3) — see Findings.
+- Produces: nothing new. **Removes** `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`, `DefaultModelResolver` from `@mcp-abap-adt/llm-agent-libs`, and `makeDefaultRoleLlm` from server-libs. `BuildAgentDeps.makeLlm` stays optional **in the type** here; its absence is refused when first called. Task B9 makes it required in the type, together with `resolveEmbedder` (§4.6.3 item 3), and removes the refusal default this task installs; this task leaves everything else about the LLM seam — the sub-agent routing, the deleted `_makeLlmDefault` and `makeDefaultRoleLlm`, the `makeLlm` imports — in its final state, and B9 does not repeat it.
 
 - [ ] **Step 1: write the failing tests**
 
@@ -3262,7 +3355,7 @@ the subagent loop (`smart-server.ts:1383-1389`); if it does not, say so and driv
 - [ ] **Step 3: delete the dispatch, and route its callers to the seam**
 
 `git rm packages/llm-agent-libs/src/providers.ts packages/llm-agent-libs/src/__tests__/make-llm-throttle.test.ts`.
-In `packages/llm-agent-libs/src/index.ts` delete `:171-180`:
+In `packages/llm-agent-libs/src/index.ts` delete `:172-180`:
 
 ```ts
 // ---------------------------------------------------------------------------
@@ -3511,10 +3604,22 @@ new SmartServer(
 
 `model` is carried because routes such as `GET /v1/models` read it from the instance. A test that goes red
 for any other reason is not this task's: report it with its message. `llm-agent-server`'s suite must stay
-green; its CLI (`cli.ts:302`, `new SmartServer(config)`) now refuses at the first LLM build, which is the
+green; its CLI (`cli.ts:307`, `new SmartServer(config)`) now refuses at the first LLM build, which is the
 state until Task B17 supplies `makeLlm` — report any `llm-agent-server` test that starts the real CLI path.
+The server-libs suite must otherwise be green, with Task B6c's nine quarantined tests still skipped.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelogs, then commit**
+
+Add to `packages/llm-agent-libs/CHANGELOG.md` under `## [Unreleased]` (create above `## 26.0.0`), opening
+with `**BREAKING:**`: `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` are removed;
+construct the provider in your composition root and pass the `ILlm` to `withMainLlm` /
+`agent.reconfigure`; `IModelResolver` is unchanged; the five `*-llm` packages are no longer optional
+peers. To `packages/llm-agent-server-libs/CHANGELOG.md` the same way: `SmartServer` no longer defaults
+`BuildAgentDeps.makeLlm` and refuses on first use without it; subagent workers build their LLMs through
+it, so `maxTokens` and `whenThrottled` now reach them; `makeDefaultRoleLlm` is removed. Behaviour change:
+an `llm:` entry built for a role other than the held main/classifier/helper reaches `makeLlm` as written —
+without a `temperature` of its own it no longer inherits main's, a fallback only the removed default
+applied (an injected `makeLlm` never received it).
 
 ```bash
 cd ~/prj/llm-agent
@@ -3537,35 +3642,32 @@ through the injected BuildAgentDeps.makeLlm: subagent workers build their
 LLMs the way the top-level roles already did, so maxTokens and whenThrottled
 reach them too. SmartServer's default was that library function, so a server
 without the seam is now refused, with the seam named, the first time it needs
-an LLM.
+an LLM. A role entry reaches the seam as written: main's temperature, which
+only the removed default filled in, is no longer inherited.
 
 BREAKING: makeLlm, makeDefaultLlm, MakeLlmConfig and DefaultModelResolver are
 removed from @mcp-abap-adt/llm-agent-libs, and the five LLM provider packages
 are no longer its optional peers. SmartServer no longer builds an LLM without
 BuildAgentDeps.makeLlm.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
-
-Add to `packages/llm-agent-libs/CHANGELOG.md` under `## [Unreleased]` (create above `## 26.0.0`), opening
-with `**BREAKING:**`: `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` are removed;
-construct the provider in your composition root and pass the `ILlm` to `withMainLlm` /
-`agent.reconfigure`; `IModelResolver` is unchanged; the five `*-llm` packages are no longer optional
-peers. To `packages/llm-agent-server-libs/CHANGELOG.md` the same way: `SmartServer` no longer defaults
-`BuildAgentDeps.makeLlm` and refuses on first use without it; subagent workers build their LLMs through
-it; `makeDefaultRoleLlm` is removed.
 
 ### Task B9: the LLM configuration carries a reference, never a secret, and two construction seams become required
 
 `SmartServerLlmConfig.apiKey` is a passenger by §4.6.2's test: remove it and a complete LLM
 configuration is left. So it goes, and a non-secret `credentialRef?: string` takes its place, so a
-role can still name its account. With the secret gone, `SmartServer` has nothing to build a provider
-from, so the default at `smart-server.ts:954` goes too. `BuildAgentDeps.makeLlm` and `resolveEmbedder`
-become **required in the type** (§4.6.3 item 3). A missing seam is then a build error, not a server
-that will not start. An untyped caller that omits one is refused at construction. `makeRag`, the third
-seam, has its shape settled by §4.6.4, so Task B10 adds it alongside the RAG split. The loader, the
+role can still name its account. `PipelineLlmProviderConfig`, the unread legacy DTO that also carried
+an `apiKey`, is **deleted** rather than reshaped (§8 migration item 4, spec decision 5), with the `llm`
+member of the legacy `PipelineConfig` that was its only reference. Task B8 already routed every LLM
+construction through `BuildAgentDeps.makeLlm` and turned the old default into a refusal; this task makes
+`makeLlm` and `resolveEmbedder` **required in the type** (§4.6.3 item 3) and removes the two defaults
+left in the constructor — B8's refusal and the library `resolveEmbedder`. A missing seam is then a build
+error, not a server that will not start, and an untyped caller that omits one is refused at
+construction. `resolveEmbedder` is typed against Task B6c's `EmbedderResolution`, the library function's
+own parameter; Task B10 retypes it to the serializable embedder section when the RAG section splits, and
+it is B10 that routes the startup embedder through the seam. `makeRag`, the third seam, has its shape
+settled by §4.6.4, so Task B10 adds it alongside the split. The loader, the
 `${VAR}` substitution and the schema validation stay (§8, server-libs row). Two validator rules leave
 with the credential, because only the composition root knows whether it holds one: the
 `AICORE_SERVICE_KEY` rule (`config-validator.ts:72`) and the api-key rule beside it (`:62-71`). A YAML
@@ -3575,27 +3677,26 @@ boundary is correct (§4.6.3, last paragraph).
 
 The skill store's `apiKey` is **Task B11**. It also changes `llm-agent-libs` and adds a dependency,
 so a reviewer can take it separately. For the same reason, the compile-time assertions for this task
-land in **Task B10**. Their typecheck file imports `smart-server.ts`, and that file still has the four
-`makeRag` errors Task B6b left. Adding the file here would turn `npm run typecheck` red until B10.
+land in **Task B10**. Their typecheck file imports `smart-server.ts`, which still has the build errors
+Tasks B6b and B6c left (Step 4 lists them). Adding the file here would turn `npm run typecheck` red
+until B10.
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`
-  - `:58-75`: drop `makeLlm` from the `@mcp-abap-adt/llm-agent-libs` import. `:85-89`: drop
-    `resolveEmbedder` from the `@mcp-abap-adt/llm-agent-rag` import. `:115-119`: drop `makeDefaultRoleLlm`.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (line numbers are the
+  working tree's before Task B8; B8 moved some — find each by the content quoted in Step 3a)
+  - `:81-89`: the type import `EmbedderResolutionConfig` becomes `EmbedderResolution`, and the value
+    import `resolveEmbedder` goes (nothing defaults to it any more).
   - `:129-148`: in `SmartServerLlmConfig`, `apiKey: string` (`:132`) becomes `credentialRef?: string`.
-  - `:352-362`: rewrite the `BuildAgentDeps` doc comment. `makeLlm` and `resolveEmbedder` lose their `?`.
-  - `:930-967`: the constructor takes `deps: BuildAgentDeps` with no default. It calls
-    `assertConstructionSeams(deps)` first, and the two `??` defaults at `:954-955` go.
-  - `:1069`: the `RoleLlmResolver` `makeLlm` lambda applies the main temperature when the entry names none.
-  - `:1180-1185`: `resolveAgentEmbedder` receives `this._deps.resolveEmbedder`.
-  - `:1839-1910`: the sub-agent path. The `apiKey` check (`:1841-1847`) goes, and the three
-    `makeLlm(...)` library calls (`:1875`, `:1888`, `:1900`) go through `this._deps.makeLlm`.
-  - `:2016-2026`: `_makeLlm` applies the main temperature, and `_makeLlmDefault` is deleted.
+  - `:352-364`: rewrite the `BuildAgentDeps` doc comment. `makeLlm` and `resolveEmbedder` lose their `?`,
+    and `resolveEmbedder`'s `cfg` is typed `EmbedderResolution`.
+  - `:930-967`: the constructor takes `deps: BuildAgentDeps` with no default and calls
+    `assertConstructionSeams(deps)` first. In `_deps`, `makeLlm` (B8's refusal lambda) and
+    `resolveEmbedder` (`?? resolveEmbedder`) take the injected members as they are.
+  - `:1836-1847`: the comment names `credentialRef`, and the `apiKey` guard becomes a guard on the main
+    entry; B8's `if (!subFlatLlm)` block below it goes, because the new guard already narrows.
   - `:3067-3070`: `buildAgent`'s `deps` becomes required.
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/llm/role-llm-resolver.ts:1-25`: delete
-  `makeDefaultRoleLlm` and its `makeLlm` import.
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/pipeline.ts:12-26`: in
-  `PipelineLlmProviderConfig`, `apiKey?` (`:15`) becomes `credentialRef?`.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/pipeline.ts:1-26`, `:62-70`: delete
+  `PipelineLlmProviderConfig` and `PipelineConfig.llm`, and correct the header comment.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/llm-config-map.ts:6-27`: flat-shape detection
   reads `credentialRef` where it read `apiKey`.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts:21-50`:
@@ -3605,8 +3706,6 @@ land in **Task B10**. Their typecheck file imports `smart-server.ts`, and that f
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts`: `:31-79`
   (`checkLlmRole`), `:144-153` (`validateLlmEntry`), `:191-236` (the LLM half of
   `validateResolvedConfig`, whose block starts at `:205`).
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts:28-98`: both
-  functions take the seam as a parameter.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/build-stepper-root.ts:98-102`: `STUB_LLM_CFG`
   loses `apiKey: ''`.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/build-dag-coordinator-deps.ts:29-32`: the doc
@@ -3625,21 +3724,22 @@ land in **Task B10**. Their typecheck file imports `smart-server.ts`, and that f
 - Modify tests (enumerated in Step 3c–3e).
 
 **Interfaces:**
-- Consumes: `resolveEmbedder`, `EmbedderResolutionConfig`, `EmbedderResolutionOptions` from
-  `@mcp-abap-adt/llm-agent-rag` (unchanged by this task).
+- Consumes: `EmbedderResolution`, `EmbedderResolutionOptions`, `resolveEmbedder` from
+  `@mcp-abap-adt/llm-agent-rag` (Task B6c); the state Task B8 left — every LLM built through
+  `this._deps.makeLlm`, `_makeLlmDefault` and `makeDefaultRoleLlm` gone, `_deps.makeLlm` defaulting to a
+  refusal.
 - Produces:
-  - `SmartServerLlmConfig.credentialRef?: string` and `PipelineLlmProviderConfig.credentialRef?: string`.
-    `apiKey` is removed from both.
+  - `SmartServerLlmConfig.credentialRef?: string`; `apiKey` is removed.
+  - **Deleted:** `PipelineLlmProviderConfig`, and the `llm` member of the legacy `PipelineConfig`.
   - `BuildAgentDeps.makeLlm: (cfg: SmartServerLlmConfig) => Promise<ILlm>` (required).
-  - `BuildAgentDeps.resolveEmbedder: (cfg: EmbedderResolutionConfig, options?: EmbedderResolutionOptions) => IEmbedder`
-    (required). Task B10 retypes its `cfg` to the serializable embedder section.
+  - `BuildAgentDeps.resolveEmbedder: (cfg: EmbedderResolution, options?: EmbedderResolutionOptions) => IEmbedder`
+    (required). Task B10 retypes its `cfg` to `SmartServerEmbedderConfig`.
   - `new SmartServer(config, deps)`, `buildAgent(cfg, deps)` and
     `ControllerSkillPipelineBuilder#build(deps)`: `deps` is required in all three.
-  - `resolveAgentEmbedder(rag, diEmbedder, resolve, extraFactories, logger?)` and
-    `resolveToolsStoreEmbedder(current, toolsStoreCfg, diEmbedder, resolve, extraFactories, logger?)`,
-    each with a new `resolve: BuildAgentDeps['resolveEmbedder']` parameter.
   - `BuilderLlmInput.credentialRef?: string`.
-  - The test fixture `constructionSeams` and `stubLlm(model?)`. Task B10 extends it with `makeRag`.
+  - The test fixture `packages/llm-agent-server-libs/src/smart-agent/__tests__/construction-seams.ts`,
+    exporting `constructionSeams` and `stubLlm(model?)`. Task B10 adds `makeRag` to it, after which it
+    stubs all three required seams; every test that constructs a `SmartServer` spreads it.
 
 - [ ] **Step 1: write the failing tests, and the fixture they use**
 
@@ -3647,7 +3747,7 @@ land in **Task B10**. Their typecheck file imports `smart-server.ts`, and that f
 // packages/llm-agent-server-libs/src/smart-agent/__tests__/construction-seams.ts
 /**
  * The construction seams every SmartServer in this suite must now name (spec §4.6.3
- * item 3). The library defaults none of them, so each test says what builds its LLMs
+ * item 3; Task B10 adds makeRag here). The library defaults none of them, so each test says what builds its LLMs
  * and embedders; this module is the answer for tests that do not care. A test that
  * does care overrides one member: `{ ...constructionSeams, makeLlm: mine }`.
  *
@@ -3683,11 +3783,9 @@ export const constructionSeams: Pick<
 // packages/llm-agent-server-libs/src/smart-agent/__tests__/credential-ref.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
 import { parse } from 'yaml';
 import { ControllerSkillPipelineBuilder } from '../../builders/controller-skill-pipeline-builder.js';
 import { resolveSmartServerConfig, YAML_TEMPLATE } from '../config.js';
-import { resolveAgentEmbedder } from '../resolve-agent-embedder.js';
 import {
   SmartServer,
   type SmartServerConfig,
@@ -3857,29 +3955,6 @@ describe('the construction seams are required', () => {
     }
   });
 
-  it('builds the agent embedder through the injected resolveEmbedder, not the library', async () => {
-    const asked: unknown[] = [];
-    const stub = {
-      embed: async () => ({ vector: [1] }),
-    } as unknown as IEmbedder;
-    const embedder = await resolveAgentEmbedder(
-      {
-        type: 'in-memory',
-        embedder: 'ollama',
-        url: 'http://localhost:11434',
-        model: 'bge-m3',
-      },
-      undefined,
-      (ec) => {
-        asked.push(ec);
-        return stub;
-      },
-      {},
-    );
-    assert.ok(embedder);
-    assert.equal(asked.length, 1);
-  });
-
   it('the controller builder reads no key from the environment', () => {
     const prev = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = 'sk-from-env';
@@ -3916,9 +3991,8 @@ Expected before the change:
 - `refuses an empty credentialRef` fails.
 - `asks for no key` fails on both the openai and the AICORE rule.
 - The template test fails, because it contains `apiKey`.
-- Both constructor tests fail, because the defaults fill the seams.
-- The `resolveAgentEmbedder` test fails, because the third argument is taken as `extraFactories`
-  and the library builds.
+- Both constructor tests fail: the constructor fills both seams with defaults (B8's refusal for
+  `makeLlm`, the library function for `resolveEmbedder`) and never checks them.
 - The builder test fails, because `toLlmConfig` drops `credentialRef` and copies the env key.
 - `hands each role its config` may already pass. It guards the routing and is not a proof of the change.
 
@@ -3940,7 +4014,19 @@ export interface SmartServerLlmConfig {
 
 (Every member from `url` down stays as it is.)
 
-`smart-server.ts:352-362`, which replaces the old doc comment and the first two members:
+`smart-server.ts:81-89`, the two `@mcp-abap-adt/llm-agent-rag` imports:
+
+```ts
+import type {
+  EmbedderResolution,
+  EmbedderResolutionOptions,
+} from '@mcp-abap-adt/llm-agent-rag';
+import { makeRag, prefetchEmbedderFactories } from '@mcp-abap-adt/llm-agent-rag';
+```
+
+(`makeRag` is still called directly at the four sites Task B10 moves onto the seam.)
+
+`smart-server.ts:352-364`, which replaces the old doc comment and the first two members:
 
 ```ts
 /**
@@ -3948,15 +4034,15 @@ export interface SmartServerLlmConfig {
  *
  * `makeLlm` and `resolveEmbedder` are REQUIRED (spec §4.6.3 item 3): the library
  * constructs no authenticated provider from configuration, so the composition root
- * supplies them. Each receives the SERIALIZABLE section, whose `credentialRef` the
- * root resolves. Passing `{}` no longer compiles, and an untyped caller that omits
- * one is refused at construction. Every other member is optional and defaults to
- * the real implementation; tests substitute canned ones the same way.
+ * supplies them. `makeLlm` receives the SERIALIZABLE section, whose `credentialRef`
+ * the root resolves. Passing `{}` no longer compiles, and an untyped caller that
+ * omits one is refused at construction. Every other member is optional and defaults
+ * to the real implementation; tests substitute canned ones the same way.
  */
 export interface BuildAgentDeps {
   makeLlm: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
   resolveEmbedder: (
-    cfg: EmbedderResolutionConfig,
+    cfg: EmbedderResolution,
     options?: EmbedderResolutionOptions,
   ) => IEmbedder;
 ```
@@ -3985,7 +4071,27 @@ function assertConstructionSeams(deps: BuildAgentDeps | undefined): void {
 }
 ```
 
-The constructor at `:930` and the `_deps` block at `:953-956`:
+The constructor (`:930`) and the first two members of `_deps`, as Task B8 left them:
+
+```ts
+  constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
+    this.cfg = config;
+    // … down to this._toolNamespace …
+    this._deps = {
+      // No default: the library no longer constructs providers (spec §4.6.2),
+      // …
+      makeLlm:
+        deps.makeLlm ??
+        (() =>
+          Promise.reject(
+            new Error(
+              'BuildAgentDeps.makeLlm is not set: SmartServer no longer constructs LLM ' +
+      // …
+          )),
+      resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
+```
+
+become:
 
 ```ts
   constructor(config: SmartServerConfig, deps: BuildAgentDeps) {
@@ -4003,44 +4109,35 @@ The constructor at `:930` and the `_deps` block at `:953-956`:
 ```
 
 `_deps`'s declared type (`:915-929`) is unchanged: `Required<Pick<…>>` over a member that is already
-required stays valid.
+required stays valid. `_makeLlm` and the `RoleLlmResolver` wiring (`:1069`) are not touched: B8 left
+them calling `this._deps.makeLlm`, and an `llm:` entry reaches it as written (§4.6.7) — the held
+main/classifier/helper builds at `:1034-1056` already state their temperatures.
 
-Beside `_makeLlm` (`:2016-2026`): delete `_makeLlmDefault` and its doc comment, and change `_makeLlm`
-to this:
-
-```ts
-  /** Build an LLM from a SmartServerLlmConfig through the BuildAgentDeps seam. */
-  private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
-    return this._deps.makeLlm(this._withMainTemperature(lc));
-  }
-
-  /**
-   * A role entry that names no temperature gets the main one. The library's own
-   * seam default used to apply this fallback (`lc.temperature ?? mainTemp ?? 0.7`);
-   * the seam is now the app's, so the server keeps the rule where the role is known.
-   */
-  private _withMainTemperature(lc: SmartServerLlmConfig): SmartServerLlmConfig {
-    return lc.temperature !== undefined
-      ? lc
-      : { ...lc, temperature: this._mainTemp ?? 0.7 };
-  }
-```
-
-`:1069`: `makeLlm: (lc) => this._deps.makeLlm(this._withMainTemperature(lc)),`
-
-`:1180-1185`:
+The sub-agent path. Task B8 left the `apiKey` guard (`:1841-1847`) and, below it, a guard it called
+unreachable because of that one:
 
 ```ts
-    const resolvedEmbedder = await resolveAgentEmbedder(
-      this.cfg.rag,
-      this._deps.embedder ?? this.cfg.embedder,
-      this._deps.resolveEmbedder,
-      mergedEmbedderFactories,
-      this._fileLogger,
-    );
+    // Normalize subagent llm: either flat { provider, apiKey, ... } or a map
+    // …
+    if (
+      !subLlmMain?.apiKey &&
+      subLlmMain?.provider !== 'sap-ai-sdk' &&
+      subLlmMain?.provider !== 'ollama'
+    ) {
+      throw new Error(`subagent '${name}': LLM API key is required`);
+    }
+    // …
+    const subFlatLlm = subLlmMain;
+    if (!subFlatLlm) {
+      // Unreachable: the key guard above throws when no main entry exists.
+      // Stated so the seam below receives a defined config.
+      throw new Error(`subagent '${name}': no llm configured`);
+    }
 ```
 
-The sub-agent path, `:1841-1847` (the `apiKey` guard):
+The first becomes a guard on the entry itself, which narrows `subLlmMain`, so the second is deleted and
+`const subFlatLlm = subLlmMain;` stays with a defined type. In the comment, `{ provider, apiKey, ... }`
+becomes `{ provider, credentialRef?, ... }`:
 
 ```ts
     if (!subLlmMain) {
@@ -4050,38 +4147,26 @@ The sub-agent path, `:1841-1847` (the `apiKey` guard):
     }
 ```
 
-At `:1873-1910`, the three factories. Each now reaches the provider with every field the config
-carries. It used to lose `maxTokens` and `whenThrottled` to a hand-copied field list:
-
-```ts
-      makeMain: () =>
-        this._deps.makeLlm({ ...subFlatLlm, temperature: mainTemp }),
-      makeClassifier: () =>
-        this._deps.makeLlm({ ...subFlatLlm, temperature: classifierTemp }),
-      makeHelper: subHelperCfg
-        ? (
-            (h) => () =>
-              this._deps.makeLlm({
-                ...h,
-                temperature: Number(h.temperature ?? 0.1),
-              })
-          )(subHelperCfg)
-        : undefined,
-```
-
 `:3067-3070`: `deps?: BuildAgentDeps` becomes `deps: BuildAgentDeps`.
 
-`llm/role-llm-resolver.ts`: delete lines 1-25 up to `export interface IRoleLlmResolver` (the `makeLlm`
-import and `makeDefaultRoleLlm`), and keep `import type { ILlm }`, the `config.js` import and the
-`SmartServerLlmConfig` type import. `IRoleLlmResolver.makeLlm` stays, because removing it is §4.6.6's
-task.
-
-`pipeline.ts:14-15`:
+`pipeline.ts`. `PipelineLlmProviderConfig` and the legacy `PipelineConfig` are read by nothing in any
+package — the loader refuses the legacy `pipeline:` shape (`assertNoLegacyPipelineConfig`,
+`config-validator.ts:166`) — so the DTO is deleted, not reshaped. Delete `PipelineLlmProviderConfig`
+(`:12-26`) and the `llm?: { main; helper?; classifier? }` member of `PipelineConfig` (`:63-70`), whose
+only type it was. Replace the header comment (`:1-6`), which points at a `providers.ts` that Task B8
+deleted:
 
 ```ts
-  /** Names the account the composition root resolves; omit for its default. Never a secret. */
-  credentialRef?: string;
+/**
+ * Pipeline configuration types for SmartServer.
+ *
+ * The legacy `PipelineConfig` shape is refused at load (assertNoLegacyPipelineConfig)
+ * and read by nothing; what is left of it here is kept only until its remaining
+ * members are retired with it.
+ */
 ```
+
+`PipelineRagStoreConfig` and `PipelineConfig.rag` are Task B10's, which deletes them the same way.
 
 `llm-config-map.ts:6-21`: in the doc comment and in `isFlatLlmConfig`, replace `apiKey` with
 `credentialRef`, so the line reads `typeof flat.credentialRef === 'string' ||`. At `:26`, the comment
@@ -4235,32 +4320,6 @@ read it and the signature stays for `config.ts`. Then replace the LLM block at `
 The `checkLlmRole('llm', { apiKey, provider: 'openai' }, …, true)` call reuses one message and adds no
 provider issue. The final `new Set(issues)` deduplicates the message when the flat branch reports it too.
 
-`resolve-agent-embedder.ts`. Replace the `SmartServerRagConfig` import with
-`import type { BuildAgentDeps, SmartServerRagConfig } from './smart-server.js';`, then:
-
-```ts
-export async function resolveAgentEmbedder(
-  rag: SmartServerRagConfig | undefined,
-  diEmbedder: IEmbedder | undefined,
-  resolve: BuildAgentDeps['resolveEmbedder'],
-  extraFactories: Record<string, EmbedderFactory>,
-  logger?: AnyLogger,
-): Promise<IEmbedder | undefined> {
-  // … the DI branch and the bare-in-memory branch unchanged: the DI branch only
-  // composes chunking/retry onto an instance the consumer built, so it keeps calling
-  // the library's resolveEmbedder — it constructs nothing …
-  await prefetchEmbedderFactories([rag.embedder ?? 'ollama']);
-  // Construction goes through the app's seam: the library builds no embedder.
-  const resolved = resolve(rag, { extraFactories, logger });
-  return resolved ? wrapEmbedder(resolved) : undefined;
-}
-```
-
-In `resolveToolsStoreEmbedder`, add the same `resolve` parameter after `diEmbedder`, and pass it
-through at `:93-98` as `resolveAgentEmbedder(toolsStoreCfg, diEmbedder, resolve, extraFactories, logger)`.
-The `current` branch (`:81-91`) keeps calling the library's `resolveEmbedder` with
-`injectedEmbedder: current`. It only composes, and constructs nothing.
-
 `controller-skill-pipeline-builder.ts`, `:13-20` and `:35-66`:
 
 ```ts
@@ -4393,8 +4452,17 @@ grep -rn --include='*.ts' -E "new SmartServer\(|[^.a-zA-Z_]buildAgent\(|\.build\
   packages/llm-agent-server-libs/src packages/llm-agent-server/src | grep -v "smart-server.ts:"
 ```
 
-`packages/llm-agent-server/src/smart-agent/cli.ts:307` and `scripts/start-smart-server.{ts,js}` are
-**Task B17's**. They are the composition root, and they get real seams, not the fixture.
+Two sites get something other than the plain rule:
+- `smart-agent/__tests__/make-llm-seam.test.ts` (Task B8's). Its second test's deps
+  (`{ makeLlm, embedder, mcpClients }`) spread `...constructionSeams` first, as the rule says. Its first
+  test, `without an injected makeLlm the server refuses, naming the seam`, gets **no** seams: the refusal
+  is its subject. The constructor now throws `BuildAgentDeps.makeLlm, BuildAgentDeps.resolveEmbedder are
+  required…` inside the async `buildAgent`, so the rejection still matches `/BuildAgentDeps\.makeLlm/`.
+- `packages/llm-agent-server/src/smart-agent/cli.ts:307` is **Task B17's**: it is the composition root
+  and gets real seams, not the fixture. `packages/llm-agent-server/scripts/start-smart-server.{ts,js}` is
+  dead and left alone: it sits outside that package's `tsconfig` `include`, is not in its `files`, and
+  imports `../src/smart-agent/config.js` and `../src/smart-agent/smart-server.js`, which do not exist in
+  `llm-agent-server`.
 
 - [ ] **Step 3d: fixtures that carried `apiKey`**
 
@@ -4444,73 +4512,72 @@ cd ~/prj/llm-agent && npx biome format --write packages/llm-agent-server-libs/sr
 Review the diff of each file. The substitution only removes a member, so a literal left as
 `{ provider: 'openai', }` is valid, and the formatter tidies it.
 
-Delete `llm-throttle-config.test.ts:229-265` (`describe('makeDefaultRoleLlm')`), its import at `:15`,
-and the words `and the object makeDefaultRoleLlm builds for makeLlm` from the header at `:1-9`. The
-function is gone. That *the provider receives `maxTokens` and `whenThrottled`* is now the app's
-`makeLlm`'s job, and Task B17 carries the equivalent test.
+`llm-throttle-config.test.ts` needs nothing here: Task B8 already deleted its `makeDefaultRoleLlm`
+block and imports.
 
-- [ ] **Step 3e: the two test files that call the embedder helpers, and the pre-existing failures**
+- [ ] **Step 3e: the pre-existing quarantines**
 
-`resolve-agent-embedder.test.ts` and `resolve-agent-embedder-resilience.test.ts`: add
-`import { resolveEmbedder } from '@mcp-abap-adt/llm-agent-rag';` and pass `resolveEmbedder`
-- as the new **third** argument of each `resolveAgentEmbedder(…)` call: `resolve-agent-embedder.test.ts:14`,
-  `:26`, `:31`, `:41`, `:57` and `-resilience.test.ts:24`, `:38`;
-- as the new **fourth** argument of each `resolveToolsStoreEmbedder(…)` call: `:69`, `:84`, `:100`, `:113`
-  and `-resilience.test.ts:44`.
-
-Seven tests have been red since Task B6b. Each feeds the flat YAML DTO into `makeRag`, which now takes
-`RagResolution`, and Task B10 owns every one of them. Quarantine them here, with no other change to
-their bodies:
-- `builders/controller-skill-pipeline-builder.test.ts`: the tests at `:119`, `:157`, `:192`, `:232`, `:270`;
-- `smart-agent/__tests__/mcp-yaml-vectorization.test.ts`: the tests at `:159`, `:210`.
-
-Each becomes `test('<same name>', { skip: 'makeRag takes RagResolution since Task B6b; Task B10 routes this call site through BuildAgentDeps.makeRag' }, async (…) => {…})`.
-Rename the test at `:270` to `build(deps) with a keyed provider reads no key from the environment`,
-because the old name described the removed `skipRuntime` path.
+Task B6c quarantined nine tests (two in `resolve-agent-embedder.test.ts`, five in
+`controller-skill-pipeline-builder.test.ts`, two in `mcp-yaml-vectorization.test.ts`). Leave their
+`skip` options as they are: Task B10 lifts them. `resolve-agent-embedder.ts` and its two test files are
+not touched here — Task B10 threads the embedder seam through both helpers when it gives them a section
+to pass. One quarantined test needs a new name now: rename the test at
+`controller-skill-pipeline-builder.test.ts:270` to
+`build(deps) with a keyed provider reads no key from the environment`, because the old name described
+the `skipRuntime` path this task removes; its `skip` stays.
 
 - [ ] **Step 4: run the package suite and the build**
 
 ```bash
 cd ~/prj/llm-agent
 find packages -name '*.tsbuildinfo' -delete
+npx biome check --write packages/llm-agent-server-libs/src
 npm run build               # count "Found N errors"; ANSI colour defeats grep -c "error TS"
 npm run typecheck           # unchanged list, exit 0
-npm test -w packages/llm-agent-server-libs
+timeout 900 npm test -w packages/llm-agent-server-libs
 npm test -w packages/llm-agent-server
 grep -rn --include='*.ts' -E "apiKey|AICORE_SERVICE_KEY" packages/llm-agent-server-libs/src \
   | grep -v -E '__tests__|\.test\.ts|controller/plan-analysis\.ts' \
   || echo "  no secret field left in server-libs source (skill store: Task B11)"
+grep -rn --include='*.ts' "PipelineLlmProviderConfig" packages/*/src \
+  || echo "  PipelineLlmProviderConfig is gone"
+# Task B8's end state, which this task relies on and does not redo:
 grep -rn --include='*.ts' -E "makeDefaultRoleLlm|_makeLlmDefault|import \{ makeLlm \}" \
   packages/llm-agent-server-libs/src || echo "  no library provider dispatch left"
-sed -n '/^import {$/,/^} from .@mcp-abap-adt\/llm-agent-libs.;$/p' \
-  packages/llm-agent-server-libs/src/smart-agent/smart-server.ts | grep -w 'makeLlm,' \
-  && echo "  STILL IMPORTED" || true
 ```
 
 Expected:
-- `npm run build` reports exactly the four `makeRag` errors in `smart-server.ts`, the call sites that
-  were `:1271`, `:1272`, `:1915`, `:1923` before this task (Task B10's). If it builds downstream,
-  `llm-agent-server` adds `cli.ts:307` (`new SmartServer(config)` with no deps, Task B17's) and the
-  pre-existing `smoke-adapters.ts:105`.
-- The server-libs suite passes, with the two old skips and the seven quarantined in Step 3e.
+- `npm run build` reports exactly these errors, all in `llm-agent-server-libs` and all Task B10's:
+  - the four `makeRag` sites Task B6b left in `smart-server.ts` (`:1271`, `:1272`, `:1915`, `:1923`
+    before Task B8 moved lines);
+  - `resolve-agent-embedder.ts:54`, Task B6c's: the flat `SmartServerRagConfig` is not an
+    `EmbedderResolution`;
+  - the skill-host call in `smart-server.ts` (`:1221` before Task B8): now that the seam has a real
+    type, `ec: SkillHostEmbedderConfig` (`{ embedder?; model? }`) is visibly not an
+    `EmbedderResolution`. Task B10 converts it.
+  B6c's `smart-server.ts:82` error is gone. If the build reaches `llm-agent-server`, it adds `cli.ts:307`
+  (`new SmartServer(config)` with no deps, Task B17's) and the pre-existing `smoke-adapters.ts:105`.
+- The server-libs suite passes, with Task B6c's nine quarantined tests and the suite's pre-existing
+  skips.
 - The first grep prints only the skill-store lines of `skill-plugins-config.ts` and
-  `skill-plugins-host-factory.ts`, which are Task B11's.
+  `skill-plugins-host-factory.ts`, which are Task B11's; the second and third print their `echo`.
 
 If another test fails, it is one that relied on the real provider the old default built. Give the stub
 in `construction-seams.ts` the member that test needed (a `getModels`, say). Do not weaken the
 assertion, and report which one.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog, then commit**
 
-Add to `packages/llm-agent-server-libs/CHANGELOG.md`, under a new `## [Unreleased]` at the top and
-opening with `**BREAKING:**`:
-- `SmartServerLlmConfig.apiKey` and `PipelineLlmProviderConfig.apiKey` are removed, and `credentialRef`
-  names the account instead. A YAML that still carries `apiKey` is refused with `credentialRef` in the
-  message.
-- `BuildAgentDeps.makeLlm` and `resolveEmbedder` are required. `SmartServer`, `buildAgent` and
+Add to `packages/llm-agent-server-libs/CHANGELOG.md`, under the `## [Unreleased]` Task B8 opened, opening
+with `**BREAKING:**`:
+- `SmartServerLlmConfig.apiKey` is removed, and `credentialRef` names the account instead. A YAML that
+  still carries `apiKey` is refused with `credentialRef` in the message.
+- `PipelineLlmProviderConfig` is deleted, with the `llm` member of the legacy `PipelineConfig`; nothing
+  read either.
+- `BuildAgentDeps.makeLlm` and `resolveEmbedder` are required, and `resolveEmbedder` is typed with
+  `EmbedderResolution` from `@mcp-abap-adt/llm-agent-rag`. `SmartServer`, `buildAgent` and
   `ControllerSkillPipelineBuilder#build` require `deps`.
 - The validator no longer asks for an api key or `AICORE_SERVICE_KEY`.
-- `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` take the embedder seam.
 - `BuilderLlmInput.apiKey` becomes `credentialRef`, and the builder reads no environment variable.
 
 ```bash
@@ -4519,31 +4586,28 @@ git add packages/llm-agent-server-libs
 git commit -m "$(cat <<'MSG'
 feat(llm-agent-server-libs)!: the LLM config carries a reference, and the seams are required
 
-SmartServerLlmConfig.apiKey and PipelineLlmProviderConfig.apiKey were
-passengers: remove them and a complete LLM configuration is left. They
-go, and a non-secret credentialRef names the account instead, so two
-roles can still use two accounts. A YAML that still carries apiKey is
-refused, naming credentialRef — a loaded object is not a fresh literal,
-so the boundary is the only place that can catch it.
+SmartServerLlmConfig.apiKey was a passenger: remove it and a complete
+LLM configuration is left. It goes, and a non-secret credentialRef names
+the account instead, so two roles can still use two accounts. A YAML
+that still carries apiKey is refused, naming credentialRef — a loaded
+object is not a fresh literal, so the boundary is the only place that
+can catch it. PipelineLlmProviderConfig, an unread legacy DTO carrying
+the same field, is deleted rather than reshaped.
 
 With the secret gone the server has nothing to build a provider from,
 so BuildAgentDeps.makeLlm and resolveEmbedder are now required in the
 type: a missing seam is a build error rather than a deployment that
 stops starting, and an untyped caller is refused at construction. The
-startup embedder and the sub-agent LLMs now go through those seams too;
-before, both reached the library directly. The api-key and
+constructor's last two defaults go with it. The api-key and
 AICORE_SERVICE_KEY validator rules leave with the credential, since only
 the composition root knows whether it holds one. The loader, ${VAR}
 substitution and schema validation stay.
 
-BREAKING: apiKey is removed from two exported DTOs and refused in YAML;
-BuildAgentDeps.makeLlm/resolveEmbedder are required, so passing {} (or
-nothing) as deps no longer compiles; resolveAgentEmbedder and
-resolveToolsStoreEmbedder take the embedder seam; BuilderLlmInput.apiKey
-becomes credentialRef and the builder no longer reads OPENAI_API_KEY and
-friends from the environment.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+BREAKING: SmartServerLlmConfig.apiKey is removed and refused in YAML;
+PipelineLlmProviderConfig is deleted; BuildAgentDeps.makeLlm and
+resolveEmbedder are required, so passing {} (or nothing) as deps no
+longer compiles; BuilderLlmInput.apiKey becomes credentialRef and the
+builder no longer reads OPENAI_API_KEY and friends from the environment.
 MSG
 )"
 ```
@@ -4553,76 +4617,100 @@ MSG
 The flat `SmartServerRagConfig` (`smart-server.ts:150-188`) describes two independently authenticated
 targets as one. `url` is Qdrant's address or Ollama's depending on its neighbours, so no single
 `credentialRef` could say which account it names (§4.6.4). It splits into `store`, discriminated by
-`type`, and `embedder`, each with its own `credentialRef?`. `PipelineRagStoreConfig` (`pipeline.ts:28`)
-splits the same way. `dedupThreshold`/`vectorWeight`/`keywordWeight` move onto the in-memory arm, the
-only store that reads them. Their two readers move with them: the config watcher
-(`llm-agent-libs/src/config/config-watcher.ts:112`, `:141-144`) and the section defaults
-(`resolve-config-sections.ts:199-201`). `SmartServer` also has no store seam: it calls the library's
-`makeRag` directly at `smart-server.ts:1271`, `:1272`, `:1915`, `:1923`, with the flat DTO the library
-no longer accepts, and those four are Task B6b's errors. So `BuildAgentDeps` gains a required
-`makeRag: (input: MakeRagInput) => Promise<IRag>`, and those four sites go through `resolveEmbedder`
-and then the seam (§4.6.3 item 4). `resolveEmbedder`'s input becomes the serializable embedder section,
-because §4.6.4's seam table says that is what the library holds. A legacy flat `rag:` is refused, and
-the message points at the new shape. The compile-time assertions for this task and for B9 land here
-(see B9's intro).
+`type`, and `embedder`, each with its own `credentialRef?`. `dedupThreshold`/`vectorWeight`/`keywordWeight`
+move onto the in-memory arm, the only store that reads them. Their two readers move with them: the config
+watcher (`llm-agent-libs/src/config/config-watcher.ts:112`, `:141-144`) and the section defaults
+(`resolve-config-sections.ts:199-201`). `PipelineRagStoreConfig` (`pipeline.ts:28`), the unread legacy
+DTO beside it, is **deleted** rather than split (§4.6.4, §8 migration item 4), with the `rag` member of
+the legacy `PipelineConfig`. The embedder section is `SmartServerEmbedderConfig`, a union on the same
+split Task B6c gave `EmbedderResolution`: a built-in named by `provider`, or a consumer factory named by
+`factory`. It carries **no `apiBaseUrl`** — SAP AI Core's address travels with the credential from the
+same service key (§8 migration item 4's `CredentialEntry`), so YAML that writes one is refused. `SmartServer`
+also has no store seam: it calls the library's `makeRag` directly at `smart-server.ts:1271`, `:1272`,
+`:1915`, `:1923`, with the flat DTO the library no longer accepts (Task B6b's errors). So `BuildAgentDeps`
+gains a required `makeRag: (input: MakeRagInput) => Promise<IRag>`, `resolveEmbedder` takes the embedder
+section (§4.6.4's seam table), and those four sites resolve the embedder through the seam and then build
+through the other (§4.6.3 item 4). An embedder the consumer injected is composed with `composeEmbedder`,
+never passed to `resolveEmbedder`. A legacy flat `rag:` is refused, and the message points at the new
+shape. The compile-time assertions for this task and for B9 land here (see B9's intro).
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/rag-config.ts`: the store and embedder types,
-  `MakeRagInput`, `isVectorStoreInput`, `toMakeRagInput`, `assertRagConfigShape`.
+  `MakeRagInput`, `isInMemoryInput`, `isBuiltInEmbedderProvider`, `embedderSectionFor`, `toMakeRagInput`,
+  `assertRagConfigShape`.
 - Modify: `packages/llm-agent-server-libs/src/index.ts:15`: add `export * from './smart-agent/rag-config.js';`.
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`
-  - `:81-89`: imports. `EmbedderResolutionConfig` and `makeRag` go, and `rag-config.js` comes in.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (numbers from before Task B8;
+  find each by content)
+  - `:81-89`: imports. `EmbedderResolution` and `makeRag` go, and `rag-config.js` comes in.
   - `:150-188`: delete `SmartServerRagConfig`. It moves to `rag-config.ts`, and `:265` imports the type.
   - `BuildAgentDeps` (`:359-`): `resolveEmbedder` is retyped, and `makeRag` is added.
   - `REQUIRED_CONSTRUCTION_SEAMS` (B9) gains `'makeRag'`. The constructor checks the RAG shape, and
     `_deps` carries `makeRag`.
-  - `:1218-1224`: the skill-host embedder goes through the seam in its new shape.
+  - `:1180-1185`: `resolveAgentEmbedder` receives `this._deps.resolveEmbedder`.
+  - `:1218-1224`: the skill-host embedder goes through the seam as a section.
   - `:1266-1273`: the tools and history stores go through the seam.
-  - `:1911-1930`: the worker stores go through the seam.
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/pipeline.ts:28-58`: `PipelineRagStoreConfig`
-  becomes `{ store; embedder? }`.
+  - `:1856-1860`, `:1911-1930`: the worker stores go through the seam.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/pipeline.ts:28-58`, `:71-72`: delete
+  `PipelineRagStoreConfig` and `PipelineConfig.rag`.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts:180-222`:
-  `resolveRagSection` projects `store` per arm and `embedder`.
+  `resolveRagSection` projects `store` per arm and `embedder` per arm.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts`: `:81-142`
   (`checkRagStore` becomes `checkRag`), `:276-283` (the call), and a new `assertNoLegacyRagShape`.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/config.ts:203`: call
   `assertNoLegacyRagShape(yaml)`.
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts`: read the new shape.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.ts` (whole file): read
+  the new shape, take the seam, compose an injected embedder.
 - Modify: `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts`:
   `:28-33` (`BuilderEmbedderInput.credentialRef?`) and `:173-183` (`rag:` in the new shape).
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts:23-32`: the template's `rag:`.
 - Modify: `packages/llm-agent-server-libs/tsconfig.json`: exclude `**/__typechecks__/**`.
 - Modify: `packages/llm-agent-libs/src/config/config-watcher.ts:112`, `:141-144`
-- Modify: `packages/llm-agent-server/src/smart-agent/cli.ts:285-299`: peer prefetch reads `rag.store.type`.
+- Modify: `packages/llm-agent-server/src/smart-agent/cli.ts:251-299`: both prefetch blocks read the split
+  section — the embedder block (`:255-277`) as well as the store block (`:285-299`).
 - Modify: `packages/llm-agent-server/src/smart-agent/check-models-cli.ts:90-109`: read the embedder model
   from `rag.embedder`.
 - Modify: `tsconfig.typecheck.json`: append the new typecheck file.
 - Create: `packages/llm-agent-server-libs/src/__typechecks__/construction-seams.ts`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/construction-seams.ts`: add
-  `makeRag`, and adapt `resolveEmbedder`.
+  `makeRag`, and convert the section in `resolveEmbedder`.
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/rag-store-embedder.test.ts`
 - Modify tests: `config-validation.test.ts`, `rag-max-batch-size-config.test.ts`,
   `mcp-yaml-vectorization.test.ts`, `resolve-agent-embedder.test.ts`,
   `resolve-agent-embedder-resilience.test.ts`, `builders/controller-skill-pipeline-builder.test.ts`,
-  `llm-agent-libs/src/config/__tests__/config-watcher.test.ts`.
+  `llm-agent-libs/src/config/__tests__/config-watcher.test.ts` — including lifting Task B6c's nine
+  quarantines.
 - Modify: `packages/llm-agent-server-libs/CHANGELOG.md`, `packages/llm-agent-libs/CHANGELOG.md`
 
 **Interfaces:**
 - Consumes:
-  - `RagResolution`, `makeRag`, `resolveEmbedder`, `EmbedderResolutionOptions` (Task B6b, `llm-agent-rag`);
+  - `RagResolution`, `makeRag` (Task B6b) and `EmbedderResolution`, `EmbedderResolutionOptions`,
+    `resolveEmbedder`, `composeEmbedder`, `prefetchEmbedderFactories` (Task B6c), all from
+    `@mcp-abap-adt/llm-agent-rag`;
   - `InMemoryRag` (`@mcp-abap-adt/llm-agent`);
-  - B9's `BuildAgentDeps`, `assertConstructionSeams` and the fixture.
+  - B9's `BuildAgentDeps`, `assertConstructionSeams` and the fixture `constructionSeams`.
 - Produces (all exported from `@mcp-abap-adt/llm-agent-server-libs`):
-  - `InMemoryStoreConfig`, `QdrantStoreConfig`, `PgVectorStoreConfig`, `HanaVectorStoreConfig`,
-    `SmartServerRagStoreConfig`, `SmartServerRagEmbedderConfig`,
-    `SmartServerRagConfig = { store; embedder? }`, `MakeRagInput`.
-  - `isVectorStoreInput(input): input is Extract<MakeRagInput, { embedder: IEmbedder }>`.
+  - `InMemoryStoreConfig` (with `credentialRef?`), `QdrantStoreConfig`, `PgVectorStoreConfig`,
+    `HanaVectorStoreConfig`, `SmartServerRagStoreConfig`, `SmartServerRagConfig = { store; embedder? }`,
+    `MakeRagInput`.
+  - `SmartServerEmbedderConfig =`
+    `{ provider: 'openai' | 'sap-ai-core' | 'sap-aicore' | 'ollama'; model?; url?; resourceGroup?; scenario?; maxBatchSize?; credentialRef? }`
+    `| { factory: string; model?; url?; maxBatchSize? }` (each arm also declares the other's
+    discriminant as `?: never`, and the factory arm `credentialRef?: never`, so the compiler narrows on
+    `factory` and refuses a ref on a consumer factory). No `apiBaseUrl` on either arm.
+  - `BuiltInEmbedderProvider`, `isBuiltInEmbedderProvider(name): name is BuiltInEmbedderProvider`,
+    `embedderSectionFor(name: string | undefined, model?: string): SmartServerEmbedderConfig`.
+  - `isInMemoryInput(input): input is Extract<MakeRagInput, { store: { type: 'in-memory' } }>`.
   - `toMakeRagInput(store, embedder, label): MakeRagInput` and `assertRagConfigShape(rag, label)`.
   - `BuildAgentDeps.makeRag: (input: MakeRagInput) => Promise<IRag>` (required).
-  - `BuildAgentDeps.resolveEmbedder: (cfg: SmartServerRagEmbedderConfig, options?: EmbedderResolutionOptions) => IEmbedder`.
-  - `PipelineRagStoreConfig = { store; embedder? }`.
+  - `BuildAgentDeps.resolveEmbedder: (cfg: SmartServerEmbedderConfig, options?: EmbedderResolutionOptions) => IEmbedder` (required).
+  - `resolveAgentEmbedder(rag, diEmbedder, resolve, extraFactories, logger?)` and
+    `resolveToolsStoreEmbedder(current, toolsStoreCfg, diEmbedder, resolve, extraFactories, logger?)`,
+    each with a new `resolve: BuildAgentDeps['resolveEmbedder']` parameter.
+  - **Deleted:** `PipelineRagStoreConfig`, and the `rag` member of the legacy `PipelineConfig`.
   - `BuilderEmbedderInput.credentialRef?`.
-  - Task B17 implements the three seams against exactly these types.
+  - Task B17 implements the three seams against exactly these types; its `resolveEmbedder` converts a
+    `SmartServerEmbedderConfig` into an `EmbedderResolution` (built-ins by `provider`, consumer factories
+    by `factory`) and imports `isInMemoryInput` for its `makeRag`.
 
 - [ ] **Step 1: write the failing tests: behavioural, and one compile-time file**
 
@@ -4637,9 +4725,9 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { resolveSmartServerConfig } from '../config.js';
 import {
-  isVectorStoreInput,
+  isInMemoryInput,
   type MakeRagInput,
-  type SmartServerRagEmbedderConfig,
+  type SmartServerEmbedderConfig,
   toMakeRagInput,
 } from '../rag-config.js';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
@@ -4839,6 +4927,94 @@ describe('rag: splits into store and embedder, each with its own account', () =>
       ),
     );
   });
+
+  it('defaults an embedder section with no provider to ollama', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm,
+        rag: { store: { type: 'in-memory' }, embedder: { model: 'bge-m3' } },
+      },
+      {},
+    );
+    assert.deepEqual(cfg.rag?.embedder, { provider: 'ollama', model: 'bge-m3' });
+  });
+
+  it('names a consumer-registered embedder with factory, carrying no account', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm,
+        rag: {
+          store: { type: 'in-memory' },
+          embedder: { factory: 'gemini', model: 'text-embedding-004', maxBatchSize: 50 },
+        },
+      },
+      {},
+    );
+    assert.deepEqual(cfg.rag?.embedder, {
+      factory: 'gemini',
+      model: 'text-embedding-004',
+      maxBatchSize: 50,
+    });
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm,
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { factory: 'gemini', credentialRef: 'GEMINI' },
+            },
+          },
+          {},
+        ),
+      /rag\.embedder\.credentialRef[\s\S]*factory/,
+      'a consumer factory closes over its own credential; a ref here would authorize nothing',
+    );
+  });
+
+  it('refuses an unknown provider, pointing at factory', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm,
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { provider: 'gemini', model: 'm' },
+            },
+          },
+          {},
+        ),
+      /rag\.embedder\.provider[\s\S]*rag\.embedder\.factory/,
+    );
+  });
+
+  it('refuses apiBaseUrl in YAML: it comes from the credential entry', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm,
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: {
+                provider: 'sap-ai-core',
+                model: 'text-embedding-3-small',
+                apiBaseUrl: 'https://api.ai.example',
+              },
+            },
+          },
+          {},
+        ),
+      /rag\.embedder\.apiBaseUrl[\s\S]*credential entry[\s\S]*_SERVICE_KEY/,
+      'two sources for one value is what the credential entry removes',
+    );
+  });
 });
 
 describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
@@ -4853,9 +5029,9 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
       /rag\.store\.type 'qdrant' needs an embedder[\s\S]*rag\.embedder/,
     );
     const paired = toMakeRagInput(qdrant, stubEmbedder, 'rag');
-    assert.equal(isVectorStoreInput(paired), true);
+    assert.equal(isInMemoryInput(paired), false);
     const keywordOnly = toMakeRagInput({ type: 'in-memory' }, undefined, 'rag');
-    assert.equal(isVectorStoreInput(keywordOnly), false);
+    assert.equal(isInMemoryInput(keywordOnly), true);
     assert.equal(keywordOnly.embedder, undefined);
   });
 
@@ -4882,7 +5058,7 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
   });
 
   it('builds the tools and the history store through the seam, embedder resolved first', async () => {
-    const embedderAsked: SmartServerRagEmbedderConfig[] = [];
+    const embedderAsked: SmartServerEmbedderConfig[] = [];
     const inputs: MakeRagInput[] = [];
     const server = new SmartServer(
       {
@@ -4962,7 +5138,11 @@ could not compile before this task:
 ```ts
 // packages/llm-agent-server-libs/src/__typechecks__/construction-seams.ts — add to tsconfig.typecheck.json
 import type { IEmbedder, ILlm, IRag } from '@mcp-abap-adt/llm-agent';
-import type { MakeRagInput, SmartServerRagConfig } from '../smart-agent/rag-config.js';
+import type {
+  MakeRagInput,
+  SmartServerEmbedderConfig,
+  SmartServerRagConfig,
+} from '../smart-agent/rag-config.js';
 import type {
   BuildAgentDeps,
   SmartServerLlmConfig,
@@ -5014,6 +5194,27 @@ const _flat: SmartServerRagConfig = { type: 'in-memory' };
 // @ts-expect-error — the search knobs belong to the in-memory arm alone
 const _qdrantWeights: SmartServerRagConfig = { store: { type: 'qdrant', url: 'http://q', collectionName: 'c', vectorWeight: 0.5 } };
 
+// SAP AI Core's address travels with its credential entry, never in the section.
+// biome-ignore format: one line — the error lands on the offending property
+// @ts-expect-error — apiBaseUrl is not a member of either embedder arm
+const _embedderAddress: SmartServerEmbedderConfig = { provider: 'sap-ai-core', model: 'm', apiBaseUrl: 'https://x' };
+
+// A consumer factory closes over its own credential, so a ref on it is a build error.
+// biome-ignore format: one line — the error lands on the offending property
+// @ts-expect-error — the factory arm carries no credentialRef
+const _factoryRef: SmartServerEmbedderConfig = { factory: 'mine', credentialRef: 'MINE' };
+
+// biome-ignore format: one line — the error lands on the offending property
+// @ts-expect-error — deepseek is no embedder; a custom one is named with factory
+const _unknownProvider: SmartServerEmbedderConfig = { provider: 'deepseek', model: 'm' };
+
+const _embedders: readonly SmartServerEmbedderConfig[] = [
+  { provider: 'openai', model: 'text-embedding-3-small', credentialRef: 'OPENAI' },
+  { provider: 'sap-ai-core', model: 'm', resourceGroup: 'default', scenario: 'foundation-models' },
+  { provider: 'ollama', model: 'bge-m3', url: 'http://localhost:11434' },
+  { factory: 'mine', model: 'm', maxBatchSize: 10 },
+];
+
 // referenced so noUnusedLocals stays quiet about the compile-time-only fixtures above
 void _noSeams;
 void _noMakeRag;
@@ -5026,6 +5227,10 @@ void _qdrant;
 void _pgSecret;
 void _flat;
 void _qdrantWeights;
+void _embedderAddress;
+void _factoryRef;
+void _unknownProvider;
+void _embedders;
 ```
 
 Append `"packages/llm-agent-server-libs/src/__typechecks__/construction-seams.ts"` to the `include`
@@ -5044,8 +5249,9 @@ npm run typecheck
 Expected:
 - `rag-config.js` does not exist, so the new test file fails to load.
 - The watcher's reworded tests fail, because the watcher still reads `rag.vectorWeight`.
-- `npm run typecheck` fails. `rag-config.js` is missing, `SmartServer` still has its four `makeRag`
-  errors, and `_noMakeRag` is `TS2578`, because `makeRag` is not a member yet.
+- `npm run typecheck` fails. `rag-config.js` is missing, server-libs still has the errors Task B9's
+  Step 4 lists (the four `makeRag` sites, `resolve-agent-embedder.ts:54`, the skill-host call), and
+  `_noMakeRag` is `TS2578`, because `makeRag` is not a member yet.
 
 - [ ] **Step 3a: the types, in a file of their own**
 
@@ -5125,30 +5331,76 @@ export type SmartServerRagStoreConfig =
   | PgVectorStoreConfig
   | HanaVectorStoreConfig;
 
-export interface SmartServerRagEmbedderConfig {
-  /** Embedder name: 'ollama' | 'openai' | 'sap-ai-core', or one a consumer registered. Default 'ollama'. */
-  provider?: string;
-  model?: string;
-  /** The embedder's own address (Ollama, an OpenAI-compatible endpoint). */
-  url?: string;
-  /** SAP AI Core's API base URL — an address, not a credential (§4.6.3). */
-  apiBaseUrl?: string;
-  /** SAP AI Core resource group. */
-  resourceGroup?: string;
-  /** SAP AI Core scenario: 'orchestration' (default) or 'foundation-models'. */
-  scenario?: 'orchestration' | 'foundation-models';
-  /**
-   * Cap on texts per embedBatch call. Precedence: this value → the provider's
-   * declared cap → the library default (100).
-   */
-  maxBatchSize?: number;
-  credentialRef?: string;
+/** The embedders this library's resolver constructs itself (Task B6c's `EmbedderResolution` arms). */
+const BUILT_IN_EMBEDDER_PROVIDERS = ['openai', 'sap-ai-core', 'sap-aicore', 'ollama'] as const;
+export type BuiltInEmbedderProvider = (typeof BUILT_IN_EMBEDDER_PROVIDERS)[number];
+
+export function isBuiltInEmbedderProvider(
+  name: string,
+): name is BuiltInEmbedderProvider {
+  return (BUILT_IN_EMBEDDER_PROVIDERS as readonly string[]).includes(name);
+}
+
+/**
+ * The serializable embedder section: a built-in named by `provider`, or a consumer-registered
+ * factory named by `factory` — the same split as the library's `EmbedderResolution`, minus the
+ * credential, which the composition root resolves from `credentialRef`.
+ *
+ * No `apiBaseUrl`: SAP AI Core's address travels with the credential from the same service key
+ * (the root's credential entry), so it is never also written here — one source (spec §4.6.2,
+ * §8 migration item 4). The YAML boundary refuses one by name.
+ */
+export type SmartServerEmbedderConfig =
+  | {
+      /** Default when a YAML section names neither: 'ollama'. */
+      provider: BuiltInEmbedderProvider;
+      model?: string;
+      /** The embedder's own address (Ollama, an OpenAI-compatible endpoint). */
+      url?: string;
+      /** SAP AI Core resource group. */
+      resourceGroup?: string;
+      /** SAP AI Core scenario: 'orchestration' (default) or 'foundation-models'. */
+      scenario?: 'orchestration' | 'foundation-models';
+      /**
+       * Cap on texts per embedBatch call. Precedence: this value → the provider's
+       * declared cap → the library default (100).
+       */
+      maxBatchSize?: number;
+      /** The embedder's account; omit for the root's default embedder entry. */
+      credentialRef?: string;
+      factory?: never;
+    }
+  | {
+      /** An `extraFactories` key the consumer registered; it receives `EmbedderFactoryConfig`. */
+      factory: string;
+      model?: string;
+      url?: string;
+      maxBatchSize?: number;
+      provider?: never;
+      /** A consumer factory closes over its own credential; the framework carries none for it. */
+      credentialRef?: never;
+    };
+
+/**
+ * The section for an embedder known only by name — the skill host's
+ * `skillPlugins.embedder.provider`: a built-in name becomes `provider`, anything else
+ * the `factory` it must have been registered as, and no name means ollama.
+ */
+export function embedderSectionFor(
+  name: string | undefined,
+  model?: string,
+): SmartServerEmbedderConfig {
+  const m = model !== undefined ? { model } : {};
+  if (name === undefined) return { provider: 'ollama', ...m };
+  return isBuiltInEmbedderProvider(name)
+    ? { provider: name, ...m }
+    : { factory: name, ...m };
 }
 
 export interface SmartServerRagConfig {
   store: SmartServerRagStoreConfig;
   /** Absent → no embedder: only an in-memory store works without one (keyword-only). */
-  embedder?: SmartServerRagEmbedderConfig;
+  embedder?: SmartServerEmbedderConfig;
 }
 
 /**
@@ -5164,16 +5416,16 @@ export type MakeRagInput =
     };
 
 /**
- * Narrows a `MakeRagInput` to its vector arm. TypeScript does not narrow the pair
- * through `input.store.type` — the discriminant is nested — so without this a
- * `makeRag` body sees `embedder: IEmbedder | undefined` on every arm (measured:
- * TS2322 on §4.6.4's reference body). The guard's one-line body restates the
- * union's own pairing; nothing else in the path is asserted.
+ * Narrows a `MakeRagInput` to its in-memory arm — and, in the `false` branch, to the vector
+ * arm with `embedder: IEmbedder`. TypeScript does not narrow the pair through
+ * `input.store.type` — the discriminant is nested — so without this a `makeRag` body sees
+ * `embedder: IEmbedder | undefined` on every arm (§4.6.4's reference `makeRag` uses exactly
+ * this guard). The one-line body restates the union's own pairing.
  */
-export function isVectorStoreInput(
+export function isInMemoryInput(
   input: MakeRagInput,
-): input is Extract<MakeRagInput, { embedder: IEmbedder }> {
-  return input.store.type !== 'in-memory';
+): input is Extract<MakeRagInput, { store: { type: 'in-memory' } }> {
+  return input.store.type === 'in-memory';
 }
 
 /**
@@ -5216,15 +5468,20 @@ export function assertRagConfigShape(rag: unknown, label: string): void {
 
 `smart-server.ts`:
 - delete `SmartServerRagConfig` (`:150-188`) and add
-  `import { assertRagConfigShape, type MakeRagInput, type SmartServerRagConfig, type SmartServerRagEmbedderConfig, toMakeRagInput } from './rag-config.js';`.
-- at `:81-89`, keep `EmbedderResolutionOptions` and `prefetchEmbedderFactories`, and drop
-  `EmbedderResolutionConfig` and `makeRag`.
+  `import { assertRagConfigShape, embedderSectionFor, type MakeRagInput, type SmartServerEmbedderConfig, type SmartServerRagConfig, toMakeRagInput } from './rag-config.js';`.
+- the `@mcp-abap-adt/llm-agent-rag` imports, as Task B9 left them, become
+  `import type { EmbedderResolutionOptions } from '@mcp-abap-adt/llm-agent-rag';` and
+  `import { prefetchEmbedderFactories } from '@mcp-abap-adt/llm-agent-rag';` — `EmbedderResolution` and
+  `makeRag` go.
 - in `BuildAgentDeps`, the two seam members become:
 
 ```ts
-  /** Receives the serializable embedder section; the root resolves its credentialRef. */
+  /**
+   * Receives the serializable embedder section; the root resolves its credentialRef
+   * and turns the section into the library's `EmbedderResolution`.
+   */
   resolveEmbedder: (
-    cfg: SmartServerRagEmbedderConfig,
+    cfg: SmartServerEmbedderConfig,
     options?: EmbedderResolutionOptions,
   ) => IEmbedder;
   /**
@@ -5246,20 +5503,37 @@ export function assertRagConfigShape(rag: unknown, label: string): void {
     }
 ```
 
-The skill-host embedder at `:1218-1224`. `SkillHostEmbedderConfig` keeps its `embedder`/`model` names,
-so convert at the one call:
+The agent embedder at `:1180-1185` goes through the seam (the helper's new `resolve` parameter, Step 3c):
+
+```ts
+    const resolvedEmbedder = await resolveAgentEmbedder(
+      this.cfg.rag,
+      this._deps.embedder ?? this.cfg.embedder,
+      this._deps.resolveEmbedder,
+      mergedEmbedderFactories,
+      this._fileLogger,
+    );
+```
+
+The skill-host embedder at `:1218-1224`. `SkillHostEmbedderConfig` keeps its `embedder`/`model` names
+(`skillPlugins.embedder` gains no `credentialRef` in this release, so the root's default embedder entry
+applies), so convert at the one call; the prefetch above it (`:1205-1209`) prefetches only a built-in:
+
+```ts
+      if (!reuseAgentEmbedder) {
+        const section = embedderSectionFor(skillCfg.embedder?.provider);
+        if (section.factory === undefined) {
+          await this._deps.prefetchEmbedderFactories([section.provider]);
+        }
+      }
+```
 
 ```ts
               resolveEmbedder: (ec) =>
                 reuseAgentEmbedder
                   ? ((injectedEmbedder ?? resolvedEmbedder) as IEmbedder)
                   : this._deps.resolveEmbedder(
-                      {
-                        ...(ec.embedder !== undefined
-                          ? { provider: ec.embedder }
-                          : {}),
-                        ...(ec.model !== undefined ? { model: ec.model } : {}),
-                      },
+                      embedderSectionFor(ec.embedder, ec.model),
                       { extraFactories: mergedEmbedderFactories },
                     ),
 ```
@@ -5329,16 +5603,10 @@ Update the comment at `:1856-1860`, which says embedders ride on `makeRag`'s `in
 the worker's embedder is resolved through `BuildAgentDeps.resolveEmbedder` inside these factories. They
 still run once per worker, because the cache short-circuits them.
 
-`pipeline.ts:28-58`. Add
-`import type { SmartServerRagEmbedderConfig, SmartServerRagStoreConfig } from './rag-config.js';` and:
-
-```ts
-/** One named store: the store and its embedder, each with its own account (spec §4.6.4). */
-export interface PipelineRagStoreConfig {
-  store: SmartServerRagStoreConfig;
-  embedder?: SmartServerRagEmbedderConfig;
-}
-```
+`pipeline.ts`. `PipelineRagStoreConfig` is read by nothing (the legacy `pipeline:` shape is refused at
+load), so it is deleted, not split (§4.6.4: "reshaping a dead DTO would be work with no reader").
+Delete `PipelineRagStoreConfig` (`:28-58`) and the `rag?: Record<string, PipelineRagStoreConfig>`
+member of `PipelineConfig` with its doc comment (`:71-72`). Nothing else in the file referred to either.
 
 `index.ts`: after `:15`, add `export * from './smart-agent/rag-config.js';`.
 
@@ -5375,10 +5643,10 @@ export function assertNoLegacyRagShape(yaml: YamlConfig): void {
         'It described two independently authenticated targets as one, so it splits: ' +
         'rag.store holds type, url, collectionName, connectionString/host/port/database/schema ' +
         'and the pool/schema settings — plus dedupThreshold, vectorWeight and keywordWeight, ' +
-        'for type in-memory only; rag.embedder holds provider (was rag.embedder), model, url, ' +
-        'apiBaseUrl, resourceGroup, scenario and maxBatchSize. apiKey, user and password do not ' +
-        'move: remove them and name the account with rag.store.credentialRef or ' +
-        'rag.embedder.credentialRef.',
+        'for type in-memory only; rag.embedder holds provider (a built-in: openai, sap-ai-core, ' +
+        'ollama — was rag.embedder) or factory (a consumer-registered embedder), model, url, ' +
+        'resourceGroup, scenario and maxBatchSize. apiKey, user and password do not move: remove ' +
+        'them and name the account with rag.store.credentialRef or rag.embedder.credentialRef.',
     );
   }
   for (const section of ['store', 'embedder'] as const) {
@@ -5394,6 +5662,19 @@ export function assertNoLegacyRagShape(yaml: YamlConfig): void {
           `account with rag.${section}.credentialRef (your composition root resolves the name).`,
       );
     }
+  }
+  const embedder = r.embedder;
+  if (
+    embedder !== null &&
+    typeof embedder === 'object' &&
+    (embedder as Record<string, unknown>).apiBaseUrl !== undefined
+  ) {
+    throw new Error(
+      'rag.embedder.apiBaseUrl: SAP AI Core\'s address comes from the credential entry — the same ' +
+        'service key (<REF>_SERVICE_KEY in the shipped server) that holds the credential — and is ' +
+        'never also written in YAML. Remove it; name the account with rag.embedder.credentialRef ' +
+        'if it is not the default one.',
+    );
   }
 }
 ```
@@ -5469,27 +5750,52 @@ function checkRag(
     return;
   }
   const e = rawEmbedder as Record<string, unknown> | undefined;
-  // Blocklist (NOT allowlist): consumers can register custom embedder
-  // factories, so only known embedder-less providers are hard-rejected here.
   const provider = e?.provider as string | undefined;
-  if (provider === 'deepseek' || provider === 'anthropic') {
+  const factory = e?.factory;
+  if (provider !== undefined && factory !== undefined) {
+    issues.push(
+      'rag.embedder: name either provider (a built-in) or factory (one you registered), not both',
+    );
+  } else if (factory !== undefined) {
+    if (typeof factory !== 'string' || factory.length === 0) {
+      issues.push('rag.embedder.factory: must be a non-empty string naming a registered factory');
+    }
+    // A consumer factory receives EmbedderFactoryConfig only (url, model, timeoutMs) and
+    // closes over its own credential, so these would be dropped without a word.
+    for (const k of ['credentialRef', 'resourceGroup', 'scenario'] as const) {
+      if (e?.[k] !== undefined) {
+        issues.push(
+          `rag.embedder.${k}: not read for a factory — a consumer factory closes over its own ` +
+            'configuration and credential; remove it',
+        );
+      }
+    }
+  } else if (provider === 'deepseek' || provider === 'anthropic') {
     issues.push(
       `rag.embedder.provider: "${provider}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
     );
+  } else if (provider !== undefined && !isBuiltInEmbedderProvider(provider)) {
+    issues.push(
+      `rag.embedder.provider: "${provider}" is not a built-in embedder (openai, sap-ai-core, sap-aicore, ollama) — ` +
+        'an embedder you registered in extraFactories is named with rag.embedder.factory',
+    );
   }
-  if (e) checkCredentialRef('rag.embedder', e.credentialRef, issues);
+  if (e && factory === undefined) checkCredentialRef('rag.embedder', e.credentialRef, issues);
   const usesEmbedder =
     ragType === 'qdrant' ||
     ragType === 'hana-vector' ||
     ragType === 'pg-vector' ||
     (ragType === 'in-memory' && e !== undefined);
-  if (!skipRuntime && usesEmbedder && !e?.model) {
+  // Every built-in constructor requires a model; a factory decides for itself.
+  if (!skipRuntime && usesEmbedder && factory === undefined && !e?.model) {
     issues.push(
       'rag.embedder.model: required when an embedder is used (e.g. bge-m3 for ollama)',
     );
   }
 }
 ```
+
+`config-validator.ts` imports `isBuiltInEmbedderProvider` from `./rag-config.js`.
 
 `:276-283`, the call:
 
@@ -5504,7 +5810,8 @@ function checkRag(
   }
 ```
 
-`resolve-config-sections.ts:180-222`. Import the arm types from `./rag-config.js`, then:
+`resolve-config-sections.ts:180-222`. Import `SmartServerRagStoreConfig`, `SmartServerEmbedderConfig`
+and `BuiltInEmbedderProvider` from `./rag-config.js`, then:
 
 ```ts
 const has = (v: unknown): boolean => v !== undefined && v !== null;
@@ -5574,19 +5881,28 @@ function resolveRagStore(
   }
 }
 
-function resolveRagEmbedder(raw: Record<string, unknown>): SmartServerRagEmbedderConfig {
-  return {
-    ...(has(raw.provider) ? { provider: String(raw.provider) } : {}),
+function resolveRagEmbedder(raw: Record<string, unknown>): SmartServerEmbedderConfig {
+  const common = {
     ...(has(raw.model) ? { model: String(raw.model) } : {}),
     ...(has(raw.url) ? { url: String(raw.url) } : {}),
-    ...(has(raw.apiBaseUrl) ? { apiBaseUrl: String(raw.apiBaseUrl) } : {}),
+    // Left absent when unset so the provider's declared cap wins; see
+    // composeResilientEmbedder's precedence (YAML → provider → default).
+    ...positiveIntOption(raw.maxBatchSize, 'rag.embedder.maxBatchSize'),
+  };
+  if (has(raw.factory)) {
+    // credentialRef/resourceGroup/scenario beside a factory are refused by checkRag.
+    return { factory: String(raw.factory), ...common };
+  }
+  return {
+    // No provider means ollama, the default this section always had. An unknown
+    // name is refused by checkRag in the same resolveSmartServerConfig call, before
+    // anything reads the value — as `resolveRagStore`'s pass-through default is.
+    provider: (has(raw.provider) ? String(raw.provider) : 'ollama') as BuiltInEmbedderProvider,
+    ...common,
     ...(has(raw.resourceGroup) ? { resourceGroup: String(raw.resourceGroup) } : {}),
     ...(has(raw.scenario)
       ? { scenario: String(raw.scenario) as 'orchestration' | 'foundation-models' }
       : {}),
-    // Left absent when unset so the provider's declared cap wins; see
-    // composeResilientEmbedder's precedence (YAML → provider → default).
-    ...positiveIntOption(raw.maxBatchSize, 'rag.embedder.maxBatchSize'),
     ...(typeof raw.credentialRef === 'string' ? { credentialRef: raw.credentialRef } : {}),
   };
 }
@@ -5617,8 +5933,28 @@ programmatically. The projection above is the first to carry them.
 
 - [ ] **Step 3c: the embedder helpers, the builder, the watcher and the two app files**
 
-`resolve-agent-embedder.ts`. Import `SmartServerRagConfig` from `./rag-config.js`, and keep
-`BuildAgentDeps` from `./smart-server.js`:
+`resolve-agent-embedder.ts`. The imports become:
+
+```ts
+import type {
+  AnyLogger,
+  EmbedderFactory,
+  IEmbedder,
+} from '@mcp-abap-adt/llm-agent';
+import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  composeEmbedder,
+  prefetchEmbedderFactories,
+} from '@mcp-abap-adt/llm-agent-rag';
+import type {
+  SmartServerEmbedderConfig,
+  SmartServerRagConfig,
+} from './rag-config.js';
+import type { BuildAgentDeps } from './smart-server.js';
+```
+
+(`resolveEmbedder` leaves the imports: construction goes through the seam.) Then the two functions,
+in full:
 
 ```ts
 export async function resolveAgentEmbedder(
@@ -5631,14 +5967,12 @@ export async function resolveAgentEmbedder(
   // Canonical owner: every non-undefined embedder is wrapped here so its embed()
   // calls log token usage to the per-request logger. wrapEmbedder is idempotent.
   //
-  // The DI'd embedder goes through the library's resolveEmbedder, not straight to
-  // wrapEmbedder: that composes chunking and retry onto an instance the consumer
-  // built — it constructs nothing, so it needs no seam.
+  // An instance the consumer built is COMPOSED (chunking and retry), not resolved:
+  // it constructs nothing, so it needs neither the seam nor a credential.
   if (diEmbedder) {
-    const cap = rag?.embedder?.maxBatchSize;
     return wrapEmbedder(
-      resolveEmbedder(cap !== undefined ? { maxBatchSize: cap } : {}, {
-        injectedEmbedder: diEmbedder,
+      composeEmbedder(diEmbedder, {
+        maxBatchSize: rag?.embedder?.maxBatchSize,
         logger,
       }),
     );
@@ -5647,32 +5981,46 @@ export async function resolveAgentEmbedder(
   if (!rag || (rag.store.type === 'in-memory' && rag.embedder === undefined)) {
     return undefined;
   }
-  // A vector store with no embedder section keeps main's default ('ollama'); the
-  // validator already asked for its model unless provider checks were skipped.
-  const section = rag.embedder ?? {};
-  await prefetchEmbedderFactories([section.provider ?? 'ollama']);
+  // A vector store with no embedder section keeps the default this path always
+  // had ('ollama'); the validator already asked for its model unless provider
+  // checks were skipped.
+  const section: SmartServerEmbedderConfig = rag.embedder ?? { provider: 'ollama' };
+  // Only a built-in has a peer package to load; a factory is registered, not imported.
+  if (section.factory === undefined) {
+    await prefetchEmbedderFactories([section.provider]);
+  }
+  // Construction goes through the app's seam: the library builds no embedder.
   return wrapEmbedder(resolve(section, { extraFactories, logger }));
+}
+
+export async function resolveToolsStoreEmbedder(
+  current: IEmbedder | undefined,
+  toolsStoreCfg: SmartServerRagConfig,
+  diEmbedder: IEmbedder | undefined,
+  resolve: BuildAgentDeps['resolveEmbedder'],
+  extraFactories: Record<string, EmbedderFactory>,
+  logger?: AnyLogger,
+): Promise<IEmbedder | undefined> {
+  if (current) {
+    // #141's contract is identity: reuse, never rebuild — compose only when this
+    // store asks for a cap, the sole input that can conflict.
+    const cap = toolsStoreCfg.embedder?.maxBatchSize;
+    if (cap === undefined) return current;
+    return composeEmbedder(current, { maxBatchSize: cap, logger });
+  }
+  return resolveAgentEmbedder(
+    toolsStoreCfg,
+    diEmbedder,
+    resolve,
+    extraFactories,
+    logger,
+  );
 }
 ```
 
-In `resolveToolsStoreEmbedder`, type `toolsStoreCfg: SmartServerRagConfig` (from `rag-config.js`), and
-replace the `current` branch with:
-
-```ts
-  if (current) {
-    // #141's contract is identity: reuse, never rebuild — route through the
-    // resolver only when this store asks for a cap, the sole input that can conflict.
-    const cap = toolsStoreCfg.embedder?.maxBatchSize;
-    if (cap === undefined) return current;
-    return resolveEmbedder(
-      { maxBatchSize: cap },
-      { injectedEmbedder: current, extraFactories, logger },
-    );
-  }
-```
-
-Rewrite the file's header comment (`:1-14`) to name `rag.embedder`, the section, where it names the
-flat `rag.embedder` key.
+Keep each function's doc comment, and rewrite the file's header comment (`:1-14`) to name the
+`rag.embedder` **section** where it names the flat `rag.embedder` key, and `BuildAgentDeps.resolveEmbedder`
+where it names the library's `resolveEmbedder`.
 
 `controller-skill-pipeline-builder.ts:28-33`. `BuilderEmbedderInput` gains
 `/** Names the embedder's account; omit for the root's default. */ credentialRef?: string;`.
@@ -5741,37 +6089,58 @@ and `:141-144` with:
 consumes `HotReloadableConfig.vectorWeight`/`keywordWeight`, which the watcher above produces, and never
 reads YAML.
 
-`llm-agent-server/src/smart-agent/cli.ts:285-299`:
+`llm-agent-server/src/smart-agent/cli.ts:255-299`, both prefetch blocks. The embedder block (`:255-277`)
+typed its argument `{ type?: string; embedder?: string }`, so after the split `pushEmbedderFor(ragCfg)`
+is `TS2345`, and at runtime the embedder **object** would land in `embedderNames` and
+`prefetchEmbedderFactories([obj])` would throw `MissingProviderError('(unknown)')` for every config with a
+`rag.embedder` section. Both blocks also walked `baseConfig.pipeline.rag`, which cannot exist:
+`SmartServerConfig.pipeline` is `{ name; config? }` (`smart-server.ts:279`) and the legacy `pipeline:`
+shape is refused at load — so those loops go rather than being ported. The two blocks become:
 
 ```ts
+{
+  // Only a built-in embedder has a peer package; a `factory` is the consumer's own,
+  // registered in extraFactories rather than imported. A vector store with no
+  // embedder section uses the ollama default, so its peer is needed too.
   const ragCfg = baseConfig.rag;
-  const ragBackendNames = new Set<string>();
-  const peerBackend = (t: string | undefined): t is string =>
-    t === 'qdrant' || t === 'hana-vector' || t === 'pg-vector';
-  if (ragCfg && peerBackend(ragCfg.store.type)) ragBackendNames.add(ragCfg.store.type);
-  const pipelineRag = (
-    baseConfig as {
-      pipeline?: { rag?: Record<string, { store?: { type?: string } }> };
-    }
-  ).pipeline?.rag;
-  if (pipelineRag) {
-    for (const cfg of Object.values(pipelineRag)) {
-      const t = cfg?.store?.type;
-      if (peerBackend(t)) ragBackendNames.add(t);
-    }
+  const embedderNames = new Set<string>();
+  if (ragCfg?.embedder) {
+    if (ragCfg.embedder.factory === undefined) embedderNames.add(ragCfg.embedder.provider);
+  } else if (ragCfg && ragCfg.store.type !== 'in-memory') {
+    embedderNames.add('ollama');
   }
+  await prefetchEmbedderFactories([...embedderNames]);
+}
 ```
+
+```ts
+{
+  const storeType = baseConfig.rag?.store.type;
+  const ragBackendNames =
+    storeType === 'qdrant' || storeType === 'hana-vector' || storeType === 'pg-vector'
+      ? [storeType]
+      : [];
+  await prefetchRagFactories(ragBackendNames);
+}
+```
+
+(The section comments above each block, `:251-253` and `:281-283`, stay.)
 
 `llm-agent-server/src/smart-agent/check-models-cli.ts:97-109`. In the `pipeline.rag` loop, `cfg?.model`
 becomes `cfg?.embedder?.model`, and `String(cfg.model)` becomes `String(cfg.embedder.model)`. After
 that, `yaml.rag?.model` becomes `yaml.rag?.embedder?.model`, and `String(yaml.rag.model)` becomes
-`String(yaml.rag.embedder.model)`.
+`String(yaml.rag.embedder.model)`. (This tool reads the raw YAML with its own loader, so a `pipeline.rag`
+block it finds is reported the same way; it builds nothing.)
 
 - [ ] **Step 3d: the fixture, and the tests that used the flat shape**
 
-The fixture gains `makeRag` and adapts `resolveEmbedder` to the section. It resolves no reference: a
-test that names one injects its own seam. Replace the `constructionSeams` export in
-`__tests__/construction-seams.ts`, and replace its `resolveEmbedder` import with the imports below:
+The fixture gains `makeRag`, and its `resolveEmbedder` now converts the section into an
+`EmbedderResolution` the way a composition root does — built-ins by `provider`, consumer factories by
+`factory` — except that it holds no credential. So it builds only what needs none (an ollama embedder, a
+consumer factory, an in-memory or unauthenticated qdrant/pg store) and refuses, by name, a
+`credentialRef` or a target that needs a credential: a test that wants one injects its own seam. Replace
+the `constructionSeams` export in `__tests__/construction-seams.ts`, and replace its `resolveEmbedder`
+import with the imports below:
 
 ```ts
 import { type IEmbedder, InMemoryRag, type IRag } from '@mcp-abap-adt/llm-agent';
@@ -5781,9 +6150,9 @@ import {
   resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';
 import {
-  isVectorStoreInput,
+  isInMemoryInput,
   type MakeRagInput,
-  type SmartServerRagEmbedderConfig,
+  type SmartServerEmbedderConfig,
 } from '../rag-config.js';
 
 function refuseRef(ref: string | undefined, target: string): void {
@@ -5801,20 +6170,39 @@ export const constructionSeams: Pick<
   makeLlm: async (cfg: SmartServerLlmConfig) => stubLlm(cfg.model),
 
   resolveEmbedder(
-    cfg: SmartServerRagEmbedderConfig,
+    cfg: SmartServerEmbedderConfig,
     options?: EmbedderResolutionOptions,
   ): IEmbedder {
-    const { credentialRef, provider, ...rest } = cfg;
-    refuseRef(credentialRef, `embedder '${provider ?? 'ollama'}'`);
-    // the library still names the factory `embedder`; the section calls it `provider`
-    return resolveEmbedder(
-      { ...rest, ...(provider !== undefined ? { embedder: provider } : {}) },
-      options,
-    );
+    // Each EmbedderResolution arm is built from NAMED fields — the section is never
+    // spread into the library, so nothing it does not declare can ride along.
+    const common = {
+      ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+      ...(cfg.maxBatchSize !== undefined ? { maxBatchSize: cfg.maxBatchSize } : {}),
+    };
+    if (cfg.factory !== undefined) {
+      return resolveEmbedder(
+        {
+          factory: cfg.factory,
+          ...(cfg.model !== undefined ? { model: cfg.model } : {}),
+          ...common,
+        },
+        options,
+      );
+    }
+    refuseRef(cfg.credentialRef, `embedder '${cfg.provider}'`);
+    if (cfg.provider !== 'ollama') {
+      throw new Error(
+        `the test seams hold no credential, and embedder '${cfg.provider}' requires one — inject a resolveEmbedder of your own`,
+      );
+    }
+    if (cfg.model === undefined) {
+      throw new Error('the test seams build ollama only with a model: set rag.embedder.model');
+    }
+    return resolveEmbedder({ provider: 'ollama', model: cfg.model, ...common }, options);
   },
 
   async makeRag(input: MakeRagInput): Promise<IRag> {
-    if (!isVectorStoreInput(input)) {
+    if (isInMemoryInput(input)) {
       const { credentialRef, ...address } = input.store;
       refuseRef(credentialRef, 'the in-memory store');
       return input.embedder
@@ -5842,8 +6230,9 @@ export const constructionSeams: Pick<
 ```
 
 Test edits, verified on the working tree:
-- Remove the seven B9 quarantine options: `controller-skill-pipeline-builder.test.ts` (the tests
-  starting at `:119`, `:157`, `:192`, `:232`, `:270`) and `mcp-yaml-vectorization.test.ts` (`:159`, `:210`).
+- Remove Task B6c's nine quarantine options: `resolve-agent-embedder.test.ts:39`, `:83`;
+  `controller-skill-pipeline-builder.test.ts` (the tests starting at `:119`, `:157`, `:192`, `:232`, and
+  the one at `:270` Task B9 renamed); `mcp-yaml-vectorization.test.ts:160`, `:211`.
 - `mcp-yaml-vectorization.test.ts:170` and `:224`: `rag: { type: 'in-memory' }` becomes
   `rag: { store: { type: 'in-memory' } }`.
 - `controller-skill-pipeline-builder.test.ts`:
@@ -5857,20 +6246,25 @@ Test edits, verified on the working tree:
   - `:36` and `:41`: `cfg.rag?.maxBatchSize` becomes `cfg.rag?.embedder?.maxBatchSize`.
   - `:48`: `/rag\.maxBatchSize/` becomes `/rag\.embedder\.maxBatchSize/`.
   - the header comment (`:1-6`) names `rag.embedder.maxBatchSize`.
-- `resolve-agent-embedder.test.ts`:
-  - pass `constructionSeams.resolveEmbedder` (from `./construction-seams.js`) where B9 passed the
-    library's `resolveEmbedder`.
+- `resolve-agent-embedder.test.ts` (import `constructionSeams` from `./construction-seams.js`):
+  - pass `constructionSeams.resolveEmbedder` as the new **third** argument of each
+    `resolveAgentEmbedder(…)` call (`:14`, `:26`, `:31`, `:41`, `:57`) and the new **fourth** argument of
+    each `resolveToolsStoreEmbedder(…)` call (`:69`, `:84`, `:100`, `:113`).
   - each rag literal becomes the new shape. `{ type: 'in-memory', embedder: 'ollama', … }` becomes
-    `{ store: { type: 'in-memory' }, embedder: { provider: 'ollama', url, model } }`.
-    `{ type: 'in-memory' }` becomes `{ store: { type: 'in-memory' } }`.
-    `{ type: 'qdrant', url, model }` becomes
-    `{ store: { type: 'qdrant', url, collectionName: 'c' }, embedder: { model } }`.
+    `{ store: { type: 'in-memory' }, embedder: { provider: 'ollama', url, model } }` (keeping the
+    literal's own `url`/`model`, or none where it had none). `{ type: 'in-memory' }` becomes
+    `{ store: { type: 'in-memory' } }`. `{ type: 'qdrant', url, model }` becomes
+    `{ store: { type: 'qdrant', url, collectionName: 'c' }, embedder: { provider: 'ollama', model } }`.
     These are the literals at `:15`, `:32`, `:43-48`, `:58`, `:72`, `:87-92`, `:102`, `:115`.
+  - the two tests un-quarantined above now build through the fixture's ollama branch, so they assert
+    what they asserted before the split.
 - `resolve-agent-embedder-resilience.test.ts`:
   - `:25` and `:39`: `{ type: 'qdrant', embedder: 'sap-ai-core' }` becomes
     `{ store: { type: 'qdrant', url: 'http://q', collectionName: 'c' }, embedder: { provider: 'sap-ai-core' } }`.
   - `:46`: the same, with `embedder: { provider: 'sap-ai-core', maxBatchSize: 64 }`.
-  - pass the seam as in the file above.
+  - pass `constructionSeams.resolveEmbedder` as the new third argument at `:24`, `:38` and the new fourth
+    argument at `:44`. Both tests inject an embedder, so the seam is never called; the sap-ai-core section
+    is never resolved.
 - `config-validation.test.ts`, the flat-rag tests:
   - `:55` becomes `assert.equal(cfg.rag, undefined);`.
   - `:151-160`: YAML `rag: { store: { url: 'http://x' } }`, regex `/rag\.store\.type.*required/i`.
@@ -5903,36 +6297,57 @@ node scripts/check-example-configs.mjs || true
 ```bash
 cd ~/prj/llm-agent
 find packages -name '*.tsbuildinfo' -delete
+npx biome check --write packages/llm-agent-server-libs/src packages/llm-agent-libs/src/config \
+  packages/llm-agent-server/src/smart-agent/cli.ts packages/llm-agent-server/src/smart-agent/check-models-cli.ts
 npm run build               # count "Found N errors"
 npm run typecheck           # exit 0, no TS2578
-npm test -w packages/llm-agent-server-libs
+timeout 900 npm test -w packages/llm-agent-server-libs
 npm test -w packages/llm-agent-libs
 npm test -w packages/llm-agent-server
+grep -rn --include='*.ts' -E "PipelineRagStoreConfig|isVectorStoreInput|SmartServerRagEmbedderConfig|injectedEmbedder:" \
+  packages/llm-agent-server-libs/src packages/llm-agent-server/src || echo "  none left"
+grep -rn --include='*.ts' "skip: '" packages/llm-agent-server-libs/src | grep -E "Task B6b|Task B6c" \
+  || echo "  B6c's quarantines are lifted"
 ```
 
 Expected:
-- `llm-agent-server-libs` builds clean, so Task B6b's four errors are gone. The only errors left are in
-  `llm-agent-server`: `cli.ts:307` (Task B17) and the pre-existing `smoke-adapters.ts:105`.
-- All three suites are green, and the seven formerly quarantined tests pass.
+- `llm-agent-server-libs` builds clean: Task B6b's four `makeRag` errors, B6c's
+  `resolve-agent-embedder.ts:54` and B9's skill-host error are gone. The only errors left are in
+  `llm-agent-server`: `cli.ts:307` (`new SmartServer(config)` with no deps, Task B17) and the
+  pre-existing `smoke-adapters.ts:105`. `cli.ts:255-299` compiles.
+- All three suites are green, and the nine tests Task B6c quarantined pass.
+- Both greps print their `echo`.
 
 Prove each directive guards what it says. Make `makeRag?:` optional in `BuildAgentDeps`, and
 `npm run typecheck` must report `TS2578` at `_noMakeRag`. Put `apiKey?: string` back on
 `SmartServerLlmConfig`, and it must report `TS2578` at `_llmSecret`. Change `MakeRagInput`'s vector arm
-to `embedder?: IEmbedder`, and it must report `TS2578` at `_qdrantNoEmbedder`. Revert all three.
+to `embedder?: IEmbedder`, and it must report `TS2578` at `_qdrantNoEmbedder`. Add `apiBaseUrl?: string`
+to the `provider` arm of `SmartServerEmbedderConfig`, and it must report `TS2578` at `_embedderAddress`.
+Revert all four.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelogs, then commit**
 
 In `packages/llm-agent-server-libs/CHANGELOG.md`, add to `## [Unreleased]`, opening with **BREAKING:**:
-- `SmartServerRagConfig` and `PipelineRagStoreConfig` are now `{ store, embedder? }`. The store is
-  discriminated by `type`, and the store and the embedder each carry `credentialRef`.
+- `SmartServerRagConfig` is now `{ store, embedder? }`. The store is discriminated by `type`, and the
+  store and the embedder each carry `credentialRef`.
+- The embedder section, `SmartServerEmbedderConfig`, names a built-in with `provider` (`openai`,
+  `sap-ai-core`/`sap-aicore`, `ollama`, the default) or an embedder registered in `extraFactories` with
+  `factory`, which carries no `credentialRef`. A custom name under `provider` is refused, pointing at
+  `factory`. `apiBaseUrl` is not part of it and is refused in YAML: SAP AI Core's address comes from the
+  credential entry (the same service key).
+- `PipelineRagStoreConfig` is deleted, with the `rag` member of the legacy `PipelineConfig`; nothing
+  read either.
 - The search knobs live on the in-memory store.
 - A flat `rag:` is refused with the new shape in the message. A secret inside either section is refused
   with that section's `credentialRef` named.
-- `BuildAgentDeps.makeRag` is required, and `resolveEmbedder` receives the embedder section.
+- `BuildAgentDeps.makeRag` is required, and `resolveEmbedder` receives the embedder section. An injected
+  embedder is composed (`composeEmbedder`), never resolved. `resolveAgentEmbedder` and
+  `resolveToolsStoreEmbedder` take the embedder seam as a new parameter. `isInMemoryInput` narrows a
+  `MakeRagInput`.
 - YAML pg-vector and HANA address fields are now actually read.
 
-In `packages/llm-agent-libs/CHANGELOG.md`, add under a new `## [Unreleased]`: the config watcher reads
-`vectorWeight`/`keywordWeight` from `rag.store`, and only for `type: in-memory`.
+In `packages/llm-agent-libs/CHANGELOG.md`, add to `## [Unreleased]` (Task B8 opened it): the config
+watcher reads `vectorWeight`/`keywordWeight` from `rag.store`, and only for `type: in-memory`.
 
 ```bash
 cd ~/prj/llm-agent
@@ -5949,21 +6364,27 @@ named. It splits into store (discriminated by type) and embedder, each
 with its own credentialRef; the search knobs move onto the in-memory
 store, the only one that ever read them, and the config watcher and
 section defaults move with them. A flat rag is refused with the new
-shape in the message.
+shape in the message. PipelineRagStoreConfig, an unread legacy DTO, is
+deleted rather than split.
+
+The embedder section mirrors the library's EmbedderResolution: a
+built-in by provider, a registered factory by factory, which carries no
+account. It has no apiBaseUrl: SAP AI Core's address travels with the
+credential from the same service key, so YAML that writes one is
+refused.
 
 SmartServer called the library's makeRag directly, so with secrets out
 of YAML the composition root never took part in building a store.
 BuildAgentDeps gains a required makeRag(input: MakeRagInput), paired so
 the compiler demands an embedder exactly where a store cannot work
 without one; the four call sites resolve the embedder through the seam
-first, then build through it. resolveEmbedder now receives the
-serializable embedder section, which is what the library holds.
+first, then build through it, and an injected embedder is composed, not
+resolved. The CLI's peer prefetch reads the split section.
 
-BREAKING: SmartServerRagConfig and PipelineRagStoreConfig change shape;
-BuildAgentDeps.makeRag is required and resolveEmbedder takes the
-embedder section.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+BREAKING: SmartServerRagConfig changes shape and PipelineRagStoreConfig
+is deleted; BuildAgentDeps.makeRag is required and resolveEmbedder takes
+the embedder section; a custom embedder is named with factory, not
+provider; rag.embedder.apiBaseUrl is refused.
 MSG
 )"
 ```
@@ -5978,8 +6399,8 @@ at the parse boundary. One layer down, `llm-agent-libs`' own REST client takes t
 (`QdrantRestOptions.apiKey`, `qdrant-store.ts:389-393`). The spec does not name it, but it is the
 constructor this config feeds, so it takes an `IApiKeyCredential` and asks it on every request, as
 `qdrant-rag` does (`qdrant-rag.ts:65`). `buildSkillHostFromConfig` stays the default `buildSkillHost`,
-and a credential reaches it through a new `storeCredential` dependency. A **named** `credentialRef` that
-nothing resolved is refused. It is never sent anonymously (§4.6.4, "optional means the reference may be
+and a credential reaches it through a new `storeCredential` dependency, which Task B17's `buildSkillHost`
+wrapper fills in the shipped server. A **named** `credentialRef` that nothing resolved is refused. It is never sent anonymously (§4.6.4, "optional means the reference may be
 omitted").
 
 **Files:**
@@ -6003,7 +6424,13 @@ omitted").
   - `BuildSkillHostDeps.storeCredential?: IApiKeyCredential`;
   - `QdrantRestOptions.credential?: IApiKeyCredential`, replacing `apiKey`, on `makeQdrantReader` and
     `makeQdrantClient`.
-  - Task B17's `buildSkillHost` wrapper fills `storeCredential`.
+  - Consumed by **Task B17**, which provides the `buildSkillHost` wrapper the shipped server injects as
+    `BuildAgentDeps.buildSkillHost`: for a qdrant store it resolves `cfg.store.credentialRef` through
+    `lookup(cfg.store.credentialRef, DEFAULT_STORE_REF, 'qdrant')` and passes the resulting
+    `IApiKeyCredential` (if any) as `storeCredential`, merged into the `BuildSkillHostDeps` SmartServer
+    hands it (`resolveEmbedder`, `makePgPool`, `makePgReadPool`), then calls `buildSkillHostFromConfig`.
+    This task keeps `buildSkillHostFromConfig` as the default and adds only the `storeCredential`
+    dependency and its refusal.
 
 - [ ] **Step 1: write the failing tests**
 
@@ -6330,8 +6757,6 @@ reference may be omitted, never that a named one may fail to resolve.
 BREAKING: QdrantRestOptions.apiKey is replaced by credential;
 SkillPluginsStoreConfig's qdrant arm loses apiKey and gains
 credentialRef.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -6349,22 +6774,39 @@ resolves its roles through a private chain that constructs (`build-dag-coordinat
 rewrites the resolver to the §4.6.6 default rules, deletes `llmMap`/`pipelineFallback` from the
 context and `makeLlm(lc)` from `IRoleLlmResolver`, and makes `dag` ask — `resolveNamedLlm(key)` for
 a key its section names, `resolveLlm(role)` when it names none. `dag` still reads its keys from the
-raw section it already has; Task B13–B14 moves that parsing to the server.
+raw section it already has; Task B14 moves that parsing to the server.
 
-**`IServerPipelineContext.makeLlm` is deliberately NOT removed here** (see Findings, item 1). Its
-only remaining reader is `controller.ts:335-338`, whose `subagents.<role>` are inline
-`SmartServerLlmConfig`s, not keys; resolving them through `ctx` needs the `{ llm?, hint? }` shape
-Task B15 introduces. Removing the member here would either break every controller deployment or
-silently swap each subagent's model for `main`. This task marks it `@deprecated` naming B15, and
-B15 deletes it.
+**`IServerPipelineContext.makeLlm` is deliberately NOT removed here.** Its only remaining reader is
+`controller.ts:335-338`, whose `subagents.<role>` are inline `SmartServerLlmConfig`s, not keys;
+resolving them through `ctx` needs the `{ llm?, hint? }` shape Task B15 introduces. Removing the
+member here would either break every controller deployment or silently swap each subagent's model
+for `main`. This task marks it `@deprecated` naming B15, and B15 deletes it together with its test
+overrides.
+
+**One scope, stated.** §8's server-libs row says the resolver's shape admits two scopes —
+deployment-wide and per-session, disposal following the identity — and that which scope a role
+lands in is the app's policy; `SmartServer`, whose sessions carry no caller credential (§6.4),
+ships **the deployment scope only**. So this task builds exactly that: one `RoleLlmResolver` per
+server, holding what it builds for the server's lifetime. It adds no per-session resolver, no
+session-bound disposal and no registration API for one. The shape admits the second scope because
+`IRoleLlmResolver` is lookups only (`resolve`, `resolveNamed`) and `RoleLlmResolverDeps` hands in
+the builder — a consumer whose sessions do carry a caller's credential constructs its own resolver
+per session over that session's builder and disposes it with the session.
+
+**What B8 and B9 already did here is not repeated.** B8 deleted `makeDefaultRoleLlm` and its
+`makeLlm` import from `role-llm-resolver.ts`, and `_makeLlmDefault` from `smart-server.ts`; B9 made
+`BuildAgentDeps.makeLlm` required. The resolver's `build` hands an entry to the seam **as written**
+— `(entry) => this._deps.makeLlm(entry)`, as the code already does at `smart-server.ts:1069` — so an
+entry without a `temperature` of its own does not inherit main's: a model's temperature is a property
+of its `llm:` entry (§4.6.6), and B8 records the change.
 
 **Files:**
 - Modify: `packages/llm-agent/src/interfaces/pipeline-plugin.ts:46-48` — `resolveNamedLlm` beside `resolveLlm`
 - Create: `packages/llm-agent/src/interfaces/__tests__/pipeline-context.typecheck.ts` — compile assertion
 - Modify: `tsconfig.typecheck.json` — **append** that file to `include`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/llm/role-llm-resolver.ts:27-70` — the new resolver (`makeDefaultRoleLlm`, `:7-25`, is untouched)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/llm/role-llm-resolver.ts` — as B8 left it (three imports, then `IRoleLlmResolver`): the `config.js` import becomes type-only, and everything from `export interface IRoleLlmResolver` to the end is the new resolver
 - Modify: `packages/llm-agent-server-libs/src/pipelines/server-context.ts:13`, `:25-28` — drop `llmMap`, `pipelineFallback`; deprecate `makeLlm`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:775` (field), `:1024-1032`, `:1060-1070`, `:2027-2038`, `:2462`, `:2533-2534`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:775` (field), `:1024-1032`, `:1060-1070`, `:2027-2038`, `:2462`, `:2533-2534` (working-tree line numbers; B9's edits shift some of them — locate each by the text shown in Step 3)
 - Modify: `packages/llm-agent-server-libs/src/pipelines/coordinator-resolvers.ts:22-26`, `:154-195` — `buildFinalizer` takes a lookup thunk
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/build-dag-coordinator-deps.ts` — whole file (199 lines) replaced
 - Modify: `packages/llm-agent-server-libs/src/pipelines/dag.ts:41-51`
@@ -6388,19 +6830,20 @@ Step 1 that the list is unchanged):
   (`over as IServerPipelineContext`), and the spreads-then-`as unknown as` in
   `controller-mcp-classifier.test.ts:127`, `server-routing-namespace.test.ts:189`,
   `server-namespacing-e2e.test.ts:711`, which inherit the member from the fixture or the real ctx;
-- none in `llm-agent-libs` or `llm-agent-server`. The Markdown docs that show a context are the
-  docs task's (Findings, item 10).
+- none in `llm-agent-libs` or `llm-agent-server`. The Markdown docs that show a context are
+  Task B30's: it rewrites every documented context once the contract has settled.
 
 **Interfaces:**
-- Consumes: `BuildAgentDeps.makeLlm: (cfg: SmartServerLlmConfig) => Promise<ILlm>` (required after
-  the Workstream 2 part-1 task — until then the defaulted `this._deps.makeLlm` works identically);
-  `IConfigUpdateTarget.setMainLlm/setClassifierLlm/setHelperLlm` (`smart-server.ts:3043-3049`).
+- Consumes: `BuildAgentDeps.makeLlm: (cfg: SmartServerLlmConfig) => Promise<ILlm>` (required since
+  B9); the test fixture `constructionSeams` from
+  `smart-agent/__tests__/construction-seams.ts` (B9, extended by B10 so it stubs all three required
+  seams); `IConfigUpdateTarget.setMainLlm/setClassifierLlm/setHelperLlm` (`smart-server.ts:3042-3049`).
 - Produces: `IPipelineContext.resolveNamedLlm(key: string): Promise<ILlm>` (required);
   `IRoleLlmResolver = { resolve(role): Promise<ILlm>; resolveNamed(key): Promise<ILlm> }`;
   `RoleLlmResolverDeps.build(entry: SmartServerLlmConfig): Promise<ILlm>` replacing `makeLlm` and
   `getPipelineFallback`; `BuildDagCoordinatorDepsInput = { coordCfg; registry; resolveLlm;
   resolveNamedLlm; warn }`; `buildFinalizer(cfg: FinalizerYaml | undefined, finalizerLlm: () =>
-  Promise<ILlm>): Promise<IFinalizer>`. Task B13–B14 replaces `coordCfg` with typed settings.
+  Promise<ILlm>): Promise<IFinalizer>`. Task B14 replaces `coordCfg` with typed settings.
 
 - [ ] **Step 1: write the failing tests**
 
@@ -6513,14 +6956,22 @@ test('resolveNamed is strict: no entry, no alias, no fallback — and it names t
   await assert.rejects(() => r.resolveNamed('planner'), /'planner'/);
 });
 
-test('resolveNamed("main") and ("helper") answer with the held, swappable instances', async () => {
-  const map = { main: entry('m-main'), helper: entry('m-helper') } as unknown as NormalizedLlmMap;
+test('resolveNamed("main"), ("classifier") and ("helper") answer with the held, swappable instances', async () => {
+  const map = {
+    main: entry('m-main'),
+    classifier: entry('m-classifier'),
+    helper: entry('m-helper'),
+  } as unknown as NormalizedLlmMap;
   const { r, held, builds } = setup({ map });
   assert.equal(await r.resolveNamed('main'), held.main);
+  assert.equal(await r.resolveNamed('classifier'), held.classifier);
   assert.equal(await r.resolveNamed('helper'), held.helper);
+  // what PUT /v1/config's setMainLlm / setClassifierLlm do
   held.main = stub('main2');
+  held.classifier = stub('classifier2');
   assert.equal(await r.resolveNamed('main'), held.main);
-  assert.deepEqual(builds, []);
+  assert.equal(await r.resolveNamed('classifier'), held.classifier);
+  assert.deepEqual(builds, [], 'a held role is never built a second time (§4.6.6)');
 });
 
 test('a failed build is not held, so the next ask retries', async () => {
@@ -6563,6 +7014,7 @@ import type { IEmbedder, ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 function put(port: number, path: string, body: unknown): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -6587,12 +7039,14 @@ type Ctx = {
   resolveNamedLlm(key: string): Promise<ILlm>;
 };
 
-test('PUT /v1/config swaps main for the next resolveLlm("main") and for a key with no entry', async () => {
+test('PUT /v1/config swaps main and classifier for the next lookup, strict or default', async () => {
   const mk = (model: string) => ({ ...makeTestLlm([{ content: 'ok' }]), model }) as ILlm;
   const swapped = mk('m-swapped');
+  const swappedClassifier = mk('m-classifier-swapped');
   const modelResolver: IModelResolver = {
     resolve: async (name) => {
       if (name === 'm-swapped') return swapped;
+      if (name === 'm-classifier-swapped') return swappedClassifier;
       throw new Error(`unknown model ${name}`);
     },
   };
@@ -6604,10 +7058,14 @@ test('PUT /v1/config swaps main for the next resolveLlm("main") and for a key wi
       modelResolver,
       llm: {
         main: { provider: 'openai', model: 'm-main' },
+        classifier: { provider: 'openai', model: 'm-classifier' },
         reviewer: { provider: 'openai', model: 'm-reviewer' },
       },
     } as unknown as SmartServerConfig,
     {
+      // B9's assertConstructionSeams runs in the constructor, so every required seam
+      // is named; this test overrides only makeLlm.
+      ...constructionSeams,
       makeLlm: async (c) => {
         built.push(c.model ?? '');
         return mk(c.model ?? '');
@@ -6635,11 +7093,25 @@ test('PUT /v1/config swaps main for the next resolveLlm("main") and for a key wi
     assert.equal('pipelineFallback' in ctx, false);
     assert.equal((await ctx.resolveLlm('main')).model, 'm-main');
 
-    assert.equal(await put(handle.port, '/v1/config', { models: { mainModel: 'm-swapped' } }), 200);
+    const heldClassifierBefore = await ctx.resolveNamedLlm('classifier');
+    assert.equal(heldClassifierBefore, await ctx.resolveLlm('classifier'), 'strict and default agree');
+
+    assert.equal(
+      await put(handle.port, '/v1/config', {
+        models: { mainModel: 'm-swapped', classifierModel: 'm-classifier-swapped' },
+      }),
+      200,
+    );
 
     assert.equal(await ctx.resolveLlm('main'), swapped, 'the next lookup observes the swap');
     assert.equal(await ctx.resolveLlm('no-such-entry'), swapped, 'a key with no entry is the held main');
     assert.equal(await ctx.resolveNamedLlm('main'), swapped);
+    assert.equal(
+      await ctx.resolveNamedLlm('classifier'),
+      swappedClassifier,
+      'a worker naming the classifier key reaches the instance PUT swapped (§4.6.6)',
+    );
+    assert.equal(built.includes('m-classifier'), false, 'the classifier entry is never built as a second instance');
 
     const r1 = await ctx.resolveLlm('reviewer');
     const r2 = await ctx.resolveNamedLlm('reviewer');
@@ -6651,10 +7123,6 @@ test('PUT /v1/config swaps main for the next resolveLlm("main") and for a key wi
   }
 });
 ```
-
-If the Workstream 2 part-1 task has made further `BuildAgentDeps` members required (`resolveEmbedder`,
-`makeRag`), add to the `deps` literal exactly the stubs that task added to
-`build-agent-deps.test.ts`; the test runs under tsx either way, but the literal should compile.
 
 `dag` asks, and says which question it asks:
 
@@ -6906,9 +7374,11 @@ its comment with both lookups:
   resolveNamedLlm(key: string): Promise<ILlm>;
 ```
 
-`packages/llm-agent-server-libs/src/smart-agent/llm/role-llm-resolver.ts` — change the import line
-`:3` to `import type { NormalizedLlmMap } from '../config.js';`, keep `makeDefaultRoleLlm` (`:6-25`)
-byte-identical, and replace `:27-70` with:
+`packages/llm-agent-server-libs/src/smart-agent/llm/role-llm-resolver.ts` — B8 left it as three
+imports followed by `IRoleLlmResolver`. Change the `config.js` import (working-tree `:3`, the second
+line after B8) to `import type { NormalizedLlmMap } from '../config.js';` — `resolveLlmConfig` has
+no reader left — keep the `ILlm` and `SmartServerLlmConfig` type imports, and replace everything from
+`export interface IRoleLlmResolver` to the end of the file (working-tree `:27-70`) with:
 
 ```ts
 /** The server's answer to "which LLM?" — lookups only. Nothing here constructs on a
@@ -6918,7 +7388,8 @@ export interface IRoleLlmResolver {
    *  → the held helper when there is one; any other name → its `llm:` entry, built
    *  once and held; a name with no entry → the held `main`. */
   resolve(role: string): Promise<ILlm>;
-  /** Strict: only an `llm:` entry of exactly this name; rejects, naming the key. */
+  /** Strict: only an `llm:` entry of exactly this name; rejects, naming the key.
+   *  A declared `main`/`classifier`/`helper` key answers with the held instance. */
   resolveNamed(key: string): Promise<ILlm>;
 }
 
@@ -6935,6 +7406,11 @@ export interface RoleLlmResolverDeps {
  * The default implementation's role map (§4.6.6). Held roles are read through LIVE
  * accessors, so a `PUT /v1/config` swap of main/classifier/helper is observed by the
  * next lookup; every other entry is built once per key and held (§4.6.5).
+ *
+ * One instance is one scope: what it builds lives as long as it does. `SmartServer`
+ * constructs one per server — the deployment scope, the only one it ships, because
+ * its sessions carry no caller credential. A consumer that builds from a session's
+ * credential constructs one per session and drops it with the session.
  */
 export class RoleLlmResolver implements IRoleLlmResolver {
   private readonly built = new Map<string, Promise<ILlm>>();
@@ -6964,7 +7440,13 @@ export class RoleLlmResolver implements IRoleLlmResolver {
           `strictly (declared: ${map ? Object.keys(map).join(', ') : 'none'})`,
       );
     }
+    // A declared key that names a held role answers with the HELD instance — the one
+    // PUT /v1/config swaps — never a second build of the same entry (§4.6.6).
     if (key === 'main') return this.heldMain(key);
+    if (key === 'classifier') {
+      const classifier = this.deps.getClassifier();
+      if (classifier) return classifier;
+    }
     if (key === 'helper') {
       const helper = this.deps.getHelper();
       if (helper) return helper;
@@ -7029,7 +7511,7 @@ export class RoleLlmResolver implements IRoleLlmResolver {
   ```
 
 - `:1060-1070` — before: `this._llmMap = llmMap;` … `makeLlm: (lc) => this._deps.makeLlm(lc),\n    });`;
-  after:
+  after — `_pipelineFallback` goes, and each entry reaches the seam as written:
 
   ```ts
       this._llmMap = llmMap;
@@ -7225,7 +7707,9 @@ export async function buildDagCoordinatorDeps(
 ```
 
 `controller.ts` is not edited (see the intro). `IServerPipelineContext.mainLlm`, `helperLlm` and
-`mainTemp` keep their values; `dag` no longer reads them (Findings, item 4).
+`mainTemp` keep their values although `dag` no longer reads them: they are instances and a number,
+not configuration, §4.6.6 does not list them among the members that go, and a dynamic plugin may
+read them.
 
 - [ ] **Step 4: run the package suites and the build**
 
@@ -7242,10 +7726,26 @@ Then prove the directive can fail: make `resolveNamedLlm?` optional in `pipeline
 `npm run typecheck`, expect `error TS2578: Unused '@ts-expect-error' directive` in
 `pipeline-context.typecheck.ts`, and restore it. Expected suites: green. If a server-libs test that
 starts a `pipeline: dag` server with `plannerLlm: helper|planner` and no such `llm:` entry goes red,
-that is the stated behaviour change (Findings, item 2) — update the test's `llm:` map to declare the
+that is this task's stated behaviour change — a named key is resolved strictly (§4.6.7), so the old
+`helper`/`planner` aliases of the dag chain are gone — update the test's `llm:` map to declare the
 entry and say so in the report; do not reintroduce an alias.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: CHANGELOG**
+
+Add to `packages/llm-agent/CHANGELOG.md` under `## [Unreleased]` (create the heading if absent),
+opening with `**BREAKING:**`: `IPipelineContext` gains the required `resolveNamedLlm(key)` — a
+strict lookup that answers only from an `llm:` entry of exactly that name — so every implementation
+must add it. To `packages/llm-agent-server-libs/CHANGELOG.md`, same heading, `**BREAKING:**`:
+`IServerPipelineContext` loses `llmMap` and `pipelineFallback`; `IRoleLlmResolver` loses `makeLlm`
+and gains `resolveNamed` (a declared `main`/`classifier`/`helper` key answers with the held instance
+`PUT /v1/config` swaps); a role with no `llm:` entry shares the held `main` instance instead of a
+fresh build per call; every other entry is built once and held for the server's lifetime (the
+deployment scope — `SmartServer` ships no per-session resolver); `buildDagCoordinatorDeps` and
+`buildFinalizer` take lookups; a `dag` key with no entry fails rather than falling back; an omitted
+`dag` planner key follows the pipeline-wide default (helper when configured).
+`IServerPipelineContext.makeLlm` is deprecated; Task B15 removes it.
+
+- [ ] **Step 6: commit**
 
 ```bash
 cd ~/prj/llm-agent
@@ -7260,14 +7760,18 @@ and dag resolved its roles through a private chain that constructed.
 
 IPipelineContext gains resolveNamedLlm(key), the strict lookup for a key
 a file named: only the llm: entry of exactly that name, rejecting and
-naming the key otherwise. resolveLlm(role) keeps its defaults: held
-main, classifier and helper; planner as helper when one is held; any
-other entry built once and held; a name with no entry the held main —
-shared, and swapped by PUT /v1/config — instead of a fresh build.
-dag asks the named or the default question per role and constructs
-nothing. llmMap and pipelineFallback leave IServerPipelineContext and
-makeLlm leaves IRoleLlmResolver. IServerPipelineContext.makeLlm stays,
-deprecated, for controller's inline subagent configs until B15.
+naming the key otherwise; a declared main, classifier or helper key
+answers with the held instance PUT /v1/config swaps. resolveLlm(role)
+keeps its defaults: held main, classifier and helper; planner as helper
+when one is held; any other entry built once and held; a name with no
+entry the held main — shared, and swapped by PUT /v1/config — instead
+of a fresh build. The resolver is one per server, the deployment scope;
+SmartServer's sessions carry no caller credential, so it ships no
+per-session scope. dag asks the named or the default question per role
+and constructs nothing. llmMap and pipelineFallback leave
+IServerPipelineContext and makeLlm leaves IRoleLlmResolver.
+IServerPipelineContext.makeLlm stays, deprecated, for controller's
+inline subagent configs until B15.
 
 BREAKING: every implementation of IPipelineContext must add
 resolveNamedLlm. IServerPipelineContext loses llmMap and
@@ -7278,23 +7782,9 @@ buildFinalizer takes a lookup thunk. A dag section naming a key with no
 llm: entry (including plannerLlm: helper or planner) now fails instead
 of falling back to main; an omitted dag planner key now gets the helper
 when one is configured.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
-
-Add to `packages/llm-agent/CHANGELOG.md` under `## [Unreleased]` (create the heading if absent),
-opening with `**BREAKING:**`: `IPipelineContext` gains the required `resolveNamedLlm(key)` — a
-strict lookup that answers only from an `llm:` entry of exactly that name — so every implementation
-must add it. To `packages/llm-agent-server-libs/CHANGELOG.md`, same heading, `**BREAKING:**`:
-`IServerPipelineContext` loses `llmMap` and `pipelineFallback`; `IRoleLlmResolver` loses `makeLlm`
-and gains `resolveNamed`; a role with no `llm:` entry shares the held `main` instance (built at
-`temperature ?? 0.7`) instead of a fresh build per call; every other entry is built once;
-`buildDagCoordinatorDeps` and `buildFinalizer` take lookups; a `dag` key with no entry fails rather
-than falling back; an omitted `dag` planner key follows the pipeline-wide default (helper when
-configured). `IServerPipelineContext.makeLlm` is deprecated and goes in the next task that changes
-`controller`'s subagents.
 
 ### Task B13: the loader reports every pipeline export it refuses, and accepts factories
 
@@ -7326,8 +7816,11 @@ checked, so nothing here needs changing when it goes.
 - Consumes: `IPipelinePlugin` (unchanged here).
 - Produces: `type PipelinePluginFactory = (section: unknown) => IPipelinePlugin`;
   `PluginExports.pipelinePluginFactories?: Record<string, PipelinePluginFactory>`;
-  `LoadedPlugins.pipelinePluginFactories?: Map<string, PipelinePluginFactory>` (optional — see
-  Findings, item 6); `pipelinePluginSources` now covers both maps;
+  `LoadedPlugins.pipelinePluginFactories?: Map<string, PipelinePluginFactory>` (optional, because
+  `LoadedPlugins` is a public interface callers build as literals — `mcp-clients-di.test.ts:165`,
+  `:183` do — and a required member would break each of them for no reader's benefit;
+  `emptyLoadedPlugins` always initialises it, and readers treat it as possibly absent);
+  `pipelinePluginSources` now covers both maps;
   `describePipelinePluginDefect(value: unknown, key: string): string | undefined`, exported from
   `@mcp-abap-adt/llm-agent-libs` — B14 runs it on a factory's result.
 
@@ -7615,7 +8108,16 @@ timeout 900 npm test -w packages/llm-agent-server-libs
 Expected: green. `conformance.test.ts:69-86` registers `DagPipelinePlugin` (name `dag`) under the key
 `dag` twice, so it still exercises the duplicate path unchanged.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: CHANGELOG**
+
+CHANGELOGs under `## [Unreleased]`: `llm-agent` — `PipelinePluginFactory`, and
+`PluginExports.pipelinePluginFactories` / `LoadedPlugins.pipelinePluginFactories?` (additive).
+`llm-agent-libs`, opening with `**BREAKING:**`: the loader refuses a pipeline plugin whose `name`
+differs from its key; every refused pipeline export (missing `build`, non-string `name`, a
+non-function factory, a non-object export) is reported in `errors` instead of skipped;
+`describePipelinePluginDefect` is exported.
+
+- [ ] **Step 6: commit**
 
 ```bash
 cd ~/prj/llm-agent
@@ -7638,18 +8140,9 @@ and factories share one key space.
 
 BREAKING: a pipeline plugin whose name differs from its export key is
 refused, where it used to load under the key.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
-
-CHANGELOGs under `## [Unreleased]`: `llm-agent` — `PipelinePluginFactory`, and
-`PluginExports.pipelinePluginFactories` / `LoadedPlugins.pipelinePluginFactories?` (additive).
-`llm-agent-libs`, opening with `**BREAKING:**`: the loader refuses a pipeline plugin whose `name`
-differs from its key; every refused pipeline export (missing `build`, non-string `name`, a
-non-function factory, a non-object export) is reported in `errors` instead of skipped;
-`describePipelinePluginDefect` is exported.
 
 ### Task B14: a plugin reads no configuration — the server parses, and the registry holds factories
 
@@ -7661,13 +8154,16 @@ constructor; the four dialects — `controller.ts:82-151`, `dag.ts:29-35`, `step
 `build`) — move to the server; `SmartServer`'s registry (`smart-server.ts:1121-1151`) becomes a map
 of `PipelinePluginFactory`, the selected one is called **once** in startup and its result validated,
 and `buildPipelineInstance` (`:2337-2351`) only builds. A `dag` key with no `llm:` entry is now
-refused at startup. `SmartServerConfig.pipeline.config` keeps its public type (Findings, item 5).
+refused at startup. `SmartServerConfig.pipeline.config` keeps its public type,
+`Record<string, unknown>` (`smart-server.ts:279`): §4.6.7 keeps it because its meaning depends on
+which plugin is selected, and that plugin's server-side parser is what narrows it.
 
 **`controller`'s subagents are not reshaped here.** Its settings are today's `ControllerConfig`,
 parsed server-side by the moved parser and handed in typed; each `subagents.<role>` is still an inline
 `SmartServerLlmConfig & { hint? }`, built through the deprecated `ctx.makeLlm` exactly as before.
-Task B15 changes the shape to `{ llm?: key, hint? }`, adds those keys to the startup refusal
-(`assertNamedLlmKeys`) and deletes `ctx.makeLlm`. The fixture helper `controllerPlugin()` below exists
+Task B15 changes the shape to `{ llm?: key, hint? }`, refuses a named subagent key with no `llm:`
+entry at startup — inside the controller parser, which it hands the set of declared keys — and
+deletes `ctx.makeLlm`. The fixture helper `controllerPlugin()` below exists
 so B15 edits one section literal, not eleven.
 
 **Why one task, not more:** the contract change makes every plugin's `build(cfg, ctx)` unassignable
@@ -7687,7 +8183,7 @@ The diff is large but uniform; the new logic is three files (`pipeline-settings.
 - Modify: `packages/llm-agent-server-libs/src/pipelines/flat.ts`, `linear.ts`, `stepper.ts`, `dag.ts` — whole files; `controller.ts:62-156`, `:261`, `:353-357`
 - Modify: `packages/llm-agent-server-libs/src/pipelines/parsers.ts:9-37` — `parseLinearConfig` deleted; the file keeps only the stepper re-export `legacy/stepper.ts:7` imports
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/build-dag-coordinator-deps.ts` — `coordCfg`/`warn` → `settings`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:22-23`, `:268-280` (doc), `:482-490`, `:875-881`, `:1121-1151`, `:2330-2351`; `resolve-config-sections.ts:475-478` (comment)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:22-23`, `:268-280` (doc), `:482-490`, `:875-881`, `:1121-1151`, `:2330-2351`; `resolve-config-sections.ts:475-478` (comment); `yaml-loader.ts:115` (the `YAML_TEMPLATE` comment for `config:`)
 - Test (create): `smart-agent/__tests__/pipeline-settings.test.ts`, `smart-agent/__tests__/select-pipeline-plugin.test.ts`, `smart-agent/__tests__/pipeline-registry.test.ts`
 - Test (migrate), each listed with its replacement in Step 1: `pipelines/__tests__/fixtures.ts`, `conformance.test.ts`, `flat.test.ts`, `linear.test.ts`, `stepper.test.ts`, `dag.test.ts`, `controller.test.ts`, `controller-step-control-wiring.test.ts`, `controller-context-wiring.test.ts`, `controller-auxiliary-wiring.test.ts`, `controller-mcp-classifier.test.ts`, `smart-agent/__tests__/server-routing-namespace.test.ts`, `server-namespacing-e2e.test.ts`, `build-dag-coordinator-deps.test.ts`
 - Modify: `packages/llm-agent/CHANGELOG.md`, `packages/llm-agent-libs/CHANGELOG.md`, `packages/llm-agent-server-libs/CHANGELOG.md`
@@ -7958,12 +8454,16 @@ import { test } from 'node:test';
 import type { IEmbedder, ILlm, IPipelinePlugin } from '@mcp-abap-adt/llm-agent';
 import { emptyLoadedPlugins } from '@mcp-abap-adt/llm-agent-libs';
 import { buildAgent, type SmartServerConfig } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 const cannedLlm = {
   chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),
   model: 'stub',
 } as unknown as ILlm;
+// B9's assertConstructionSeams runs when buildAgent constructs the SmartServer, so every required seam
+// is named; this test overrides only makeLlm.
 const DEPS = {
+  ...constructionSeams,
   makeLlm: async () => cannedLlm,
   embedder: { embed: async () => ({ vector: [0] }) } as unknown as IEmbedder,
 };
@@ -8029,8 +8529,6 @@ test('an unknown pipeline name is refused at startup', async () => {
   await assert.rejects(() => buildAgent(cfg({ name: 'nope' }), DEPS), /unknown pipeline 'nope'/);
 });
 ```
-
-As in B12, add the part-1 `BuildAgentDeps` stubs to `DEPS` if that task made more members required.
 
 **Migrations** — every test that called `plugin.parseConfig(…)` or `plugin.build(cfg, ctx)`
 (`grep -rn "parseConfig\|\.build(cfg" packages/*/src` must print nothing afterwards except the
@@ -8718,7 +9216,8 @@ export async function buildDagCoordinatorDeps(
 ```
 
 The reviewer alias warning now happens in `parseDagSettings`, at startup. `ctx.warn` is no longer
-read by `dag` (Findings, item 4).
+read by `dag`; it stays on `IServerPipelineContext`, which §4.6.6 does not shrink beyond `makeLlm`,
+`llmMap` and `pipelineFallback`, and a dynamic plugin may warn through it.
 
 - [ ] **Step 6: implement — the registry holds factories, and the selected one is called at startup**
 
@@ -8822,6 +9321,9 @@ read by `dag` (Findings, item 4).
   The type stays `{ name: string; config?: Record<string, unknown> }`.
 - `resolve-config-sections.ts:475-478` comment — "`config` is the selected plugin's section, parsed
   at startup by the server (built-ins) or by the plugin's factory".
+- `yaml-loader.ts:115`, the `YAML_TEMPLATE` line for `config:` — the trailing comment
+  `# Opaque per-pipeline dialect (validated by the plugin)` becomes
+  `# The selected pipeline's section (parsed at startup by the server, or by a dynamic plugin's factory)`.
 
 `this._llmMap` is assigned at `:1060`, before the registry block, so the `dag` factory reads the
 loaded map. The selection throws inside `_buildInfra` at the same point the collision check already
@@ -8845,7 +9347,17 @@ Prove each new directive can fail: temporarily re-add `parseConfig?(raw: unknown
 `IPipelinePlugin` → `TS2578` on the `parse` line; give `build` an optional second parameter →
 `TS2578` on `twoArgs`; restore both. Expected suites: green.
 
-- [ ] **Step 8: commit**
+- [ ] **Step 8: CHANGELOG**
+
+CHANGELOGs under `## [Unreleased]`, each opening with `**BREAKING:**`: `llm-agent` — `IPipelinePlugin`
+is `name` + `build(ctx)`; a plugin with settings is exported through `pipelinePluginFactories` and
+constructs itself from its section. `llm-agent-libs` — nothing beyond B13 (skip if B13's entry
+stands). `llm-agent-server-libs` — the built-in plugins take settings in their constructors and the
+parsers are exported from `pipeline-settings`; the registry is a map of factories and the selected
+one is constructed once at startup; `dag` keys and unknown pipeline names fail at startup;
+`buildDagCoordinatorDeps` takes `DagPipelineSettings`.
+
+- [ ] **Step 9: commit**
 
 ```bash
 cd ~/prj/llm-agent
@@ -8881,25 +9393,9 @@ LinearPipelineConfig and DagPipelineConfig are replaced by
 LinearPipelineSettings and DagPipelineSettings;
 buildDagCoordinatorDeps takes settings and never returns undefined; a
 configurable dynamic plugin exports pipelinePluginFactories.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
-
-CHANGELOGs under `## [Unreleased]`, each opening with `**BREAKING:**`: `llm-agent` — `IPipelinePlugin`
-is `name` + `build(ctx)`; a plugin with settings is exported through `pipelinePluginFactories` and
-constructs itself from its section. `llm-agent-libs` — nothing beyond B13 (skip if B13's entry
-stands). `llm-agent-server-libs` — the built-in plugins take settings in their constructors and the
-parsers are exported from `pipeline-settings`; the registry is a map of factories and the selected
-one is constructed once at startup; `dag` keys and unknown pipeline names fail at startup;
-`buildDagCoordinatorDeps` takes `DagPipelineSettings`.
-
-The group's two tasks are drafted as **four**, because each one splits along a line a reviewer
-could reject on one side and approve on the other: the controller's subagents and the DAG worker
-files are independent YAML shapes with independent fixtures (B15 / B16), and the composition
-modules are reviewable on their own before the app is wired and the repository gate runs
-(B17 / B18). The IDs are proposals; see the Findings.
 
 ### Task B15: the controller's subagents name `llm:` keys
 
@@ -8911,27 +9407,60 @@ through `ctx.resolveNamedLlm(key)`, an omitted one through `ctx.resolveLlm(role)
 name, and an absent `reviewer`/`finalizer` **block** keeps meaning "the planner's instance" — its key,
 or its default when it named none. An inline LLM configuration in a subagent is refused at parse,
 naming the `llm:` map; a named key with no `llm:` entry is refused in `start()`, because that is where
-the server parses a built-in's section (B13–B14).
+the server parses a built-in's section (B14).
+
+With the controller asking through `ctx`, `IServerPipelineContext.makeLlm` has no reader left — B12
+already moved `dag` off it — so this task **deletes it** (§4.6.6, §8's server-libs row): the member in
+`server-context.ts`, the `makeLlm:` entry `SmartServer#buildServerCtx` supplies, the `_makeLlm`
+method that entry was the only caller of, and the `makeLlm` overrides the test contexts carry. A
+compile assertion proves the member is gone.
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts:189-213` — `ControllerSubagentConfig` becomes `{ llm?: string; hint?: string }`; the `SmartServerLlmConfig` import goes if nothing else in the file uses it (verify in Step 3)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts:189-213` — `ControllerSubagentConfig` becomes `{ llm?: string; hint?: string }`; the `SmartServerLlmConfig` import (`:8`) goes — `:200` is its only use
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/llm-config-map.ts` — add `INLINE_LLM_CONFIG_FIELDS` and `llmKeySet(map)` (B16 reuses both)
 - Create: `packages/llm-agent-server-libs/src/pipelines/controller-subagents.ts` — `parseControllerSubagents(raw, llmKeys)`
-- Modify: the controller section parser B13–B14 moved out of `ControllerPipelinePlugin.parseConfig` (baseline `pipelines/controller.ts:82-155`; this task calls it `parseControllerSettings`, verify its name and file in Step 3) — its required-role loop and its `subagents: subagents as ControllerConfig['subagents']` line are replaced by one call to `parseControllerSubagents`, and it gains the `llmKeys` parameter
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — the two registry factories for `controller` and `controller-weak` (baseline `:1133-1134`, factories since B13–B14) pass `llmKeySet(llmMap)`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/pipeline-settings.ts` — `parseControllerSettings` (B14 moved it there from `ControllerPipelinePlugin.parseConfig`, baseline `pipelines/controller.ts:82-155`): its required-role loop and its `subagents: subagents as ControllerConfig['subagents']` line are replaced by one call to `parseControllerSubagents`, and it gains the `llmKeys` parameter
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — the `controller` and `controller-weak` registry factories B14 wrote pass `llmKeySet(this._llmMap)`; the `makeLlm: (c) => this._makeLlm(c),` entry of `buildServerCtx`'s context literal (working-tree `:2532`) and the `_makeLlm` method (working-tree `:2016-2021`) are deleted
+- Modify: `packages/llm-agent-server-libs/src/pipelines/server-context.ts` — delete the `makeLlm` member (B12 marked it `@deprecated`) and the now-unused `SmartServerLlmConfig` import (working-tree `:14`)
+- Create: `packages/llm-agent-server-libs/src/pipelines/__tests__/server-context-lookups-only.typecheck.ts`; append it to `tsconfig.typecheck.json`
 - Modify: `packages/llm-agent-server-libs/src/factories/controller-factory.ts:86-114`, `:152-160` — add `makeControllerRoleLlm`; the JSDoc example stops calling `makeLlm`; the reviewer/finalizer comment states the rule
 - Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts:335-338` (baseline) — `makeRoleLlm` becomes `makeControllerRoleLlm(<settings>.subagents, ctx)`
 - Modify: `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts:141-165` — role overrides become `llm:` entries named by role, and subagents name them
-- Modify (fixtures): `factories/__tests__/controller-factory.test.ts:31-35`, `factories/__tests__/controller-factory.skills.test.ts:36`, `pipelines/__tests__/conformance.test.ts:43-56`, `pipelines/__tests__/controller-auxiliary-wiring.test.ts:41`, `pipelines/__tests__/controller-context-wiring.test.ts:37`, `pipelines/__tests__/controller-mcp-classifier.test.ts:117`, `pipelines/__tests__/controller-step-control-wiring.test.ts:48`, `pipelines/__tests__/controller.test.ts` (every `subagents:` literal, or wherever B13–B14 moved those parser tests), `smart-agent/__tests__/build-agent-deps.test.ts:52-56`, `smart-agent/__tests__/config-validation.test.ts:645-649`, `smart-agent/__tests__/server-namespacing-e2e.test.ts:694-725`, `smart-agent/__tests__/server-routing-namespace.test.ts:179-192`, `smart-agent/controller/__tests__/types.test.ts:40-44`, `:56-60`, `builders/controller-skill-pipeline-builder.test.ts:35-38` — all under `packages/llm-agent-server-libs/src/`
+- Modify (fixtures): `pipelines/__tests__/fixtures.ts` (B14's `MIN_CONTROLLER_SECTION` and `controllerPlugin()`, and `fakeServerCtx`'s `makeLlm` member, working-tree `:38`), `pipelines/__tests__/server-context.test.ts:22` (its `makeLlm` member), `factories/__tests__/controller-factory.test.ts:31-35`, `factories/__tests__/controller-factory.skills.test.ts:36`, `pipelines/__tests__/controller.test.ts` (every `subagents:` literal in the `parseControllerSettings …` tests B14 migrated), `pipelines/__tests__/controller-mcp-classifier.test.ts:115-128`, `smart-agent/__tests__/build-agent-deps.test.ts:52-56`, `smart-agent/__tests__/config-validation.test.ts:645-649`, `smart-agent/__tests__/server-namespacing-e2e.test.ts:694-729`, `smart-agent/__tests__/server-routing-namespace.test.ts:179-195`, `smart-agent/controller/__tests__/types.test.ts:40-44`, `:56-60`, `builders/controller-skill-pipeline-builder.test.ts:35-38` — all under `packages/llm-agent-server-libs/src/`. `conformance.test.ts` and the three `controller-*-wiring.test.ts` files need no edit of their own: B14 routed them through `controllerPlugin()`, so they follow the fixture
 - Modify (YAML): `pipelines/controller.yaml`, `pipelines/controller-mixed.yaml`, `docs/examples/13-controller.yaml`, `docs/examples/13-controller-skills.yaml`, `docs/examples/14-controller-weak.yaml`, `docs/examples/14-controller-weak-skills.yaml`
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/controller-subagents.test.ts` (new), `packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.test.ts` (one test added)
-- Modify: `packages/llm-agent-server-libs/CHANGELOG.md`
+- Modify: `tsconfig.typecheck.json`, `packages/llm-agent-server-libs/CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: `IPipelineContext.resolveNamedLlm(key: string): Promise<ILlm>` and `resolveLlm(role)` (B12); the controller plugin constructed as `new ControllerPipelinePlugin(name, plannerKind, settings)` with its settings held on the instance, and a controller section parser called by the registry factory in `start()` (B13–B14 — the field and parser names are verified in Step 3); `PipelineFactoryDepsBase.makeRoleLlm: (role: string) => Promise<ILlm>` (`llm-agent/src/interfaces/pipeline-factory.ts:21`, unchanged).
-- Produces: `ControllerSubagentConfig = { llm?: string; hint?: string }`; `parseControllerSubagents(raw: unknown, llmKeys: ReadonlySet<string>): ControllerConfig['subagents']`; `makeControllerRoleLlm(subagents: ControllerConfig['subagents'], ctx: Pick<IPipelineContext, 'resolveLlm' | 'resolveNamedLlm'>): (role: string) => Promise<ILlm>`; `INLINE_LLM_CONFIG_FIELDS: readonly string[]`; `llmKeySet(map: NormalizedLlmMap | undefined): ReadonlySet<string>`.
+- Consumes: `IPipelineContext.resolveNamedLlm(key: string): Promise<ILlm>` and `resolveLlm(role)` (B12); from B14: `new ControllerPipelinePlugin(name, plannerKind, settings)` holding its settings in `private readonly settings: ControllerConfig` (read as `this.settings`), `parseControllerSettings(raw): ControllerConfig` in `smart-agent/pipeline-settings.ts`, the registry factories in `SmartServer#_buildInfra` that call it with the section, and the test helpers `MIN_CONTROLLER_SECTION` / `controllerPlugin(name?, kind?, section?)` in `pipelines/__tests__/fixtures.ts`; `toLlmConfig(input: BuilderLlmInput)` in `controller-skill-pipeline-builder.ts` (B9: one argument); `PipelineFactoryDepsBase.makeRoleLlm: (role: string) => Promise<ILlm>` (`llm-agent/src/interfaces/pipeline-factory.ts:21`, unchanged).
+- Produces: `ControllerSubagentConfig = { llm?: string; hint?: string }`; `parseControllerSubagents(raw: unknown, llmKeys: ReadonlySet<string>): ControllerConfig['subagents']`; `makeControllerRoleLlm(subagents: ControllerConfig['subagents'], ctx: Pick<IPipelineContext, 'resolveLlm' | 'resolveNamedLlm'>): (role: string) => Promise<ILlm>`; `INLINE_LLM_CONFIG_FIELDS: readonly string[]`; `llmKeySet(map: NormalizedLlmMap | undefined): ReadonlySet<string>`;
+  `parseControllerSettings(raw: unknown, llmKeys: ReadonlySet<string>): ControllerConfig`;
+  `controllerPlugin(name?, kind?, section?, llmKeys?)` (test helper). **Removes**
+  `IServerPipelineContext.makeLlm`.
 
 - [ ] **Step 1: write the failing tests**
+
+The compile assertion — the server context offers lookups only (§4.6.6):
+
+```ts
+// packages/llm-agent-server-libs/src/pipelines/__tests__/server-context-lookups-only.typecheck.ts
+// Appended to tsconfig.typecheck.json. Not a *.test.ts, so the runner skips it;
+// under __tests__/, which the package tsconfig excludes, so the build never emits it.
+import type { IServerPipelineContext } from '../server-context.js';
+
+declare const ctx: IServerPipelineContext;
+
+// @ts-expect-error — a step may not construct an LLM: makeLlm is gone (§4.6.6)
+export const construct = ctx.makeLlm;
+// @ts-expect-error — nor read LLM configuration: llmMap is gone (B12)
+export const configs = ctx.llmMap;
+
+// the two lookups are what remains
+export const lookups: [
+  IServerPipelineContext['resolveLlm'],
+  IServerPipelineContext['resolveNamedLlm'],
+] = [ctx.resolveLlm, ctx.resolveNamedLlm];
+```
 
 ```ts
 // packages/llm-agent-server-libs/src/pipelines/__tests__/controller-subagents.test.ts
@@ -9130,17 +9659,14 @@ node --import tsx/esm --test packages/llm-agent-server-libs/src/pipelines/__test
 node --import tsx/esm --test packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.test.ts
 ```
 
+Then append the typecheck file to `tsconfig.typecheck.json`'s `include` and run `npm run typecheck`.
+
 Expected: the first file fails to load with `ERR_MODULE_NOT_FOUND` for `controller-subagents.js`; the
 second fails with `SyntaxError: The requested module '../controller-factory.js' does not provide an
-export named 'makeControllerRoleLlm'`.
+export named 'makeControllerRoleLlm'`; `typecheck` reports `TS2578: Unused '@ts-expect-error'
+directive` on the `ctx.makeLlm` line (the member still exists).
 
 - [ ] **Step 3: implement**
-
-Before editing, confirm B13–B14's names and record them in the report: the file and name of the controller
-section parser (`grep -rn "controller: \`planner:\` removed" packages/llm-agent-server-libs/src` finds
-its body — the message is unique), the constructor signature of `ControllerPipelinePlugin`, and the
-instance field that holds its settings (`grep -n "constructor(" packages/llm-agent-server-libs/src/pipelines/controller.ts`).
-Below, the parser is `parseControllerSettings` and the field is `this.settings`; substitute B13–B14's names.
 
 `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts:189-200` — the doc keeps its
 paragraph on `hint`; the first sentence and the type change:
@@ -9312,8 +9838,12 @@ export function parseControllerSubagents(
 }
 ```
 
-The controller section parser (B13–B14's; baseline body `pipelines/controller.ts:82-155`) — two edits.
-Its signature gains the key set, `(raw: unknown, llmKeys: ReadonlySet<string>): ControllerConfig`.
+`parseControllerSettings` in `packages/llm-agent-server-libs/src/smart-agent/pipeline-settings.ts`
+(B14's; baseline body `pipelines/controller.ts:82-155`) — two edits. Its signature gains the key set,
+`(raw: unknown, llmKeys: ReadonlySet<string>): ControllerConfig`, and its doc comment's last sentence
+("`subagents.<role>` is still an inline LLM configuration; Task B15 makes it name an `llm:` key")
+becomes "`subagents.<role>` names an `llm:` key; a named key with no entry is refused here, at
+startup."
 Delete the block
 
 ```ts
@@ -9328,13 +9858,48 @@ Delete the block
 ```
 
 and replace `subagents: subagents as ControllerConfig['subagents'],` in the returned object with
-`subagents: parseControllerSubagents(cfg.subagents, llmKeys),`, importing it from
-`./controller-subagents.js` (adjust the relative path to the parser's file).
+`subagents: parseControllerSubagents(cfg.subagents, llmKeys),`, importing it with
+`import { parseControllerSubagents } from '../pipelines/controller-subagents.js';`.
 
-`packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — the `controller` and
-`controller-weak` registry factories B13–B14 wrote call the parser with the section; each now passes
-`llmKeySet(llmMap)` as the second argument, where `llmMap` is the normalized map `_buildInfra` already
-holds in scope (baseline `:1029`). Import `llmKeySet` from `./llm-config-map.js`.
+`packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — three edits.
+
+- The `controller` and `controller-weak` registry factories B14 wrote become
+
+  ```ts
+          [
+            'controller',
+            (s) =>
+              new ControllerPipelinePlugin(
+                'controller',
+                'smart-executor',
+                parseControllerSettings(s, llmKeySet(this._llmMap)),
+              ),
+          ],
+          [
+            'controller-weak',
+            (s) =>
+              new ControllerPipelinePlugin(
+                'controller-weak',
+                'weak-executor',
+                parseControllerSettings(s, llmKeySet(this._llmMap)),
+              ),
+          ],
+  ```
+
+  with `llmKeySet` imported from `./llm-config-map.js`. `this._llmMap` is set earlier in
+  `_buildInfra` (B12's block), before the registry is built.
+- In `buildServerCtx`'s `createServerPipelineContext({ … })` literal, delete
+  `makeLlm: (c) => this._makeLlm(c),` (working-tree `:2532`).
+- Delete `_makeLlm` and its doc comment (working-tree `:2016-2021`; its body is
+  `this._deps.makeLlm(lc)`). Its one caller was the entry just deleted —
+  verify with `grep -n "_makeLlm\b" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`,
+  which must print nothing.
+
+`packages/llm-agent-server-libs/src/pipelines/server-context.ts` — delete the `makeLlm` member and the
+`@deprecated` comment B12 put above it, and the import
+`import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';` (nothing else in the file
+uses it after B12 removed `pipelineFallback`; `ILlm` stays for `mainLlm`/`helperLlm`). The
+`// Raw materials …` comment line stays above `mainLlm`.
 
 `packages/llm-agent-server-libs/src/factories/controller-factory.ts` — add the helper beside the
 factory, and import `IPipelineContext` and `ILlm` as types from `@mcp-abap-adt/llm-agent`:
@@ -9405,7 +9970,7 @@ Also re-export `makeControllerRoleLlm` from `pipelines/controller.ts`'s existing
 line (the `./controller` subpath is how embedders reach the factory).
 
 `packages/llm-agent-server-libs/src/pipelines/controller.ts` — in `build(ctx)`, the `makeRoleLlm`
-member of `deps` (baseline `:335-338`, whatever B12 left there) becomes
+member of `deps` (baseline `:335-338`, `(role) => ctx.makeLlm(cfg.subagents[…])`; B12 and B14 left it as it was) becomes
 
 ```ts
       makeRoleLlm: makeControllerRoleLlm(this.settings.subagents, ctx),
@@ -9427,7 +9992,7 @@ Replace `roleCfg` and the `llm`/`subagents` members (baseline `:141-165`) with:
         }
         return {}; // the role's own name → llm.<role> absent → the main instance
       }
-      llm[r] = toLlmConfig(ovr, { skipRuntime });
+      llm[r] = toLlmConfig(ovr);
       return { llm: r };
     };
     const subagents = {
@@ -9439,7 +10004,8 @@ Replace `roleCfg` and the `llm`/`subagents` members (baseline `:141-165`) with:
 ```
 
 and in the returned object `llm: llm,` plus `subagents,` inside `pipeline.config`. (`toLlmConfig`
-stays as B9 left it.) In its test, the four `sub.*` assertions (`:35-38`) become:
+stays as B9 left it: one argument, no environment read.) In its test, the four `sub.*` assertions
+(`:35-38`) become:
 
 ```ts
   const sub = (cfg.pipeline.config as any).subagents;
@@ -9450,18 +10016,43 @@ stays as B9 left it.) In its test, the four `sub.*` assertions (`:35-38`) become
   assert.equal((cfg as any).llm.main.provider, 'sap-ai-sdk');
 ```
 
-**Fixtures.** Every inline subagent value in the files listed above becomes `{}`, except where a
-test distinguishes roles by model:
+**Fixtures.** `pipelines/__tests__/fixtures.ts` first, because `conformance.test.ts` and the three
+`controller-*-wiring.test.ts` files build their controller through it (B14). `MIN_CONTROLLER_SECTION`
+and `controllerPlugin` become:
+
+```ts
+/** The smallest valid controller section: every role takes its own name's default. */
+export const MIN_CONTROLLER_SECTION = {
+  subagents: { evaluator: {}, planner: {}, executor: {} },
+};
+
+/** A controller plugin constructed the way SmartServer's registry constructs it,
+ *  with the keys of the `llm:` map the section may name. */
+export function controllerPlugin(
+  name = 'controller',
+  kind: PlannerKind = 'smart-executor',
+  section: unknown = MIN_CONTROLLER_SECTION,
+  llmKeys: ReadonlySet<string> = new Set(['main']),
+): ControllerPipelinePlugin {
+  return new ControllerPipelinePlugin(name, kind, parseControllerSettings(section, llmKeys));
+}
+```
+
+and `fakeServerCtx` loses its `makeLlm: async () => stubLlm,` line (working-tree `:38`;
+`fakeControllerServerCtx` spreads it, so it follows). `server-context.test.ts:22` loses its
+`makeLlm: async () => stubLlm,` line too.
+
+Every other inline subagent value in the files listed above becomes `{}`, except where a test
+distinguishes roles by model:
 
 - `controller-factory.test.ts:31-35`, `controller-factory.skills.test.ts:36`, `types.test.ts:40-44`,
-  `:56-60`, `controller-auxiliary-wiring.test.ts:41`, `controller-context-wiring.test.ts:37`,
-  `controller-mcp-classifier.test.ts:117`, `controller-step-control-wiring.test.ts:48`,
-  `build-agent-deps.test.ts:52-56`, `config-validation.test.ts:645-649`, `conformance.test.ts:43-56`
-  (both `controller` and `controller-weak`), and every `subagents:` literal in the controller parser's
-  tests: `{ evaluator: {}, planner: {}, executor: {} }`. Where a test calls the parser directly, pass
-  `new Set(['main'])` as its second argument. The `as never` casts on those literals go.
-- `server-namespacing-e2e.test.ts:694-725` and `server-routing-namespace.test.ts:179-192` select an
-  LLM per role by model. Their subagents become
+  `:56-60`, `build-agent-deps.test.ts:52-56`, `config-validation.test.ts:645-649`, and every
+  `subagents:` literal in the `parseControllerSettings …` tests of `controller.test.ts`:
+  `{ evaluator: {}, planner: {}, executor: {} }`. Where a test calls `parseControllerSettings`
+  directly, pass `new Set(['main'])` as its second argument. The `as never` casts on those literals go.
+- `controller-mcp-classifier.test.ts:115-128`, `server-namespacing-e2e.test.ts:694-729` and
+  `server-routing-namespace.test.ts:179-195` select an LLM per role by model (a `byModel` map behind
+  a ctx `makeLlm` override). Their subagents become
 
   ```ts
       subagents: {
@@ -9471,9 +10062,12 @@ test distinguishes roles by model:
       },
   ```
 
-  parsed with `new Set(['main', 'm-eval', 'm-plan', 'm-exec'])`, and the ctx override that used to be
-  `makeLlm: async (c: { model?: string }) => byModel[c.model ?? ''] ?? …` (or whatever B12 turned it
-  into) becomes
+  parsed with `new Set(['main', 'm-eval', 'm-plan', 'm-exec'])` — in `controller-mcp-classifier` as
+  `controllerPlugin('controller', 'smart-executor', { subagents: … }, new Set(['main', 'm-eval', 'm-plan', 'm-exec']))`,
+  in the other two as `parseControllerSettings({ subagents: … }, new Set([…]))` inside B14's
+  `new ControllerPipelinePlugin(…)` — and the ctx override
+  `makeLlm: async (c: { model?: string }) => byModel[c.model ?? ''] ?? base.mainLlm` (B14 left it
+  untouched) is deleted and replaced by
 
   ```ts
       resolveNamedLlm: async (key: string) => {
@@ -9513,22 +10107,45 @@ test distinguishes roles by model:
 cd ~/prj/llm-agent
 find packages -name '*.tsbuildinfo' -delete
 npm run build                                  # expect: exit 0
+npm run typecheck                              # expect: exit 0, and NO TS2578
 node --import tsx/esm --test packages/llm-agent-server-libs/src/pipelines/__tests__/controller-subagents.test.ts
 timeout 900 npm test -w packages/llm-agent-server-libs   # expect: all pass
 npm run lint:check                             # expect: exit 0
 for f in pipelines/controller*.yaml docs/examples/1[34]-controller*.yaml; do
   awk '/subagents:/{s=1} /targetState|sessionMemory|budgets/{s=0} s && /provider:/{print FILENAME": "$0}' "$f"
 done
+grep -rn "makeLlm" packages/llm-agent-server-libs/src/pipelines
+grep -n "_makeLlm\b\|makeLlm: (c)" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts
 ```
 
-The loop must print nothing — no `provider:` line left inside a `subagents:` block.
+The loop must print nothing — no `provider:` line left inside a `subagents:` block. The first grep
+prints only the two lines of `server-context-lookups-only.typecheck.ts` that name `makeLlm` (the
+directive's comment and the assertion); any other hit is a context member or override this task
+missed (B12 already removed `dag.ts`'s and `coordinator-resolvers.ts`'s). The second grep must print
+nothing.
 
-- [ ] **Step 5: commit**
+Then prove the directive can fail: re-add `makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>;` to
+`IServerPipelineContext` (with its import), rerun `npm run typecheck`, expect `error TS2578: Unused
+'@ts-expect-error' directive` in `server-context-lookups-only.typecheck.ts`, and restore the deletion.
+
+- [ ] **Step 5: CHANGELOG**
+
+Add to `packages/llm-agent-server-libs/CHANGELOG.md` under `## [Unreleased]`, opening with
+`**BREAKING:**`: `ControllerSubagentConfig` is `{ llm?: string; hint?: string }`; an inline LLM
+configuration in `subagents.<role>` is refused naming the `llm:` map; a named key with no entry fails
+startup; an absent reviewer/finalizer block still means the planner's instance; a per-role temperature
+moves onto the `llm:` entry; `makeControllerRoleLlm` is exported for code-level composition;
+`ControllerSkillPipelineBuilder.withRoleLlm(role, …)` now emits an `llm.<role>` entry that the role
+names; `parseControllerSettings` takes the set of `llm:` keys; and `IServerPipelineContext.makeLlm`
+is removed — a step reaches an LLM only through `resolveLlm(role)` or `resolveNamedLlm(key)`, so an
+implementation or test double of the context drops the member.
+
+- [ ] **Step 6: commit**
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/llm-agent-server-libs pipelines/controller.yaml pipelines/controller-mixed.yaml \
-  docs/examples/13-controller.yaml docs/examples/13-controller-skills.yaml \
+git add tsconfig.typecheck.json packages/llm-agent-server-libs pipelines/controller.yaml \
+  pipelines/controller-mixed.yaml docs/examples/13-controller.yaml docs/examples/13-controller-skills.yaml \
   docs/examples/14-controller-weak.yaml docs/examples/14-controller-weak-skills.yaml
 git commit -m "$(cat <<'MSG'
 feat(llm-agent-server-libs)!: controller subagents name llm: keys
@@ -9545,21 +10162,17 @@ An inline LLM configuration in a subagent is refused at parse, naming the
 llm: map, and a named key with no entry is refused in start() — never
 answered with main.
 
+With its last reader gone, IServerPipelineContext.makeLlm is removed: a
+usage-side contract may not construct, so the per-step authorization path
+closes by type.
+
 BREAKING: pipeline.config.subagents.<role> no longer accepts provider, model,
 temperature or any other LLM field; move the model to llm: and name it with
-`llm: <key>`.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+`llm: <key>`. IServerPipelineContext loses makeLlm; parseControllerSettings
+takes the llm: key set.
 MSG
 )"
 ```
-
-Add to `packages/llm-agent-server-libs/CHANGELOG.md` under `## [Unreleased]`, opening with
-`**BREAKING:**`: `ControllerSubagentConfig` is `{ llm?: string; hint?: string }`; an inline LLM
-configuration in `subagents.<role>` is refused naming the `llm:` map; a named key with no entry fails
-startup; an absent reviewer/finalizer block still means the planner's instance; a per-role temperature
-moves onto the `llm:` entry; `makeControllerRoleLlm` is exported for code-level composition; and
-`ControllerSkillPipelineBuilder.withRoleLlm(role, …)` now emits an `llm.<role>` entry that the role names.
 
 ### Task B16: a DAG worker file names keys of the main file's `llm:` map
 
@@ -9583,13 +10196,13 @@ history RAG and MCP clients stay cached per worker name.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts:196-210` — `requireLlmSection` option
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — `_buildInfra` start-time check after the resolver is built (baseline `:1063-1070`); worker-registry callback cast (`:1168-1175`); `buildSubAgent` (`:1820-1956`) takes its three LLMs from the resolver; new private `resolveWorkerRoleLlm`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/workers/worker-registry.ts:42-63`, `:117-153`, `:229-244`, `:309-324` — the LLM slots leave `WorkerLlmSet`, `resolveWorkerLlmSet`, `BuildSubAgentFn`'s `injected` and the per-session call
-- Modify (fixtures): `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-llm-cache.test.ts` (whole file, see Step 3), `packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-config-reload.test.ts:180-187`
+- Modify (fixtures): `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-llm-cache.test.ts` (whole file, see Step 3), `packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-config-reload.test.ts:180-187`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/make-llm-seam.test.ts` (created by B8; its worker test holds an inline worker LLM)
 - Modify (YAML): `examples/subagents/{abap-coder,code-reviewer}{,-deepseek,-sap-aicore}.yaml`, `docs/examples/dag-coordinator/{worker-sonnet,worker-haiku,worker-generic,inspector-haiku}.yaml`, and the main files that must now define the keys: `docs/examples/subagent-orchestration{,-deepseek,-sap-aicore}.yaml`, `docs/examples/coordinator-orchestration{,-deepseek}.yaml`, `docs/examples/dag-coordinator/{01-all-sonnet,02-hybrid-sonnet-haiku,02b-hybrid-generic-worker,03-full-roles}.yaml`
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-llm-keys.test.ts` (new)
 - Modify: `packages/llm-agent-server-libs/CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: `INLINE_LLM_CONFIG_FIELDS`, `llmKeySet` (B15); `IRoleLlmResolver.resolve(role)` and a strict `IRoleLlmResolver.resolveNamed(key): Promise<ILlm>` — the method `resolveNamedLlm` is backed by (B12; name verified in Step 3); `NormalizedLlmMap`, `normalizeLlmConfig` (`llm-config-map.ts`); B10's `makeRag` seam calls inside `buildSubAgent`'s `makeToolsRag`/`makeHistoryRag`, which this task leaves as B10 wrote them.
+- Consumes: `INLINE_LLM_CONFIG_FIELDS`, `llmKeySet` (B15); `IRoleLlmResolver.resolve(role)` and the strict `IRoleLlmResolver.resolveNamed(key): Promise<ILlm>` that backs `ctx.resolveNamedLlm` — a declared `main`/`classifier`/`helper` key answers with the held instance (B12); `NormalizedLlmMap`, `normalizeLlmConfig` (`llm-config-map.ts`); the test fixture `constructionSeams` (`smart-agent/__tests__/construction-seams.ts`, B9, extended by B10); B10's `makeRag` seam calls inside `buildSubAgent`'s `makeToolsRag`/`makeHistoryRag`, which this task leaves as B10 wrote them; `SmartServerLlmConfig.credentialRef?` (B9) and the composition root's env naming rule `<REF>_API_KEY` (B17), which the YAML conversion below relies on.
 - Produces: `SmartServerWorkerLlmKeys = { main?: string; helper?: string; classifier?: string }`; `SmartServerWorkerConfig = Omit<SmartServerConfig, 'log' | 'llm' | 'subAgentConfigs'> & { llm?: string | SmartServerWorkerLlmKeys }`; `parseWorkerLlm(worker: string, raw: unknown): SmartServerWorkerLlmKeys`; `assertWorkerLlmConfig(subs, llmMap): void`; `ResolveSmartServerConfigOptions.requireLlmSection?: boolean`; `WorkerLlmSet` without `mainLlm`/`classifierLlm`/`helperLlm`.
 
 - [ ] **Step 1: write the failing tests**
@@ -9611,6 +10224,7 @@ import {
   type SmartServerLlmConfig,
 } from '../smart-server.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from '../worker-llm.js';
+import { constructionSeams } from './construction-seams.js';
 
 describe('parseWorkerLlm (§4.6.7)', () => {
   it('reads a string as the main key, a map as role keys, absence as nothing named', () => {
@@ -9720,15 +10334,15 @@ describe('worker LLMs come from the server resolver', () => {
       streamChat: async function* () {},
     }) as unknown as ILlm;
   const stubEmbedder = { embed: async () => ({ vector: [0] }) } as unknown as IEmbedder;
+  // Every SmartServer in the suite spreads B9's fixture (all three required seams);
+  // these tests override makeLlm to count builds and embedder to skip resolution.
   const deps = (built: string[]): BuildAgentDeps => ({
+    ...constructionSeams,
     makeLlm: async (cfg: SmartServerLlmConfig) => {
       built.push(cfg.model ?? '');
       return stubLlm(cfg.model ?? '');
     },
-    resolveEmbedder: () => stubEmbedder,
-    makeRag: async () => {
-      throw new Error('no rag: section in this test');
-    },
+    embedder: stubEmbedder,
   });
   const llm = {
     main: { provider: 'ollama', model: 'main-model' },
@@ -9824,9 +10438,6 @@ cases fail with `llm: required` from `validateResolvedConfig`, and the server ca
 `buildSubAgent` still builds worker LLMs itself.)
 
 - [ ] **Step 3: implement**
-
-Before editing, confirm B12's strict resolver method (`grep -n "resolve" packages/llm-agent-server-libs/src/smart-agent/llm/role-llm-resolver.ts`);
-below it is `resolveNamed(key)`.
 
 `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:433-447`:
 
@@ -10102,11 +10713,62 @@ that measured LLM construction change to measure what the set still builds: the 
 `packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-config-reload.test.ts:180-187`
 — the worker names no model; its `config` becomes `{ skipModelValidation: true }`.
 
+`packages/llm-agent-server-libs/src/smart-agent/__tests__/make-llm-seam.test.ts` (B8's file) — its
+second test, `a subagent worker builds its LLMs through the injected makeLlm`, gives the worker an
+inline `llm: { provider, model: 'worker-model' }`, which `assertWorkerLlmConfig` now refuses. Replace
+that whole test — whatever deps literal B9 left in it — with the key form, and add
+`import { constructionSeams } from './construction-seams.js';` if B9 did not already import it. The
+first test (the missing-seam refusal) stays as B9 left it.
+
+```ts
+test('a subagent worker names a key; its LLM is built once, through the injected makeLlm', async () => {
+  const models: Array<string | undefined> = [];
+  const { close } = await buildAgent(
+    {
+      skipModelValidation: true,
+      llm: {
+        main: { provider: 'openai', model: 'parent-model' },
+        worker: { provider: 'openai', model: 'worker-model' },
+      },
+      subAgentConfigs: [{ name: 'worker', config: { llm: 'worker' } }],
+    } as unknown as SmartServerConfig,
+    {
+      ...constructionSeams,
+      makeLlm: async (cfg) => {
+        models.push(cfg.model);
+        return cannedLlm;
+      },
+      embedder: stubEmbedder,
+      mcpClients: [],
+    },
+  );
+  await close();
+  assert.equal(
+    models.filter((m) => m === 'worker-model').length,
+    1,
+    `the worker's entry is built once, through the seam, and held (§4.6.5); saw ${models.join(', ')}`,
+  );
+});
+```
+
+The old assertion (`>= 2` builds of `worker-model`, one per slot) described the per-worker builds this
+task removes: the worker's classifier is now the held classifier, not a second build of its model.
+
 **YAML.** Each worker file's `llm:` block is replaced by one key; the main files that point at it gain
-an entry of that name, whose body is the worker file's former `llm.main` (or flat) block **without**
-`apiKey` (the credential is the root's — B17). A worker's former `classifier` entry is dropped: an
-omitted classifier resolves to the main file's held classifier, which §4.6.7 states as a behaviour
-change.
+an entry of that name, whose body is the worker file's former `llm.main` (or flat) block. A worker's
+former `classifier` entry is dropped: an omitted classifier resolves to the main file's held
+classifier, which §4.6.7 states as a behaviour change.
+
+**No `apiKey` survives in any `llm:` block this task writes or moves** — B9's validator refuses it.
+Each `apiKey: ${<NAME>_API_KEY}` line in those blocks becomes `credentialRef: <NAME>`: B17's root
+resolves a ref by reading `<REF>_API_KEY`, so the entry reads the very variable the file used before
+(`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and a deployment's environment does not change. An entry that
+had no `apiKey` (the `sap-ai-sdk` ones) gets no `credentialRef` and resolves the default ref `LLM`.
+This covers the pre-existing `deepseek` entry of `coordinator-orchestration.yaml`'s map too, because
+this task edits that map. Everything else these files carry that the new contracts refuse — a flat
+`rag:` block, header comments naming the old variables — is Task B30's, which converts every example
+file and runs `scripts/check-example-configs.mjs` over them; this task touches only the `llm:` blocks
+and the worker files' keys.
 
 | worker file | its `llm:` becomes | main files that gain the entry |
 |---|---|---|
@@ -10131,15 +10793,17 @@ flat block moves under `main:` unchanged, and the worker entries sit beside it. 
 llm:
   main:
     provider: openai
-    apiKey: ${OPENAI_API_KEY}          # left as it was; B9/B30 own this line
+    credentialRef: OPENAI              # the root reads OPENAI_API_KEY, as apiKey did
     model: ${OPENAI_MODEL:-gpt-4o-mini}
     temperature: 0.7
   abap-coder:
     provider: openai
+    credentialRef: OPENAI
     model: ${OPENAI_MODEL:-gpt-4o-mini}
     temperature: 0.2
   code-reviewer:
     provider: openai
+    credentialRef: OPENAI
     model: ${OPENAI_MODEL:-gpt-4o-mini}
     temperature: 0.1
 ```
@@ -10154,11 +10818,21 @@ node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__te
 timeout 900 npm test -w packages/llm-agent-server-libs    # expect: all pass
 npm run lint:check                              # expect: exit 0
 grep -n "^llm" examples/subagents/*.yaml docs/examples/dag-coordinator/worker-*.yaml docs/examples/dag-coordinator/inspector-haiku.yaml
+grep -n "apiKey" examples/subagents/*.yaml docs/examples/subagent-orchestration*.yaml \
+  docs/examples/coordinator-orchestration*.yaml docs/examples/dag-coordinator/*.yaml
 ```
 
-The grep must show exactly one `llm: <key>` line per worker file.
+The first grep must show exactly one `llm: <key>` line per worker file; the second must print nothing
+(no `apiKey` left in any file this task edits).
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: CHANGELOG**
+
+Add to `packages/llm-agent-server-libs/CHANGELOG.md` under `## [Unreleased]`, opening with
+`**BREAKING:**`: the worker-file `llm` shape and its refusal of inline configuration; the new
+`SmartServerWorkerConfig`/`SmartServerWorkerLlmKeys` types; `WorkerLlmSet` and `resolveWorkerLlmSet`
+losing their LLM members; and the two behaviour changes for omitted helper and classifier.
+
+- [ ] **Step 6: commit**
 
 ```bash
 cd ~/prj/llm-agent
@@ -10179,35 +10853,49 @@ are not re-vectorized or reconnected per session.
 An inline LLM configuration in a worker file is refused, and a named key with
 no entry fails at parse and again at start() for programmatic subAgentConfigs.
 
+The example worker and main files follow; every apiKey in the llm: blocks
+they carry becomes a credentialRef naming the same variable.
+
 BREAKING: a worker file's llm: holds keys of the main file's llm: map, not an
 LLM configuration; SmartServerSubAgentConfig.config is SmartServerWorkerConfig;
 WorkerLlmSet loses mainLlm, classifierLlm and helperLlm. An omitted helper now
 resolves to the held helper, or main when none is configured, where a worker
 used to have none; an omitted classifier is the held classifier rather than
 the worker's own main at classifierTemperature.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
-
-Add to `packages/llm-agent-server-libs/CHANGELOG.md` under `## [Unreleased]`, opening with
-`**BREAKING:**`: the worker-file `llm` shape and its refusal of inline configuration; the new
-`SmartServerWorkerConfig`/`SmartServerWorkerLlmKeys` types; `WorkerLlmSet` and `resolveWorkerLlmSet`
-losing their LLM members; and the two behaviour changes for omitted helper and classifier.
 
 ### Task B17: the composition modules — every rule of the spec's reference, tested
 
 §8 migration item 4 is the reference implementation; §4.6.4's two adapter rules (the ref ends in the
 root; a named ref must resolve) and §4.6.5's memoization are the rules it encodes. This task writes
 that code in `llm-agent-server/src/composition/`, one module per seam, each testable without the
-network: the provider constructors and the library's `resolveEmbedder`/`makeRag` are injectable
-defaults, so a test records exactly what each would have received. It **deviates from the reference
-in five places, each because the reference is wrong against the real code** (listed in the Findings
-and marked in comments): provider configs carry `baseURL`/`temperature`/`maxTokens`/`whenThrottled`;
-the role default is read only when a target asks for a credential; an Ollama LLM gets a credential only
-from a ref that names one; `makeRag` narrows the pair with a type guard; and the shipped registry reads
-a naming convention from the environment instead of the reference's deployment-specific switch.
+network: the provider constructors, the library's `resolveEmbedder`/`makeRag` and
+`buildSkillHostFromConfig` are injectable defaults, so a test records exactly what each would have
+received. The code implements §8 item 4 as the spec writes it: a memoized `credentialFor` over the
+environment naming rule (`<REF>_API_KEY` | `<REF>_SERVICE_KEY` | `<REF>_USER`+`<REF>_PASSWORD`), per-role
+defaults read only when a target asks, provider configs built from named fields with the knobs
+forwarded, an Ollama LLM credentialed only by a ref that names one, and `makeRag` narrowed by
+`isInMemoryInput`.
+
+Three pieces §8 item 4 names but its reference block does not spell out are written here too:
+- **The embedder conversion.** `BuildAgentDeps.resolveEmbedder` receives B10's serializable
+  `SmartServerEmbedderConfig`; the library's `resolveEmbedder` takes B6c's `EmbedderResolution`, whose
+  built-in arms require `model` and a typed credential. `resolve-embedder.ts` builds each arm from named
+  fields: `openai` with an api key, `sap-ai-core`/`sap-aicore` with a bearer and the entry's
+  `apiBaseUrl`, `ollama` with nothing, and a section naming a consumer `factory` as the library's
+  `{ factory }` arm — so a consumer-registered factory reaches the library's factory path, never the
+  built-in "unknown provider" arm. Ollama and factories refuse a named ref (`refuseAny`).
+- **The skill store's account.** §8 item 4: "a qdrant skill store's `apiKey` … become[s]
+  `credentialRef`, resolved through the same `credentialFor`". B11 made `buildSkillHostFromConfig`
+  refuse a named skill-store ref unless `BuildSkillHostDeps.storeCredential` carries it;
+  `build-skill-host.ts` is the `BuildAgentDeps.buildSkillHost` wrapper that resolves
+  `lookup(store.credentialRef, DEFAULT_STORE_REF, …).optional('api-key')` and merges the credential
+  into the deps `SmartServer` passes.
+- **The documentation of the rule.** `packages/llm-agent-server/README.md` gains a `## Credentials`
+  section — the naming rule, the three defaults, the Ollama rule and the `AICORE_SERVICE_KEY`
+  migration — which the docs task (B30) links to from the migration guide.
 
 **Files:**
 - Create: `packages/llm-agent-server/src/composition/credential-for.ts` — `AnyCredential`, `CredentialEntry`, `CredentialFor`, `DEFAULT_LLM_REF`/`DEFAULT_STORE_REF`/`DEFAULT_EMBEDDER_REF`, `memoizeCredentials`, `envCredentialEntries`
@@ -10215,31 +10903,30 @@ a naming convention from the environment instead of the reference's deployment-s
 - Create: `packages/llm-agent-server/src/composition/make-llm.ts` — `createMakeLlm`, `LlmProviderCtors`, `SHIPPED_LLM_PROVIDERS`
 - Create: `packages/llm-agent-server/src/composition/resolve-embedder.ts` — `createResolveEmbedder`
 - Create: `packages/llm-agent-server/src/composition/make-rag.ts` — `createMakeRag`
+- Create: `packages/llm-agent-server/src/composition/build-skill-host.ts` — `createBuildSkillHost`
 - Create: `packages/llm-agent-server/src/composition/model-resolver.ts` — `createModelResolver`
 - Create: `packages/llm-agent-server/src/composition/index.ts` — `buildCompositionDeps`
-- Modify: `packages/llm-agent-server/tsconfig.json:10-26` — add the `ollama-llm` and `sap-aicore-auth` project references (both are imported now, and neither is referenced today)
+- Modify: `packages/llm-agent-server/tsconfig.json:10-26` — add the `ollama-llm` and `sap-aicore-auth` project references (both are imported now, and neither is referenced today; `package.json` already declares both, and `interfaces-auth`)
+- Modify: `packages/llm-agent-server/README.md` — a `## Credentials` section after `## CLIs shipped`
 - Test: `packages/llm-agent-server/src/composition/__tests__/credentials.test.ts`, `make-llm.test.ts`, `store-and-embedder.test.ts`, `model-resolver.test.ts`
 
 **Interfaces:**
-- Consumes: `BuildAgentDeps` with **required** `makeLlm`, `resolveEmbedder`, `makeRag` (B9, B10); `SmartServerLlmConfig` with `credentialRef?: string` and no `apiKey` (B9); `MakeRagInput` and the four store section types, each with `credentialRef?: string` — **including `InMemoryStoreConfig`** (B10; see Findings); the YAML embedder section as `BuildAgentDeps['resolveEmbedder']`'s first parameter, discriminated on `provider` with `credentialRef?` (B10); the library `resolveEmbedder(cfg, options)` and `makeRag(cfg: RagResolution, options?)` from `@mcp-abap-adt/llm-agent-rag` (B6a/B6b, as B10 left them); `staticApiKey`, `staticLogin`, `InMemoryRag` (`@mcp-abap-adt/llm-agent`); `serviceKeyCredential` (`@mcp-abap-adt/sap-aicore-auth`); `LlmAdapter`, `LlmProviderBridge` (`@mcp-abap-adt/llm-agent-libs`); the five providers and their config types (B3, B5); `normalizeLlmConfig` (`@mcp-abap-adt/llm-agent-server-libs`).
-- Produces: `buildCompositionDeps(env?: NodeJS.ProcessEnv): Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder' | 'makeRag'>`; `createModelResolver(makeLlm, llm): IModelResolver | undefined` — both consumed by B18. Nothing is exported from the package barrel: the app is the root.
+- Consumes: `BuildAgentDeps` with **required** `makeLlm`, `resolveEmbedder`, `makeRag` and the optional `buildSkillHost?: (cfg: SkillPluginsConfig, deps: BuildSkillHostDeps) => Promise<ISkillPluginHost>` (B9, B10; `smart-server.ts:366-369`); `SmartServerLlmConfig` with `credentialRef?: string` and no `apiKey` (B9); from B10, all through the server-libs barrel: `MakeRagInput`, the four store section types each with `credentialRef?: string` (**including `InMemoryStoreConfig`**, so a ref named for a store that takes none is refused by name — §8 item 4), the guard `isInMemoryInput(input): input is Extract<MakeRagInput, { store: { type: 'in-memory' } }>`, and `SmartServerEmbedderConfig = { provider: 'openai' | 'sap-ai-core' | 'sap-aicore' | 'ollama'; model?; url?; resourceGroup?; scenario?; maxBatchSize?; credentialRef? } | { factory: string; model?; url?; maxBatchSize? }` (no `apiBaseUrl`: it comes from the credential entry only) as `BuildAgentDeps['resolveEmbedder']`'s first parameter; from B6c (`@mcp-abap-adt/llm-agent-rag`): `EmbedderResolution`, `resolveEmbedder(cfg: EmbedderResolution, options?: EmbedderResolutionOptions): IEmbedder`, `makeRag(cfg: RagResolution, options?)`; from B11: `SkillPluginsStoreConfig`'s qdrant arm with `credentialRef?: string`, `BuildSkillHostDeps.storeCredential?: IApiKeyCredential`, `buildSkillHostFromConfig` (server-libs barrel); `staticApiKey`, `staticLogin`, `InMemoryRag` (`@mcp-abap-adt/llm-agent`); `serviceKeyCredential` (`@mcp-abap-adt/sap-aicore-auth`); `LlmAdapter`, `LlmProviderBridge` (`@mcp-abap-adt/llm-agent-libs`); the five providers and their config types (B3, B5); `normalizeLlmConfig` (`@mcp-abap-adt/llm-agent-server-libs`).
+- Produces: `buildCompositionDeps(env?: NodeJS.ProcessEnv): Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder' | 'makeRag'> & { buildSkillHost: NonNullable<BuildAgentDeps['buildSkillHost']> }` — four seams over one memoized registry; `createModelResolver(makeLlm, llm): IModelResolver | undefined` — both consumed by B18; the README's `## Credentials` section (anchor `#credentials`), which B30 links to. Nothing is exported from the package barrel: the app is the root.
 
-- [ ] **Step 1: confirm the names this task consumes from B9/B10**
+- [ ] **Step 1: check that the names this task consumes exist**
 
 ```bash
 cd ~/prj/llm-agent
-grep -n "credentialRef\|export type MakeRagInput\|export interface InMemoryStoreConfig\|export type InMemoryStoreConfig\|resolveEmbedder:" \
-  packages/llm-agent-server-libs/src/smart-agent/smart-server.ts
-grep -n "export function resolveEmbedder" -A3 packages/llm-agent-rag/src/rag-factories.ts
+grep -rn "export function isInMemoryInput\|export type MakeRagInput\|export type SmartServerEmbedderConfig\|credentialRef?: string" \
+  packages/llm-agent-server-libs/src/smart-agent
+grep -n "export type EmbedderResolution\|export function resolveEmbedder" packages/llm-agent-rag/src/*.ts
+grep -n "storeCredential" packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.ts
 ```
 
-Record in the report: that `SmartServerLlmConfig` has `credentialRef?: string`; that `MakeRagInput`
-is exported; that every store arm — in-memory included — declares `credentialRef?: string`; and the
-first parameter types of `BuildAgentDeps['resolveEmbedder']` and of the library `resolveEmbedder`. The
-code below assumes the embedder section is discriminated on `provider` (`'openai' | 'sap-ai-core' |
-'ollama' | <custom>`) and that the library accepts the same members minus `credentialRef`, plus
-`credential` and `apiBaseUrl`, as §8 item 4's reference does. If B10 chose other names, adapt
-`resolve-embedder.ts` and its test only, and say so.
+Each grep must find what the Interfaces list names (B6c, B9, B10, B11). If one is missing, stop and
+report which: the code below is written against those exact names and shapes, and a difference means an
+earlier task deviated from the plan, which is fixed there, not adapted here.
 
 - [ ] **Step 2: write the failing tests**
 
@@ -10491,10 +11178,23 @@ describe('makeLlm (§8 item 4)', () => {
 // packages/llm-agent-server/src/composition/__tests__/store-and-embedder.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type IEmbedder, InMemoryRag, type IRag, staticApiKey, staticLogin } from '@mcp-abap-adt/llm-agent';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-import type { BuildAgentDeps, MakeRagInput } from '@mcp-abap-adt/llm-agent-server-libs';
-import { type CredentialEntry, memoizeCredentials } from '../credential-for.js';
+import {
+  type IEmbedder,
+  InMemoryRag,
+  type IRag,
+  type ISkillPluginHost,
+  staticApiKey,
+  staticLogin,
+} from '@mcp-abap-adt/llm-agent';
+import type {
+  BuildSkillHostDeps,
+  MakeRagInput,
+  SkillPluginsConfig,
+  SmartServerEmbedderConfig,
+} from '@mcp-abap-adt/llm-agent-server-libs';
+import { createBuildSkillHost } from '../build-skill-host.js';
+import { type CredentialEntry, DEFAULT_STORE_REF, memoizeCredentials } from '../credential-for.js';
 import { createLookup } from '../lookup.js';
 import { createMakeRag } from '../make-rag.js';
 import { createResolveEmbedder } from '../resolve-embedder.js';
@@ -10504,9 +11204,7 @@ const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
 const lookupOver = (entries: Record<string, CredentialEntry>) =>
   createLookup(memoizeCredentials((r) => entries[r]));
 
-type EmbedderSection = Parameters<BuildAgentDeps['resolveEmbedder']>[0];
-
-describe('resolveEmbedder seam', () => {
+describe('resolveEmbedder seam: SmartServerEmbedderConfig → EmbedderResolution', () => {
   const recorder = () => {
     const seen: Record<string, unknown>[] = [];
     const impl = ((cfg: Record<string, unknown>) => {
@@ -10516,39 +11214,88 @@ describe('resolveEmbedder seam', () => {
     return { seen, impl };
   };
 
-  it('openai gets an api-key credential, and the ref does not travel on', () => {
+  it('openai gets an api-key credential and its named fields; the ref does not travel on', () => {
     const cred = staticApiKey('k');
     const { seen, impl } = recorder();
     const resolve = createResolveEmbedder(lookupOver({ OPENAI: { credential: cred } }), impl);
-    resolve({ provider: 'openai', model: 'e', credentialRef: 'OPENAI' } as EmbedderSection);
-    assert.equal(seen[0]?.credential, cred);
-    assert.equal('credentialRef' in (seen[0] ?? {}), false);
+    const section: SmartServerEmbedderConfig = {
+      provider: 'openai',
+      model: 'e',
+      url: 'https://gw',
+      maxBatchSize: 8,
+      credentialRef: 'OPENAI',
+    };
+    resolve(section);
+    assert.deepEqual(seen[0], {
+      provider: 'openai',
+      model: 'e',
+      url: 'https://gw',
+      maxBatchSize: 8,
+      credential: cred,
+    });
   });
 
-  it('sap-ai-core needs a bearer AND an apiBaseUrl from the same entry', () => {
+  it('sap-ai-core and sap-aicore need a bearer AND an apiBaseUrl from the same entry', () => {
     const { seen, impl } = recorder();
     const resolve = createResolveEmbedder(
       lookupOver({ A: { credential: bearer, apiBaseUrl: 'https://a' }, B: { credential: bearer } }),
       impl,
     );
-    resolve({ provider: 'sap-ai-core', model: 'e', credentialRef: 'A' } as EmbedderSection);
+    resolve({ provider: 'sap-ai-core', model: 'e', scenario: 'foundation-models', credentialRef: 'A' });
+    resolve({ provider: 'sap-aicore', model: 'e', resourceGroup: 'rg', credentialRef: 'A' });
     assert.equal(seen[0]?.credential, bearer);
     assert.equal(seen[0]?.apiBaseUrl, 'https://a');
+    assert.equal(seen[0]?.scenario, 'foundation-models');
+    assert.equal(seen[1]?.provider, 'sap-aicore');
+    assert.equal(seen[1]?.resourceGroup, 'rg');
     assert.throws(
-      () => resolve({ provider: 'sap-ai-core', model: 'e', credentialRef: 'B' } as EmbedderSection),
-      /apiBaseUrl/,
+      () => resolve({ provider: 'sap-ai-core', model: 'e', credentialRef: 'B' }),
+      /'B' must carry an apiBaseUrl/,
     );
   });
 
-  it('ollama sends nothing, so a named ref is refused and an omitted one reads nothing', () => {
+  it('ollama sends nothing: a named ref is refused, an omitted one reads no entry', () => {
+    const asked: string[] = [];
+    const { seen, impl } = recorder();
+    const resolve = createResolveEmbedder(
+      createLookup(
+        memoizeCredentials((r) => {
+          asked.push(r);
+          return r === 'K' ? { credential: staticApiKey('k') } : undefined;
+        }),
+      ),
+      impl,
+    );
+    assert.throws(
+      () => resolve({ provider: 'ollama', model: 'e', credentialRef: 'K' }),
+      /ollama takes no credential, so credentialRef 'K' cannot apply/,
+    );
+    asked.length = 0;
+    resolve({ provider: 'ollama', model: 'e', url: 'http://o' });
+    assert.deepEqual(asked, [], 'RAG_EMBEDDER was not even read');
+    assert.deepEqual(seen[0], { provider: 'ollama', model: 'e', url: 'http://o' });
+  });
+
+  it('a consumer factory reaches the library factory arm, and takes no credential', () => {
     const { seen, impl } = recorder();
     const resolve = createResolveEmbedder(lookupOver({ K: { credential: staticApiKey('k') } }), impl);
+    resolve({ factory: 'mine', model: 'm', url: 'http://u' });
+    assert.deepEqual(seen[0], { factory: 'mine', model: 'm', url: 'http://u' });
+    assert.equal('provider' in (seen[0] ?? {}), false, 'never the built-in provider path');
     assert.throws(
-      () => resolve({ provider: 'ollama', model: 'e', credentialRef: 'K' } as EmbedderSection),
-      /ollama takes no credential/,
+      () =>
+        resolve({ factory: 'mine', model: 'm', credentialRef: 'K' } as unknown as SmartServerEmbedderConfig),
+      /embedder factory 'mine' takes no credential/,
     );
-    resolve({ provider: 'ollama', model: 'e' } as EmbedderSection);
-    assert.equal('credential' in (seen[0] ?? {}), false);
+  });
+
+  it('a built-in without a model is refused, naming the provider — the library arm requires one', () => {
+    const { impl } = recorder();
+    const resolve = createResolveEmbedder(lookupOver({ OPENAI: { credential: staticApiKey('k') } }), impl);
+    assert.throws(
+      () => resolve({ provider: 'openai', credentialRef: 'OPENAI' }),
+      /rag\.embedder\.model is required for provider 'openai'/,
+    );
   });
 });
 
@@ -10616,6 +11363,73 @@ describe('makeRag seam', () => {
     assert.equal((seen[0]?.credential as { kind?: string } | undefined)?.kind, 'secret-login');
   });
 });
+
+describe('buildSkillHost seam: the skill store account (§8 item 4)', () => {
+  const recorder = () => {
+    const seen: BuildSkillHostDeps[] = [];
+    const impl = (async (_cfg: SkillPluginsConfig, deps: BuildSkillHostDeps) => {
+      seen.push(deps);
+      return {} as ISkillPluginHost;
+    }) as Parameters<typeof createBuildSkillHost>[1];
+    return { seen, impl };
+  };
+  const hostDeps = { resolveEmbedder: () => embedder } as unknown as BuildSkillHostDeps;
+  const skills = (store: Record<string, unknown>) =>
+    ({ store }) as unknown as SkillPluginsConfig;
+
+  it('a named qdrant ref reaches the factory as storeCredential, the other deps untouched', async () => {
+    const cred = staticApiKey('q');
+    const { seen, impl } = recorder();
+    const build = createBuildSkillHost(lookupOver({ SKILLS_QDRANT: { credential: cred } }), impl);
+    await build(skills({ type: 'qdrant', url: 'http://q', credentialRef: 'SKILLS_QDRANT' }), hostDeps);
+    assert.equal(seen[0]?.storeCredential, cred);
+    assert.equal(seen[0]?.resolveEmbedder, hostDeps.resolveEmbedder);
+  });
+
+  it('an omitted ref reads the store default; with no entry the store is anonymous', async () => {
+    const cred = staticApiKey('default');
+    const withDefault = recorder();
+    await createBuildSkillHost(lookupOver({ [DEFAULT_STORE_REF]: { credential: cred } }), withDefault.impl)(
+      skills({ type: 'qdrant', url: 'http://q' }),
+      hostDeps,
+    );
+    assert.equal(withDefault.seen[0]?.storeCredential, cred);
+    const anonymous = recorder();
+    await createBuildSkillHost(lookupOver({}), anonymous.impl)(skills({ type: 'qdrant', url: 'http://q' }), hostDeps);
+    assert.equal('storeCredential' in (anonymous.seen[0] ?? {}), false);
+  });
+
+  it('a misspelled or wrong-kind ref is refused by name — never sent anonymously', async () => {
+    const { seen, impl } = recorder();
+    const build = createBuildSkillHost(lookupOver({ LOGIN: { credential: staticLogin('u', 'p') } }), impl);
+    await assert.rejects(
+      () => build(skills({ type: 'qdrant', url: 'http://q', credentialRef: 'SKILS' }), hostDeps),
+      /credentialRef 'SKILS' for skill store \(qdrant\) has no entry/,
+    );
+    await assert.rejects(
+      () => build(skills({ type: 'qdrant', url: 'http://q', credentialRef: 'LOGIN' }), hostDeps),
+      /must hold a api-key credential for skill store \(qdrant\), got secret-login/,
+    );
+    assert.equal(seen.length, 0);
+  });
+
+  it('an in-memory skill store reads no credential at all', async () => {
+    const asked: string[] = [];
+    const { seen, impl } = recorder();
+    const build = createBuildSkillHost(
+      createLookup(
+        memoizeCredentials((r) => {
+          asked.push(r);
+          return undefined;
+        }),
+      ),
+      impl,
+    );
+    await build(skills({ type: 'in-memory' }), hostDeps);
+    assert.deepEqual(asked, []);
+    assert.equal(seen[0], hostDeps);
+  });
+});
 ```
 
 ```ts
@@ -10663,6 +11477,13 @@ describe('buildCompositionDeps against the REAL constructors', () => {
     const deps = buildCompositionDeps({ LLM_API_KEY: 'k' });
     const llm = await deps.makeLlm({ provider: 'openai', model: 'gpt-4o-mini' });
     assert.equal(llm.model, 'gpt-4o-mini');
+  });
+
+  it('hands out all four seams, the skill-store wrapper included', () => {
+    const deps = buildCompositionDeps({});
+    for (const seam of ['makeLlm', 'resolveEmbedder', 'makeRag', 'buildSkillHost'] as const) {
+      assert.equal(typeof deps[seam], 'function', seam);
+    }
   });
 
   it('an omitted ref with nothing in the environment fails naming the default ref', async () => {
@@ -10740,14 +11561,15 @@ export function memoizeCredentials(
 }
 
 /**
- * The shipped app's registry: a ref names a family of environment variables.
+ * The shipped app's registry (§8 item 4): a ref names a family of environment
+ * variables.
  *   <REF>_API_KEY                → an api-key credential
  *   <REF>_SERVICE_KEY            → a SAP AI Core service key: bearer + apiBaseUrl
  *   <REF>_USER + <REF>_PASSWORD  → a secret-login credential
  * None set → no entry. More than one set → refused: an entry holds ONE
- * credential. §8 item 4's switch is a deployment's example; a CLI shipped to
- * every deployment needs a rule instead, and a consumer with its own composition
- * root passes its own `buildEntry` to `memoizeCredentials`.
+ * credential. A rule rather than a switch, so it serves every deployment; a
+ * consumer with its own composition root passes its own `buildEntry` to
+ * `memoizeCredentials`.
  */
 export function envCredentialEntries(
   env: NodeJS.ProcessEnv,
@@ -10817,10 +11639,9 @@ export type Lookup = (
  * The lookup that makes "optional" mean what it says (§4.6.4): a ref may be
  * OMITTED, but a ref that was NAMED must resolve and hold the right kind — the
  * difference between a deployment that chose anonymous access and one with a
- * typo in it. Deviation from §8 item 4, on purpose: the role default is read
- * only when a target asks for a credential, so a target that takes none (an
- * in-memory store, an Ollama embedder) never parses the default entry — the
- * laziness rule the reference states and its own eager lookup broke.
+ * typo in it. The role default is read only when a target asks for a
+ * credential (§8 item 4), so a target that takes none (an in-memory store, an
+ * Ollama embedder) never parses the default entry.
  */
 export function createLookup(credentialFor: CredentialFor): Lookup {
   return (ref, roleDefault, target) => {
@@ -10917,11 +11738,11 @@ export const SHIPPED_LLM_PROVIDERS: LlmProviderCtors = {
 };
 
 /**
- * `BuildAgentDeps.makeLlm`. Every provider config is built from NAMED fields —
- * nothing spreads `cfg` — so `credentialRef` cannot ride along into a provider
- * (§4.6.4). Unlike §8 item 4's reference, the knobs the library's `makeLlm`
- * forwarded are forwarded here too: without `temperature` the server's main
- * (0.7) and classifier (0.1) roles would collapse onto one provider default.
+ * `BuildAgentDeps.makeLlm` (§8 item 4). Every provider config is built from NAMED
+ * fields — nothing spreads `cfg` — so `credentialRef` cannot ride along into a
+ * provider (§4.6.4). The knobs the library's `makeLlm` used to forward are
+ * forwarded here: without `temperature` the server's main (0.7) and classifier
+ * (0.1) roles would collapse onto one provider default.
  */
 export function createMakeLlm(
   lookup: Lookup,
@@ -10975,75 +11796,132 @@ export function createMakeLlm(
 
 ```ts
 // packages/llm-agent-server/src/composition/resolve-embedder.ts
-import type { BuildAgentDeps } from '@mcp-abap-adt/llm-agent-server-libs';
-import { resolveEmbedder as libResolveEmbedder } from '@mcp-abap-adt/llm-agent-rag';
+import {
+  type EmbedderResolution,
+  type EmbedderResolutionOptions,
+  resolveEmbedder as libResolveEmbedder,
+} from '@mcp-abap-adt/llm-agent-rag';
+import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { SmartServerEmbedderConfig } from '@mcp-abap-adt/llm-agent-server-libs';
 import { DEFAULT_EMBEDDER_REF } from './credential-for.js';
 import type { Lookup } from './lookup.js';
 
+type BuiltInSection = Exclude<SmartServerEmbedderConfig, { factory: string }>;
+type FactorySection = Extract<SmartServerEmbedderConfig, { factory: string }>;
+
+function isFactorySection(cfg: SmartServerEmbedderConfig): cfg is FactorySection {
+  return 'factory' in cfg && typeof cfg.factory === 'string';
+}
+
+/** The library's built-in arms require a model; the section may omit it. */
+function requireModel(cfg: BuiltInSection): string {
+  if (cfg.model === undefined || cfg.model === '') {
+    throw new Error(`rag.embedder.model is required for provider '${cfg.provider}'`);
+  }
+  return cfg.model;
+}
+
 /**
- * `BuildAgentDeps.resolveEmbedder`: the embedder's own account. The ref is
- * destructured out HERE, so no spread carries it onward (§4.6.4). The switch
- * is on `rest.provider`, not `cfg.provider` as §8 item 4 wrote it: only the
- * variable being switched on is narrowed, and `rest` is what gets spread.
+ * `BuildAgentDeps.resolveEmbedder` (§8 item 4): the embedder's own account, and
+ * the conversion from B10's serializable section into B6c's `EmbedderResolution`.
+ * Every arm is built from NAMED fields, so `credentialRef` ends here and nothing
+ * the section carries rides along unasked. A built-in is named by `provider`; a
+ * consumer-registered factory by `factory`, and it goes to the library's factory
+ * arm. Ollama and factories send nothing from this root — a consumer factory
+ * closes over its own credential (§4.6.2) — so a named ref for them is refused.
  */
 export function createResolveEmbedder(
   lookup: Lookup,
   impl: typeof libResolveEmbedder = libResolveEmbedder,
-): BuildAgentDeps['resolveEmbedder'] {
+): (cfg: SmartServerEmbedderConfig, options?: EmbedderResolutionOptions) => IEmbedder {
   return (cfg, options) => {
-    const { credentialRef, ...rest } = cfg;
-    const entry = lookup(credentialRef, DEFAULT_EMBEDDER_REF, rest.provider);
-    switch (rest.provider) {
+    if (isFactorySection(cfg)) {
+      // The factory arm declares no credentialRef; a YAML section may still carry
+      // one, and a ref for a target that takes none is refused by name.
+      const raw = cfg as FactorySection & { credentialRef?: unknown };
+      const ref = typeof raw.credentialRef === 'string' ? raw.credentialRef : undefined;
+      lookup(ref, DEFAULT_EMBEDDER_REF, `embedder factory '${cfg.factory}'`).refuseAny();
+      const resolution: EmbedderResolution = {
+        factory: cfg.factory,
+        ...(cfg.model !== undefined ? { model: cfg.model } : {}),
+        ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+        ...(cfg.maxBatchSize !== undefined ? { maxBatchSize: cfg.maxBatchSize } : {}),
+      };
+      return impl(resolution, options);
+    }
+    const entry = lookup(cfg.credentialRef, DEFAULT_EMBEDDER_REF, cfg.provider);
+    const model = requireModel(cfg);
+    const batch = cfg.maxBatchSize !== undefined ? { maxBatchSize: cfg.maxBatchSize } : {};
+    switch (cfg.provider) {
       case 'openai':
-        return impl({ ...rest, credential: entry.require('api-key') }, options);
-      case 'sap-ai-core':
         return impl(
           {
-            ...rest,
+            provider: 'openai',
+            model,
+            ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+            ...batch,
+            credential: entry.require('api-key'),
+          },
+          options,
+        );
+      case 'sap-ai-core':
+      case 'sap-aicore':
+        return impl(
+          {
+            provider: cfg.provider,
+            model,
+            ...(cfg.resourceGroup !== undefined ? { resourceGroup: cfg.resourceGroup } : {}),
+            ...(cfg.scenario !== undefined ? { scenario: cfg.scenario } : {}),
+            ...batch,
             credential: entry.require('bearer'),
             apiBaseUrl: entry.requireApiBaseUrl(),
           },
           options,
         );
-      default:
-        // ollama and consumer factories: nothing on the wire from us — a consumer
-        // factory closes over its own credential (§4.6.2), so a ref is a mistake
+      case 'ollama':
         entry.refuseAny();
-        return impl(rest, options);
+        return impl(
+          {
+            provider: 'ollama',
+            model,
+            ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+            ...batch,
+          },
+          options,
+        );
     }
   };
 }
 ```
 
+The `switch` is exhaustive over B10's four provider literals, so it needs no `default`; if `tsc`
+reports "Not all code paths return a value", `SmartServerEmbedderConfig`'s provider union is wider than
+the four literals — report it rather than adding a `default`, because it means B10 and B6c disagree.
+In the `sap` arm, `provider: cfg.provider` is narrowed to `'sap-ai-core' | 'sap-aicore'` by the two
+`case` labels, which is exactly B6c's arm.
+
 ```ts
 // packages/llm-agent-server/src/composition/make-rag.ts
 import { InMemoryRag, type IRag } from '@mcp-abap-adt/llm-agent';
 import { makeRag as libMakeRag } from '@mcp-abap-adt/llm-agent-rag';
-import type { MakeRagInput } from '@mcp-abap-adt/llm-agent-server-libs';
+import { isInMemoryInput, type MakeRagInput } from '@mcp-abap-adt/llm-agent-server-libs';
 import { DEFAULT_STORE_REF } from './credential-for.js';
 import type { Lookup } from './lookup.js';
 
-type InMemoryInput = Extract<MakeRagInput, { store: { type: 'in-memory' } }>;
-
-/** The pairing's discriminant is nested (`store.type`), which TypeScript does
- *  not use to narrow the pair — so §8 item 4's `embedder` stayed
- *  `IEmbedder | undefined` in the vector-store arms and did not compile against
- *  `RagResolution`. A guard narrows the whole input; its body is the discriminant. */
-function isInMemory(input: MakeRagInput): input is InMemoryInput {
-  return input.store.type === 'in-memory';
-}
-
 /**
- * `BuildAgentDeps.makeRag`: the serializable store section plus, where the
- * store needs one, a resolved embedder — and this body is the conversion into
- * the library's typed `RagResolution` (§4.6.4).
+ * `BuildAgentDeps.makeRag` (§8 item 4): the serializable store section plus,
+ * where the store needs one, a resolved embedder — and this body is the
+ * conversion into the library's typed `RagResolution` (§4.6.4). The pair's
+ * discriminant is nested (`store.type`), which does not narrow the pair, so
+ * B10's `isInMemoryInput` narrows the whole input before `embedder` is known
+ * to be present.
  */
 export function createMakeRag(
   lookup: Lookup,
   impl: typeof libMakeRag = libMakeRag,
 ): (input: MakeRagInput) => Promise<IRag> {
   return async (input) => {
-    if (isInMemory(input)) {
+    if (isInMemoryInput(input)) {
       const { credentialRef, ...address } = input.store;
       lookup(credentialRef, DEFAULT_STORE_REF, 'in-memory').refuseAny();
       return input.embedder
@@ -11077,6 +11955,47 @@ export function createMakeRag(
 If `tsc` reports "Not all code paths return a value" on the `switch`, the store union is wider than
 the three arms — report it rather than adding a `default`, because it means B10's union and
 `MakeRagInput` disagree.
+
+```ts
+// packages/llm-agent-server/src/composition/build-skill-host.ts
+import type { ISkillPluginHost } from '@mcp-abap-adt/llm-agent';
+import {
+  type BuildAgentDeps,
+  type BuildSkillHostDeps,
+  buildSkillHostFromConfig,
+  type SkillPluginsConfig,
+} from '@mcp-abap-adt/llm-agent-server-libs';
+import { DEFAULT_STORE_REF } from './credential-for.js';
+import type { Lookup } from './lookup.js';
+
+/**
+ * `BuildAgentDeps.buildSkillHost`: the skill store's account. §8 item 4 has a
+ * qdrant skill store's `credentialRef` resolved through the same `credentialFor`
+ * as every other ref — a named ref must resolve to an api key; an omitted one
+ * reads the store default and, finding no entry, stays anonymous — and the
+ * credential reaches the library's factory as `storeCredential` (B11), merged
+ * into the deps `SmartServer` passes. An in-memory skill store sends nothing and
+ * reads no entry.
+ */
+export function createBuildSkillHost(
+  lookup: Lookup,
+  impl: typeof buildSkillHostFromConfig = buildSkillHostFromConfig,
+): NonNullable<BuildAgentDeps['buildSkillHost']> {
+  return (cfg: SkillPluginsConfig, deps: BuildSkillHostDeps): Promise<ISkillPluginHost> => {
+    if (cfg.store.type !== 'qdrant') return impl(cfg, deps);
+    const { credential } = lookup(
+      cfg.store.credentialRef,
+      DEFAULT_STORE_REF,
+      'skill store (qdrant)',
+    ).optional('api-key');
+    return impl(cfg, credential ? { ...deps, storeCredential: credential } : deps);
+  };
+}
+```
+
+`SmartServer` calls `this._deps.buildSkillHost(skillCfg, { resolveEmbedder, makePgPool, … })`
+(`smart-server.ts:1217`); the wrapper keeps every member it is handed and adds only
+`storeCredential`.
 
 ```ts
 // packages/llm-agent-server/src/composition/model-resolver.ts
@@ -11122,6 +12041,7 @@ export function createModelResolver(
 ```ts
 // packages/llm-agent-server/src/composition/index.ts
 import type { BuildAgentDeps } from '@mcp-abap-adt/llm-agent-server-libs';
+import { createBuildSkillHost } from './build-skill-host.js';
 import { envCredentialEntries, memoizeCredentials } from './credential-for.js';
 import { createLookup } from './lookup.js';
 import { createMakeLlm } from './make-llm.js';
@@ -11130,19 +12050,23 @@ import { createResolveEmbedder } from './resolve-embedder.js';
 
 export { createModelResolver } from './model-resolver.js';
 
+export type CompositionDeps = Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder' | 'makeRag'> & {
+  buildSkillHost: NonNullable<BuildAgentDeps['buildSkillHost']>;
+};
+
 /**
- * The three construction seams the library no longer defaults (§4.6.3, §4.6.4),
- * over ONE memoized registry, so an account named by an LLM, a store and an
- * embedder is one credential object and one quota bucket.
+ * The three construction seams the library no longer defaults (§4.6.3, §4.6.4)
+ * and the skill-store wrapper, over ONE memoized registry, so an account named
+ * by an LLM, a store, an embedder and a skill store is one credential object and
+ * one quota bucket (§4.6.5).
  */
-export function buildCompositionDeps(
-  env: NodeJS.ProcessEnv = process.env,
-): Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder' | 'makeRag'> {
+export function buildCompositionDeps(env: NodeJS.ProcessEnv = process.env): CompositionDeps {
   const lookup = createLookup(memoizeCredentials(envCredentialEntries(env)));
   return {
     makeLlm: createMakeLlm(lookup),
     resolveEmbedder: createResolveEmbedder(lookup),
     makeRag: createMakeRag(lookup),
+    buildSkillHost: createBuildSkillHost(lookup),
   };
 }
 ```
@@ -11154,66 +12078,133 @@ export function buildCompositionDeps(
     { "path": "../sap-aicore-auth" }
 ```
 
+`packages/llm-agent-server/README.md` — insert after the `## CLIs shipped` section, before
+`## License`:
+
+````markdown
+## Credentials
+
+**TL;DR** — a config file carries no secrets, only names. Each section that authenticates may say
+`credentialRef: <REF>`; the binary reads that account from the environment by one naming rule. Omit the
+ref and the section uses its role's default.
+
+### The naming rule
+
+| Set in the environment | You get |
+|---|---|
+| `<REF>_API_KEY` | an API key — OpenAI, Anthropic, DeepSeek, an OpenAI embedder, Qdrant |
+| `<REF>_SERVICE_KEY` | a SAP AI Core service key (the JSON) — the token **and** the API base URL both come from it |
+| `<REF>_USER` + `<REF>_PASSWORD` | a login — pg-vector, HANA |
+
+- Set **one** of the three per ref. Two at once is refused as ambiguous; `<REF>_USER` without
+  `<REF>_PASSWORD` (or the reverse) is refused.
+- A **named** ref must resolve. `credentialRef: OPENAI` with no `OPENAI_*` variable set fails at
+  startup, naming `OPENAI`. A ref holding the wrong kind fails, naming the kind wanted and the kind found.
+- The same ref named in several sections is **one** credential — one rate-limit bucket.
+
+### Defaults, when a section names no ref
+
+| Section | Default ref | A single-account deployment sets |
+|---|---|---|
+| each `llm:` entry | `LLM` | `LLM_API_KEY`, or `LLM_SERVICE_KEY` for SAP AI Core |
+| `rag.store`, a qdrant `skillPlugins.store` | `RAG_STORE` | `RAG_STORE_API_KEY` (Qdrant) or `RAG_STORE_USER` + `RAG_STORE_PASSWORD` |
+| `rag.embedder` | `RAG_EMBEDDER` | `RAG_EMBEDDER_API_KEY`, or `RAG_EMBEDDER_SERVICE_KEY` for SAP AI Core |
+
+A default is read only when the target needs a credential. Where a target can work without one (a Qdrant
+without auth, a pg-vector connection that needs no login), an unset default means anonymous.
+
+### Ollama and other targets that send nothing
+
+- An **Ollama LLM** gets a credential only from a `credentialRef` that names one — never the `LLM`
+  default, which usually holds a hosted provider's key.
+- An **Ollama embedder**, an **in-memory store** and an embedder **`factory`** send nothing from the
+  binary, so naming a ref for them is refused.
+
+### Coming from `AICORE_SERVICE_KEY` or `apiKey: ${…}`
+
+- The binary no longer reads `AICORE_SERVICE_KEY`. Set `LLM_SERVICE_KEY` instead (and
+  `RAG_EMBEDDER_SERVICE_KEY` for a SAP AI Core embedder) — or keep the variable and name it:
+  `credentialRef: AICORE` reads `AICORE_SERVICE_KEY`.
+- `apiKey: ${DEEPSEEK_API_KEY}` is refused in YAML. Delete the line and set `LLM_API_KEY`, or write
+  `credentialRef: DEEPSEEK`, which reads `DEEPSEEK_API_KEY`.
+- SAP AI Core's API base URL is never written in YAML: it travels inside `<REF>_SERVICE_KEY`.
+````
+
+The heading must be exactly `## Credentials`: the migration guide (B30) links to
+`packages/llm-agent-server/README.md#credentials`.
+
 - [ ] **Step 5: run the tests and the build**
 
 ```bash
 cd ~/prj/llm-agent
 find packages -name '*.tsbuildinfo' -delete
-npm run build            # expect: exit 0, except cli.ts:307 / smoke-adapters.ts if B9 left them red — B18 owns both
+npm run build            # expect: exit 0, except the two errors B18 owns (below)
 node --import tsx/esm --test 'packages/llm-agent-server/src/composition/__tests__/*.test.ts'   # expect: all pass
 npm run lint:check       # expect: exit 0
+grep -n "^## Credentials$" packages/llm-agent-server/README.md   # expect: one line
 ```
 
-If `npm run build` reports errors outside `packages/llm-agent-server/src/smart-agent/cli.ts` and
-`packages/llm-agent-server/src/smoke-adapters.ts`, stop and report them with file and line: they are
-not this task's and not B18's.
+`npm run build` may still report exactly two errors, both B18's: `cli.ts:307` (`new SmartServer(config)`
+without the now-required deps) and `smoke-adapters.ts:105` (`apiKey` on `DeepSeekProvider`). The
+embedder prefetch in `cli.ts:255-277` is B10's and is already adapted. Any other error: stop and report
+it with file and line — it is neither this task's nor B18's.
+
+This task adds no `llm-agent-server` CHANGELOG entry: the modules are not wired, so the binary behaves
+exactly as before until B18, whose entry states the change.
 
 - [ ] **Step 6: commit**
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/llm-agent-server/src/composition packages/llm-agent-server/tsconfig.json
+git add packages/llm-agent-server/src/composition packages/llm-agent-server/tsconfig.json \
+  packages/llm-agent-server/README.md
 git commit -m "$(cat <<'MSG'
-feat(llm-agent-server): the composition modules — credentials, lookup, three seams
+feat(llm-agent-server): the composition modules — credentials, lookup, four seams
 
 The app turns a credentialRef into a credential and constructs every
 authenticated object the library no longer builds: LLM providers, embedders
-and stores, plus the IModelResolver behind PUT /v1/config. One memoized
-registry serves all three seams, so one account is one credential object and
-one 429 bucket (§4.6.5); a named ref must resolve and hold the right kind,
-while an omitted one falls back to a per-role default read only when a target
-asks for a credential (§4.6.4).
+and stores, the skill store's client credential, and the IModelResolver
+behind PUT /v1/config. One memoized registry serves all four seams, so one
+account is one credential object and one 429 bucket (§4.6.5); a named ref
+must resolve and hold the right kind, while an omitted one falls back to a
+per-role default read only when a target asks for a credential (§4.6.4).
 
-It follows §8 item 4's reference except where that code is wrong against the
-real constructors: provider configs carry temperature, maxTokens,
-whenThrottled and baseURL; an Ollama LLM is never handed the deployment's
-default key; makeRag narrows the store/embedder pair with a guard; and the
-shipped registry reads <REF>_API_KEY / _SERVICE_KEY / _USER+_PASSWORD from the
-environment instead of one deployment's switch.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+The code implements §8 item 4: the environment naming rule
+<REF>_API_KEY / _SERVICE_KEY / _USER+_PASSWORD with defaults LLM,
+RAG_STORE and RAG_EMBEDDER, provider configs built from named fields with
+their knobs, no default key for an Ollama LLM, and isInMemoryInput for the
+store/embedder pair. The embedder seam converts the serializable section
+into the library's EmbedderResolution, a consumer factory included; the
+skill-store wrapper fills BuildSkillHostDeps.storeCredential. The README
+documents the rule under Credentials.
 MSG
 )"
 ```
 
 ### Task B18: the app constructs `SmartServer` through the root, and workstream 2 is green
 
-§8 migration item 4's last sentence — "`llm-agent-server` carries exactly this switch as the reference
-implementation" — lands here: the CLI is the one place in the repository that constructs `SmartServer`
-for a deployment (`llm-agent-server/src/smart-agent/cli.ts:307`, today `new SmartServer(config)` with
-no deps), and it now passes the three seams and a model resolver. `smoke-adapters.ts:104-107` is the
-package's other remaining compile error (it still passes `apiKey` to `DeepSeekProvider`, verified with
-`tsc --noEmit -p packages/llm-agent-server`). The task ends on the repository-wide gate that proves
-workstream 2 complete.
+§8's `llm-agent-server` row makes the app the composition root — env, credentials, provider dispatch
+and the `IModelResolver` behind `PUT /v1/config` — and this task wires B17's modules into it. The CLI is
+the one place in the repository that constructs `SmartServer` for a deployment
+(`llm-agent-server/src/smart-agent/cli.ts:307`, today `new SmartServer(config)` with no deps); it now
+passes B17's four seams (`makeLlm`, `resolveEmbedder`, `makeRag`, and the `buildSkillHost` wrapper
+that resolves the skill store's `credentialRef`) and a model resolver. `smoke-adapters.ts:104-107` is
+the package's other remaining compile error (it still passes `apiKey` to `DeepSeekProvider`). The dead
+`scripts/start-smart-server.ts` — outside the package's `tsconfig` `include`, not in `files`, and
+importing `../src/smart-agent/config.js` and `../src/smart-agent/smart-server.js`, which moved to
+`llm-agent-server-libs` long ago — also constructs `SmartServer` without deps; it has not run since
+that move, so this task deletes it rather than leave a construction site that shows the removed
+contract. The task ends on the repository-wide gate that proves workstream 2 complete.
 
 **Files:**
 - Modify: `packages/llm-agent-server/src/smart-agent/cli.ts:53-64` (imports), `:307` — construct through the root
 - Modify: `packages/llm-agent-server/src/smoke-adapters.ts:104-107` — `credential: staticApiKey(…)`
+- Delete: `packages/llm-agent-server/scripts/start-smart-server.{ts,js,d.ts,js.map,d.ts.map}` (git-tracked build leftovers included)
 - Modify: `packages/llm-agent-server/CHANGELOG.md`
 - Test: `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts` (one case added)
 
 **Interfaces:**
-- Consumes: `buildCompositionDeps`, `createModelResolver` (B17); `SmartServer(config, deps: BuildAgentDeps)` with required seams (B9/B10); `SmartServerConfig.modelResolver?` (`smart-server.ts:334`).
+- Consumes: `buildCompositionDeps(env): CompositionDeps` (the three required seams plus `buildSkillHost`) and `createModelResolver(makeLlm, llm)` (B17); `SmartServer(config, deps: BuildAgentDeps)` with required seams (B9/B10); `SmartServerConfig.modelResolver?` (`smart-server.ts:334`); the embedder prefetch at `cli.ts:255-277`, which B10 already adapted to the split `rag:` section.
 - Produces: nothing importable — the root.
 
 - [ ] **Step 1: write the failing test**
@@ -11232,7 +12223,6 @@ describe('cli composition root', () => {
       cfg,
       [
         'port: 0',
-        'skipModelValidation: true',
         'llm:',
         '  main: { provider: openai, model: gpt-4o-mini }',
       ].join('\n'),
@@ -11253,9 +12243,9 @@ describe('cli composition root', () => {
 });
 ```
 
-Confirm in Step 1 that `skipModelValidation` is read from the YAML (`grep -n skipModelValidation
-packages/llm-agent-server-libs/src/smart-agent/config.ts packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts`);
-if it is not, drop that line — the failure under test happens at `makeLlm`, before any model validation.
+The YAML carries no `skipModelValidation`: the loader does not read that key (it is a programmatic
+`SmartServerConfig` field, `smart-server.ts:332`), and the failure under test happens at the first
+`makeLlm` in `start()`, before any model validation.
 
 - [ ] **Step 2: run it and watch it fail**
 
@@ -11279,8 +12269,9 @@ and replace `:307` (whatever B9 left on that line) with:
 
 ```ts
 // This binary is the composition root (§8 item 4): it owns the credentials and
-// constructs every authenticated object through three seams the library no
-// longer defaults, plus the model resolver PUT /v1/config needs.
+// constructs every authenticated object through the seams the library no longer
+// defaults — makeLlm, resolveEmbedder, makeRag, and buildSkillHost for the skill
+// store's account — plus the model resolver PUT /v1/config needs.
 const deps = buildCompositionDeps(process.env);
 const server = new SmartServer(
   {
@@ -11303,6 +12294,21 @@ const server = new SmartServer(
 
 importing `staticApiKey` from `@mcp-abap-adt/llm-agent`.
 
+Delete the dead script and its tracked build output:
+
+```bash
+git rm packages/llm-agent-server/scripts/start-smart-server.ts \
+  packages/llm-agent-server/scripts/start-smart-server.js \
+  packages/llm-agent-server/scripts/start-smart-server.d.ts \
+  packages/llm-agent-server/scripts/start-smart-server.js.map \
+  packages/llm-agent-server/scripts/start-smart-server.d.ts.map
+grep -rn "start-smart-server" packages docs README.md --include='*.md' --include='*.json' --include='*.ts' \
+  | grep -v '^docs/superpowers/'
+```
+
+The grep must print nothing (no script, doc or package entry points at it). `.env.smart-server.template`
+stays: nothing in this task decides whether the other scripts use it.
+
 - [ ] **Step 4: the repository gate — workstream 2 is complete only when all of this is green**
 
 ```bash
@@ -11318,10 +12324,24 @@ grep -rn "skip: '" packages/*/src --include='*.test.ts' | grep -iE "B(6c|7|8|9|1
 Expected: `LINT=0`, `BUILD=0`, `TYPECHECK=0`; every workspace's suite reports `# fail 0`; and the last
 grep prints **nothing** — every quarantine an earlier workstream-2 task added (`{ skip: '…which task
 fixes it' }`) has been lifted by the task that named itself. `tsc -b` returning 0 is the workstream's
-real completion test: every error Task B1 created has been claimed. If anything is red, report it with
-file, line and the task that owns it; do not quarantine here.
+real completion test: every error Task B1 created has been claimed. This task closes the last two
+(`cli.ts:307`, `smoke-adapters.ts:105`); the embedder prefetch above them (`cli.ts:255-277`) was B10's
+and the store-backend prefetch (`cli.ts:285-299`) too, so a red `tsc -b` in either block is a B10
+defect. If anything is red, report it with file, line and the task that owns it; do not quarantine here.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: CHANGELOG**
+
+Add to `packages/llm-agent-server/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
+the binary is the composition root and reads credentials from the environment by reference —
+`<REF>_API_KEY`, `<REF>_SERVICE_KEY`, or `<REF>_USER` + `<REF>_PASSWORD` — with `LLM`, `RAG_STORE` and
+`RAG_EMBEDDER` as the refs a section without `credentialRef` uses (see the README's Credentials
+section); `AICORE_SERVICE_KEY` is no longer read — set `LLM_SERVICE_KEY` (or `credentialRef: AICORE`,
+which reads `AICORE_SERVICE_KEY`); an unknown named ref, a wrong kind and a missing `apiBaseUrl` fail
+at the first construction naming the ref; an Ollama LLM receives a credential only from a ref naming
+one; a qdrant skill store's `credentialRef` is resolved like every other ref; and `PUT /v1/config`
+model switching now works in the CLI, where it was refused with 400 for want of a resolver.
+
+- [ ] **Step 6: commit**
 
 ```bash
 cd ~/prj/llm-agent
@@ -11332,9 +12352,11 @@ feat(llm-agent-server)!: the CLI is the composition root
 
 The binary constructed SmartServer with no deps, leaning on library defaults
 that built providers from secrets carried in YAML. It now passes the three
-construction seams and a model resolver from its own composition root, so the
-credentials live in the one place that owns them and a YAML file carries only
-credentialRef names.
+construction seams, the skill-store wrapper and a model resolver from its own
+composition root, so the credentials live in the one place that owns them
+and a YAML file carries only credentialRef names. The dead
+scripts/start-smart-server.ts, which constructed SmartServer from paths that
+no longer exist, is deleted.
 
 This closes workstream 2: the build, the typecheck list and every workspace
 suite are green with no quarantine left.
@@ -11346,16 +12368,11 @@ uses. A deployment that wrote apiKey: ${DEEPSEEK_API_KEY} now sets
 LLM_API_KEY (or names its own ref); one that set AICORE_SERVICE_KEY sets
 LLM_SERVICE_KEY. PUT /v1/config model changes are now accepted by the CLI,
 where they were refused with 400 for want of a resolver.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
 
-Add to `packages/llm-agent-server/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
-the env naming convention and the three default refs; that an unknown named ref, a wrong kind and a
-missing `apiBaseUrl` fail at the first construction naming the ref; that an Ollama LLM receives a
-credential only from a ref naming one; and that `PUT /v1/config` model switching now works in the CLI.
+The `git rm` in Step 3 already staged the deleted script files.
 
 ## Phase B, workstream 3 — RAG identity, attributes and a catalog that can be read back
 
@@ -11367,12 +12384,12 @@ Spec §5.1, §6.1–§6.4. Tasks B19–B22 give the record and the stores their 
 record names its scope and owner or is not a record, `attributes` are JSON a backend can return
 unchanged, and a `user`/`session` owner without its key is refused before any backend is touched.
 This task adds those types and optional members to `@mcp-abap-adt/llm-agent`, the named errors the
-three catalogued providers (B20–B22) and the registry (drafter g6) return, and **one shared
+three catalogued providers (B20–B22) and the registry (B23–B25) return, and **one shared
 validator** every layer calls — so the rule for "what is a valid owner, a valid attribute value, a
 valid catalog row" is written once. It also changes the few places inside this repository whose
 `{ scope, sessionId?, userId? }` stops type-checking once both `createCollection` inputs take the
-union, and **nothing else**: the registry's keying, `adopt`, `deleting` and the tools' identity are
-drafter g6's tasks.
+union, and **nothing else**: the registry's keying (B23), `adopt`'s implementation (B24), `deleting`
+(B25) and the tools' identity (B27) are later tasks.
 
 **Why the validator lives in `@mcp-abap-adt/llm-agent`, exported.** It is runtime code, not a
 contract, so it does not belong in an interfaces package; and every caller already depends on this
@@ -11394,7 +12411,8 @@ path) unchecked.
 - Modify: `packages/llm-agent/src/interfaces/index.ts:139-154` — export the six new types
 - Modify: `packages/llm-agent/src/rag/corrections/errors.ts` (append after `:99`) —
   `InvalidAttributesError`, `InvalidOwnerError`, `DuplicateCollectionError`, `OrphanStoreError`,
-  `AmbiguousCollectionError`, `CatalogRecordDeleteError`
+  `AmbiguousCollectionError`, `CatalogRecordDeleteError`, `ReservedCollectionNameError` — the whole
+  set B20–B27 throw, declared once here so no later task invents a bare `RagError` with the same code
 - Create: `packages/llm-agent/src/rag/catalog/validation.ts`, `packages/llm-agent/src/rag/catalog/index.ts`
 - Modify: `packages/llm-agent/src/rag/index.ts` — `export * from './catalog/index.js';`
 - Modify: `packages/llm-agent/src/rag/providers/base-provider.ts:31-38` — abstract signature takes the
@@ -11406,7 +12424,7 @@ path) unchecked.
   validates owner and attributes first, forwards `collectionName`, `attributes`, `adoptExisting` and
   the normalized owner to the provider; nothing else in the registry changes here
 - Modify: `packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts:262-271` — build a typed owner
-  from `args.scope` and the context (the minimum that compiles; drafter g6 replaces it with the bound
+  from `args.scope` and the context (the minimum that compiles; Task B27 replaces it with the bound
   identity)
 - Modify: `packages/llm-agent-libs/src/builder.ts:67`, `:224-233`, `:309-321` — the queued dynamic
   collection is typed `RagRegistryCreateCollectionParams`
@@ -11431,7 +12449,7 @@ only `dist`/`node_modules`):
 | `pg-vector-rag-provider.ts:67`, `hana-vector-rag-provider.ts:88`, `qdrant-rag-provider.ts:59` | implement with the wide opts | still compile; rewritten by B20, B21, B22 |
 | `pg-vector-rag/src/__tests__/pg-vector-rag-provider.test.ts:134`, `hana-vector-rag/src/__tests__/hana-vector-rag-provider.test.ts:137` | `createCollection('docs', { scope: 'session' })` | compile now (the concrete class keeps its wide signature); **break the build** once B20/B21 change the concrete signature — fixed there |
 | `llm-agent/src/rag/__tests__/{base-provider,in-memory-rag-provider,vector-rag-provider,simple-rag-registry,rag-collection-tools}.test.ts`, `llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts:99`, `llm-agent-libs/src/__tests__/smart-agent-close-session.test.ts:42`, `llm-agent-server-libs/src/smart-agent/__tests__/smart-server-session-lifecycle.test.ts:36`, `llm-agent-server/src/smart-agent/__tests__/session-artifact-visibility.test.ts:19`, `qdrant-rag/src/qdrant-rag-provider.test.ts:137,149`, `pg…test.ts:51,75`, `hana…test.ts:54,81` | literals that already carry the key for their scope (or `global`) | unaffected — checked each |
-| `docs/INTEGRATION.md:513-517`, `:613-616`, `:661-666` | documents the wide shape | not code; listed for the docs task (Findings) |
+| `docs/INTEGRATION.md:513-517`, `:613-616`, `:661-666` | documents the wide shape | not code; Task B30 rewrites them |
 
 **Interfaces:**
 - Consumes: `RagError`, `Result` (`interfaces/types.ts:13`, `:154-159`); `RagCollectionScope`,
@@ -11444,7 +12462,8 @@ only `dist`/`node_modules`):
     `RagCatalogRow`, `RagCatalogRowParse`
   - members: `IRagProvider.describeCollections?(): Promise<Result<RagCatalogDescription, RagError>>`,
     `IRagProvider.openCollection?(record: RagCollectionRecord): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>`,
-    `IRagRegistry.adopt?(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void`
+    `IRagRegistry.adopt?(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor, providerName?: string): void`
+    (the spec's four-parameter form, §6.3; Task B24 implements it)
   - functions: `validateRagOwner(input: unknown): Result<RagCollectionOwner, InvalidOwnerError>`,
     `validateRagAttributes(value: unknown): Result<RagJsonValue | undefined, InvalidAttributesError>`,
     `ragOwnerKeys(owner: RagCollectionOwner): { sessionId?: string; userId?: string }`,
@@ -11455,7 +12474,8 @@ only `dist`/`node_modules`):
     `InvalidOwnerError` (`RAG_INVALID_OWNER`, `.reason`), `DuplicateCollectionError`
     (`RAG_DUPLICATE_COLLECTION`), `OrphanStoreError` (`RAG_ORPHAN_STORE`, `.storeName`),
     `AmbiguousCollectionError` (`RAG_AMBIGUOUS_COLLECTION`, `.scopes`), `CatalogRecordDeleteError`
-    (`RAG_CATALOG_RECORD_DELETE`, `.storeName`)
+    (`RAG_CATALOG_RECORD_DELETE`, `.storeName`), `ReservedCollectionNameError`
+    (`RAG_RESERVED_COLLECTION_NAME`, `.prefix`; constructor `(collectionName, prefix)`)
   - `AbstractRagProvider.checkCreateOptions(opts): Result<RagCollectionOwner, RagError>` (protected)
 
 - [ ] **Step 1: write the failing tests**
@@ -11515,8 +12535,8 @@ void registry.createCollection({ providerName: 'p', collectionName: 'c', scope: 
 export const _big: RagJsonValue = 1n;
 ```
 
-Append to `tsconfig.typecheck.json`'s `include` (after
-`"packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts"`):
+Append to `tsconfig.typecheck.json`'s `include` as its **last** entry, after whatever earlier tasks
+appended (never replace the list; add a comma to the entry before it):
 
 ```json
     "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts"
@@ -11549,6 +12569,7 @@ import {
   InvalidAttributesError,
   InvalidOwnerError,
   OrphanStoreError,
+  ReservedCollectionNameError,
 } from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
@@ -11674,6 +12695,7 @@ describe('the named errors', () => {
       [new OrphanStoreError('docs_1', 'why'), 'RAG_ORPHAN_STORE'],
       [new AmbiguousCollectionError('docs', ['global', 'user']), 'RAG_AMBIGUOUS_COLLECTION'],
       [new CatalogRecordDeleteError('docs_1', 'why'), 'RAG_CATALOG_RECORD_DELETE'],
+      [new ReservedCollectionNameError('user/docs', 'user/'), 'RAG_RESERVED_COLLECTION_NAME'],
     ];
     for (const [error, code] of cases) {
       assert.ok(error instanceof RagError);
@@ -11683,6 +12705,8 @@ describe('the named errors', () => {
     assert.equal(new CatalogRecordDeleteError('docs_1', 'why').storeName, 'docs_1');
     assert.deepEqual(new AmbiguousCollectionError('docs', ['global', 'user']).scopes, ['global', 'user']);
     assert.match(new OrphanStoreError('docs_1', 'why').message, /docs_1/);
+    assert.equal(new ReservedCollectionNameError('user/docs', 'user/').prefix, 'user/');
+    assert.match(new ReservedCollectionNameError('user/docs', 'user/').message, /user\/docs/);
   });
 });
 
@@ -11896,10 +12920,23 @@ Replace `IRagRegistry.createCollection` (`:173-183`) and add `adopt?` after it:
   ): Promise<Result<RagCollectionMeta, RagError>>;
 
   /**
-   * Register a store that EXISTS, from its catalog record: creates nothing.
-   * Optional so an external implementation is not broken by gaining a member.
+   * Register a collection whose store EXISTS, from its catalog record, under its
+   * logical name, keeping the store name the record gives (§6.3). Creates
+   * nothing and asks no provider for anything. `providerName` is the name the
+   * owning provider is registered under in the IRagProviderRegistry: with it,
+   * deleting the entry reaches that provider under `record.storeName`; without
+   * it the entry is a reference and deleting it only unregisters — so a
+   * hydrated collection adopted without it could never be deleted, and would
+   * come back at the next hydration. Throws InvalidOwnerError,
+   * ReservedCollectionNameError or DuplicateCollectionError. Optional so an
+   * external implementation is not broken by gaining a member.
    */
-  adopt?(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor): void;
+  adopt?(
+    record: RagCollectionRecord,
+    rag: IRag,
+    editor?: IRagEditor,
+    providerName?: string,
+  ): void;
 ```
 
 Replace `IRagProvider`'s `createCollection` … `listCollections?` (`:207-217`):
@@ -12018,6 +13055,25 @@ export class CatalogRecordDeleteError extends RagError {
       'RAG_CATALOG_RECORD_DELETE',
     );
     this.name = 'CatalogRecordDeleteError';
+  }
+}
+
+/**
+ * A global named into a prefix the `ragStores` projection gives another scope
+ * (§6.4): it would take that scope's key, and one entry would silently
+ * overwrite the other. Thrown by `register` and `adopt`, returned by
+ * `createCollection` (Tasks B23, B24).
+ */
+export class ReservedCollectionNameError extends RagError {
+  constructor(
+    collectionName: string,
+    readonly prefix: string,
+  ) {
+    super(
+      `A global collection may not be named '${collectionName}': the prefix '${prefix}' is reserved for the ${prefix.slice(0, -1)} scope`,
+      'RAG_RESERVED_COLLECTION_NAME',
+    );
+    this.name = 'ReservedCollectionNameError';
   }
 }
 ```
@@ -12393,8 +13449,12 @@ and replace the `try` at `:176-180` and `createUnder` (`:183-214`, up to and inc
       );
 ```
 
-The rest of `createUnder` (`:215-241`) is unchanged. `storeNameFor` keeps its signature; for a valid
-owner its output is byte-identical to today's (the same scope and owner key feed the digest).
+The rest of `createUnder` (`:215-241`) is unchanged, including the register-then-rollback tail that
+calls `provider.deleteCollection(storeName)` when `register` throws. Once B20–B22 give the stores a
+catalog, that rollback could remove a committed record, so **Task B23 deletes it** and must stay
+ahead of B25 in the order; between B19 and B23 it is unreachable, because the preflight `creating`
+guard keeps `register` from throwing. `storeNameFor` keeps its signature; for a valid owner its
+output is byte-identical to today's (the same scope and owner key feed the digest).
 
 - [ ] **Step 8: the tool and the builder**
 
@@ -12403,7 +13463,7 @@ owner its output is byte-identical to today's (the same scope and owner key feed
 replace the `registry.createCollection({ … })` call (`:262-271`):
 
 ```ts
-        // The owner this handler can state today; drafter g6's task replaces
+        // The owner this handler can state today; Task B27 replaces
         // the per-call context with the identity bound at construction. An
         // absent key becomes '' and is refused by the registry with
         // RAG_INVALID_OWNER instead of digesting to a shared store.
@@ -12464,8 +13524,10 @@ selects — instead of `scope` beside optional `sessionId`/`userId`, so a `user`
 without its key is a build error, and at runtime `RAG_INVALID_OWNER`; `attributes?: RagJsonValue`
 and `adoptExisting?` are accepted by both and NaN/±Infinity/cycles are refused with
 `RAG_INVALID_ATTRIBUTES` before anything is created; `IRagProvider` gains optional
-`describeCollections` and `openCollection`, `IRagRegistry` optional `adopt`; new exported errors and
-the catalog validators. Add to `packages/llm-agent-libs/CHANGELOG.md` under `## [Unreleased]`
+`describeCollections` and `openCollection`, `IRagRegistry` optional
+`adopt(record, rag, editor?, providerName?)`; new exported errors (`InvalidOwnerError`,
+`InvalidAttributesError`, `DuplicateCollectionError`, `OrphanStoreError`, `AmbiguousCollectionError`,
+`CatalogRecordDeleteError`, `ReservedCollectionNameError`) and the catalog validators. Add to `packages/llm-agent-libs/CHANGELOG.md` under `## [Unreleased]`
 (create it above `## 26.0.0`): `createRagCollection` takes `RagRegistryCreateCollectionParams`.
 
 ```bash
@@ -12498,8 +13560,6 @@ registry and all three stores alike.
 
 BREAKING: IRagProvider.createCollection and IRagRegistry.createCollection take
 RagCollectionOwner in place of { scope; sessionId?; userId? }.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -12518,13 +13578,17 @@ the shared validator, opens handles that never create (their lazy `maybeEnsureSc
 is checked, and a failed create is re-checked.
 
 **Two decisions this task makes, stated so a reviewer can reject them.** (1) `autoCreateSchema: false`
-means *no DDL at all*, the catalog included: the operator creates the catalog table
-(`createCatalogTableSql` is exported for that) as they create the stores, and `createCollection`
-requires both. (2) The provider opens a pool of its own for catalog work when no `clientFactory` is
-given. Today `deleteCollection`/`listCollections` throw without one (`pg-vector-rag-provider.ts:122-129`),
-which was tolerable while `createCollection` needed no client of its own; it now must write a record,
-and making `createCollection` fail for every consumer without a `clientFactory` would be a break no
-spec line asks for.
+means *no creating DDL at all*, the catalog included (§8 migration item 10): the operator creates the
+catalog table (`createCatalogTableSql` is exported for that) as they create the stores, and
+`createCollection` requires both. The flag governs **creation only**: `deleteCollection` still issues
+`DROP TABLE`, as it does today (`pg-vector-rag-provider.ts:95-105`), because a deletion that left the
+table would leave a store without a record, which the next `createCollection` under that flag adopts
+with its old rows. The README and the CHANGELOG say so. (2) The provider opens a pool of its own for
+catalog work when no `clientFactory` is given. This is necessary, not a convenience: today
+`deleteCollection`/`listCollections` throw without one (`pg-vector-rag-provider.ts:122-129`), which
+was tolerable while `createCollection` needed no client of its own; it now must write a record, and
+without a pool `createCollection` would fail for every consumer without a `clientFactory` — a break
+§8 does not list (item 10 names missing catalog rights as the only new way for it to fail).
 
 **Files:**
 - Create: `packages/pg-vector-rag/src/catalog.ts`
@@ -12540,6 +13604,8 @@ spec line asks for.
   `{ scope: 'session' }` → `{ scope: 'session', sessionId: 's1' }` (the build type-checks this file)
 - Create: `packages/pg-vector-rag/src/__tests__/fake-pg.ts`
 - Test: `packages/pg-vector-rag/src/__tests__/catalog.test.ts`
+- Modify: `packages/pg-vector-rag/README.md` — a `## Catalog and the rights it needs` section before
+  `## License` (§8 item 10: "what to grant is that provider's to document")
 - Modify: `packages/pg-vector-rag/CHANGELOG.md`
 
 **Interfaces:**
@@ -13460,21 +14526,44 @@ npm test -w packages/pg-vector-rag      # all green, catalog.test.ts included
 npm test -w packages/llm-agent-rag      # makeRag still builds a standalone PgVectorRag (lazy ensure kept there)
 ```
 
-- [ ] **Step 6: changelog and commit**
+- [ ] **Step 6: README, changelog and commit**
 
-Add to `packages/pg-vector-rag/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
+Insert into `packages/pg-vector-rag/README.md`, before `## License`:
+
+````markdown
+## Catalog and the rights it needs
+
+`PgVectorRagProvider` keeps one record per collection in a catalog table of its own
+(`rag_collection_catalog` by default, `catalogTable` to rename it). `createCollection` creates the
+collection's table and then writes its record; `deleteCollection` deletes the record first, then
+drops the table; `describeCollections` reads the catalog back. The account the connection uses needs:
+
+| with `autoCreateSchema` | rights |
+|---|---|
+| `true` (default) | `CREATE` on the schema (the catalog table on first use, one table per collection); `SELECT`, `INSERT`, `DELETE` on the catalog; ownership of the collection tables it creates (for `DROP TABLE`); the `vector` extension installed, or the right to create it |
+| `false` | no creating DDL is issued: the operator creates the catalog with `createCatalogTableSql(table)` (exported) and each collection table. The account needs `SELECT`, `INSERT`, `DELETE` on the catalog, read and write on the collection tables, and ownership of them — the flag governs creation only, and `deleteCollection` still drops the table |
+
+Without those rights `createCollection` fails where it used to succeed. A collection created before
+this release has a table and no record: take it over once with
+`createCollection(..., { adoptExisting: true })`.
+````
+
+Add to `packages/pg-vector-rag/CHANGELOG.md` under `## [Unreleased]` (create it above `## 26.0.0` if
+no earlier task has), opening with `**BREAKING:**`:
 the provider keeps a catalog table (`rag_collection_catalog`, configurable as `catalogTable`), which
-the connection's account must be able to create and write; `createCollection` refuses a collection
+the connection's account must be able to create and write (the README's new section lists the
+rights); `createCollection` refuses a collection
 whose record exists (`RAG_DUPLICATE_COLLECTION`) and a table that exists without one
 (`RAG_ORPHAN_STORE`) unless `adoptExisting: true`; re-creating a collection no longer reattaches it —
 hydrate through `describeCollections`/`openCollection`; `deleteCollection` can fail with
 `CatalogRecordDeleteError` (nothing deleted, retry); with `autoCreateSchema: false` the operator also
-creates the catalog (`createCatalogTableSql`); without `clientFactory`, catalog work runs on a pool the
+creates the catalog (`createCatalogTableSql`), and the flag governs creation only — `deleteCollection`
+still drops the table; without `clientFactory`, catalog work runs on a pool the
 provider opens itself (delete and list no longer throw for its absence).
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/pg-vector-rag/src packages/pg-vector-rag/CHANGELOG.md
+git add packages/pg-vector-rag/src packages/pg-vector-rag/README.md packages/pg-vector-rag/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(pg-vector-rag)!: a catalog, a create that cannot reuse a table, and a delete that reaches it
 
@@ -13494,8 +14583,6 @@ stops with CatalogRecordDeleteError if it cannot.
 
 BREAKING: the account needs rights to the catalog, a taken name is refused,
 and re-creating a collection no longer reattaches it.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -13509,8 +14596,11 @@ connection's schema, mirroring `listCollections` (`hana-vector-rag-provider.ts:1
 extension to create; the catalog's attribute column is `NCLOB`, whose value the driver may hand back
 as a `Buffer`, so it is decoded before the shared row check. Column aliases are quoted
 (`AS "storeName"`), because HANA upper-cases unquoted identifiers. The two decisions of B20 hold here
-(no DDL at all under `autoCreateSchema: false`; a connection of the provider's own when no
-`clientFactory`), for the same reasons.
+(no creating DDL under `autoCreateSchema: false`, while `deleteCollection` still drops the table —
+`hana-vector-rag-provider.ts:98-108` does today; a connection of the provider's own when no
+`clientFactory`, since `deleteCollection`/`listCollections` throw without one today,
+`hana-vector-rag-provider.ts:126-133`, and `createCollection` now needs one for its record), for the
+same reasons.
 
 **Files:**
 - Create: `packages/hana-vector-rag/src/catalog.ts`
@@ -13525,6 +14615,8 @@ as a `Buffer`, so it is decoded before the shared row check. Column aliases are 
   `{ scope: 'session' }` → `{ scope: 'session', sessionId: 's1' }`
 - Create: `packages/hana-vector-rag/src/__tests__/fake-hana.ts`
 - Test: `packages/hana-vector-rag/src/__tests__/catalog.test.ts`
+- Modify: `packages/hana-vector-rag/README.md` — a `## Catalog and the rights it needs` section before
+  `## License`
 - Modify: `packages/hana-vector-rag/CHANGELOG.md`
 
 **Interfaces:**
@@ -14340,17 +15432,40 @@ npm test -w packages/hana-vector-rag     # all green, catalog.test.ts included
 npm test -w packages/llm-agent-rag
 ```
 
-- [ ] **Step 6: changelog and commit**
+- [ ] **Step 6: README, changelog and commit**
 
-Add to `packages/hana-vector-rag/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`,
-the same entry as B20's for pg (catalog table `rag_collection_catalog` / `catalogTable`, rights,
+Insert into `packages/hana-vector-rag/README.md`, before `## License`:
+
+````markdown
+## Catalog and the rights it needs
+
+`HanaVectorRagProvider` keeps one record per collection in a catalog table of its own
+(`rag_collection_catalog` by default, `catalogTable` to rename it), in the configured schema or the
+connection's current one. `createCollection` creates the collection's table and then writes its
+record; `deleteCollection` deletes the record first, then drops the table; `describeCollections`
+reads the catalog back. The database user the connection uses needs:
+
+| with `autoCreateSchema` | rights |
+|---|---|
+| `true` (default) | `CREATE ANY` on the schema (the catalog table on first use, one table per collection); `SELECT`, `INSERT`, `DELETE` on the catalog; `DROP` on the collection tables (it owns those it created); `SELECT` on `SYS.TABLES` (granted to `PUBLIC` by default) |
+| `false` | no creating DDL is issued: the operator creates the catalog with `createCatalogTableSql(table)` (exported) and each collection table. The user needs `SELECT`, `INSERT`, `DELETE` on the catalog, `SELECT`, `INSERT`, `UPDATE`, `DELETE` on the collection tables, and `DROP` on them — the flag governs creation only, and `deleteCollection` still drops the table |
+
+Without those rights `createCollection` fails where it used to succeed. A collection created before
+this release has a table and no record: take it over once with
+`createCollection(..., { adoptExisting: true })`.
+````
+
+Add to `packages/hana-vector-rag/CHANGELOG.md` under `## [Unreleased]` (create it above `## 26.0.0` if
+no earlier task has), opening with `**BREAKING:**`, the same entry as B20's for pg (catalog table
+`rag_collection_catalog` / `catalogTable`, the rights the README's new section lists,
 `RAG_DUPLICATE_COLLECTION`, `RAG_ORPHAN_STORE`, `adoptExisting`, no reattach by re-creating,
-`CatalogRecordDeleteError`, operator-created catalog under `autoCreateSchema: false`, a connection of
-the provider's own without `clientFactory`).
+`CatalogRecordDeleteError`, operator-created catalog under `autoCreateSchema: false` with the flag
+governing creation only, a connection of the provider's own without `clientFactory`), written out
+with HANA's names.
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/hana-vector-rag/src packages/hana-vector-rag/CHANGELOG.md
+git add packages/hana-vector-rag/src packages/hana-vector-rag/README.md packages/hana-vector-rag/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(hana-vector-rag)!: a catalog, a create that cannot reuse a table, and a delete that reaches it
 
@@ -14367,8 +15482,6 @@ removes the record first and stops with CatalogRecordDeleteError.
 
 BREAKING: the account needs rights to the catalog, a taken name is refused,
 and re-creating a collection no longer reattaches it.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -14395,9 +15508,14 @@ one `GET` per collection. Record the finding in the report.
 standalone `QdrantRag` for configured stores (`llm-agent-rag/src/rag-factories.ts:361-364`) and relies
 on first-write creation for them — a fresh deployment's configured store would never be created
 otherwise. So `QdrantRagConfig` gains `autoCreateCollection?: boolean` (default `true`, today's
-behaviour), and **every handle the provider builds passes `false`**. That is what §6.3 requires —
-"no handle, from here or from createCollection, ever creates its store" — for the provider's handles,
-without breaking a store path §6.3 does not govern. The Findings raise it with the coordinator.
+behaviour), and **every handle the provider builds passes `false`**. §6.3 states exactly this split:
+lazy creation "survives in one place, deliberately", the standalone `QdrantRag` `makeRag` builds for a
+configured store, which is not catalogued.
+
+**Qdrant ≥ 1.17 is a requirement, not a finding.** The create-if-absent record write uses
+`update_mode: "insert_only"`, which exists from Qdrant 1.17, so a catalogued Qdrant store requires
+1.17 or later (§6.3, §8 migration item 10). Step 1 records what an older server does, for the notes;
+it changes no wording.
 
 **Files:**
 - Modify: `packages/qdrant-rag/src/qdrant-rag.ts:21` (export `deterministicUUID`), `:29-61`
@@ -14410,6 +15528,8 @@ without breaking a store path §6.3 does not govern. The Findings raise it with 
   stub that models both)
 - Create: `packages/qdrant-rag/src/__tests__/qdrant-stub.ts`
 - Test: `packages/qdrant-rag/src/__tests__/catalog.test.ts`
+- Modify: `packages/qdrant-rag/README.md` — a `## Catalog, rights, and the Qdrant version` section
+  before `## License`
 - Modify: `packages/qdrant-rag/CHANGELOG.md`
 
 **Interfaces:**
@@ -14451,14 +15571,15 @@ done
 ```
 
 Expected on v1.17.0: repeat create `409`; the retrieved payload is `{"w":"first"}`. On v1.12.4 record
-what happens. **The code below does not branch on the answer**, because it reads the record back and
-commits only on its own `write_id`: if an old server refuses the field, `createCollection` fails loudly
-there (an `OrphanStoreError` naming the store) — then the CHANGELOG states "Qdrant ≥ 1.17 is required
-for `createCollection`"; if it ignores the field, the read-back still detects a lost race whenever the
-competing write lands before this one's read, and the CHANGELOG states that exclusive creation is
-guaranteed only on ≥ 1.17. If Docker is unavailable, say so in the report, keep "unverified" in the
-CHANGELOG wording, and rely on the stub tests below, which assert the provider's behaviour against the
-documented semantics.
+what happens in the task report. **Neither the code nor the documentation branches on the answer.**
+The code reads the record back and commits only on its own `write_id`: if an old server refuses the
+field, `createCollection` fails loudly there (an `OrphanStoreError` naming the store); if it ignores
+the field, the read-back still detects a lost race whenever the competing write lands before this
+one's read. Either way the README and the CHANGELOG state "requires Qdrant ≥ 1.17" unconditionally,
+and add the observed older-server behaviour as a note ("on older servers `createCollection` fails" or
+"on older servers two concurrent creations of one collection are not reliably told apart"). If Docker
+is unavailable, say so in the report, leave the note out, and rely on the stub tests below, which
+assert the provider's behaviour against the documented semantics.
 
 - [ ] **Step 2: write the stub and the failing tests**
 
@@ -15311,21 +16432,48 @@ npm test -w packages/qdrant-rag        # all green: catalog.test.ts, and qdrant-
 npm test -w packages/llm-agent-rag     # makeRag's standalone QdrantRag keeps first-write creation
 ```
 
-- [ ] **Step 7: changelog and commit**
+- [ ] **Step 7: README, changelog and commit**
 
-Add to `packages/qdrant-rag/CHANGELOG.md` under `## [Unreleased]`, opening with `**BREAKING:**`:
+Insert into `packages/qdrant-rag/README.md`, before `## License`:
+
+````markdown
+## Catalog, rights, and the Qdrant version
+
+`QdrantRagProvider` keeps one record per collection in a catalog collection of its own
+(`rag_collection_catalog` by default, `catalogCollection` to rename it): one point per collection,
+the record in its payload. `createCollection` embeds one probe string to learn the vector size,
+creates the collection, and then writes its record; `deleteCollection` deletes the record first, then
+the collection; `describeCollections` reads the catalog back.
+
+- **Qdrant 1.17 or later is required** for a catalogued store: the record is written with
+  `update_mode: "insert_only"`, which exists from 1.17.
+- **The key must be able to manage collections**: create collections (the catalog on first use, one
+  per collection), write, read and delete points in the catalog, and delete collections. A
+  `read-only-api-key`, or a JWT restricted to named collections, is not enough.
+- A standalone `QdrantRag` (a store configured directly, not through the provider) keeps creating
+  its collection on the first write (`autoCreateCollection`, default `true`); the provider's handles
+  never create theirs.
+
+A collection created before this release has a collection and no record: take it over once with
+`createCollection(..., { adoptExisting: true })`.
+````
+
+Add to `packages/qdrant-rag/CHANGELOG.md` under `## [Unreleased]` (create it above `## 26.0.0` if no
+earlier task has), opening with `**BREAKING:**`: **a catalogued `QdrantRagProvider` requires Qdrant
+1.17 or later** (the record is written with `update_mode: "insert_only"`), plus Step 1's older-server
+behaviour as a note when it was observed;
 `QdrantRagProvider` keeps a catalog collection (`rag_collection_catalog`, configurable as
-`catalogCollection`) the key must be able to create and write; `createCollection` creates the
+`catalogCollection`) the key must be able to create and write (the README lists what the key needs);
+`createCollection` creates the
 collection immediately, spending **one embedding call** to learn the vector size, instead of on the
 first write, and refuses a taken name (`RAG_DUPLICATE_COLLECTION` / `RAG_ORPHAN_STORE`, the latter
-lifted by `adoptExisting: true`); exclusive creation relies on `update_mode: "insert_only"`
-(Qdrant ≥ 1.17 — state Step 1's finding for older servers here); handles from the provider never
+lifted by `adoptExisting: true`); handles from the provider never
 create their collection; `deleteCollection` removes the record first and can fail with
 `CatalogRecordDeleteError`; `QdrantRag` gains `autoCreateCollection` (default `true`).
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/qdrant-rag/src packages/qdrant-rag/CHANGELOG.md
+git add packages/qdrant-rag/src packages/qdrant-rag/README.md packages/qdrant-rag/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(qdrant-rag)!: a catalog collection, and creation in createCollection only
 
@@ -15343,10 +16491,9 @@ The catalog is a collection with one point per collection, not collection
 metadata: metadata is written with the store, so it can express neither a
 record written last nor a store without one.
 
-BREAKING: createCollection costs one embedding call and needs rights to the
-catalog, a taken name is refused, and re-creating no longer reattaches.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+BREAKING: a catalogued store requires Qdrant 1.17 or later; createCollection
+costs one embedding call and needs rights to the catalog, a taken name is
+refused, and re-creating no longer reattaches.
 MSG
 )"
 ```
@@ -15357,41 +16504,57 @@ A caller may hold a `global`, a `user` and a `session` collection called `docs`:
 three stores already (`storeNameFor` digests the scope), and only the registry's key — the logical name
 alone, `simple-rag-registry.ts:61` — says otherwise. This task keys `entries` and `creating` by
 (scope, name), gives `get`, `getEditor`, `unregister` and `deleteCollection` an optional `scope`, refuses
-an ambiguous name with `RAG_AMBIGUOUS_COLLECTION` instead of choosing silently, makes a duplicate a
-`RagError` carrying `RAG_DUPLICATE_COLLECTION`, reserves the `user/` and `session/` prefixes against
-globals (they are the projection's keys, Task B26), and has `closeSession` delete with
-`scope: 'session'` (spec §6.4, §6.3's paragraph on `register` and `adopt`). Creation's owner checks,
-the deletion reservation and the restore are Task B25; this task does not touch them.
+an ambiguous name with B19's `AmbiguousCollectionError` instead of choosing silently, makes a duplicate
+B19's `DuplicateCollectionError`, reserves the `user/` and `session/` prefixes against globals with
+B19's `ReservedCollectionNameError` (they are the projection's keys, Task B26), and has `closeSession`
+delete with `scope: 'session'` (spec §6.4, §6.3's paragraph on `register` and `adopt`). It builds on
+the registry **as B19 left it**: B19's owner and attribute validation stays at the head of
+`createCollection`, and `createUnder` keeps receiving the owner B19's `validateRagOwner` returned.
+The deletion reservation and the restore are Task B25; this task does not touch them.
+
+**This task also removes the register-then-rollback tail of `createUnder`** (`:200-241` today),
+which calls `provider.deleteCollection(storeName)` when `register` throws. Once B20–B22 give the stores
+a catalog, that rollback would remove a store whose record was just committed, so it must go here,
+before B25 — B25 must not be moved ahead of this task.
 
 **Files:**
-- Create: `packages/llm-agent/src/rag/registry/store-key.ts` — `RESERVED_GLOBAL_PREFIXES`,
-  `reservedGlobalNameError`, `ragStoreKey`
-- Modify: `packages/llm-agent/src/rag/registry/index.ts` — export the three
+- Create: `packages/llm-agent/src/rag/registry/store-key.ts` — `reservedGlobalNameError`,
+  `ragStoreKey`
+- Modify: `packages/llm-agent/src/rag/registry/index.ts` — export `ragStoreKey` (only it: Task B26's
+  builder in `llm-agent-libs` keys the projection with it, so the rule for a projection key lives once,
+  beside the reservation it must agree with; `reservedGlobalNameError` is used only inside this
+  package and stays unexported)
 - Modify: `packages/llm-agent/src/interfaces/rag.ts:161-197` (`IRagRegistry`) — optional `scope` on
   `unregister`, `get`, `getEditor`, `deleteCollection`, and the doc saying what an ambiguous name does
 - Modify: `packages/llm-agent/src/rag/registry/simple-rag-registry.ts:60-131` (key, `find`, `register`,
-  `unregister`, `get`, `getEditor`), `:160-181` (duplicate check and `creating` by key, reserved
-  prefix), `:200-241` (`createUnder` inserts directly; the register-then-rollback tail goes),
-  `:258-263` (`deleteCollection` looks up by key), `:324-334` (`closeSession` with `'session'`)
+  `unregister`, `get`, `getEditor`), `createCollection` and `createUnder` as B19 left them (`:133-242`
+  today; duplicate check and `creating` by key, reserved prefix, a direct insert in place of the
+  register-then-rollback tail), `deleteCollection` (`:258-274`), `closeSession` (`:324-342`)
 - Modify: `packages/llm-agent/src/rag/__tests__/simple-rag-registry.test.ts:126-141` — the duplicate
   test registers its blocker in the scope it then creates in (below)
+- Modify: `packages/llm-agent/CHANGELOG.md` — `[Unreleased]` entry
 - Test: `packages/llm-agent/src/rag/__tests__/simple-rag-registry-scope.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `IRagRegistry`, `SimpleRagRegistry` as B19 left them (B19 changes `createCollection`'s
-  parameter type and declares `adopt?`; this task relies on neither — it reads only `params.scope` and
-  `params.collectionName`, which both shapes have).
+- Consumes (B19): `RagRegistryCreateCollectionParams`, `RagCollectionOwner`, `validateRagOwner`,
+  `validateRagAttributes`, `ragOwnerKeys`, `AmbiguousCollectionError`, `DuplicateCollectionError`,
+  `ReservedCollectionNameError`, and `createCollection`'s head and `createUnder(provider, params,
+  owner)` as B19 wrote them.
 - Produces:
   - `IRagRegistry.get(name, scope?)`, `getEditor(name, scope?)`, `unregister(name, scope?)`,
-    `deleteCollection(name, scope?)`; ambiguity → thrown `RagError` code `RAG_AMBIGUOUS_COLLECTION`
-    from the three synchronous ones, returned from `deleteCollection`.
-  - `register` throws `RagError(…, 'RAG_DUPLICATE_COLLECTION')` for a taken (scope, name), and
-    `RagError(…, 'RAG_RESERVED_COLLECTION_NAME')` for a global named `user/…` or `session/…`.
-  - `RESERVED_GLOBAL_PREFIXES`, `reservedGlobalNameError(scope, name): RagError | undefined`,
-    `ragStoreKey(meta: { name: string; scope?: RagCollectionScope }): string` — exported from the
-    package root; Task B26 keys the projection with `ragStoreKey`.
-  - `SimpleRagRegistry`'s protected `keyOf`-keyed `entries`, `find(name, scope?)`, `isTaken(key)` and
-    private `insert(key, entry)` — Tasks B24 and B25 build on them.
+    `deleteCollection(name, scope?)`; ambiguity → `AmbiguousCollectionError` (code
+    `RAG_AMBIGUOUS_COLLECTION`, `.scopes`), thrown by the three synchronous ones and returned by
+    `deleteCollection`.
+  - `register` throws `DuplicateCollectionError` for a taken (scope, name) and
+    `ReservedCollectionNameError` for a global named `user/…` or `session/…`; `createCollection`
+    returns them.
+  - `ragStoreKey(meta: { name: string; scope?: RagCollectionScope }): string` — exported from the
+    package root; Task B26 keys the projection with it.
+  - `reservedGlobalNameError(scope, name): ReservedCollectionNameError | undefined` — module export of
+    `registry/store-key.ts`; Task B24 uses it in `adopt`.
+  - `SimpleRagRegistry`'s module-level `keyOf(scope, name)`, protected `keyOf`-keyed `entries`,
+    `find(name, scope?)`, `isTaken(key)`, private `findOrThrow(name, scope?)` and
+    `insert(key, entry)`, and `createUnder(provider, key, params, owner)` — Tasks B24–B26 build on them.
 
 - [ ] **Step 1: write the failing tests**
 
@@ -15400,7 +16563,11 @@ the deletion reservation and the restore are Task B25; this task does not touch 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRagEditor, IRagProvider } from '../../interfaces/rag.js';
-import { RagError } from '../../interfaces/types.js';
+import {
+  AmbiguousCollectionError,
+  DuplicateCollectionError,
+  ReservedCollectionNameError,
+} from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { SimpleRagProviderRegistry } from '../providers/simple-provider-registry.js';
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
@@ -15419,11 +16586,9 @@ function threeDocs() {
 }
 
 const ambiguous = (err: unknown) => {
-  assert.ok(err instanceof RagError, 'a RagError, so a caller can read the code');
+  assert.ok(err instanceof AmbiguousCollectionError, 'B19’s named error, so a caller can test the class');
   assert.equal(err.code, 'RAG_AMBIGUOUS_COLLECTION');
-  assert.match(err.message, /global/);
-  assert.match(err.message, /user/);
-  assert.match(err.message, /session/);
+  assert.deepEqual(err.scopes, ['global', 'user', 'session']);
   return true;
 };
 
@@ -15465,15 +16630,15 @@ describe('SimpleRagRegistry — keyed by scope and name', () => {
     assert.equal(reg.get('mine'), undefined);
   });
 
-  it('throws a RagError carrying RAG_DUPLICATE_COLLECTION for a taken scope and name', () => {
+  it('throws DuplicateCollectionError for a taken scope and name', () => {
     const reg = new SimpleRagRegistry();
     reg.register('x', new InMemoryRag());
     assert.throws(
       () => reg.register('x', new InMemoryRag()),
       (err: unknown) =>
-        err instanceof RagError &&
-        err instanceof Error &&
+        err instanceof DuplicateCollectionError &&
         err.code === 'RAG_DUPLICATE_COLLECTION' &&
+        // builder-rag-collection-idempotency.test.ts:56 matches this phrase
         /already registered/.test(err.message),
     );
     // the same name in another scope is another collection
@@ -15486,7 +16651,8 @@ describe('SimpleRagRegistry — keyed by scope and name', () => {
       assert.throws(
         () => reg.register(name, new InMemoryRag()),
         (err: unknown) =>
-          err instanceof RagError && err.code === 'RAG_RESERVED_COLLECTION_NAME',
+          err instanceof ReservedCollectionNameError &&
+          err.code === 'RAG_RESERVED_COLLECTION_NAME',
       );
     }
     // a user collection may be called anything: its key is prefixed anyway
@@ -15499,9 +16665,9 @@ describe('SimpleRagRegistry — keyed by scope and name', () => {
     const reg = new SimpleRagRegistry();
     const res = await reg.createCollection({
       providerName: 'mem', collectionName: 'session/x', scope: 'global',
-    } as never);
+    });
     assert.ok(!res.ok);
-    assert.equal(res.error.code, 'RAG_RESERVED_COLLECTION_NAME',
+    assert.ok(res.error instanceof ReservedCollectionNameError,
       'not RAG_NO_PROVIDER_REGISTRY: the name is refused first');
   });
 
@@ -15522,13 +16688,35 @@ describe('SimpleRagRegistry — keyed by scope and name', () => {
     reg.setProviderRegistry(providers);
     const user = reg.createCollection({
       providerName: 'slow', collectionName: 'docs', scope: 'user', userId: 'alice',
-    } as never);
+    });
     const session = await reg.createCollection({
       providerName: 'slow', collectionName: 'docs', scope: 'session', sessionId: 'S',
-    } as never);
+    });
     assert.ok(session.ok, 'the creating set is keyed by scope and name');
     release();
     assert.ok((await user).ok);
+  });
+
+  it('a creation of a taken scope and name returns DuplicateCollectionError without asking the provider', async () => {
+    let asked = 0;
+    const provider: IRagProvider = {
+      name: 'p', kind: 'vector', editable: true, supportedScopes: ['session', 'user', 'global'],
+      createCollection: async () => {
+        asked += 1;
+        return { ok: true, value: { rag: new InMemoryRag(), editor: {} as IRagEditor } };
+      },
+    };
+    const providers = new SimpleRagProviderRegistry();
+    providers.registerProvider(provider);
+    const reg = new SimpleRagRegistry();
+    reg.setProviderRegistry(providers);
+    reg.register('docs', new InMemoryRag(), undefined, { displayName: 'docs', scope: 'user', userId: 'alice' });
+    const res = await reg.createCollection({
+      providerName: 'p', collectionName: 'docs', scope: 'user', userId: 'alice',
+    });
+    assert.ok(!res.ok);
+    assert.ok(res.error instanceof DuplicateCollectionError);
+    assert.equal(asked, 0);
   });
 
   it('closeSession deletes the session `docs` and leaves the global and user ones', async () => {
@@ -15551,8 +16739,8 @@ describe('ragStoreKey', () => {
 });
 ```
 
-The `as never` casts on `createCollection` params keep this file independent of whether B19's
-`RagCollectionOwner` shape is already the declared type — the file is not in the typecheck list.
+Every `createCollection` literal above is a valid `RagRegistryCreateCollectionParams` after B19, so
+none needs a cast.
 
 Then the one existing test whose premise this task changes on purpose. Its blocker was registered as a
 global and the creation asked for a session collection; under the new key those are two collections,
@@ -15585,28 +16773,23 @@ throws `Collection 'docs' is already registered`, a plain `Error` — then resto
 ```ts
 // packages/llm-agent/src/rag/registry/store-key.ts
 import type { RagCollectionScope } from '../../interfaces/rag.js';
-import { RagError } from '../../interfaces/types.js';
+import { ReservedCollectionNameError } from '../corrections/errors.js';
 
 /**
  * The prefixes the `ragStores` projection gives the two owned scopes (§6.4). A
  * global may not begin with one: it would take a key the projection gives
  * another scope, and one entry would silently overwrite the other.
  */
-export const RESERVED_GLOBAL_PREFIXES = ['user/', 'session/'] as const;
+const RESERVED_GLOBAL_PREFIXES = ['user/', 'session/'] as const;
 
 /** The refusal for a global named into a reserved prefix, or undefined. */
 export function reservedGlobalNameError(
   scope: RagCollectionScope,
   name: string,
-): RagError | undefined {
+): ReservedCollectionNameError | undefined {
   if (scope !== 'global') return undefined;
   const prefix = RESERVED_GLOBAL_PREFIXES.find((p) => name.startsWith(p));
-  return prefix
-    ? new RagError(
-        `A global collection may not be named '${name}': the prefix '${prefix}' is reserved for the ${prefix.slice(0, -1)} scope`,
-        'RAG_RESERVED_COLLECTION_NAME',
-      )
-    : undefined;
+  return prefix ? new ReservedCollectionNameError(name, prefix) : undefined;
 }
 
 /**
@@ -15627,11 +16810,7 @@ export function ragStoreKey(meta: {
 ```ts
 // packages/llm-agent/src/rag/registry/index.ts
 export { SimpleRagRegistry } from './simple-rag-registry.js';
-export {
-  RESERVED_GLOBAL_PREFIXES,
-  ragStoreKey,
-  reservedGlobalNameError,
-} from './store-key.js';
+export { ragStoreKey } from './store-key.js';
 ```
 
 On `IRagRegistry` (`interfaces/rag.ts:161-197`), the four members become:
@@ -15641,9 +16820,10 @@ On `IRagRegistry` (`interfaces/rag.ts:161-197`), the four members become:
    * Entries are keyed by scope and name (§6.4): a caller may hold a global, a
    * user and a session collection of one name. `scope` selects the entry. When
    * it is omitted the name must be held by exactly one scope; a name several
-   * hold fails with a RagError coded RAG_AMBIGUOUS_COLLECTION naming them —
-   * thrown by `unregister`, `get` and `getEditor`, whose return values cannot
-   * tell "ambiguous" from "absent", and returned by `deleteCollection`.
+   * hold fails with AmbiguousCollectionError (RAG_AMBIGUOUS_COLLECTION, naming
+   * them in `.scopes`) — thrown by `unregister`, `get` and `getEditor`, whose
+   * return values cannot tell "ambiguous" from "absent", and returned by
+   * `deleteCollection`.
    */
   unregister(name: string, scope?: RagCollectionScope): boolean;
   get(name: string, scope?: RagCollectionScope): IRag | undefined;
@@ -15657,16 +16837,18 @@ On `IRagRegistry` (`interfaces/rag.ts:161-197`), the four members become:
   ): Promise<Result<void, RagError>>;
 ```
 
-and `register`'s doc gains: "Throws a `RagError` coded `RAG_DUPLICATE_COLLECTION` when its scope
-(default `'global'`) already holds `name`, and one coded `RAG_RESERVED_COLLECTION_NAME` for a global
-named `user/…` or `session/…`." Adding an optional parameter keeps every call site compiling; an
-implementation must now accept it (Task B26's findings list the only one in the repository).
+and `register`'s doc gains: "Throws `DuplicateCollectionError` when its scope (default `'global'`)
+already holds `name`, and `ReservedCollectionNameError` for a global named `user/…` or `session/…`."
+Adding an optional parameter keeps every call site compiling; an implementation must now accept it.
+The only implementation in the repository is `SimpleRagRegistry` (`grep -rn "implements IRagRegistry"
+packages/*/src` finds only `simple-rag-registry.ts:60`); test doubles cast with
+`as unknown as IRagRegistry` and are unaffected.
 
-In `simple-rag-registry.ts`, add below `storeNameFor`:
+In `simple-rag-registry.ts`, extend the errors import from `'../corrections/errors.js'` with
+`AmbiguousCollectionError` and `DuplicateCollectionError`, add
+`import { reservedGlobalNameError } from './store-key.js';`, and add below `storeNameFor`:
 
 ```ts
-import { reservedGlobalNameError } from './store-key.js';
-
 /** A collection is its scope and its name (§6.4); the owner is the registry's own. */
 function keyOf(scope: RagCollectionScope, name: string): string {
   return JSON.stringify([scope, name]);
@@ -15676,15 +16858,18 @@ const SCOPES: readonly RagCollectionScope[] = ['global', 'user', 'session'];
 
 type Found =
   | { ok: true; found?: { key: string; entry: Entry } }
-  | { ok: false; error: RagError };
+  | { ok: false; error: AmbiguousCollectionError };
 ```
 
-Replace the `entries` and `creating` declarations (`:61`, `:68-69`) — `deletions` stays until B25:
+Replace the `entries` and `creating` declarations (`:61`, `:68-69`); the `deletions` field and its
+comment (`:62-67`) stay as they are until B25:
 
 ```ts
   /** Keyed by keyOf(scope, name). */
   protected readonly entries = new Map<string, Entry>();
-  // (the `deletions` field and its comment stay as they are until Task B25)
+```
+
+```ts
   /** Keys (scope, name) being created, held until inserted or refused. */
   protected readonly creating = new Set<string>();
 ```
@@ -15694,8 +16879,8 @@ Replace `register` through `getEditor` (`:85-127`) with:
 ```ts
   /**
    * The entry `name` addresses: with a scope, that scope's; without one, the
-   * entry of the one scope holding it — or RAG_AMBIGUOUS_COLLECTION naming every
-   * scope that does. Never a silent precedence between scopes.
+   * entry of the one scope holding it — or AmbiguousCollectionError naming
+   * every scope that does. Never a silent precedence between scopes.
    */
   protected find(name: string, scope?: RagCollectionScope): Found {
     if (scope) {
@@ -15705,13 +16890,7 @@ Replace `register` through `getEditor` (`:85-127`) with:
     }
     const held = SCOPES.filter((s) => this.entries.has(keyOf(s, name)));
     if (held.length > 1) {
-      return {
-        ok: false,
-        error: new RagError(
-          `Collection '${name}' is held in several scopes (${held.join(', ')}); name the scope`,
-          'RAG_AMBIGUOUS_COLLECTION',
-        ),
-      };
+      return { ok: false, error: new AmbiguousCollectionError(name, held) };
     }
     if (held.length === 0) return { ok: true };
     const key = keyOf(held[0], name);
@@ -15749,9 +16928,9 @@ Replace `register` through `getEditor` (`:85-127`) with:
     if (reserved) throw reserved;
     const key = keyOf(scope, name);
     if (this.isTaken(key)) {
-      throw new RagError(
-        `Collection '${name}' is already registered (scope '${scope}')`,
-        'RAG_DUPLICATE_COLLECTION',
+      throw new DuplicateCollectionError(
+        name,
+        `already registered in scope '${scope}'`,
       );
     }
     const editable =
@@ -15791,55 +16970,98 @@ Replace `register` through `getEditor` (`:85-127`) with:
   }
 ```
 
-In `createCollection` (`:160-180`), the reserved-name refusal goes first — before the provider registry
-is consulted — and the duplicate check and the `creating` set move to the key:
+Replace `createCollection` and `createUnder` — as B19 left them, from `async createCollection(` to the
+end of `createUnder` (`:133-242` today) — in full. B19's validation stays first and its returned owner
+is what everything after it uses; the reserved name is refused next, before the provider registry is
+consulted; the duplicate check and the `creating` set move to the key; and the tail after
+`if (!created.ok) return created;` — `this.register(...)`, the rollback that called
+`provider.deleteCollection(storeName)` when `register` threw, and the "vanished after registration"
+check — becomes a direct insert. That path existed because `register` could refuse the name; it no
+longer can reach it, because the key is held in `creating` from the preflight to the insert and
+nothing else writes `entries` for a key in `creating`:
 
 ```ts
   async createCollection(
-    params: Parameters<IRagRegistry['createCollection']>[0],
+    params: RagRegistryCreateCollectionParams,
   ): Promise<Result<RagCollectionMeta, RagError>> {
-    const reserved = reservedGlobalNameError(params.scope, params.collectionName);
+    // Checked before anything else: an untyped caller's owner without its key
+    // would digest to a store every such caller shares (storeNameFor), and
+    // attributes JSON would change could not come back as given (§6.3).
+    const owner = validateRagOwner(params);
+    if (!owner.ok) return owner;
+    const attributes = validateRagAttributes(params.attributes);
+    if (!attributes.ok) return attributes;
+    const reserved = reservedGlobalNameError(
+      owner.value.scope,
+      params.collectionName,
+    );
     if (reserved) return { ok: false, error: reserved };
-    // … the providerRegistry and provider checks, unchanged …
 
-    // Preflight duplicate check, counting creations still running: two at
-    // once would share one store.
-    const key = keyOf(params.scope, params.collectionName);
-    if (this.isTaken(key)) {
+    if (!this.providerRegistry) {
       return {
         ok: false,
         error: new RagError(
-          `Collection '${params.collectionName}' already exists (scope '${params.scope}')`,
-          'RAG_DUPLICATE_COLLECTION',
+          'No IRagProviderRegistry configured on SimpleRagRegistry',
+          'RAG_NO_PROVIDER_REGISTRY',
+        ),
+      };
+    }
+    const provider = this.providerRegistry.getProvider(params.providerName);
+    if (!provider) {
+      return {
+        ok: false,
+        error: new ProviderNotFoundError(params.providerName),
+      };
+    }
+
+    // Preflight duplicate check, counting creations still running: two at
+    // once would share one store.
+    const key = keyOf(owner.value.scope, params.collectionName);
+    if (this.isTaken(key)) {
+      return {
+        ok: false,
+        error: new DuplicateCollectionError(
+          params.collectionName,
+          `the name is taken in scope '${owner.value.scope}'`,
         ),
       };
     }
 
     this.creating.add(key);
     try {
-      return await this.createUnder(provider, key, params);
+      return await this.createUnder(provider, key, params, owner.value);
     } finally {
       this.creating.delete(key);
     }
   }
-```
 
-`createUnder` takes the key, and its tail after `if (!created.ok) return created;` (`:200-241`) —
-`this.register(...)`, the rollback that deleted the store when `register` threw, and the "vanished
-after registration" check — is replaced by a direct insert. That path existed because `register`
-could refuse the name; it no longer can reach it, because the key is held in `creating` from the
-preflight to here and `register` counts `creating`. Leave the `storeNameFor` line, the
-`deletions` wait and the `provider.createCollection(storeName, …)` call exactly as B19 left them:
-
-```ts
   private async createUnder(
     provider: IRagProvider,
     key: string,
-    params: Parameters<IRagRegistry['createCollection']>[0],
+    params: RagRegistryCreateCollectionParams,
+    owner: RagCollectionOwner,
   ): Promise<Result<RagCollectionMeta, RagError>> {
-    // … storeName, the deletions wait and the provider call, unchanged …
+    // A provider that keeps stores by name (Qdrant, a database) opens whatever
+    // is there, so each owner gets a store name of its own; see storeNameFor.
+    const storeName = storeNameFor({
+      collectionName: params.collectionName,
+      ...owner,
+    });
+    // Released only when a deletion under it has finished; see deletions.
+    await this.deletions.get(storeName);
+
+    const created = await provider.createCollection(storeName, {
+      ...owner,
+      collectionName: params.collectionName,
+      attributes: params.attributes,
+      adoptExisting: params.adoptExisting,
+    });
     if (!created.ok) return created;
 
+    // Inserted directly: the key has been held in `creating` since the
+    // preflight, so nothing can have taken it, and there is nothing to roll
+    // back — a rollback would delete a store whose catalog record the provider
+    // has just committed (§6.3).
     const editor = created.value.editor;
     const entry: Entry = {
       rag: created.value.rag,
@@ -15850,9 +17072,8 @@ preflight to here and `register` counts `creating`. Leave the `storeNameFor` lin
         displayName: params.displayName ?? params.collectionName,
         description: params.description,
         editable: Boolean(editor) && !(editor instanceof ImmutableEditStrategy),
-        scope: params.scope,
-        sessionId: params.scope === 'session' ? params.sessionId : undefined,
-        userId: params.scope === 'user' ? params.userId : undefined,
+        scope: owner.scope,
+        ...ragOwnerKeys(owner),
         providerName: params.providerName,
         tags: params.tags,
       },
@@ -15862,8 +17083,8 @@ preflight to here and `register` counts `creating`. Leave the `storeNameFor` lin
   }
 ```
 
-`deleteCollection` looks its target up through `find` (`:258-263`); the rest of the method — the
-`deletions` bookkeeping — is unchanged until B25:
+`deleteCollection` (`:258-274`), in full — it looks its target up through `find`; the `deletions`
+bookkeeping is today's, unchanged until B25:
 
 ```ts
   async deleteCollection(
@@ -15878,11 +17099,20 @@ preflight to here and `register` counts `creating`. Leave the `storeNameFor` lin
     const { key, entry } = f.found;
     this.entries.delete(key);
     this.fireMutation();
-    // … the deletions bookkeeping, unchanged …
+    const deletion: Promise<Result<void, RagError>> = this.deleteData(
+      name,
+      entry,
+    ).finally(() => {
+      if (this.deletions.get(entry.storeName) === deletion) {
+        this.deletions.delete(entry.storeName);
+      }
+    });
+    this.deletions.set(entry.storeName, deletion);
+    return deletion;
   }
 ```
 
-and `closeSession` (`:331-332`) passes the only scope a `sessionId` selects:
+and `closeSession` (`:332`) passes the only scope a `sessionId` selects:
 
 ```ts
       const res = await this.deleteCollection(name, 'session');
@@ -15899,19 +17129,33 @@ npm test -w packages/llm-agent-libs
 timeout 900 npm test -w packages/llm-agent-server-libs
 ```
 
-Expected: build clean; the new file passes; every pre-existing registry and tool test passes, the one
-edited above included. `llm-agent-libs` and `llm-agent-server-libs` stay green because nothing there
-holds one name in two scopes yet — Task B26 is what makes their name-only calls safe once something
-does. Report any other red test with its name; do not edit it here.
+Expected: build clean; the new file passes; B19's `catalog-validation.test.ts` stays green (its
+validation and forwarding cases run through the unchanged head and provider call); every pre-existing
+registry and tool test passes, the one edited above included, and
+`builder-rag-collection-idempotency.test.ts:56` still matches `/already registered/`. `llm-agent-libs`
+and `llm-agent-server-libs` stay green because nothing there holds one name in two scopes yet — Task
+B26 is what makes their name-only calls safe once something does. Report any other red test with its
+name; do not edit it here.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog and commit**
+
+Add to `packages/llm-agent/CHANGELOG.md` under `## [Unreleased]` (B19 created it), in its
+`**BREAKING:**` list: `SimpleRagRegistry` is keyed by scope and name, so one name may be held once per
+scope; `get`, `getEditor`, `unregister` and `deleteCollection` take an optional `scope`, and a name
+several scopes hold without one fails with `AmbiguousCollectionError` (`RAG_AMBIGUOUS_COLLECTION`) —
+thrown by the three synchronous ones, returned by `deleteCollection`; an `IRagRegistry` implementation
+must accept that `scope`; `register` throws `DuplicateCollectionError` (a `RagError`) instead of a
+plain `Error`, and refuses a global named `user/…` or `session/…` with `ReservedCollectionNameError`
+(`RAG_RESERVED_COLLECTION_NAME`), which `createCollection` returns too; `closeSession` deletes with
+`scope: 'session'`; new export `ragStoreKey`.
 
 ```bash
 cd ~/prj/llm-agent
 git add packages/llm-agent/src/interfaces/rag.ts \
         packages/llm-agent/src/rag/registry \
         packages/llm-agent/src/rag/__tests__/simple-rag-registry-scope.test.ts \
-        packages/llm-agent/src/rag/__tests__/simple-rag-registry.test.ts
+        packages/llm-agent/src/rag/__tests__/simple-rag-registry.test.ts \
+        packages/llm-agent/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(llm-agent)!: the RAG registry is keyed by scope and name
 
@@ -15919,19 +17163,19 @@ A caller may hold a global, a user and a session collection of one name:
 three collections with three stores already, and only the registry's key
 said otherwise. Entries and the creating set are keyed by (scope, name);
 get, getEditor, unregister and deleteCollection take an optional scope,
-and a name several scopes hold is refused with RAG_AMBIGUOUS_COLLECTION
+and a name several scopes hold is refused with AmbiguousCollectionError
 rather than answered with whichever came first.
 
-register throws a RagError coded RAG_DUPLICATE_COLLECTION, so a caller
-can tell a duplicate from any other failure, and refuses a global named
+register throws DuplicateCollectionError, so a caller can tell a
+duplicate from any other failure by its class, and refuses a global named
 user/... or session/..., the keys the ragStores projection gives the
-owned scopes. closeSession deletes with scope 'session'.
+owned scopes. closeSession deletes with scope 'session'. createCollection
+inserts directly: the register-then-rollback tail could delete a store
+whose catalog record the provider had just committed.
 
 BREAKING: an IRagRegistry implementation must accept the new optional
-scope parameter; register throws RagError instead of a plain Error (a
-caller catching Error is unaffected).
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+scope parameter; register throws a RagError subclass instead of a plain
+Error (a caller catching Error is unaffected).
 MSG
 )"
 ```
@@ -15940,31 +17184,31 @@ MSG
 
 Hydration registers a collection whose store already exists, and `register` cannot express it: it sets
 `storeName: name` (`simple-rag-registry.ts:99`), true for a store registered directly and false for
-every hydrated one, whose store name is `storeNameFor`'s digest. `adopt(record, rag, editor?)` takes the
-record whole, keeps the two names apart, creates nothing and touches no provider (spec §6.3, "hydration
-needs its own member"). It refuses what `register` refuses — a taken (scope, name), a reserved global —
-and, because a record may come from an untyped caller, an owner without its key (`RAG_INVALID_OWNER`).
-It also takes the **provider's registry name**, without which a hydrated collection could never be
-deleted (see Findings — this is a proposed spec amendment).
+every hydrated one, whose store name is `storeNameFor`'s digest. B19 declared
+`IRagRegistry.adopt?(record, rag, editor?, providerName?)` in the spec's form (§6.3, "hydration needs
+its own member"); this task implements it on `SimpleRagRegistry`. It takes the record whole, keeps the
+two names apart, creates nothing and touches no provider. It refuses what `register` refuses — a taken
+(scope, name) with `DuplicateCollectionError`, a reserved global with `ReservedCollectionNameError` —
+and, because a record may come from an untyped caller, an owner without its key with B19's
+`validateRagOwner`, throwing the `InvalidOwnerError` it returns. The owner it registers is the one
+`validateRagOwner` returns, so a stray key of the other scope never reaches `meta`. The fourth
+parameter, the provider's registry name, is what makes a hydrated collection deletable: without it
+the entry is a reference, and deleting it reaches no store.
 
 **Files:**
-- Create: `packages/llm-agent/src/rag/registry/collection-checks.ts` — `invalidOwner`
-- Modify: `packages/llm-agent/src/rag/registry/index.ts` — export it
-- Modify: `packages/llm-agent/src/interfaces/rag.ts` — `IRagRegistry.adopt?` gains a fourth,
-  optional `providerName` (B19 declared it with three)
-- Modify: `packages/llm-agent/src/rag/registry/simple-rag-registry.ts` — `adopt`
+- Modify: `packages/llm-agent/src/rag/registry/simple-rag-registry.ts` — `adopt`, after `register`
+- Modify: `packages/llm-agent/CHANGELOG.md` — `[Unreleased]` entry
 - Test: `packages/llm-agent/src/rag/__tests__/simple-rag-registry-adopt.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `RagCollectionRecord`, `RagCollectionOwner` (B19); `keyOf`, `isTaken`, `insert`,
-  `reservedGlobalNameError` (B23).
-- Produces:
-  - `IRagRegistry.adopt?(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor, providerName?: string): void`
-    — throws `RagError` coded `RAG_INVALID_OWNER`, `RAG_RESERVED_COLLECTION_NAME` or
-    `RAG_DUPLICATE_COLLECTION`. With `providerName`, deleting the entry reaches that provider under
-    `record.storeName`; without it the entry is a reference and deleting it only unregisters.
-  - `invalidOwner(owner: unknown): RagError | undefined` — exported from the package root; Task B25
-    uses it in `createCollection`.
+- Consumes: `RagCollectionRecord`, `IRagRegistry.adopt?` (declared by B19 with four parameters),
+  `validateRagOwner`, `ragOwnerKeys`, `InvalidOwnerError`, `DuplicateCollectionError`,
+  `ReservedCollectionNameError` (B19); `keyOf`, `isTaken`, `insert`, `reservedGlobalNameError` (B23).
+- Produces: `SimpleRagRegistry.adopt(record: RagCollectionRecord, rag: IRag, editor?: IRagEditor, providerName?: string): void`
+  — throws `InvalidOwnerError`, `ReservedCollectionNameError` or `DuplicateCollectionError`. With
+  `providerName`, deleting the entry reaches that provider under `record.storeName`; without it the
+  entry is a reference and deleting it only unregisters. Task B29's hydration calls it with the
+  provider's name.
 
 - [ ] **Step 1: write the failing tests**
 
@@ -15974,6 +17218,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRagProvider, RagCollectionRecord } from '../../interfaces/rag.js';
 import { RagError } from '../../interfaces/types.js';
+import {
+  DuplicateCollectionError,
+  InvalidOwnerError,
+  ReservedCollectionNameError,
+} from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { SimpleRagProviderRegistry } from '../providers/simple-provider-registry.js';
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
@@ -16026,6 +17275,15 @@ describe('SimpleRagRegistry.adopt', () => {
     assert.equal(meta.providerName, 'pg');
   });
 
+  it('keeps only the key the scope selects, as validateRagOwner returns it', () => {
+    const { reg } = spyProvider();
+    reg.adopt(
+      { ...record, sessionId: 'stray' } as unknown as RagCollectionRecord,
+      new InMemoryRag(),
+    );
+    assert.equal(reg.list()[0].sessionId, undefined);
+  });
+
   it('creates nothing: no provider is asked for anything', () => {
     const { reg, asked, deleted } = spyProvider();
     reg.adopt(record, new InMemoryRag(), undefined, 'pg');
@@ -16060,17 +17318,17 @@ describe('SimpleRagRegistry.adopt', () => {
     assert.equal(reg.get('my notes'), undefined);
   });
 
-  it('refuses a taken scope and name with RAG_DUPLICATE_COLLECTION; another scope is free', () => {
+  it('refuses a taken scope and name with DuplicateCollectionError; another scope is free', () => {
     const { reg } = spyProvider();
     reg.adopt(record, new InMemoryRag(), undefined, 'pg');
     assert.throws(
       () => reg.adopt(record, new InMemoryRag(), undefined, 'pg'),
-      (e: unknown) => e instanceof RagError && e.code === 'RAG_DUPLICATE_COLLECTION',
+      (e: unknown) => e instanceof DuplicateCollectionError,
     );
-    reg.adopt({ ...record, scope: 'global' } as RagCollectionRecord, new InMemoryRag());
+    reg.adopt({ storeName: 's_g', name: 'my notes', scope: 'global' }, new InMemoryRag());
   });
 
-  it('refuses an owner without its key, as a record from an untyped caller may be', () => {
+  it('refuses an owner without its key with InvalidOwnerError, as a record from an untyped caller may be', () => {
     const { reg } = spyProvider();
     for (const bad of [
       { storeName: 's', name: 'n', scope: 'user' },
@@ -16080,18 +17338,18 @@ describe('SimpleRagRegistry.adopt', () => {
     ]) {
       assert.throws(
         () => reg.adopt(bad as unknown as RagCollectionRecord, new InMemoryRag()),
-        (e: unknown) => e instanceof RagError && e.code === 'RAG_INVALID_OWNER',
+        (e: unknown) => e instanceof InvalidOwnerError && e.code === 'RAG_INVALID_OWNER',
         JSON.stringify(bad),
       );
     }
     assert.equal(reg.list().length, 0);
   });
 
-  it('refuses a global in a reserved prefix', () => {
+  it('refuses a global in a reserved prefix with ReservedCollectionNameError', () => {
     const { reg } = spyProvider();
     assert.throws(
       () => reg.adopt({ storeName: 's', name: 'user/x', scope: 'global' }, new InMemoryRag()),
-      (e: unknown) => e instanceof RagError && e.code === 'RAG_RESERVED_COLLECTION_NAME',
+      (e: unknown) => e instanceof ReservedCollectionNameError,
     );
   });
 });
@@ -16104,86 +17362,38 @@ cd ~/prj/llm-agent
 node --import tsx/esm --test packages/llm-agent/src/rag/__tests__/simple-rag-registry-adopt.test.ts
 ```
 
-Expected: every case fails with `reg.adopt is not a function`.
+Expected: every case fails with `reg.adopt is not a function` (B19 declared the member optional on
+`IRagRegistry`; `SimpleRagRegistry` does not have it yet).
 
 - [ ] **Step 3: implement**
 
-```ts
-// packages/llm-agent/src/rag/registry/collection-checks.ts
-import { RagError } from '../../interfaces/types.js';
-
-/**
- * The refusal for an owner that does not name what its scope requires, or
- * undefined. The type already makes this a build error; this is the boundary
- * for a caller no compiler saw (§6.3), checked before any backend is touched:
- * a user or session owner whose key is absent or empty would be digested as ''
- * by storeNameFor, and every such caller would share one store.
- */
-export function invalidOwner(owner: unknown): RagError | undefined {
-  const o = (owner ?? {}) as {
-    scope?: unknown;
-    userId?: unknown;
-    sessionId?: unknown;
-  };
-  const refuse = (why: string) =>
-    new RagError(`Invalid collection owner: ${why}`, 'RAG_INVALID_OWNER');
-  switch (o.scope) {
-    case 'global':
-      return undefined;
-    case 'user':
-      return typeof o.userId === 'string' && o.userId !== ''
-        ? undefined
-        : refuse("a 'user' collection needs a non-empty userId");
-    case 'session':
-      return typeof o.sessionId === 'string' && o.sessionId !== ''
-        ? undefined
-        : refuse("a 'session' collection needs a non-empty sessionId");
-    default:
-      return refuse(`unknown scope ${JSON.stringify(o.scope) ?? 'undefined'}`);
-  }
-}
-```
-
-Add `export { invalidOwner } from './collection-checks.js';` to `registry/index.ts`.
-
-On `IRagRegistry`, replace B19's declaration of `adopt?` with:
+In `SimpleRagRegistry`, after `register` (add `RagCollectionRecord` to the type import from
+`'../../interfaces/rag.js'`; `validateRagOwner` and `ragOwnerKeys` are imported since B19,
+`DuplicateCollectionError` and `reservedGlobalNameError` since B23):
 
 ```ts
   /**
-   * Register a collection whose store EXISTS, under its logical name, keeping
-   * the store name the record gives (§6.3). Creates nothing and asks no
-   * provider for anything. `providerName` is the name the owning provider is
-   * registered under in the IRagProviderRegistry: with it, deleting the entry
-   * reaches that provider under `record.storeName`; without it the entry is a
-   * reference and deleting it only unregisters. Throws a RagError coded
-   * RAG_INVALID_OWNER, RAG_RESERVED_COLLECTION_NAME or RAG_DUPLICATE_COLLECTION.
+   * Register a collection whose store EXISTS, from its catalog record (§6.3):
+   * under its logical name, with the store name the record gives. Creates
+   * nothing and asks no provider for anything. See IRagRegistry.adopt.
    */
-  adopt?(
-    record: RagCollectionRecord,
-    rag: IRag,
-    editor?: IRagEditor,
-    providerName?: string,
-  ): void;
-```
-
-In `SimpleRagRegistry`, after `register`:
-
-```ts
   adopt(
     record: RagCollectionRecord,
     rag: IRag,
     editor?: IRagEditor,
     providerName?: string,
   ): void {
-    const invalid = invalidOwner(record);
-    if (invalid) throw invalid;
-    const reserved = reservedGlobalNameError(record.scope, record.name);
+    // A record may come from a caller no compiler saw: the one owner rule,
+    // and the owner it returns, with only the key its scope selects.
+    const owner = validateRagOwner(record);
+    if (!owner.ok) throw owner.error;
+    const reserved = reservedGlobalNameError(owner.value.scope, record.name);
     if (reserved) throw reserved;
-    const key = keyOf(record.scope, record.name);
+    const key = keyOf(owner.value.scope, record.name);
     if (this.isTaken(key)) {
-      throw new RagError(
-        `Collection '${record.name}' is already registered (scope '${record.scope}')`,
-        'RAG_DUPLICATE_COLLECTION',
+      throw new DuplicateCollectionError(
+        record.name,
+        `already registered in scope '${owner.value.scope}'`,
       );
     }
     this.insert(key, {
@@ -16196,9 +17406,8 @@ In `SimpleRagRegistry`, after `register`:
         name: record.name,
         displayName: record.name,
         editable: Boolean(editor) && !(editor instanceof ImmutableEditStrategy),
-        scope: record.scope,
-        sessionId: record.scope === 'session' ? record.sessionId : undefined,
-        userId: record.scope === 'user' ? record.userId : undefined,
+        scope: owner.value.scope,
+        ...ragOwnerKeys(owner.value),
         providerName,
       },
     });
@@ -16206,8 +17415,7 @@ In `SimpleRagRegistry`, after `register`:
 ```
 
 `record.attributes` is not copied: `RagCollectionMeta` gains nothing (§6.3), and the tools must not be
-able to read a policy value. Import `RagCollectionRecord` from `../../interfaces/rag.js` and
-`invalidOwner` from `./collection-checks.js`.
+able to read a policy value.
 
 - [ ] **Step 4: run the package suite and the build**
 
@@ -16220,13 +17428,19 @@ npm test -w packages/llm-agent
 
 Expected: build clean, all green, no pre-existing test edited.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog and commit**
+
+Add to `packages/llm-agent/CHANGELOG.md` under `## [Unreleased]`: `SimpleRagRegistry.adopt(record,
+rag, editor?, providerName?)` registers a store that exists under its logical name and keeps its
+store name, creating nothing; with `providerName` a later delete reaches that provider, without it
+the entry is a reference; it throws `InvalidOwnerError`, `ReservedCollectionNameError` or
+`DuplicateCollectionError`.
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/llm-agent/src/interfaces/rag.ts \
-        packages/llm-agent/src/rag/registry \
-        packages/llm-agent/src/rag/__tests__/simple-rag-registry-adopt.test.ts
+git add packages/llm-agent/src/rag/registry/simple-rag-registry.ts \
+        packages/llm-agent/src/rag/__tests__/simple-rag-registry-adopt.test.ts \
+        packages/llm-agent/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(llm-agent): SimpleRagRegistry.adopt registers an existing store
 
@@ -16237,48 +17451,48 @@ no provider for anything. It takes the provider's registry name too:
 without it a hydrated collection's delete would reach nobody, leave its
 catalog record, and come back at the next hydration.
 
-It refuses what register refuses, and an owner without its key, since a
-record may come from a caller no compiler checked.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+It refuses what register refuses, and an owner without its key through
+the shared validateRagOwner, since a record may come from a caller no
+compiler checked.
 MSG
 )"
 ```
 
-### Task B25: creation is checked and forwarded; deletion reserves the name and restores on a record failure
+### Task B25: creation is forwarded as given; deletion reserves the name and restores on a record failure
 
-Three rules of spec §6.3 land in the registry here. **Creation:** `createCollection` refuses an owner
-without its key (`RAG_INVALID_OWNER`) and attributes JSON would change (`RAG_INVALID_ATTRIBUTES`)
-before it consults anything, and forwards the logical name, the owner, the attributes and
-`adoptExisting` to `provider.createCollection` — the provider's catalog cannot return what it was never
-given. **Deletion:** a `deleting` set of keys replaces the `deletions` wait map (`:62-67`, `:190-191`,
-`:264-273`); a taken name is refused, not queued. **Restore:** on `CatalogRecordDeleteError` — nothing
-was deleted — the registry re-inserts the entry it removed before releasing the reservation, so a retry
-of the same delete, or of `closeSession`, finds it. The `storeNameFor` comment and three tests encode
-the old "create again after a restart" and "wait for the deletion" behaviour and change on purpose.
+Three rules of spec §6.3 land in the registry here, on top of what B19 and B23 left. **Creation:** B19
+already refuses an owner without its key and attributes JSON would change before anything is
+consulted (its `validateRagOwner`/`validateRagAttributes` at the head of `createCollection`, kept by
+B23), and already forwards the logical name, the owner, the attributes and `adoptExisting`; this task
+stops forwarding `attributes`/`adoptExisting` as keys holding `undefined` when the caller gave none, so
+a provider testing `'attributes' in opts` reads the caller's intent. **Deletion:** a `deleting` set of
+keys replaces the `deletions` wait map (`:62-67`, and the wait in `createUnder` and the bookkeeping in
+`deleteCollection` as B23 left them); a taken name is refused, not queued. **Restore:** on
+`CatalogRecordDeleteError` — nothing was deleted — the registry re-inserts the entry it removed before
+releasing the reservation, so a retry of the same delete, or of `closeSession`, finds it. The
+`storeNameFor` comment and three tests encode the old "create again after a restart" and "wait for
+the deletion" behaviour and change on purpose (§10's workstream-3 list names them).
 
 **Files:**
-- Modify: `packages/llm-agent/src/rag/registry/collection-checks.ts` — `invalidAttributes`
-- Modify: `packages/llm-agent/src/rag/registry/index.ts` — export it
 - Modify: `packages/llm-agent/src/rag/registry/simple-rag-registry.ts:20-50` (`storeNameFor` and its
-  comment), `:62-67` (`deletions` → `deleting`), `createCollection`, `createUnder`, `deleteCollection`,
-  `isTaken`
-- Modify: `packages/llm-agent-libs/src/builder.ts:224-233`, `:308-320` — `createRagCollection`'s
-  parameter and `_pendingDynamicCollections` take the registry's own parameter type (skip if B19 did)
+  comment), `:62-67` (`deletions` → `deleting`), `isTaken`, `createUnder`, `deleteCollection` (as B23
+  left them); `createCollection` stays as B23 left it
 - Modify: `packages/llm-agent/src/rag/__tests__/simple-rag-registry.test.ts:456-489` (the stub keeps
   the contract), `:531-542`, `:544-557`, `:559-590` (rewritten on purpose)
+- Modify: `packages/llm-agent/CHANGELOG.md` — `[Unreleased]` entry
 - Test: `packages/llm-agent/src/rag/__tests__/simple-rag-registry-lifecycle.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `RagCollectionOwner`, `RagJsonValue`, `IRagRegistry.createCollection`'s B19 parameter type,
-  `IRagProvider.createCollection`'s B19 `opts`, `CatalogRecordDeleteError` (B19); `invalidOwner`,
-  `keyOf`, `find`, `insert` (B23, B24).
+- Consumes: `RagCollectionOwner`, `RagRegistryCreateCollectionParams`, `IRagProvider.createCollection`'s
+  B19 `opts`, `CatalogRecordDeleteError`, `DuplicateCollectionError`, `OrphanStoreError` (B19);
+  `createCollection` with B19's validation at its head, `createUnder(provider, key, params, owner)`,
+  `keyOf`, `find`, `isTaken`, `insert` (B23); `adopt` (B24).
 - Produces:
-  - `invalidAttributes(value: unknown): RagError | undefined` — exported from the package root.
-  - `SimpleRagRegistry.createCollection` refusal order: `RAG_INVALID_OWNER`, `RAG_INVALID_ATTRIBUTES`,
-    `RAG_RESERVED_COLLECTION_NAME`, then `RAG_NO_PROVIDER_REGISTRY` / `RAG_PROVIDER_NOT_FOUND`, then
-    `RAG_DUPLICATE_COLLECTION`; what the provider returns (`RAG_DUPLICATE_COLLECTION`,
-    `RAG_ORPHAN_STORE`, …) is returned unchanged.
+  - `SimpleRagRegistry.createCollection` refusal order (B19's and B23's, pinned here):
+    `RAG_INVALID_OWNER`, `RAG_INVALID_ATTRIBUTES`, `RAG_RESERVED_COLLECTION_NAME`, then
+    `RAG_NO_PROVIDER_REGISTRY` / `RAG_PROVIDER_NOT_FOUND`, then `DuplicateCollectionError` for a key
+    that is held, being created, or being deleted; what the provider returns (`DuplicateCollectionError`,
+    `OrphanStoreError`, …) is returned unchanged.
   - `deleteCollection`: the key is absent to `get`/`getEditor`/`list` and taken for
     `createCollection`/`register`/`adopt` while the deletion runs; on `CatalogRecordDeleteError` the
     same entry is back before the call returns. Task B27's delete tool relies on this.
@@ -16291,7 +17505,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRagEditor, IRagProvider } from '../../interfaces/rag.js';
 import { RagError } from '../../interfaces/types.js';
-import { CatalogRecordDeleteError } from '../corrections/errors.js';
+import {
+  CatalogRecordDeleteError,
+  DuplicateCollectionError,
+  OrphanStoreError,
+} from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { SimpleRagProviderRegistry } from '../providers/simple-provider-registry.js';
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
@@ -16320,6 +17538,8 @@ function recording(deleteAnswer: () => Promise<{ ok: true; value: undefined } | 
   return { reg, creates };
 }
 
+// Already green after B19 and B23 — they pin the refusal order and the
+// forwarding this task must not break while it rewrites createUnder.
 describe('createCollection — checked before anything is consulted', () => {
   it('refuses an owner without its key with RAG_INVALID_OWNER, even with no provider registry', async () => {
     const reg = new SimpleRagRegistry(); // no provider registry at all
@@ -16398,12 +17618,12 @@ describe('createCollection — checked before anything is consulted', () => {
     const providers = new SimpleRagProviderRegistry();
     providers.registerProvider({
       name: 'p', kind: 'vector', editable: true, supportedScopes: ['global'],
-      createCollection: async () => ({ ok: false, error: new RagError('store c_x exists', 'RAG_ORPHAN_STORE') }),
+      createCollection: async () => ({ ok: false, error: new OrphanStoreError('c_x', 'it exists without a record') }),
     });
     reg.setProviderRegistry(providers);
     const res = await reg.createCollection({ providerName: 'p', collectionName: 'c', scope: 'global' } as never);
     assert.ok(!res.ok);
-    assert.equal(res.error.code, 'RAG_ORPHAN_STORE');
+    assert.ok(res.error instanceof OrphanStoreError);
     assert.equal(reg.list().length, 0);
   });
 });
@@ -16424,8 +17644,8 @@ describe('deleteCollection — the name is reserved while it runs', () => {
       providerName: 'p', collectionName: 'docs', scope: 'user', userId: 'alice',
     } as never);
     assert.ok(!again.ok);
-    assert.equal(again.error.code, 'RAG_DUPLICATE_COLLECTION');
-    const dup = (e: unknown) => e instanceof RagError && e.code === 'RAG_DUPLICATE_COLLECTION';
+    assert.ok(again.error instanceof DuplicateCollectionError);
+    const dup = (e: unknown) => e instanceof DuplicateCollectionError;
     assert.throws(() => reg.register('docs', new InMemoryRag(), undefined,
       { displayName: 'docs', scope: 'user', userId: 'alice' }), dup);
     assert.throws(() => reg.adopt({ storeName: 's', name: 'docs', scope: 'user', userId: 'alice' },
@@ -16494,14 +17714,15 @@ describe('deleteCollection — the name is reserved while it runs', () => {
 });
 ```
 
-`CatalogRecordDeleteError`'s constructor is B19's; the calls above assume `(collection, reason)` — verify
-against B19 in this step and adjust the two constructions if it differs.
+`CatalogRecordDeleteError` is B19's, constructed `(storeName, reason)`; the tests pass a stand-in
+store name, since the stub provider keeps none.
 
 Then the existing file. The stub at `simple-rag-registry.test.ts:456-489` opens whatever store is
 there, which is exactly what a provider may no longer do (§6.3: a create "fails, rather than succeeds,
 when the store is already there"). It becomes a contract-keeping stub — no catalog, so an existing
 store without a record is `RAG_ORPHAN_STORE`; `adoptExisting` takes one over and refuses a missing one;
-`openCollection` hands back an existing store — and it exposes `stores`:
+`openCollection` hands back an existing store — and it exposes `stores`. Add `OrphanStoreError` to the
+file's existing import from `'../corrections/errors.js'` (`:5-10`):
 
 ```ts
   function storesByName(deletion: 'fails' | 'deletes' = 'fails') {
@@ -16523,7 +17744,7 @@ store without a record is `RAG_ORPHAN_STORE`; `adoptExisting` takes one over and
         if (existing && !opts.adoptExisting) {
           return {
             ok: false,
-            error: new RagError(`Store '${name}' exists without a record`, 'RAG_ORPHAN_STORE'),
+            error: new OrphanStoreError(name, 'it exists without a record'),
           };
         }
         if (!existing && opts.adoptExisting) {
@@ -16635,78 +17856,16 @@ node --import tsx/esm --test \
   packages/llm-agent/src/rag/__tests__/simple-rag-registry.test.ts
 ```
 
-Expected: the owner cases fail with `RAG_NO_PROVIDER_REGISTRY`; the attribute cases create; the
-forwarding case sees no `collectionName`; the reservation case's second create **waits** (the old
-`deletions` map) and the test times out on it — run it alone with `--test-timeout=5000`; the restore
-case finds the entry gone; the three rewritten tests fail against the old behaviour.
+Expected — only what this task changes is red. B19 already validates before the provider-registry
+check and forwards `collectionName`, `attributes` and `adoptExisting`, so the owner, attribute,
+JSON-accepting, forwarding and provider-refusal cases **pass**. Red: "passes neither attributes nor
+adoptExisting" (B19 forwards both keys holding `undefined`, which `deepStrictEqual` tells from absent);
+the reservation case, whose second create **waits** on the old `deletions` map, so the test times out
+— run it alone with `--test-timeout=5000`; the restore case and the `closeSession` retry, which find
+the entry gone; and the three rewritten tests in `simple-rag-registry.test.ts`, which meet the old
+reattach-and-wait behaviour.
 
 - [ ] **Step 3: implement**
-
-Append to `collection-checks.ts`:
-
-```ts
-/**
- * The refusal for attributes a catalog could not return unchanged, or
- * undefined (§6.3). JSON with finite numbers only: NaN and the infinities come
- * back as null, a cycle cannot be written, and undefined, a function, a bigint,
- * a symbol or a class instance (a Date included) either vanish, throw or come
- * back as something else. A shared, acyclic sub-object is fine.
- */
-export function invalidAttributes(value: unknown): RagError | undefined {
-  const problem = jsonProblem(value, '(root)', new Set());
-  return problem
-    ? new RagError(
-        `Collection attributes are not storable as JSON: ${problem}`,
-        'RAG_INVALID_ATTRIBUTES',
-      )
-    : undefined;
-}
-
-function jsonProblem(
-  value: unknown,
-  at: string,
-  ancestors: Set<object>,
-): string | undefined {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') {
-    return undefined;
-  }
-  if (typeof value === 'number') {
-    return Number.isFinite(value)
-      ? undefined
-      : `${at} is ${value}, which JSON stores as null`;
-  }
-  if (typeof value !== 'object') {
-    return `${at} is ${typeof value === 'undefined' ? 'undefined' : `a ${typeof value}`}, which JSON cannot store`;
-  }
-  if (ancestors.has(value)) return `${at} is a cycle`;
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i += 1) {
-        const p = jsonProblem(value[i], `${at}[${i}]`, ancestors);
-        if (p) return p;
-      }
-      return undefined;
-    }
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) {
-      const kind =
-        (value as { constructor?: { name?: string } }).constructor?.name ??
-        'class instance';
-      return `${at} is a ${kind}, which JSON would not return unchanged`;
-    }
-    for (const [k, v] of Object.entries(value)) {
-      const p = jsonProblem(v, `${at}.${k}`, ancestors);
-      if (p) return p;
-    }
-    return undefined;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-```
-
-and export it beside `invalidOwner` in `registry/index.ts`.
 
 In `simple-rag-registry.ts`, `storeNameFor` takes the owner union — the digest input is unchanged, so
 every store created by v26.x keeps its name — and its comment states the new rule:
@@ -16744,20 +17903,6 @@ function storeNameFor(
   if (!/^[a-zA-Z_]/.test(base)) base = `_${base}`;
   return `${base.slice(0, 63 - digest.length - 1)}_${digest}`;
 }
-
-/** The owner alone, so nothing else in the params rides along to a provider. */
-function ownerOf(o: RagCollectionOwner): RagCollectionOwner {
-  switch (o.scope) {
-    case 'user':
-      return { scope: 'user', userId: o.userId };
-    case 'session':
-      return { scope: 'session', sessionId: o.sessionId };
-    default:
-      return { scope: 'global' };
-  }
-}
-
-type CreateParams = Parameters<IRagRegistry['createCollection']>[0];
 ```
 
 The `deletions` field (`:62-67`) is **deleted** and replaced:
@@ -16783,68 +17928,26 @@ The `deletions` field (`:62-67`) is **deleted** and replaced:
   }
 ```
 
-`createCollection` and `createUnder`, whole:
+`createUnder`, in full — B23's, with the `deletions` wait gone (the reservation replaces it: a key
+under deletion never reaches here, because `createCollection` refuses it through `isTaken`) and
+`attributes`/`adoptExisting` forwarded only when given. `createCollection` itself is unchanged: B19's
+validation still heads it and it still hands `createUnder` the owner `validateRagOwner` returned.
 
 ```ts
-  async createCollection(
-    params: CreateParams,
-  ): Promise<Result<RagCollectionMeta, RagError>> {
-    // The boundary for a caller no compiler saw, before anything is consulted:
-    // an owner without its key would be digested as '' and shared, and a value
-    // JSON would change could not be handed back as stored (§6.3).
-    const refused =
-      invalidOwner(params) ??
-      (params.attributes === undefined
-        ? undefined
-        : invalidAttributes(params.attributes)) ??
-      reservedGlobalNameError(params.scope, params.collectionName);
-    if (refused) return { ok: false, error: refused };
-
-    if (!this.providerRegistry) {
-      return {
-        ok: false,
-        error: new RagError(
-          'No IRagProviderRegistry configured on SimpleRagRegistry',
-          'RAG_NO_PROVIDER_REGISTRY',
-        ),
-      };
-    }
-    const provider = this.providerRegistry.getProvider(params.providerName);
-    if (!provider) {
-      return { ok: false, error: new ProviderNotFoundError(params.providerName) };
-    }
-
-    const key = keyOf(params.scope, params.collectionName);
-    if (this.isTaken(key)) {
-      return {
-        ok: false,
-        error: new RagError(
-          `Collection '${params.collectionName}' already exists (scope '${params.scope}')`,
-          'RAG_DUPLICATE_COLLECTION',
-        ),
-      };
-    }
-    this.creating.add(key);
-    try {
-      return await this.createUnder(provider, key, params);
-    } finally {
-      this.creating.delete(key);
-    }
-  }
-
   private async createUnder(
     provider: IRagProvider,
     key: string,
-    params: CreateParams,
+    params: RagRegistryCreateCollectionParams,
+    owner: RagCollectionOwner,
   ): Promise<Result<RagCollectionMeta, RagError>> {
-    const owner = ownerOf(params);
     // A provider that keeps stores by name gets one per owner; see storeNameFor.
     const storeName = storeNameFor({
       collectionName: params.collectionName,
       ...owner,
     });
     // The logical name and the attributes go to the provider, because its
-    // catalog cannot return what it was never given (§6.3). Passed unread.
+    // catalog cannot return what it was never given (§6.3). Passed unread, and
+    // only when given, so `'attributes' in opts` reads the caller's intent.
     const created = await provider.createCollection(storeName, {
       ...owner,
       collectionName: params.collectionName,
@@ -16866,8 +17969,7 @@ The `deletions` field (`:62-67`) is **deleted** and replaced:
         description: params.description,
         editable: Boolean(editor) && !(editor instanceof ImmutableEditStrategy),
         scope: owner.scope,
-        sessionId: owner.scope === 'session' ? owner.sessionId : undefined,
-        userId: owner.scope === 'user' ? owner.userId : undefined,
+        ...ragOwnerKeys(owner),
         providerName: params.providerName,
         tags: params.tags,
       },
@@ -16935,28 +18037,9 @@ The `deletions` field (`:62-67`) is **deleted** and replaced:
   }
 ```
 
-Import `CatalogRecordDeleteError` from `../corrections/errors.js`, `RagCollectionOwner` from
-`../../interfaces/rag.js`, and `invalidAttributes` beside `invalidOwner`. A restored entry moves to the
-end of `list()`'s insertion order — say so in the report; nothing depends on the order.
-
-In `llm-agent-libs/src/builder.ts`, if B19 has not already done it, `createRagCollection` and the
-queue take the registry's own parameter type, so the owner union reaches it unchanged:
-
-```ts
-  private _pendingDynamicCollections: Array<
-    Parameters<IRagRegistry['createCollection']>[0]
-  > = [];
-```
-
-```ts
-  /** Queue a dynamic collection to be created via a provider during build(). */
-  createRagCollection(
-    params: Parameters<IRagRegistry['createCollection']>[0],
-  ): this {
-    this._pendingDynamicCollections.push(params);
-    return this;
-  }
-```
+Add `CatalogRecordDeleteError` to the errors import from `'../corrections/errors.js'`
+(`RagCollectionOwner` is imported since B19). A restored entry moves to the end of `list()`'s
+insertion order — say so in the report; nothing depends on the order.
 
 - [ ] **Step 4: run the package suites and the build**
 
@@ -16973,21 +18056,29 @@ npm test -w packages/llm-agent-server
 Expected: build clean; all green. The only pre-existing tests edited are the stub and the three named
 above — `git diff --stat packages/*/src/**/__tests__` must show nothing else.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog and commit**
+
+Add to `packages/llm-agent/CHANGELOG.md` under `## [Unreleased]`, in its `**BREAKING:**` list: a
+collection that exists is no longer reattached by creating it again — the provider refuses it
+(`DuplicateCollectionError` / `OrphanStoreError`) and hydration (`describeCollections`,
+`openCollection`, `adopt`) is the way back after a restart; a creation during a running deletion of
+the same (scope, name) is refused with `DuplicateCollectionError` instead of waiting for it; on
+`CatalogRecordDeleteError` the registry re-registers the entry, so the same delete or `closeSession`
+can be retried; `createCollection` forwards `attributes`/`adoptExisting` to the provider only when
+given.
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/llm-agent/src/rag/registry \
+git add packages/llm-agent/src/rag/registry/simple-rag-registry.ts \
         packages/llm-agent/src/rag/__tests__/simple-rag-registry-lifecycle.test.ts \
         packages/llm-agent/src/rag/__tests__/simple-rag-registry.test.ts \
-        packages/llm-agent-libs/src/builder.ts
+        packages/llm-agent/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
-feat(llm-agent)!: creation is checked and forwarded; a deletion reserves its name
+feat(llm-agent)!: a deletion reserves its name, and restores on a record failure
 
-createCollection refuses an owner without its key and attributes JSON
-would change before it consults anything, and hands the provider the
-logical name, the owner, the attributes and adoptExisting: a catalog
-cannot return what it was never given.
+createCollection hands the provider attributes and adoptExisting only
+when the caller gave them, so a provider reading the options sees the
+caller's intent rather than keys holding undefined.
 
 A deletion reserves its (scope, name) until the provider answers, and a
 creation of it meanwhile is refused rather than queued. On
@@ -17000,8 +18091,6 @@ it again — the provider refuses it (RAG_DUPLICATE_COLLECTION or
 RAG_ORPHAN_STORE); an assembly that re-creates its collections at
 startup must hydrate instead. A creation during a running deletion of
 the same collection is refused instead of waiting for it.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -17013,9 +18102,15 @@ Once one name can live in two scopes, a call that passes a name alone either thr
 "every caller that addresses the registry by name alone changes with the key"). The `ragStores`
 projection (`builder.ts:946-952`) rebuilds with `get(m.name)` and keys by bare name, so two `docs`
 would throw in the mutation listener; it keys with `ragStoreKey` instead. The fallback-RAG wrapping
-(`:990-1004`) iterates the projection's keys and re-registers every entry as a global, losing its owner
-— with prefixed keys it would even try to register a global `user/docs`; it iterates `list()` and
-carries scope and owner. `addRagStore`/`removeRagStore` (`agent.ts:396-399`, `:427`) and the
+(`:990-1004`) iterates the projection's keys and re-registers every entry as a global through
+`unregister` + `register` — losing its owner, its editor, its provider name and its store name (with
+prefixed keys it would even try to register a global `user/docs`). Losing the provider name and the
+store name is the resurrection §6.3 exists to prevent: B29 hydrates adopted collections into a session
+registry before `buildAgent` runs, so a build with `withCircuitBreaker()` would re-register every
+hydrated collection with no provider, and `rag_delete_collection`/`closeSession` would then take
+`deleteData`'s "no providerName → ok" path (`simple-rag-registry.ts:280-281`), leaving the catalog
+record for the next hydration. It iterates `list()` and swaps the store handle **in place**.
+`addRagStore`/`removeRagStore` (`agent.ts:396-399`, `:427`) and the
 `tools`/`history`/idempotent probes (`builder.ts:914`, `:920`, `:926`, `:1238`,
 `worker-registry.ts:188`, `:192`) address deployment stores, which are globals, and say so.
 
@@ -17025,18 +18120,38 @@ key into a stage (`rag-user/docs` is a valid id), `tool-select.ts:81`, `skill-se
 `agent/rag-orchestrator.ts:124`, `:264` iterate entries, `mcp/tool-registry.ts:95` reads `tools` (a
 global, so unchanged) or the first entry, and `history-upsert.ts:81` reads `history`.
 
+**How the wrap keeps what it must — the choice, and why.** Re-registering through `adopt` cannot work:
+it needs the record's `storeName`, and neither `RagCollectionMeta` (which gains nothing, §6.3) nor any
+`IRagRegistry` member exposes it. So `SimpleRagRegistry` gains `replaceRag(name, scope, rag): boolean`,
+which swaps an entry's `rag` and keeps its editor, store name, provider name and meta — the one
+operation a decorator needs. It is a method of the class, not of `IRagRegistry`, so no implementer of
+the interface gains an obligation; the builder already special-cases `SimpleRagRegistry` the same way
+for `setProviderRegistry` (`builder.ts:893-902`). For another `IRagRegistry` the builder re-registers
+with everything `register` can carry (`editor` from `getEditor`, `providerName`, `description`, `tags`,
+owner keys); what store name that entry deletes under is that implementation's own business.
+
 **Files:**
+- Modify: `packages/llm-agent/src/rag/registry/simple-rag-registry.ts` — `replaceRag`, after
+  `getEditor`
 - Modify: `packages/llm-agent-libs/src/builder.ts:914` (idempotent probe), `:920`, `:926` (`tools`,
   `history`), `:946-952` (projection), `:990-1004` (fallback wrapping), `:1238` (`history`)
 - Modify: `packages/llm-agent-libs/src/agent.ts:396-402`, `:427` (`addRagStore`, `removeRagStore`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/workers/worker-registry.ts:188`, `:192`
+- Modify: `packages/llm-agent/CHANGELOG.md`, `packages/llm-agent-libs/CHANGELOG.md` — `[Unreleased]`
+  entries
 - Test: `packages/llm-agent-libs/src/__tests__/rag-stores-projection.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `IRagRegistry.get/getEditor/unregister(name, scope?)`, `ragStoreKey` (B23).
-- Produces: `SmartAgentHandle.ragStores` / `deps.ragStores` keyed `name` for globals and
+- Consumes: `IRagRegistry.get/getEditor/unregister(name, scope?)`, `ragStoreKey`, `findOrThrow` (B23);
+  `SimpleRagRegistry.adopt(…, providerName)` (B24, in the test).
+- Produces:
+  - `SimpleRagRegistry.replaceRag(name: string, scope: RagCollectionScope, rag: IRag): boolean` — swaps
+    the store handle of an existing entry, keeping editor, store name, provider name and meta; fires
+    the mutation listener; `false` when the entry is absent.
+  - `SmartAgentHandle.ragStores` / `deps.ragStores` keyed `name` for globals and
   `user/<name>`, `session/<name>` otherwise — a stage configuration names a user or session collection
-  by its prefixed key. Task B29's per-session registries rely on the builder never probing by bare name.
+  by its prefixed key. Task B29's per-session registries rely on the builder never probing by bare name,
+  and on the circuit-breaker wrap keeping a hydrated entry's provider and store name.
 
 - [ ] **Step 1: write the failing tests**
 
@@ -17044,7 +18159,15 @@ global, so unchanged) or the first entry, and `history-upsert.ts:81` reads `hist
 // packages/llm-agent-libs/src/__tests__/rag-stores-projection.test.ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { FallbackRag, InMemoryRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
+import {
+  FallbackRag,
+  InMemoryRag,
+  type IRagEditor,
+  type IRagProvider,
+  RagError,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+} from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { makeDefaultDeps, makeLlm, makeRag } from '../testing/index.js';
@@ -17102,6 +18225,49 @@ test('the circuit-breaker wrapping keeps each entry’s scope and owner', async 
   }
 });
 
+test('a wrapped hydrated collection keeps its editor, and its delete still reaches its provider', async () => {
+  const deleted: string[] = [];
+  const provider = {
+    name: 'pg',
+    kind: 'vector',
+    editable: true,
+    supportedScopes: ['session', 'user', 'global'],
+    createCollection: async () => ({ ok: false, error: new RagError('not expected') }),
+    deleteCollection: async (storeName: string) => {
+      deleted.push(storeName);
+      return { ok: true, value: undefined };
+    },
+  } as unknown as IRagProvider;
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(provider);
+  const reg = new SimpleRagRegistry();
+  const editor = {} as IRagEditor;
+  reg.adopt(
+    { storeName: 'mine_0123456789ab', name: 'mine', scope: 'user', userId: 'alice' },
+    new InMemoryRag(),
+    editor,
+    'pg',
+  );
+  const handle = await new SmartAgentBuilder({})
+    .withMainLlm(makeLlm([{ content: 'ok' }]))
+    .setRagRegistry(reg)
+    .setRagProviderRegistry(providers)
+    .withCircuitBreaker()
+    .build();
+  try {
+    assert.ok(handle.ragStores['user/mine'] instanceof FallbackRag);
+    const meta = reg.list().find((m) => m.name === 'mine');
+    assert.equal(meta?.providerName, 'pg', 'the provider survives the wrap');
+    assert.equal(meta?.userId, 'alice');
+    assert.equal(reg.getEditor('mine', 'user'), editor, 'still editable through the tools');
+    assert.ok((await reg.deleteCollection('mine', 'user')).ok);
+    assert.deepEqual(deleted, ['mine_0123456789ab'],
+      'the store name, not the logical one: a delete that missed would leave the record to be hydrated again');
+  } finally {
+    await handle.close();
+  }
+});
+
 test('a user collection named "tools" does not hide or break the built-in tools store', async () => {
   const reg = new SimpleRagRegistry();
   const mine = new InMemoryRag();
@@ -17147,12 +18313,35 @@ npm run build
 node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/rag-stores-projection.test.ts
 ```
 
-Expected: the first two builds reject with `RAG_AMBIGUOUS_COLLECTION` from the projection's
-`get(m.name)`; the third finds `get('tools')` answered by the user collection, so the built-in is never
-registered; the fourth finds `get('kb')` answered by the user collection and `unregister('kb')` removing
+Expected: the first two builds reject with `AmbiguousCollectionError` from the projection's
+`get(m.name)`; the hydrated-collection build succeeds (one name, one scope) but its wrap re-registers
+`mine` as a global with no provider and no editor, so the `providerName` assertion fails; the
+`tools` test finds `get('tools')` answered by the user collection, so the built-in is never
+registered; the last finds `get('kb')` answered by the user collection and `unregister('kb')` removing
 it.
 
 - [ ] **Step 3: implement**
+
+`simple-rag-registry.ts`, after `getEditor`:
+
+```ts
+  /**
+   * Swap the store handle of an existing entry, keeping everything else — its
+   * editor, its provider, its store name and its meta — and tell the mutation
+   * listener. For a decorator such as the builder's circuit-breaker
+   * FallbackRag: re-registering would set the store name to the logical name
+   * and drop the provider, so a hydrated collection's delete would miss its
+   * store and its catalog record would come back (§6.3). The scope is
+   * required, so the lookup is never ambiguous. False when the entry is absent.
+   */
+  replaceRag(name: string, scope: RagCollectionScope, rag: IRag): boolean {
+    const found = this.findOrThrow(name, scope);
+    if (!found) return false;
+    found.entry.rag = rag;
+    this.fireMutation();
+    return true;
+  }
+```
 
 `builder.ts:914`:
 
@@ -17193,21 +18382,31 @@ it.
 `builder.ts:990-1004`, the fallback wrapping:
 
 ```ts
-      // list() is a snapshot, so re-registering while iterating is safe.
+      // list() is a snapshot, so changing entries while iterating is safe.
       for (const meta of ragRegistry.list()) {
         const scope = meta.scope ?? 'global';
         const store = ragRegistry.get(meta.name, scope);
         if (!store) continue;
         const wrapped = new FallbackRag(store, new InMemoryRag(), embedderBreaker);
-        // Update the registry so later lookups (and the mutation-listener
-        // rebuild) see the wrapped store. The entry keeps its scope and owner:
-        // dropping them would turn a user or session collection into a global.
+        // Later lookups (and the mutation-listener rebuild) see the wrapped
+        // store. The entry keeps its scope, owner, editor, provider and store
+        // name: without the last two a hydrated collection's delete would reach
+        // no store and its catalog record would bring it back (§6.3).
+        if (ragRegistry instanceof SimpleRagRegistry) {
+          ragRegistry.replaceRag(meta.name, scope, wrapped);
+          continue;
+        }
+        // Another IRagRegistry: re-register with everything register carries.
+        const editor = ragRegistry.getEditor(meta.name, scope);
         ragRegistry.unregister(meta.name, scope);
-        ragRegistry.register(meta.name, wrapped, undefined, {
+        ragRegistry.register(meta.name, wrapped, editor, {
           displayName: meta.displayName,
+          description: meta.description,
           scope,
           sessionId: meta.sessionId,
           userId: meta.userId,
+          providerName: meta.providerName,
+          tags: meta.tags,
         });
       }
 ```
@@ -17253,15 +18452,28 @@ timeout 900 npm test -w packages/llm-agent-server-libs
 npm test -w packages/llm-agent-server
 ```
 
-Expected: build clean; all green, no pre-existing test edited.
+Expected: build clean; all green, no pre-existing test edited. A collection wrapped by the circuit
+breaker now keeps its editor where it used to lose it, so it stays editable through the tools; report
+any test that asserted the old read-only result by name.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog and commit**
+
+Add to `packages/llm-agent-libs/CHANGELOG.md` under `## [Unreleased]`, in a `**BREAKING:**` line: the
+`ragStores` projection keys a global by its bare name and a user or session collection
+`user/<name>` / `session/<name>`, so a stage configuration that named an owned collection by its bare
+name names the prefixed key; the circuit-breaker wrap keeps each entry's scope, owner, editor,
+provider and store name (it used to re-register every entry as a read-only global, which left a
+hydrated collection undeletable); `addRagStore`/`removeRagStore` address the global of that name.
+Add to `packages/llm-agent/CHANGELOG.md` under `## [Unreleased]`: `SimpleRagRegistry.replaceRag(name,
+scope, rag)` swaps an entry's store handle in place.
 
 ```bash
 cd ~/prj/llm-agent
-git add packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/agent.ts \
+git add packages/llm-agent/src/rag/registry/simple-rag-registry.ts \
+        packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/agent.ts \
         packages/llm-agent-libs/src/__tests__/rag-stores-projection.test.ts \
-        packages/llm-agent-server-libs/src/smart-agent/workers/worker-registry.ts
+        packages/llm-agent-server-libs/src/smart-agent/workers/worker-registry.ts \
+        packages/llm-agent/CHANGELOG.md packages/llm-agent-libs/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(llm-agent-libs)!: ragStores keys an owned collection by scope/name
 
@@ -17269,14 +18481,14 @@ With the registry keyed by scope and name, every caller that passed a
 name alone would throw on an ambiguous one or reach the wrong entry.
 The ragStores projection keeps a global's bare name and keys a user or
 session collection user/<name> or session/<name>; the circuit-breaker
-wrapping iterates the registry and keeps each entry's scope and owner
-instead of re-registering everything as a global; addRagStore,
+wrapping iterates the registry and swaps each store in place
+(SimpleRagRegistry.replaceRag), keeping scope, owner, editor, provider
+and store name, instead of re-registering everything as a global — which
+left a hydrated collection's delete reaching no store; addRagStore,
 removeRagStore and the tools/history probes address globals.
 
 BREAKING: a stage configuration that named a user or session collection
 by its bare name in ragStores now names it user/<name> or session/<name>.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -17297,7 +18509,7 @@ identity and attributes from the consumer's `attributesFor`, and delete answers 
 
 The only caller of `buildRagCollectionToolEntries` in `src` is its own test
 (`rag/__tests__/rag-collection-tools.test.ts`); `docs/EXAMPLES.md:220`, `docs/INTEGRATION.md:675` and
-`docs/SECURITY_THREAT_MODEL.md:75` describe the old call and belong to the documentation task.
+`docs/SECURITY_THREAT_MODEL.md:75` describe the old call; Task B30 rewrites them.
 
 **Files:**
 - Modify: `packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts` — whole file (below)
@@ -17305,33 +18517,42 @@ The only caller of `buildRagCollectionToolEntries` in `src` is its own test
   `RagCollectionToolOptions`
 - Modify: `packages/llm-agent/src/rag/__tests__/rag-collection-tools.test.ts` — every call gains an
   identity; three tests change meaning (below)
-- Create: `packages/llm-agent/src/__typechecks__/rag-tool-identity.ts`
+- Create: `packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts` — under `__tests__/`
+  because `packages/llm-agent/tsconfig.json` includes `src/**/*` and excludes only `**/__tests__/**`,
+  `**/*.test.ts` and `dist`: a file in `src/__typechecks__/` would be compiled into the published
+  `dist/`. The test glob `src/**/*.test.ts` does not run it (the same arrangement as B19's
+  `rag-collection-owner.typecheck.ts`)
 - Modify: `tsconfig.typecheck.json` — append that file
+- Modify: `packages/llm-agent/CHANGELOG.md` — `[Unreleased]` entry
 - Test: `packages/llm-agent/src/rag/__tests__/rag-collection-tools-identity.test.ts` (new)
 
 **Interfaces:**
 - Consumes: `IRagRegistry.getEditor/deleteCollection(name, scope?)` (B23); the restore on
-  `CatalogRecordDeleteError` (B25); `RagCollectionOwner`, `RagJsonValue`, `CatalogRecordDeleteError`
-  (B19).
+  `CatalogRecordDeleteError` (B25); `RagCollectionOwner`, `RagJsonValue`, `CatalogRecordDeleteError`,
+  `AmbiguousCollectionError` (B19).
 - Produces:
   - `interface RagCallerIdentity { readonly sessionId: string; readonly userId?: string }`
   - `interface RagToolContext { [key: string]: unknown }`
   - `interface RagCollectionToolOptions { registry: IRagRegistry; identity: RagCallerIdentity; providerRegistry?: IRagProviderRegistry; attributesFor?: (created: { name: string } & RagCollectionOwner) => RagJsonValue | undefined }`
   - `buildRagCollectionToolEntries(opts: RagCollectionToolOptions): RagToolEntry[]`
-  - failure answers `{ ok: false, error: string, code?: string }`; `code` is
-    `'RAG_AMBIGUOUS_COLLECTION'` for an ambiguous name and the registry's code for a refused create.
+  - failure answers `{ ok: false, error: string, code?: string }`; for an ambiguous name the handler
+    builds B19's `AmbiguousCollectionError` and answers its `code` and `message`; for a refused create
+    it answers the registry error's `code` (a `DuplicateCollectionError`, `InvalidOwnerError`, … from
+    B19–B25); the delete tool tells a record failure from a data failure by
+    `instanceof CatalogRecordDeleteError`.
 
 - [ ] **Step 1: write the failing tests**
 
 The compile assertion — the task's central rule is that the unsafe call can no longer be written:
 
 ```ts
-// packages/llm-agent/src/__typechecks__/rag-tool-identity.ts — appended to tsconfig.typecheck.json
-import type { IRagRegistry } from '../interfaces/rag.js';
+// packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts — appended to tsconfig.typecheck.json
+// Compile-time assertions only; under __tests__ so the package build neither compiles nor ships it.
+import type { IRagRegistry } from '../../interfaces/rag.js';
 import {
   buildRagCollectionToolEntries,
   type RagCallerIdentity,
-} from '../rag/mcp-tools/rag-collection-tools.js';
+} from '../mcp-tools/rag-collection-tools.js';
 
 declare const registry: IRagRegistry;
 
@@ -17357,9 +18578,12 @@ buildRagCollectionToolEntries({
 });
 ```
 
+Append to `tsconfig.typecheck.json`'s `include`, as its last entry. B20–B26 append nothing, so the
+last entry is B19's file and the edit reads:
+
 ```json
-    "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts",
-    "packages/llm-agent/src/__typechecks__/rag-tool-identity.ts"
+    "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts",
+    "packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts"
 ```
 
 The behaviour:
@@ -17720,6 +18944,7 @@ import type {
   RagJsonValue,
 } from '../../interfaces/rag.js';
 import {
+  AmbiguousCollectionError,
   CatalogRecordDeleteError,
   CollectionNotFoundError,
 } from '../corrections/errors.js';
@@ -17834,13 +19059,10 @@ export function buildRagCollectionToolEntries(
       };
     }
     if (matches.length > 1) {
-      return {
-        ok: false,
-        code: 'RAG_AMBIGUOUS_COLLECTION',
-        error: `Collection '${name}' exists in scopes ${matches
-          .map(scopeOf)
-          .join(', ')}; pass scope to choose one`,
-      };
+      // The registry's own error, so the tool and the registry word and code
+      // an ambiguous name alike.
+      const ambiguous = new AmbiguousCollectionError(name, matches.map(scopeOf));
+      return { ok: false, code: ambiguous.code, error: ambiguous.message };
     }
     return { ok: true, meta: matches[0], scope: scopeOf(matches[0]) };
   };
@@ -18124,17 +19346,29 @@ npm test -w packages/llm-agent
 ```
 
 Then make `identity` optional in `RagCollectionToolOptions`, run `npm run typecheck`, confirm
-`error TS2578: Unused '@ts-expect-error' directive` on `rag-tool-identity.ts`, and restore it.
+`error TS2578: Unused '@ts-expect-error' directive` on `rag-tool-identity.typecheck.ts`, and restore
+it. Confirm the file stays out of the package output: `ls packages/llm-agent/dist/rag/__tests__`
+fails (no such directory).
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog and commit**
+
+Add to `packages/llm-agent/CHANGELOG.md` under `## [Unreleased]`, in its `**BREAKING:**` list:
+`buildRagCollectionToolEntries` requires `identity: RagCallerIdentity` and resolves every collection
+inside that caller's address space (its own collections and the globals); `RagToolContext` no longer
+declares `sessionId`/`userId` (call sites passing them still compile, nothing reads them); the tools
+that take a collection name take an optional `scope`, and a name several scopes hold answers
+`RAG_AMBIGUOUS_COLLECTION`; no framework tool writes or deletes a global, and `rag_create_collection`
+accepts `session | user` only; the attributes of a tool-created collection come from the optional
+`attributesFor` callback, never from the model; `rag_delete_collection` answers `{ ok: false }` for
+`CatalogRecordDeleteError`. New exported types `RagCallerIdentity`, `RagCollectionToolOptions`.
 
 ```bash
 cd ~/prj/llm-agent
 git add packages/llm-agent/src/rag/mcp-tools \
         packages/llm-agent/src/rag/__tests__/rag-collection-tools-identity.test.ts \
         packages/llm-agent/src/rag/__tests__/rag-collection-tools.test.ts \
-        packages/llm-agent/src/__typechecks__/rag-tool-identity.ts \
-        tsconfig.typecheck.json
+        packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts \
+        tsconfig.typecheck.json packages/llm-agent/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(llm-agent)!: the collection tools are built for one caller
 
@@ -18147,8 +19381,8 @@ not refused. RagToolContext loses sessionId and userId: one source of
 identity, so none can disagree with the instance.
 
 A tool that takes a collection name takes an optional scope, and a name
-several scopes hold is refused with RAG_AMBIGUOUS_COLLECTION instead of
-answered with the first match. No framework tool mutates a global:
+several scopes hold is refused with the registry's AmbiguousCollectionError
+instead of answered with the first match. No framework tool mutates a global:
 reachable licenses reading, never writing, so rag_create_collection's
 scope narrows to session | user. Attributes of a tool-created collection
 come from the consumer's attributesFor, never from the model. A record
@@ -18158,8 +19392,6 @@ BREAKING: buildRagCollectionToolEntries requires identity; RagToolContext
 no longer declares sessionId/userId (call sites passing them still
 compile, nothing reads them); rag_create_collection refuses 'global';
 a framework tool no longer writes a global collection.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -18171,12 +19403,16 @@ to every build (`:228`) and the object `closeSession` is called on at dispose (`
 *"GLOBAL … shared; the per-call scope filter isolates"* — is the model spec §5.1 replaces. This task adds
 the seam of §6.4: an optional, **asynchronous** `ragRegistryFactory(identity)` whose registry the session
 owns — handed to `buildAgent`, and the one `dispose()` closes instead of the shared one. Absent, the old
-path runs untouched. `ragRegistry` becomes optional, with a guard that one of the two is given, so a
-consumer supplying the factory is not made to pass a registry it does not use.
+path runs untouched. **`SessionGraphFactoryOptions.ragRegistry` becomes optional** (`IRagRegistry |
+undefined`), with a guard at `build()` that one of the two is given, so a consumer supplying the
+factory is not made to pass a registry it does not use. The spec lists exactly this in §8's
+`llm-agent-libs` row ("which makes `SessionGraphFactoryOptions.ragRegistry` optional where it was
+required — a consumer that *reads* it must now handle `undefined`"), and the CHANGELOG says so.
 
 **Files:**
 - Modify: `packages/llm-agent-libs/src/session/session-graph-factory.ts:91-94` (options), `:166-176`
   (resolve the registry before MCP starts), `:222-230` (hand it to `buildAgent`), `:279-280` (close it)
+- Modify: `packages/llm-agent-libs/CHANGELOG.md` — `[Unreleased]` entry
 - Test: `packages/llm-agent-libs/src/session/__tests__/session-graph-factory-rag-registry.test.ts` (new)
 
 **Interfaces:**
@@ -18413,14 +19649,21 @@ Expected: build clean (the `SessionLifecycleOptions.ragRegistry` forward in serv
 type-checks: a required value assigned to an optional field); all green; `git diff --stat
 packages/llm-agent-libs/src/session/__tests__` shows only the new file.
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog and commit**
+
+Add to `packages/llm-agent-libs/CHANGELOG.md` under `## [Unreleased]`: `SessionGraphFactoryOptions`
+gains the optional async `ragRegistryFactory(identity)`; the registry it returns is the session's own
+— handed to `buildAgent` and closed by `dispose()` in place of the shared one. **BREAKING** for a
+consumer that *reads* the options: `SessionGraphFactoryOptions.ragRegistry` is now optional
+(`IRagRegistry | undefined`), and `build()` rejects when neither it nor `ragRegistryFactory` is given.
 
 ```bash
 cd ~/prj/llm-agent
 git add packages/llm-agent-libs/src/session/session-graph-factory.ts \
-        packages/llm-agent-libs/src/session/__tests__/session-graph-factory-rag-registry.test.ts
+        packages/llm-agent-libs/src/session/__tests__/session-graph-factory-rag-registry.test.ts \
+        packages/llm-agent-libs/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
-feat(llm-agent-libs): a session can own its RAG registry
+feat(llm-agent-libs)!: a session can own its RAG registry
 
 ragRegistry was one object handed to every session build and closed at
 dispose, and its comment said the isolation came from a per-call scope
@@ -18431,7 +19674,8 @@ full identity, which a build callback cannot. Absent, the shared
 registry is used exactly as before; ragRegistry becomes optional, and a
 build with neither is refused.
 
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+BREAKING: SessionGraphFactoryOptions.ragRegistry is optional; a consumer
+that reads it must handle undefined.
 MSG
 )"
 ```
@@ -18444,9 +19688,28 @@ always supplies `ragRegistryFactory`: per session, a fresh `SimpleRagRegistry` h
 globals by reference and hydrated for the identity — each provider's `describeCollections()`, its
 `rejected` rows reported through the logger, the records belonging to the caller kept, `openCollection`,
 `adopt` (§6.3's hydration flow). Hydration is, from this release, the only way back to a collection after
-a restart. The server also owns one `IRagProviderRegistry` and hands it to every build: today each
-session build silently replaced the shared registry's provider registry with a fresh empty one
-(`builder.ts:887-902`), and hydration needs the providers in one place.
+a restart.
+
+**Why the server also hands one `IRagProviderRegistry` to every build — kept because the task cannot
+work without it.** `SmartAgentBuilder.build()` takes `this._ragProviderRegistry ?? new
+SimpleRagProviderRegistry()` and calls `setProviderRegistry` with it on whatever registry it was given
+(`builder.ts:887-902`). The server passes none today, so every session build would overwrite the
+provider registry `buildSessionRagRegistry` set on the session's registry with a fresh empty one; an
+adopted collection's `deleteCollection` would then fail with `DeleteUnsupportedError` ("provider 'pg'
+is not registered", `simple-rag-registry.ts:282-291`) and its catalog record would bring it back at the
+next hydration. Handing the builder the server's one registry keeps the provider registry **shared and
+untouched**, as §9 (question 4) and §10 require — the same object for every build, its contract unchanged; what
+changes is only that the builder stops substituting an empty one per build.
+
+**Two limits of today's `SmartServer`, stated rather than fixed (§6.4, §11).** It registers **no RAG
+providers**, so until a deployment configures one there is no catalog to hydrate from and each
+session's registry holds only the deployment's globals; and its sessions carry a `sessionId` and **no
+`userId`** (`llm-agent-libs/src/session/session-registry.ts:91` builds them from `{ sessionId }`), so
+`user` collections are neither hydrated nor creatable through it. The per-session registry is still the
+right shape to ship — it removes the shared registry the leak depends on. This task states both limits
+in a code comment at the wiring, in a `warning` log line at startup when no provider is registered,
+and in the `llm-agent-server-libs` CHANGELOG entry; carrying a caller's `userId` into `SmartServer`'s
+sessions is a separate change.
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` —
@@ -18455,16 +19718,18 @@ session build silently replaced the shared registry's provider registry with a f
   (`ragRegistry?`, `ragRegistryFactory?`), `:189-191` (forward), and re-export the helper
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — fields
   `_ragProviderRegistry`, `_globalRagRegistry` (beside `_toolsRag`, `:789`); `:1447-1448` capture the
-  global registry; `:1550` `ragRegistryFactory` replaces `ragRegistry: globalRagRegistry`; `:2608-2610`
+  global registry, with the two limits stated in a comment (not logged: it would fire at every start of the default deployment); `:1550` `ragRegistryFactory` replaces `ragRegistry: globalRagRegistry`; `:2608-2610`
   every build gets the server's provider registry; `_sessionRagRegistry`
 - Test: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/__tests__/session-rag-registry.test.ts` (new)
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-session-rag-registry.test.ts` (new)
+- Modify: `packages/llm-agent-server-libs/CHANGELOG.md` — `[Unreleased]` entry
 
 **Interfaces:**
 - Consumes: `SimpleRagRegistry.adopt(record, rag, editor?, providerName?)` (B24),
   `IRagRegistry.get/getEditor(name, scope?)` (B23), `IRagProvider.describeCollections?` /
   `openCollection?` and `RagCollectionRecord` (B19, implemented by B20–B22),
-  `SessionGraphFactoryOptions.ragRegistryFactory` (B28).
+  `SessionGraphFactoryOptions.ragRegistryFactory` (B28); the test fixture `constructionSeams` from
+  `smart-agent/__tests__/construction-seams.ts` (B9, extended by B10 to stub all three required seams).
 - Produces: `buildSessionRagRegistry(input: { identity: SessionGraphIdentity; globals: IRagRegistry; providers?: IRagProviderRegistry; logger?: ILogger }): Promise<IRagRegistry>`;
   `SessionLifecycleOptions.ragRegistryFactory?`; `SessionLifecycleOptions.ragRegistry` optional.
 
@@ -18634,22 +19899,19 @@ test('a provider without a catalog is skipped silently', async () => {
 ```
 
 The server wiring. `_sessionRagRegistry` is private; the cast reaches it the way
-`session-parts-descriptors.test.ts` reaches `_embeddedSessionParts`. Copy that file's `cfg` and
-`new SmartServer(cfg, deps)` literal as they stand when this task runs (B9/B10 change the deps' shape)
-and verify in Step 2 that the server builds:
+`session-parts-descriptors.test.ts` reaches `_embeddedSessionParts`. The `SmartServer` literal spreads
+`constructionSeams` first, like every test that constructs one since B9, so all three required seams
+(`makeLlm`, `resolveEmbedder`, `makeRag`) are supplied; `embedder` is the optional injected embedder:
 
 ```ts
 // packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-session-rag-registry.test.ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type IEmbedder, type ILlm, InMemoryRag, type IRagRegistry } from '@mcp-abap-adt/llm-agent';
+import { type IEmbedder, InMemoryRag, type IRagRegistry } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraphIdentity } from '@mcp-abap-adt/llm-agent-libs';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
-const cannedLlm = {
-  chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),
-  model: 'stub',
-} as unknown as ILlm;
 const stubEmbedder = { embed: async () => ({ vector: [0] }) } as unknown as IEmbedder;
 const cfg = {
   skipModelValidation: true,
@@ -18662,7 +19924,7 @@ interface Internals {
 }
 
 test('every session gets its own registry, seeded with the deployment’s globals', async () => {
-  const server = new SmartServer(cfg, { makeLlm: async () => cannedLlm, embedder: stubEmbedder });
+  const server = new SmartServer(cfg, { ...constructionSeams, embedder: stubEmbedder });
   const built = await server._buildEmbeddedAgent();
   try {
     const internals = server as unknown as Internals;
@@ -18678,6 +19940,7 @@ test('every session gets its own registry, seeded with the deployment’s global
     a.register('mine', new InMemoryRag(), undefined, { displayName: 'mine', scope: 'session', sessionId: 'a' });
     assert.equal(b.get('mine'), undefined, 'one session’s collection is absent from another’s registry');
     assert.equal(internals._globalRagRegistry.get('mine'), undefined, 'and from the deployment’s');
+
   } finally {
     await built.close();
   }
@@ -18695,6 +19958,8 @@ node --import tsx/esm --test \
 ```
 
 Expected: `Cannot find module '../session-rag-registry.js'`, and `_sessionRagRegistry is not a function`.
+If the server test instead fails while building (a seam the fixture does not stub), fix the fixture
+member the build needed in `construction-seams.ts`, as B9 prescribes — never the server.
 
 - [ ] **Step 3: implement**
 
@@ -18870,6 +20135,14 @@ After `:1447-1448`:
 
 ```ts
     this._globalRagRegistry = globalRagRegistry;
+    // Two limits of this server, stated rather than fixed (§6.4): it registers
+    // no RAG providers, so no session registry has a catalog to hydrate from —
+    // each holds only the deployment's globals; and its sessions carry a
+    // sessionId and no userId (llm-agent-libs session-registry.ts builds them
+    // from { sessionId }), so user collections are neither hydrated nor
+    // creatable through it. Not logged: in today's default deployment it would
+    // fire at every start, and an expected warning trains readers to skip the
+    // real ones — the limits are stated here, in the CHANGELOG and in the docs.
 ```
 
 `:1550`, in the `buildSessionLifecycle` options — `ragRegistry: globalRagRegistry,` is replaced by:
@@ -18878,7 +20151,9 @@ After `:1447-1448`:
       // A registry per session, seeded with the deployment's globals and
       // hydrated for its identity (§6.4). Never the shared one: collections are
       // addressed by name, so sharing it would put every session's collections
-      // in every session's address space.
+      // in every session's address space. Hydration finds nothing until a
+      // provider is registered, and no user collection while sessions carry no
+      // userId — see the limits stated above.
       ragRegistryFactory: (identity) => this._sessionRagRegistry(identity),
 ```
 
@@ -18888,6 +20163,9 @@ After `:1447-1448`:
     if (parts.ragRegistry) {
       builder = builder.setRagRegistry(parts.ragRegistry);
     }
+    // The server's one provider registry: without it build() substitutes an
+    // empty one and sets it on the session's registry, and an adopted
+    // collection's delete then reaches no provider.
     builder = builder.setRagProviderRegistry(this._ragProviderRegistry);
 ```
 
@@ -18913,7 +20191,8 @@ and the method, beside `buildSessionAgent`:
 ```
 
 `_buildEmbeddedAgent` (`:1686-1690`) keeps `infra.globalRagRegistry`: the embeddable agent serves one
-consumer with no session lifecycle, so there is no second caller to separate — see Findings.
+consumer with no session lifecycle, so there is no second caller whose collections it could see, and
+§6.4's seam concerns the session lifecycle only.
 
 - [ ] **Step 4: run the package suites and the build**
 
@@ -18929,13 +20208,26 @@ npm test -w packages/llm-agent-server
 Expected: build clean; all green, the existing `smart-server-session-lifecycle.test.ts` included (it
 passes `ragRegistry` to `buildSessionLifecycle` directly, which still works).
 
-- [ ] **Step 5: commit**
+- [ ] **Step 5: changelog and commit**
+
+Add to `packages/llm-agent-server-libs/CHANGELOG.md` under `## [Unreleased]` (create it above
+`## 26.0.0` if no earlier task has): every `SmartServer` session owns its RAG registry — a fresh one
+per session, holding the deployment's globals by reference and hydrated for the session's identity
+(`describeCollections`, rejected rows logged, the caller's records opened and `adopt`ed with their
+provider's name) — instead of one registry shared by every session; hydration is the only way back to
+a collection after a restart; one provider registry is handed to every build. **Two limits, stated:**
+`SmartServer` registers no RAG providers, so there is no catalog to hydrate from and a session's
+registry holds only the globals until a deployment registers one; and its sessions carry no `userId`, so `user` collections are neither hydrated
+nor creatable through it. New exports `buildSessionRagRegistry`, `SessionRagRegistryInput`;
+`SessionLifecycleOptions` gains `ragRegistryFactory?`, and its `ragRegistry` is optional — a consumer
+that reads it must handle `undefined`.
 
 ```bash
 cd ~/prj/llm-agent
 git add packages/llm-agent-server-libs/src/smart-agent/session-lifecycle \
         packages/llm-agent-server-libs/src/smart-agent/smart-server.ts \
-        packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-session-rag-registry.test.ts
+        packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-session-rag-registry.test.ts \
+        packages/llm-agent-server-libs/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 feat(llm-agent-server-libs): every SmartServer session owns its RAG registry
 
@@ -18949,10 +20241,13 @@ records opened and adopted. Hydration is the only way back to a
 collection after a restart.
 
 The server also owns one provider registry and hands it to every build;
-before, each session build replaced the shared registry's providers with
-an empty set.
+before, each session build replaced the registry's providers with an
+empty set, which would have left an adopted collection undeletable.
 
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Two limits are stated, not fixed: SmartServer registers no RAG provider,
+so there is nothing to hydrate yet, and its
+sessions carry no userId, so user collections are neither hydrated nor
+creatable through it.
 MSG
 )"
 ```
@@ -18964,14 +20259,25 @@ MSG
 A stale doc that describes the previous contract is worse than none: people believe it. This task
 is the final sweep. It writes the migration guide for every item in spec §8 "Migration — what a
 consumer on the old contract must do". It also writes the root `[Unreleased]` changelog. Then it
-brings every document, example YAML and template in the repository in line with the code that the
-earlier tasks landed, and it proves the result with greps and the example-config checker.
+brings every document, example YAML, deploy template and env template in the repository in line
+with the code that the earlier tasks landed, and it proves the result with greps and the
+example-config checker.
 Package READMEs and package CHANGELOGs go **with the code task that changes that package**, in the
 same commit. That is the convention B1–B6b followed (see "Ownership" below). This task owns what no
 single package owns, and it catches what the per-package tasks missed.
 
-It argues from spec §8 (the change matrix, "Release shape", and migration items 1–11), §10 (no
-version bump: entries stay under `[Unreleased]`), and `docs/ARCHITECTURE.md` principle 9.
+It argues from spec §8 (the change matrix, "Release shape", and migration items 1–11), §6.4 and §11
+(the two `SmartServer` limits the spec states rather than fixes), §10 (no version bump: entries stay
+under `[Unreleased]`), and `docs/ARCHITECTURE.md` principle 9.
+
+**Scope.** A doc that was already wrong before this release is fixed here **only where this task's
+own greps would otherwise fail** — that is, where it shows a name or field this release removes.
+That covers the v19-removed `pipeline: { llm, rag, mcp }` sections (`QUICK_START.md:190-231`,
+`INTEGRATION.md:2240-2266`, `PERFORMANCE.md:300-322`, the five legacy `pipelines/*.yaml`) and the
+`withMainLlm({ … })` / `new SmartAgentBuilder({ llm })` snippets: every one of them carries `apiKey`.
+Adding `pipelines` to the example-config checker's roots follows from that: the task rewrites those
+files, so the checker verifies the rewrite. Drift that carries no removed name — for example the
+`pipeline: llm:` streaming block in `SAP_AI_CORE.md` — is left alone.
 
 **Ownership — which doc change lands where**
 
@@ -18979,14 +20285,15 @@ version bump: entries stay under `[Unreleased]`), and `docs/ARCHITECTURE.md` pri
 |---|---|---|
 | `packages/<p>/CHANGELOG.md` `[Unreleased]` entry, opening with `**BREAKING:**` where it breaks | the code task that changes `<p>`, same commit | B3–B6b did this; the entry must describe the commit it sits in |
 | `packages/<p>/README.md` usage snippets | the code task that changes `<p>`, same commit | the README is the package's own contract doc |
-| `YAML_TEMPLATE` in `packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts:6-125` | the task that reshapes the YAML DTOs (`credentialRef`, `rag.store`/`rag.embedder`) | it is code: `__tests__/config-validation.test.ts` loads it, so it must change together with the validator |
-| `scripts/check-example-configs.mjs` `CRED_RE` (`:19`) | **this task** | it is the verification tool this task runs |
-| `packages/llm-agent-server/README.md` new `## Credentials` section (ref → env contract, per-role defaults) | the composition-root task in `llm-agent-server` | only that task knows the contract; this task links to it, never restates it |
-| root `CHANGELOG.md`, `docs/MIGRATION-v27.md` (new), root `README.md`, everything under `docs/` except `docs/superpowers/`, `examples/**`, `pipelines/**`, `.env.template`, `examples/*/.env.template`, `CLAUDE.md` | **this task** | cross-package, or consumer-facing guides |
-| gaps the finished tasks left: `packages/llm-agent/CHANGELOG.md` has no `[Unreleased]` (B1's `apiKey` removal, `staticApiKey`/`staticLogin`, the per-account 429 gate); `packages/sap-aicore-auth/CHANGELOG.md` **does not exist** (new package, B2); `packages/pg-vector-rag/README.md:24-31` and `packages/hana-vector-rag/README.md:20-28` still show `connectionString: …://user:pass@host`, which is now refused at construction; `packages/llm-agent-rag/README.md:13,35,42` still shows `resolveRag` and `RagResolutionConfig`, removed by B6b | **this task** (Step 5) | those tasks are closed; the sweep is where a miss gets caught |
+| catalog rights and the operator's DDL in `packages/{pg-vector-rag,hana-vector-rag,qdrant-rag}/README.md` | B20, B21, B22 | "what to grant is that provider's to document" (spec §8 item 10); only those tasks measured the catalog |
+| `YAML_TEMPLATE` in `packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts:6-125` | the task that reshapes the YAML DTOs (`credentialRef`, `rag.store`/`rag.embedder`, plugin sections) | it is code: `__tests__/config-validation.test.ts` loads it, so it must change together with the validator |
+| `scripts/check-example-configs.mjs` | **this task** | it is the verification tool this task runs |
+| `packages/llm-agent-server/README.md` section `## Credentials` (the env naming rule, the three per-role defaults, the Ollama rule, the `AICORE_SERVICE_KEY` → `LLM_SERVICE_KEY` rename) | **B17** | only the composition-root task knows the contract. This task links to it and checks that it exists. The guide states only the env renames a YAML user must make, and it takes them from B17's code, not from memory |
+| root `CHANGELOG.md`, `docs/MIGRATION-v27.md` (new), root `README.md`, everything under `docs/` except `docs/superpowers/`, `examples/**` (YAML, READMEs, `.env.template`, `docker-compose.yml`), `pipelines/**`, `.env.template`, the header comments of `packages/llm-agent-server/tools/claude-via-agent.{sh,ps1}`, `CLAUDE.md` | **this task** | cross-package, or consumer-facing guides and deploy templates |
+| gaps the finished tasks left (Step 5 re-measures each): `packages/llm-agent/CHANGELOG.md` has no entry for B1 (`apiKey` removal, `staticApiKey`/`staticLogin`, the per-account 429 gate); `packages/sap-aicore-auth/CHANGELOG.md` **does not exist** (new package, B2); `packages/pg-vector-rag/README.md:24-31` and `packages/hana-vector-rag/README.md:20-28` still show `connectionString: …://user:pass@host`, which is now refused at construction; `packages/llm-agent-rag/README.md:9-44` still lists `resolveRag`, `resolvePrefetchedEmbedder`, `builtInEmbedderFactories`, `RagResolutionConfig`, `EmbedderResolutionConfig`, `EmbedderFactoryOpts` (removed by B6b/B6c); `packages/llm-agent-libs/README.md:10, 17-24, 26-47` still lists `makeLlm`/`makeDefaultLlm`/`DefaultModelResolver`/`MakeLlmConfig` and the five LLM peers (removed by B8); `packages/llm-agent-server/README.md:12` names `makeLlm`; `packages/llm-agent/README.md:32-36` names the removed resolvers and factories; `packages/llm-agent-mcp/README.md` does not list B7's `HttpMcpServer`/`StdioMcpServer`; `packages/qdrant-rag/README.md` does not state Qdrant ≥ 1.17; any package whose `[Unreleased]` entry does not name its change (B23–B29 had no CHANGELOG step when this task was written) | **this task** (Step 5) | those tasks are closed; the sweep is where a miss gets caught |
 
-A later code task that **does** update its package's README/CHANGELOG makes the matching row in
-Step 5 a no-op. Step 1 checks this and says which rows are still open.
+A code task that **does** update its package's README/CHANGELOG makes the matching Step 5 item a
+no-op. Step 1 checks this and says which items are still open.
 
 **Files:**
 - Create: `docs/MIGRATION-v27.md` — the migration guide. The name follows the existing
@@ -18995,38 +20302,50 @@ Step 5 a no-op. Step 1 checks this and says which rows are still open.
   everywhere below.
 - Create: `packages/sap-aicore-auth/CHANGELOG.md`
 - Modify: `CHANGELOG.md:10-106` — the existing `[Unreleased]` keeps workstreams 1 and 4. This task
-  adds the workstream 2 and 3 entries and a `### Migration` pointer.
-- Modify: `packages/llm-agent/CHANGELOG.md:1-3` — add `[Unreleased]` above `## 26.0.0`
+  adds a `### Breaking` section at its top and merges its bullets into the existing `### Added` and
+  `### Changed`.
+- Modify: `packages/llm-agent/CHANGELOG.md` — B1's entry, merged into the `[Unreleased]` that B12/B19
+  created (one heading, not two)
+- Modify, only where Step 5's check reports a gap: any `packages/*/CHANGELOG.md`
 - Modify, only if Step 1 finds them still stale: `packages/pg-vector-rag/README.md:24-31`,
   `packages/hana-vector-rag/README.md:20-28`, `packages/llm-agent-rag/README.md:9-44`,
-  `packages/llm-agent/README.md:36`
+  `packages/llm-agent-libs/README.md:10, 17-24, 26-47`, `packages/llm-agent-server/README.md:12`,
+  `packages/llm-agent/README.md:32-36`, `packages/llm-agent-mcp/README.md:7-12`,
+  `packages/qdrant-rag/README.md:6-8`
+- Modify, only if still stale after B14: `packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts:115`
+  (one comment line of `YAML_TEMPLATE`, "Opaque per-pipeline dialect (validated by the plugin)")
 - Modify: `README.md:25-27, 36-37, 76, 99-102, 121, 125-137 (table), 181-185`
-- Modify: `docs/ARCHITECTURE.md:43, 50-53, 67-68, 111, 132-139, 258-270, 419-420, 480, 617-621, 833, 888, 1122-1133, 1377-1380`
-- Modify: `docs/INTEGRATION.md:242-267, 497-704, 1664-1671, 1757, 1952, 2252, 2263, 2268, 2308-2334, 2376-2385, 2655-2667, 2689, 2714-2800, 2747-2760, 3313-3345, 3436-3445`
+- Modify: `docs/ARCHITECTURE.md:43, 50-53, 67-68, 111, 113, 115, 130-139, 258-270, 419-420, 480, 617-621, 833, 870, 888, 1122-1133, 1377-1380`
+- Modify: `docs/INTEGRATION.md:242-267, 497-704, 1664-1671, 1757, 1952, 2240-2268, 2308-2334, 2376-2385, 2655-2667, 2689, 2714-2800, 2747-2760, 3313-3345, 3436-3445`
 - Modify: `docs/PIPELINES.md:56-77, 113-116, 181-212, 222-253`
 - Modify: `docs/QUICK_START.md:60-93, 190-231, 233-251, 297-298`
 - Modify: `docs/SAP_AI_CORE.md:39-105, 107-150 (programmatic examples), 383`
 - Modify: `docs/EXAMPLES.md:198-270`
-- Modify: `docs/DEPLOYMENT.md:111-123, 180-198, 241-252, 370-379`
-- Modify: `docs/PERFORMANCE.md:60-80, 138-148, 300-322, 416`
+- Modify: `docs/DEPLOYMENT.md:111-123, 180-198, 241-252, 370-383`
+- Modify: `docs/PERFORMANCE.md:14-45, 60-80, 138-148, 300-322, 416`
+- Modify: `docs/TROUBLESHOOTING.md:18-20, 65, 216-218`
 - Modify: `docs/CLIENT_SETUP.md:14-19, 208-216`
 - Modify: `docs/SECURITY_THREAT_MODEL.md:68-100, 123`
 - Modify: `docs/examples/**/*.yaml` (35 files; the table in Step 8 lists them) and the READMEs at
   `docs/examples/stepper/README.md:104-145` and `docs/examples/plugins/README.md:19-27`
 - Modify: `examples/**/*.yaml` (10 files), `examples/docker-deepseek/README.md:54-70`,
-  `examples/docker-sap-ai-core/README.md:33-45`, `examples/sap-ai-core-direct/README.md:15-20, 70-76`
+  `examples/docker-sap-ai-core/README.md:33-45`, `examples/sap-ai-core-direct/README.md:15-20, 70-76`,
+  `examples/docker-deepseek/{.env.template,docker-compose.yml}`,
+  `examples/docker-sap-ai-core/{.env.template,docker-compose.yml}`
 - Modify: `pipelines/*.yaml` (8 files)
-- Modify: `.env.template:22-26`, `CLAUDE.md:45-49, 59, 125-132` (see Step 7: the user confirms edits to `CLAUDE.md`)
-- Modify: `scripts/check-example-configs.mjs:19`
+- Modify: `packages/llm-agent-server/tools/claude-via-agent.sh:9-13`, `claude-via-agent.ps1:10-14` (header comments only)
+- Modify: `.env.template:1-26`, `CLAUDE.md:40-49, 59, 125-132` (see Step 7: the user confirms edits to `CLAUDE.md`)
+- Modify: `scripts/check-example-configs.mjs:1-7, 15-20, 38-59`
 
 **Interfaces:**
 - Consumes (confirm each one in Step 1 by reading the code; this task documents, and it invents no name):
   - from B1: `staticApiKey(secret)`, `staticLogin(principal, secret)` exported from `@mcp-abap-adt/llm-agent` (`packages/llm-agent/src/index.ts:47`)
-  - from B2: `serviceKeyCredential(raw): { credential; apiBaseUrl }`, `parseServiceKey` from `@mcp-abap-adt/sap-aicore-auth`
-  - from B6b: `RagResolution` and `makeRag(cfg: RagResolution, options?)` in `@mcp-abap-adt/llm-agent-rag`; `resolveRag`, `RagFactoryOpts` and `RagResolutionConfig` are gone
-  - from the workstream-2 tasks: `BuildAgentDeps.makeLlm`/`resolveEmbedder`/`makeRag` required; `MakeRagInput`; `credentialRef` on `SmartServerLlmConfig`, `rag.store`, `rag.embedder`, the qdrant `skillPlugins` store; `IPipelineContext.resolveNamedLlm(key)`; `IPipelinePlugin` = `name` + `build(ctx)`; `PluginExports.pipelinePluginFactories`; controller subagents `{ llm?, hint? }`; worker-file `llm: key | { main, helper, classifier }`
-  - from the composition-root task: the section `## Credentials` in `packages/llm-agent-server/README.md`. It gives the ref → env mapping and the three per-role defaults, `DEFAULT_LLM_REF`, `DEFAULT_STORE_REF` and `DEFAULT_EMBEDDER_REF`. **Every YAML edit in Step 8 depends on it.** Step 1 stops if it is missing.
-  - from the workstream-3 tasks: `RagCollectionOwner`, `RagCollectionRecord`, `describeCollections`, `openCollection`, `adopt`, `adoptExisting`, `CatalogRecordDeleteError`, `RAG_DUPLICATE_COLLECTION`/`RAG_ORPHAN_STORE`/`RAG_AMBIGUOUS_COLLECTION`/`RAG_INVALID_OWNER`/`RAG_INVALID_ATTRIBUTES`, `buildRagCollectionToolEntries({ registry, identity, attributesFor? })`, `SessionGraphFactoryOptions.ragRegistryFactory`
+  - from B2: `serviceKeyCredential(raw): { credential; apiBaseUrl }`, `parseServiceKey` from `@mcp-abap-adt/sap-aicore-auth` (`packages/sap-aicore-auth/src/index.ts:2-3`)
+  - from B6b/B6c: `RagResolution`, `makeRag(cfg: RagResolution, options?)`, `EmbedderResolution` (union on `provider`, plus a `{ factory }` arm), `resolveEmbedder(cfg: EmbedderResolution, options?)`, `composeEmbedder` in `@mcp-abap-adt/llm-agent-rag`; `resolveRag`, `RagFactoryOpts`, `RagResolutionConfig`, `EmbedderResolutionConfig`, `EmbedderFactoryOpts`, `resolvePrefetchedEmbedder` and `builtInEmbedderFactories` are gone
+  - from B7: `HttpMcpServer`, `StdioMcpServer` (and their `*Config`/`*Auth` types) from `@mcp-abap-adt/llm-agent-mcp`
+  - from B8–B16: `BuildAgentDeps.makeLlm`/`resolveEmbedder`/`makeRag` required; `MakeRagInput`, `isInMemoryInput`; `credentialRef` on `SmartServerLlmConfig`, `rag.store`, `rag.embedder`, the qdrant `skillPlugins` store; `PipelineLlmProviderConfig`/`PipelineRagStoreConfig` deleted; `IPipelineContext.resolveNamedLlm(key)`; `IPipelinePlugin` = `name` + `build(ctx)`; `PluginExports.pipelinePluginFactories`; controller subagents `{ llm?, hint? }`; worker-file `llm: key | { main, helper, classifier }`
+  - from B17/B18: the env naming rule in `packages/llm-agent-server/src/composition/credential-for.ts` (`envCredentialEntries`: `<REF>_API_KEY` | `<REF>_SERVICE_KEY` | `<REF>_USER` + `<REF>_PASSWORD`), `DEFAULT_LLM_REF = 'LLM'`, `DEFAULT_STORE_REF = 'RAG_STORE'`, `DEFAULT_EMBEDDER_REF = 'RAG_EMBEDDER'`, the lookup's error messages (`composition/lookup.ts`, `createLookup`), and the section `## Credentials` in `packages/llm-agent-server/README.md`
+  - from B19–B29: `RagCollectionOwner`, `RagCollectionRecord`, `RagJsonValue`, `describeCollections`, `openCollection`, `IRagRegistry.adopt?(record, rag, editor?, providerName?)`, `adoptExisting`, the named errors `DuplicateCollectionError`, `OrphanStoreError`, `AmbiguousCollectionError`, `CatalogRecordDeleteError`, `InvalidOwnerError`, `InvalidAttributesError`, `ReservedCollectionNameError` and their codes `RAG_DUPLICATE_COLLECTION`, `RAG_ORPHAN_STORE`, `RAG_AMBIGUOUS_COLLECTION`, `RAG_CATALOG_RECORD_DELETE`, `RAG_INVALID_OWNER`, `RAG_INVALID_ATTRIBUTES`, `RAG_RESERVED_COLLECTION_NAME`; `createCatalogTableSql` (pg-vector, hana-vector); `buildRagCollectionToolEntries({ registry, identity, attributesFor? })`; `SessionGraphFactoryOptions.ragRegistryFactory`
 - Produces: nothing a later task consumes. This is the last task before the PR.
 
 - [ ] **Step 1: check the preconditions, and re-measure the inventory against this task**
@@ -19036,22 +20355,49 @@ cd ~/prj/llm-agent
 git status --short                      # clean
 npm view @mcp-abap-adt/llm-agent version   # expect 26.0.0 → the guide is MIGRATION-v27.md
 grep -n '^## ' CHANGELOG.md | head -3   # expect [Unreleased] then [26.0.0]
-grep -n '^## Credentials' packages/llm-agent-server/README.md || echo "STOP: composition-root task has not documented the ref contract"
 find packages -name '*.tsbuildinfo' -delete && npm run build && echo BUILD=0
 ```
 
-Then confirm that each "Consumes" name exists. For example:
+Then confirm that each "Consumes" name exists:
 
 ```bash
 grep -n "resolveNamedLlm" packages/llm-agent/src/interfaces/*.ts | head -3
-grep -n "pipelinePluginFactories" packages/llm-agent/src -r | head -3
-grep -rn "adoptExisting\|CatalogRecordDeleteError" packages/llm-agent/src --include='*.ts' -l | head
+grep -rn "pipelinePluginFactories" packages/llm-agent/src | head -3
+grep -rn "adoptExisting\|CatalogRecordDeleteError\|ReservedCollectionNameError" packages/llm-agent/src --include='*.ts' -l | head
+grep -n "adopt?(" -A6 packages/llm-agent/src/interfaces/rag.ts        # 4th parameter providerName
+grep -rn "RAG_RESERVED_COLLECTION_NAME\|RAG_CATALOG_RECORD_DELETE" packages/llm-agent/src --include='*.ts' -l | head -3
 grep -n "credentialRef" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts | head
+grep -n "isInMemoryInput" packages/llm-agent-server-libs/src/index.ts packages/llm-agent-server-libs/src/smart-agent/rag-config.ts
+grep -n "HttpMcpServer\|StdioMcpServer" packages/llm-agent-mcp/src/index.ts
+grep -n "EmbedderResolution\b\|composeEmbedder" packages/llm-agent-rag/src/index.ts
+grep -n "_API_KEY\|_SERVICE_KEY\|_USER\|DEFAULT_.*_REF" packages/llm-agent-server/src/composition/credential-for.ts
+grep -n "createCatalogTableSql" packages/pg-vector-rag/src/index.ts packages/hana-vector-rag/src/index.ts
 ```
 
 A missing name means a code task is not merged, so stop. Do not document a name that does not exist.
 
-Next, run the inventory. Compare it with the per-file lists in Steps 6–8. A hit that no step
+Four facts decide wording below. Read each one from the code, and write the guide from what you read:
+
+```bash
+# (1) B17's README section. B30 links to it; it does not block on it. If it is missing, go on, and
+#     Step 10 (g) writes it from B17's code if it is still missing then.
+grep -n '^## Credentials' packages/llm-agent-server/README.md || echo "OPEN: ## Credentials not written by B17"
+# (2) pg/hana with autoCreateSchema:false — does deleteCollection still drop the table?
+grep -n "DROP TABLE\|autoCreateSchema" packages/pg-vector-rag/src/*.ts packages/hana-vector-rag/src/*.ts
+# (3) the worker-file shape B16 accepts: a string, and which keys of the object form
+grep -rn "classifier" packages/llm-agent-server-libs/src/smart-agent/workers/*.ts | head -5
+# (4) whether anything in server-libs names a session-scoped LLM resolver a consumer can use
+grep -rln "session-scoped\|SessionScoped\|sessionScope" packages/llm-agent-server-libs/src packages/llm-agent-libs/src | head
+```
+
+- (2): if `deleteCollection` still issues `DROP TABLE` with `autoCreateSchema: false`, item 10 of the
+  guide says "no DDL on creation — `deleteCollection` still drops the collection's own table" instead
+  of the spec's "no DDL at all". The code is the fact.
+- (3): if the object form has no `classifier`, drop it from item 8's worker example.
+- (4): if a named session-scoped resolver exists, item 5 names it. Otherwise item 5 keeps the generic
+  wording written below.
+
+Next, run the inventory. Compare it with the per-file lists in Steps 5–8. A hit that no step
 lists means a code task added doc drift, so add it to this task. A listed line that is already
 clean means its code task fixed it, so skip it.
 
@@ -19059,99 +20405,166 @@ clean means its code task fixed it, so skip it.
 git ls-files '*.md' '*.yaml' '*.yml' '*.template' \
   | grep -vE '^docs/superpowers/|^experiments/|CHANGELOG\.md$|SKILL\.md$|docker-compose|^\.github/' \
   > /tmp/doc-files.txt
+git ls-files 'examples/*/docker-compose.yml' 'examples/*/.env.template' '.env.template' \
+  'packages/llm-agent-server/tools/claude-via-agent.*' > /tmp/deploy-files.txt
 xargs -a /tmp/doc-files.txt /usr/bin/grep -nE \
-  'apiKey|parseConfig|makeLlm|makeDefaultLlm|MakeLlmConfig|DefaultModelResolver|pipelineFallback|llmMap|RagToolContext|buildRagCollectionToolEntries|resolveRag|RagFactoryOpts|RagResolutionConfig|SapAICoreCredentials|AICORE_SERVICE_KEY|rag_create_collection|dedupThreshold|vectorWeight|keywordWeight|://[^/ ]+:[^@/ ]+@' \
+  'apiKey|parseConfig|makeLlm|makeDefaultLlm|MakeLlmConfig|DefaultModelResolver|pipelineFallback|llmMap|RagToolContext|buildRagCollectionToolEntries|resolveRag|RagFactoryOpts|RagResolutionConfig|EmbedderResolutionConfig|EmbedderFactoryOpts|resolvePrefetchedEmbedder|builtInEmbedderFactories|SapAICoreCredentials|AICORE_SERVICE_KEY|[A-Z]+_API_KEY|rag_create_collection|dedupThreshold|vectorWeight|keywordWeight|://[^/ ]+:[^@/ ]+@' \
   > /tmp/doc-hits.txt; wc -l /tmp/doc-hits.txt
 ```
 
-When this task was drafted, the grep found **244 hits in 66 files**. Record the new count in the
-report. Last, check the package-doc gaps from the Ownership table:
-
-```bash
-grep -n '^## ' packages/llm-agent/CHANGELOG.md | head -2      # is there an [Unreleased]?
-ls packages/sap-aicore-auth/CHANGELOG.md                         # exists yet?
-grep -n '://.*:.*@' packages/pg-vector-rag/README.md packages/hana-vector-rag/README.md
-grep -n 'resolveRag\|RagResolutionConfig' packages/llm-agent-rag/README.md
-```
+When this task was drafted (branch at `194c42d4`, before `[A-Z]+_API_KEY` and the three B6c names
+joined the pattern), the grep found **244 hits in 66 files**. Record the new count in the report.
 
 - [ ] **Step 2: write the checks first, and watch them fail**
 
-These checks are the test for this task. There are two, and both must fail now.
+These checks are the test for this task. All of them must fail now.
 
 (a) **No doc shows a removed field or call.** Run the grep below. Every line it prints must be
-either stale, and fixed by a later step, or listed in the allowlist that follows it. Nothing
+either stale, and fixed by a later step, or covered by the allowlist that follows it. Nothing
 else may pass.
 
 ```bash
 cd ~/prj/llm-agent
 xargs -a /tmp/doc-files.txt /usr/bin/grep -nE \
-  '(^|[^A-Za-z_])apiKey:|apiKey: \$\{|parseConfig\(|makeDefaultLlm|MakeLlmConfig|DefaultModelResolver|pipelineFallback|llmMap|RagToolContext \{|sessionId\?: string;|buildRagCollectionToolEntries\(\{ registry(, providerRegistry)? \}\)|resolveRag\(|RagFactoryOpts|RagResolutionConfig|SapAICoreCredentials|credentials,|withMainLlm\(\{|new SmartAgentBuilder\(\{ llm:|://[A-Za-z0-9_]+:[^@/ ]+@' \
+  '(^|[^A-Za-z_])apiKey:|apiKey: \$\{|parseConfig\(|makeDefaultLlm|MakeLlmConfig|DefaultModelResolver|pipelineFallback|llmMap|RagToolContext \{|scope: RagCollectionScope; sessionId\?|buildRagCollectionToolEntries\(\{ registry(, providerRegistry)? \}\)|resolveRag\(|RagFactoryOpts|RagResolutionConfig|EmbedderResolutionConfig|EmbedderFactoryOpts|resolvePrefetchedEmbedder|builtInEmbedderFactories|SapAICoreCredentials|^\s+credentials,$|withMainLlm\(\{|new SmartAgentBuilder\(\{ llm:|://[A-Za-z0-9_]+:[^@/ ]+@' \
   | grep -vE \
     -e '^docs/MIGRATION-v(11|27)\.md:' \
+    -e '\*\*Since v27:\*\*' \
     -e '^docs/EXAMPLES\.md:[0-9]+:\s+apiKey: dummy' \
     -e '^docs/EXAMPLES\.md:[0-9]+:.*api_key="dummy"' \
     -e '^docs/CLIENT_SETUP\.md:[0-9]+:.*(apiKeyHelper|api_key: placeholder)' \
+    -e '^docs/INTEGRATION\.md:[0-9]+:\s+constructor\(private readonly apiKey: string' \
+    -e '^docs/EXAMPLES\.md:[0-9]+:\s+catalog: \{ type: postgres, connectionString: postgres://' \
+    -e '^packages/llm-agent/README\.md:[0-9]+:(\| |`makeLlm`, `makeDefaultLlm`, and `makeRag` are now)' \
   ; echo "exit=$?"
 ```
 
-The allowlist holds only client-side configs and the migration guides. Client-side configs are
-Continue, the Python OpenAI client, the Claude CLI `apiKeyHelper` and Goose, and their `api_key` is
-the client's own. The migration guides show the old contract on purpose. `makeLlm` from
-`@mcp-abap-adt/llm-agent-libs/testing` is a test double that stays (`packages/llm-agent-libs/src/testing/index.ts:70`).
-So the pattern above leaves out a bare `makeLlm`, and a second grep checks the non-testing
-imports:
+Each allowlist entry, and why it is legitimate (each was measured against the branch):
+- the two migration guides show the old contract on purpose;
+- `**Since v27:**` marks the one-line history notes this task appends to package READMEs (Step 5);
+- `EXAMPLES.md` `apiKey: dummy` / `api_key="dummy"` and `CLIENT_SETUP.md` `apiKeyHelper` /
+  `api_key: placeholder` are **client-side** configs (Continue, the Python OpenAI client, the Claude
+  CLI, Goose); their key is the client's own;
+- `INTEGRATION.md:79` is a consumer's own `ILlm` class (the Gemini example), holding its own key;
+- `EXAMPLES.md:464, :483` are `skillPlugins.catalog.connectionString`, a secret this release leaves
+  in place (spec §11 lists it for the next release);
+- `packages/llm-agent/README.md:32-33, :36` are the 12.0.1 relocation table and its note: history.
+
+The pattern matches `^\s+credentials,$` (an object-shorthand property alone on a line), not a bare
+`credentials,`: prose such as `docs/examples/stepper/05-gnostic-abap-review.yaml:122` ("hardcoded
+credentials, and") and `packages/sap-aicore-auth/README.md:7` is legitimate. It matches the old
+`IRagProvider.createCollection` opts (`scope: RagCollectionScope; sessionId?`), not a bare
+`sessionId?: string;`, which `ISubAgentInput` (`INTEGRATION.md:3030`) and `RagCollectionMeta` keep.
+
+`makeLlm` needs its own check, because the `@mcp-abap-adt/llm-agent-libs/testing` test double of that
+name stays (`packages/llm-agent-libs/src/testing/index.ts:70`) and `BuildAgentDeps.makeLlm` is still a
+seam:
 
 ```bash
 xargs -a /tmp/doc-files.txt /usr/bin/grep -nE "makeLlm" | grep -v "llm-agent-libs/testing" \
-  | grep -vE "^docs/MIGRATION-v(11|27)\.md:|BuildAgentDeps|deps\.makeLlm|makeLlm\(cfg\)|async makeLlm"
+  | grep -vE \
+    -e '^docs/MIGRATION-v(11|27)\.md:' \
+    -e '\*\*Since v27:\*\*' \
+    -e 'BuildAgentDeps|deps\.makeLlm|async makeLlm|makeLlm\(cfg\)' \
+    -e "the server's \`makeLlm\` seam" \
+    -e 'existing fields \(makeLlm' \
+    -e 'makeLlm\(\[' \
+    -e '^docs/INTEGRATION\.md:[0-9]+:  makeLlm,$' \
+    -e '^packages/llm-agent/README\.md:[0-9]+:(\| |`makeLlm`, `makeDefaultLlm`, and `makeRag` are now)'
 ```
 
-A flat `rag:` spans lines, which `grep -E` cannot see. So a third check prints every YAML
-(standalone or fenced in markdown) whose `rag:` is followed directly by `type:` or `embedder:`
-rather than `store:`/`embedder:` as a mapping:
+Its allowlist: the seam (`BuildAgentDeps`, `deps.makeLlm`, the `async makeLlm(cfg)` of a seam
+implementation); the phrase "the server's `makeLlm` seam", which Step 7 writes at `INTEGRATION.md:2252`
+and `:2268`; `INTEGRATION.md:1952` ("existing fields (makeLlm, …)", kept, since it is a `BuildAgentDeps`
+field); the test double's call `makeLlm([…])` (`EXAMPLES.md:596`) and its line in the `/testing`
+import list (`INTEGRATION.md:2937`); and the 12.0.1 history in `packages/llm-agent/README.md`. If the
+user declines the `CLAUDE.md` edit (Step 7), add `-e '^CLAUDE\.md:'` and say so in the report.
+
+(b) **No doc says the binary reads `AICORE_SERVICE_KEY`.** After B17 the binary reads `<REF>_SERVICE_KEY`,
+so for the default LLM ref it reads `LLM_SERVICE_KEY`. A consumer's own code may still read any
+variable it likes, so `process.env.AICORE_SERVICE_KEY` in a library snippet is legitimate, and so is a
+line that names the replacement:
+
+```bash
+sort -u /tmp/doc-files.txt /tmp/deploy-files.txt | xargs /usr/bin/grep -n 'AICORE_SERVICE_KEY' \
+  | grep -vE \
+    -e '^docs/MIGRATION-v(11|27)\.md:' \
+    -e 'process\.env\.AICORE_SERVICE_KEY' \
+    -e 'LLM_SERVICE_KEY|credentialRef' \
+    -e '^packages/sap-aicore-(auth|embedder|llm)/README\.md:'
+```
+
+The allowlist: the migration guides; code that reads the variable itself (`docs/TROUBLESHOOTING.md:94`,
+the library READMEs' snippets); a line that also names `LLM_SERVICE_KEY` or a `credentialRef` (a
+rename note); and the three SAP library READMEs, whose prose is about a consumer's own code.
+
+(c) **No YAML shows a flat `rag:`.** A flat `rag:` spans lines, which `grep -E` cannot see. This check
+prints every YAML (standalone or fenced in markdown) whose `rag:` is followed directly by a store or
+search key rather than by `store:`/`embedder:` as a mapping:
 
 ```bash
 xargs -a /tmp/doc-files.txt awk '
-  /^[ ]*rag:[ ]*$/ { ind = match($0, /[^ ]/); getline nxt;
+  /^[ ]*rag:[ ]*$/ { getline nxt;
     if (nxt ~ /^[ ]*(type|url|collectionName|dedupThreshold|vectorWeight|keywordWeight):/ ||
-        nxt ~ /^[ ]*embedder:[ ]*[A-Za-z$]/) print FILENAME ":" FNR ": flat rag: → " nxt }'
+        nxt ~ /^[ ]*embedder:[ ]*[A-Za-z$]/) print FILENAME ":" FNR ": flat rag: → " nxt }' \
+  | grep -vE '^docs/MIGRATION-v(11|27)\.md:'
 ```
 
-Expected now: dozens of lines from each of the three checks. Expected after Step 10: no output
-from any of them. The legacy `pipeline.rag.<name>:` maps in `pipelines/*.yaml` are caught by (b)
-below rather than here, because their `rag:` is followed by a store name.
+The guides show the old shape as their "before" on purpose, so they are filtered. Measured against
+the branch, the check also hits `docs/TROUBLESHOOTING.md:19, :217` and `docs/PERFORMANCE.md:17, :41`,
+which Step 7 now lists.
 
-(b) **Every example config still loads.** The checker parses each YAML with the real validator.
-Update its credential regex first. Once `apiKey` has left the DTOs, the validator no longer raises
-"requires llm.apiKey", so that phrase is dead. A config that still names `apiKey`, or a flat
-`rag:`, now fails for its **shape**, and the checker must report that as a SHAPE-FAIL:
+Expected now: dozens of lines from each of (a), the `makeLlm` check, (b) and (c). Expected after
+Step 10: no output from any of them. The legacy `pipeline.rag.<name>:` maps in `pipelines/*.yaml`
+are caught by (d) below rather than here, because their `rag:` is followed by a store name.
 
-```js
-// scripts/check-example-configs.mjs:19 — before
-const CRED_RE = /AICORE_SERVICE_KEY|requires llm\.apiKey|apiKey to resolve/;
-// after — the only credential failures left are an unset env var the root reads, and those
-// are reached only with provider runtime checks on, which this script turns off
-const CRED_RE = /is not set, but a credentialRef asked for it|has no entry configured/;
-```
-
-Also add `pipelines` to the default roots (`:17`): `: ['docs/examples', 'examples', 'pipelines'];`
+(d) **Every example config still loads.** The checker parses each YAML with the real validator
+(`loadYamlConfig` + `resolveSmartServerConfig`). It sorted failures into "credential" and "shape" by a
+regex on the message (`CRED_RE`, `:19`). After B9 the validator raises no credential error at all:
+the `AICORE_SERVICE_KEY` rule and the `apiKey` rule (`config-validator.ts:62-79`) are gone, and the
+composition root, which resolves `credentialRef`, is not run by this script. Confirm that first:
 
 ```bash
-node scripts/check-example-configs.mjs; echo "exit=$?"
+grep -n "AICORE_SERVICE_KEY\|requires .*apiKey" packages/llm-agent-server-libs/src/smart-agent/config-validator.ts
+# expect nothing (a legacy apiKey field is now refused by name, which is a SHAPE error)
+```
+
+Then drop the credential bucket, so no failure can be filed as "credential-only" and slip past:
+
+```js
+// scripts/check-example-configs.mjs — header comment (:1-7), replace the credential sentence with:
+// Credentials are not checked here: a config carries only credentialRef names, which
+// llm-agent-server's composition root resolves at startup, and this script does not run it.
+// Every failure is a SHAPE-FAIL.
+
+// :15-17 — add pipelines/ to the default roots (this task rewrites those files)
+  : ['docs/examples', 'examples', 'pipelines'];
+
+// :19 — delete CRED_RE, the `cred` counter and its branch (:38-51); every catch counts as shape.
+// :55-58 — the summary line becomes:
+console.log(`\n${files.length} configs — ${shape} SHAPE-FAIL`);
+```
+
+Three pipelines (`pipelines/legacy/stepper.yaml:12`, `controller.yaml:21`, `controller-mixed.yaml:20`)
+read `${MCP_ENDPOINT}` without a default, which substitutes an empty string. So run the checker with
+the variable set; that measures shape, not the caller's environment:
+
+```bash
+MCP_ENDPOINT=http://localhost:3001/mcp/stream/http node scripts/check-example-configs.mjs; echo "exit=$?"
 ```
 
 Expected now: a non-zero exit, with a SHAPE-FAIL for every YAML that still has `apiKey:`, a flat
-`rag:`, an inline subagent LLM or an inline worker `llm:`. It also flags the five legacy
-`pipelines/*.yaml` files, which have failed since v19 (measured while drafting:
-`53 configs — 8 SHAPE-FAIL`). Expected after Step 8: `0 SHAPE-FAIL`.
+`rag:`, an inline subagent LLM or an inline worker `llm:`, and for the five legacy
+`pipelines/*.yaml` files, which have failed since v19. Expected after Step 8: `0 SHAPE-FAIL`.
 
 - [ ] **Step 3: write `docs/MIGRATION-v27.md`**
 
 The guide must stand alone. **Do not link the spec.** `CLAUDE.md:152` deletes a spec once it is
 implemented, so any link to `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` from a
-durable doc will break. Copy each item from spec §8 and keep its before/after, but drop the design
-argument. Keep the spec's numbering 1–11 so the root changelog and the package changelogs can cite
-items by number. Write the file in full:
+durable doc will break. Copy each item from spec §8 with all of its content and keep its
+before/after, but drop the design argument. Keep the spec's numbering 1–11 so the root changelog
+and the package changelogs can cite items by number. Write the file in full (the bracketed notes are
+instructions from Step 1, not text):
 
 ````markdown
 # Migrating to v27.0.0
@@ -19160,15 +20573,18 @@ items by number. Write the file in full:
 
 - **Secrets left every config and contract.** Pass a *credential* object to the provider or store
   you construct. In YAML, name an account with `credentialRef:`. `apiKey: ${VAR}` is gone.
+- **The `llm-agent` binary reads new variable names.** `LLM_API_KEY` / `LLM_SERVICE_KEY` replace
+  `DEEPSEEK_API_KEY`, `AICORE_SERVICE_KEY` and friends (item 4).
 - **The library no longer builds providers for you.** `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig`
   and `DefaultModelResolver` are removed. `BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag`
   are **required**.
 - **YAML changed shape in three places.** `rag:` splits into `store:` + `embedder:`. Controller
-  subagents and sub-agent (worker) files name keys of the top-level `llm:` map.
+  subagents and DAG worker files name keys of the top-level `llm:` map.
 - **Pipeline plugins take typed settings.** `parseConfig` is gone. `ctx.resolveNamedLlm(key)` is
   new, and a configurable plugin is exported as a factory.
 - **RAG collections belong to one caller.** The collection tools are built for one identity. Every
-  shipped store keeps a catalog. Re-creating a collection no longer reattaches it; hydration does.
+  shipped store keeps a catalog (Qdrant ≥ 1.17). Re-creating a collection no longer reattaches it;
+  hydration does.
 
 Nothing here is deprecated-but-working. Every item below needs an edit or a check.
 
@@ -19176,21 +20592,23 @@ Nothing here is deprecated-but-working. Every item below needs an edit or a chec
 
 | You… | Do items |
 |---|---|
-| run `llm-agent` (the binary) from YAML only | 4 (YAML part), 8 (YAML part), 10 |
-| embed `SmartAgentBuilder` in code | 1, 2, 3, 9 |
-| embed `SmartServer` from `llm-agent-server-libs` | 1, 2, 3, 4, 5, 9, 10, 11 |
+| run `llm-agent` (the binary) from YAML only | 4 (YAML part and **env names**), 8 (YAML part), 10, and "Also changed" |
+| embed `SmartAgentBuilder` in code | 1, 2, 3, 9; 6 and 7 if you mount the RAG collection tools |
+| embed `SmartServer` from `llm-agent-server-libs` | 1, 2, 3, 4, 5, 8, 9, 10, 11 |
 | ship a pipeline plugin | 5, 8 |
 | mount the RAG collection tools | 6, 7, 10 |
-| implement `IRagRegistry` or `IPipelineContext` yourself | 5, 10 |
+| implement `IPipelineContext` yourself (fixtures included) | 5 |
+| implement `IRagRegistry` yourself | 10, 11 |
+| read a logger option (`options.logger`) | 9 |
 | call `makeRag` / `resolveEmbedder` from `llm-agent-rag` directly | 1, and "Also changed" below |
 
 ---
 
 ## 1. Replace a plain key with a credential
 
-`apiKey` is gone from `LLMProviderConfig`, from `EmbedderFactoryConfig` and from every concrete
-provider's config. `user`/`password` are gone from the pg and hana store configs. A static key is
-still a credential, so the conversion is one line. `staticApiKey` and `staticLogin` come from
+`apiKey` is gone from `LLMProviderConfig`, from `EmbedderFactoryConfig` and from the concrete
+providers' own configs. `user`/`password` are gone from the pg and hana store configs. A static key
+is already a credential, and core ships the conversion: `staticApiKey` and `staticLogin` come from
 `@mcp-abap-adt/llm-agent`.
 
 ```ts
@@ -19208,13 +20626,16 @@ still a credential, so the conversion is one line. `staticApiKey` and `staticLog
 ```
 
 - A connection string that carries a user and password is now **refused at construction**, and
-  the message names `staticLogin`.
+  the message names `staticLogin`. It is not silently ignored.
 - `hana-vector-rag` **requires** `credential`, because HANA has no anonymous login. A bare-string
   `HanaVectorRagProviderConfig.connection` is refused too.
 - Your own embedder factory no longer receives `cfg.apiKey`. Close over the credential you
-  already hold.
+  already hold — that is why the framework no longer carries one.
 
-## 2. Construct your LLM provider yourself
+## 2. Construct your LLM provider yourself, and hand in the instance
+
+`makeLlm`, `makeDefaultLlm` and `MakeLlmConfig` are gone from `llm-agent-libs`: a dispatch that
+restates five constructors it does not own belongs to the consumer.
 
 ```ts
 - const llm = await makeLlm({ provider: 'openai', apiKey: key, model: 'gpt-4o' });
@@ -19223,8 +20644,9 @@ still a credential, so the conversion is one line. `staticApiKey` and `staticLog
 + builder.withMainLlm(new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model }));
 ```
 
-`DefaultModelResolver` is gone. `IModelResolver` is **unchanged**. For `PUT /v1/config` model
-switching, implement the one method yourself:
+`DefaultModelResolver` is gone too. `IModelResolver` is **unchanged**. If you relied on the library's
+implementation for `PUT /v1/config` model switching, implement the one-method contract where your
+credential lives. `llm-agent-server` now does exactly this for the shipped server.
 
 ```ts
 - new DefaultModelResolver({ provider: 'openai', apiKey: key })
@@ -19236,30 +20658,38 @@ switching, implement the one method yourself:
 + };
 ```
 
-- The old per-role temperature (`main ? 0.7 : 0.1`) did not move. Choose your own.
-- A per-call `CallOptions.model` is **not** a substitute. It does not reach the reviewer,
-  finalizer, planner or evaluator roles.
+- The library's per-role temperature (`main ? 0.7 : 0.1`) did not move. Choose your own.
+- A per-call `CallOptions.model` is **not** a substitute. By its own contract it does not reach the
+  reviewer, finalizer, planner or evaluator roles.
 
-## 3. Build the SAP AI Core credential yourself
+## 3. Build the SAP AI Core credential in your composition root
 
-The SAP packages no longer read `AICORE_SERVICE_KEY`. Their programmatic `credentials:` shape
-(`SapAICoreCredentials`: `clientId`/`clientSecret`/`tokenServiceUrl`/`servicUrl`) is gone as well.
+The SAP providers no longer read `AICORE_SERVICE_KEY`. A service key is OAuth client credentials,
+not a token, so the exchange, its cache and its refresh live in one function you call:
+`serviceKeyCredential` from the new `@mcp-abap-adt/sap-aicore-auth`.
 
 ```ts
 import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 
-- new SapCoreAIProvider({ model });                          // read AICORE_SERVICE_KEY itself
-- new SapCoreAIProvider({ model, credentials: { clientId, clientSecret, tokenServiceUrl, servicUrl } });
-+ new SapCoreAIProvider({ model, ...serviceKeyCredential(process.env.AICORE_SERVICE_KEY!) });
+- new SapCoreAIProvider({ model });                    // read AICORE_SERVICE_KEY itself
++ const { credential, apiBaseUrl } = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
++ new SapCoreAIProvider({ model, credential, apiBaseUrl });
 
 - new SapAiCoreEmbedder({ model, credentials: { clientId, clientSecret, tokenUrl, apiBaseUrl } });
-+ new SapAiCoreEmbedder({ model, ...serviceKeyCredential(rawServiceKeyJson) });
++ new SapAiCoreEmbedder({ model, credential, apiBaseUrl });
 ```
 
-A deployment that sets the same env var behaves the same. The difference is that your code reads
-the variable now, one level up.
+- It is the package's former `TokenProvider` and `parseServiceKey`, moved out with their tests.
+  Behaviour is unchanged for a deployment that sets the same variable; your code now reads it, one
+  level up.
+- The providers' `credentials` option and its exported `SapAICoreCredentials` shape
+  (`clientId`/`clientSecret`/`tokenServiceUrl`/`servicUrl` — spelled that way in the old type) are
+  gone. The credential and `apiBaseUrl` above replace them.
 
-## 4. Supply the three construction seams, and move secrets to `credentialRef`
+## 4. Supply all three construction seams, and move your secrets to `credentialRef`
+
+The library no longer defaults these seams. Without `makeLlm` there is no LLM, and startup refuses,
+naming the missing seam.
 
 **YAML (the binary):**
 
@@ -19268,6 +20698,7 @@ the variable now, one level up.
     main:
       provider: deepseek
 -     apiKey: ${DEEPSEEK_API_KEY}
++     # nothing here: the role's default ref applies. A secret never enters the loaded config.
       model: deepseek-chat
     classifier:
       provider: openai
@@ -19275,11 +20706,56 @@ the variable now, one level up.
       model: gpt-4o-mini
 ```
 
-An entry without `credentialRef` uses its role's default. What a ref name resolves to, and the
-defaults themselves, are the server's contract. See
+- `credentialRef` is optional **in each section on its own**. Omitting it means that role's default
+  ref: `LLM` for an `llm:` entry, `RAG_STORE` for `rag.store`, `RAG_EMBEDDER` for `rag.embedder`.
+- `rag.apiKey`, `rag.user`/`rag.password` and a qdrant `skillPlugins` store's `apiKey` all become
+  `credentialRef` too.
+
+**The binary reads new environment variable names — BREAKING for YAML-only deployments.** A ref names
+a family of variables: `<REF>_API_KEY` (an API key), `<REF>_SERVICE_KEY` (a SAP AI Core service key) or
+`<REF>_USER` + `<REF>_PASSWORD` (a login). The full contract is in
 [`llm-agent-server` → Credentials](../packages/llm-agent-server/README.md#credentials).
 
-**Split `rag:` in two.** Each target now states its own address, model and account:
+| You set before | Set now (no `credentialRef`) | Or keep the old variable |
+|---|---|---|
+| `apiKey: ${DEEPSEEK_API_KEY}` (any provider, any variable name) | `LLM_API_KEY` | `credentialRef: DEEPSEEK` → reads `DEEPSEEK_API_KEY` |
+| `AICORE_SERVICE_KEY` for `provider: sap-ai-sdk` | `LLM_SERVICE_KEY` | `credentialRef: AICORE` → reads `AICORE_SERVICE_KEY` |
+| `AICORE_SERVICE_KEY` for a `sap-ai-core` embedder | `RAG_EMBEDDER_SERVICE_KEY` | `credentialRef: LLM` (share the LLM's) or `credentialRef: AICORE` in `rag.embedder` |
+| an OpenAI embedder's `apiKey` | `RAG_EMBEDDER_API_KEY` | `credentialRef: <REF>` in `rag.embedder` |
+| a Qdrant `rag.apiKey` | `RAG_STORE_API_KEY` (optional: unset means anonymous) | `credentialRef: <REF>` in `rag.store` |
+| user and password inside a pg/hana `connectionString` | `RAG_STORE_USER` + `RAG_STORE_PASSWORD` | `credentialRef: <REF>` in `rag.store` |
+
+- Ollama gets a credential only from a ref that **names** one: the `LLM` default usually holds a
+  hosted provider's key, and it is never sent to whatever sits at an Ollama URL. An Ollama embedder
+  and an in-memory store take none, and naming a ref for them is refused.
+- Several kinds set for one ref (for example `LLM_API_KEY` and `LLM_SERVICE_KEY`) are refused: an
+  entry holds one credential.
+
+**Code (`SmartServer` / `BuildAgentDeps`):** `makeLlm`, `resolveEmbedder` and `makeRag` are all
+required. Passing `{}` as `deps` stops compiling, and every call site, tests included, names the
+seams. `llm-agent-server` carries the reference implementation (`packages/llm-agent-server/src/composition/`).
+Copy it rather than writing your own:
+
+- one `credentialFor(ref)`, **memoized**, so a ref always returns the **same** credential object —
+  that identity keys the 429 quota bucket;
+- one `lookup(ref, roleDefault, target)` with `require` / `optional` / `requireApiBaseUrl` /
+  `refuseAny`, where "optional" means a ref may be **omitted**, never that a **named** ref may fail
+  to resolve;
+- one default ref per role, read only when a target asks for a credential, so an in-memory store or
+  an Ollama embedder never parses it;
+- `apiBaseUrl` travels with the SAP credential from the same service key, so the YAML never carries
+  one;
+- the knobs the library's `makeLlm` forwarded (`temperature`, `maxTokens`, `whenThrottled`,
+  `baseURL`) and the model listing (`getModels`, which `GET /v1/models` reads) are part of the seam.
+
+A deployment that authenticates nothing (for example Ollama plus in-memory) still writes all three
+seams. `resolveEmbedder` and `makeRag` remain the library's functions; what changes is who calls them
+and who owns the credential. `isInMemoryInput` is the one-line guard `input.store.type === 'in-memory'`,
+exported beside `MakeRagInput`, and `InMemoryStoreConfig` carries `credentialRef?` so that a ref named
+for a store that takes none is refused by name.
+
+**Split `rag:` in two.** The old shape held a store's settings beside an embedder's, with `url`
+meaning either one's address, so one `credentialRef` could not say which target it named:
 
 ```yaml
 # before
@@ -19290,6 +20766,7 @@ rag:
   apiKey: ${QDRANT_API_KEY}
   embedder: openai
   model: text-embedding-3-small
+  dedupThreshold: 0.95
 
 # after
 rag:
@@ -19307,22 +20784,16 @@ rag:
 - `dedupThreshold`, `vectorWeight` and `keywordWeight` move under `store:`, and only for
   `type: in-memory`, the one store that reads them. Beside another store type they did nothing
   before either, so delete them there.
-- For keyword-only retrieval, write `store: { type: in-memory }` with no `embedder:`.
-- A qdrant `skillPlugins` store keeps its shape. Its `apiKey` becomes `credentialRef`.
+- For keyword-only retrieval, write `store: { type: in-memory }` with no `embedder:` section.
+- A qdrant `skillPlugins` store does **not** split: it already keeps its embedder separately. It
+  only gains `credentialRef`.
+- `PipelineRagStoreConfig` and `PipelineLlmProviderConfig` are **deleted**, not reshaped. Nothing
+  has read them since v19.
 
-**Code (`SmartServer` / `BuildAgentDeps`):** `makeLlm`, `resolveEmbedder` and `makeRag` are all
-required. Passing `{}` as `deps` stops compiling. `llm-agent-server` carries the reference
-implementation (`packages/llm-agent-server/src/…`, see its README): one `credentialFor(ref)`,
-memoized so a ref always returns the **same** credential object. That identity keys the 429 quota
-bucket. The same file has one `lookup(ref, roleDefault, target)` with
-`require`/`optional`/`requireApiBaseUrl`/`refuseAny`, and one default ref per role. Copy it rather
-than writing your own. A deployment that authenticates nothing (for example Ollama plus in-memory)
-still writes all three seams.
+## 5. Stop constructing inside the pipeline: name the model, resolve the instance
 
-## 5. Stop constructing inside a pipeline: name the model, resolve the instance
-
-`IServerPipelineContext` loses `makeLlm`, `llmMap` and `pipelineFallback`. `IRoleLlmResolver` loses
-`makeLlm(lc)`.
+`IServerPipelineContext` loses `makeLlm`, `llmMap` and `pipelineFallback` (the last was always
+`undefined`). `IRoleLlmResolver` loses `makeLlm(lc)`.
 
 ```ts
 - const llm = await ctx.makeLlm({ provider: 'openai', model: 'gpt-4o-mini' });
@@ -19331,35 +20802,54 @@ still writes all three seams.
 +   : await ctx.resolveLlm('planner');                 // no key: the role's own name, falls back to main
 ```
 
-- To use a new model, add it to `llm:` and resolve it by key.
+- Use `resolveNamedLlm` for anything a file named. `resolveLlm` answers an unknown name with `main`,
+  which would turn a misspelled key into a silent model change.
 - If you implement `IPipelineContext` yourself, add `resolveNamedLlm(key)`. Test fixtures need it
   too.
+- The instance comes from the server, which hands back the current one after a `PUT /v1/config`
+  swap. **Do not take an `ILlm` in your plugin's constructor**: that would freeze the model against
+  a swap.
+- **Do not reach for a per-call `model`.** It does not reach the reviewer, finalizer, planner or
+  evaluator, which are exactly the roles a controller or DAG path builds.
+- Constructing a provider mid-pipeline from a config assembled at runtime is the capability this
+  release removes on purpose. Add the model to `llm:`, or register it in your composition root, and
+  resolve it by key.
+- If the credential is the **caller's** rather than the deployment's, register it in a
+  session-scoped resolver that disposes what it built when the session ends. [If Step 1 (4) found a
+  named type for it, name it here.] The shipped `SmartServer` uses the deployment scope only: its
+  sessions carry no caller credential.
 
-## 6. Build the RAG collection tools for one caller
+## 6. Build the RAG collection tools with an identity
+
+The identity is the caller the pipeline is being built for — the one whose collections the tools
+may address.
 
 ```ts
 - const entries = buildRagCollectionToolEntries({ registry });
 + const entries = buildRagCollectionToolEntries({ registry, identity });
 + // optional: attributes your policy needs on collections the model creates
-+ buildRagCollectionToolEntries({ registry, identity,
-+   attributesFor: ({ name, scope }) => ({ authorization: 'owner' }) });
++ const withPolicy = buildRagCollectionToolEntries({ registry, identity,
++   attributesFor: ({ name, scope }) => ({ authorization: 'owner', createdVia: 'tool' }) });
 ```
 
-`identity` is required. There is no overload without it.
+- `identity` is required. There is no overload without it: an optional `identity` would mean "do not
+  narrow", reached by forgetting a field.
+- The framework records what `attributesFor` returns and never reads it. Absent → no attributes.
 
 ## 7. Stop reading identity from the tool context
 
-`RagToolContext` no longer declares `sessionId?`/`userId?`. A caller that *passes* them still
-compiles, and the values are ignored. A caller that *reads* them gets `TS2339`.
+`RagToolContext` no longer declares `sessionId?`/`userId?`: the entries were built for one caller, so
+the owner comes from the bound identity. A caller that *passes* them still compiles, and the values
+are ignored. A caller that *reads* them gets `TS2339` or `TS2322`.
 
 `rag_create_collection` no longer creates `global` collections. Its `scope` is `session | user`.
-Create shared collections in your own code, behind your own check:
+Create a deployment's shared collections in your own code, behind whatever check you apply:
 
 ```ts
 await registry.createCollection({ providerName, collectionName, scope: 'global' });
 ```
 
-## 8. Pipeline plugins: typed settings, no `parseConfig`, subagents name `llm:` keys
+## 8. Construct your pipeline plugin with typed settings, drop `parseConfig`, point subagents at `llm:` keys
 
 ```ts
 - const plugin: IPipelinePlugin<MyConfig> = {
@@ -19378,12 +20868,27 @@ await registry.createCollection({ providerName, collectionName, scope: 'global' 
 + };
 ```
 
-- A plugin that needs no settings keeps a plain `pipelinePlugins` instance export.
-- A plugin's `name` must equal its export key. The loader now **reports** a malformed export or a
-  name mismatch in `errors`, or `start()` refuses it. It no longer skips it silently.
-- Every instance comes through `ctx`, never through the constructor.
+- The contract is `name` + `build(ctx)`. The plugin reads no configuration.
+- Its constructor takes a **typed settings object**: knobs, kinds, and the **keys** naming which
+  `llm:` entry each role uses. Whoever constructs it parses and validates it.
+- At `build(ctx)`: a key the settings **named** → `ctx.resolveNamedLlm(key)`; a role whose key was
+  **omitted** → `ctx.resolveLlm(role)` with the role's own name. Never the other way round.
+- An LLM configuration or a `credentialRef` never reaches the plugin; a key is only a value.
+- A dynamically loaded plugin that needs settings exports a **factory** under
+  `pipelinePluginFactories`, `(raw: unknown) => IPipelinePlugin`, parsing its own shape. It is
+  assembly code you ship beside the plugin. Its YAML section carries no secret and no
+  `credentialRef`, because nothing on the server resolves one for it.
+- A plugin that needs no settings keeps a plain `pipelinePlugins` instance export (among the shipped
+  ones, only `flat`).
+- A plugin's `name` must equal its export key. The loader now **refuses** a mismatched instance and
+  reports it in `errors`, and startup refuses a mismatched factory result. It no longer skips a
+  malformed export silently.
+- Every instance comes through `ctx`, never through the constructor: the registry constructs the
+  plugin once, process-wide.
+- A plugin that needs an authorized backend `ctx` does not offer cannot get one from the file or its
+  constructor. The remedy is a named, typed `ctx` capability; `ctx` offers no credential lookup.
 
-**YAML:** controller subagents and sub-agent files name keys of the main file's `llm:` map:
+**YAML:** controller subagents and DAG worker files name keys of the main file's `llm:` map:
 
 ```yaml
 # before
@@ -19391,8 +20896,9 @@ pipeline:
   name: controller
   config:
     subagents:
-      planner:   { provider: openai, model: gpt-4o-mini, apiKey: ${OPENAI_API_KEY} }
+      planner:   { provider: openai, model: gpt-4o-mini, apiKey: ${OPENAI_API_KEY}, hint: … }
       executor:  { provider: sap-ai-sdk, model: anthropic--claude-4.5-sonnet }
+      evaluator: { provider: openai, model: gpt-4o-mini, apiKey: ${OPENAI_API_KEY} }
 
 # after
 llm:
@@ -19402,104 +20908,215 @@ pipeline:
   name: controller
   config:
     subagents:
-      planner:  { llm: cheap }
-      executor: {}              # the role's own name: llm.executor if present, else main
+      planner:   { llm: cheap, hint: … }
+      executor:  {}              # the role's own name: llm.executor if present, else main
+      evaluator: { llm: cheap }  # the same instance the planner uses
 ```
 
 ```yaml
-# a sub-agent's own file (subagents: [{ name, config: ./worker.yaml }])
+# a DAG worker's own file (subagents: [{ name, config: ./worker.yaml }])
 - llm:
 -   main: { provider: openai, model: gpt-4o-mini, apiKey: ${OPENAI_API_KEY} }
 + llm: cheap                   # or { main: cheap, helper: …, classifier: … }
 ```
 
-- An inline LLM configuration in a sub-agent file is refused.
-- A key with no `llm:` entry is refused at startup.
-- A per-role temperature moves onto the `llm:` entry.
-- **Behaviour change:** a sub-agent with no `helper` now gets the server's helper (or `main`),
-  where it used to get none. Its classifier is the server's classifier, not a colder copy of its
-  own main. Name an entry if you want the old behaviour.
+- An omitted `llm` means the role's own name (`planner`, `executor`, …), resolved like any key —
+  what `linear` and `stepper` already do.
+- An absent `reviewer` or `finalizer` block keeps meaning "the planner's".
+- `hint` stays where it was.
+- A per-role temperature moves onto the `llm:` entry: a role that wants a colder model names a
+  colder entry.
+- An inline LLM configuration in a worker file is refused. A key with no `llm:` entry is refused at
+  startup.
+- **Behaviour change, from the same move:** a worker with no `helper` now gets the server's helper
+  (or `main`), where it used to get none. Its classifier is the server's classifier, not a colder
+  copy of its own main. Name an entry if you want the old behaviour.
 
 ## 9. Narrow a widened logger option before reading it
+
+Six readable option properties accept `ILogger | ITextLogger`. A consumer that only *passes* a logger
+is unaffected; one that *reads* an option must narrow first. The guarded form is the one that
+compiles: the property is optional, so `normaliseLogger(options.logger)` alone fails with `TS2345`.
 
 ```ts
 - options.logger.log(event);
 + if (options.logger) normaliseLogger(options.logger).log(event);
 ```
 
-## 10. Give each store's account the rights its catalog needs
+## 10. Give each store's account the rights its catalog needs, and handle the new errors
 
-`qdrant-rag`, `pg-vector-rag` and `hana-vector-rag` now keep a catalog beside the collections:
+`qdrant-rag`, `pg-vector-rag` and `hana-vector-rag` now keep a small catalog of their own beside the
+collections. `createCollection` creates it if absent and writes a record; `deleteCollection` deletes
+the record **before** the data.
 
-- `createCollection` creates the catalog if absent, then writes a record. The store's account
-  must be allowed to do that, or creation fails.
-- `deleteCollection` deletes the record **first**. It can return `CatalogRecordDeleteError`, in
-  which case nothing was deleted and the collection is still registered. Retry.
-- Creating a collection that already exists is refused: `RAG_DUPLICATE_COLLECTION` if it has a
-  record, `RAG_ORPHAN_STORE` if it has a store but no record.
-- `qdrant-rag` creates the collection inside `createCollection` and spends **one embedding call**
-  to learn the vector size.
-- A name held in several scopes must be addressed with `scope`, or the call fails with
-  `RAG_AMBIGUOUS_COLLECTION`. This applies to tools and to
-  `get`/`getEditor`/`unregister`/`deleteCollection`.
-- `ragStores` keys user and session collections as `user/<name>` / `session/<name>`. A global
-  named `user/…` or `session/…` is refused and must be renamed.
-- **Collections created by v26.x** have no record. Adopt each one once:
-  `createCollection(…, { adoptExisting: true })`. A v25-or-earlier collection lives under its
-  logical name; use the provider's own `createCollection(oldName, { adoptExisting: true })`.
+- **Rights.** The account a store's credential names must be able to create and write the catalog,
+  or `createCollection` fails where it used to succeed. The catalog's form is each provider's own (a
+  table, a collection), so each package documents what to grant:
+  [pg-vector-rag](../packages/pg-vector-rag/README.md), [hana-vector-rag](../packages/hana-vector-rag/README.md),
+  [qdrant-rag](../packages/qdrant-rag/README.md).
+- **`autoCreateSchema: false`.** The provider issues **no DDL at all**, the catalog table included.
+  The operator creates it with the statement the package exports, `createCatalogTableSql`.
+  [Step 1 (2): if `deleteCollection` still drops with the flag off, write "no DDL on creation —
+  `deleteCollection` still drops the collection's own table" instead.]
+- **Qdrant 1.17 or later** is required for a catalogued Qdrant store: the record is written with an
+  insert-only operation, so a record's creation loses cleanly to a concurrent one.
+- **`CatalogRecordDeleteError`** (`RAG_CATALOG_RECORD_DELETE`) is a new way for `deleteCollection` to
+  fail: the record could not be removed, so nothing was deleted and the collection is still
+  registered. Retry it.
+- **A taken name is refused.** `RAG_DUPLICATE_COLLECTION` if a record exists, `RAG_ORPHAN_STORE` if a
+  store exists without one. Creating the same (scope, owner, name) again works only after its
+  deletion has finished.
+- **`qdrant-rag` creates the collection at `createCollection`**, not on the first write, and spends
+  **one embedding call** per collection created to learn the vector size.
+- **Scope.** A name held in several scopes of one registry must be addressed with its `scope` — by the
+  tools and by `get`/`getEditor`/`unregister`/`deleteCollection` — or the call fails with
+  `RAG_AMBIGUOUS_COLLECTION`. If you implement `IRagRegistry` yourself, accept that optional `scope`.
+- **Collections created by v26.x** have a store and no record, so creating one again is refused
+  with `RAG_ORPHAN_STORE` naming the store. Call `createCollection` for it once with
+  `adoptExisting: true`, which records the existing store; it hydrates like any other from then on.
+- **Collections from v25 or earlier** sit under their logical name, where the registry never looks.
+  Reach one with the provider's own `createCollection(oldName, { adoptExisting: true })`.
+- **`ragStores` names.** A stage configuration that named a user or session collection by its bare
+  name now names `user/<name>` or `session/<name>`. Globals — `tools`, `history`, every configured
+  store — keep their names, **except** one whose name begins with `user/` or `session/`, which is
+  refused at registration (`RAG_RESERVED_COLLECTION_NAME`) and must be renamed.
+- Collections created before this release read back `attributes` as `undefined`.
 
-## 11. Reattach after a restart by hydrating, not re-creating
+## 11. Reattach collections after a restart by hydrating them, not by creating them again
 
-Re-creating a collection at startup is now refused (item 10). Read the catalog and adopt what
-you find instead:
+Until now a fresh registry got a `user` or `global` collection back by calling `createCollection`
+with the same identity. That call is now refused — `RAG_DUPLICATE_COLLECTION` with a record,
+`RAG_ORPHAN_STORE` without — so an assembly that re-creates its collections at startup must read the
+catalog and adopt what it finds, for the records that belong to the caller whose registry it builds:
 
 ```ts
-const { records } = unwrap(await provider.describeCollections());
-for (const record of records.filter(belongsTo(identity))) {
-  const { rag, editor } = unwrap(await provider.openCollection(record));
-  registry.adopt(record, rag, editor);
+import type {
+  IRagProvider,
+  IRagRegistry,
+  RagCollectionRecord,
+  RagError,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+
+/** The caller whose registry you are building. */
+type Caller = { sessionId: string; userId?: string };
+
+function unwrap<T>(result: Result<T, RagError>): T {
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
+/** A caller's own collections; globals are hydrated once, into your deployment-wide registry. */
+function belongsTo(caller: Caller) {
+  return (record: RagCollectionRecord): boolean =>
+    (record.scope === 'user' && record.userId === caller.userId) ||
+    (record.scope === 'session' && record.sessionId === caller.sessionId);
+}
+
+export async function hydrate(
+  provider: IRagProvider,
+  registry: IRagRegistry,
+  caller: Caller,
+): Promise<void> {
+  if (!provider.describeCollections || !provider.openCollection || !registry.adopt) return;
+  const { records } = unwrap(await provider.describeCollections());
+  for (const record of records.filter(belongsTo(caller))) {
+    const { rag, editor } = unwrap(await provider.openCollection(record));
+    // providerName: without it a later delete never reaches the provider, and the collection returns
+    registry.adopt(record, rag, editor, provider.name);
+  }
 }
 ```
 
-The shipped `SmartServer` already does this per session.
+A collection created by v26.x has no record: adopt it once with `createCollection(…, { adoptExisting: true })`
+(item 10), after which it hydrates like any other.
+
+**The shipped `SmartServer` already does this**, per session, through `ragRegistryFactory`. Two limits
+of the shipped server make that smaller than it sounds:
+
+- It registers **no RAG providers** by default. Until your deployment configures one, there is no
+  catalog to hydrate from, and each session's registry holds only the deployment's globals.
+- Its sessions carry a `sessionId` and **no `userId`**, so `user` collections are neither hydrated
+  nor creatable through it.
 
 ---
 
-## Also changed (no numbered item, still breaking)
+## Also changed (no numbered item — check your deployment)
 
-- `@mcp-abap-adt/llm-agent-rag`: `makeRag` takes `RagResolution`, a discriminated union on
-  `type`, in place of `RagResolutionConfig`. `resolveRag` and `RagFactoryOpts` are removed.
-  A leftover `apiKey`/`user`/`password` from an untyped source is refused at resolution.
-- `@mcp-abap-adt/llm-agent-server-libs`: startup no longer demands `AICORE_SERVICE_KEY`. The
-  composition root asks for it when a ref needs it.
-- **Behaviour, no edit:** each `SmartServer` session now owns its collection registry, hydrated
-  for its identity, instead of sharing one process-wide registry.
+- **A `dag` planner key now has to exist.** `plannerLlm: helper`, or `planner` with no `llm:` entry
+  of that name, used to fall back quietly; a named key is now resolved strictly and refused at
+  startup. An **omitted** `dag` planner key now resolves as the role name `planner` — the helper when
+  one is configured — where it used to get `main`.
+- **A configured embedder URL now arrives.** The old resolution passed `url`, while the Ollama
+  embedder reads `ollamaUrl` and the OpenAI one `baseURL`, so a configured embedder URL was silently
+  ignored. Each provider now gets its own field. A deployment that set one and never noticed it was
+  unused now reaches it.
+- **`llm-agent-rag`'s resolution API is typed per target.** `resolveRag` and the flat
+  `RagResolutionConfig` are gone for the `RagResolution` union. Embedder resolution takes
+  `EmbedderResolution`, a union discriminated by `provider` (formerly `embedder`), with a consumer
+  factory named by its own `factory` arm; an embedder you already hold is wrapped with
+  `composeEmbedder`. A leftover `apiKey`/`user`/`password` from an untyped source (a loaded YAML object)
+  is refused at resolution, naming the target.
+- **An `llm:` entry without a `temperature` no longer inherits main's.** Role entries reach the
+  composition root as written; main and classifier keep `temperature`/`classifierTemperature`. Set a
+  `temperature` on any other entry that relied on inheriting it.
+- **`PUT /v1/config` model switching works in the shipped server.** It needs an `IModelResolver`,
+  which the binary never set, so the route answered 400. The composition root now supplies one.
+- **Each `SmartServer` session owns its collection registry** (`ragRegistryFactory`), instead of
+  sharing one process-wide registry. Not an edit, but a changed runtime (see item 11 for its limits).
 
 ## New and optional (decline freely)
 
-`IMcpServer` / `withMcpServers` / `mcpServerFactory`, `closePipeline`, `ragRegistryFactory`,
-`describeCollections` / `openCollection` / `adopt`, `ITextLogger`. See the root
-[CHANGELOG](../CHANGELOG.md).
+`IMcpServer` with `withMcpServers` and `mcpServerFactory`; the typed `HttpMcpServer` and
+`StdioMcpServer` in `llm-agent-mcp`; the `closePipeline` hook; `ragRegistryFactory`;
+`describeCollections` / `openCollection` / `adopt`; `ITextLogger` acceptance. A consumer that uses
+none of them keeps today's behaviour on those paths. See the root [CHANGELOG](../CHANGELOG.md).
 ````
 
-Check Step 3 before moving on. Count the numbered `## N.` headings: there must be 11, the same as
-spec §8. If the counts differ, the spec moved, so fix the guide and not the spec.
+Check Step 3 before moving on.
 
 ```bash
 grep -cE '^## ([1-9]|1[01])\. ' docs/MIGRATION-v27.md    # 11
 grep -c '^\*\*[0-9]\+\. ' docs/superpowers/specs/2026-09-16-auth-contracts-design.md   # 11
 ```
 
-Compile-check the TypeScript snippets in the guide against the real signatures. Extract each
-` ```ts ` block into a scratch file, add the imports it implies, and run `npx tsc --noEmit --strict`
-from a scratch dir that resolves the workspace packages. A diff-style block (`-`/`+` lines) is
-checked in its `+` form only. Report which blocks you checked. A block that does not compile is
-fixed in the guide.
+If the counts differ, the spec moved, so fix the guide and not the spec. Then compare the guide with
+spec §8 item by item: every sentence of each spec item must have its fact in the guide's item of the
+same number, and the "Also changed" section must carry all four of the spec's bullets. Report any item
+you shortened and why.
+
+Compile-check the TypeScript snippets against the real signatures:
+
+```bash
+cd ~/prj/llm-agent
+d=$(mktemp -d -p .) && echo "$d"   # inside the repo, so the workspace packages resolve
+```
+
+For each ` ```ts ` block of the guide write `"$d"/block-<item>.ts`:
+- a diff-style block (`-`/`+` lines) is checked in its `+` form only;
+- prepend the imports its names need, from the packages the guide names;
+- declare its free variables with their real types (`declare const key: string;`,
+  `declare const registry: IRagRegistry;`, `declare const identity: RagCallerIdentity;`, …);
+- replace an elided body `{ … }` with `{ throw new Error('elided'); }`, and `hint: …` with a string.
+
+The item 11 block is complete as written: check it with **no** additions. Then:
+
+```bash
+npx tsc --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext \
+  --target es2022 "$d"/*.ts; echo "tsc=$?"
+rm -rf "$d"
+```
+
+Expected `tsc=0`. A block that does not compile is fixed in the guide, not in the scratch file.
+Report which blocks you checked.
 
 - [ ] **Step 4: root `CHANGELOG.md` — add to the existing `[Unreleased]`**
 
-Keep the workstream-1 and workstream-4 entries at `:12-106` as they are. Add the following. Keep
-each bullet to what a consumer must know, and let the guide carry the before/after.
+Keep the workstream-1 and workstream-4 entries at `:12-106` as they are. Put the `### Breaking`
+section below at the top of `[Unreleased]` (before `### Added`). Merge the `### Added` and
+`### Changed` bullets below **into the existing headings** of the same names; do not add a second
+`### Added` or `### Changed`. Keep each bullet to what a consumer must know, and let the guide carry
+the before/after.
 
 ```markdown
 ### Breaking — see [docs/MIGRATION-v27.md](docs/MIGRATION-v27.md)
@@ -19513,42 +21130,66 @@ Eleven changes need an edit; the guide numbers them and shows each before/after.
    credential is required.
 2. **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` are removed** from
    `llm-agent-libs`. `IModelResolver` is unchanged.
-3. **SAP AI Core providers no longer read `AICORE_SERVICE_KEY`**, and their `credentials:` shape is
-   gone; build `{ credential, apiBaseUrl }` with `serviceKeyCredential` from the new
-   `@mcp-abap-adt/sap-aicore-auth`.
+3. **SAP AI Core providers no longer read `AICORE_SERVICE_KEY`**, and their `credentials` option and
+   `SapAICoreCredentials` are gone; build `{ credential, apiBaseUrl }` with `serviceKeyCredential`
+   from the new `@mcp-abap-adt/sap-aicore-auth`.
 4. **`BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag` are required.** YAML `apiKey: ${VAR}`
    becomes `credentialRef`; `rag:` splits into `store:` and `embedder:`, each with its own
-   `credentialRef`, and the in-memory search knobs move under `store:`.
+   `credentialRef`, and the in-memory search knobs move under `store:`. `PipelineLlmProviderConfig`
+   and `PipelineRagStoreConfig` are deleted. **The `llm-agent` binary reads credentials by
+   reference**: `<REF>_API_KEY`, `<REF>_SERVICE_KEY` or `<REF>_USER` + `<REF>_PASSWORD`, with `LLM`,
+   `RAG_STORE` and `RAG_EMBEDDER` as the refs a section without `credentialRef` uses. A deployment
+   that wrote `apiKey: ${DEEPSEEK_API_KEY}` now sets `LLM_API_KEY`; one that set `AICORE_SERVICE_KEY`
+   sets `LLM_SERVICE_KEY` — or names a ref after the old variable (`credentialRef: AICORE`).
 5. **`IServerPipelineContext` loses `makeLlm`, `llmMap`, `pipelineFallback`; `IRoleLlmResolver`
    loses `makeLlm(lc)`; `IPipelineContext` gains the required `resolveNamedLlm(key)`.**
 6. **`buildRagCollectionToolEntries` requires an `identity`.**
 7. **`RagToolContext` loses `sessionId?`/`userId?`; `rag_create_collection` creates no `global`.**
 8. **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter**; configurable plugins
    export `pipelinePluginFactories`; the loader reports what it used to skip; controller subagents
-   and sub-agent files name `llm:` keys.
-9. **Six readable logger options widen** (already listed under Changed above).
-10. **The shipped stores keep a catalog**: new backend rights, `CatalogRecordDeleteError`,
-    refusals for taken names (`RAG_DUPLICATE_COLLECTION`, `RAG_ORPHAN_STORE`), scoped registry
-    keys (`RAG_AMBIGUOUS_COLLECTION`), reserved `user/`/`session/` global names.
-11. **Re-creating a collection no longer reattaches it** — hydrate through the catalog.
+   and DAG worker files name `llm:` keys, and an inline LLM configuration there is refused.
+9. **Six readable logger options widen** (see Changed).
+10. **The shipped stores keep a catalog**: the store's account needs rights to create and write it;
+    a catalogued Qdrant store requires **Qdrant ≥ 1.17**; `deleteCollection` can fail with
+    `CatalogRecordDeleteError` (`RAG_CATALOG_RECORD_DELETE`); a taken name is refused
+    (`RAG_DUPLICATE_COLLECTION`, `RAG_ORPHAN_STORE`); a name in several scopes needs its `scope`
+    (`RAG_AMBIGUOUS_COLLECTION`); a global named `user/…` or `session/…` is refused
+    (`RAG_RESERVED_COLLECTION_NAME`); v26.x collections are adopted once with `adoptExisting`.
+11. **Re-creating a collection no longer reattaches it** — hydrate through the catalog
+    (`describeCollections` → `openCollection` → `adopt(record, rag, editor, providerName)`).
+
+Also changed, no edit of their own: a `dag` planner key must exist, and an omitted one resolves as
+`planner` (the helper when configured); a configured embedder URL now reaches the embedder; the
+`llm-agent-rag` resolution inputs are discriminated unions (`RagResolution`, and `EmbedderResolution`
+on `provider`, formerly `embedder`); `PUT /v1/config` model switching works in the shipped server; an `llm:` entry without its own `temperature` no longer inherits main's.
 
 ### Added
 
 - `@mcp-abap-adt/sap-aicore-auth` (new package): `serviceKeyCredential`, `parseServiceKey`.
 - `staticApiKey`, `staticLogin` in `@mcp-abap-adt/llm-agent`.
+- `HttpMcpServer` and `StdioMcpServer` in `@mcp-abap-adt/llm-agent-mcp`: typed `IMcpServer`
+  implementations whose `auth` demands the credential kind for its scheme.
 - `credentialRef` on every serializable LLM, store and embedder config.
 - `IPipelineContext.resolveNamedLlm(key)`; `PluginExports.pipelinePluginFactories`.
 - RAG catalog: `RagCollectionOwner`, `RagCollectionRecord`, `RagJsonValue`, `attributes` on
   creation, `IRagProvider.describeCollections?()` / `openCollection?()`,
-  `IRagRegistry.adopt?()`, `adoptExisting`, `CatalogRecordDeleteError`, error codes
-  `RAG_INVALID_OWNER`, `RAG_INVALID_ATTRIBUTES`, `RAG_ORPHAN_STORE`, `RAG_AMBIGUOUS_COLLECTION`.
+  `IRagRegistry.adopt?(record, rag, editor?, providerName?)`, `adoptExisting`,
+  `createCatalogTableSql` (pg-vector, hana-vector).
+- Named RAG errors and their codes: `OrphanStoreError` (`RAG_ORPHAN_STORE`),
+  `AmbiguousCollectionError` (`RAG_AMBIGUOUS_COLLECTION`), `InvalidOwnerError` (`RAG_INVALID_OWNER`),
+  `InvalidAttributesError` (`RAG_INVALID_ATTRIBUTES`), `ReservedCollectionNameError`
+  (`RAG_RESERVED_COLLECTION_NAME`), `CatalogRecordDeleteError` (`RAG_CATALOG_RECORD_DELETE`),
+  `DuplicateCollectionError` (`RAG_DUPLICATE_COLLECTION`, the code itself is not new).
 - `SessionGraphFactoryOptions.ragRegistryFactory(identity)` with session-owned disposal.
 
 ### Changed
 
 - A 429 quota bucket keys on the credential object's identity, not on the secret.
 - Each `SmartServer` session owns a collection registry hydrated for its identity, instead of
-  sharing `globalRagRegistry`.
+  sharing `globalRagRegistry`. Two limits of the shipped server: it registers **no RAG providers**
+  by default, so until a deployment configures one there is no catalog to hydrate and a session sees
+  only the globals; and its sessions carry **no `userId`**, so `user` collections are neither
+  hydrated nor creatable through it.
 - `llm-agent-server` is the composition root: it reads the environment, builds credentials,
   dispatches providers and implements `IModelResolver` behind `PUT /v1/config`.
 
@@ -19558,44 +21199,74 @@ Eleven changes need an edit; the guide numbers them and shows each before/after.
   entries are built for one caller, and no framework tool mutates a `global` collection.
 ```
 
-Before committing, check the count of `1.`…`11.` against the guide's headings from Step 3. The
-counts must match.
+Before names go in, confirm each error class name against `packages/llm-agent/src/rag/corrections/errors.ts`
+(or wherever B19 put them), and drop a class that does not exist rather than inventing it. Step 10 (e)
+checks that this entry and the guide agree.
 
-- [ ] **Step 5: package changelogs and READMEs — complete, then close the finished tasks' gaps**
+- [ ] **Step 5: package changelogs and READMEs — check that each entry names its change, then close the gaps**
 
-First the completeness check. Every package whose `src` changed on this branch has an
-`[Unreleased]` section:
+First the check. For every package whose `src` changed on this branch, its `[Unreleased]` section must
+exist once and must **name** what changed — a heading that exists is not enough. The pathspec needs
+the trailing `*`: `'packages/*/src'` alone matches no file, and the loop then passes vacuously.
 
 ```bash
 cd ~/prj/llm-agent
-for p in $(git diff --name-only main...HEAD -- 'packages/*/src' | cut -d/ -f2 | sort -u); do
-  f=packages/$p/CHANGELOG.md
-  if [ ! -f "$f" ]; then echo "MISSING FILE  $f"; continue; fi
-  sed -n '1,6p' "$f" | grep -q '^## \[Unreleased\]' || echo "NO [Unreleased]  $f"
+check() {   # check <package> <token>... — each token must appear in that package's [Unreleased]
+  local p=$1; shift; local f=packages/$p/CHANGELOG.md
+  [ -f "$f" ] || { echo "MISSING FILE  $f"; return; }
+  local n; n=$(grep -c '^## \[Unreleased\]' "$f")
+  [ "$n" = 1 ] || { echo "[Unreleased] x$n  $f"; return; }
+  local sec; sec=$(awk '/^## \[Unreleased\]/{on=1;next} /^## /{if(on)exit} on' "$f")
+  for t in "$@"; do grep -qF -- "$t" <<<"$sec" || echo "UNNAMED  $f: $t"; done
+}
+check llm-agent apiKey staticApiKey resolveNamedLlm parseConfig pipelinePluginFactories \
+  RagCollectionRecord describeCollections adopt CatalogRecordDeleteError RAG_AMBIGUOUS_COLLECTION \
+  RAG_RESERVED_COLLECTION_NAME buildRagCollectionToolEntries RagToolContext rag_create_collection
+check llm-agent-libs makeLlm DefaultModelResolver pipelinePluginFactories ragRegistryFactory ragStores vectorWeight
+check llm-agent-server-libs credentialRef makeRag resolveEmbedder rag.store PipelineRagStoreConfig \
+  PipelineLlmProviderConfig IServerPipelineContext subagents worker AICORE_SERVICE_KEY \
+  ControllerSkillPipelineBuilder ragRegistryFactory userId
+check llm-agent-server LLM_API_KEY LLM_SERVICE_KEY 'PUT /v1/config'
+check llm-agent-rag RagResolution EmbedderResolution composeEmbedder
+check llm-agent-mcp HttpMcpServer StdioMcpServer
+check qdrant-rag credential 1.17 CatalogRecordDeleteError describeCollections
+check pg-vector-rag staticLogin CatalogRecordDeleteError autoCreateSchema createCatalogTableSql
+check hana-vector-rag credential CatalogRecordDeleteError autoCreateSchema createCatalogTableSql
+check sap-aicore-auth serviceKeyCredential
+check sap-aicore-llm credential AICORE_SERVICE_KEY
+check sap-aicore-embedder credential AICORE_SERVICE_KEY
+for p in openai-llm anthropic-llm deepseek-llm ollama-llm openai-embedder; do check "$p" credential; done
+# a package that changed but has no row above:
+listed=" llm-agent llm-agent-libs llm-agent-server-libs llm-agent-server llm-agent-rag llm-agent-mcp qdrant-rag pg-vector-rag hana-vector-rag sap-aicore-auth sap-aicore-llm sap-aicore-embedder openai-llm anthropic-llm deepseek-llm ollama-llm openai-embedder "
+for p in $(git diff --name-only main...HEAD -- 'packages/*/src/*' | cut -d/ -f2 | sort -u); do
+  case "$listed" in *" $p "*) ;; *) echo "NO ROW  $p — add a check line naming its change";; esac
 done
 ```
 
-Each reported package gets an entry. It says what a consumer must do, opens with `**BREAKING:**`
-where the change breaks, and ends with `Migration: see docs/MIGRATION-v27.md item N`. Write the two
-known gaps like this.
+Against the branch at `194c42d4` this prints only `MISSING FILE packages/sap-aicore-auth/CHANGELOG.md`
+and `[Unreleased] x0 packages/llm-agent/CHANGELOG.md`; the other B1–B6b entries already name their
+change. Every line it prints after the code tasks is a gap. For an `UNNAMED` token, add one sentence
+to that package's `[Unreleased]` naming the change, taken from the commit that made it
+(`git log --oneline main..HEAD -- packages/<p>/src`); a token whose change genuinely did not happen
+is removed from the `check` line instead, with the reason in the report. Each entry says what a
+consumer must do, opens with `**BREAKING:**` where the change breaks, and ends with
+`Migration: see docs/MIGRATION-v27.md item N`. Rerun until it prints nothing.
 
-`packages/llm-agent/CHANGELOG.md`, inserted above `## 26.0.0`:
+Two gaps are known. Write them like this.
+
+`packages/llm-agent/CHANGELOG.md` — B1's entry, **merged into** the `## [Unreleased]` that B12/B19
+created (the file must have **one** `[Unreleased]`):
 
 ```markdown
-## [Unreleased]
-
 **BREAKING:** `LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` are removed — a
 contract carries no secret. `staticApiKey(secret)` and `staticLogin(principal, secret)` are new and
 convert a call site in one line. A 429 gate's quota bucket now keys on the credential object's
-identity, so one account is one bucket however many providers share it. Further breaking changes
-in this release — `IPipelinePlugin`, `IPipelineContext.resolveNamedLlm`, `RagToolContext`,
-`buildRagCollectionToolEntries`, the RAG catalog and the scoped registry — are listed in the root
-CHANGELOG. Migration: see docs/MIGRATION-v27.md items 1, 5–8, 10, 11.
+identity, so one account is one bucket however many providers share it. Migration: see
+docs/MIGRATION-v27.md item 1.
 ```
 
 Before writing it, confirm the gate claim against B1's follow-up commit `0daa97f4`
-(`git show 0daa97f4 --stat`). Also merge in whatever the workstream-3 and plugin-contract tasks
-already added under this heading. The file must have **one** `[Unreleased]`, not two.
+(`git show 0daa97f4 --stat`).
 
 `packages/sap-aicore-auth/CHANGELOG.md` (new file; match the others' header):
 
@@ -19611,14 +21282,16 @@ that need the fields. Both moved here from `sap-aicore-embedder`, with their tes
 packages and a composition root share one implementation.
 ```
 
-Check that `packages/sap-aicore-auth/package.json` `files` includes `CHANGELOG.md`, the way its
-siblings do (`grep -n '"files"' -A6 packages/{sap-aicore-auth,qdrant-rag}/package.json`). Add it if
-missing.
+No package lists `CHANGELOG.md` in its `package.json` `files` (checked: `qdrant-rag`,
+`sap-aicore-auth`), so the new file needs no `files` entry.
 
-Then the READMEs that Step 1 found stale:
+Then the READMEs Step 1 found stale. Each history note this task appends is **one line** that starts
+with `**Since v27:**`, which Step 2's allowlist recognises.
+
+`packages/pg-vector-rag/README.md:24-31`:
 
 ```yaml
-# packages/pg-vector-rag/README.md:24-31 — before
+# before
 rag:
   type: pg-vector
   connectionString: postgres://user:pass@host:5432/mydb
@@ -19633,26 +21306,54 @@ rag:
     collectionName: llm_agent_docs
     dimension: 1536
     autoCreateSchema: true
-    credentialRef: RAG_PG          # resolved by your composition root to staticLogin(user, password)
+    credentialRef: RAG_PG          # the llm-agent binary reads RAG_PG_USER and RAG_PG_PASSWORD
 ```
 
 Add one line under it: `In code: new PgVectorRag({ connectionString: 'postgres://host:5432/mydb', credential: staticLogin(user, password), … }) — a connection string carrying user:pass is refused at construction.`
 Make the same change in `packages/hana-vector-rag/README.md:20-28`, with `hdbsql://host:443`. Its
-line reads `credential` **required**.
+line says `credential` is **required**.
 
-`packages/llm-agent-rag/README.md` makes these changes:
-- `:13` — delete the `resolveRag` bullet.
-- `:14` — `RagResolutionConfig` → `RagResolution` (a discriminated union on `type`).
+Check that B20/B21/B22 documented their catalog: `grep -n -i 'catalog' packages/{pg-vector-rag,hana-vector-rag,qdrant-rag}/README.md`.
+Each README must say what the account must be granted and, for pg/hana, that `createCatalogTableSql`
+gives the operator's statement under `autoCreateSchema: false`. If a section is missing, write it from
+that package's code (the catalog's table or collection name and the operations it issues, read from
+`src`), and say in the report that it was that task's gap. `packages/qdrant-rag/README.md` also states,
+under its description (`:6-8`): `Requires Qdrant 1.17 or later: the collection catalog is written with an insert-only operation.`
+Add it if B22 did not.
+
+`packages/llm-agent-rag/README.md` (skip if the `makeRag`-seam task already rewrote it):
+- `:9-15` "## Exports": rewrite the list from what `packages/llm-agent-rag/src/index.ts` exports
+  after B6c (`makeRag`, `resolveEmbedder`, `composeEmbedder`, `prefetchEmbedderFactories`,
+  `prefetchRagFactories`, types `RagResolution`, `RagResolutionOptions`, `EmbedderResolution`,
+  `EmbedderResolutionOptions`, …) — list exactly the barrel, no more.
+- `:24-27` — the common-case snippet shows a `RagResolution` arm (for example
+  `{ type: 'in-memory', embedder }`), not `{ type: 'ollama', model }`, which never was a store type.
 - `:29-44` — replace the "Hot-path consumers" block (`resolveRag`) with the prefetch-only form:
   `await prefetchRagFactories(['qdrant'])` at startup, then `makeRag(…)`. The ES loader caches, so
   a later call costs nothing.
-- `:24-27` — the common-case snippet shows a `RagResolution` arm, not `{ type: 'ollama', model }`,
-  which never was a store type.
 
-If the `makeRag`-seam task (`MakeRagInput`) has already rewritten this README, skip this item.
+`packages/llm-agent-libs/README.md` (after B8):
+- `:10` — regenerate the export list from `packages/llm-agent-libs/src/index.ts`; `makeLlm`,
+  `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` leave it.
+- `:17-24` — the five LLM providers are no longer peers of this package (confirm:
+  `grep -n 'openai-llm' packages/llm-agent-libs/package.json` prints nothing), so delete the list and
+  the `MissingProviderError` sentence. Say instead: "This package constructs no LLM provider: pass an
+  `ILlm` to `withMainLlm`."
+- `:26-47` "Migration from 12.0.0" — history, but a copied import would now fail: drop `makeLlm` from
+  both import lists and delete the two "makeLlm is now async" lines (`:43-47`). Append
+  `**Since v27:** the LLM factories are gone; see docs/MIGRATION-v27.md item 2.`
 
-`packages/llm-agent/README.md:36`: this is a historical note about 12.0.x and it stays. Append one
-sentence: `makeLlm, makeDefaultLlm and DefaultModelResolver were removed in v27 — see docs/MIGRATION-v27.md.`
+`packages/llm-agent-server/README.md:12`: `SmartAgentBuilder`, `SessionManager`, `makeLlm`, … →
+`SmartAgentBuilder`, `SessionManager`, `LlmAdapter`, …. Leave B17's `## Credentials` section alone.
+
+`packages/llm-agent/README.md:32-36`: the 12.0.1 relocation table and its note are history and
+stay. Append after `:36` one line:
+`**Since v27:** makeLlm, makeDefaultLlm and DefaultModelResolver (llm-agent-libs) and resolveRag, resolvePrefetchedEmbedder and builtInEmbedderFactories (llm-agent-rag) are removed — see docs/MIGRATION-v27.md.`
+
+`packages/llm-agent-mcp/README.md:7-12` "## Exports": add
+`HttpMcpServer`, `StdioMcpServer` — typed `IMcpServer` implementations; each one's `auth` names the
+scheme and demands the credential kind for it. Read the constructors in
+`packages/llm-agent-mcp/src/servers/*.ts` before writing a snippet; write none you have not compiled.
 
 - [ ] **Step 6: root `README.md`**
 
@@ -19664,7 +21365,7 @@ sentence: `makeLlm, makeDefaultLlm and DefaultModelResolver were removed in v27 
 | `:99-102` | add `pipelinePluginFactories` to the plugin-module list |
 | `:121` | `…plugins, skills, \`makeLlm\`/\`makeDefaultLlm\`.` → `…plugins, skills.` |
 | table `:115-137` | add a row: `[\`@mcp-abap-adt/sap-aicore-auth\`](packages/sap-aicore-auth/README.md) \| SAP AI Core service key → bearer credential + \`apiBaseUrl\` (\`serviceKeyCredential\`).` |
-| `:181-185` | prepend: `**Upgrading to v27?** Secrets moved out of configs and contracts; read [docs/MIGRATION-v27.md](docs/MIGRATION-v27.md) first.` |
+| `:181-185` | prepend: `**Upgrading to v27?** Secrets moved out of configs and contracts, and the binary reads new environment variable names; read [docs/MIGRATION-v27.md](docs/MIGRATION-v27.md) first.` |
 
 Add one new short section after "### Everything the consumer should own is a seam" (`:97-102`):
 
@@ -19680,15 +21381,16 @@ that name into a credential ([how](packages/llm-agent-server/README.md#credentia
 - [ ] **Step 7: everything under `docs/`, plus `.env.template` and `CLAUDE.md`**
 
 Work file by file. For each changed passage, the new text says what the code does **now**, in
-short chunks, and links the guide for the migration.
+short chunks, and links the guide for the migration. New text avoids the removed names that
+Step 2 (a) greps for, except in a `**Since v27:**` line.
 
 **`docs/ARCHITECTURE.md`**
 - `:43` and `:67-68`, both "See `docs/superpowers/specs/…`" / "See the spec §4.6.2": replace with
   "See [MIGRATION-v27.md](MIGRATION-v27.md) item 6/7" and "…item 2/4". The spec is deleted once it
   is implemented.
 - `:50-53`: "So `LLMProviderConfig`, `EmbedderFactoryConfig` and `MakeLlmConfig` carry none" →
-  "So `LLMProviderConfig` and `EmbedderFactoryConfig` carry none — and `MakeLlmConfig`, which
-  existed only to carry one, is gone".
+  "So `LLMProviderConfig` and `EmbedderFactoryConfig` carry none (the library's LLM factory config,
+  which existed only to carry one, was removed in v27)".
 - `:111`: drop "plus LLM factories (`makeLlm`, `makeDefaultLlm` — both **async**)" and "LLM provider
   packages are optional peers of this package". Append "Constructs no provider: `BuildAgentDeps.makeLlm`,
   `resolveEmbedder` and `makeRag` are required seams."
@@ -19696,13 +21398,14 @@ short chunks, and links the guide for the migration.
   plugin with typed settings".
 - `:115` (server): "binary only …" → add "**and the composition root**: reads the environment, turns
   each `credentialRef` into a credential, dispatches providers, implements `IModelResolver`."
-- `:130-132` (optional peers): move the five LLM provider packages from `llm-agent-libs` to
-  `llm-agent-server`. Verify this against `packages/llm-agent-server/package.json` in this step.
+- `:130-132` (optional peers): delete the `llm-agent-libs` line; add "`llm-agent-server` depends on the
+  five LLM provider packages directly — its composition root constructs them". Verify against
+  `packages/llm-agent-server/package.json` (`dependencies`) and `packages/llm-agent-libs/package.json`.
 - `:134-139` "Key API notes": delete the two `makeLlm`/`makeDefaultLlm` lines. Add
   "`staticApiKey`/`staticLogin` (`llm-agent`) → credential from a static secret" and
   "`serviceKeyCredential` (`sap-aicore-auth`) → `{ credential, apiBaseUrl }`".
 - `:258-270`: the "Minimal programmatic integration" snippet passes a config object to
-  `withMainLlm`, which takes an `ILlm`. It is wrong today and it shows `apiKey`. Replace it with:
+  `withMainLlm`, which takes an `ILlm`, and shows `apiKey`. Replace it with:
 
 ```ts
 import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
@@ -19730,6 +21433,8 @@ const handle = await new SmartAgentBuilder()
   interfaces into `SmartAgentBuilder`; the seams are filled by the composition root
   (`llm-agent-server`)".
 - `:833`: delete the `makeLlm / makeDefaultLlm` row from the Key Modules table.
+- `:870`: the `factories/` tree comment "builtInEmbedderFactories registry, dynamic backend imports" →
+  "typed embedder and store resolution, literal dynamic imports". Check the directory's contents first.
 - `:888`: delete the `make-llm.ts` tree line. Verify that the file is gone:
   `ls packages/llm-agent-libs/src/providers.ts`.
 - `:1122-1133` (PluginExports table): add a row
@@ -19745,8 +21450,8 @@ const handle = await new SmartAgentBuilder()
   "### Implementing `IModelResolver`". It holds the item-2 snippet from the guide plus one
   sentence: "The shipped server's implementation lives in `llm-agent-server`; with YAML you configure
   nothing — `PUT /v1/config` resolves the new model through the same `llm:` entries and credentials."
-  Delete the `modelResolver:` YAML block. Step 1 checks whether the server still reads a
-  `modelResolver:` section (`grep -rn "modelResolver" packages/llm-agent-server-libs/src/smart-agent/config*.ts`);
+  Delete the `modelResolver:` YAML block. Check whether the server still reads a `modelResolver:`
+  section (`grep -rn "modelResolver" packages/llm-agent-server-libs/src/smart-agent/config*.ts`);
   if it does, keep a corrected block with `credentialRef` instead of `apiKey`.
 - `:497-583` "## IRagProvider": rewrite from the workstream-3 code:
   - the `createCollection` signature (`:510-513`) becomes
@@ -19763,7 +21468,8 @@ const handle = await new SmartAgentBuilder()
     rules: store created with an op that fails if it exists, record written last,
     `RAG_DUPLICATE_COLLECTION` / `RAG_ORPHAN_STORE`, `adoptExisting`, and "a deletion in progress
     reserves the name — creating it again is refused until the deletion finishes"
-  - new subsection "### Reattaching after a restart", with the item-11 snippet
+  - new subsection "### Reattaching after a restart", with the item-11 snippet and its two
+    `SmartServer` limits
 - `:585-640` AbstractRagProvider example: update its `createCollection` signature to the
   `RagCollectionOwner` form. Add a comment that a real backend must also write the catalog record
   last and implement `describeCollections`/`openCollection`, or its collections cannot be
@@ -19784,15 +21490,15 @@ const handle = await new SmartAgentBuilder()
 - `:1664-1671` `new SmartServer({ llm: { apiKey: … } })`: replace with a config that has
   `llm: { provider: 'openai', model: 'gpt-4o', credentialRef: 'OPENAI' }` and a `deps` object that
   carries the three seams. Link the guide's item 4. Verify the `SmartServer` constructor signature
-  in Step 1: `grep -n "constructor(" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`.
+  first: `grep -n "constructor(" packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`.
 - `:1757` `ragRegistry,` in the `SessionGraphFactory` snippet: add beside it
   `// or ragRegistryFactory: (identity) => hydrateRegistryFor(identity)`, plus one sentence on
   session-owned disposal.
 - `:1952` "existing fields (makeLlm, connectMcp, …)": keep `makeLlm`, since it is still a
   `BuildAgentDeps` field, and add `resolveEmbedder, makeRag — all three required`.
 - `:2252`, `:2268`: "`makeLlm()` wraps / forwards" → "the server's `makeLlm` seam (the composition
-  root) wraps / forwards". Confirm in Step 1 that the composition root keeps both behaviours
-  (`grep -n "NonStreamingLlm\|baseURL" packages/llm-agent-server/src -r`). If it does not, say what
+  root) wraps / forwards". Confirm that the composition root keeps both behaviours
+  (`grep -rn "NonStreamingLlm\|baseURL" packages/llm-agent-server/src`). If it does not, say what
   it does instead.
 - `:2240-2247`, `:2258-2266`: these YAML blocks use the removed `pipeline: { llm: … }` form
   (removed in v19) and `apiKey`. Rewrite them as top-level `llm:` maps, with `credentialRef` where
@@ -19802,11 +21508,11 @@ const handle = await new SmartAgentBuilder()
   `LlmAdapter`). `reconfigure` is unchanged.
 - `:2376-2385`: `new OpenAIProvider({ apiKey, model })` →
   `new OpenAIProvider({ credential: staticApiKey(key), model })`, twice.
-- `:2655-2667`: `.withMainLlm({ provider, apiKey })` is wrong today, and it also shows `withRag`
-  plus `withEmbedderFactories` with a factory that builds `SapAiCoreEmbedder` without credentials.
-  Rewrite the snippet: `withMainLlm(llm)`, and a factory that closes over
-  `serviceKeyCredential(...)`, where `(cfg) => new SapAiCoreEmbedder({ model: cfg.model, ...sapKey })`.
-  Confirm first that `withRag` / `withEmbedderFactories` still exist on the builder
+- `:2655-2667`: `.withMainLlm({ provider, apiKey })` also shows `withRag` plus `withEmbedderFactories`
+  with a factory that builds `SapAiCoreEmbedder` without credentials. Rewrite the snippet:
+  `withMainLlm(llm)`, and a factory that closes over `serviceKeyCredential(...)`, where
+  `(cfg) => new SapAiCoreEmbedder({ model: cfg.model, ...sapKey })`. Confirm first that `withRag` /
+  `withEmbedderFactories` still exist on the builder
   (`grep -n "withRag\|withEmbedderFactories" packages/llm-agent-libs/src/builder.ts`).
 - `:2689`: comment "pipeline-specific config passed to the plugin's parseConfig()" →
   "parsed by the server into the plugin's typed settings".
@@ -19821,12 +21527,10 @@ const handle = await new SmartAgentBuilder()
 - `:3313-3345` "Heterogeneous LLM routing": replace the three `makeLlm` calls with direct
   construction. Use `staticApiKey` for DeepSeek and Anthropic, and `serviceKeyCredential` for SAP.
 - `:3436-3445` `ControllerSkillPipelineBuilder`: "`.build(deps)` accepts a `BuildAgentDeps` to
-  inject stubs (`makeLlm`, …)", and "bare `.build()` … requires `AICORE_SERVICE_KEY`". Rewrite this
-  to what that builder does after the workstream-2 tasks. **Read**
-  `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts` first. When
-  this task was drafted it still took `apiKey` and read `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`
-  itself (`:36-60`). See Findings. If it is unchanged, document it as it is and do not invent a
-  contract.
+  inject stubs (`makeLlm`, …)", and "bare `.build()` … requires `AICORE_SERVICE_KEY`". B9 removed the
+  builder's `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY` reads and `BuilderLlmInput.apiKey`.
+  Read `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts` and
+  document what it takes now; name no field the file does not have.
 
 **`docs/PIPELINES.md`**
 - `:56-77` controller YAML: the subagents become `llm:` keys, per item 8. Add a top-level `llm:`
@@ -19846,67 +21550,76 @@ const handle = await new SmartAgentBuilder()
 
 **`docs/QUICK_START.md`**
 - `:60-61` "Secrets go in `.env` … resolves `${VAR}`": change to "Secrets go in `.env`. The YAML
-  names accounts with `credentialRef:`, never holds a secret; the server reads the env for each ref
+  names accounts with `credentialRef:` and never holds a secret; the server reads `<REF>_API_KEY` (or
+  `<REF>_SERVICE_KEY`) for each ref, and `LLM_API_KEY` when an `llm:` entry names none
   ([mapping](../packages/llm-agent-server/README.md#credentials)). `${VAR}` still works for
   non-secret settings such as URLs and model names."
 - `:69-93` minimal config: delete `apiKey:`, and split `rag:` into `store: { type: in-memory }` and
-  `embedder: { provider: ollama, url: …, model: bge-m3 }`.
+  `embedder: { provider: ollama, url: …, model: bge-m3 }`. The `.env` line beside it becomes
+  `LLM_API_KEY=…`.
 - `:190-231` "## Advanced: Pipeline Configuration": the whole section documents the
-  `pipeline: { llm, rag, mcp }` override that v19 removed (it fails at startup today). Replace it
-  with "## Advanced: several models", which is a top-level `llm:` map with `main` + `classifier`
-  and a `credentialRef` on the second account. Change "per-store RAG" to one `rag:` with
-  `store`/`embedder`. Show `mcp:` as a top-level array.
+  `pipeline: { llm, rag, mcp }` override that v19 removed, with `apiKey`. Replace it with
+  "## Advanced: several models", which is a top-level `llm:` map with `main` + `classifier` and a
+  `credentialRef` on the second account. Change "per-store RAG" to one `rag:` with `store`/`embedder`.
+  Show `mcp:` as a top-level array.
 - `:233-251` "Dynamic RAG collections": the comment
   `rag_create_collection({ … scope: 'session' })` stays valid. Add "(`scope` is `session` or
   `user`; the tools never create a `global`)". Replace `closeSession` "clears all session-scoped
   collections" with "deletes the session's collections (catalog record first, then data)".
-- `:297-298` Troubleshooting "LLM API key is required": change to "a `credentialRef` has no entry /
-  env var not set": "The error names the ref and the variable; set it in `.env`. With no
-  `credentialRef` the role's default applies — see the server's Credentials section. `ollama` needs
-  none."
+- `:297-298` Troubleshooting "LLM API key is required": change to the lookup's own message — read it
+  in `packages/llm-agent-server/src/composition/lookup.ts` (`createLookup`), for example
+  "`credentialRef 'LLM' must hold a api-key credential for deepseek, got none`" — with the fix: "set
+  `LLM_API_KEY` in `.env` (or `<REF>_API_KEY` for the ref the entry names). `ollama` needs none."
 
 **`docs/SAP_AI_CORE.md`**
 - `:39-73` "## Authentication": replace both subsections with one: "The provider takes a
   `credential` (`IBearerCredential`) and an `apiBaseUrl`, and reads no environment variable. Build
-  both from a service key with `serviceKeyCredential`". Include the snippet from the guide's item 3,
-  and "the binary does this for you when `AICORE_SERVICE_KEY` is set — see the server's
-  Credentials section".
+  both from a service key with `serviceKeyCredential`". Include the snippet from the guide's item 3.
+  Then: "The `llm-agent` binary builds them for you from `LLM_SERVICE_KEY` (the default LLM ref), or
+  from `<REF>_SERVICE_KEY` for an entry with `credentialRef: <REF>`. A `sap-ai-core` embedder reads
+  `RAG_EMBEDDER_SERVICE_KEY`, or shares the LLM's key with `credentialRef: LLM` — see the server's
+  Credentials section."
 - `:78-87` field table: delete the `credentials` and `apiKey` rows. Add `credential` —
   `IBearerCredential`, **required**. Add `apiBaseUrl` — `string`, **required**.
-- `:91-96` env table: `AICORE_SERVICE_KEY` "(primary auth method)" → "read by the composition root
-  (`llm-agent-server`), not by the provider".
+- `:91-96` env table: the `AICORE_SERVICE_KEY` row becomes `LLM_SERVICE_KEY` — "SAP AI Core service
+  key JSON, read by the `llm-agent` binary for the default LLM ref (before v27: `AICORE_SERVICE_KEY`)".
+- `:100-105` CLI usage: `export AICORE_SERVICE_KEY='{ ... }'` → `export LLM_SERVICE_KEY='{ ... }'`.
 - `:107-150` programmatic examples: replace both with the `serviceKeyCredential` form.
-- the "Pipeline Configuration (SmartAgent)" block after `:150`: if it uses `pipeline: { llm: … }`,
-  rewrite it as a top-level `llm:` map. Check `sed -n 150,200p docs/SAP_AI_CORE.md` first.
-- `:383` troubleshooting row "`AICORE_SERVICE_KEY is not set`": fix the message to match what the
-  composition root now throws (read its `requireEnv`).
+- `:383` troubleshooting row "`AICORE_SERVICE_KEY is not set`": replace with the lookup's message for
+  an SAP entry with no key — read it in `packages/llm-agent-server/src/composition/lookup.ts`
+  (`createLookup`; for example "`credentialRef 'LLM' must hold a bearer credential for sap-ai-sdk, got none`")
+  — and the fix "set `LLM_SERVICE_KEY` to the service-key JSON".
 
 **`docs/EXAMPLES.md`**
 - `:204-231`: `QdrantRagProvider({ apiKey: process.env.QDRANT_API_KEY })` →
   `credential: staticApiKey(process.env.QDRANT_API_KEY!)`, and
   `buildRagCollectionToolEntries({ registry, providerRegistry })` → `{ registry, identity }`. Adjust
   it to the real parameter list confirmed in Step 1.
-- `:236-266`: the two `withMainLlm({ provider, apiKey })` snippets are wrong today. Rewrite both
-  with direct construction, like the ARCHITECTURE snippet above.
+- `:236-266`: the two `withMainLlm({ provider, apiKey })` snippets. Rewrite both with direct
+  construction, like the ARCHITECTURE snippet above.
+- `:464`, `:483`: skill catalog connection strings, out of this release (allowlisted), unchanged.
 - `:594-596`: `makeLlm` from `/testing` stays unchanged.
 - `:688`, `:708`: client configs, left unchanged (allowlisted).
 
 **`docs/DEPLOYMENT.md`**
 - `:111-123` "Environment variable injection": delete `apiKey: ${DEEPSEEK_API_KEY}` and show
   `${…}` only for non-secret settings. Split `rag:` into `store:` (`url: ${QDRANT_URL:-…}`). Add:
-  "Secrets are never substituted into the config: name them with `credentialRef`."
-- `:185-198` serverless: `new SmartAgentBuilder({ llm: { apiKey }, rag: … })` is wrong today, since
-  `SmartAgentBuilderConfig` has neither key (`packages/llm-agent-libs/src/builder-types.ts:48-66`).
-  Rewrite it with direct construction plus `withMainLlm`.
+  "Secrets are never substituted into the config: the server reads `LLM_API_KEY` (or the variables of
+  the ref an entry names)."
+- `:185-198` serverless: `new SmartAgentBuilder({ llm: { apiKey }, rag: … })` — `SmartAgentBuilderConfig`
+  has neither key (`packages/llm-agent-libs/src/builder-types.ts:48-66`). Rewrite it with direct
+  construction plus `withMainLlm`.
 - `:241-252` "External RAG for shared state": nest the fields under `rag.store`. Delete
   `dedupThreshold` from this Qdrant example, because Qdrant never read it. Add `credentialRef:
-  QDRANT`.
+  QDRANT` and the note "the server reads `QDRANT_API_KEY`".
 - `:370-379` hot-reload: `rag.vectorWeight`/`keywordWeight` → `rag.store.vectorWeight`/`keywordWeight`
   (in-memory only). Confirm that the config watcher reads the new path
   (`grep -n "vectorWeight" packages/llm-agent-libs/src/config/config-watcher.ts`).
 - `:383` "API key management": add "configs hold `credentialRef` names only".
 
 **`docs/PERFORMANCE.md`**
+- `:14-45`: the two flat `rag:` blocks with `embedder: ollama` / `embedder: sap-ai-core` split by R2
+  (Step 8).
 - `:60-80`, `:138-148`: nest the YAML under `rag.store`. Add one line: "read by the in-memory store
   only".
 - `:300-322` "Model Selection": `pipeline: { llm: … }` (removed in v19) with `apiKey` becomes a
@@ -19914,34 +21627,60 @@ const handle = await new SmartAgentBuilder()
 - `:416`: `new SmartAgentBuilder({ llm: { apiKey } })` → `new SmartAgentBuilder()`, which matches
   `SmartAgentBuilderConfig`.
 
+**`docs/TROUBLESHOOTING.md`**
+- `:18-20`, `:216-218`: the flat `rag:` blocks split by R2 (Step 8).
+- `:65`: "registered as aliases in `builtInEmbedderFactories`" → "accepted as aliases by the embedder
+  resolution (`provider: sap-ai-core` or `sap-aicore`)". Confirm both spellings are arms of
+  `EmbedderResolution` first.
+- `:94`: a diagnostic snippet that reads the env var itself, so it is still correct. Leave it.
+
 **`docs/CLIENT_SETUP.md`**
-- `:14-19` the comment "(e.g. apiKey: ${DEEPSEEK_API_KEY})" → "(e.g. `url: ${MCP_ENDPOINT}`); secrets are
-  read through `credentialRef`, never substituted".
-- `:208-216` env table: keep the variables and add a line: "which variable a provider uses is set by
-  the server's Credentials mapping". Check `LLM_API_KEY` against that mapping. If the server does
-  not read it, remove the row.
+- `:14-19` the comment "(e.g. apiKey: ${DEEPSEEK_API_KEY})" → "(e.g. `url: ${MCP_ENDPOINT}`); secrets
+  are read through `credentialRef`, never substituted".
+- `:208-216` env table: `LLM_API_KEY` is now exactly what the binary reads for the default LLM ref,
+  so the row stays. `:216` "For SAP AI Core, use `AICORE_SERVICE_KEY` instead of `LLM_API_KEY`" →
+  "For SAP AI Core, use `LLM_SERVICE_KEY` instead of `LLM_API_KEY`".
 - `:104-108`, `:146`: client-side, left unchanged.
 
 **`docs/SECURITY_THREAT_MODEL.md`**: this is Step 9.
 
-**`docs/TROUBLESHOOTING.md:94`**: this is a diagnostic snippet that reads the env var itself, so it
-is still correct. Leave it unchanged.
+**`.env.template:1-26`**: the credential lines follow the naming rule. Replace
+`OPENAI_API_KEY=`, `ANTHROPIC_API_KEY=`, `DEEPSEEK_API_KEY=` and the two `AICORE_SERVICE_KEY` lines
+with:
 
-**`.env.template:22-26`**: `# AICORE_SERVICE_KEY is read automatically by the SDK` → `# AICORE_SERVICE_KEY is read by llm-agent-server's composition root when a credentialRef (or the default) asks for SAP AI Core`.
+```bash
+# Credentials: the llm-agent binary reads them by reference (llm-agent-server README → Credentials).
+# An llm: entry without credentialRef uses the LLM ref; set ONE of:
+LLM_API_KEY=            # openai / anthropic / deepseek
+LLM_SERVICE_KEY=        # sap-ai-sdk: the SAP AI Core service-key JSON from BTP
+# A section naming credentialRef: OPENAI reads OPENAI_API_KEY; RAG_STORE_* and RAG_EMBEDDER_* are the
+# rag.store and rag.embedder defaults.
+```
 
-**`CLAUDE.md`** (`:45-49`, `:59`, `:125-132`): drop the `makeLlm`/`makeDefaultLlm` key-API line
-and the `makeLlm` layer mention. The `AICORE_SERVICE_KEY` row reads "read by the composition root".
+Keep any variable something in the repository still reads by name
+(`grep -rn "process.env" packages/llm-agent-server/src/smoke-adapters.ts` — the smoke adapter reads
+`DEEPSEEK_API_KEY`), with a comment saying what reads it.
+
+**`CLAUDE.md`** (`:40-49`, `:59`, `:125-132`): drop the `makeLlm`/`makeDefaultLlm` key-API line and
+the `makeLlm` layer mention; at `:40-43`, the lower-level optional peers are `llm-agent-rag`'s (the
+embedder and store packages), no longer `llm-agent-libs`'s. The env table: the provider-key row
+becomes `LLM_API_KEY` / `LLM_SERVICE_KEY` — "read by the binary for the default LLM ref; a
+`credentialRef: X` reads `X_API_KEY` / `X_SERVICE_KEY`", and the `AICORE_SERVICE_KEY` row goes.
 **Show this diff to the user and commit it only with their explicit OK.** It is the repository's
 agent instruction file.
 
-- [ ] **Step 8: the example YAMLs — convert every one, by rule**
+- [ ] **Step 8: the example YAMLs and deploy templates — convert every one, by rule**
 
-Four rules cover all 53 files. Each rule is mechanical.
+Four rules cover all 53 YAML files. Each rule is mechanical.
 
-- **R1 `apiKey`**: delete every `apiKey: ${X}` line. If the file has only one account, add
-  nothing, because the role default applies. If two entries use **different** accounts, give the
-  non-default one `credentialRef: <name>`. Take `<name>` from the server's Credentials mapping. If
-  the mapping has no name for the account, stop and report it.
+- **R1 `apiKey`**: delete every `apiKey: ${X}` line. An `llm:` entry on the deployment's one account
+  gets nothing: the `LLM` default applies. If two entries use **different** accounts, give the second
+  one `credentialRef: <NAME>`, where `<NAME>` is any name that says the account (for example
+  `OPENAI`); the binary then reads `<NAME>_API_KEY`. An `openai` or `sap-ai-core` embedder on the
+  **same** account as `llm.main` gets `credentialRef: LLM`, so one variable serves both. An `ollama`
+  embedder and an in-memory store get **no** `credentialRef` — naming one for them is refused. Update
+  the file's header comment to name the variables it now needs (`LLM_API_KEY`, `LLM_SERVICE_KEY`, …),
+  not `AICORE_SERVICE_KEY` or `DEEPSEEK_API_KEY`.
 - **R2 `rag:`**: move `type`, `url` (when the store is qdrant/pg/hana), `collectionName`,
   `connectionString`, `host`, `port`, `database`, `schema`, `dimension`, `autoCreateSchema`,
   `maxBatchSize` and the in-memory `dedupThreshold`/`vectorWeight`/`keywordWeight` under `store:`.
@@ -19952,15 +21691,20 @@ Four rules cover all 53 files. Each rule is mechanical.
   Add each distinct model as an `llm:` entry in the same file. If a role used the same model as
   `main`, write `{}` (for executor) or `{ llm: main }`.
 - **R4 sub-agent files** (`subagents: [{ config: ./x.yaml }]` targets): replace the file's `llm:`
-  map with keys of the **main** file's `llm:` map. Add the worker's models (with their
-  temperatures) to every main file that references the worker. If a worker's classifier used a
-  different temperature, add an entry for it and name it `classifier:`. The worker's `rag:` splits
-  by R2.
+  map with keys of the **main** file's `llm:` map, in the shape Step 1 (3) confirmed. Add the
+  worker's models (with their temperatures) to every main file that references the worker. If a
+  worker's classifier used a different temperature, add an entry for it and name it `classifier:`.
+  The worker's `rag:` splits by R2.
 
-Worked example of R3 plus R2, `docs/examples/13-controller.yaml:12-38`:
+B15 and B16 already convert the controller and worker files they list. For those, the table below
+applies only where Step 1's inventory still shows a hit. The two worked examples show the target
+shape.
+
+Worked example of R3 plus R2, `docs/examples/13-controller.yaml:10-38`:
 
 ```yaml
-# after
+# Base llm block (required even with pipeline: controller). sap-ai-sdk reads
+# LLM_SERVICE_KEY (the SAP AI Core service-key JSON); swap provider/model as needed.
 llm:
   main:
     provider: sap-ai-sdk
@@ -19972,6 +21716,8 @@ pipeline:
   name: controller
   config:
     # Each subagent role names an llm: key; {} = the role's own name, else main.
+    # Before v27 the subagents had no temperature and got the provider's default; they now share
+    # main at 0.3. Add an llm: entry without a temperature and name it to keep the old behaviour.
     subagents:
       evaluator: {}
       planner:   {}
@@ -19987,12 +21733,8 @@ rag:
     scenario: foundation-models
     resourceGroup: default
     model: text-embedding-3-small
+    credentialRef: LLM          # the same SAP AI Core account as llm.main
 ```
-
-This changes one behaviour, and the worked example must say so in a comment: the old subagents
-had no `temperature`, so each got the provider's default. Now they share `main` at 0.3. If the
-previous behaviour matters, add `controller-role: { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }`
-and name it.
 
 Worked example of R4, `docs/examples/dag-coordinator/worker-haiku.yaml:11-27`, with its main files
 `02-hybrid-sonnet-haiku.yaml` and `03-full-roles.yaml`:
@@ -20010,6 +21752,7 @@ rag:
     provider: sap-ai-core
     model: ${EMBEDDING_MODEL:-text-embedding-3-small}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    credentialRef: LLM
 ```
 
 ```yaml
@@ -20026,9 +21769,6 @@ rag:
     temperature: 0.1
 ```
 
-Confirm the exact worker-file shape against the worker-file task's parser before converting. That
-means checking string vs `{ main, helper, classifier }` and where it validates.
-
 Files and the rules they need. The drafting grep counted `apiKey` lines per file, and the flat
 `rag:` count comes from the section survey.
 
@@ -20036,34 +21776,51 @@ Files and the rules they need. The drafting grep counted `apiKey` lines per file
 |---|---|
 | `docs/examples/01-minimal-inmemory.yaml`, `02-ollama-mcp.yaml`, `04-structured-default.yaml`, `08-real-world-scenario.yaml`, `09-parallel-optimized.yaml`, `10-plugins.yaml`, `11-skills.yaml`, `12-deepseek-mcp.yaml` | R1, R2 (and in `12-…:52-73` the commented `llm:` map: R1) |
 | `docs/examples/10-plugins.yaml:20-45` | also the commented plugin example: `parseConfig(raw) { … }` → a factory under `pipelinePluginFactories` |
-| `docs/examples/03-multi-model.yaml`, `06-structured-multi-model.yaml` | R1 (two accounts: `credentialRef` on the non-default one), R2 |
+| `docs/examples/03-multi-model.yaml`, `06-structured-multi-model.yaml` | R1 (two accounts: `credentialRef` on the second), R2 |
 | `docs/examples/05-structured-minimal.yaml` | R1 |
-| `docs/examples/07-structured-sap-ai-core.yaml` | R2; header comment `:9` "Requires: AICORE_SERVICE_KEY" → "the server reads AICORE_SERVICE_KEY for the SAP account" |
-| `docs/examples/13-controller.yaml`, `13-controller-skills.yaml`, `14-controller-weak.yaml`, `14-controller-weak-skills.yaml`, `pipelines/controller.yaml`, `pipelines/controller-mixed.yaml` | R3, R2; `controller-mixed.yaml`'s `gpt-4o-mini` executor becomes an `llm:` entry with `credentialRef` |
-| `docs/examples/coordinator-orchestration.yaml`, `coordinator-orchestration-deepseek.yaml`, `subagent-orchestration*.yaml` (3) | R1, R2, and R4 for the files they reference |
-| `examples/subagents/*.yaml` (6) | R4, R2 |
+| `docs/examples/07-structured-sap-ai-core.yaml` | R2; header comment `:9` "Requires: AICORE_SERVICE_KEY" → "Requires: LLM_SERVICE_KEY (the SAP AI Core service-key JSON)"; its SAP embedder gets `credentialRef: LLM` |
+| `docs/examples/13-controller.yaml`, `13-controller-skills.yaml`, `14-controller-weak.yaml`, `14-controller-weak-skills.yaml`, `pipelines/controller.yaml`, `pipelines/controller-mixed.yaml` | R3, R2, and the header "(creds via AICORE_SERVICE_KEY env)" → "(creds via LLM_SERVICE_KEY)"; `controller-mixed.yaml`'s `gpt-4o-mini` executor becomes an `llm:` entry with `credentialRef: OPENAI` |
+| `docs/examples/coordinator-orchestration.yaml`, `coordinator-orchestration-deepseek.yaml`, `subagent-orchestration*.yaml` (3) | R1, R2, R4 for the files they reference; headers ":8 DEEPSEEK_API_KEY and AICORE_SERVICE_KEY" and ":13 AICORE_SERVICE_KEY" name the new variables |
+| `examples/subagents/*.yaml` (6) | R4, R2; the two `*-sap-aicore.yaml` headers name `LLM_SERVICE_KEY` |
 | `docs/examples/dag-coordinator/*.yaml` (8) | R2 everywhere; R4 for `worker-*.yaml` and `inspector-haiku.yaml`; their main files gain the entries |
-| `docs/examples/stepper/0[1-5]-*.yaml`, `stepper/worker.yaml` | R1 (`apiKey: ${LLM_API_KEY:-}` × 25, `${EMBEDDER_API_KEY:-}` × 5), R2, R4 for `worker.yaml`. **Stop and report** if the server's Credentials mapping cannot express "the account follows `LLM_PROVIDER`", because these examples switch provider by env var |
-| `examples/docker-deepseek/smart-server.yaml`, `docker-ollama/…`, `docker-sap-ai-core/…`, `sap-ai-core-direct/…` | R1, R2 |
-| `pipelines/deepseek.yaml`, `deepseek-proxy.yaml`, `sap-ai-core.yaml`, `sap-ai-core-proxy.yaml`, `sap-ai-core-proxy-ollama.yaml` | already SHAPE-FAIL since v19 (legacy `pipeline: { llm, rag, mcp }`); `packages/llm-agent-server/tools/claude-via-agent.sh:35` still selects them. Rewrite each to the current shape: top-level `llm:` map (R1), one `rag:` (R2 — the legacy named `facts`/`feedback`/`state` stores have no current equivalent and are dropped, one line of comment says so), `mcp:` top-level |
-| `pipelines/legacy/stepper.yaml` | R1, R2 (its SHAPE-FAIL today is only the unset `MCP_ENDPOINT`) |
+| `docs/examples/stepper/0[1-5]-*.yaml`, `stepper/worker.yaml` | R1 (`apiKey: ${LLM_API_KEY:-}` × 25, `${EMBEDDER_API_KEY:-}` × 5), R2, R4 for `worker.yaml`. These examples switch provider with `LLM_PROVIDER`; the default `LLM` ref already follows it (`LLM_API_KEY` for a hosted provider, `LLM_SERVICE_KEY` for SAP AI Core, nothing for Ollama), so no `credentialRef` is needed. `EMBEDDER_API_KEY` becomes `RAG_EMBEDDER_API_KEY`. The comment "apiKey/url are empty by default (SAP AI Core uses AICORE_SERVICE_KEY)" (`02-…:26`, `03-…:40`, `05-…:36`) names the new variables |
+| `examples/docker-deepseek/smart-server.yaml`, `docker-ollama/…`, `docker-sap-ai-core/…`, `sap-ai-core-direct/…` | R1, R2; `sap-ai-core-direct/smart-server.yaml:4` header "AICORE_SERVICE_KEY" → "LLM_SERVICE_KEY" |
+| `pipelines/deepseek.yaml`, `deepseek-proxy.yaml`, `sap-ai-core.yaml`, `sap-ai-core-proxy.yaml`, `sap-ai-core-proxy-ollama.yaml` | refused since v19 (legacy `pipeline: { llm, rag, mcp }`) and carrying `apiKey`; `packages/llm-agent-server/tools/claude-via-agent.sh:35` still selects them. Rewrite each to the current shape: top-level `llm:` map (R1), one `rag:` (R2 — the legacy named `facts`/`feedback`/`state` stores have no current equivalent and are dropped, one line of comment says so), `mcp:` top-level |
+| `pipelines/legacy/stepper.yaml` | R1, R2 |
+
+The deploy templates beside them follow the same names (they are not in the doc grep, so check them
+by hand):
+- `examples/docker-deepseek/.env.template:7` `DEEPSEEK_API_KEY=sk-...` → `LLM_API_KEY=sk-...`;
+  `docker-compose.yml:9` `DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}` → `LLM_API_KEY=${LLM_API_KEY}`.
+- `examples/docker-sap-ai-core/.env.template:2-8` and `docker-compose.yml:36-40, 70-73`: the container
+  must receive `LLM_SERVICE_KEY` (the service-key JSON). The compose file assembles
+  `AICORE_SERVICE_KEY={…}` from `AICORE_AUTH_URL`/`AICORE_CLIENT_ID`/`AICORE_CLIENT_SECRET`/`AICORE_BASE_URL`
+  (`:40`), while the template sets `AICORE_SERVICE_KEY` directly. Pick the template's form: the
+  template sets `LLM_SERVICE_KEY=…`, the compose file passes `LLM_SERVICE_KEY` through, and the four
+  `AICORE_*` pieces go from both the compose file and `README.md:33-45`. Its `smart-server.yaml`'s SAP
+  embedder gets `credentialRef: LLM` (R1).
+- `packages/llm-agent-server/tools/claude-via-agent.sh:9-13` and `claude-via-agent.ps1:10-14`: the
+  header comments name `LLM_API_KEY` / `LLM_SERVICE_KEY` instead of `DEEPSEEK_API_KEY` /
+  `AICORE_SERVICE_KEY`. Change comments only; the scripts read no credential themselves (check:
+  `grep -n 'API_KEY\|SERVICE_KEY' packages/llm-agent-server/tools/claude-via-agent.*` — the only code
+  lines are the `ANTHROPIC_API_KEY` unset/placeholder for the Claude CLI, which stay).
 
 Then the READMEs beside them:
-- `docs/examples/stepper/README.md:104-145`: the env table's `LLM_API_KEY`/`EMBEDDER_API_KEY`
-  rows and the `export` recipes follow the server's Credentials mapping.
+- `docs/examples/stepper/README.md:104-145`: the env table's `LLM_API_KEY` row stays (the default ref
+  reads it); `:118` "SAP AI Core uses `AICORE_SERVICE_KEY`" → "`LLM_SERVICE_KEY`"; `:127` the SAP recipe
+  sets `LLM_SERVICE_KEY`; `EMBEDDER_API_KEY` → `RAG_EMBEDDER_API_KEY` in the table and the `export`
+  recipes.
 - `docs/examples/plugins/README.md:19-27`: add `pipelinePluginFactories` to the listed exports if
   the file shows the `PluginExports` shape.
-- `examples/docker-deepseek/README.md:54-70`: the YAML excerpt follows R1/R2. The env table row
-  `DEEPSEEK_API_KEY` stays if the mapping reads it.
-- `examples/docker-sap-ai-core/README.md:33-45`: the four `AICORE_AUTH_URL`/`AICORE_CLIENT_ID`/…
-  variables. Check whether that example's `.env.template` and the mapping use them or
-  `AICORE_SERVICE_KEY`. Its `.env.template:2-8` uses `AICORE_SERVICE_KEY`, so the README disagrees
-  with its own template today. Align both with the mapping.
-- `examples/sap-ai-core-direct/README.md:70-76`: "the `embedder` under `pipeline.rag.tools`" →
-  "`rag.embedder`".
+- `examples/docker-deepseek/README.md:54-70`: the YAML excerpt follows R1/R2; the env table's
+  `DEEPSEEK_API_KEY` row becomes `LLM_API_KEY`.
+- `examples/docker-sap-ai-core/README.md:33-45`: the four `AICORE_*` variables become one
+  `LLM_SERVICE_KEY`, matching the template and compose file above.
+- `examples/sap-ai-core-direct/README.md:15-20`: `AICORE_SERVICE_KEY={…}` → `LLM_SERVICE_KEY={…}`;
+  `:70-76`: "the `embedder` under `pipeline.rag.tools`" → "`rag.embedder`".
 
 ```bash
-node scripts/check-example-configs.mjs; echo "exit=$?"     # 0 SHAPE-FAIL
+MCP_ENDPOINT=http://localhost:3001/mcp/stream/http node scripts/check-example-configs.mjs; echo "exit=$?"   # 0 SHAPE-FAIL
 ```
 
 - [ ] **Step 9: the threat model**
@@ -20081,91 +21838,126 @@ node scripts/check-example-configs.mjs; echo "exit=$?"     # 0 SHAPE-FAIL
 - `:123` Known Limitations row: delete it. Keep the AS-6 section: a threat model that forgets what it
   fixed cannot recognise a regression.
 
+Also, if B14 left it stale, the one `YAML_TEMPLATE` comment line
+`packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts:115` ("Opaque per-pipeline dialect
+(validated by the plugin)") becomes "Per-pipeline section, parsed by the server into the selected
+plugin's typed settings". Check first: `grep -n 'validated by the plugin\|apiKey' packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts`.
+It is a comment inside a template string that `config-validation.test.ts` loads, so run that test
+after the edit.
+
 - [ ] **Step 10: run every check green**
 
 ```bash
 cd ~/prj/llm-agent
-# (a) the two greps from Step 2 — both must print nothing
-xargs -a /tmp/doc-files.txt /usr/bin/grep -nE '<pattern from Step 2 (a)>' | grep -vE '<allowlist from Step 2 (a)>'
-xargs -a /tmp/doc-files.txt /usr/bin/grep -nE "makeLlm" | grep -v "llm-agent-libs/testing" \
-  | grep -vE "^docs/MIGRATION-v(11|27)\.md:|BuildAgentDeps|deps\.makeLlm|makeLlm\(cfg\)|async makeLlm"
+# (a) the four doc checks from Step 2 (a), the makeLlm check, (b) and (c) — each must print nothing.
+#     Paste each command literally from Step 2; they appear once, there, so that they cannot drift.
 # (b) no durable doc links a spec or plan that will be deleted
 grep -rn "superpowers/specs\|superpowers/plans" README.md docs/*.md docs/examples packages/*/README.md packages/*/CHANGELOG.md CHANGELOG.md
-# (c) every relative link in the edited docs resolves
+# (c) every relative link in the edited docs resolves, and every #credentials anchor has its heading
 for f in README.md docs/*.md; do
   grep -oE '\]\(([^)#:]+)(#[^)]*)?\)' "$f" | sed -E 's/\]\(([^)#]+).*/\1/' | while read -r l; do
     [ -e "$(dirname "$f")/$l" ] || echo "BROKEN $f → $l"; done; done
+grep -rln 'llm-agent-server/README.md#credentials' README.md docs >/dev/null \
+  && { grep -q '^## Credentials' packages/llm-agent-server/README.md || echo "BROKEN anchor #credentials"; }
 # (d) every example config loads
-node scripts/check-example-configs.mjs                          # 0 SHAPE-FAIL
+MCP_ENDPOINT=http://localhost:3001/mcp/stream/http node scripts/check-example-configs.mjs   # 0 SHAPE-FAIL
 # (e) the migration guide and the root changelog agree
 grep -cE '^## ([1-9]|1[01])\. ' docs/MIGRATION-v27.md           # 11
-# (f) the repo still builds and passes
+unrel=$(awk '/^## \[Unreleased\]/{on=1;next} /^## \[/{if(on)exit} on' CHANGELOG.md)
+grep -cE '^(1[01]|[1-9])\. \*\*' <<<"$unrel"                    # 11
+for n in $(seq 1 11); do
+  printf '%-3s guide: %s\n    log:   %s\n' "$n" \
+    "$(grep -m1 -E "^## $n\. " docs/MIGRATION-v27.md)" \
+    "$(grep -m1 -E "^$n\. \*\*" <<<"$unrel" | cut -c1-100)"
+done
+for t in 1.17 credentialRef LLM_API_KEY LLM_SERVICE_KEY staticLogin serviceKeyCredential \
+         resolveNamedLlm pipelinePluginFactories identity rag_create_collection \
+         CatalogRecordDeleteError RAG_ORPHAN_STORE RAG_AMBIGUOUS_COLLECTION \
+         RAG_RESERVED_COLLECTION_NAME adoptExisting providerName userId \
+         'PUT /v1/config' planner EmbedderResolution; do
+  grep -qF -- "$t" docs/MIGRATION-v27.md || echo "GUIDE LACKS  $t"
+  grep -qF -- "$t" <<<"$unrel"           || echo "CHANGELOG LACKS  $t"
+done
+# (f) every package's [Unreleased] names its change — rerun the Step 5 check; it prints nothing
+# (g) the repo still builds and passes
 npm run lint:check && echo LINT=0
 find packages -name '*.tsbuildinfo' -delete && npm run build && echo BUILD=0
 npm run typecheck && echo TYPECHECK=0
 timeout 1800 npm test --workspaces 2>&1 | tail -15
 ```
 
-Paste the literal Step 2 pattern and allowlist into (a) when you run it. They appear once, in
-Step 2, so that they cannot drift. Expected: (a), (b) and (c) print nothing. (d) reports
-`0 SHAPE-FAIL`. (e) prints 11. (f) exits 0 everywhere. No source file was touched, so a red test
-here is pre-existing. Report it and do not fix it in this task.
+Expected: (a), (b) and (c) print nothing. (d) reports `0 SHAPE-FAIL`. (e) prints 11 twice; each
+pair of lines in its table names the same change; and the token loop prints nothing. (f) prints
+nothing. (g) exits 0 everywhere. No source file was touched except, possibly, the `YAML_TEMPLATE`
+comment (Step 9), whose test (g) runs; so any other red test here is pre-existing — report it and do
+not fix it in this task.
+
+If (c) reports `BROKEN anchor #credentials`, B17 did not write its README section. Write it now in
+`packages/llm-agent-server/README.md`, from B17's code only
+(`packages/llm-agent-server/src/composition/credential-for.ts` and `lookup.ts`): the naming rule
+(`<REF>_API_KEY` | `<REF>_SERVICE_KEY` | `<REF>_USER` + `<REF>_PASSWORD`, several kinds for one ref
+refused), the defaults `LLM` / `RAG_STORE` / `RAG_EMBEDDER` per section, the Ollama rule (a credential
+only from a ref that names one; an Ollama embedder and an in-memory store take none), and that
+`AICORE_SERVICE_KEY` becomes `LLM_SERVICE_KEY`. Say in the report that it was B17's gap.
 
 - [ ] **Step 11: commit — three commits, each reviewable alone**
 
+Each commit carries only what it lists; the executing session adds its own attribution.
+
 ```bash
 cd ~/prj/llm-agent
-git add docs/MIGRATION-v27.md CHANGELOG.md packages/llm-agent/CHANGELOG.md \
-        packages/sap-aicore-auth/CHANGELOG.md packages/sap-aicore-auth/package.json
+git add docs/MIGRATION-v27.md CHANGELOG.md packages/*/CHANGELOG.md
 git commit -m "$(cat <<'MSG'
 docs: the v27 migration guide and the root changelog
 
 Eleven changes need an edit from a consumer on the old contract, and the
 spec that argued them is deleted once implemented, so the guide carries
-each one self-contained: secrets out of every contract, the construction
-seams required, credentialRef and the rag store/embedder split, the
-pipeline and plugin contracts, identity-bound RAG tools, and the catalog.
-Also closes two changelog gaps left by finished tasks: llm-agent had no
-entry for its apiKey removal, and sap-aicore-auth had no changelog.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+each one self-contained: secrets out of every contract and the binary's
+new variable names, the construction seams required, credentialRef and
+the rag store/embedder split, the pipeline and plugin contracts,
+identity-bound RAG tools, the catalog (Qdrant 1.17), and hydration with
+the shipped server's two limits stated. Also closes the changelog gaps
+left by finished tasks: llm-agent had no entry for its apiKey removal,
+sap-aicore-auth had no changelog, and every package entry now names its
+change.
 MSG
 )"
 
 git add README.md docs/ARCHITECTURE.md docs/INTEGRATION.md docs/PIPELINES.md docs/QUICK_START.md \
         docs/SAP_AI_CORE.md docs/EXAMPLES.md docs/DEPLOYMENT.md docs/PERFORMANCE.md \
-        docs/CLIENT_SETUP.md docs/SECURITY_THREAT_MODEL.md .env.template \
-        packages/pg-vector-rag/README.md packages/hana-vector-rag/README.md \
-        packages/llm-agent-rag/README.md packages/llm-agent/README.md
+        docs/TROUBLESHOOTING.md docs/CLIENT_SETUP.md docs/SECURITY_THREAT_MODEL.md .env.template \
+        packages/*/README.md
+git add packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts 2>/dev/null || true   # only if Step 9 edited it
 git commit -m "$(cat <<'MSG'
 docs: describe the credential and RAG-identity contracts as they now are
 
 Every guide showed apiKey in configs, makeLlm and DefaultModelResolver,
-parseConfig, and RAG tools without an identity — the previous contract,
-which is worse than no doc because it is believed. Several snippets were
-wrong before this release too (withMainLlm given a config object,
+parseConfig, AICORE_SERVICE_KEY read by the binary, and RAG tools
+without an identity - the previous contract, which is worse than no doc
+because it is believed. Snippets that were wrong before this release too
+and that carry a removed field (withMainLlm given a config object,
 SmartAgentBuilder given llm/rag keys it never had, the v19-removed
-pipeline.llm override); they are fixed with the rest rather than left
-beside correct ones. AS-6 is recorded as mitigated.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+pipeline.llm override) are fixed with the rest. Package READMEs lose the
+removed exports. AS-6 is recorded as mitigated.
 MSG
 )"
 
-git add docs/examples examples pipelines scripts/check-example-configs.mjs
+git add docs/examples examples pipelines scripts/check-example-configs.mjs \
+        packages/llm-agent-server/tools/claude-via-agent.sh packages/llm-agent-server/tools/claude-via-agent.ps1
 git commit -m "$(cat <<'MSG'
 docs(examples): every example config on credentialRef, split rag, llm keys
 
-apiKey: ${VAR} becomes credentialRef where a second account is named and
-disappears where the role default applies; rag: splits into store and
-embedder; controller subagents and sub-agent files name keys of the main
-llm: map. The five legacy pipelines/*.yaml, refused at startup since v19
-but still selected by claude-via-agent.sh, move to the current shape.
-check-example-configs.mjs now covers pipelines/ and reports 0 SHAPE-FAIL.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+apiKey: ${VAR} disappears where the role default applies and becomes
+credentialRef where a second account is named; env templates, compose
+files and headers name LLM_API_KEY / LLM_SERVICE_KEY; rag: splits into
+store and embedder; controller subagents and sub-agent files name keys
+of the main llm: map. The five legacy pipelines/*.yaml, refused at
+startup since v19 but still selected by claude-via-agent.sh, move to the
+current shape. check-example-configs.mjs covers pipelines/, has no
+credential bucket left to hide a failure in, and reports 0 SHAPE-FAIL.
 MSG
 )"
+git status --short   # clean, except CLAUDE.md while it waits for the user's OK
 ```
 
 `CLAUDE.md` goes in a fourth commit (`docs(claude): the key-API notes lose makeLlm`) only after the
@@ -20181,17 +21973,16 @@ Workstreams 2 and 3 of the auth-contracts design, in one PR: one plan covers bot
 `@mcp-abap-adt/interfaces-auth` is touched once (^1.1.0, published first).
 
 **Breaking.** Consumers on the old contract: read `docs/MIGRATION-v27.md`. It has eleven items,
-each with a before/after. No version bump; the release version is decided at the release by what
-has accumulated.
+each with a before/after. Deployments of the `llm-agent` binary: the credential variables are
+renamed (`LLM_API_KEY`, `LLM_SERVICE_KEY`, …), see item 4. No version bump; the release version is
+decided at the release by what has accumulated.
 
 Security: AS-6 is mitigated. The RAG collection tools are built for one caller, and no framework
 tool mutates a global.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-https://claude.ai/code/session_01ANAxaKTh6qZ8pQp4XUMoiT
 BODY
 ```
+
+The executing session appends its own attribution to the PR body.
 
 After the merge, on `main`, run the following. `CLAUDE.md:152` says a plan or spec leaves the tree
 once it is implemented.
@@ -20214,11 +22005,15 @@ This section records the review of the **re-derived** part, B6c–B30.
 
 **Known seams between drafters, resolved here:**
 
-- **B8 and B9 both touch the sub-agent LLM builds** (`smart-server.ts:1875`, `:1888`, `:1900`). B8 routes them from the library `makeLlm` to the injected `this._deps.makeLlm`; B9 then only removes the defaults around them. B16 later replaces the three slots with the resolver. Whichever task runs second re-reads the lines rather than trusting its own citation.
-- **`ctx.makeLlm` outlives B12 on purpose.** Its last reader is the controller, whose subagents are inline LLM configurations until B15 makes them keys; B12 marks it `@deprecated` naming B15, and B15 deletes it.
-- **Quarantined tests name the task that lifts them.** B6b left seven server-libs tests red; B9 skips them naming B10, and B10 lifts them. B18's gate fails on any `skip:` naming a workstream-2 task.
+- **B8 owns the LLM seam wiring** — deleting the library dispatch, routing the three sub-agent builds through `this._deps.makeLlm`, the refusal default, and deleting `_makeLlmDefault`, `makeDefaultRoleLlm` and the throttle-test block. B9 and B12 start from that state and repeat none of it. A role entry reaches the seam as written: no task restores main's temperature on other entries (spec §8 migration, "Also changed").
+- **`ctx.makeLlm` outlives B12 on purpose.** Its last reader is the controller, whose subagents are inline LLM configurations until B15 makes them keys; B12 marks it `@deprecated`, and **B15 deletes it** with its overrides and a compile check.
+- **Quarantined tests name their lifter.** B6c skips nine server-libs tests (two it turns red, seven red since B6b), each naming B10, and B10 lifts them. B18's gate fails on any `skip:` naming a workstream-2 task.
+- **B6c's API is what B9 and B10 consume** (`EmbedderResolution`, `EmbedderResolutionOptions` without `injectedEmbedder`, `composeEmbedder`); B10's serializable `SmartServerEmbedderConfig` has no `apiBaseUrl` and names consumer factories by `factory:`; B17 converts it.
+- **B19's contracts are the only ones B23–B27 use** — its validators and named errors; no second validator exists.
 
-The per-task review of this sequence is recorded below when it has run.
+**Review record.** Three reviewers read the assembled draft (WS2, WS3, coverage) and found 20 blocking seams; four fixers repaired the regions in parallel against one brief of binding cross-region names; the coordinator reconciled the one conflict between them (the temperature fallback) and folded five spec corrections back (`9de4c412` onward).
+
+
 
 ---
 
