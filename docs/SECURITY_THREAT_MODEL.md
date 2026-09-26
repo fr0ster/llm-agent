@@ -72,32 +72,29 @@ that is the responsibility of the RAG store implementation used in production.
 or writes it. Distinct from AS-4, which is about records returned by `query`: this is about the
 collection-management tools themselves.
 
-**State: latent, not live.** `buildRagCollectionToolEntries` has no consumer — it is exported
-from the barrel (`packages/llm-agent/src/rag/mcp-tools/index.ts`) and mounted by nothing in this
-monorepo, and cloud-llm-hub does not use it either (it has its own `dispatchRagTool`). Nothing
-exposes these handlers to a model today, so there is no exploitable path in any shipped assembly.
-It is recorded because mounting them as they stand would create one.
+**State: mitigated** (`f0be5135`, "the collection tools are built for one caller").
 
-**What is wrong as written** (`packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts`):
-five of seven handlers take the `RagToolContext` they are given and ignore it — `rag_add`
-(`:61`), `rag_correct` (`:87`), `rag_deprecate` (`:128`), `rag_list_collections` (`:155`) and
-`rag_describe_collection` (`:171`). They resolve any name against the registry they were built
-with, so against a shared registry they reach every registered collection. `rag_create_collection`
-(`:266`) and `rag_delete_collection` (`:200`, `:208`) do use the owner keys, and the latter also
-refuses global deletes outright — that pair is the intended shape.
+**What was wrong (before v27)** (`packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts`,
+v26 line numbers): five of seven handlers took the `RagToolContext` they were given and ignored
+it — `rag_add` (`:61`), `rag_correct` (`:87`), `rag_deprecate` (`:128`), `rag_list_collections`
+(`:155`) and `rag_describe_collection` (`:171`). They resolved any name against the registry they
+were built with, so against a shared registry they reached every registered collection.
+`rag_create_collection` (`:266`) and `rag_delete_collection` (`:200`, `:208`) did use the owner
+keys, and the latter also refused global deletes outright — that pair was the intended shape.
 
-**Planned mitigation — construction, not a check.** Per architecture principle 8, the tool
+**Mitigation — construction, not a check.** Per architecture principle 8, the tool
 entries are built with the caller's identity bound in — **required, not optional**, so that an
 unnarrowed address space cannot be reached by omitting a field, so the only collections they can address
 are that caller's own and the globals; another caller's collection is absent rather than refused.
 No access check enters the framework. Where addressing cannot answer — a `role`-authorized
 global — the tools refuse, and a consumer that wants that case mounts its own.
-Two rules make that mitigation complete, and both are part of it:
+Three rules make that mitigation complete, and all are part of it:
 
 - **No framework tool mutates a `global` collection**, whatever its `authorization` value. `public` says who may reach a global, never who may change one; treating reachable as writable would be us inventing a rule about shared data for every consumer. Reads of a `public` global are allowed because the value itself settles them; a `role` global is refused for reads too, since who holds a role is policy.
-- **One source of caller identity.** `RagToolContext`'s declared `sessionId?`/`userId?` are removed, so a per-call value cannot disagree with the identity bound at construction — today `rag_create_collection` reads owner keys from that context (`:266-267`), which would create a collection owned by an identity the address space was never narrowed to. Its `[key: string]: unknown` index signature (`:15`) keeps existing call sites compiling.
+- **One source of caller identity.** `RagToolContext`'s declared `sessionId?`/`userId?` are removed, so a per-call value cannot disagree with the identity bound at construction — `rag_create_collection` no longer reads owner keys from that context, which would create a collection owned by an identity the address space was never narrowed to. Its `[key: string]: unknown` index signature keeps existing call sites compiling.
+- **Each session owns its collection registry** (`SmartServer` supplies `ragRegistryFactory`), so two callers' same-named collections never meet in one registry.
 
-Design: `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` §5.1; workstream 3 (§10).
+Design and migration: [MIGRATION-v27.md](MIGRATION-v27.md) items 6, 7, 10, 11; `docs/ARCHITECTURE.md` principle 8.
 
 ---
 
@@ -120,7 +117,6 @@ server resources.
 | Namespace is consumer-supplied and not authenticated | Low–Medium | Consumer: enforce namespace derivation from authenticated session |
 | `smartAgentEnabled=false` is not cryptographically enforced — a second instance can be created with `enabled=true` | Low | Consumer: do not instantiate SmartAgent when disabled |
 | No rate limiting or request authentication at the library level | Medium | Consumer / API gateway |
-| RAG collection tools ignore their `RagToolContext` (AS-6) — latent: nothing mounts them | Medium if mounted | Library: workstream 3 binds identity at construction |
 
 ---
 

@@ -14,8 +14,9 @@ All shipped examples use `bge-m3` (BAAI/bge-m3 via Ollama):
 
 ```yaml
 rag:
-  embedder: ollama
-  model: bge-m3
+  embedder:
+    provider: ollama
+    model: bge-m3
 ```
 
 ```bash
@@ -38,9 +39,10 @@ The embedding dimensions are model-specific: `nomic-embed-text` produces 768-dim
 
 ```yaml
 rag:
-  embedder: sap-ai-core
-  model: gemini-embedding
-  maxBatchSize: 250
+  embedder:
+    provider: sap-ai-core
+    model: gemini-embedding
+    maxBatchSize: 250
 ```
 
 Precedence: `rag.maxBatchSize` → the provider's declared cap → **100**.
@@ -62,9 +64,11 @@ One shared embedder has one cap. When several stores share an instance, the firs
 The hybrid RAG engine (`VectorRag`) combines semantic similarity (vector cosine) and lexical matching (BM25) using configurable weights:
 
 ```yaml
+# read by the in-memory store only
 rag:
-  vectorWeight: 0.7    # Semantic similarity weight (0..1)
-  keywordWeight: 0.3   # Lexical matching weight (0..1)
+  store:
+    vectorWeight: 0.7    # Semantic similarity weight (0..1)
+    keywordWeight: 0.3   # Lexical matching weight (0..1)
 ```
 
 **Default:** 0.7 / 0.3 (favors semantic understanding).
@@ -140,8 +144,10 @@ Because filtering is score-based, no SAP-specific or domain-specific classifier 
 Cosine similarity threshold for deduplication on upsert:
 
 ```yaml
+# read by the in-memory store only
 rag:
-  dedupThreshold: 0.92   # Default: 0.92
+  store:
+    dedupThreshold: 0.92   # Default: 0.92
 ```
 
 - **Higher (0.95+):** Keeps near-duplicates, larger index, slightly better recall.
@@ -303,23 +309,22 @@ These are hardcoded constants. For most use cases, the defaults work well.
 The pipeline supports heterogeneous models for different internal tasks:
 
 ```yaml
-pipeline:
-  llm:
-    main:
-      provider: openai
-      apiKey: ${OPENAI_API_KEY}
-      model: gpt-4o
-      temperature: 0.7
-    classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
+llm:
+  main:
+    provider: openai
+    credentialRef: OPENAI      # reads OPENAI_API_KEY
+    model: gpt-4o
+    temperature: 0.7
+  classifier:
+    provider: deepseek
+    credentialRef: DEEPSEEK    # reads DEEPSEEK_API_KEY
+    model: deepseek-chat
+    temperature: 0.1
+  helper:
+    provider: deepseek
+    credentialRef: DEEPSEEK
+    model: deepseek-chat
+    temperature: 0.1
 ```
 
 An optional `onBeforeStream` hook can be configured via `.withOnBeforeStream(hook)` on the builder. When set, it receives the fully accumulated response content before it is streamed to the caller, allowing reformatting, summarization, or any other post-processing via an async generator. See the Integration guide for usage examples.
@@ -413,7 +418,8 @@ agent:
 The circuit breaker wraps LLM and embedder calls with automatic failure detection and recovery:
 
 ```ts
-const handle = await new SmartAgentBuilder({ llm: { apiKey } })
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
   .withCircuitBreaker({
     failureThreshold: 5,       // Open after 5 consecutive failures
     recoveryWindowMs: 30_000,  // Try half-open after 30s

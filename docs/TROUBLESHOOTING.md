@@ -16,9 +16,10 @@ A symptom-first index of problems you can hit while wiring this agent up against
 
 ```yaml
 rag:
-  embedder: sap-ai-core
-  scenario: foundation-models
-  resourceGroup: default
+  embedder:
+    provider: sap-ai-core
+    scenario: foundation-models
+    resourceGroup: default
 ```
 
 Default remains `'orchestration'` to preserve v11.0.0 behavior for tenants that already had embedding models under that scenario.
@@ -62,7 +63,7 @@ For new model families not covered by `^gemini` heuristic, extend `detectFamily`
 
 **Cause.** Both forms appear in user-facing docs and in the docker-compose defaults (`sap-aicore`), but only `'sap-ai-core'` was registered as a factory. The package-name and class-name lookup tables had both keys; the runtime registry didn't.
 
-**Fix.** Both spellings are now registered as aliases in `builtInEmbedderFactories`. Either form works.
+**Fix.** Both spellings are accepted as aliases by the embedder resolution (`provider: sap-ai-core` or `sap-aicore`). Either form works.
 
 ---
 
@@ -214,9 +215,10 @@ On releases before #236 the same situation produced one `Batch embedding failed`
 
 ```yaml
 rag:
-  embedder: sap-ai-core
-  model: gemini-embedding
-  maxBatchSize: 100    # YAML → provider-declared cap → 100
+  embedder:
+    provider: sap-ai-core
+    model: gemini-embedding
+    maxBatchSize: 100    # YAML → provider-declared cap → 100
 ```
 
 ### SAP AI Core returns 429 / quota errors during startup tool-vectorization

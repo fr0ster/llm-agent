@@ -7,6 +7,8 @@ QdrantRag vector store and QdrantRagProvider for @mcp-abap-adt/llm-agent.
 
 Provides vector search capabilities using Qdrant as the backend.
 
+Requires Qdrant 1.17 or later: the collection catalog is written with an insert-only operation.
+
 ## Catalog, rights, and the Qdrant version
 
 `QdrantRagProvider` keeps one record per collection in a catalog collection of its own

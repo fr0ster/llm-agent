@@ -13,10 +13,12 @@ Start the llm-agent server:
 
 ```bash
 # Configuration comes from a YAML file, not from standalone LLM_* environment
-# variables. The CLI loads .env into the environment at startup; env vars then
-# take effect only where the YAML references them as ${VAR} (e.g. apiKey:
-# ${DEEPSEEK_API_KEY}). PORT and LOG_FILE are the two the server also reads
-# directly; LLM_PROVIDER/LLM_API_KEY/LLM_MODEL are NOT config knobs on their own.
+# variables. The CLI loads .env into the environment at startup; secrets are
+# read through credentialRef, never substituted — an llm: entry with no
+# credentialRef reads LLM_API_KEY (or LLM_SERVICE_KEY for sap-ai-sdk). ${VAR}
+# still works for non-secret settings (e.g. url: ${MCP_ENDPOINT}). PORT and
+# LOG_FILE are the two the server also reads directly; LLM_PROVIDER/LLM_MODEL
+# are NOT config knobs on their own.
 
 # Option 1: first run with no config writes a smart-server.yaml template and exits.
 # Put your keys in .env, edit smart-server.yaml, then run again to start:
@@ -213,4 +215,4 @@ All clients connect to the same llm-agent server and benefit from:
 | `MCP_ENDPOINT` | MCP server URL | `http://localhost:3001/mcp/stream/http` |
 | `PORT` | Server port | `4004` (default) |
 
-For SAP AI Core, use `AICORE_SERVICE_KEY` instead of `LLM_API_KEY`. See [SAP_AI_CORE.md](SAP_AI_CORE.md).
+For SAP AI Core, use `LLM_SERVICE_KEY` instead of `LLM_API_KEY`. See [SAP_AI_CORE.md](SAP_AI_CORE.md).

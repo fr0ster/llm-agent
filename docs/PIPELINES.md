@@ -50,20 +50,19 @@ session's knowledge store) lives under `pipeline.config.knowledgeSeed`.
 ### `controller` config
 
 ```yaml
+llm:
+  main:                               # the role's own default when a subagent names no llm key
+    provider: sap-ai-sdk
+    model: anthropic--claude-4.6-sonnet
+
 pipeline:
   name: controller
   config:
-    subagents:                       # three roles, each a standalone LLM config
-      evaluator:                     # formulates the target state (goal)
-        provider: sap-ai-sdk
-        model: anthropic--claude-4.6-sonnet
-      planner:                       # returns the next step / done / rewind
-        provider: sap-ai-sdk
-        model: anthropic--claude-4.6-sonnet
-      executor:                      # carries out a step; emits tool calls
-        provider: sap-ai-sdk
-        # hint: <operational steering>  # optional — mainly for weaker models
-        model: anthropic--claude-4.6-sonnet
+    subagents:                       # three roles, each names a key of the top-level llm: map
+      evaluator: {}                   # {} = the role's own name (llm.evaluator), else main
+      planner:   {}                   # formulates the plan; {} = llm.planner, else main
+      executor:  {}                   # carries out a step; emits tool calls
+        # optionally: { hint: <operational steering> }  — mainly for weaker models
     targetState:                     # how the goal is confirmed
       strategy: auto                 # auto | semantic-distance | consumer-confirm
       distanceThreshold: 0.7         # (semantic-distance/auto) larger ⇒ ask to confirm
@@ -106,9 +105,10 @@ A `planner:` key in the controller config is rejected fail-loud (migration: use 
 preset name, or pass the kind to `new ControllerFactory().build(config, deps, 'weak-executor')`
 when composing in code — `ControllerFactory` is the public controller export).
 
-- The three subagents are independent LLM endpoints — they can target different
-  providers/models (e.g. a heavy planner + a light executor). The executor must
-  be a **tool-capable** model the backend accepts (OpenAI function format);
+- Each subagent names a key of the top-level `llm:` map (`{ llm: <key>, hint? }`); an omitted `llm`
+  means the role's own name, then `main`; an absent `reviewer`/`finalizer` uses the planner's key.
+  Different roles can name different entries — e.g. a heavy planner + a light executor. The executor
+  must be a **tool-capable** model the backend accepts (OpenAI function format);
   `anthropic--claude-3-haiku` cannot do tool calls via SAP AI Core orchestration.
 - **Per-role hints (operational scaffolding for weaker models).** The engine's
   role system prompts are agnostic and concise. An optional `subagents.<role>.hint`
@@ -181,8 +181,8 @@ combination to match the task:
 
 ## Adding a custom pipeline (plugin)
 
-A pipeline is an `IPipelinePlugin` (from `@mcp-abap-adt/llm-agent`): it names
-itself, parses its own `config`, and builds an `IPipelineInstance` (`{ agent,
+A pipeline is an `IPipelinePlugin` (from `@mcp-abap-adt/llm-agent`): it names itself and builds
+from `ctx`; its settings arrive in its constructor, and it builds an `IPipelineInstance` (`{ agent,
 close }`). Server-side plugins receive an `IServerPipelineContext` (from
 `@mcp-abap-adt/llm-agent-server-libs`) whose `createAgentBuilder()` returns a
 builder pre-wired with all shared infra (RAG/MCP/embedder/adapters/subagents) —
@@ -202,8 +202,13 @@ The package exports its plugins via the standard plugin surface:
 
 ```ts
 // @acme/superpuper-pipeline
-export const pipelinePlugins = { superpuper: new SuperPuperPipelinePlugin() };
+export const pipelinePluginFactories = {
+  superpuper: (raw: unknown) => new SuperPuperPipelinePlugin(parse(raw)),
+};
 ```
+
+A plugin that needs no settings keeps a plain `pipelinePlugins` instance export instead. A plugin's
+`name` must equal its export key; the loader reports a mismatch in `errors`.
 
 Specifiers resolve against the user's `cwd`. The host merges each module's full
 `PluginExports` (so a pipeline package may also ship `embedderFactories`,
@@ -240,16 +245,13 @@ const { agent, close } = await plugin.build(serverCtx);
 //     three role LLMs via makeRoleLlm, wraps them as subagent clients, validates
 //     the embedder requirement, and returns { handler }.
 import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
+
+// You construct each role's ILlm yourself (see MIGRATION-v27.md item 2) and hand
+// in the instances — the factory resolves no config and reads no credential.
+declare const llms: Record<'evaluator' | 'planner' | 'executor', ILlm>;
+
 const { handler } = await new ControllerFactory().build(config, {
-  // role ∈ 'evaluator' | 'planner' | 'executor' (typed as string by the base
-  // deps; resolve it explicitly so it stays strict-safe).
-  makeRoleLlm: (role) => {
-    switch (role) {
-      case 'planner':  return makeLlm(config.subagents.planner);
-      case 'executor': return makeLlm(config.subagents.executor);
-      default:         return makeLlm(config.subagents.evaluator);
-    }
-  },
+  makeRoleLlm: (role) => llms[role as 'evaluator' | 'planner' | 'executor'],
   callMcp, backend, knowledgeRagFor, embedder, selectTools,
   // model ids for usage attribution are derived from the resolved LLMs.
 });

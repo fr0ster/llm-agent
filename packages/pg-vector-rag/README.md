@@ -23,13 +23,19 @@ npm install @mcp-abap-adt/pg-vector-rag pg
 ## Minimal config
 
 ```yaml
+# the address only; the login is a credential
 rag:
-  type: pg-vector
-  connectionString: postgres://user:pass@host:5432/mydb
-  collectionName: llm_agent_docs
-  dimension: 1536
-  autoCreateSchema: true
+  store:
+    type: pg-vector
+    connectionString: postgres://host:5432/mydb
+    collectionName: llm_agent_docs
+    dimension: 1536
+    autoCreateSchema: true
+    credentialRef: RAG_PG          # the llm-agent binary reads RAG_PG_USER and RAG_PG_PASSWORD
 ```
+
+In code: `new PgVectorRag({ connectionString: 'postgres://host:5432/mydb', credential: staticLogin(user, password), … })`
+— a connection string carrying `user:pass` is refused at construction.
 
 See the monorepo root README for full configuration surface.
 

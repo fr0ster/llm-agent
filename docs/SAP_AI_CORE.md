@@ -38,39 +38,25 @@ Key differences from direct provider access:
 
 ## Authentication
 
-SAP AI Core supports two authentication methods:
-
-### 1. Environment Variable (AICORE_SERVICE_KEY)
-
-The simplest approach. Set the `AICORE_SERVICE_KEY` environment variable with the full service key JSON from your BTP cockpit:
-
-```bash
-export AICORE_SERVICE_KEY='{"clientid":"sb-xxx","clientsecret":"...","url":"https://api.ai.xxx.aicore.cfapps.xxx.hana.ondemand.com","serviceurls":{"AI_API_URL":"..."},"appname":"...","identityzone":"...","identityzoneid":"...","tenantid":"...","uaa":{"clientid":"...","clientsecret":"...","url":"https://xxx.authentication.xxx.hana.ondemand.com","identityzone":"...","tenantid":"...","tenantmode":"...","sburl":"...","apiurl":"...","verificationkey":"...","xsappname":"...","subaccountid":"...","uaadomain":"...","zoneid":"...","credential-type":"..."}}'
-```
-
-The `@sap-ai-sdk/orchestration` package reads this variable automatically. No additional configuration is needed.
-
-### 2. Programmatic Credentials (SapAICoreCredentials)
-
-For environments where you cannot set environment variables (e.g., multi-tenant apps, serverless functions), pass credentials programmatically:
+The provider takes a `credential` (`IBearerCredential`) and an `apiBaseUrl`, and reads no
+environment variable itself. Build both from a service key with `serviceKeyCredential`:
 
 ```typescript
-import { SapCoreAIProvider, type SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
+import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
 
-const credentials: SapAICoreCredentials = {
-  clientId: 'sb-xxx...',
-  clientSecret: 'your-client-secret',
-  tokenServiceUrl: 'https://xxx.authentication.xxx.hana.ondemand.com/oauth/token',
-  servicUrl: 'https://api.ai.xxx.aicore.cfapps.xxx.hana.ondemand.com',
-};
-
-const provider = new SapCoreAIProvider({
-  model: 'gpt-4o',
-  credentials,
-});
+const { credential, apiBaseUrl } = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
+const provider = new SapCoreAIProvider({ model: 'gpt-4o', credential, apiBaseUrl });
 ```
 
-When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destination object instead of reading `AICORE_SERVICE_KEY`.
+A service key is OAuth client credentials, not a token, so `serviceKeyCredential` runs the exchange
+once and the returned credential caches and refreshes it on every `token()` call — the provider never
+sees the client secret.
+
+**The `llm-agent` binary builds them for you** from `LLM_SERVICE_KEY` (the default LLM ref), or from
+`<REF>_SERVICE_KEY` for an entry with `credentialRef: <REF>`. A `sap-ai-core` embedder reads
+`RAG_EMBEDDER_SERVICE_KEY`, or shares the LLM's key with `credentialRef: LLM` — see the server's
+[Credentials](../packages/llm-agent-server/README.md#credentials) section.
 
 ## Configuration
 
@@ -82,8 +68,8 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 | `temperature` | `number` | `0.7` | Generation temperature |
 | `maxTokens` | `number` | `16384` | Max tokens for generation |
 | `resourceGroup` | `string` | — | SAP AI Core resource group |
-| `credentials` | `SapAICoreCredentials` | — | Programmatic OAuth2 credentials (bypasses env var) |
-| `apiKey` | `string` | — | Not used by SAP provider (auth handled by SDK) |
+| `credential` | `IBearerCredential` | **required** | From `serviceKeyCredential` — runs the OAuth exchange and refreshes the token |
+| `apiBaseUrl` | `string` | **required** | From the same `serviceKeyCredential` call — not part of the credential itself |
 | `whenThrottled` | `IThrottleStrategy` | — | The strategy itself. Omit and nothing waits — see [Throttling](#throttling-429) |
 | `log` | `object` | — | Optional logger with `debug()` and `error()`. Throttling is not reported here — see `setThrottleObserver` below, which covers every provider |
 
@@ -91,7 +77,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 
 | Variable | Purpose |
 |----------|---------|
-| `AICORE_SERVICE_KEY` | Full SAP AI Core service key JSON (primary auth method) |
+| `LLM_SERVICE_KEY` | SAP AI Core service key JSON, read by the `llm-agent` binary for the default LLM ref (before v27: `AICORE_SERVICE_KEY`) |
 | `LLM_PROVIDER` | Set to `sap-ai-sdk` to use SAP AI Core |
 | `SAP_AI_MODEL` | Model name (used by CLI, maps to `model` config) |
 | `SAP_AI_RESOURCE_GROUP` | Resource group (used by CLI, maps to `resourceGroup` config) |
@@ -102,7 +88,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 
 ```bash
 # Set credentials
-export AICORE_SERVICE_KEY='{ ... }'
+export LLM_SERVICE_KEY='{ ... }'
 export LLM_PROVIDER=sap-ai-sdk
 export SAP_AI_MODEL=gpt-4o
 export SAP_AI_RESOURCE_GROUP=default
@@ -111,48 +97,28 @@ export SAP_AI_RESOURCE_GROUP=default
 npm run dev
 ```
 
-### Programmatic Usage — Basic
+### Programmatic Usage
 
 ```typescript
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
 
+const { credential, apiBaseUrl } = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
 const provider = new SapCoreAIProvider({
   model: 'gpt-4o',
   resourceGroup: 'default',
   maxTokens: 4000,
-});
-
-const { agent } = await new SmartAgentBuilder()
-  .withMainLlm(provider)
-  .build();
-
-const response = await agent.process('What tools are available?');
-```
-
-### Programmatic Usage — With Credentials
-
-```typescript
-import { SapCoreAIProvider, type SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-
-const credentials: SapAICoreCredentials = {
-  clientId: 'sb-xxx',
-  clientSecret: 'secret',
-  tokenServiceUrl: 'https://auth.example.com/oauth/token',
-  servicUrl: 'https://api.ai.example.com',
-};
-
-const provider = new SapCoreAIProvider({
-  model: 'claude-3-5-sonnet',
-  resourceGroup: 'default',
-  credentials,
+  credential,
+  apiBaseUrl,
   log: console, // optional: log debug/error messages
 });
 
 const { agent } = await new SmartAgentBuilder()
-  .withMainLlm(provider)
+  .withMainLlm(new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model }))
   .build();
+
+const response = await agent.process('What tools are available?');
 ```
 
 ### Pipeline Configuration (SmartAgent)
@@ -380,7 +346,7 @@ Use this endpoint to dynamically discover which embedding model names are valid 
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `AICORE_SERVICE_KEY is not set` | Missing env var | Export the service key JSON |
+| `credentialRef 'LLM' must hold a bearer credential for sap-ai-sdk, got none` | Missing env var | Set `LLM_SERVICE_KEY` to the service-key JSON |
 | `401 Unauthorized` | Invalid or expired credentials | Regenerate service key in BTP cockpit |
 | `Model not found` | Model not deployed | Deploy the model in SAP AI Core Launchpad |
 | `Resource group not found` | Wrong resource group | Check `SAP_AI_RESOURCE_GROUP` value |

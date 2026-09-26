@@ -18,13 +18,19 @@ npm install @mcp-abap-adt/hana-vector-rag @sap/hana-client
 ## Minimal config
 
 ```yaml
+# the address only; the login is a credential (required — HANA has no anonymous login)
 rag:
-  type: hana-vector
-  connectionString: hdbsql://user:pass@host:443
-  collectionName: llm_agent_docs
-  dimension: 1536
-  autoCreateSchema: true
+  store:
+    type: hana-vector
+    connectionString: hdbsql://host:443
+    collectionName: llm_agent_docs
+    dimension: 1536
+    autoCreateSchema: true
+    credentialRef: RAG_HANA          # the llm-agent binary reads RAG_HANA_USER and RAG_HANA_PASSWORD
 ```
+
+In code: `new HanaVectorRag({ connectionString: 'hdbsql://host:443', credential: staticLogin(user, password), … })`
+— `credential` is **required**, and a bare-string `connection` is refused at construction.
 
 See the monorepo root README for full configuration surface.
 
