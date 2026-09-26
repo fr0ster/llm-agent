@@ -645,7 +645,7 @@ Each was measured in the packages on 2026-09-20, not reasoned about. Two of the 
    consumer owns is expressed as a seam, not as a policy we wrote down for them.
 
    So what follows is the **default implementation's** behaviour, offered as an example and not as a
-   requirement: `SmartServer` answers `main`, `classifier` and `helper` (and `planner`, read as `helper`
+   requirement: `SmartServer` builds its held `classifier` from `llm.classifier` when that entry is declared and otherwise from `llm.main` at `classifierTemperature` — today it always uses `llm.main` (`smart-server.ts:1041-1046`), so a declared classifier on a second account silently ran on main's, which the strict lookup below would have made permanent. It answers `main`, `classifier` and `helper` (and `planner`, read as `helper`
    and checked **before** any `llm.planner` entry, when a helper is configured) with the instances it holds, which `PUT /v1/config` swaps;
    any other key names an `llm:` entry, built **once** per key and held (§4.6.5); and a key with no entry
    gets the held **`main` instance** — not, as `RoleLlmResolver.resolve` does today, a fresh instance built
@@ -1742,6 +1742,7 @@ if (options.logger) normaliseLogger(options.logger).log(event);
 - **A configured embedder URL now arrives.** The old resolution bag passed `url`, while the Ollama embedder reads `ollamaUrl` and the OpenAI one `baseURL`, so a configured embedder URL has been silently ignored; the typed resolution passes each provider its own field. A deployment that set one and never noticed it was unused now reaches it.
 - **`llm-agent-rag`'s resolution API is typed per target.** `resolveRag` and the flat `RagResolutionConfig` are gone for the `RagResolution` union, and embedder resolution takes a union discriminated by `provider` (formerly `embedder`), with a consumer factory named by its own arm.
 - **An `llm:` entry without a `temperature` no longer inherits main's.** The library's `makeLlm` default filled in main's temperature for every role it built; a role entry now reaches the composition root as written, since a model's temperature is a property of its `llm:` entry (§4.6.6). The held main and classifier keep `temperature`/`classifierTemperature` as before; set a `temperature` on any other entry that relied on inheriting.
+- **A declared `llm.classifier` is now used.** The held classifier was always built from `llm.main` at `classifierTemperature`, so a `classifier` entry — its model and its `credentialRef` — was validated and ignored. It is now built from that entry when declared.
 - **`PUT /v1/config` model switching works in the shipped server.** It needs an `IModelResolver`, which the CLI never set, so the route answered 400; the composition root now supplies one.
 
 ---
