@@ -44,7 +44,7 @@ function sessionRagRegistryOf(graph: SessionGraph): IRagRegistry {
   return agentInternals.deps.ragRegistry;
 }
 
-/** A real, listening SmartServer (port 0 — loopback, OS-assigned, no fixed port),
+/** A real, listening SmartServer (loopback only, OS-assigned port 0),
  *  wired with the same stub LLM the config-reload suite uses, so the DEFAULT
  *  `flat` pipeline really calls `SmartAgentBuilder.build()` per session — the
  *  same path a real request takes (`_withSession` → `lifecycle.acquire`). */
@@ -57,6 +57,7 @@ async function startTestServer(
 }> {
   const server = new SmartServer(
     {
+      host: '127.0.0.1',
       port: 0,
       skipModelValidation: true,
       llm: { model: 'test-model' },
