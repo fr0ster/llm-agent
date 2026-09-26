@@ -6882,7 +6882,7 @@ of its `llm:` entry (§4.6.6), and B8 records the change.
 - Modify: `tsconfig.typecheck.json` — **append** that file to `include`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/llm/role-llm-resolver.ts` — as B8 left it (three imports, then `IRoleLlmResolver`): the `config.js` import becomes type-only, and everything from `export interface IRoleLlmResolver` to the end is the new resolver
 - Modify: `packages/llm-agent-server-libs/src/pipelines/server-context.ts:13`, `:25-28` — drop `llmMap`, `pipelineFallback`; deprecate `makeLlm`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:775` (field), `:1024-1032`, `:1060-1070`, `:2027-2038`, `:2462`, `:2533-2534` (working-tree line numbers; B9's edits shift some of them — locate each by the text shown in Step 3)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:775` (field), `:1024-1032`, `:1041-1046` (the held classifier), `:1060-1070`, `:2027-2038`, `:2462`, `:2533-2534` (working-tree line numbers; B9's edits shift some of them — locate each by the text shown in Step 3)
 - Modify: `packages/llm-agent-server-libs/src/pipelines/coordinator-resolvers.ts:22-26`, `:154-195` — `buildFinalizer` takes a lookup thunk
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/build-dag-coordinator-deps.ts` — whole file (199 lines) replaced
 - Modify: `packages/llm-agent-server-libs/src/pipelines/dag.ts:41-51`
@@ -7842,8 +7842,9 @@ and gains `resolveNamed` (a declared `main`/`classifier`/`helper` key answers wi
 fresh build per call; every other entry is built once and held for the server's lifetime (the
 deployment scope — `SmartServer` ships no per-session resolver); `buildDagCoordinatorDeps` and
 `buildFinalizer` take lookups; a `dag` key with no entry fails rather than falling back; an omitted
-`dag` planner key follows the pipeline-wide default (helper when configured).
-`IServerPipelineContext.makeLlm` is deprecated; Task B15 removes it.
+`dag` planner key follows the pipeline-wide default (helper when configured); a declared
+`llm.classifier` now builds the held classifier (it was always built from `llm.main`, ignoring the
+entry and its `credentialRef`). `IServerPipelineContext.makeLlm` is deprecated; Task B15 removes it.
 
 - [ ] **Step 6: commit**
 
@@ -7861,7 +7862,9 @@ and dag resolved its roles through a private chain that constructed.
 IPipelineContext gains resolveNamedLlm(key), the strict lookup for a key
 a file named: only the llm: entry of exactly that name, rejecting and
 naming the key otherwise; a declared main, classifier or helper key
-answers with the held instance PUT /v1/config swaps. resolveLlm(role)
+answers with the held instance PUT /v1/config swaps — and the held
+classifier is now built from a declared llm.classifier, which startup used
+to ignore in favour of llm.main. resolveLlm(role)
 keeps its defaults: held main, classifier and helper; planner as helper
 when one is held; any other entry built once and held; a name with no
 entry the held main — shared, and swapped by PUT /v1/config — instead
@@ -11586,6 +11589,22 @@ describe('createModelResolver (PUT /v1/config)', () => {
     );
   });
 
+  it('a declared classifier without a temperature keeps none after a swap, as at startup', async () => {
+    const seen: SmartServerLlmConfig[] = [];
+    const makeLlm = async (cfg: SmartServerLlmConfig) => {
+      seen.push(cfg);
+      return { model: cfg.model } as unknown as ILlm;
+    };
+    const llm = {
+      main: { provider: 'openai', model: 'a' },
+      classifier: { provider: 'openai', model: 'c' },
+    } as unknown as SmartServerConfig['llm'];
+    const resolver = createModelResolver(makeLlm, llm);
+    assert.ok(resolver);
+    await resolver.resolve('gpt-mini', 'classifier');
+    assert.equal(seen[0]?.temperature, undefined, 'not 0.1 — B12 builds it as written');
+  });
+
   it('no llm: section → no resolver, so model updates stay refused', () => {
     assert.equal(createModelResolver(async () => ({}) as ILlm, undefined), undefined);
   });
@@ -12148,11 +12167,15 @@ export function createModelResolver(
       const own =
         role === 'helper' ? map.helper : role === 'classifier' ? map.classifier : undefined;
       const base = own ?? map.main;
+      // A declared classifier is built as written at startup (B12), so its
+      // temperature passes through unchanged here too — a swap must not move it.
       const temperature =
         role === 'main'
           ? Number(map.main.temperature ?? 0.7)
-          : role === 'classifier' && !own
-            ? Number(map.main.classifierTemperature ?? 0.1)
+          : role === 'classifier'
+            ? own
+              ? own.temperature
+              : Number(map.main.classifierTemperature ?? 0.1)
             : Number(base.temperature ?? 0.1);
       return makeLlm({ ...base, model: modelName, temperature });
     },
@@ -12232,11 +12255,11 @@ ref and the section uses its role's default.
 |---|---|---|
 | each `llm:` entry | `LLM` | `LLM_API_KEY`, or `LLM_SERVICE_KEY` for SAP AI Core |
 | `rag.store`, a qdrant `skillPlugins.store` | `RAG_STORE` | `RAG_STORE_API_KEY` (Qdrant) or `RAG_STORE_USER` + `RAG_STORE_PASSWORD` |
+| `rag.embedder` | `RAG_EMBEDDER` | `RAG_EMBEDDER_API_KEY`, or `RAG_EMBEDDER_SERVICE_KEY` for SAP AI Core |
 
 The two stores share one default, so they share its one credential kind: a pg-vector or HANA `rag.store`
 on the default (a login) beside a qdrant skill store with no ref (an API key) fails at startup with a
 wrong-kind error. Name a ref on one of them — usually the skill store's.
-| `rag.embedder` | `RAG_EMBEDDER` | `RAG_EMBEDDER_API_KEY`, or `RAG_EMBEDDER_SERVICE_KEY` for SAP AI Core |
 
 A default is read only when the target needs a credential. Where a target can work without one (a Qdrant
 without auth, a pg-vector connection that needs no login), an unset default means anonymous.
@@ -12436,7 +12459,7 @@ git rm packages/llm-agent-server/scripts/e2e-rag-search.ts \
   packages/llm-agent-server/scripts/e2e-rag-search.d.ts \
   packages/llm-agent-server/scripts/e2e-rag-search.js.map \
   packages/llm-agent-server/scripts/e2e-rag-search.d.ts.map
-grep -rn "start-smart-server" packages docs README.md --include='*.md' --include='*.json' --include='*.ts' \
+grep -rnE "start-smart-server|e2e-rag-search" packages docs README.md --include='*.md' --include='*.json' --include='*.ts' \
   | grep -v '^docs/superpowers/'
 ```
 
