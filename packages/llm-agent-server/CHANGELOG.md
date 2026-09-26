@@ -1,5 +1,20 @@
 # @mcp-abap-adt/llm-agent-server
 
+## [Unreleased]
+
+**BREAKING:** the CLI is the composition root — it owns the credentials and
+reads them from the environment by reference: `<REF>_API_KEY`,
+`<REF>_SERVICE_KEY`, or `<REF>_USER` + `<REF>_PASSWORD`, with `LLM`,
+`RAG_STORE` and `RAG_EMBEDDER` as the refs a section without `credentialRef`
+uses (see the README's Credentials section). `AICORE_SERVICE_KEY` is no
+longer read — set `LLM_SERVICE_KEY` (or `credentialRef: AICORE`, which reads
+`AICORE_SERVICE_KEY`). An unknown named ref, a wrong kind, and a missing
+`apiBaseUrl` all fail at the first construction that needs them, naming the
+ref. An Ollama LLM receives a credential only from a ref that names one, and
+a qdrant skill store's `credentialRef` is resolved like every other ref.
+`PUT /v1/config` model switching now works in the CLI — it was refused with
+400 for want of a resolver.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

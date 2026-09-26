@@ -63,6 +63,10 @@ import {
   type SmartServerConfig,
 } from '@mcp-abap-adt/llm-agent-server-libs';
 import { configDotenv } from 'dotenv';
+import {
+  buildCompositionDeps,
+  createModelResolver,
+} from '../composition/index.js';
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing — must happen before dotenv so --env is available
@@ -286,8 +290,33 @@ const config: SmartServerConfig = {
 // Start
 // ---------------------------------------------------------------------------
 
-const server = new SmartServer(config);
-const handle = await server.start();
+// This binary is the composition root (§8 item 4): it owns the credentials and
+// constructs every authenticated object through the seams the library no longer
+// defaults — makeLlm, resolveEmbedder, makeRag, and buildSkillHost for the skill
+// store's account — plus the model resolver PUT /v1/config needs.
+//
+// Caught here (rather than left to propagate) so a construction-time failure —
+// a bad credentialRef, a missing apiBaseUrl — prints once to stderr and exits
+// 1, matching every other startup failure in this file (see the config-resolve
+// catch above). Left uncaught, a peer SDK pulled in by the LLM provider map
+// (@sap-ai-sdk/orchestration) registers its own process-wide winston
+// exception handler, which intercepts it first and prints to stdout instead.
+let handle: Awaited<ReturnType<SmartServer['start']>>;
+try {
+  const deps = buildCompositionDeps(process.env);
+  const server = new SmartServer(
+    {
+      ...config,
+      modelResolver:
+        config.modelResolver ?? createModelResolver(deps.makeLlm, config.llm),
+    },
+    deps,
+  );
+  handle = await server.start();
+} catch (err) {
+  process.stderr.write(`Error: ${String(err)}\n`);
+  process.exit(1);
+}
 
 process.stderr.write(`llm-agent listening on http://0.0.0.0:${handle.port}\n`);
 if (logFile) process.stderr.write(`logs → ${logFile}\n`);

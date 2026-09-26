@@ -33,7 +33,7 @@ if (!existsSync(smokeEnvPath)) {
 config({ path: smokeEnvPath });
 
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { type Message, staticApiKey } from '@mcp-abap-adt/llm-agent';
 import { LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
@@ -102,7 +102,7 @@ async function main() {
   });
 
   const llmProvider = new DeepSeekProvider({
-    apiKey: String(deepseekKey),
+    credential: staticApiKey(String(deepseekKey)),
     model: deepseekModel,
   });
 
