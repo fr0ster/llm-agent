@@ -5,7 +5,9 @@
 Added `HttpMcpServer` and `StdioMcpServer`, typed `IMcpServer` implementations whose `auth`
 names the scheme and demands the credential kind for it (`bearer`, `header` with optional
 `prefix`, `none`; `env-token`, `env-key`, `env-login`, `none`). The http credential is
-resolved once per connection. Both are single-use.
+resolved once per connection. Both are single-use. Concurrent `start()` calls share the one
+start in flight — one client, the same result or failure for every caller — and a `stop()` during a
+start waits for it and closes the client it made.
 
 ## 26.0.0
 

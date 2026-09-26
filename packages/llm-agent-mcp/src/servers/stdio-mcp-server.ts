@@ -8,6 +8,7 @@ import type {
   IMcpServer,
   McpClientDescriptor,
   McpClientFactory,
+  McpClientFactoryResult,
   McpConnectionConfig,
 } from '@mcp-abap-adt/llm-agent';
 import { createDefaultMcpClient } from '../factory.js';
@@ -58,6 +59,8 @@ export class StdioMcpServer implements IMcpServer {
   readonly descriptor?: McpClientDescriptor;
   private state: 'idle' | 'started' | 'stopped' = 'idle';
   private close: (() => Promise<void> | void) | undefined;
+  /** The start in flight: `state` stays 'idle' across its awaits. */
+  private starting: Promise<IMcpClient> | undefined;
 
   constructor(
     private readonly cfg: StdioMcpServerConfig,
@@ -66,12 +69,36 @@ export class StdioMcpServer implements IMcpServer {
     if (cfg.descriptor) this.descriptor = cfg.descriptor;
   }
 
-  async start(): Promise<IMcpClient> {
-    if (this.state === 'started')
-      throw new Error('StdioMcpServer already started');
-    if (this.state === 'stopped') {
-      throw new Error('StdioMcpServer already stopped; build a new one');
+  start(): Promise<IMcpClient> {
+    // Concurrent callers share the one start in flight: without this, both
+    // would pass the 'idle' check below and build two clients.
+    if (this.starting) return this.starting;
+    if (this.state === 'started') {
+      return Promise.reject(new Error('StdioMcpServer already started'));
     }
+    if (this.state === 'stopped') {
+      return Promise.reject(
+        new Error('StdioMcpServer already stopped; build a new one'),
+      );
+    }
+    const starting = this.connect().then(
+      (result) => {
+        this.starting = undefined;
+        this.state = 'started';
+        this.close = result.close;
+        return result.client;
+      },
+      (err: unknown) => {
+        // Failed: nothing was acquired, so the server stays startable.
+        this.starting = undefined;
+        throw err;
+      },
+    );
+    this.starting = starting;
+    return starting;
+  }
+
+  private async connect(): Promise<McpClientFactoryResult> {
     const { command, args, env, auth, timeout, toolTimeouts } = this.cfg;
     const config: McpConnectionConfig = {
       type: 'stdio',
@@ -83,13 +110,14 @@ export class StdioMcpServer implements IMcpServer {
       ...(timeout !== undefined ? { timeout } : {}),
       ...(toolTimeouts ? { toolTimeouts: { ...toolTimeouts } } : {}),
     };
-    const result = await this.createClient(config);
-    this.state = 'started';
-    this.close = result.close;
-    return result.client;
+    return this.createClient(config);
   }
 
   async stop(): Promise<void> {
+    // A start in flight finishes first, so the client it makes is closed here
+    // rather than leaked. Its failure is delivered to its own callers; for
+    // stop() it only means there is nothing to close.
+    if (this.starting) await this.starting.catch(() => undefined);
     const pending = this.close;
     this.close = undefined;
     if (this.state === 'started') this.state = 'stopped';

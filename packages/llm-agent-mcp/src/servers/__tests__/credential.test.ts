@@ -356,3 +356,64 @@ describe('StdioMcpServer', () => {
     );
   });
 });
+
+describe('concurrent start()', () => {
+  const servers = [
+    [
+      'HttpMcpServer',
+      (factory: ReturnType<typeof fakeFactory>['factory']) =>
+        new HttpMcpServer({ url: URL_, auth: { scheme: 'none' } }, factory),
+    ],
+    [
+      'StdioMcpServer',
+      (factory: ReturnType<typeof fakeFactory>['factory']) =>
+        new StdioMcpServer(
+          { command: 'node', args: [], auth: { scheme: 'none' } },
+          factory,
+        ),
+    ],
+  ] as const;
+
+  for (const [name, build] of servers) {
+    it(`${name}: two start() calls in flight share one connection`, async () => {
+      const f = fakeFactory();
+      const server = build(f.factory);
+      const [a, b] = await Promise.all([server.start(), server.start()]);
+      assert.equal(f.configs.length, 1, 'one client, not two');
+      assert.equal(a, b);
+      // Once started, a further start() still refuses.
+      await assert.rejects(() => server.start(), /already started/);
+    });
+
+    it(`${name}: a failed in-flight start fails both callers and leaves it startable`, async () => {
+      const f = fakeFactory();
+      let calls = 0;
+      const server = build(async (config) => {
+        calls += 1;
+        if (calls === 1) throw new Error('connect refused');
+        return f.factory(config);
+      });
+      const results = await Promise.allSettled([
+        server.start(),
+        server.start(),
+      ]);
+      assert.deepEqual(
+        results.map((r) => r.status),
+        ['rejected', 'rejected'],
+      );
+      assert.equal(calls, 1);
+      await server.start();
+      assert.equal(f.configs.length, 1);
+    });
+
+    it(`${name}: stop() during an in-flight start closes the connection it made`, async () => {
+      const f = fakeFactory();
+      const server = build(f.factory);
+      const starting = server.start();
+      await server.stop();
+      await starting;
+      assert.equal(f.closes(), 1, 'the client the start made is not leaked');
+      await assert.rejects(() => server.start(), /already stopped/);
+    });
+  }
+});
