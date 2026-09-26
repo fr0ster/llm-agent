@@ -23,6 +23,8 @@
     { "path": "../qdrant-rag" },
     { "path": "../sap-aicore-embedder" },
     { "path": "../hana-vector-rag" },
-    { "path": "../pg-vector-rag" }
+    { "path": "../pg-vector-rag" },
+    { "path": "../ollama-llm" },
+    { "path": "../sap-aicore-auth" }
   ]
 }
