@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+A malformed service key is reported under the variable that held it
+(`LLM_SERVICE_KEY: service key is not valid JSON …`). A startup failure with
+`AICORE_SERVICE_KEY` still set and `LLM_SERVICE_KEY` unset adds a `Hint:` line
+naming the rename — printed only beside a failure, never at a working start.
+Startup errors no longer print `Error: Error:`, and the "listening" line names
+the configured host instead of always `0.0.0.0`.
+
 **BREAKING:** the CLI is the composition root — it owns the credentials and
 reads them from the environment by reference: `<REF>_API_KEY`,
 `<REF>_SERVICE_KEY`, or `<REF>_USER` + `<REF>_PASSWORD`, with `LLM`,

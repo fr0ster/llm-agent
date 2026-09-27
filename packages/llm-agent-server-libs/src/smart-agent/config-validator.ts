@@ -23,7 +23,7 @@ export class ConfigValidationError extends Error {
     super(
       `Configuration error in smart-server.yaml:\n${issues
         .map((i) => `  - ${i}`)
-        .join('\n')}\nSet these fields in your YAML and restart.`,
+        .join('\n')}\nFix these fields in your YAML and restart.`,
     );
     this.name = 'ConfigValidationError';
   }

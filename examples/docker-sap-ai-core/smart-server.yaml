@@ -43,8 +43,9 @@ rag:
     type: ${RAG_TYPE:-in-memory}
     url: ${QDRANT_URL:-http://localhost:6333}
     collectionName: mcp_tools__${EMBEDDING_MODEL:-text-embedding-3-small}
-    vectorWeight: 0.7
-    keywordWeight: 0.3
+    # vectorWeight / keywordWeight tune the in-memory store only (defaults
+    # 0.7 / 0.3); a qdrant store refuses them, so they are left out here where
+    # RAG_TYPE can switch the store.
   embedder:
     provider: ${RAG_EMBEDDER:-sap-ai-core}
     scenario: ${RAG_SCENARIO:-foundation-models}

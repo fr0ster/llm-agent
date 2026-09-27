@@ -82,7 +82,14 @@ export function envCredentialEntries(
     if (apiKey) return { credential: staticApiKey(apiKey) };
     if (serviceKey) {
       const k = serviceKeyCredential(serviceKey);
-      return { credential: k.credential, apiBaseUrl: k.apiBaseUrl };
+      let apiBaseUrl: string;
+      try {
+        apiBaseUrl = k.apiBaseUrl;
+      } catch (err) {
+        // The parser cannot know which variable held the key; this rule does.
+        throw new Error(`${ref}_SERVICE_KEY: ${(err as Error).message}`);
+      }
+      return { credential: k.credential, apiBaseUrl };
     }
     if (user || password) {
       if (!user || !password) {
@@ -94,4 +101,22 @@ export function envCredentialEntries(
     }
     return undefined;
   };
+}
+
+/**
+ * Before v27 the shipped app read one fixed variable, `AICORE_SERVICE_KEY`; now
+ * a ref names the family (`LLM_SERVICE_KEY` for the default LLM). A deployment
+ * that upgraded without renaming it fails with "got none", which does not say
+ * why. Printed only beside a startup failure, so a stale variable left next to
+ * a working configuration never produces a warning at every start.
+ */
+export function legacyEnvHint(env: NodeJS.ProcessEnv): string | undefined {
+  if (!env.AICORE_SERVICE_KEY || env[`${DEFAULT_LLM_REF}_SERVICE_KEY`]) {
+    return undefined;
+  }
+  return (
+    'AICORE_SERVICE_KEY is set but no longer read: since v27 a service key is ' +
+    `<REF>_SERVICE_KEY — rename it to ${DEFAULT_LLM_REF}_SERVICE_KEY for the default LLM ` +
+    '(see docs/MIGRATION-v27.md, item 4).'
+  );
 }

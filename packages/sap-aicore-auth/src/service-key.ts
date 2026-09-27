@@ -19,9 +19,7 @@ export function parseServiceKey(raw: string): ParsedServiceKey {
   try {
     obj = JSON.parse(raw) as RawServiceKey;
   } catch (err) {
-    throw new Error(
-      `AICORE_SERVICE_KEY is not valid JSON: ${(err as Error).message}`,
-    );
+    throw new Error(`service key is not valid JSON: ${(err as Error).message}`);
   }
 
   const clientId = obj.clientid;
@@ -31,7 +29,7 @@ export function parseServiceKey(raw: string): ParsedServiceKey {
 
   if (!clientId || !clientSecret || !authUrl || !apiBaseUrl) {
     throw new Error(
-      'AICORE_SERVICE_KEY is missing required fields (clientid, clientsecret, url, serviceurls.AI_API_URL)',
+      'service key is missing required fields (clientid, clientsecret, url, serviceurls.AI_API_URL)',
     );
   }
 

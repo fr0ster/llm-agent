@@ -19,8 +19,8 @@ rag:
     type: in-memory                   # in-memory | qdrant | hana-vector | pg-vector
     # collectionName: llm-agent       # Qdrant collection name (qdrant type only)
     dedupThreshold: 0.92
-    vectorWeight: 0.7                 # Semantic similarity weight (0..1)
-    keywordWeight: 0.3                # Lexical matching weight (0..1)
+    vectorWeight: 0.7                 # Semantic similarity weight (0..1) — in-memory only
+    keywordWeight: 0.3                # Lexical matching weight (0..1) — in-memory only
   embedder:
     provider: ollama                  # ollama | openai | sap-ai-core (omit `embedder` for BM25 keyword-only)
     url: http://localhost:11434

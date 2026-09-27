@@ -41,11 +41,21 @@ test('parseServiceKey does not double-append /oauth/token', () => {
 
 test('parseServiceKey throws on missing required fields', () => {
   const raw = JSON.stringify({ clientid: 'x' });
-  assert.throws(() => parseServiceKey(raw), /AICORE_SERVICE_KEY/);
+  assert.throws(
+    () => parseServiceKey(raw),
+    (err: Error) =>
+      /service key is missing required fields/.test(err.message) &&
+      !err.message.includes('AICORE_SERVICE_KEY'),
+  );
 });
 
 test('parseServiceKey throws on invalid JSON', () => {
-  assert.throws(() => parseServiceKey('not json'), /AICORE_SERVICE_KEY/);
+  assert.throws(
+    () => parseServiceKey('not json'),
+    (err: Error) =>
+      /service key is not valid JSON/.test(err.message) &&
+      !err.message.includes('AICORE_SERVICE_KEY'),
+  );
 });
 
 test('parseServiceKey handles trailing slash on URL already ending in /oauth/token', () => {

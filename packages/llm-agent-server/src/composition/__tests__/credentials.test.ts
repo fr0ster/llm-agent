@@ -4,6 +4,7 @@ import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import {
   type CredentialEntry,
   envCredentialEntries,
+  legacyEnvHint,
   memoizeCredentials,
 } from '../credential-for.js';
 import { createLookup } from '../lookup.js';
@@ -162,5 +163,43 @@ describe('lookup (§4.6.4: optional means omittable, never unresolvable)', () =>
       () => l2('T', 'DEF', 'sap-ai-sdk').requireApiBaseUrl(),
       /'T' must carry an apiBaseUrl/,
     );
+  });
+});
+
+describe('env credential errors name the variable the operator set', () => {
+  it('a malformed service key names <REF>_SERVICE_KEY, not a variable nobody reads', () => {
+    const entries = envCredentialEntries({ LLM_SERVICE_KEY: '{bad' });
+    assert.throws(
+      () => entries('LLM'),
+      (err: Error) =>
+        err.message.startsWith('LLM_SERVICE_KEY: ') &&
+        !err.message.includes('AICORE_SERVICE_KEY'),
+    );
+  });
+
+  it('a service key missing fields names its variable too', () => {
+    const entries = envCredentialEntries({
+      RAG_EMBEDDER_SERVICE_KEY: JSON.stringify({ clientid: 'x' }),
+    });
+    assert.throws(
+      () => entries('RAG_EMBEDDER'),
+      /^Error: RAG_EMBEDDER_SERVICE_KEY: /,
+    );
+  });
+});
+
+describe('legacyEnvHint: a pre-v27 variable nothing reads any more', () => {
+  it('points AICORE_SERVICE_KEY at LLM_SERVICE_KEY when that is unset', () => {
+    const hint = legacyEnvHint({ AICORE_SERVICE_KEY: '{}' });
+    assert.match(hint ?? '', /AICORE_SERVICE_KEY/);
+    assert.match(hint ?? '', /LLM_SERVICE_KEY/);
+  });
+
+  it('says nothing once LLM_SERVICE_KEY is set, or when the old name is absent', () => {
+    assert.equal(
+      legacyEnvHint({ AICORE_SERVICE_KEY: '{}', LLM_SERVICE_KEY: '{}' }),
+      undefined,
+    );
+    assert.equal(legacyEnvHint({}), undefined);
   });
 });

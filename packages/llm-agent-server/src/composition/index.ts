@@ -6,6 +6,7 @@ import { createMakeLlm } from './make-llm.js';
 import { createMakeRag } from './make-rag.js';
 import { createResolveEmbedder } from './resolve-embedder.js';
 
+export { legacyEnvHint } from './credential-for.js';
 export { createModelResolver } from './model-resolver.js';
 
 export type CompositionDeps = Pick<

@@ -72,11 +72,17 @@ import { configDotenv } from 'dotenv';
 import {
   buildCompositionDeps,
   createModelResolver,
+  legacyEnvHint,
 } from '../composition/index.js';
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing — must happen before dotenv so --env is available
 // ---------------------------------------------------------------------------
+
+/** An Error's own message — `String(err)` would print "Error: Error: …". */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 function parseCliArgs() {
   try {
@@ -223,7 +229,7 @@ try {
     { configPath: path.resolve(configPath) },
   );
 } catch (err) {
-  process.stderr.write(`Error: ${String(err)}\n`);
+  process.stderr.write(`Error: ${errorText(err)}\n`);
   process.exit(1);
 }
 
@@ -320,9 +326,13 @@ try {
   );
   handle = await server.start();
 } catch (err) {
-  process.stderr.write(`Error: ${String(err)}\n`);
+  process.stderr.write(`Error: ${errorText(err)}\n`);
+  const hint = legacyEnvHint(process.env);
+  if (hint) process.stderr.write(`Hint: ${hint}\n`);
   process.exit(1);
 }
 
-process.stderr.write(`llm-agent listening on http://0.0.0.0:${handle.port}\n`);
+process.stderr.write(
+  `llm-agent listening on http://${config.host ?? '0.0.0.0'}:${handle.port}\n`,
+);
 if (logFile) process.stderr.write(`logs → ${logFile}\n`);
