@@ -327,7 +327,7 @@ try {
   handle = await server.start();
 } catch (err) {
   process.stderr.write(`Error: ${errorText(err)}\n`);
-  const hint = legacyEnvHint(process.env);
+  const hint = legacyEnvHint(process.env, err);
   if (hint) process.stderr.write(`Hint: ${hint}\n`);
   process.exit(1);
 }

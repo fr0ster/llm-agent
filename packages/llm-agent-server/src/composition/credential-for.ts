@@ -107,16 +107,22 @@ export function envCredentialEntries(
  * Before v27 the shipped app read one fixed variable, `AICORE_SERVICE_KEY`; now
  * a ref names the family (`LLM_SERVICE_KEY` for the default LLM). A deployment
  * that upgraded without renaming it fails with "got none", which does not say
- * why. Printed only beside a startup failure, so a stale variable left next to
- * a working configuration never produces a warning at every start.
+ * why. Given only for THAT failure — the default LLM ref resolving to nothing —
+ * because `AICORE_SERVICE_KEY` is still a valid variable for `credentialRef:
+ * AICORE`, and a hint beside any other failure would be false.
  */
-export function legacyEnvHint(env: NodeJS.ProcessEnv): string | undefined {
-  if (!env.AICORE_SERVICE_KEY || env[`${DEFAULT_LLM_REF}_SERVICE_KEY`]) {
-    return undefined;
-  }
+export function legacyEnvHint(
+  env: NodeJS.ProcessEnv,
+  failure: unknown,
+): string | undefined {
+  const message = failure instanceof Error ? failure.message : String(failure);
+  const llmRefMissing =
+    message.startsWith(`credentialRef '${DEFAULT_LLM_REF}' must hold`) &&
+    message.endsWith('got none');
+  if (!llmRefMissing || !env.AICORE_SERVICE_KEY) return undefined;
   return (
-    'AICORE_SERVICE_KEY is set but no longer read: since v27 a service key is ' +
-    `<REF>_SERVICE_KEY — rename it to ${DEFAULT_LLM_REF}_SERVICE_KEY for the default LLM ` +
+    `AICORE_SERVICE_KEY is set, but the default LLM reads ${DEFAULT_LLM_REF}_SERVICE_KEY ` +
+    `since v27 — rename it, or name it with credentialRef: AICORE ` +
     '(see docs/MIGRATION-v27.md, item 4).'
   );
 }

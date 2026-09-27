@@ -188,18 +188,28 @@ describe('env credential errors name the variable the operator set', () => {
   });
 });
 
-describe('legacyEnvHint: a pre-v27 variable nothing reads any more', () => {
-  it('points AICORE_SERVICE_KEY at LLM_SERVICE_KEY when that is unset', () => {
-    const hint = legacyEnvHint({ AICORE_SERVICE_KEY: '{}' });
+describe('legacyEnvHint: a pre-v27 variable beside the failure it explains', () => {
+  const noLlm = new Error(
+    "credentialRef 'LLM' must hold a bearer credential for sap-ai-sdk, got none",
+  );
+
+  it('points AICORE_SERVICE_KEY at LLM_SERVICE_KEY when the default LLM got none', () => {
+    const hint = legacyEnvHint({ AICORE_SERVICE_KEY: '{}' }, noLlm);
     assert.match(hint ?? '', /AICORE_SERVICE_KEY/);
     assert.match(hint ?? '', /LLM_SERVICE_KEY/);
   });
 
-  it('says nothing once LLM_SERVICE_KEY is set, or when the old name is absent', () => {
+  it('says nothing beside another failure: AICORE_SERVICE_KEY may be a ref in use', () => {
     assert.equal(
-      legacyEnvHint({ AICORE_SERVICE_KEY: '{}', LLM_SERVICE_KEY: '{}' }),
+      legacyEnvHint(
+        { AICORE_SERVICE_KEY: '{}' },
+        new Error('Startup aborted: model "deepseek-chat" is not available'),
+      ),
       undefined,
     );
-    assert.equal(legacyEnvHint({}), undefined);
+  });
+
+  it('says nothing when the old variable is absent', () => {
+    assert.equal(legacyEnvHint({}, noLlm), undefined);
   });
 });

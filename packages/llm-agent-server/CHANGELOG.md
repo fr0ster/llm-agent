@@ -3,9 +3,10 @@
 ## [Unreleased]
 
 A malformed service key is reported under the variable that held it
-(`LLM_SERVICE_KEY: service key is not valid JSON …`). A startup failure with
-`AICORE_SERVICE_KEY` still set and `LLM_SERVICE_KEY` unset adds a `Hint:` line
-naming the rename — printed only beside a failure, never at a working start.
+(`LLM_SERVICE_KEY: service key is not valid JSON …`). A startup that fails
+because the default LLM ref resolved to nothing, with `AICORE_SERVICE_KEY` still
+set, adds a `Hint:` line naming the rename — only beside that failure, since
+`AICORE_SERVICE_KEY` stays valid for `credentialRef: AICORE`.
 Startup errors no longer print `Error: Error:`, and the "listening" line names
 the configured host instead of always `0.0.0.0`.
 
