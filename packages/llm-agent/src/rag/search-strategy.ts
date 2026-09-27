@@ -19,6 +19,15 @@ export interface IScoredResult {
 }
 
 export interface ISearchContext {
+  /**
+   * Term statistics over THIS query's candidates only — the records that
+   * passed the store's namespace / TTL / session / user filters — never over
+   * the whole store: store-wide statistics make one session's ranking depend
+   * on (and leak a signal about) another session's records. The built-in
+   * strategies do not read it; they compute the same statistics from the
+   * `candidates` they are given, so they are scoped whatever a caller passes.
+   * Kept for custom strategies.
+   */
   index: InvertedIndex;
   tokenize: (s: string) => string[];
 }
@@ -48,20 +57,47 @@ function cosine(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
+/**
+ * BM25 term statistics over a candidate set: document frequency, document
+ * count and average length come from `candidates` alone, so a query's scores
+ * depend only on the records it may see.
+ */
+interface KeywordStats {
+  docTokens: string[][];
+  df: Map<string, number>;
+  n: number;
+  avgDocLength: number;
+}
+
+function keywordStats(
+  candidates: ISearchCandidate[],
+  tokenize: (s: string) => string[],
+): KeywordStats {
+  const docTokens = candidates.map((c) => tokenize(c.text));
+  const df = new Map<string, number>();
+  let total = 0;
+  for (const tokens of docTokens) {
+    total += tokens.length;
+    for (const t of new Set(tokens)) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  const n = docTokens.length;
+  return { docTokens, df, n, avgDocLength: n === 0 ? 0 : total / n };
+}
+
 function bm25(
   queryTokens: string[],
-  docText: string,
-  context: ISearchContext,
+  docIdx: number,
+  stats: KeywordStats,
 ): number {
-  const docTokens = context.tokenize(docText);
+  const docTokens = stats.docTokens[docIdx];
   if (queryTokens.length === 0 || docTokens.length === 0) return 0;
-  const avgDocLength = context.index.avgDocLength || 1;
-  const n = context.index.docCount || 1;
+  const avgDocLength = stats.avgDocLength || 1;
+  const n = stats.n || 1;
   const k1 = 1.2;
   const b = 0.75;
   let score = 0;
   for (const token of new Set(queryTokens)) {
-    const df = context.index.getDocFrequency(token);
+    const df = stats.df.get(token) ?? 0;
     const idf = Math.log((n - df + 0.5) / (df + 0.5) + 1);
     const tf = docTokens.filter((t) => t === token).length;
     const tfScored =
@@ -92,13 +128,14 @@ export class WeightedFusionStrategy implements ISearchStrategy {
     context: ISearchContext,
   ): IScoredResult[] {
     const queryTokens = context.tokenize(query.text);
+    const stats = keywordStats(candidates, context.tokenize);
     return candidates
-      .map((c) => ({
+      .map((c, i) => ({
         text: c.text,
         metadata: c.metadata,
         score:
           cosine(query.vector, c.vector) * this.vectorWeight +
-          bm25(queryTokens, c.text, context) * this.keywordWeight,
+          bm25(queryTokens, i, stats) * this.keywordWeight,
       }))
       .sort((a, b) => b.score - a.score);
   }
@@ -136,9 +173,10 @@ export class RrfStrategy implements ISearchStrategy {
       idx: i,
       score: cosine(query.vector, c.vector),
     }));
-    const bm25Scores = candidates.map((c, i) => ({
+    const stats = keywordStats(candidates, context.tokenize);
+    const bm25Scores = candidates.map((_c, i) => ({
       idx: i,
-      score: bm25(queryTokens, c.text, context),
+      score: bm25(queryTokens, i, stats),
     }));
 
     // Sort each list desc to get ranks
@@ -209,11 +247,12 @@ export class Bm25OnlyStrategy implements ISearchStrategy {
     context: ISearchContext,
   ): IScoredResult[] {
     const queryTokens = context.tokenize(query.text);
+    const stats = keywordStats(candidates, context.tokenize);
     return candidates
-      .map((c) => ({
+      .map((c, i) => ({
         text: c.text,
         metadata: c.metadata,
-        score: bm25(queryTokens, c.text, context),
+        score: bm25(queryTokens, i, stats),
       }))
       .sort((a, b) => b.score - a.score);
   }

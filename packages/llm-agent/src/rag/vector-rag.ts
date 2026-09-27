@@ -44,7 +44,6 @@ export interface VectorRagConfig {
 
 export class VectorRag implements IRag {
   private records: (StoredRecord | null)[] = [];
-  private readonly index = new InvertedIndex();
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
   private vectorWeight: number;
@@ -112,19 +111,15 @@ export class VectorRag implements IRag {
     vector: number[],
     metadata: RagMetadata,
   ): Result<void, RagError> {
-    const newTokens = this.tokenize(text);
-
     // Idempotent upsert: if metadata.id matches, replace in-place
     if (metadata.id) {
       for (let i = 0; i < this.records.length; i++) {
         const slot = this.records[i];
         if (slot === null) continue;
         if (slot.metadata.id === metadata.id) {
-          const oldTokens = this.tokenize(slot.text);
           slot.text = text;
           slot.vector = vector;
           slot.metadata = { ...slot.metadata, ...metadata };
-          this.index.update(i, oldTokens, newTokens);
           return { ok: true, value: undefined };
         }
       }
@@ -134,11 +129,9 @@ export class VectorRag implements IRag {
       const slot = this.records[i];
       if (slot === null) continue;
       if (this.cosine(slot.vector, vector) >= this.dedupThreshold) {
-        const oldTokens = this.tokenize(slot.text);
         slot.text = text;
         slot.vector = vector;
         slot.metadata = { ...slot.metadata, ...metadata };
-        this.index.update(i, oldTokens, newTokens);
         return { ok: true, value: undefined };
       }
     }
@@ -147,11 +140,8 @@ export class VectorRag implements IRag {
     const freeIdx = this.records.indexOf(null);
     if (freeIdx !== -1) {
       this.records[freeIdx] = { text, vector, metadata };
-      this.index.add(freeIdx, newTokens);
     } else {
-      const docIdx = this.records.length;
       this.records.push({ text, vector, metadata });
-      this.index.add(docIdx, newTokens);
     }
     return { ok: true, value: undefined };
   }
@@ -255,9 +245,22 @@ export class VectorRag implements IRag {
         text: searchText,
         vector: queryVector,
       };
+      // Keyword statistics over THESE candidates only, never the whole store
+      // — see ISearchContext.index. Built on first read: the built-in
+      // strategies compute their own from `candidates` and never read it.
+      const tokenize = this.tokenize.bind(this);
+      let candidateIndex: InvertedIndex | undefined;
       const context: ISearchContext = {
-        index: this.index,
-        tokenize: this.tokenize.bind(this),
+        get index() {
+          if (!candidateIndex) {
+            candidateIndex = new InvertedIndex();
+            candidates.forEach((c, i) => {
+              candidateIndex?.add(i, tokenize(c.text));
+            });
+          }
+          return candidateIndex;
+        },
+        tokenize,
       };
 
       const scored = this.strategy
@@ -311,7 +314,6 @@ export class VectorRag implements IRag {
         for (let i = 0; i < this.records.length; i++) {
           const r = this.records[i];
           if (r !== null && r.metadata.id === id) {
-            this.index.remove(i, this.tokenize(r.text));
             this.records[i] = null;
             return { ok: true, value: true };
           }
@@ -320,7 +322,6 @@ export class VectorRag implements IRag {
       },
       clearAll: async () => {
         this.records.length = 0;
-        this.index.clear();
         return { ok: true, value: undefined };
       },
       upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
@@ -336,6 +337,5 @@ export class VectorRag implements IRag {
 
   clear(): void {
     this.records.length = 0;
-    this.index.clear();
   }
 }

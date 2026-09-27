@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**Security:** `VectorRag`'s keyword ranking no longer spans every session. BM25 document
+frequency, document count and average length came from one index over the whole store, so a
+session's scores changed when another session added records — and so leaked a signal about them.
+The built-in strategies (`WeightedFusionStrategy`, `RrfStrategy`, `Bm25OnlyStrategy`,
+`CompositeStrategy`) now compute these statistics from the candidates they score, i.e. the
+records that passed the namespace / TTL / session / user filters; `ISearchContext.index` is now
+documented as, and built by `VectorRag` as, an index over those candidates only (for custom
+strategies). `VectorRag` no longer maintains a store-wide index.
+
 **Security (BREAKING):** every `IRag` store honours the identity scope of a query.
 `IRag.query` now documents it as a contract: `ragFilter.sessionId` returns only records whose
 `metadata.sessionId` equals it, `ragFilter.userId` the same for `metadata.userId`, both set →
