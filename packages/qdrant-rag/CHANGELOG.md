@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+A record with a negative `metadata.ttl` is expired, as in every other store. The
+query told "no ttl" apart from "ttl in the past" with `must_not: ttl >= 0`, so
+`ttl: -1` passed as if it had none; the no-ttl branch now uses `is_empty`.
+
 **Tests:** the shared conformance kit (identity, namespace, expiry) runs against `QdrantRag` in the
 unit tests, through a stub that now evaluates Qdrant search filters (`must` / `should` /
 `must_not`, `match`, `range`) and orders by cosine; it also passes against a live Qdrant 1.18.

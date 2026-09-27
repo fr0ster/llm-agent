@@ -288,16 +288,16 @@ export class QdrantRag implements IRag {
           ...(identityMust.length > 0 ? { must: identityMust } : {}),
           should: [
             { must },
-            // Also match points without TTL set (no ttl field)
+            // Points with NO ttl field. `is_empty`, not "no ttl >= 0": that
+            // let a negative ttl — a time in the past, so expired — through
+            // as if it had none (PR #308 review).
             {
-              must_not: [{ key: 'ttl', range: { gte: 0 } }],
-              ...(targetNamespace !== undefined
-                ? {
-                    must: [
-                      { key: 'namespace', match: { value: targetNamespace } },
-                    ],
-                  }
-                : {}),
+              must: [
+                { is_empty: { key: 'ttl' } },
+                ...(targetNamespace !== undefined
+                  ? [{ key: 'namespace', match: { value: targetNamespace } }]
+                  : []),
+              ],
             },
           ],
         };

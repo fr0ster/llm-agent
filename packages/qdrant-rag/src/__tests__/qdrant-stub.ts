@@ -200,11 +200,13 @@ export async function startQdrantStub(
 // Filter evaluation, per Qdrant's documented semantics: `must` — every
 // condition holds; `should` — at least one holds (when non-empty); `must_not`
 // — none holds. A field condition on a missing key does not hold (so under
-// `must_not` it does); `range` holds only for a numeric value.
+// `must_not` it does); `range` holds only for a numeric value; `is_empty`
+// holds when the key is missing, null or an empty array.
 // ---------------------------------------------------------------------------
 
 type QdrantCondition =
   | { key: string; match: { value: unknown } }
+  | { is_empty: { key: string } }
   | {
       key: string;
       range: { gt?: number; gte?: number; lt?: number; lte?: number };
@@ -221,6 +223,12 @@ function holds(
   payload: Record<string, unknown>,
   cond: QdrantCondition,
 ): boolean {
+  if ('is_empty' in cond) {
+    const v = payload[cond.is_empty.key];
+    return (
+      v === undefined || v === null || (Array.isArray(v) && v.length === 0)
+    );
+  }
   if ('match' in cond) {
     return cond.key in payload && payload[cond.key] === cond.match.value;
   }

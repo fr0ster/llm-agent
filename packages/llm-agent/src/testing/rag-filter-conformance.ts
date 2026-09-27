@@ -333,6 +333,19 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
     },
   },
   {
+    name: 'a negative ttl is in the past, so the record is expired',
+    // A store that told "no ttl" apart from "ttl in the past" by `ttl >= 0`
+    // let ttl: -1 through as if it had none (found in Qdrant, PR #308).
+    async run(makeStore) {
+      const rag = await makeStore();
+      await seed(rag, [
+        { id: 'negative', text: 'tango reef octopus', metadata: { ttl: -1 } },
+        { id: 'no-ttl', text: 'uniform glade badger', metadata: {} },
+      ]);
+      assert.deepEqual(await queryIds(rag, Q, 10), ['no-ttl']);
+    },
+  },
+  {
     name: 'expiry applies before top-k',
     async run(makeStore) {
       const rag = await makeStore();
