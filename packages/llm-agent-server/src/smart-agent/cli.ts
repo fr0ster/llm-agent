@@ -249,7 +249,19 @@ const logFile = logToStdout
 
 let logStream: fs.WriteStream | null = null;
 if (logFile) {
+  // A relative `log:` names a directory that may not exist in the launch cwd
+  // (the examples use ./.run/…); a stream opened into it errored
+  // asynchronously, uncaught — and with sap-ai-sdk loaded, that SDK's handler
+  // printed it to stdout. Create the directory, and fail loudly on stderr if
+  // the log still cannot be written.
+  fs.mkdirSync(path.dirname(path.resolve(logFile as string)), {
+    recursive: true,
+  });
   logStream = fs.createWriteStream(logFile as string, { flags: 'a' });
+  logStream.on('error', (err) => {
+    process.stderr.write(`Error: log file ${logFile}: ${err.message}\n`);
+    process.exit(1);
+  });
 }
 
 const config: SmartServerConfig = {

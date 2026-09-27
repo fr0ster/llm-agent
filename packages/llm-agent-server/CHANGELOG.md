@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+The CLI creates the directory of its `log:` file, and reports a log that cannot
+be written on stderr and exits 1. The stepper examples log to `./.run/…`; run
+from a directory without `.run`, the stream error went uncaught — and with
+`sap-ai-sdk` loaded, that SDK's handler printed it to stdout.
+
 A malformed service key is reported under the variable that held it
 (`LLM_SERVICE_KEY: service key is not valid JSON …`). A startup that fails
 because the default LLM ref resolved to nothing, with `AICORE_SERVICE_KEY` still
