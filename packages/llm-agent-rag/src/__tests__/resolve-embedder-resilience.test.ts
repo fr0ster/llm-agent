@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedResult, LogEvent } from '@mcp-abap-adt/llm-agent';
 import { getResilienceMetadata } from '@mcp-abap-adt/llm-agent';
-import { resolveEmbedder } from '../rag-factories.js';
+import { composeEmbedder } from '../rag-factories.js';
 
 class GeminiLike {
   readonly maxBatchSize = 250;
@@ -14,39 +14,35 @@ class GeminiLike {
   }
 }
 
-describe('resolveEmbedder resilience composition', () => {
+describe('composeEmbedder resilience composition', () => {
   it('composes an injected embedder and adopts its declared cap', () => {
-    const e = resolveEmbedder({}, { injectedEmbedder: new GeminiLike() });
+    const e = composeEmbedder(new GeminiLike());
     assert.equal(getResilienceMetadata(e)?.maxBatchSize, 250);
   });
 
   it('lets YAML override the provider cap', () => {
-    const e = resolveEmbedder(
-      { maxBatchSize: 64 },
-      { injectedEmbedder: new GeminiLike() },
-    );
+    const e = composeEmbedder(new GeminiLike(), { maxBatchSize: 64 });
     assert.equal(getResilienceMetadata(e)?.maxBatchSize, 64);
   });
 
-  it('re-resolving without an explicit cap keeps the cap and stays silent', () => {
+  it('re-composing without an explicit cap keeps the cap and stays silent', () => {
     const events: LogEvent[] = [];
-    const first = resolveEmbedder({}, { injectedEmbedder: new GeminiLike() });
-    const second = resolveEmbedder(
-      {},
-      { injectedEmbedder: first, logger: { log: (e) => events.push(e) } },
-    );
+    const first = composeEmbedder(new GeminiLike());
+    const second = composeEmbedder(first, {
+      logger: { log: (e) => events.push(e) },
+    });
     assert.equal(second, first);
     assert.equal(getResilienceMetadata(second)?.maxBatchSize, 250);
     assert.deepEqual(events, []);
   });
 
-  it('re-resolving with a different explicit cap warns once', () => {
+  it('re-composing with a different explicit cap warns once', () => {
     const events: LogEvent[] = [];
-    const first = resolveEmbedder({}, { injectedEmbedder: new GeminiLike() });
-    resolveEmbedder(
-      { maxBatchSize: 64 },
-      { injectedEmbedder: first, logger: { log: (e) => events.push(e) } },
-    );
+    const first = composeEmbedder(new GeminiLike());
+    composeEmbedder(first, {
+      maxBatchSize: 64,
+      logger: { log: (e) => events.push(e) },
+    });
     assert.equal(events.length, 1);
   });
 });

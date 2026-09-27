@@ -11,6 +11,24 @@ MCP client wrapper, adapter, factory, and connection strategies for the SmartAge
 - `McpClientAdapter`
 - `createDefaultMcpClient(...)` — the `McpClientFactory` that `mcpServerFromFactory` (`@mcp-abap-adt/llm-agent`) wraps into an `IMcpServer`
 - Connection strategies: `LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`
+- `HttpMcpServer`, `HttpMcpServerConfig`, `HttpMcpAuth` — a typed `IMcpServer` for a server already
+  running elsewhere; `auth` is required, and each scheme (`bearer`, `header`, `none`) demands the one
+  credential kind it can use:
+  ```ts
+  new HttpMcpServer({
+    url: 'https://mcp.example.com',
+    auth: { scheme: 'bearer', credential: { kind: 'bearer', token: async () => token } },
+  });
+  ```
+- `StdioMcpServer`, `StdioMcpServerConfig`, `StdioMcpAuth` — a typed `IMcpServer` that spawns a child
+  process; `auth` names which environment variable(s) carry the credential (`env-token`, `env-key`,
+  `env-login`, `none`):
+  ```ts
+  new StdioMcpServer({
+    command: 'my-mcp-server',
+    auth: { scheme: 'env-key', variable: 'MY_MCP_API_KEY', credential: staticApiKey(key) },
+  });
+  ```
 
 ## Usage
 

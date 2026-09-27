@@ -19,6 +19,15 @@ export interface IScoredResult {
 }
 
 export interface ISearchContext {
+  /**
+   * Term statistics over THIS query's candidates only — the records that
+   * passed the store's namespace / TTL / session / user filters — never over
+   * the whole store: store-wide statistics make one session's ranking depend
+   * on (and leak a signal about) another session's records. The built-in
+   * strategies do not read it; they compute the same statistics from the
+   * `candidates` they are given, so they are scoped whatever a caller passes.
+   * Kept for custom strategies.
+   */
   index: InvertedIndex;
   tokenize: (s: string) => string[];
 }
@@ -48,20 +57,47 @@ function cosine(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
+/**
+ * BM25 term statistics over a candidate set: document frequency, document
+ * count and average length come from `candidates` alone, so a query's scores
+ * depend only on the records it may see.
+ */
+interface KeywordStats {
+  docTokens: string[][];
+  df: Map<string, number>;
+  n: number;
+  avgDocLength: number;
+}
+
+function keywordStats(
+  candidates: ISearchCandidate[],
+  tokenize: (s: string) => string[],
+): KeywordStats {
+  const docTokens = candidates.map((c) => tokenize(c.text));
+  const df = new Map<string, number>();
+  let total = 0;
+  for (const tokens of docTokens) {
+    total += tokens.length;
+    for (const t of new Set(tokens)) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  const n = docTokens.length;
+  return { docTokens, df, n, avgDocLength: n === 0 ? 0 : total / n };
+}
+
 function bm25(
   queryTokens: string[],
-  docText: string,
-  context: ISearchContext,
+  docIdx: number,
+  stats: KeywordStats,
 ): number {
-  const docTokens = context.tokenize(docText);
+  const docTokens = stats.docTokens[docIdx];
   if (queryTokens.length === 0 || docTokens.length === 0) return 0;
-  const avgDocLength = context.index.avgDocLength || 1;
-  const n = context.index.docCount || 1;
+  const avgDocLength = stats.avgDocLength || 1;
+  const n = stats.n || 1;
   const k1 = 1.2;
   const b = 0.75;
   let score = 0;
   for (const token of new Set(queryTokens)) {
-    const df = context.index.getDocFrequency(token);
+    const df = stats.df.get(token) ?? 0;
     const idf = Math.log((n - df + 0.5) / (df + 0.5) + 1);
     const tf = docTokens.filter((t) => t === token).length;
     const tfScored =
@@ -69,7 +105,27 @@ function bm25(
       (tf + k1 * (1 - b + b * (docTokens.length / avgDocLength)));
     score += idf * tfScored;
   }
-  return Math.min(score / 5, 1.0);
+  return score;
+}
+
+/** Raw BM25 of every candidate, in candidate order. */
+function bm25Scores(
+  query: ISearchQuery,
+  candidates: ISearchCandidate[],
+  context: ISearchContext,
+): number[] {
+  const queryTokens = context.tokenize(query.text);
+  const stats = keywordStats(candidates, context.tokenize);
+  return candidates.map((_c, i) => bm25(queryTokens, i, stats));
+}
+
+/**
+ * Raw BM25 is unbounded; the historical absolute scale, kept for the score
+ * `Bm25OnlyStrategy` reports (ranking uses the raw value, so the clamp no
+ * longer flattens strong matches into a tie).
+ */
+function bm25Absolute(raw: number): number {
+  return Math.min(raw / 5, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -91,14 +147,18 @@ export class WeightedFusionStrategy implements ISearchStrategy {
     candidates: ISearchCandidate[],
     context: ISearchContext,
   ): IScoredResult[] {
-    const queryTokens = context.tokenize(query.text);
+    // BM25 normalised per query over these candidates (divided by the best
+    // one), so both parts are in [0, 1] and the weights mean what they say:
+    // the best keyword match contributes exactly `keywordWeight`.
+    const raw = bm25Scores(query, candidates, context);
+    const max = Math.max(0, ...raw);
     return candidates
-      .map((c) => ({
+      .map((c, i) => ({
         text: c.text,
         metadata: c.metadata,
         score:
           cosine(query.vector, c.vector) * this.vectorWeight +
-          bm25(queryTokens, c.text, context) * this.keywordWeight,
+          (max > 0 ? raw[i] / max : 0) * this.keywordWeight,
       }))
       .sort((a, b) => b.score - a.score);
   }
@@ -129,29 +189,26 @@ export class RrfStrategy implements ISearchStrategy {
     candidates: ISearchCandidate[],
     context: ISearchContext,
   ): IScoredResult[] {
-    const queryTokens = context.tokenize(query.text);
-
     // Score by each method independently
     const vectorScores = candidates.map((c, i) => ({
       idx: i,
       score: cosine(query.vector, c.vector),
     }));
-    const bm25Scores = candidates.map((c, i) => ({
-      idx: i,
-      score: bm25(queryTokens, c.text, context),
-    }));
+    const bm25Ranked = bm25Scores(query, candidates, context).map(
+      (score, idx) => ({ idx, score }),
+    );
 
     // Sort each list desc to get ranks
     vectorScores.sort((a, b) => b.score - a.score);
-    bm25Scores.sort((a, b) => b.score - a.score);
+    bm25Ranked.sort((a, b) => b.score - a.score);
 
     // Build rank maps (0-indexed rank)
     const vectorRank = new Map<number, number>();
     const bm25Rank = new Map<number, number>();
     for (let i = 0; i < vectorScores.length; i++)
       vectorRank.set(vectorScores[i].idx, i);
-    for (let i = 0; i < bm25Scores.length; i++)
-      bm25Rank.set(bm25Scores[i].idx, i);
+    for (let i = 0; i < bm25Ranked.length; i++)
+      bm25Rank.set(bm25Ranked[i].idx, i);
 
     // Compute RRF score
     return candidates
@@ -208,14 +265,15 @@ export class Bm25OnlyStrategy implements ISearchStrategy {
     candidates: ISearchCandidate[],
     context: ISearchContext,
   ): IScoredResult[] {
-    const queryTokens = context.tokenize(query.text);
+    const raw = bm25Scores(query, candidates, context);
     return candidates
-      .map((c) => ({
+      .map((c, i) => ({ c, raw: raw[i] }))
+      .sort((a, b) => b.raw - a.raw)
+      .map(({ c, raw: r }) => ({
         text: c.text,
         metadata: c.metadata,
-        score: bm25(queryTokens, c.text, context),
-      }))
-      .sort((a, b) => b.score - a.score);
+        score: bm25Absolute(r),
+      }));
   }
 }
 

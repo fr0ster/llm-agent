@@ -1,6 +1,6 @@
 # SAP AI Core-backed code reviewer sub-agent (with semantic tool-select).
 # Used by docs/examples/subagent-orchestration-sap-aicore.yaml.
-# Requires: AICORE_SERVICE_KEY env variable with SAP AI Core service key JSON.
+# Requires: LLM_SERVICE_KEY (the SAP AI Core service-key JSON) env variable.
 #
 # NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
 # in v19. Multi-role LLM and MCP config now live at the top level. The flat
@@ -13,20 +13,11 @@ agent:
   maxIterations: 2
   ragQueryK: 10
 
-llm:
-  main:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_MODEL:-gpt-4o}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.1
-  classifier:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_MODEL:-gpt-4o}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.1
+llm: code-reviewer
 
 rag:
-  type: in-memory
+  store:
+    type: in-memory
 
 mcp:
   - type: http

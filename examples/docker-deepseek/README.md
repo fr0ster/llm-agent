@@ -28,7 +28,7 @@ Client → :4004/v1/chat/completions → llm-agent → DeepSeek API (LLM)
 2. **Set environment variables** (`.env` or export):
 
    ```dotenv
-   DEEPSEEK_API_KEY=sk-your-deepseek-key
+   LLM_API_KEY=sk-your-deepseek-key
    ```
 
 3. **Start:**
@@ -51,7 +51,7 @@ Client → :4004/v1/chat/completions → llm-agent → DeepSeek API (LLM)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | (required) | DeepSeek API key |
+| `LLM_API_KEY` | (required) | DeepSeek API key (read for the `llm:` entry's default ref) |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama endpoint |
 | `MCP_SERVER_URL` | `http://host.docker.internal:3001/mcp/stream/http` | MCP server endpoint |
 | `MCP_ENABLED` | `true` | Set `false` to run without MCP tools |
@@ -63,7 +63,8 @@ Switch to keyword-only RAG — edit `smart-server.yaml`:
 
 ```yaml
 rag:
-  type: in-memory
+  store:
+    type: in-memory
 ```
 
 This uses BM25 lexical matching instead of neural embeddings. No external dependencies required.

@@ -68,15 +68,6 @@ export abstract class BaseLLMProvider<
     options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse>;
 
-  /**
-   * Validate configuration
-   */
-  protected validateConfig(): void {
-    if (!this.config.apiKey) {
-      throw new Error('API key is required');
-    }
-  }
-
   // --- Rate limiting (issue #282) -----------------------------------------
   //
   // The policy is shared (see `rate-limit.ts`); a provider supplies only the
@@ -101,9 +92,55 @@ export abstract class BaseLLMProvider<
   protected quotaScope(): string {
     return [
       this.canonicalEndpoint(this.quotaEndpoint()),
-      this.credentialFingerprint(this.config.apiKey),
+      // A consumer's explicit scope wins, so two providers can be made to share a
+      // gate on purpose; otherwise the credential object's identity separates them.
+      this.config.quotaScope ?? this.credentialScope(),
     ].join('|');
   }
+
+  /**
+   * Which account this call's quota belongs to.
+   *
+   * A rate limit is per account, so two callers holding different credentials
+   * against one endpoint must not share a 429 gate — one of them getting limited
+   * would otherwise throttle the other. That dimension used to come from a
+   * fingerprint of the configured `apiKey`; the base no longer carries one, and
+   * a secret was the wrong thing to derive a cache key from in the first place.
+   *
+   * It comes from the credential **object's identity** instead: an opaque id
+   * assigned on first sight and remembered for as long as the object lives. That
+   * needs no secret and stays synchronous, which `quotaKey` requires.
+   *
+   * Two providers that wrap the same key in two separate credential objects get
+   * two buckets where they used to share one. That is the safe direction: the
+   * failure worth preventing is two *different* accounts sharing a gate. A
+   * consumer that means them to share sets `quotaScope` on the provider's config.
+   */
+  protected credentialScope(): string {
+    const credential = this.quotaCredential();
+    if (!credential) return 'anonymous';
+    let id = BaseLLMProvider.credentialIds.get(credential);
+    if (id === undefined) {
+      BaseLLMProvider.nextCredentialId += 1;
+      id = `c${BaseLLMProvider.nextCredentialId}`;
+      BaseLLMProvider.credentialIds.set(credential, id);
+    }
+    return id;
+  }
+
+  /**
+   * The credential this provider authenticates with, when it has one.
+   *
+   * `LLMProviderConfig` declares none — each provider declares its own, typed for
+   * what its target speaks — so a provider overrides this to take part in
+   * per-account quota isolation. The object is never read for its secret here.
+   */
+  protected quotaCredential(): object | undefined {
+    return undefined;
+  }
+
+  private static readonly credentialIds = new WeakMap<object, string>();
+  private static nextCredentialId = 0;
 
   /**
    * Reduce spellings of one endpoint to one key.

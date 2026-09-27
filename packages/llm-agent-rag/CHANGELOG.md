@@ -1,5 +1,87 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## [Unreleased]
+
+**BREAKING:** `resolveEmbedder` now takes `EmbedderResolution`, a discriminated
+union on `provider` (`openai` requires an `IApiKeyCredential`;
+`sap-ai-core`/`sap-aicore` an `IBearerCredential` and `apiBaseUrl`; `ollama`,
+the default, takes none; a consumer factory is named with `factory` and
+receives only `EmbedderFactoryConfig`); `EmbedderResolutionOptions.injectedEmbedder`
+is replaced by `composeEmbedder`; `EmbedderFactoryOpts`, `resolvePrefetchedEmbedder`,
+`builtInEmbedderFactories`, `EMBEDDER_CREDENTIALS` and `assertCredentialKind` are
+removed; a configured `url` now reaches Ollama (`ollamaUrl`) and OpenAI
+(`baseURL`), where it was dropped before; a leftover `apiKey` or `embedder`
+field from an untyped source is refused naming its replacement.
+
+**BREAKING:** `makeRag` now takes `RagResolution`, a discriminated union on
+`type`, in place of the flat `RagResolutionConfig`. `resolveRag` reached a
+store through a variable-specifier `import()` and two casts (`RagCtor`, then
+`as unknown as Record<string, unknown>`), and `makeRag` copied a hand-picked
+whitelist into an untyped `RagFactoryOpts` bag — so Task B6's removal of
+`apiKey` (qdrant) and `user`/`password` (pg-vector, hana-vector) from the
+three store configs produced no error in this package at all. `resolveRag`
+and `RagFactoryOpts` are removed as unused outside this package: `makeRag`
+now dispatches over **literal** import specifiers
+(`await import('@mcp-abap-adt/qdrant-rag')` etc.), so each arm constructs
+its store directly — `new QdrantRag({...})`, `new PgVectorRag({...})`,
+`new HanaVectorRag({...})` — with an object literal checked against that
+store's own real config type. `apiKey`, `user` and `password` are gone from
+every arm, replaced by `credential`, typed per backend
+(`IApiKeyCredential` for qdrant, `ISecretLoginCredential` for pg-vector and
+hana-vector — **required** for hana-vector, since HANA has no anonymous
+login). A wrong credential kind, a missing required credential, or a
+leftover legacy field on a **typed** literal is now a **build error**, not
+a runtime guard — see `packages/llm-agent-rag/src/__typechecks__/
+rag-resolution.ts`, run by `npm run typecheck`. The one runtime check left
+on the store side refuses `apiKey`/`user`/`password` arriving from an
+**untyped** source (YAML, JSON, any caller the compiler never saw), naming
+the offending field and `credential` as the replacement — a loaded object is
+not a fresh literal, so no excess-property check ever sees it there.
+`RagResolution.embedder` is always an already-built `IEmbedder`, not a
+factory name: embedder-by-name resolution (`resolveEmbedder`,
+`EmbedderResolutionConfig`) is unchanged and stays a separate step a caller
+composes before calling `makeRag`. Because every arm requires an `embedder`,
+a plain, embedder-less `InMemoryRag` is no longer reachable through
+`makeRag`; construct `new InMemoryRag(...)` directly for that case, which is
+unaffected. `_resetPrefetchedRagForTests` is removed along with the module
+cache it reset — every call, in `prefetchRagFactories` and in `makeRag`
+alike, now imports through its own literal specifier, and the ES module
+loader's cache is what makes repeating that free; `prefetchRagFactories`
+keeps its exported signature (`(names: readonly string[]) => Promise<void>`)
+for its one external caller, `llm-agent-server`'s CLI.
+
+Migration: `makeRag({ type: 'qdrant', url, collectionName, apiKey })`
+becomes `makeRag({ type: 'qdrant', url, collectionName, embedder,
+credential: staticApiKey(apiKey) })` — note `embedder` is now a required,
+already-built `IEmbedder` (call `resolveEmbedder` first, or inject one).
+`makeRag({ type: 'pg-vector'/'hana-vector', ..., user, password })` becomes
+`..., credential: staticLogin(user, password) }` (`staticApiKey` /
+`staticLogin` are exported from `@mcp-abap-adt/llm-agent`). `resolveRag` and
+`RagFactoryOpts` have no replacement — call `makeRag` directly; a caller
+that genuinely needs the by-name low-level entry point should construct via
+its own literal `import()`, mirroring `makeRag`'s own arms.
+
+**BREAKING:** `apiKey` is gone from `EmbedderResolutionConfig` and
+`EmbedderFactoryOpts`, replaced by `credential` (an `IApiKeyCredential` or
+`IBearerCredential` from `@mcp-abap-adt/interfaces-auth`) and, for the SAP
+targets, `apiBaseUrl`. `resolveEmbedder` used to copy a hand-picked whitelist
+of fields into an untyped bag (`Record<string, unknown>`) reaching a cast
+constructor, so a credential passed in was silently dropped once the openai
+and SAP embedders stopped accepting a plain `apiKey`; the bag is now declared
+and the credential object itself is forwarded — not a copy — so quota
+identity survives. A consumer's own `extraFactories` entry now receives the
+same typed bag instead of the narrower upstream `EmbedderFactoryConfig`. A new
+`credential-guard.ts` checks each named target's requirement before
+construction: a missing required credential, the wrong kind, or a credential
+supplied to a target that takes none (`ollama`) now throws at resolution
+instead of producing an embedder that cannot authenticate.
+
+Migration: `resolveEmbedder({ embedder: 'openai', apiKey })` becomes
+`resolveEmbedder({ embedder: 'openai', credential: staticApiKey(apiKey) })`
+(`staticApiKey` is exported from `@mcp-abap-adt/llm-agent`); the SAP targets
+also need `apiBaseUrl` (see `serviceKeyCredential` in
+`@mcp-abap-adt/sap-aicore-auth`).
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

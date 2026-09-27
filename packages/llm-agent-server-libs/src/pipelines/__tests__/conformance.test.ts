@@ -1,66 +1,80 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type {
+  IPipelineContext,
+  IPipelinePlugin,
+} from '@mcp-abap-adt/llm-agent';
 import {
   emptyLoadedPlugins,
   mergePluginExports,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { ControllerPipelinePlugin } from '../controller.js';
+import {
+  parseDagSettings,
+  parseLinearSettings,
+  parseStepperSettings,
+} from '../../smart-agent/pipeline-settings.js';
 import { DagPipelinePlugin } from '../dag.js';
 import { FlatPipelinePlugin } from '../flat.js';
 import { LinearPipelinePlugin } from '../linear.js';
 import { StepperPipelinePlugin } from '../stepper.js';
-import { fakeControllerServerCtx, fakeServerCtx } from './fixtures.js';
+import {
+  controllerPlugin,
+  fakeControllerServerCtx,
+  fakeServerCtx,
+} from './fixtures.js';
 
 const BUILTINS: Array<{
-  plugin: {
-    name: string;
-    parseConfig(r: unknown): unknown;
-    build(
-      c: unknown,
-      x: unknown,
-    ): Promise<{ agent: { streamProcess: unknown }; close(): unknown }>;
-  };
+  name: string;
+  make(): IPipelinePlugin;
   ctx(): unknown;
 }> = [
-  { plugin: new FlatPipelinePlugin(), ctx: fakeServerCtx },
-  { plugin: new LinearPipelinePlugin(), ctx: fakeServerCtx },
-  { plugin: new DagPipelinePlugin(), ctx: fakeServerCtx },
-  { plugin: new StepperPipelinePlugin(), ctx: fakeServerCtx },
+  { name: 'flat', make: () => new FlatPipelinePlugin(), ctx: fakeServerCtx },
   {
-    plugin: new ControllerPipelinePlugin('controller', 'smart-executor'),
+    name: 'linear',
+    make: () =>
+      new LinearPipelinePlugin(
+        parseLinearSettings({ planning: 'one-shot', dispatch: 'self' }),
+      ),
+    ctx: fakeServerCtx,
+  },
+  {
+    name: 'dag',
+    make: () =>
+      new DagPipelinePlugin(
+        parseDagSettings({ planner: { type: 'llm' } }, () => {}),
+      ),
+    ctx: fakeServerCtx,
+  },
+  {
+    name: 'stepper',
+    make: () =>
+      new StepperPipelinePlugin(
+        parseStepperSettings({ mode: 'planned-react' }),
+      ),
+    ctx: fakeServerCtx,
+  },
+  {
+    name: 'controller',
+    make: () => controllerPlugin('controller', 'smart-executor'),
     ctx: fakeControllerServerCtx,
   },
   {
-    plugin: new ControllerPipelinePlugin('controller-weak', 'weak-executor'),
+    name: 'controller-weak',
+    make: () => controllerPlugin('controller-weak', 'weak-executor'),
     ctx: fakeControllerServerCtx,
   },
 ];
-const MIN_CFG: Record<string, unknown> = {
-  flat: {},
-  linear: { planning: 'one-shot', dispatch: 'self' },
-  dag: { planner: { type: 'llm' } },
-  stepper: { mode: 'planned-react' },
-  controller: {
-    subagents: {
-      evaluator: { provider: 'openai' },
-      planner: { provider: 'openai' },
-      executor: { provider: 'openai' },
-    },
-  },
-  'controller-weak': {
-    subagents: {
-      evaluator: { provider: 'openai' },
-      planner: { provider: 'openai' },
-      executor: { provider: 'openai' },
-    },
-  },
-};
 
 describe('built-in pipeline conformance', () => {
-  for (const { plugin: p, ctx } of BUILTINS) {
-    it(`${p.name}: parseConfig → build → stream → close`, async () => {
-      const cfg = p.parseConfig(MIN_CFG[p.name]);
-      const inst = await p.build(cfg, ctx());
+  for (const b of BUILTINS) {
+    it(`${b.name}: settings → construct → build → stream → close`, async () => {
+      const p = b.make();
+      assert.equal(
+        p.name,
+        b.name,
+        'a plugin reports the key it is registered under',
+      );
+      const inst = await p.build(b.ctx() as IPipelineContext);
       assert.equal(typeof inst.agent.streamProcess, 'function');
       await inst.close();
     });
@@ -69,7 +83,9 @@ describe('built-in pipeline conformance', () => {
   it('duplicate pipeline name across sources fails fast (stable contract)', () => {
     const r = emptyLoadedPlugins();
     const mk = (n: string) => ({
-      pipelinePlugins: { [n]: new DagPipelinePlugin() },
+      pipelinePlugins: {
+        [n]: new DagPipelinePlugin(parseDagSettings({ planner: {} }, () => {})),
+      },
     });
     mergePluginExports(r, mk('dag'), 'pkg-a');
     mergePluginExports(r, mk('dag'), 'pkg-b');

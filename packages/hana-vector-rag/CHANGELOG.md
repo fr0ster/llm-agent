@@ -1,5 +1,77 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## [Unreleased]
+
+**Security:** `query` honours `ragFilter.namespace` and record expiry (`metadata.ttl` in epoch
+seconds, in the past), as the other stores do; both were ignored. **Applied in the client, like the
+session/user filter, and not verified against a live HANA instance.** A namespace-scoped query
+drops the `LIMIT` (as a session/user-scoped one does). An unscoped query keeps its `LIMIT` query and
+drops expired rows from it; only when that removed a row from a full page does it re-run without
+`LIMIT`, so it still returns up to `k` live rows.
+
+**Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId`. Before,
+the query filtered nothing, so a session- or user-scoped query returned every session's rows.
+**The filter is applied in the client and has not been verified against a live HANA instance**
+(none was available to test HANA's JSON functions on): a scoped query selects every row by vector
+score with no `LIMIT`, filters on the parsed metadata, then takes the top `k` — correct, but it
+reads the whole table per scoped query. An unscoped query keeps the `LIMIT` query. A row without
+the key is excluded.
+
+`query` and `getById` return the record's id in its metadata. It is kept in its
+own column, so readers never saw it — and tool selection, which recovers a tool
+from `metadata.id`, selected no tool from a HANA tools store.
+
+A `HanaVectorRag` connects on its first query or write instead of in its
+constructor, so `HanaVectorRagProvider.openCollection` opens no connection;
+before, per-session hydration opened one connection per catalog record per
+session, used or not, and never closed it. A failed connect is no longer kept:
+the next use tries again. Where collections are hydrated per session, pass
+`clientFactory` returning one shared client (README).
+
+**BREAKING:** the provider keeps a catalog table (`rag_collection_catalog`, configurable as
+`catalogTable`), which the connection's account must be able to create and write (the README's new
+section lists the rights); `createCollection` refuses a collection whose record exists
+(`RAG_DUPLICATE_COLLECTION`) and a table that exists without one (`RAG_ORPHAN_STORE`) unless
+`adoptExisting: true`; re-creating a collection no longer reattaches it — hydrate through
+`describeCollections`/`openCollection`; `deleteCollection` can fail with `CatalogRecordDeleteError`
+(nothing deleted, retry); with `autoCreateSchema: false` the operator also creates the catalog
+(`createCatalogTableSql`), and the flag governs creation only — `deleteCollection` still drops the
+table; without `clientFactory`, catalog work runs on a connection the provider opens itself (delete
+and list no longer throw for its absence).
+
+**BREAKING:** `user`/`password` are gone from `HanaVectorRagConfig`, replaced
+by a **required** `credential` (an `ISecretLoginCredential` from
+`@mcp-abap-adt/interfaces-auth`) — required, unlike `qdrant-rag`'s and
+`pg-vector-rag`'s `credential`, both of which stay optional: an
+unauthenticated Qdrant and Postgres trust/`PGUSER`/`PGPASSWORD` auth are real
+working configurations a required field would refuse, but HANA has no
+anonymous login, so `resolveHanaConnectArgs` throws unconditionally when a
+user/password does not resolve — before and after this change. The one HANA
+configuration that used to work without discrete `user`/`password` was a
+connection string carrying them, and that path is refused on purpose (below);
+optional typing here would only move an unavoidable failure from a compile
+error to a connect-time throw. `resolveHanaConnectArgs` is now `async` and
+resolves the identity and secret from the credential once, at the one
+connect a `HanaVectorRag` instance ever does — it opens a single physical
+connection, not a pool, so "once" and "per connection" coincide here (unlike
+`pg-vector-rag`, whose pool needed the secret handed over as a function to
+get the same guarantee across many physical connections). A
+`connectionString` carrying embedded credentials
+(`hdbsql://user:pass@host:443`) is now refused at construction, naming
+`staticLogin` in the message — the resolver used to fill `user`/`password`
+gaps from the URL with `??=`, silently accepting an embedded password; that
+is the failure this replaces. `HanaVectorRagProviderConfig.connection` as a
+bare `string` shorthand is no longer supported for the same reason: it
+cannot carry a credential, and one is now required — it throws instead of
+silently building a config missing one.
+
+Migration: `resolveHanaConnectArgs({ host, user, password })` becomes
+`await resolveHanaConnectArgs({ host, credential: staticLogin(user, password) })`
+(`staticLogin` is exported from `@mcp-abap-adt/llm-agent`); a caller's own
+`connectionString` must now carry the address only; a caller passing
+`HanaVectorRagProviderConfig.connection` as a bare string must switch to
+`{ connectionString, credential: staticLogin(user, password) }`.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

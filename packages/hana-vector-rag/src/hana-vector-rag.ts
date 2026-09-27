@@ -8,7 +8,12 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { FallbackQueryEmbedding, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  FallbackQueryEmbedding,
+  matchesRagIdentity,
+  RagError,
+  ragIdentityFilter,
+} from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
 import { resolveHanaConnectArgs } from './connection.js';
 import { assertCollectionName, createTableSql, quoteIdent } from './schema.js';
@@ -24,12 +29,64 @@ export interface HanaClient {
   close(): Promise<void>;
 }
 
+export async function createHanaClient(
+  cfg: HanaVectorRagConfig,
+): Promise<HanaClient> {
+  const args = await resolveHanaConnectArgs(cfg);
+  const mod = (await import('@sap/hana-client')) as unknown as {
+    createConnection: () => {
+      connect: (opts: unknown, cb: (err: Error | null) => void) => void;
+      exec: (
+        sql: string,
+        params: unknown[],
+        cb: (err: Error | null, rows: unknown) => void,
+      ) => void;
+      disconnect: (cb: (err: Error | null) => void) => void;
+    };
+  };
+  const conn = mod.createConnection();
+  await new Promise<void>((resolve, reject) =>
+    conn.connect(args, (err) => (err ? reject(err) : resolve())),
+  );
+  return {
+    exec: (sql, params = []) =>
+      new Promise((resolve, reject) =>
+        conn.exec(sql, params as unknown[], (err, result) =>
+          err
+            ? reject(err)
+            : resolve({
+                rowCount:
+                  typeof result === 'number'
+                    ? result
+                    : Array.isArray(result)
+                      ? result.length
+                      : 0,
+              }),
+        ),
+      ),
+    query: (sql, params = []) =>
+      new Promise((resolve, reject) =>
+        conn.exec(sql, params as unknown[], (err, rows) =>
+          err
+            ? reject(err)
+            : resolve((rows as Array<Record<string, unknown>>) ?? []),
+        ),
+      ),
+    close: () =>
+      new Promise((resolve, reject) =>
+        conn.disconnect((err) => (err ? reject(err) : resolve())),
+      ),
+  };
+}
+
 export class HanaVectorRag implements IRag {
   private readonly collectionName: string;
   private readonly dimension: number;
   private readonly embedder: IEmbedder;
   private readonly autoCreateSchema: boolean;
-  private readonly clientPromise: Promise<HanaClient>;
+  private readonly connectConfig: HanaVectorRagConfig;
+  private readonly injectedClient?: HanaClient;
+  private clientPromise?: Promise<HanaClient>;
   private schemaReady = false;
   private schemaPromise?: Promise<void>;
 
@@ -42,63 +99,26 @@ export class HanaVectorRag implements IRag {
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
     this.autoCreateSchema = config.autoCreateSchema ?? true;
-    // Attach a no-op catch so the eager import never becomes an unhandledRejection.
-    // The rejection is re-thrown when clientPromise is actually awaited.
-    const driverPromise = injectedClient
-      ? Promise.resolve(injectedClient)
-      : this.createDriverClient(config);
-    driverPromise.catch(() => {});
-    this.clientPromise = driverPromise;
+    this.connectConfig = config;
+    this.injectedClient = injectedClient;
   }
 
-  private async createDriverClient(
-    cfg: HanaVectorRagConfig,
-  ): Promise<HanaClient> {
-    const args = resolveHanaConnectArgs(cfg);
-    const mod = (await import('@sap/hana-client')) as unknown as {
-      createConnection: () => {
-        connect: (opts: unknown, cb: (err: Error | null) => void) => void;
-        exec: (
-          sql: string,
-          params: unknown[],
-          cb: (err: Error | null, rows: unknown) => void,
-        ) => void;
-        disconnect: (cb: (err: Error | null) => void) => void;
-      };
-    };
-    const conn = mod.createConnection();
-    await new Promise<void>((resolve, reject) =>
-      conn.connect(args, (err) => (err ? reject(err) : resolve())),
+  /**
+   * The connection, opened on first use — never in the constructor. A provider
+   * hands out one handle per catalog record, and per-session hydration opens
+   * every record for every session: a handle that connected when built would
+   * open a connection per record per session whether it is used or not. A
+   * failed connect is not kept, so the next use tries again.
+   */
+  private client(): Promise<HanaClient> {
+    if (this.injectedClient) return Promise.resolve(this.injectedClient);
+    this.clientPromise ??= createHanaClient(this.connectConfig).catch(
+      (err: unknown) => {
+        this.clientPromise = undefined;
+        throw err;
+      },
     );
-    return {
-      exec: (sql, params = []) =>
-        new Promise((resolve, reject) =>
-          conn.exec(sql, params as unknown[], (err, result) =>
-            err
-              ? reject(err)
-              : resolve({
-                  rowCount:
-                    typeof result === 'number'
-                      ? result
-                      : Array.isArray(result)
-                        ? result.length
-                        : 0,
-                }),
-          ),
-        ),
-      query: (sql, params = []) =>
-        new Promise((resolve, reject) =>
-          conn.exec(sql, params as unknown[], (err, rows) =>
-            err
-              ? reject(err)
-              : resolve((rows as Array<Record<string, unknown>>) ?? []),
-          ),
-        ),
-      close: () =>
-        new Promise((resolve, reject) =>
-          conn.disconnect((err) => (err ? reject(err) : resolve())),
-        ),
-    };
+    return this.clientPromise;
   }
 
   /**
@@ -108,10 +128,14 @@ export class HanaVectorRag implements IRag {
   async ensureSchema(): Promise<void> {
     if (this.schemaReady) return;
     this.schemaPromise ??= (async () => {
-      const client = await this.clientPromise;
+      const client = await this.client();
       await client.exec(createTableSql(this.collectionName, this.dimension));
       this.schemaReady = true;
-    })();
+    })().catch((err: unknown) => {
+      // Not kept: like client(), the next use tries again.
+      this.schemaPromise = undefined;
+      throw err;
+    });
     await this.schemaPromise;
   }
 
@@ -134,19 +158,66 @@ export class HanaVectorRag implements IRag {
       await this.maybeEnsureSchema();
       const safe = new FallbackQueryEmbedding(embedding, this.embedder);
       const vector = await safe.toVector();
-      const client = await this.clientPromise;
+      const client = await this.client();
       const table = quoteIdent(this.collectionName);
-      const sql = `SELECT id, text, metadata, COSINE_SIMILARITY(vector, ${this.vectorLiteral(vector)}) AS score FROM ${table} ORDER BY score DESC LIMIT ${Math.max(1, k)}`;
-      const rows = await client.query(sql);
-      const results: RagResult[] = rows.map((row) => {
-        const metaRaw = row.metadata as string | null | undefined;
-        const metadata = metaRaw ? (JSON.parse(metaRaw) as RagMetadata) : {};
-        return {
-          text: String(row.text ?? ''),
-          metadata,
-          score: Number(row.score ?? 0),
-        };
-      });
+      const base = `SELECT id, text, metadata, COSINE_SIMILARITY(vector, ${this.vectorLiteral(vector)}) AS score FROM ${table} ORDER BY score DESC`;
+      const identity = ragIdentityFilter(options);
+      const rawNamespace = options?.ragFilter?.namespace;
+      const targetNamespace =
+        typeof rawNamespace === 'string' ? rawNamespace : undefined;
+      const nowSecs = Date.now() / 1000;
+      // Every filter — the session/user scope, `ragFilter.namespace`, and
+      // expiry (a numeric `metadata.ttl` in epoch seconds that is in the past)
+      // — is applied HERE, in the client, with the same semantics as
+      // VectorRag / QdrantRag / PgVectorRag. None of it has been verified
+      // against a live HANA instance (none was available to test HANA's JSON
+      // functions against). To stay correct without that:
+      // - a scoped query (identity or namespace) selects every candidate by
+      //   score with NO LIMIT and filters on the parsed metadata before taking
+      //   the top k — never a LIMIT-then-filter, which would return fewer than
+      //   k of the caller's own records. Correct, but it reads the whole table
+      //   per scoped query; moving the filters into SQL needs a live instance;
+      // - an unscoped query keeps the LIMIT query, and drops expired rows from
+      //   it; only when that dropped a row from a FULL page (so an unexpired
+      //   record may sit just below the cut) is it re-run without LIMIT.
+      const limit = Math.max(1, k);
+      const keep = (metadata: RagMetadata): boolean =>
+        !(typeof metadata.ttl === 'number' && metadata.ttl < nowSecs) &&
+        !(
+          targetNamespace !== undefined &&
+          metadata.namespace !== targetNamespace
+        ) &&
+        matchesRagIdentity(metadata, identity);
+      const pick = (rows: Array<Record<string, unknown>>) => {
+        const picked: RagResult[] = [];
+        let dropped = false;
+        for (const row of rows) {
+          if (picked.length >= limit) break;
+          const metadata = withId(row);
+          if (!keep(metadata)) {
+            dropped = true;
+            continue;
+          }
+          picked.push({
+            text: String(row.text ?? ''),
+            metadata,
+            score: Number(row.score ?? 0),
+          });
+        }
+        return { picked, dropped };
+      };
+      const scoped = identity !== undefined || targetNamespace !== undefined;
+      let results: RagResult[];
+      if (scoped) {
+        results = pick(await client.query(base)).picked;
+      } else {
+        const page = await client.query(`${base} LIMIT ${limit}`);
+        const first = pick(page);
+        results =
+          first.dropped && page.length >= limit
+            ? pick(await client.query(base)).picked
+            : first.picked;
+      }
       return { ok: true, value: results };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
@@ -161,15 +232,14 @@ export class HanaVectorRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
-      const client = await this.clientPromise;
+      const client = await this.client();
       const rows = await client.query(
         `SELECT id, text, metadata FROM ${quoteIdent(this.collectionName)} WHERE id = ?`,
         [id],
       );
       const row = rows[0];
       if (!row) return { ok: true, value: null };
-      const metaRaw = row.metadata as string | null | undefined;
-      const metadata = metaRaw ? (JSON.parse(metaRaw) as RagMetadata) : {};
+      const metadata = withId(row);
       return {
         ok: true,
         value: { text: String(row.text ?? ''), metadata, score: 1 },
@@ -181,7 +251,7 @@ export class HanaVectorRag implements IRag {
 
   async healthCheck(): Promise<Result<void, RagError>> {
     try {
-      const client = await this.clientPromise;
+      const client = await this.client();
       await client.query('SELECT 1 FROM DUMMY');
       return { ok: true, value: undefined };
     } catch (err) {
@@ -222,7 +292,7 @@ export class HanaVectorRag implements IRag {
   ): Promise<Result<void, RagError>> {
     try {
       await this.maybeEnsureSchema();
-      const client = await this.clientPromise;
+      const client = await this.client();
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = metadata ?? {};
       const metaJson = JSON.stringify(rest);
@@ -243,7 +313,7 @@ export class HanaVectorRag implements IRag {
       deleteByIdRaw: async (id) => {
         try {
           await this.maybeEnsureSchema();
-          const client = await this.clientPromise;
+          const client = await this.client();
           const r = await client.exec(
             `DELETE FROM ${quoteIdent(this.collectionName)} WHERE id = ?`,
             [id],
@@ -259,7 +329,7 @@ export class HanaVectorRag implements IRag {
       clearAll: async () => {
         try {
           await this.maybeEnsureSchema();
-          const client = await this.clientPromise;
+          const client = await this.client();
           await client.exec(
             `TRUNCATE TABLE ${quoteIdent(this.collectionName)}`,
           );
@@ -272,4 +342,15 @@ export class HanaVectorRag implements IRag {
         this.upsertPrecomputed(text, vector, { ...metadata, id }),
     };
   }
+}
+
+/**
+ * upsert keeps the id in its own column and out of the JSON, so a read puts it
+ * back: readers find a record's id in its metadata, as every other store
+ * returns it (tool selection's toolNameFromRecord keys on it).
+ */
+function withId(row: Record<string, unknown>): RagMetadata {
+  const raw = row.metadata as string | null | undefined;
+  const parsed = raw ? (JSON.parse(raw) as RagMetadata) : {};
+  return { ...parsed, id: String(row.id) };
 }

@@ -11,12 +11,12 @@
 import type {
   EmbedderFactory,
   IEmbedder,
-  ILlm,
   ILogger,
   IMcpClient,
   IRag,
   IRagRegistry,
   IRequestLogger,
+  RagCollectionScope,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -31,17 +31,15 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Immutable-ish per-worker LLM/embedder/MCP cache entry, built ONCE per
- * distinct worker name and reused by reference across every per-session
- * session. In addition to LLM/embedder clients, the worker's OWN declared
+ * Per-worker cache entry for what a worker builds for itself — embedder,
+ * tools RAG, history RAG, MCP clients — built once per worker name and
+ * reused by reference. Its LLMs are not here: they come from the server's
+ * resolver (§4.6.7). In addition to the embedder, the worker's OWN declared
  * `toolsRag`/`historyRag`/`mcpClients` (if any) are cached here too — the
  * per-session re-wire MUST prefer the worker's own resources over the
  * parent's injected ones, so we build them once and reuse by reference.
  */
 export interface WorkerLlmSet {
-  mainLlm: ILlm;
-  classifierLlm: ILlm;
-  helperLlm?: ILlm;
   embedder?: IEmbedder;
   /** Worker's OWN tools RAG, built from `subCfg.rag` if declared. */
   toolsRag?: IRag;
@@ -117,9 +115,6 @@ export async function drainWorkerCache(
 export async function resolveWorkerLlmSet(input: {
   name: string;
   cache: Map<string, WorkerLlmSet>;
-  makeMain: () => Promise<ILlm>;
-  makeClassifier: () => Promise<ILlm>;
-  makeHelper?: () => Promise<ILlm>;
   makeEmbedder?: () => Promise<IEmbedder>;
   makeToolsRag?: () => Promise<IRag>;
   makeHistoryRag?: () => Promise<IRag>;
@@ -127,9 +122,6 @@ export async function resolveWorkerLlmSet(input: {
 }): Promise<WorkerLlmSet> {
   const hit = input.cache.get(input.name);
   if (hit) return hit;
-  const mainLlm = await input.makeMain();
-  const classifierLlm = await input.makeClassifier();
-  const helperLlm = input.makeHelper ? await input.makeHelper() : undefined;
   const embedder = input.makeEmbedder ? await input.makeEmbedder() : undefined;
   const toolsRag = input.makeToolsRag ? await input.makeToolsRag() : undefined;
   const historyRag = input.makeHistoryRag
@@ -139,9 +131,6 @@ export async function resolveWorkerLlmSet(input: {
     ? await input.makeMcpClients()
     : undefined;
   const set: WorkerLlmSet = {
-    mainLlm,
-    classifierLlm,
-    helperLlm,
     embedder,
     toolsRag,
     historyRag,
@@ -173,7 +162,9 @@ export async function backfillWorkerCacheFromHandle(
   entry: WorkerLlmSet,
   handle: {
     mcpClients?: IMcpClient[];
-    ragRegistry: { get(name: string): IRag | undefined };
+    ragRegistry: {
+      get(name: string, scope?: RagCollectionScope): IRag | undefined;
+    };
     close?: () => Promise<void>;
   },
 ): Promise<void> {
@@ -185,11 +176,11 @@ export async function backfillWorkerCacheFromHandle(
     entry.mcpClients = handle.mcpClients;
   }
   if (!entry.toolsRag) {
-    const t = handle.ragRegistry.get('tools');
+    const t = handle.ragRegistry.get('tools', 'global');
     if (t) entry.toolsRag = t;
   }
   if (!entry.historyRag) {
-    const h = handle.ragRegistry.get('history');
+    const h = handle.ragRegistry.get('history', 'global');
     if (h) entry.historyRag = h;
   }
   // Capture the per-worker shutdown function (Fix #21). If the entry already
@@ -238,9 +229,6 @@ type BuildSubAgentFn = (
     toolsRag: IRag | undefined;
     mcpClients: IMcpClient[];
     requestLogger: IRequestLogger;
-    mainLlm: ILlm;
-    classifierLlm: ILlm;
-    helperLlm?: ILlm;
     embedder?: IEmbedder;
   },
 ) => Promise<SmartAgent>;
@@ -331,9 +319,6 @@ export class WorkerRegistry implements IWorkerRegistry {
           toolsRag: injectedToolsRag,
           mcpClients: injectedMcpClients,
           requestLogger: parts.logger,
-          mainLlm: cached.mainLlm,
-          classifierLlm: cached.classifierLlm,
-          helperLlm: cached.helperLlm,
           embedder: cached.embedder,
         },
       );

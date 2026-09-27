@@ -1,9 +1,14 @@
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
 
 export interface OpenAiEmbedderConfig {
-  /** API key for OpenAI-compatible service */
-  apiKey: string;
+  /**
+   * Asked for fresh on every request — never cached — so a rotating key
+   * rotates and a resolved-once secret is never frozen for the object's
+   * lifetime.
+   */
+  credential: IApiKeyCredential;
   /** API base URL. Default: 'https://api.openai.com/v1' */
   baseURL?: string;
   /** Required: embedding model name (e.g. 'text-embedding-3-small'). No default — must be set explicitly. */
@@ -12,22 +17,27 @@ export interface OpenAiEmbedderConfig {
 
 export class OpenAiEmbedder implements IEmbedderBatch {
   private readonly baseURL: string;
-  private readonly apiKey: string;
+  private readonly credential: IApiKeyCredential;
   readonly model: string;
 
   constructor(config: OpenAiEmbedderConfig) {
-    if (!config.apiKey) {
+    if (!config.credential) {
       throw new Error('OpenAI API key is required for embedding');
     }
     if (!config.model) {
       throw new Error("OpenAIEmbedder requires a 'model'");
     }
-    this.apiKey = config.apiKey;
+    this.credential = config.credential;
     this.baseURL = (config.baseURL ?? 'https://api.openai.com/v1').replace(
       /\/$/,
       '',
     );
     this.model = config.model;
+  }
+
+  /** Asked per request, from the field — there is no config object to pass. */
+  private async authorization(): Promise<string> {
+    return `Bearer ${await this.credential.secret()}`;
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
@@ -45,7 +55,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`,
+            Authorization: await this.authorization(),
           },
           body: JSON.stringify({ model: this.model, input: text }),
           signal: options?.signal,
@@ -106,7 +116,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${this.apiKey}`,
+              Authorization: await this.authorization(),
             },
             body: JSON.stringify({ model: this.model, input: chunk }),
             signal: options?.signal,

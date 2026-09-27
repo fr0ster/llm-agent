@@ -1,35 +1,43 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import { MissingProviderError, staticApiKey } from '@mcp-abap-adt/llm-agent';
 import {
   _resetPrefetchedForTests,
   prefetchEmbedderFactories,
-  resolvePrefetchedEmbedder,
 } from '../embedder-factories.js';
+import { resolveEmbedder } from '../rag-factories.js';
 
 afterEach(() => {
   _resetPrefetchedForTests();
 });
 
-describe('factory registry — MissingProviderError', () => {
-  it('resolvePrefetchedEmbedder throws MissingProviderError for unknown factory name', () => {
+describe('embedder peers — MissingProviderError', () => {
+  it('prefetch refuses a name that is not a built-in', async () => {
+    await assert.rejects(
+      () => prefetchEmbedderFactories(['does-not-exist']),
+      MissingProviderError,
+    );
+  });
+
+  it('resolving a built-in before its prefetch throws MissingProviderError', () => {
     assert.throws(
-      () => resolvePrefetchedEmbedder('does-not-exist', {}),
+      () =>
+        resolveEmbedder({
+          provider: 'openai',
+          model: 'text-embedding-3-small',
+          credential: staticApiKey('test'),
+        }),
       (err: unknown) => err instanceof MissingProviderError,
     );
   });
-  it('resolvePrefetchedEmbedder throws before prefetch', () => {
-    assert.throws(
-      () => resolvePrefetchedEmbedder('openai', {}),
-      (err: unknown) => err instanceof MissingProviderError,
-    );
-  });
-  it('prefetchEmbedderFactories resolves installed peer', async () => {
+
+  it('prefetch loads the installed peer, and resolution then constructs it', async () => {
     await prefetchEmbedderFactories(['openai']);
-    const e = resolvePrefetchedEmbedder('openai', {
-      apiKey: 'test',
+    const e = resolveEmbedder({
+      provider: 'openai',
       model: 'text-embedding-3-small',
+      credential: staticApiKey('test'),
     });
-    assert.ok(e);
+    assert.equal(typeof e.embed, 'function');
   });
 });

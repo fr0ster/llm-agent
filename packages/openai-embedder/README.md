@@ -20,9 +20,10 @@ npm install @mcp-abap-adt/openai-embedder
 
 ```ts
 import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 
 const embedder = new OpenAiEmbedder({
-  apiKey: 'sk-...',
+  credential: staticApiKey('sk-...'),
   model: 'text-embedding-3-small',
 });
 

@@ -1,0 +1,1825 @@
+{
+  "source": "@mcp-abap-adt/core 8.13.0, --exposition=readonly (default handler sets readonly,high minus high)",
+  "capturedAt": "2026-09-27",
+  "tools": [
+    {
+      "name": "GetTableContents",
+      "description": "[read-only] Retrieve contents (data preview) of an ABAP database table or CDS view. Returns rows of data like SE16/SE16N.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "table_name": {
+            "type": "string",
+            "description": "Name of the ABAP table"
+          },
+          "max_rows": {
+            "description": "Maximum number of rows to retrieve",
+            "type": "number"
+          }
+        },
+        "required": [
+          "table_name"
+        ]
+      }
+    },
+    {
+      "name": "GetPackageContents",
+      "description": "[read-only] Retrieve objects inside an ABAP package as a flat list. Supports recursive traversal of subpackages.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "package_name": {
+            "type": "string",
+            "description": "Name of the ABAP package (e.g., \"ZMY_PACKAGE\")"
+          },
+          "include_subpackages": {
+            "description": "Include contents of subpackages recursively (default: false)",
+            "type": "boolean"
+          },
+          "max_depth": {
+            "description": "Maximum depth for recursive package traversal (default: 5)",
+            "type": "number"
+          },
+          "include_descriptions": {
+            "description": "Include object descriptions in response (default: true)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "package_name"
+        ]
+      }
+    },
+    {
+      "name": "GetInclude",
+      "description": "[read-only] Read ANY single ABAP include source by name, from anywhere in the repository (an include may live outside any single program tree). This is the correct tool for include names (PROG/I) — ReadProgram does not read includes.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "include_name": {
+            "type": "string",
+            "description": "Name of the ABAP Include"
+          }
+        },
+        "required": [
+          "include_name"
+        ]
+      }
+    },
+    {
+      "name": "GetIncludesList",
+      "description": "[read-only] Recursively discover and list ALL include files within an ABAP program or include.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_name": {
+            "type": "string",
+            "description": "Name of the ABAP program or include"
+          },
+          "object_type": {
+            "type": "string",
+            "enum": [
+              "PROG/P",
+              "PROG/I",
+              "FUGR",
+              "CLAS/OC"
+            ],
+            "description": "[read-only] ADT object type of the parent. Only these four values are supported: 'PROG/P' (program), 'PROG/I' (include), 'FUGR' (function group), 'CLAS/OC' (class). Any other value is rejected by the schema."
+          },
+          "detailed": {
+            "description": "[read-only] If true, returns structured JSON with metadata and raw XML.",
+            "default": false,
+            "type": "boolean"
+          },
+          "timeout": {
+            "description": "[read-only] Timeout in ms for each ADT request.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "object_name",
+          "object_type"
+        ]
+      }
+    },
+    {
+      "name": "GetEnhancements",
+      "description": "[read-only] Retrieve a list of enhancements for a given ABAP object.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_name": {
+            "type": "string",
+            "description": "Name of the ABAP object"
+          },
+          "object_type": {
+            "type": "string",
+            "description": "[read-only] Type of the ABAP object"
+          }
+        },
+        "required": [
+          "object_name",
+          "object_type"
+        ]
+      }
+    },
+    {
+      "name": "GetEnhancementSpot",
+      "description": "[read-only] Retrieve metadata and list of implementations for a specific enhancement spot.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "enhancement_spot": {
+            "type": "string",
+            "description": "Name of the enhancement spot"
+          }
+        },
+        "required": [
+          "enhancement_spot"
+        ]
+      }
+    },
+    {
+      "name": "GetEnhancementImpl",
+      "description": "[read-only] Retrieve source code of a specific enhancement implementation by its name and enhancement spot.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "enhancement_spot": {
+            "type": "string",
+            "description": "Name of the enhancement spot"
+          },
+          "enhancement_name": {
+            "type": "string",
+            "description": "[read-only] Name of the enhancement implementation"
+          }
+        },
+        "required": [
+          "enhancement_spot",
+          "enhancement_name"
+        ]
+      }
+    },
+    {
+      "name": "GetTransport",
+      "description": "[read-only] Retrieve ABAP transport request information including metadata, included objects, and status from SAP system.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "transport_number": {
+            "type": "string",
+            "description": "Transport request number (e.g., E19K905635, DEVK905123)"
+          },
+          "include_objects": {
+            "description": "Include list of objects in transport (default: true)",
+            "default": true,
+            "type": "boolean"
+          },
+          "include_tasks": {
+            "description": "Include list of tasks in transport (default: true)",
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "transport_number"
+        ]
+      }
+    },
+    {
+      "name": "ListTransports",
+      "description": "[read-only] List transport requests for the current or specified user. Returns modifiable and/or released workbench and customizing requests.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "user": {
+            "description": "SAP user name. If not provided, returns transports for the current user.",
+            "type": "string"
+          },
+          "modifiable_only": {
+            "description": "Only return modifiable (not yet released) transports. Default: true.",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "ReadClass",
+      "description": "Operation: Read, Create, Update. Subject: Class. Will be useful for reading, creating, or updating class. [read-only] Read ABAP class source code and metadata. Answers: \"show class code\", \"display class source\", \"view class definition/implementation\", \"get class X\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "class_name": {
+            "type": "string",
+            "description": "Class name (e.g., ZCL_MY_CLASS)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "class_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadInterface",
+      "description": "Operation: Read, Create, Update. Subject: Interface. Will be useful for reading, creating, or updating interface. [read-only] Read ABAP interface source code and metadata. Answers: \"show interface code\", \"display interface definition\", \"view interface X\", \"get interface source\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "interface_name": {
+            "type": "string",
+            "description": "Interface name (e.g., ZIF_MY_INTERFACE)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "interface_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadTable",
+      "description": "Operation: Read, Create, Update. Subject: Table. Will be useful for reading, creating, or updating table. [read-only] Read ABAP table definition and metadata. Answers: \"show table fields\", \"display table structure\", \"view table X\", \"get table definition\". Returns field list, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "table_name": {
+            "type": "string",
+            "description": "Table name (e.g., Z_MY_TABLE)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "table_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadStructure",
+      "description": "Operation: Read, Create, Update. Subject: Structure. Will be useful for reading, creating, or updating structure. [read-only] Read ABAP structure definition and metadata. Answers: \"show structure fields\", \"display structure X\", \"view structure definition\", \"get structure components\". Returns field list, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "structure_name": {
+            "type": "string",
+            "description": "Structure name (e.g., Z_MY_STRUCTURE)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "structure_name"
+        ]
+      }
+    },
+    {
+      "name": "GetStructuresList",
+      "description": "[read-only] Recursively list the structures embedded in an ABAP structure (.INCLUDE / append), as a tree.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "structure_name": {
+            "type": "string",
+            "description": "Structure name (e.g., Z_MY_STRUCTURE)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          },
+          "include_extensions": {
+            "description": "[read-only] Also find extension (append) structures via where-used (objects that `extend type <this> with …`). Default true. Set false to skip the (slower) where-used lookups and return includes only.",
+            "default": true,
+            "type": "boolean"
+          },
+          "timeout": {
+            "description": "[read-only] Timeout in ms for each ADT request.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "structure_name"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectVersions",
+      "description": "[read-only] List the version history of an ABAP object. Returns each version with its versionId, author, updatedAt, title, the transportRequest (and transportDescription) that produced it when available, and an opaque content_uri to fetch that version source via GetObjectVersionSource.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_type": {
+            "type": "string",
+            "enum": [
+              "class",
+              "program",
+              "interface",
+              "function_module",
+              "table",
+              "structure",
+              "ddl",
+              "behavior_definition",
+              "metadata_extension"
+            ],
+            "description": "Object type."
+          },
+          "object_name": {
+            "type": "string",
+            "description": "Object name (e.g., ZCL_MY_CLASS, ZIF_MY_INTERFACE, Z_MY_TABLE)."
+          },
+          "function_group_name": {
+            "description": "Owning function group name. Required when object_type is function_module.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_type",
+          "object_name"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectVersionSource",
+      "description": "[read-only] Fetch the source code of a specific object version. Pass the opaque content_uri from a GetObjectVersions entry.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_type": {
+            "type": "string",
+            "enum": [
+              "class",
+              "program",
+              "interface",
+              "function_module",
+              "table",
+              "structure",
+              "ddl",
+              "behavior_definition",
+              "metadata_extension"
+            ],
+            "description": "Object type (same value used in GetObjectVersions)."
+          },
+          "content_uri": {
+            "type": "string",
+            "description": "Opaque content_uri taken from a GetObjectVersions version entry."
+          }
+        },
+        "required": [
+          "object_type",
+          "content_uri"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectVersionDiff",
+      "description": "[read-only] Compute a unified diff between two object versions. Pass the two opaque content_uris from GetObjectVersions entries; returns the unified diff (jsdiff) of their sources.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_type": {
+            "type": "string",
+            "enum": [
+              "class",
+              "program",
+              "interface",
+              "function_module",
+              "table",
+              "structure",
+              "ddl",
+              "behavior_definition",
+              "metadata_extension"
+            ],
+            "description": "Object type (same value used in GetObjectVersions)."
+          },
+          "content_uri_from": {
+            "type": "string",
+            "description": "Opaque content_uri of the OLD/base version (from a GetObjectVersions entry)."
+          },
+          "content_uri_to": {
+            "type": "string",
+            "description": "Opaque content_uri of the NEW/compare version (from a GetObjectVersions entry)."
+          }
+        },
+        "required": [
+          "object_type",
+          "content_uri_from",
+          "content_uri_to"
+        ]
+      }
+    },
+    {
+      "name": "ReadDdl",
+      "description": "Operation: Read, Create, Update. Subject: DDL source. Will be useful for reading, creating, or updating a DDL source. [read-only] Read ABAP CDS view source code and metadata. Answers: \"show CDS view source\", \"display view definition\", \"view CDS X\", \"get CDS code\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "ddl_name": {
+            "type": "string",
+            "description": "DDL source name (e.g., Z_MY_VIEW)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "ddl_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadDomain",
+      "description": "Operation: Read, Create, Update. Subject: Domain. Will be useful for reading, creating, or updating domain. [read-only] Read ABAP domain definition and metadata. Answers: \"show domain X\", \"display domain fixed values\", \"view domain definition\", \"get domain properties\". Returns definition, fixed values, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "domain_name": {
+            "type": "string",
+            "description": "Domain name (e.g., Z_MY_DOMAIN)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "domain_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadMessageClass",
+      "description": "Operation: Read. Subject: Message Class (MSAG). Will be useful for reading a message class and its messages. [read-only] Read an ABAP message class (T100) with all of its messages. Answers: \"show message class X\", \"list messages of message class\", \"display message text 001 of class\". Returns name, description, package, master language and the array of messages (msgno, msgtext, self-explanatory, description).",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "message_class_name": {
+            "type": "string",
+            "description": "Message class name (e.g., ZMY_MSGS)."
+          }
+        },
+        "required": [
+          "message_class_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadMessageClassMessage",
+      "description": "Operation: Read. Subject: a single message inside a Message Class (MSAG). [read-only] Read one message (by number) from an ABAP message class. Answers: \"show message 001 of class ZMY_MSGS\", \"get text of message\". Returns msgno, msgtext, self-explanatory flag and description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "message_class_name": {
+            "type": "string",
+            "description": "Parent message class name (e.g., ZMY_MSGS)."
+          },
+          "msgno": {
+            "type": "string",
+            "description": "Message number (e.g., \"001\")."
+          }
+        },
+        "required": [
+          "message_class_name",
+          "msgno"
+        ]
+      }
+    },
+    {
+      "name": "ReadDataElement",
+      "description": "Operation: Read, Create, Update. Subject: DataElement. Will be useful for reading, creating, or updating data element. [read-only] Read ABAP data element definition and metadata. Answers: \"show data element X\", \"display data element properties\", \"view DTEL definition\", \"get data element type\". Returns definition, domain, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "data_element_name": {
+            "type": "string",
+            "description": "Data element name (e.g., Z_MY_DATA_ELEMENT)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "data_element_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadFunctionModule",
+      "description": "Operation: Read, Create, Update. Subject: FunctionModule. Will be useful for reading, creating, or updating function module. [read-only] Read ABAP function module source code and metadata. Answers: \"show function module code\", \"display FM source\", \"view function X\", \"get function module implementation\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "function_module_name": {
+            "type": "string",
+            "description": "Function module name (e.g., Z_MY_FM)."
+          },
+          "function_group_name": {
+            "type": "string",
+            "description": "Function group name containing the function module (e.g., Z_MY_FG)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "function_module_name",
+          "function_group_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadFunctionInclude",
+      "description": "[read-only] Read ABAP function group include source code and metadata. Answers: \"show function group include code\", \"display include source\", \"view include of function group\". Returns source code and include metadata.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "function_group_name": {
+            "type": "string",
+            "description": "Function group name containing the include (e.g., Z_MY_FG)."
+          },
+          "include_name": {
+            "type": "string",
+            "description": "Include name (e.g., LZ_MY_FGTOP, LZ_MY_FGU01)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "function_group_name",
+          "include_name"
+        ]
+      }
+    },
+    {
+      "name": "ListFunctionGroupIncludes",
+      "description": "[read-only] List the includes (TOP, custom) of an ABAP function group.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "function_group_name": {
+            "type": "string",
+            "description": "Function group name (e.g., Z_MY_FG)."
+          }
+        },
+        "required": [
+          "function_group_name"
+        ]
+      }
+    },
+    {
+      "name": "ListFunctionModules",
+      "description": "[read-only] List the function modules of an ABAP function group.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "function_group_name": {
+            "type": "string",
+            "description": "Function group name (e.g., Z_MY_FG)."
+          }
+        },
+        "required": [
+          "function_group_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadFunctionGroup",
+      "description": "[read-only] Read ABAP function group source code and metadata. Answers: \"show function group code\", \"display FUGR source\", \"view function group X\", \"get function group includes\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "function_group_name": {
+            "type": "string",
+            "description": "Function group name (e.g., Z_MY_FG)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "function_group_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadPackage",
+      "description": "[read-only] Read ABAP package definition and metadata. Answers: \"show package X\", \"display package properties\", \"view package contents\", \"get package info\". Returns definition, super-package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "package_name": {
+            "type": "string",
+            "description": "Package name (e.g., Z_MY_PACKAGE)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "package_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadServiceDefinition",
+      "description": "Operation: Read, Create, Update. Subject: ServiceDefinition. Will be useful for reading, creating, or updating service definition. [read-only] Read ABAP service definition (SRVD) source code and metadata. Answers: \"show service definition\", \"display SRVD source\", \"view service definition X\", \"get service exposure\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "service_definition_name": {
+            "type": "string",
+            "description": "Service definition name (e.g., Z_MY_SRVD)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "service_definition_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadMetadataExtension",
+      "description": "Operation: Read, Create, Update. Subject: MetadataExtension. Will be useful for reading, creating, or updating metadata extension. [read-only] Read ABAP metadata extension (DDLX) source code and metadata. Answers: \"show metadata extension\", \"display DDLX source\", \"view UI annotations\", \"get metadata extension X\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "metadata_extension_name": {
+            "type": "string",
+            "description": "Metadata extension name (e.g., Z_MY_DDLX)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "metadata_extension_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadBehaviorDefinition",
+      "description": "Operation: Read, Create, Update. Subject: BehaviorDefinition. Will be useful for reading, creating, or updating behavior definition. [read-only] Read ABAP RAP behavior definition (BDEF) source code and metadata. Answers: \"show behavior definition\", \"display BDEF source\", \"view RAP behavior X\", \"get behavior definition code\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "behavior_definition_name": {
+            "type": "string",
+            "description": "Behavior definition name (e.g., Z_MY_BDEF)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "behavior_definition_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadBehaviorImplementation",
+      "description": "[read-only] Read ABAP RAP behavior implementation source code and metadata. Answers: \"show behavior implementation\", \"display behavior pool code\", \"view RAP implementation X\". Returns source code, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "behavior_implementation_name": {
+            "type": "string",
+            "description": "Behavior implementation name (e.g., ZBP_MY_CLASS)."
+          },
+          "version": {
+            "description": "Version to read: \"active\" (default) or \"inactive\".",
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          }
+        },
+        "required": [
+          "behavior_implementation_name"
+        ]
+      }
+    },
+    {
+      "name": "ReadServiceBinding",
+      "description": "Operation: Read, Create, Update. Subject: ServiceBinding. Will be useful for reading, creating, or updating service binding. [read-only] Read ABAP service binding (SRVB) payload and metadata. Answers: \"show service binding\", \"display SRVB config\", \"view service binding X\", \"get OData service binding\". Returns payload, package, responsible, description.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "service_binding_name": {
+            "type": "string",
+            "description": "Service binding name (e.g., ZUI_MY_BINDING)."
+          }
+        },
+        "required": [
+          "service_binding_name"
+        ]
+      }
+    },
+    {
+      "name": "GetTypeInfo",
+      "description": "[read-only] Retrieve ABAP type information for domains (DOMA), data elements (DTEL), table types, and structures. Returns field definitions, value ranges, fixed values, and DDIC metadata.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "type_name": {
+            "type": "string",
+            "description": "Name of the ABAP type"
+          },
+          "include_structure_fallback": {
+            "description": "When true (default), tries DDIC structure lookup only if type lookup returns 404/empty.",
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type_name"
+        ]
+      }
+    },
+    {
+      "name": "GetTransaction",
+      "description": "[read-only] Retrieve ABAP transaction (t-code) details — program, screen, authorization object, and transaction type (dialog, report, OO).",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "transaction_name": {
+            "type": "string",
+            "description": "Name of the ABAP transaction"
+          }
+        },
+        "required": [
+          "transaction_name"
+        ]
+      }
+    },
+    {
+      "name": "RuntimeCreateProfilerTraceParameters",
+      "description": "[runtime] Create ABAP profiler trace parameters and return profilerId (URI) for profiled execution.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Human-readable trace description."
+          },
+          "all_misc_abap_statements": {
+            "type": "boolean"
+          },
+          "all_procedural_units": {
+            "type": "boolean"
+          },
+          "all_internal_table_events": {
+            "type": "boolean"
+          },
+          "all_dynpro_events": {
+            "type": "boolean"
+          },
+          "aggregate": {
+            "type": "boolean"
+          },
+          "explicit_on_off": {
+            "type": "boolean"
+          },
+          "with_rfc_tracing": {
+            "type": "boolean"
+          },
+          "all_system_kernel_events": {
+            "type": "boolean"
+          },
+          "sql_trace": {
+            "type": "boolean"
+          },
+          "all_db_events": {
+            "type": "boolean"
+          },
+          "max_size_for_trace_file": {
+            "type": "number"
+          },
+          "amdp_trace": {
+            "type": "boolean"
+          },
+          "max_time_for_tracing": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "description"
+        ]
+      }
+    },
+    {
+      "name": "RuntimeListProfilerTraceFiles",
+      "description": "[runtime] List ABAP profiler trace files available in ADT runtime. Returns parsed JSON payload.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "RuntimeGetProfilerTraceData",
+      "description": "[runtime] Read profiler trace data by trace id/uri: hitlist, statements, or db accesses. Returns parsed JSON payload.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "trace_id_or_uri": {
+            "type": "string",
+            "description": "Profiler trace ID or full ADT trace URI."
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "hitlist",
+              "statements",
+              "db_accesses"
+            ],
+            "description": "Trace view to retrieve."
+          },
+          "with_system_events": {
+            "description": "Include system events.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Statement node ID (for statements view).",
+            "type": "number"
+          },
+          "with_details": {
+            "description": "Include statement details (for statements view).",
+            "type": "boolean"
+          },
+          "auto_drill_down_threshold": {
+            "description": "Auto drill-down threshold (for statements view).",
+            "type": "number"
+          }
+        },
+        "required": [
+          "trace_id_or_uri",
+          "view"
+        ]
+      }
+    },
+    {
+      "name": "RuntimeGetDumpById",
+      "description": "[runtime] Read a specific ABAP runtime dump by its ID. First use RuntimeListFeeds to find dumps and get their IDs, then pass dump_id here to read the full dump content.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "dump_id": {
+            "type": "string",
+            "description": "Full runtime dump ID (e.g. from RuntimeListFeeds)."
+          },
+          "view": {
+            "description": "Dump view mode: default payload, summary section, or formatted long text.",
+            "default": "default",
+            "type": "string",
+            "enum": [
+              "default",
+              "summary",
+              "formatted"
+            ]
+          },
+          "response_mode": {
+            "description": "Controls what is returned: \"payload\" — full parsed dump data, \"summary\" — compact key facts only (title, exception, program, line, user, date…), \"both\" — summary + full payload.",
+            "default": "both",
+            "type": "string",
+            "enum": [
+              "payload",
+              "summary",
+              "both"
+            ]
+          }
+        },
+        "required": [
+          "dump_id"
+        ]
+      }
+    },
+    {
+      "name": "RuntimeRunClass",
+      "description": "[runtime] Execute an ABAP class implementing if_oo_adt_classrun and return its output. Set profile=true to also capture a profiler trace (returns profilerId/traceId alongside output).",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "class_name": {
+            "type": "string",
+            "description": "ABAP class name to execute."
+          },
+          "profile": {
+            "description": "When true, run with the profiler and resolve the resulting traceId. Default false.",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "Profiler trace description (only used when profile=true).",
+            "type": "string"
+          },
+          "all_procedural_units": {
+            "type": "boolean"
+          },
+          "all_misc_abap_statements": {
+            "type": "boolean"
+          },
+          "all_internal_table_events": {
+            "type": "boolean"
+          },
+          "all_dynpro_events": {
+            "type": "boolean"
+          },
+          "aggregate": {
+            "type": "boolean"
+          },
+          "explicit_on_off": {
+            "type": "boolean"
+          },
+          "with_rfc_tracing": {
+            "type": "boolean"
+          },
+          "all_system_kernel_events": {
+            "type": "boolean"
+          },
+          "sql_trace": {
+            "type": "boolean"
+          },
+          "all_db_events": {
+            "type": "boolean"
+          },
+          "max_size_for_trace_file": {
+            "type": "number"
+          },
+          "amdp_trace": {
+            "type": "boolean"
+          },
+          "max_time_for_tracing": {
+            "type": "number"
+          },
+          "max_trace_attempts": {
+            "description": "Max polling attempts to resolve traceId after execution (default 5). Only used when profile=true.",
+            "type": "number"
+          },
+          "trace_retry_delay_ms": {
+            "description": "Delay in ms between trace polling attempts (default 2000). Only used when profile=true.",
+            "type": "number"
+          },
+          "trace_lookup_uris": {
+            "description": "Additional URIs to consult when resolving the trace (advanced, profile=true).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "class_name"
+        ]
+      }
+    },
+    {
+      "name": "RuntimeRunClassWithProfiling",
+      "description": "[runtime][deprecated] Execute ABAP class with profiler enabled and return created profilerId + traceId. Prefer RuntimeRunClass with profile=true; this tool is kept for backward compatibility and will be removed in a future major release.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "class_name": {
+            "type": "string",
+            "description": "ABAP class name to execute."
+          },
+          "description": {
+            "description": "Profiler trace description.",
+            "type": "string"
+          },
+          "all_procedural_units": {
+            "type": "boolean"
+          },
+          "all_misc_abap_statements": {
+            "type": "boolean"
+          },
+          "all_internal_table_events": {
+            "type": "boolean"
+          },
+          "all_dynpro_events": {
+            "type": "boolean"
+          },
+          "aggregate": {
+            "type": "boolean"
+          },
+          "explicit_on_off": {
+            "type": "boolean"
+          },
+          "with_rfc_tracing": {
+            "type": "boolean"
+          },
+          "all_system_kernel_events": {
+            "type": "boolean"
+          },
+          "sql_trace": {
+            "type": "boolean"
+          },
+          "all_db_events": {
+            "type": "boolean"
+          },
+          "max_size_for_trace_file": {
+            "type": "number"
+          },
+          "amdp_trace": {
+            "type": "boolean"
+          },
+          "max_time_for_tracing": {
+            "type": "number"
+          },
+          "max_trace_attempts": {
+            "description": "Max polling attempts to resolve traceId after execution (default 5). Increase for slow systems (e.g. SAP trial cloud).",
+            "type": "number"
+          },
+          "trace_retry_delay_ms": {
+            "description": "Delay in ms between trace polling attempts (default 2000).",
+            "type": "number"
+          },
+          "trace_lookup_uris": {
+            "description": "Additional URIs to consult when resolving the trace (advanced).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "class_name"
+        ]
+      }
+    },
+    {
+      "name": "RuntimeAnalyzeProfilerTrace",
+      "description": "[runtime] Read profiler trace view and return compact analysis summary (totals + top entries).",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "trace_id_or_uri": {
+            "type": "string",
+            "description": "Profiler trace ID or full trace URI."
+          },
+          "view": {
+            "default": "hitlist",
+            "type": "string",
+            "enum": [
+              "hitlist",
+              "statements",
+              "db_accesses"
+            ]
+          },
+          "top": {
+            "description": "Number of top rows for summary. Default: 10.",
+            "type": "number"
+          },
+          "with_system_events": {
+            "description": "Include system events.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trace_id_or_uri"
+        ]
+      }
+    },
+    {
+      "name": "RuntimeListFeeds",
+      "description": "[runtime] List available ADT runtime feeds or read a specific feed type. Feed types: dumps, system_messages, gateway_errors. Without feed_type returns available feed descriptors.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "feed_type": {
+            "description": "Feed to read. \"descriptors\" lists available feeds, \"variants\" lists feed variants, others read that specific feed. Default: descriptors.",
+            "default": "descriptors",
+            "type": "string",
+            "enum": [
+              "descriptors",
+              "variants",
+              "dumps",
+              "system_messages",
+              "gateway_errors"
+            ]
+          },
+          "user": {
+            "description": "Filter feed entries by SAP username.",
+            "type": "string"
+          },
+          "max_results": {
+            "description": "Maximum number of entries to return.",
+            "type": "number"
+          },
+          "from": {
+            "description": "Start of time range in YYYYMMDDHHMMSS format.",
+            "type": "string"
+          },
+          "to": {
+            "description": "End of time range in YYYYMMDDHHMMSS format.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "RuntimeListSystemMessages",
+      "description": "[runtime] List SM02 system messages. Returns structured entries with id, title, text, severity, validity period, and author.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "user": {
+            "description": "Filter by author username.",
+            "type": "string"
+          },
+          "max_results": {
+            "description": "Maximum number of messages to return.",
+            "type": "number"
+          },
+          "from": {
+            "description": "Start of time range in YYYYMMDDHHMMSS format.",
+            "type": "string"
+          },
+          "to": {
+            "description": "End of time range in YYYYMMDDHHMMSS format.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "GetSqlQuery",
+      "description": "[read-only] Execute ABAP SQL SELECT queries on database tables and CDS views via SAP ADT Data Preview API. Use for ad-hoc data retrieval, row counts, and filtered queries.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "sql_query": {
+            "type": "string",
+            "description": "SQL query to execute"
+          },
+          "row_number": {
+            "description": "[read-only] Maximum number of rows to return",
+            "default": 100,
+            "type": "number"
+          }
+        },
+        "required": [
+          "sql_query"
+        ]
+      }
+    },
+    {
+      "name": "GetWhereUsed",
+      "description": "[read-only] Search where-used references — find all objects that reference or depend on a given ABAP object. Answers: \"where is X used\", \"who calls X\", \"what depends on X\", \"show usages of X\". Returns referencing objects with types and packages. Supports a fixed set of object types (see object_type). Object types outside the supported list (e.g. RAP behavior definitions, service definitions/bindings, BAdI, search helps, message classes, classic DDIC views) are NOT supported and will fail.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_name": {
+            "type": "string",
+            "description": "Name of the ABAP object. For function modules the name MUST be in the form 'GROUP|FM_NAME' (function group name, pipe, function module name)."
+          },
+          "object_type": {
+            "type": "string",
+            "description": "Type of the ABAP object. Case-insensitive. Accepts either a human alias or an ADT type code. Supported values: 'class' / 'clas/oc', 'interface' / 'intf/if', 'program' / 'prog/p', 'include', 'function' / 'functiongroup' / 'fugr' (function group), 'functionmodule' / 'function_module' / 'fugr/ff' (function module — see object_name format), 'package' / 'devc/k', 'table' / 'tabl/dt', 'structure' / 'stru/dt', 'domain' / 'doma/dd', 'dataelement' / 'dtel', 'view' / 'ddls/df' (CDS DDL source only — classic DDIC views are not supported). Any other value throws 'Unsupported object type'."
+          },
+          "enable_all_types": {
+            "description": "If true, expands the scope to all available object types (Eclipse 'select all' behavior) by flipping every isSelected flag in the scope XML. Default: false (SAP default scope). Note: on large systems this can make the search significantly slower.",
+            "default": false,
+            "type": "boolean"
+          },
+          "enable_only_types": {
+            "description": "Restrict the search to ONLY these ADT object types (e.g. ['TABL/DS','TABL/DT'] for structures, ['DDLS/DF'] for CDS sources). SAP applies the selection server-side, so unwanted types (e.g. hundreds of CLAS/OC) are never searched nor returned — use this instead of enable_all_types to avoid huge result sets. Values must be object-type codes from THIS object's where-used scope (the searchable categories, e.g. 'CLAS/OC','INTF/OI','FUGR/FF','DDLS/DF', not result-row codes like 'FUGR/F'). If any value is not searchable for the object the call returns an error listing the supported types — it never falls back to the unfiltered default set. Takes precedence over enable_all_types.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "disable_types": {
+            "description": "Remove these ADT object types from the default scope, keeping the rest (e.g. ['CLAS/OC'] to drop class usages). Applied on top of the default scope or of enable_only_types/enable_all_types.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "object_name",
+          "object_type"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectInfo",
+      "description": "[read-only] Return ABAP object tree structure for packages (DEVC), classes (CLAS), programs (PROG), function groups (FUGR), and other objects. Shows root, group nodes, and terminal leaves up to maxDepth. Enrich each node with description and package via SearchObject if enrich=true.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "parent_type": {
+            "type": "string",
+            "description": "[read-only] Parent object type (e.g. DEVC/K, CLAS/OC, PROG/P)"
+          },
+          "parent_name": {
+            "type": "string",
+            "description": "[read-only] Parent object name"
+          },
+          "maxDepth": {
+            "description": "[read-only] Maximum tree depth (default depends on type)",
+            "default": 1,
+            "type": "number"
+          },
+          "enrich": {
+            "description": "[read-only] Whether to add description and package via SearchObject (default true)",
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "parent_type",
+          "parent_name"
+        ]
+      }
+    },
+    {
+      "name": "GetAbapAST",
+      "description": "[read-only] Parse ABAP code and return AST (Abstract Syntax Tree) in JSON format.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "ABAP source code to parse"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      }
+    },
+    {
+      "name": "GetAbapSemanticAnalysis",
+      "description": "[read-only] Perform semantic analysis on ABAP code and return symbols, types, scopes, and dependencies.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "ABAP source code to analyze"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      }
+    },
+    {
+      "name": "GetAbapSystemSymbols",
+      "description": "[read-only] Resolve ABAP symbols from semantic analysis with SAP system information including types, scopes, descriptions, and packages.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "ABAP source code to analyze and resolve symbols for"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      }
+    },
+    {
+      "name": "GetSession",
+      "description": "[read-only] Get a new session ID and current session state (cookies, CSRF token) for reuse across multiple ADT operations. Use this to maintain the same session and lock handle across multiple requests.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "force_new": {
+            "description": "Force creation of a new session even if one exists. Default: false",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "GetInactiveObjects",
+      "description": "[read-only] Get a list of inactive ABAP objects — modified but not yet activated, pending activation. Shows classes, tables, CDS views, and other objects awaiting activation.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "GetAdtTypes",
+      "description": "[read-only] Retrieve all valid ADT object types (CLAS, TABL, PROG, DEVC, FUGR, INTF, DDLS, DTEL, DOMA, SRVD, SRVB, BDEF, DDLX, etc.) or validate a specific type name.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "validate_type": {
+            "description": "Type name to validate (optional)",
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "GetObjectStructure",
+      "description": "[read-only] Retrieve ADT object structure as a compact JSON tree.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "objecttype": {
+            "type": "string",
+            "description": "ADT object type (e.g. DDLS/DF)"
+          },
+          "objectname": {
+            "type": "string",
+            "description": "ADT object name (e.g. /CBY/ACQ_DDL)"
+          }
+        },
+        "required": [
+          "objecttype",
+          "objectname"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectNodeFromCache",
+      "description": "[read-only] Returns a node from the in-memory objects list cache by OBJECT_TYPE, OBJECT_NAME, TECH_NAME, and expands OBJECT_URI if present.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_type": {
+            "type": "string",
+            "description": "[read-only] Object type"
+          },
+          "object_name": {
+            "type": "string",
+            "description": "[read-only] Object name"
+          },
+          "tech_name": {
+            "type": "string",
+            "description": "[read-only] Technical name"
+          }
+        },
+        "required": [
+          "object_type",
+          "object_name",
+          "tech_name"
+        ]
+      }
+    },
+    {
+      "name": "DescribeByList",
+      "description": "[read-only] Batch description for a list of ABAP objects. Input: objects: Array<{ name: string, type?: string }>. Each object may be of type: PROG/P, FUGR, PROG/I, CLAS/OC, FUGR/FC, INTF/OI, TABLE, STRUCTURE, etc.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "objects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "description": "[read-only] Object name (required, must be valid ABAP object name or mask)",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "[read-only] Optional type (e.g. PROG/P, CLAS/OC, etc.)",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "objects"
+        ]
+      }
+    },
+    {
+      "name": "GetVirtualFoldersLow",
+      "description": "[low-level] Retrieve hierarchical virtual folder contents from ADT information system. Used for browsing ABAP objects by package, group, type, etc.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_search_pattern": {
+            "description": "Object search pattern (e.g., \"*\", \"Z*\", \"ZCL_*\"). Default: \"*\"",
+            "default": "*",
+            "type": "string"
+          },
+          "preselection": {
+            "description": "Optional preselection filters (facet-value pairs for filtering)",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "facet": {
+                  "type": "string",
+                  "description": "Facet name (e.g., \"package\", \"group\", \"type\")"
+                },
+                "values": {
+                  "description": "Array of facet values to filter by"
+                }
+              },
+              "required": [
+                "facet",
+                "values"
+              ]
+            }
+          },
+          "facet_order": {
+            "description": "Order of facets in response (e.g., [\"package\", \"group\", \"type\"]). Default: [\"package\", \"group\", \"type\"]",
+            "default": [
+              "package",
+              "group",
+              "type"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "with_versions": {
+            "description": "Include version information in response",
+            "default": false,
+            "type": "boolean"
+          },
+          "ignore_short_descriptions": {
+            "description": "Ignore short descriptions in response",
+            "default": false,
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "GetNodeStructureLow",
+      "description": "[low-level] Fetch node structure from ADT repository. Used for object tree navigation and structure discovery. Can use session_id and session_state from GetSession to maintain the same session.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "parent_type": {
+            "type": "string",
+            "description": "Parent object type (e.g., \"CLAS/OC\", \"PROG/P\", \"DEVC/K\")"
+          },
+          "parent_name": {
+            "type": "string",
+            "description": "Parent object name"
+          },
+          "node_id": {
+            "description": "Optional node ID (default: \"0000\" for root). Use to fetch child nodes.",
+            "default": "0000",
+            "type": "string"
+          },
+          "with_short_descriptions": {
+            "description": "Include short descriptions in response",
+            "default": true,
+            "type": "boolean"
+          },
+          "session_id": {
+            "description": "Session ID from GetSession. If not provided, a new session will be created.",
+            "type": "string"
+          },
+          "session_state": {
+            "description": "Session state from GetSession (cookies, csrf_token, cookie_store). Required if session_id is provided.",
+            "type": "object",
+            "properties": {
+              "cookies": {
+                "type": "string"
+              },
+              "csrf_token": {
+                "type": "string"
+              },
+              "cookie_store": {}
+            }
+          }
+        },
+        "required": [
+          "parent_type",
+          "parent_name"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectStructureLow",
+      "description": "[low-level] Retrieve ADT object structure as compact JSON tree. Returns XML response with object structure tree. Can use session_id and session_state from GetSession to maintain the same session.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_type": {
+            "type": "string",
+            "description": "Object type (e.g., \"CLAS/OC\", \"PROG/P\", \"DEVC/K\", \"DDLS/DF\")"
+          },
+          "object_name": {
+            "type": "string",
+            "description": "Object name (e.g., \"ZMY_CLASS\", \"ZMY_PROGRAM\")"
+          },
+          "session_id": {
+            "description": "Session ID from GetSession. If not provided, a new session will be created.",
+            "type": "string"
+          },
+          "session_state": {
+            "description": "Session state from GetSession (cookies, csrf_token, cookie_store). Required if session_id is provided.",
+            "type": "object",
+            "properties": {
+              "cookies": {
+                "type": "string"
+              },
+              "csrf_token": {
+                "type": "string"
+              },
+              "cookie_store": {}
+            }
+          }
+        },
+        "required": [
+          "object_type",
+          "object_name"
+        ]
+      }
+    },
+    {
+      "name": "GetPackageTree",
+      "description": "[high-level] Retrieve complete package tree structure including subpackages and objects. Returns hierarchical tree with object names, types, and descriptions.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "package_name": {
+            "type": "string",
+            "description": "Package name (e.g., \"ZMY_PACKAGE\")"
+          },
+          "include_subpackages": {
+            "description": "Include subpackages recursively in the tree. If false, subpackages are shown as first-level objects but not recursively expanded. Default: true",
+            "default": true,
+            "type": "boolean"
+          },
+          "max_depth": {
+            "description": "Maximum depth for recursive package traversal. Default: 5",
+            "default": 5,
+            "type": "number"
+          },
+          "include_descriptions": {
+            "description": "Include object descriptions in response. Default: true",
+            "default": true,
+            "type": "boolean"
+          },
+          "debug": {
+            "description": "Include diagnostic metadata in response (counts, types, hierarchy info). Default: false",
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "package_name"
+        ]
+      }
+    },
+    {
+      "name": "SearchObject",
+      "description": "[read-only] Search ABAP repository by object name or wildcard pattern (e.g. 'ZOK*'). Answers: \"find object X\", \"does X exist\", \"list objects matching...\", \"search for program/class/table by name\". Supports all repository object types — optionally filter by type (PROG, CLAS, INTF, DEVC, TABL, DDLS, DTEL, FUGR, SRVD, SRVB, BDEF, DDLX, etc.).",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "object_name": {
+            "type": "string",
+            "description": "[read-only] Object name or mask (e.g. 'MARA*')"
+          },
+          "object_type": {
+            "description": "[read-only] Optional ABAP object type (e.g. 'TABL', 'CLAS/OC')",
+            "type": "string"
+          },
+          "maxResults": {
+            "description": "[read-only] Maximum number of results to return",
+            "default": 100,
+            "type": "number"
+          }
+        },
+        "required": [
+          "object_name"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectsList",
+      "description": "[read-only] Recursively retrieves all child ABAP repository objects for a given parent — programs (PROG), function groups (FUGR), classes (CLAS), packages (DEVC), and other composite objects — including nested includes and subcomponents.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "parent_name": {
+            "type": "string",
+            "description": "[read-only] Parent object name"
+          },
+          "parent_tech_name": {
+            "type": "string",
+            "description": "[read-only] Parent technical name"
+          },
+          "parent_type": {
+            "type": "string",
+            "description": "[read-only] Parent object type (e.g. PROG/P, FUGR)"
+          },
+          "with_short_descriptions": {
+            "description": "[read-only] Include short descriptions (default: true)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "parent_name",
+          "parent_tech_name",
+          "parent_type"
+        ]
+      }
+    },
+    {
+      "name": "GetObjectsByType",
+      "description": "[read-only] Retrieves all ABAP objects of a specific type (classes, tables, programs, interfaces, etc.) under a given parent node. Useful for listing all objects of one type within a package or composite object.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "parent_name": {
+            "type": "string",
+            "description": "[read-only] Parent object name"
+          },
+          "parent_tech_name": {
+            "type": "string",
+            "description": "[read-only] Parent technical name"
+          },
+          "parent_type": {
+            "type": "string",
+            "description": "[read-only] Parent object type"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "[read-only] Node ID"
+          },
+          "format": {
+            "description": "[read-only] Output format: 'raw' or 'parsed'",
+            "type": "string"
+          },
+          "with_short_descriptions": {
+            "description": "[read-only] Include short descriptions",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "parent_name",
+          "parent_tech_name",
+          "parent_type",
+          "node_id"
+        ]
+      }
+    }
+  ]
+}

@@ -4,7 +4,6 @@
 export const pipelinePlugins = {
   'demo-ext': {
     name: 'demo-ext',
-    parseConfig: (r) => r ?? {},
     build: async () => ({
       agent: {
         process: async () => ({}),
@@ -17,4 +16,17 @@ export const pipelinePlugins = {
 
 export const embedderFactories = {
   'demo-embedder': () => ({ embed: async () => [] }),
+};
+
+export const pipelinePluginFactories = {
+  'demo-factory': (section) => ({
+    name: 'demo-factory',
+    build: async () => ({
+      agent: {
+        process: async () => section,
+        streamProcess: async function* () {},
+      },
+      close: async () => {},
+    }),
+  }),
 };

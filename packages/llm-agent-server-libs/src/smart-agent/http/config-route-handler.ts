@@ -9,6 +9,8 @@ import { jsonError, readBody } from './response-helpers.js';
 /** Exactly the SmartServer state PUT /v1/config touches — the hot-swap seam. */
 export interface IConfigUpdateTarget {
   readonly modelResolver?: IModelResolver;
+  /** The switch startup's model check obeys; a swapped-in model is checked the same way. */
+  readonly skipModelValidation: boolean;
   setMainLlm(llm: ILlm): void;
   setClassifierLlm(llm: ILlm): void;
   setHelperLlm(llm: ILlm): void;
@@ -146,6 +148,34 @@ export async function handleConfigUpdate(
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(jsonError(String(err), 'server_error'));
       return;
+    }
+    // A resolver only constructs: a wrong model name first fails on a call.
+    // Ask each new model once, as startup does, BEFORE anything is applied —
+    // otherwise the swap succeeds and every later request fails.
+    if (!target.skipModelValidation) {
+      const checks: [string, ILlm | undefined][] = [
+        [String(modelFields.mainModel), resolvedModels.mainLlm],
+        [String(modelFields.classifierModel), resolvedModels.classifierLlm],
+        [String(modelFields.helperModel), resolvedModels.helperLlm],
+      ];
+      for (const [name, llm] of checks) {
+        if (!llm) continue;
+        const probe = await llm.chat(
+          [{ role: 'user', content: 'Reply with OK' }],
+          undefined,
+          { maxTokens: 10 },
+        );
+        if (!probe.ok) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(
+            jsonError(
+              `model "${name}" is not available: ${probe.error.message}`,
+              'invalid_request_error',
+            ),
+          );
+          return;
+        }
+      }
     }
   }
 

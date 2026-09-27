@@ -10,7 +10,7 @@ mode: smart
 # Base main LLM (flat SmartServerLlmConfig — `provider` required so it is not
 # parsed as a multi-model named map). The LLM provider is the inference backend
 # and is INDEPENDENT of the target domain; SAP AI Core is used here only as the
-# example LLM service. Service key comes from AICORE_SERVICE_KEY in .env.
+# example LLM service. Service key comes from LLM_SERVICE_KEY in .env.
 llm:
   provider: sap-ai-sdk
   model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
@@ -23,29 +23,27 @@ mcp:
 # The controller's evaluator needs an embedder for distance-based target-state
 # strategies (semantic-distance/auto). consumer-confirm needs none.
 rag:
-  type: in-memory
-  embedder: sap-ai-core
-  model: text-embedding-3-small
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: text-embedding-3-small
+    credentialRef: LLM   # the same SAP AI Core account as llm.main
 
 pipeline:
   name: controller
   config:
-    # Three opaque subagent roles. Each is a standalone LLM endpoint; they can
-    # point at different providers/URLs. No `hint` here — these are capable
-    # models. Add an optional `hint:` under a role to give a WEAKER model extra
+    # Three subagent roles. Each names an optional `llm:` key; an omitted one
+    # resolves the role's own name, which here means the same main instance
+    # (same model for all three). No `hint` here — these are capable models.
+    # Add an optional `hint:` under a role to give a WEAKER model extra
     # operational steering (how to plan/execute); see controller-mixed.yaml. The
     # dynamic counterpart — procedural skills pulled from a RAG collection — is a
     # separate mechanism, not configured via hint.
     subagents:
-      evaluator:
-        provider: sap-ai-sdk
-        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      planner:
-        provider: sap-ai-sdk
-        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      executor:
-        provider: sap-ai-sdk
-        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+      evaluator: {}
+      planner: {}
+      executor: {}
     # planner selection is preset-encoded: `name: controller` = smart-executor.
     # (Removed `planner:` — use `name: controller-weak` for the weak-executor preset.)
     # consumer-confirm | semantic-distance | auto. A generous threshold keeps the

@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./testing/rag-filter-conformance": {
+      "types": "./dist/testing/rag-filter-conformance.d.ts",
+      "import": "./dist/testing/rag-filter-conformance.js",
+      "default": "./dist/testing/rag-filter-conformance.js"
     }
   },
   "files": [
@@ -24,6 +29,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^1.1.0",
     "@mcp-abap-adt/interfaces-utils": "^1.0.0",
     "zod": "^4.5.4"
   },

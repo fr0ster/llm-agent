@@ -10,8 +10,6 @@ import type {
   KnowledgeBackend,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
-import type { NormalizedLlmMap } from '../smart-agent/config.js';
-import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 
 /**
  * Server-side pipeline context. Extends the portable core IPipelineContext with
@@ -22,10 +20,7 @@ import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 export interface IServerPipelineContext extends IPipelineContext {
   /** Builder pre-wired with all shared infra EXCEPT the coordinator. */
   createAgentBuilder(): Promise<SmartAgentBuilder>;
-  // Raw materials for buildDagCoordinatorDeps / linear strategy resolution.
-  makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>;
-  llmMap?: NormalizedLlmMap;
-  pipelineFallback?: SmartServerLlmConfig;
+  // Raw materials for the linear/DAG coordinator builders.
   mainLlm: ILlm;
   helperLlm?: ILlm;
   mainTemp: number;

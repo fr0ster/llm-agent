@@ -19,11 +19,6 @@ import {
   TemplateFinalizer,
   TopKToolSelection,
 } from '@mcp-abap-adt/llm-agent-libs';
-import {
-  type NormalizedLlmMap,
-  resolveLlmConfig,
-} from '../smart-agent/llm-config-map.js';
-import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 
 export interface YamlCoordinator {
   planning?: 'one-shot' | 'replan-on-error' | 'skill-steps';
@@ -158,38 +153,21 @@ export type FinalizerYaml = {
 };
 
 /**
- * Build the IFinalizer impl from `coordinator.finalizer:` YAML.
+ * Build the IFinalizer impl from `coordinator.finalizer:` YAML. `finalizerLlm` is the
+ * caller's lookup — `resolveNamedLlm(key)` when the block names a key, the finalizer
+ * role's default otherwise — and is asked only for `type: llm`.
  *
- * Lookup chain for `type: llm`:
- *   resolveLlmConfig(llmMap, cfg.finalizerLlm, pipelineFallback)
- *   → top-level llm.<name> → llm.main → pipelineFallback (pipeline.llm.main)
- *   → ConfigError if all three are missing.
- *
- * Absent block / `type: passthrough` → PassthroughFinalizer.
- * `type: template` → TemplateFinalizer.
+ * Absent block / `type: passthrough` → PassthroughFinalizer. `type: template` →
+ * TemplateFinalizer.
  */
 export async function buildFinalizer(
   cfg: FinalizerYaml | undefined,
-  llmMap: NormalizedLlmMap | undefined,
-  pipelineFallback: SmartServerLlmConfig | undefined,
-  makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>,
+  finalizerLlm: () => Promise<ILlm>,
 ): Promise<IFinalizer> {
   const kind = cfg?.type ?? 'passthrough';
   if (kind === 'passthrough') return new PassthroughFinalizer();
   if (kind === 'template') return new TemplateFinalizer();
-  // kind === 'llm'
-  const resolved = resolveLlmConfig(
-    llmMap,
-    cfg?.finalizerLlm,
-    pipelineFallback,
-  );
-  if (!resolved) {
-    throw new Error(
-      'coordinator.finalizer (type: llm) requires an LLM config: provide top-level llm.<name>, llm.main, or pipeline.llm.main',
-    );
-  }
-  const llm = await makeLlm(resolved);
-  return new LlmFinalizer(llm, {
+  return new LlmFinalizer(await finalizerLlm(), {
     systemPrompt: cfg?.systemPrompt,
   });
 }

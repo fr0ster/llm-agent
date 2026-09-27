@@ -11,8 +11,11 @@
  *
  * It:
  *   1. sets `version` to <version> in every non-private packages/<pkg>/package.json,
- *   2. rewrites every internal `@mcp-abap-adt/*` range (dependencies /
- *      peerDependencies / devDependencies / optionalDependencies) to `^<version>`,
+ *   2. rewrites the range of every WORKSPACE package (a name read from
+ *      packages/<pkg>/package.json) in dependencies / peerDependencies /
+ *      devDependencies / optionalDependencies to `^<version>` — an external
+ *      `@mcp-abap-adt/*` package (interfaces-auth, interfaces-utils, ...) is
+ *      versioned on its own and keeps its range,
  *   3. prepends a `## <version>` section (with notes, if given) to each package's
  *      CHANGELOG.md (created if missing).
  * Run `npm install` afterwards to sync the lockfile.
@@ -32,13 +35,22 @@ const notes = notesFile && existsSync(notesFile)
 
 const root = join(import.meta.dirname, '..');
 const pkgsDir = join(root, 'packages');
-const INTERNAL = '@mcp-abap-adt/';
 const DEP_KEYS = [
   'dependencies',
   'peerDependencies',
   'devDependencies',
   'optionalDependencies',
 ];
+
+// The workspace's own package names. The scope alone does not make a package
+// internal: @mcp-abap-adt/interfaces-* share it and are published elsewhere.
+const WORKSPACE = new Set();
+for (const name of readdirSync(pkgsDir)) {
+  const pkgPath = join(pkgsDir, name, 'package.json');
+  if (existsSync(pkgPath)) {
+    WORKSPACE.add(JSON.parse(readFileSync(pkgPath, 'utf8')).name);
+  }
+}
 
 const bumped = [];
 for (const name of readdirSync(pkgsDir)) {
@@ -52,7 +64,7 @@ for (const name of readdirSync(pkgsDir)) {
     const deps = pkg[key];
     if (!deps) continue;
     for (const dep of Object.keys(deps)) {
-      if (dep.startsWith(INTERNAL)) deps[dep] = `^${version}`;
+      if (WORKSPACE.has(dep)) deps[dep] = `^${version}`;
     }
   }
   writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);

@@ -1,3 +1,4 @@
+import type { RagCollectionScope } from '../../interfaces/rag.js';
 import { RagError } from '../../interfaces/types.js';
 
 export class ReadOnlyError extends RagError {
@@ -95,5 +96,103 @@ export class ScopeViolationError extends RagError {
       'RAG_SCOPE_VIOLATION',
     );
     this.name = 'ScopeViolationError';
+  }
+}
+
+/** Attributes JSON would not return unchanged: NaN, ±Infinity, a cycle, or no JSON form. */
+export class InvalidAttributesError extends RagError {
+  constructor(readonly reason: string) {
+    super(
+      `Collection attributes cannot be stored as JSON unchanged: ${reason}`,
+      'RAG_INVALID_ATTRIBUTES',
+    );
+    this.name = 'InvalidAttributesError';
+  }
+}
+
+/** A scope without the owner key it selects, or no known scope at all. */
+export class InvalidOwnerError extends RagError {
+  constructor(readonly reason: string) {
+    super(`Collection owner is invalid: ${reason}`, 'RAG_INVALID_OWNER');
+    this.name = 'InvalidOwnerError';
+  }
+}
+
+/** The collection is taken: its catalog record (or a registry entry) exists. */
+export class DuplicateCollectionError extends RagError {
+  constructor(collectionName: string, detail?: string) {
+    super(
+      `Collection '${collectionName}' already exists${detail ? `: ${detail}` : ''}`,
+      'RAG_DUPLICATE_COLLECTION',
+    );
+    this.name = 'DuplicateCollectionError';
+  }
+}
+
+/**
+ * A store exists without a catalog record — at this moment: another session may
+ * be creating or deleting it, so a retry later may find a finished collection or
+ * a free name. Adopt it with `adoptExisting`, or remove it.
+ */
+export class OrphanStoreError extends RagError {
+  constructor(
+    readonly storeName: string,
+    reason: string,
+  ) {
+    super(
+      `Store '${storeName}' has no catalog record: ${reason}`,
+      'RAG_ORPHAN_STORE',
+    );
+    this.name = 'OrphanStoreError';
+  }
+}
+
+/** A name held in several scopes of one registry, addressed without a scope. */
+export class AmbiguousCollectionError extends RagError {
+  constructor(
+    collectionName: string,
+    readonly scopes: readonly RagCollectionScope[],
+  ) {
+    super(
+      `Collection '${collectionName}' exists in several scopes (${scopes.join(', ')}); name the scope`,
+      'RAG_AMBIGUOUS_COLLECTION',
+    );
+    this.name = 'AmbiguousCollectionError';
+  }
+}
+
+/**
+ * The first step of a catalogued deletion failed: the record could not be
+ * removed, so the data was not touched and nothing was deleted — retry it.
+ */
+export class CatalogRecordDeleteError extends RagError {
+  constructor(
+    readonly storeName: string,
+    reason: string,
+  ) {
+    super(
+      `The catalog record of store '${storeName}' could not be deleted, so nothing was deleted: ${reason}`,
+      'RAG_CATALOG_RECORD_DELETE',
+    );
+    this.name = 'CatalogRecordDeleteError';
+  }
+}
+
+/**
+ * A global named into a prefix the `ragStores` projection gives another scope
+ * (§6.4): it would take that scope's key, and one entry would silently
+ * overwrite the other. Thrown by `register` and `adopt`, returned by
+ * `createCollection` (Tasks B23, B24).
+ */
+export class ReservedCollectionNameError extends RagError {
+  constructor(
+    collectionName: string,
+    readonly prefix: string,
+  ) {
+    super(
+      `A global collection may not be named '${collectionName}': the prefix '${prefix}' is reserved for the ${prefix.slice(0, -1)} scope`,
+      'RAG_RESERVED_COLLECTION_NAME',
+    );
+    this.name = 'ReservedCollectionNameError';
   }
 }

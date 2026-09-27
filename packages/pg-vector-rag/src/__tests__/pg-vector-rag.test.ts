@@ -70,6 +70,9 @@ describe('PgVectorRag', () => {
     if (!r.ok) throw new Error('unreachable');
     assert.equal(r.value[0].text, 'hello');
     assert.equal(r.value[0].metadata?.namespace, 'n');
+    // The id lives in its own column; a reader (tool selection's
+    // toolNameFromRecord) finds it in metadata, as every other store returns it.
+    assert.equal(r.value[0].metadata?.id, 'a');
     assert.ok(client.calls.some((c) => c.sql.includes('<=>')));
   });
 
@@ -129,5 +132,82 @@ describe('PgVectorRag', () => {
       (err: Error & { code?: string }) =>
         err.code === 'INVALID_COLLECTION_NAME',
     );
+  });
+});
+
+describe('PgVectorRag — session/user filter (security)', () => {
+  function makeRag() {
+    const client = makeFakeClient();
+    const rag = new PgVectorRag(
+      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      client,
+    );
+    const lastSelect = () => {
+      const c = [...client.calls]
+        .reverse()
+        .find((x) => x.sql.startsWith('SELECT id, text, metadata, vector'));
+      if (!c) throw new Error('no search SELECT issued');
+      return c;
+    };
+    return { rag, lastSelect };
+  }
+  const emb = { text: 'q', toVector: async () => [0.1, 0.2, 0.3] };
+
+  it('sessionId and userId become parameterised WHERE conditions before ORDER BY … LIMIT', async () => {
+    const { rag, lastSelect } = makeRag();
+    const r = await rag.query(emb, 4, {
+      ragFilter: { sessionId: 's1', userId: 'u1' },
+    });
+    assert.equal(r.ok, true);
+    const { sql, params } = lastSelect();
+    assert.match(
+      sql,
+      /WHERE metadata->>'sessionId' = \$1 AND metadata->>'userId' = \$2 AND COALESCE\(.*\) >= \$3 ORDER BY vector <=> .* LIMIT 4$/,
+    );
+    assert.deepEqual(params.slice(0, 2), ['s1', 'u1']);
+  });
+
+  it('userId alone is filtered on its own parameter', async () => {
+    const { rag, lastSelect } = makeRag();
+    await rag.query(emb, 2, { ragFilter: { userId: 'u1' } });
+    const { sql, params } = lastSelect();
+    assert.match(sql, /WHERE metadata->>'userId' = \$1 AND COALESCE/);
+    assert.ok(!sql.includes("'sessionId'"));
+    assert.equal(params[0], 'u1');
+    assert.equal(params.length, 2);
+  });
+
+  it('no filter at all still drops expired rows, and nothing else', async () => {
+    const { rag, lastSelect } = makeRag();
+    const before = Date.now() / 1000;
+    await rag.query(emb, 2);
+    const { sql, params } = lastSelect();
+    assert.match(
+      sql,
+      /WHERE COALESCE\(CASE WHEN jsonb_typeof\(metadata->'ttl'\) = 'number' THEN \(metadata->>'ttl'\)::float8 END, 'infinity'::float8\) >= \$1 ORDER BY/,
+    );
+    assert.equal(params.length, 1);
+    assert.ok(Number(params[0]) >= before - 1);
+  });
+
+  it('ragFilter.namespace is a parameterised condition before LIMIT', async () => {
+    const { rag, lastSelect } = makeRag();
+    await rag.query(emb, 3, { ragFilter: { namespace: "n' OR '1'='1" } });
+    const { sql, params } = lastSelect();
+    assert.match(
+      sql,
+      /WHERE metadata->>'namespace' = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY vector <=> .* LIMIT 3$/,
+    );
+    assert.ok(!sql.includes("n' OR"));
+    assert.equal(params[0], "n' OR '1'='1");
+  });
+
+  it('a hostile filter value is never interpolated into the SQL', async () => {
+    const { rag, lastSelect } = makeRag();
+    const hostile = "s1' OR '1'='1";
+    await rag.query(emb, 2, { ragFilter: { sessionId: hostile } });
+    const { sql, params } = lastSelect();
+    assert.ok(!sql.includes(hostile));
+    assert.equal(params[0], hostile);
   });
 });

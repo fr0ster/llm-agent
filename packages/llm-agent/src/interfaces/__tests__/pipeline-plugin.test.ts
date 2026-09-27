@@ -42,34 +42,36 @@ describe('pipeline-plugin runnable contracts', () => {
 });
 
 describe('IPipelinePlugin', () => {
-  it('names itself, parses config, and builds an instance', async () => {
-    const plugin: IPipelinePlugin<{ depth: number }> = {
+  it('names itself and builds an instance from the context alone', async () => {
+    const depth = 3; // a typed setting, closed over at construction
+    const plugin: IPipelinePlugin = {
       name: 'demo',
-      parseConfig: (raw) => ({ depth: (raw as { depth?: number }).depth ?? 1 }),
-      build: async (config, _ctx: IPipelineContext) => ({
+      build: async (_ctx: IPipelineContext) => ({
         agent: {
-          process: async () => ({ ok: true, value: config }) as never,
+          process: async () => ({ ok: true, value: { depth } }) as never,
           streamProcess: async function* () {},
         },
         close: async () => {},
       }),
     };
     assert.equal(plugin.name, 'demo');
-    assert.deepEqual(plugin.parseConfig({ depth: 3 }), { depth: 3 });
-    const inst = await plugin.build({ depth: 3 }, {} as IPipelineContext);
+    const inst = await plugin.build({} as IPipelineContext);
     assert.equal(typeof inst.close, 'function');
   });
 });
 
 describe('PluginExports / LoadedPlugins carry pipeline plugins', () => {
-  it('PluginExports.pipelinePlugins is an optional record', () => {
+  it('PluginExports.pipelinePlugins and pipelinePluginFactories are optional records', () => {
     const p: IPipelinePlugin = {
       name: 'x',
-      parseConfig: (r) => r,
       build: async () => ({ agent: {} as never, close: async () => {} }),
     };
-    const exports: PluginExports = { pipelinePlugins: { x: p } };
+    const exports: PluginExports = {
+      pipelinePlugins: { x: p },
+      pipelinePluginFactories: { y: () => ({ ...p, name: 'y' }) },
+    };
     assert.equal(exports.pipelinePlugins?.x.name, 'x');
+    assert.equal(exports.pipelinePluginFactories?.y({}).name, 'y');
   });
 
   it('LoadedPlugins has pipelinePlugins + pipelinePluginSources maps', () => {

@@ -5,7 +5,8 @@
 #
 # Prerequisites:
 #   1. mcp-abap-adt-proxy listening on http://127.0.0.1:3001 (if subagents use MCP).
-#   2. DEEPSEEK_API_KEY and AICORE_SERVICE_KEY env variables set.
+#   2. DEEPSEEK_API_KEY (named by credentialRef: DEEPSEEK) and LLM_SERVICE_KEY
+#      (the SAP AI Core service-key JSON, for llm.main's default LLM ref) env vars set.
 
 port: 4004
 mode: smart
@@ -21,8 +22,18 @@ llm:
     temperature: 0.7
   helper:
     provider: deepseek
-    apiKey: ${DEEPSEEK_API_KEY}
+    credentialRef: DEEPSEEK            # the root reads DEEPSEEK_API_KEY, the same variable the removed secret field read
     model: deepseek-chat
+    temperature: 0.1
+  abap-coder:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  code-reviewer:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.1
 
 mcp:

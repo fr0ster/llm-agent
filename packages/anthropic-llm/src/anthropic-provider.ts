@@ -2,6 +2,7 @@
  * Anthropic (Claude) LLM Provider
  */
 
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IModelInfo,
   LLMCallOptions,
@@ -13,6 +14,18 @@ import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
 
 export interface AnthropicConfig extends LLMProviderConfig {
+  /**
+   * Asked for fresh on every request — never cached — so a rotating key
+   * rotates and a resolved-once secret is never frozen for the object's
+   * lifetime. Required: this provider cannot authenticate without one.
+   *
+   * Quota scoping (`quotaCredential`) keys on this object's IDENTITY, not its
+   * secret: two calls to `staticApiKey(key)` create two credential objects
+   * and therefore two separate rate-limit buckets, even for the same key.
+   * Reuse one credential object — or set `quotaScope` explicitly — to make
+   * two providers share a gate.
+   */
+  credential: IApiKeyCredential;
   model?: string;
   temperature?: number;
   maxTokens?: number;
@@ -24,8 +37,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
   constructor(config: AnthropicConfig) {
     super(config);
-    this.validateConfig();
 
+    if (!config.credential) {
+      throw new Error("Anthropic provider requires a 'credential'");
+    }
     if (!config.model) {
       throw new Error("Anthropic provider requires a 'model'");
     }
@@ -34,7 +49,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     this.client = axios.create({
       baseURL: config.baseURL || 'https://api.anthropic.com/v1',
       headers: {
-        'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
       },
@@ -44,6 +58,20 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   /** The resolved endpoint, default filled in — see `quotaEndpoint`. */
   protected override quotaEndpoint(): string {
     return this.client.defaults.baseURL ?? 'default';
+  }
+
+  /** Quota isolation (base class): this provider's account is its credential. */
+  protected override quotaCredential(): object | undefined {
+    return this.config.credential;
+  }
+
+  /**
+   * `x-api-key`, resolved fresh for this one request — never baked into
+   * `client.defaults.headers`, which would freeze whatever secret the
+   * credential returned at construction time.
+   */
+  private async authHeaders(): Promise<Record<string, string>> {
+    return { 'x-api-key': await this.config.credential.secret() };
   }
 
   async chat(
@@ -74,9 +102,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       }
 
       const response = await this.withThrottleRetry(
-        () =>
+        async () =>
           this.client.post('/messages', requestBody, {
             signal: options?.signal,
+            headers: await this.authHeaders(),
           }),
         { model, signal: options?.signal },
       );
@@ -156,7 +185,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': this.config.apiKey ?? '',
+            'x-api-key': await this.config.credential.secret(),
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify(requestBody),
@@ -311,7 +340,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   }
 
   async getModels(): Promise<IModelInfo[]> {
-    const response = await this.client.get('/models');
+    const response = await this.client.get('/models', {
+      headers: await this.authHeaders(),
+    });
     return (response.data.data as Array<{ id: string; owned_by?: string }>).map(
       (m) => ({ id: m.id, owned_by: m.owned_by }),
     );

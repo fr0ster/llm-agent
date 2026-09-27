@@ -9,4 +9,8 @@ export type {
   LoadedPlugins,
   PluginExports,
 } from './types.js';
-export { emptyLoadedPlugins, mergePluginExports } from './types.js';
+export {
+  describePipelinePluginDefect,
+  emptyLoadedPlugins,
+  mergePluginExports,
+} from './types.js';

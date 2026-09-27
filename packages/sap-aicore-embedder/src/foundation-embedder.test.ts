@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { isBatchSizeLimited } from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
 
@@ -51,16 +52,17 @@ function deploymentList(modelName: string, id = 'd-1') {
   };
 }
 
+/** A bearer credential that hands out a fixed token — no network involved. */
+function fixedCredential(token = 'tok'): IBearerCredential {
+  return { kind: 'bearer', token: async () => token };
+}
+
 function makeOpenAiEmbedder() {
   return new FoundationModelsEmbedder({
     model: 'text-embedding-3-small',
     resourceGroup: 'default',
-    credentials: {
-      clientId: 'cid',
-      clientSecret: 'csec',
-      tokenUrl: 'https://auth.example.com/oauth/token',
-      apiBaseUrl: 'https://api.example.com',
-    },
+    credential: fixedCredential(),
+    apiBaseUrl: 'https://api.example.com',
   });
 }
 
@@ -68,12 +70,8 @@ function makeGeminiEmbedder() {
   return new FoundationModelsEmbedder({
     model: 'gemini-embedding',
     resourceGroup: 'default',
-    credentials: {
-      clientId: 'cid',
-      clientSecret: 'csec',
-      tokenUrl: 'https://auth.example.com/oauth/token',
-      apiBaseUrl: 'https://api.example.com',
-    },
+    credential: fixedCredential(),
+    apiBaseUrl: 'https://api.example.com',
   });
 }
 
@@ -83,8 +81,6 @@ function makeGeminiEmbedder() {
 
 test('openai: embed posts to /embeddings?api-version=... and returns vector', async () => {
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('text-embedding-3-small') };
     return { body: { data: [{ embedding: [0.1, 0.2, 0.3], index: 0 }] } };
@@ -106,8 +102,6 @@ test('openai: decodes base64 embedding', async () => {
   const base64 = Buffer.from(floats.buffer).toString('base64');
 
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('text-embedding-3-small') };
     return { body: { data: [{ embedding: base64, index: 0 }] } };
@@ -119,8 +113,6 @@ test('openai: decodes base64 embedding', async () => {
 
 test('openai: embedBatch sorts by index and returns vectors in input order', async () => {
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('text-embedding-3-small') };
     return {
@@ -140,8 +132,6 @@ test('openai: embedBatch sorts by index and returns vectors in input order', asy
 
 test('openai: custom azureApiVersion overrides default', async () => {
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('text-embedding-3-small') };
     return { body: { data: [{ embedding: [0], index: 0 }] } };
@@ -150,12 +140,8 @@ test('openai: custom azureApiVersion overrides default', async () => {
   const emb = new FoundationModelsEmbedder({
     model: 'text-embedding-3-small',
     azureApiVersion: '2024-02-15-preview',
-    credentials: {
-      clientId: 'cid',
-      clientSecret: 'csec',
-      tokenUrl: 'https://auth.example.com/oauth/token',
-      apiBaseUrl: 'https://api.example.com',
-    },
+    credential: fixedCredential(),
+    apiBaseUrl: 'https://api.example.com',
   });
   await emb.embed('x');
 
@@ -169,8 +155,6 @@ test('openai: custom azureApiVersion overrides default', async () => {
 
 test('gemini: embed posts to /models/<model>:predict and returns vector', async () => {
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('gemini-embedding') };
     return {
@@ -190,8 +174,6 @@ test('gemini: embed posts to /models/<model>:predict and returns vector', async 
 
 test('gemini: embedBatch returns vectors in input order', async () => {
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('gemini-embedding') };
     return {
@@ -211,8 +193,6 @@ test('gemini: embedBatch returns vectors in input order', async () => {
 
 test('gemini: request body shape uses instances[].content', async () => {
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('gemini-embedding') };
     return {
@@ -244,8 +224,6 @@ test('embedBatch: returns [] for empty input without fetching', async () => {
 test('deployment id is cached across calls', async () => {
   let deploymentCalls = 0;
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments')) {
       deploymentCalls++;
       return { body: deploymentList('text-embedding-3-small') };
@@ -261,8 +239,6 @@ test('deployment id is cached across calls', async () => {
 
 test('embeddings request uses Bearer + AI-Resource-Group headers', async () => {
   installFetch((url) => {
-    if (url.endsWith('/oauth/token'))
-      return { body: { access_token: 'tok', expires_in: 3600 } };
     if (url.includes('/v2/lm/deployments'))
       return { body: deploymentList('text-embedding-3-small') };
     return { body: { data: [{ embedding: [0], index: 0 }] } };
@@ -276,6 +252,34 @@ test('embeddings request uses Bearer + AI-Resource-Group headers', async () => {
   assert.equal(headers.Authorization, 'Bearer tok');
   assert.equal(headers['AI-Resource-Group'], 'default');
   assert.equal(embedCall.init?.method, 'POST');
+});
+
+test('asks the credential for a fresh token on every call (not cached at construction)', async () => {
+  let n = 0;
+  const credential: IBearerCredential = {
+    kind: 'bearer',
+    token: async () => `tok${++n}`,
+  };
+  installFetch((url) => {
+    if (url.includes('/v2/lm/deployments'))
+      return { body: deploymentList('text-embedding-3-small') };
+    return { body: { data: [{ embedding: [0], index: 0 }] } };
+  });
+
+  const emb = new FoundationModelsEmbedder({
+    model: 'text-embedding-3-small',
+    credential,
+    apiBaseUrl: 'https://api.example.com',
+  });
+  await emb.embed('a');
+  await emb.embed('b');
+
+  const embedCalls = calls.filter((c) => c.url.includes('/embeddings'));
+  const authHeaders = embedCalls.map(
+    (c) =>
+      (c.init?.headers as Record<string, string> | undefined)?.Authorization,
+  );
+  assert.deepEqual(authHeaders, ['Bearer tok1', 'Bearer tok2']);
 });
 
 test('gemini declares the Vertex batch cap of 250', () => {

@@ -53,7 +53,7 @@ describe('ConfigWatcher', () => {
 
   it('extracts RAG weight config', async () => {
     const { filePath, cleanup } = tmpFile(
-      'rag:\n  vectorWeight: 0.8\n  keywordWeight: 0.2\n',
+      'rag:\n  store:\n    type: in-memory\n    vectorWeight: 0.8\n    keywordWeight: 0.2\n',
     );
     try {
       const watcher = new ConfigWatcher(filePath, { debounceMs: 50 });
@@ -64,7 +64,7 @@ describe('ConfigWatcher', () => {
       await wait(100);
       fs.writeFileSync(
         filePath,
-        'rag:\n  vectorWeight: 0.6\n  keywordWeight: 0.4\n',
+        'rag:\n  store:\n    type: in-memory\n    vectorWeight: 0.6\n    keywordWeight: 0.4\n',
         'utf8',
       );
       await wait(200);
@@ -74,6 +74,29 @@ describe('ConfigWatcher', () => {
       const last = reloads[reloads.length - 1];
       assert.equal(last.vectorWeight, 0.6);
       assert.equal(last.keywordWeight, 0.4);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reads the weights only from an in-memory store, the one that applies them', async () => {
+    const { filePath, cleanup } = tmpFile('agent:\n  maxIterations: 1\n');
+    try {
+      const watcher = new ConfigWatcher(filePath, { debounceMs: 50 });
+      const reloads: HotReloadableConfig[] = [];
+      watcher.on('reload', (cfg: HotReloadableConfig) => reloads.push(cfg));
+      watcher.start();
+      await wait(100);
+      fs.writeFileSync(
+        filePath,
+        'rag:\n  store:\n    type: qdrant\n    vectorWeight: 0.6\n  vectorWeight: 0.5\n',
+        'utf8',
+      );
+      await wait(200);
+      watcher.stop();
+      const last = reloads[reloads.length - 1];
+      assert.ok(last);
+      assert.equal(last.vectorWeight, undefined);
     } finally {
       cleanup();
     }

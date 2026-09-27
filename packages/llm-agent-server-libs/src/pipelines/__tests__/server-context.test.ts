@@ -13,13 +13,13 @@ describe('createServerPipelineContext', () => {
   it('defaults toolsRag to an empty handle when omitted', async () => {
     const ctx = createServerPipelineContext({
       resolveLlm: async () => stubLlm,
+      resolveNamedLlm: async () => stubLlm,
       knowledgeRagFor: async () => ({}) as never,
       callMcp: async () => '',
       mintStepperId: () => 's',
       mintTurnId: () => 't',
       createAgentBuilder: async () =>
         new SmartAgentBuilder({}).withMainLlm(stubLlm),
-      makeLlm: async () => stubLlm,
       mainLlm: stubLlm,
       mainTemp: 0,
       workerRegistry: new Map(),

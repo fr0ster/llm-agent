@@ -75,6 +75,46 @@ test('qdrant store with postgres catalog parses', () => {
   assert.equal(cfg.catalog.type, 'postgres');
 });
 
+test('a qdrant store names its account with credentialRef', () => {
+  const cfg = parseSkillPluginsConfig({
+    store: { type: 'qdrant', url: 'http://q', credentialRef: 'SKILLS_QDRANT' },
+    embeddingSpaceId: 'sp-1',
+    catalog: { type: 'postgres', connectionString: 'pg://x' },
+    sources: [{ id: 'a', records: [] }],
+  });
+  assert.deepEqual(cfg.store, {
+    type: 'qdrant',
+    url: 'http://q',
+    credentialRef: 'SKILLS_QDRANT',
+  });
+});
+
+test('a qdrant store still carrying apiKey is refused, naming credentialRef', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        store: { type: 'qdrant', url: 'http://q', apiKey: 'k' },
+        embeddingSpaceId: 'sp-1',
+        catalog: { type: 'postgres', connectionString: 'pg://x' },
+        sources: [{ id: 'a', records: [] }],
+      }),
+    /store\.apiKey[\s\S]*store\.credentialRef/,
+  );
+});
+
+test('an empty credentialRef is refused', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        store: { type: 'qdrant', url: 'http://q', credentialRef: '' },
+        embeddingSpaceId: 'sp-1',
+        catalog: { type: 'postgres', connectionString: 'pg://x' },
+        sources: [{ id: 'a', records: [] }],
+      }),
+    /store\.credentialRef must be a non-empty string/,
+  );
+});
+
 // 4. retiredGraceMs / recallTimeoutMs invariants.
 test('retiredGraceMs < 1000 throws', () => {
   assert.throws(

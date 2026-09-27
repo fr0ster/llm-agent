@@ -40,7 +40,8 @@ export interface CallOptions {
    *  override can never corrupt their internal structured output (JSON plans,
    *  verdicts). Same for temperature / maxTokens / topP / stop. */
   model?: string;
-  /** Filter RAG results by namespace or other metadata. */
+  /** Filter RAG results by namespace or other metadata. Every `IRag` store
+   *  honours `sessionId` and `userId` as an identity scope (see `IRag.query`). */
   ragFilter?: {
     namespace?: string;
     userId?: string;

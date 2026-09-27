@@ -8,18 +8,16 @@ import type {
   Result,
 } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
+import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
+import { tokenizeSearchText } from './tokenizer.js';
 
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 
 function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length > 1);
+  return tokenizeSearchText(text);
 }
 
 function embed(text: string): Map<string, number> {
@@ -49,7 +47,9 @@ function cosineSimilarity(
 // ---------------------------------------------------------------------------
 
 export interface InMemoryRagConfig {
-  /** Cosine similarity above which upsert updates existing record. Default: 0.92 */
+  /** Cosine similarity above which an upsert without an id updates an existing
+   *  record without an id (a record with an id is replaced only by the same id).
+   *  Default: 0.92 */
   dedupThreshold?: number;
   /** Namespace for this store. Records with different namespace are invisible to query. */
   namespace?: string;
@@ -124,11 +124,18 @@ export class InMemoryRag implements IRag {
       }
     }
 
-    // Filter existing records by same namespace
-    const candidates =
-      this.namespace !== undefined
-        ? this.records.filter((r) => r.metadata.namespace === this.namespace)
-        : this.records;
+    // Similarity dedup only between records written WITHOUT an id: a record
+    // with an id is replaced only by the same id (above). Merging on
+    // similarity alone let a near-identical tool record overwrite another
+    // tool's record (ReadFunctionInclude vanished under ReadFunctionGroup).
+    const candidates = metadata.id
+      ? []
+      : this.records.filter(
+          (r) =>
+            !r.metadata.id &&
+            (this.namespace === undefined ||
+              r.metadata.namespace === this.namespace),
+        );
 
     // Find record with cosine similarity >= dedupThreshold
     let dupRecord: StoredRecord | undefined;
@@ -174,23 +181,25 @@ export class InMemoryRag implements IRag {
     }
     const queryEmbedding = embed(searchText);
     const nowSecs = Date.now() / 1000;
-    const targetSessionId = options?.ragFilter?.sessionId;
+    const identity = ragIdentityFilter(options);
+    const targetNamespace = options?.ragFilter?.namespace;
 
-    // Filter: namespace match + TTL not expired + sessionId match
+    // Filter BEFORE top-k: store namespace + the query's `ragFilter.namespace`
+    // + TTL not expired + the sessionId/userId the query is scoped to.
     const candidates = this.records.filter((r) => {
       if (
         this.namespace !== undefined &&
         r.metadata.namespace !== this.namespace
       )
         return false;
-      if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
-        return false;
       if (
-        targetSessionId !== undefined &&
-        r.metadata.sessionId !== targetSessionId
+        targetNamespace !== undefined &&
+        r.metadata.namespace !== targetNamespace
       )
         return false;
-      return true;
+      if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
+        return false;
+      return matchesRagIdentity(r.metadata, identity);
     });
 
     // Compute cosine similarity for each candidate

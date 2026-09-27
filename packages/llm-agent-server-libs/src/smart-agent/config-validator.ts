@@ -1,3 +1,4 @@
+import { isBuiltInEmbedderProvider } from './rag-config.js';
 import type { SmartServerConfig } from './smart-server.js';
 import type { YamlConfig } from './yaml-loader.js';
 import { get } from './yaml-loader.js';
@@ -22,20 +23,44 @@ export class ConfigValidationError extends Error {
     super(
       `Configuration error in smart-server.yaml:\n${issues
         .map((i) => `  - ${i}`)
-        .join('\n')}\nSet these fields in your YAML and restart.`,
+        .join('\n')}\nFix these fields in your YAML and restart.`,
     );
     this.name = 'ConfigValidationError';
   }
 }
 
+function checkCredentialRef(
+  label: string,
+  value: unknown,
+  issues: string[],
+): void {
+  if (
+    value !== undefined &&
+    (typeof value !== 'string' || value.length === 0)
+  ) {
+    issues.push(
+      `${label}.credentialRef: must be a non-empty string naming a credential (omit it for the default)`,
+    );
+  }
+}
+
 function checkLlmRole(
   label: string,
-  role: { provider?: unknown; apiKey?: unknown; model?: unknown } | undefined,
+  role: Record<string, unknown> | undefined,
   requireModel: boolean,
-  env: NodeJS.ProcessEnv,
   issues: string[],
   skipRuntime = false,
 ): void {
+  // A secret arriving from the file is refused, not ignored: a key silently dropped
+  // would leave an operator believing it was used. A loaded object is not a fresh
+  // literal, so no excess-property check ever sees it — this boundary is the only
+  // place it can be caught (§4.6.3).
+  if (role?.apiKey !== undefined) {
+    issues.push(
+      `${label}.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with ${label}.credentialRef (your composition root resolves the name).`,
+    );
+  }
+  checkCredentialRef(label, role?.credentialRef, issues);
   const provider = role?.provider as string | undefined;
   if (!provider) {
     issues.push(
@@ -51,105 +76,147 @@ function checkLlmRole(
     );
     return;
   }
-  // Structural checks above always run. The credential + model-required checks
-  // below are provider-runtime concerns; skip them when the caller injects its
-  // own makeLlm/embedder (embeddable path).
   if (skipRuntime) return;
   if (requireModel && !role?.model) {
     issues.push(`${label}.model: required (string)`);
   }
-  if (
-    provider === 'openai' ||
-    provider === 'anthropic' ||
-    provider === 'deepseek'
-  ) {
-    if (!role?.apiKey) {
-      issues.push(
-        `${provider} requires ${label}.apiKey to resolve to a non-empty value (typically via \${${provider.toUpperCase()}_API_KEY} env reference).`,
-      );
-    }
-  } else if (provider === 'sap-ai-sdk') {
-    if (!env.AICORE_SERVICE_KEY) {
-      issues.push(
-        'sap-ai-sdk requires the AICORE_SERVICE_KEY env var to be set with the SAP AI Core service-key JSON content. None found.',
-      );
-    }
-  }
-  // ollama: no credential check.
+  // No credential check. Whether a key or a service key is held is known only to
+  // the composition root, which resolves credentialRef — the api-key and
+  // AICORE_SERVICE_KEY rules left with the credential (§4.6.2).
 }
 
-function checkRagStore(
-  label: string,
-  store:
-    | {
-        type?: unknown;
-        url?: unknown;
-        collectionName?: unknown;
-        embedder?: unknown;
-        model?: unknown;
-      }
-    | undefined,
+const IN_MEMORY_ONLY_KEYS = [
+  'dedupThreshold',
+  'vectorWeight',
+  'keywordWeight',
+] as const;
+
+function checkRag(
+  rag: Record<string, unknown>,
   issues: string[],
   skipRuntime = false,
 ): void {
-  if (!store) return;
-  const ragType = store.type as string | undefined;
+  for (const key of Object.keys(rag)) {
+    if (key !== 'store' && key !== 'embedder') {
+      issues.push(`rag.${key}: unknown key — rag holds store: and embedder:`);
+    }
+  }
+  const store = rag.store;
+  if (
+    store === undefined ||
+    store === null ||
+    typeof store !== 'object' ||
+    Array.isArray(store)
+  ) {
+    issues.push(
+      'rag.store: required (a mapping with type: in-memory | qdrant | hana-vector | pg-vector)',
+    );
+    return;
+  }
+  const s = store as Record<string, unknown>;
+  const ragType = s.type as string | undefined;
   if (!ragType) {
     issues.push(
-      `${label}.type: required (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+      'rag.store.type: required (one of: in-memory, qdrant, hana-vector, pg-vector)',
     );
   } else if (ragType === 'ollama' || ragType === 'openai') {
     issues.push(
-      `${label}.type: "${ragType}" is an embedder, not a store — use \`type: in-memory\` with \`embedder: ${ragType}\` (or a real store: qdrant, hana-vector, pg-vector)`,
+      `rag.store.type: "${ragType}" is an embedder, not a store — use \`store: { type: in-memory }\` with \`embedder: { provider: ${ragType} }\` (or a real store: qdrant, hana-vector, pg-vector)`,
     );
   } else if (!(VALID_RAG_TYPES as readonly string[]).includes(ragType)) {
     issues.push(
-      `${label}.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+      `rag.store.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
     );
   } else {
-    if (ragType === 'qdrant' && !store.url) {
-      issues.push(`${label}.url: required for ${label}.type qdrant`);
+    if (ragType === 'qdrant' && !s.url) {
+      issues.push('rag.store.url: required for rag.store.type qdrant');
     }
     if (
       (ragType === 'hana-vector' || ragType === 'pg-vector') &&
-      !store.collectionName
+      !s.collectionName
     ) {
       issues.push(
-        `${label}.collectionName: required for ${label}.type ${ragType}`,
+        `rag.store.collectionName: required for rag.store.type ${ragType}`,
       );
     }
+    if (ragType !== 'in-memory') {
+      for (const k of IN_MEMORY_ONLY_KEYS) {
+        if (s[k] !== undefined) {
+          issues.push(
+            `rag.store.${k}: read only by the in-memory store — remove it (a ${ragType} store never read it)`,
+          );
+        }
+      }
+    }
   }
-  // Blocklist (NOT allowlist): consumers can register custom embedder
-  // factories, so only known embedder-less providers are hard-rejected here.
-  const embedder = store.embedder as string | undefined;
-  if (embedder === 'deepseek' || embedder === 'anthropic') {
+  checkCredentialRef('rag.store', s.credentialRef, issues);
+
+  const rawEmbedder = rag.embedder;
+  if (
+    rawEmbedder !== undefined &&
+    (rawEmbedder === null ||
+      typeof rawEmbedder !== 'object' ||
+      Array.isArray(rawEmbedder))
+  ) {
+    issues.push('rag.embedder: must be a mapping (provider, model, …)');
+    return;
+  }
+  const e = rawEmbedder as Record<string, unknown> | undefined;
+  const provider = e?.provider as string | undefined;
+  const factory = e?.factory;
+  if (provider !== undefined && factory !== undefined) {
     issues.push(
-      `${label}.embedder: "${embedder}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+      'rag.embedder: name either provider (a built-in) or factory (one you registered), not both',
+    );
+  } else if (factory !== undefined) {
+    if (typeof factory !== 'string' || factory.length === 0) {
+      issues.push(
+        'rag.embedder.factory: must be a non-empty string naming a registered factory',
+      );
+    }
+    // A consumer factory receives EmbedderFactoryConfig only (url, model, timeoutMs) and
+    // closes over its own credential, so these would be dropped without a word.
+    for (const k of ['credentialRef', 'resourceGroup', 'scenario'] as const) {
+      if (e?.[k] !== undefined) {
+        issues.push(
+          `rag.embedder.${k}: not read for a factory — a consumer factory closes over its own ` +
+            'configuration and credential; remove it',
+        );
+      }
+    }
+  } else if (provider === 'deepseek' || provider === 'anthropic') {
+    issues.push(
+      `rag.embedder.provider: "${provider}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+    );
+  } else if (provider !== undefined && !isBuiltInEmbedderProvider(provider)) {
+    issues.push(
+      `rag.embedder.provider: "${provider}" is not a built-in embedder (openai, sap-ai-core, sap-aicore, ollama) — ` +
+        'an embedder you registered in extraFactories is named with rag.embedder.factory',
     );
   }
-  // Require model when an embedder is used: vector stores always use an
-  // embedder; in-memory uses one only when embedder is explicitly set.
+  if (e && factory === undefined)
+    checkCredentialRef('rag.embedder', e.credentialRef, issues);
   const usesEmbedder =
     ragType === 'qdrant' ||
     ragType === 'hana-vector' ||
     ragType === 'pg-vector' ||
-    (ragType === 'in-memory' && embedder != null);
-  if (!skipRuntime && usesEmbedder && !store.model) {
+    (ragType === 'in-memory' && e !== undefined);
+  // Every built-in constructor requires a model; a factory decides for itself.
+  if (!skipRuntime && usesEmbedder && factory === undefined && !e?.model) {
     issues.push(
-      `${label}.model: required when an embedder is used (e.g. bge-m3 for ollama)`,
+      'rag.embedder.model: required when an embedder is used (e.g. bge-m3 for ollama)',
     );
   }
 }
 
 function validateLlmEntry(
   label: string,
-  cfg: { provider?: unknown; apiKey?: unknown; model?: unknown } | undefined,
+  cfg: Record<string, unknown> | undefined,
   required: boolean,
-  env: NodeJS.ProcessEnv,
   issues: string[],
   skipRuntime = false,
 ): void {
-  checkLlmRole(label, cfg, required, env, issues, skipRuntime);
+  checkLlmRole(label, cfg, required, issues, skipRuntime);
 }
 
 /**
@@ -188,50 +255,132 @@ export function assertNoLegacyPipelineConfig(yaml: YamlConfig): void {
   }
 }
 
+/** Keys of the flat `rag:` shape this major removed (the `embedder: <name>` string
+ *  form is caught separately — `embedder` is also the new section's name). */
+const LEGACY_FLAT_RAG_KEYS = [
+  'type',
+  'url',
+  'model',
+  'collectionName',
+  'dedupThreshold',
+  'vectorWeight',
+  'keywordWeight',
+  'connectionString',
+  'host',
+  'port',
+  'database',
+  'schema',
+  'dimension',
+  'autoCreateSchema',
+  'poolMax',
+  'connectTimeout',
+  'maxBatchSize',
+  'resourceGroup',
+  'scenario',
+  'timeoutMs',
+  'apiKey',
+  'user',
+  'password',
+] as const;
+
+const SECRET_FIELDS = ['apiKey', 'user', 'password'] as const;
+
+/**
+ * Fail-loud migration guard for the store/embedder split (spec §4.6.4). A flat key
+ * silently dropped would leave a store the operator believes configured, and a
+ * secret silently dropped would leave one they believe authenticated.
+ */
+export function assertNoLegacyRagShape(yaml: YamlConfig): void {
+  const rag = (yaml as { rag?: unknown }).rag;
+  if (rag === null || typeof rag !== 'object' || Array.isArray(rag)) return;
+  const r = rag as Record<string, unknown>;
+  const flat: string[] = LEGACY_FLAT_RAG_KEYS.filter((k) => r[k] !== undefined);
+  if (typeof r.embedder === 'string') flat.push('embedder: <name>');
+  if (flat.length > 0) {
+    throw new Error(
+      `The flat 'rag:' section is no longer supported (found: ${flat.join(', ')}). ` +
+        'It described two independently authenticated targets as one, so it splits: ' +
+        'rag.store holds type, url, collectionName, connectionString/host/port/database/schema ' +
+        'and the pool/schema settings — plus dedupThreshold, vectorWeight and keywordWeight, ' +
+        'for type in-memory only; rag.embedder holds provider (a built-in: openai, sap-ai-core, ' +
+        'ollama — was rag.embedder) or factory (a consumer-registered embedder), model, url, ' +
+        'resourceGroup, scenario and maxBatchSize. apiKey, user and password do not move: remove ' +
+        'them and name the account with rag.store.credentialRef or rag.embedder.credentialRef.',
+    );
+  }
+  for (const section of ['store', 'embedder'] as const) {
+    const s = r[section];
+    if (s === null || typeof s !== 'object' || Array.isArray(s)) continue;
+    const secrets = SECRET_FIELDS.filter(
+      (k) => (s as Record<string, unknown>)[k] !== undefined,
+    );
+    if (secrets.length > 0) {
+      throw new Error(
+        `${secrets.map((k) => `rag.${section}.${k}`).join(', ')}: secrets are no longer read ` +
+          `from configuration — remove ${secrets.length > 1 ? 'them' : 'it'} and name the ` +
+          `account with rag.${section}.credentialRef (your composition root resolves the name).`,
+      );
+    }
+  }
+  const embedder = r.embedder;
+  if (
+    embedder !== null &&
+    typeof embedder === 'object' &&
+    (embedder as Record<string, unknown>).apiBaseUrl !== undefined
+  ) {
+    throw new Error(
+      "rag.embedder.apiBaseUrl: SAP AI Core's address comes from the credential entry — the same " +
+        'service key (<REF>_SERVICE_KEY in the shipped server) that holds the credential — and is ' +
+        'never also written in YAML. Remove it; name the account with rag.embedder.credentialRef ' +
+        'if it is not the default one.',
+    );
+  }
+}
+
 export function validateResolvedConfig(
   _resolved: Omit<SmartServerConfig, 'log'>,
   yaml: YamlConfig,
-  env: NodeJS.ProcessEnv,
-  opts: { skipProviderRuntimeChecks?: boolean } = {},
+  _env: NodeJS.ProcessEnv,
+  opts: {
+    skipProviderRuntimeChecks?: boolean;
+    requireLlmSection?: boolean;
+  } = {},
 ): void {
   const issues: string[] = [];
   const skip = opts.skipProviderRuntimeChecks === true;
 
-  // LLM is always sourced from the top-level `llm:` block now — the legacy
-  // `pipeline.llm.*` override has been removed with the `pipeline: {name,config}`
-  // migration. Read from the raw YAML so we can distinguish flat vs map shape.
-  // `resolved.llm` is always constructed as a flat object by
-  // resolveSmartServerConfig, so it cannot be used to detect the map shape.
-  const rawLlm = get(yaml, 'llm') as
-    | { provider?: unknown; apiKey?: unknown; model?: unknown }
-    | Record<string, { provider?: unknown; apiKey?: unknown; model?: unknown }>
-    | undefined;
+  const rawLlm = get(yaml, 'llm') as Record<string, unknown> | undefined;
   if (rawLlm === undefined) {
-    issues.push('llm: required (top-level llm.main or a flat llm block)');
-  } else if (typeof (rawLlm as { provider?: unknown }).provider === 'string') {
-    // Flat shape — existing behaviour.
-    validateLlmEntry(
-      'llm',
-      rawLlm as { provider?: unknown; apiKey?: unknown; model?: unknown },
-      true,
-      env,
-      issues,
-      skip,
-    );
-  } else {
-    // Map shape — llm.main is required; every named entry is validated.
-    const map = rawLlm as Record<
-      string,
-      { provider?: unknown; apiKey?: unknown; model?: unknown }
-    >;
-    if (!map.main) {
-      issues.push("llm.main: required when 'llm' is a named map");
-    } else {
-      validateLlmEntry('llm.main', map.main, true, env, issues, skip);
+    // A DAG worker file names keys of the MAIN file's llm: map (§4.6.7) and is
+    // resolved with its own llm: stripped, so it has no section to require.
+    if (opts.requireLlmSection !== false) {
+      issues.push('llm: required (top-level llm.main or a flat llm block)');
     }
-    for (const [name, entry] of Object.entries(map)) {
-      if (name === 'main') continue;
-      validateLlmEntry(`llm.${name}`, entry, true, env, issues, skip);
+  } else {
+    // Checked before the shape is decided: a flat block that lost its provider
+    // is read as a map below, and would otherwise report `llm.apiKey.provider`.
+    if (rawLlm.apiKey !== undefined) {
+      checkLlmRole(
+        'llm',
+        { apiKey: rawLlm.apiKey, provider: 'openai' },
+        false,
+        issues,
+        true,
+      );
+    }
+    if (typeof rawLlm.provider === 'string') {
+      validateLlmEntry('llm', rawLlm, true, issues, skip);
+    } else {
+      const map = rawLlm as Record<string, Record<string, unknown> | undefined>;
+      if (!map.main) {
+        issues.push("llm.main: required when 'llm' is a named map");
+      } else {
+        validateLlmEntry('llm.main', map.main, true, issues, skip);
+      }
+      for (const [name, entry] of Object.entries(map)) {
+        if (name === 'main' || name === 'apiKey') continue;
+        validateLlmEntry(`llm.${name}`, entry, true, issues, skip);
+      }
     }
   }
 
@@ -273,13 +422,15 @@ export function validateResolvedConfig(
     });
   }
 
-  if (get(yaml, 'rag')) {
-    checkRagStore(
-      'rag',
-      get(yaml, 'rag') as Record<string, unknown>,
-      issues,
-      skip,
-    );
+  const rawRag = get(yaml, 'rag');
+  if (rawRag !== undefined && rawRag !== null) {
+    if (typeof rawRag !== 'object' || Array.isArray(rawRag)) {
+      issues.push(
+        'rag: must be a mapping with store: and, optionally, embedder:',
+      );
+    } else {
+      checkRag(rawRag as Record<string, unknown>, issues, skip);
+    }
   }
   // NOTE: the legacy `pipeline.rag.{name}` multistore was removed with the
   // `pipeline: {name,config}` migration; the top-level `rag:` block is the sole

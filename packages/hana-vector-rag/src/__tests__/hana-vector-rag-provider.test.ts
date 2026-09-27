@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { staticLogin } from '@mcp-abap-adt/llm-agent';
 import type { HanaClient } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
 
@@ -44,8 +45,7 @@ describe('HanaVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
       },
       defaultDimension: 3,
       autoCreateSchema: true,
@@ -72,8 +72,7 @@ describe('HanaVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
       },
       defaultDimension: 3,
       autoCreateSchema: false,
@@ -92,8 +91,7 @@ describe('HanaVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
       },
       clientFactory: () => client,
     });
@@ -113,8 +111,7 @@ describe('HanaVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
       },
       clientFactory: () => client,
     });
@@ -132,13 +129,15 @@ describe('HanaVectorRagProvider', () => {
       connection: {
         collectionName: '__ignored',
         host: 'h',
-        user: 'u',
-        password: 'p',
+        credential: staticLogin('u', 'p'),
       },
       clientFactory: () => client,
       supportedScopes: ['global'],
     });
-    const r = await provider.createCollection('docs', { scope: 'session' });
+    const r = await provider.createCollection('docs', {
+      scope: 'session',
+      sessionId: 's1',
+    });
     assert.equal(r.ok, false);
   });
 });

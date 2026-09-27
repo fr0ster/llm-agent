@@ -13,7 +13,8 @@ import { buildAgent } from '../smart-agent/smart-server.js';
 export interface BuilderLlmInput {
   provider: 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek' | 'ollama';
   model?: string;
-  apiKey?: string;
+  /** Names the account the composition root resolves; omit for its default. */
+  credentialRef?: string;
   url?: string;
   temperature?: number;
   maxTokens?: number;
@@ -30,40 +31,26 @@ export interface BuilderEmbedderInput {
   model?: string;
   scenario?: string;
   resourceGroup?: string;
+  /** Names the embedder's account; omit for the root's default. */
+  credentialRef?: string;
 }
 type Role = 'evaluator' | 'planner' | 'executor';
 
-const KEYLESS = new Set(['sap-ai-sdk', 'ollama']);
-const ENV_KEY: Record<string, string> = {
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  deepseek: 'DEEPSEEK_API_KEY',
-};
-
-function toLlmConfig(
-  input: BuilderLlmInput,
-  opts: { skipRuntime?: boolean } = {},
-): SmartServerLlmConfig {
-  let apiKey = input.apiKey ?? '';
-  if (!KEYLESS.has(input.provider) && apiKey === '') {
-    apiKey = process.env[ENV_KEY[input.provider] ?? ''] ?? '';
-    if (apiKey === '' && !opts.skipRuntime) {
-      throw new Error(
-        `ControllerSkillPipelineBuilder: provider '${input.provider}' needs an apiKey — ` +
-          `pass it to .withLlm()/.withRoleLlm() or set ${ENV_KEY[input.provider]}`,
-      );
-    }
-  }
+// A builder reads no environment: which key a provider uses is the composition
+// root's business, reached through credentialRef (§4.6.2).
+function toLlmConfig(input: BuilderLlmInput): SmartServerLlmConfig {
   return {
     provider: input.provider,
-    apiKey,
+    ...(input.credentialRef !== undefined
+      ? { credentialRef: input.credentialRef }
+      : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.url !== undefined ? { url: input.url } : {}),
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
       : {}),
     ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
-  } as SmartServerLlmConfig;
+  };
 }
 
 export class ControllerSkillPipelineBuilder {
@@ -118,9 +105,7 @@ export class ControllerSkillPipelineBuilder {
     return this;
   }
 
-  toConfig(
-    opts: { skipProviderRuntimeChecks?: boolean } = {},
-  ): SmartServerConfig {
+  toConfig(): SmartServerConfig {
     if (!this._llm && Object.keys(this._roleLlm).length === 0) {
       throw new Error(
         'ControllerSkillPipelineBuilder: call .withLlm() (or .withRoleLlm() for all roles) before building',
@@ -136,32 +121,37 @@ export class ControllerSkillPipelineBuilder {
         'ControllerSkillPipelineBuilder: call .withEmbedder() before building (skills need an embedder)',
       );
     }
-    const skipRuntime = opts.skipProviderRuntimeChecks;
-    const base = this._llm
-      ? toLlmConfig(this._llm, { skipRuntime })
-      : undefined;
-    const roleCfg = (r: Role): SmartServerLlmConfig => {
+    const base = this._llm ? toLlmConfig(this._llm) : undefined;
+    const llm: Record<string, SmartServerLlmConfig> = {};
+    const subagent = (r: Role): { llm?: string } => {
       const ovr = this._roleLlm[r];
-      if (ovr) return toLlmConfig(ovr, { skipRuntime });
-      if (base) return base;
-      throw new Error(
-        `ControllerSkillPipelineBuilder: no LLM for role '${r}' (set .withLlm() or .withRoleLlm('${r}', …))`,
-      );
+      if (!ovr) {
+        if (!base) {
+          throw new Error(
+            `ControllerSkillPipelineBuilder: no LLM for role '${r}' (set .withLlm() or .withRoleLlm('${r}', …))`,
+          );
+        }
+        return {}; // the role's own name → llm.<role> absent → the main instance
+      }
+      llm[r] = toLlmConfig(ovr);
+      return { llm: r };
     };
+    const subagents = {
+      evaluator: subagent('evaluator'),
+      planner: subagent('planner'),
+      executor: subagent('executor'),
+    };
+    llm.main = base ?? llm.executor;
     const collection = this._skill.collection ?? 'sap';
     return {
-      llm: { main: base ?? roleCfg('executor') },
+      llm,
       pipeline: {
         name:
           this._plannerKind === 'weak-executor'
             ? 'controller-weak'
             : 'controller',
         config: {
-          subagents: {
-            evaluator: roleCfg('evaluator'),
-            planner: roleCfg('planner'),
-            executor: roleCfg('executor'),
-          },
+          subagents,
           ...(Object.keys(this._targetState).length
             ? { targetState: this._targetState }
             : {}),
@@ -171,15 +161,20 @@ export class ControllerSkillPipelineBuilder {
         },
       },
       rag: {
-        type: 'in-memory',
-        embedder: this._embedder.provider,
-        ...(this._embedder.model ? { model: this._embedder.model } : {}),
-        ...(this._embedder.scenario
-          ? { scenario: this._embedder.scenario }
-          : {}),
-        ...(this._embedder.resourceGroup
-          ? { resourceGroup: this._embedder.resourceGroup }
-          : {}),
+        store: { type: 'in-memory' },
+        embedder: {
+          provider: this._embedder.provider,
+          ...(this._embedder.model ? { model: this._embedder.model } : {}),
+          ...(this._embedder.scenario
+            ? { scenario: this._embedder.scenario }
+            : {}),
+          ...(this._embedder.resourceGroup
+            ? { resourceGroup: this._embedder.resourceGroup }
+            : {}),
+          ...(this._embedder.credentialRef
+            ? { credentialRef: this._embedder.credentialRef }
+            : {}),
+        },
       },
       ...(this._mcp.length ? { mcp: this._mcp } : {}),
       skillPlugins: {
@@ -210,25 +205,21 @@ export class ControllerSkillPipelineBuilder {
   }
 
   async build(
-    deps?: BuildAgentDeps,
+    deps: BuildAgentDeps,
   ): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
-    // When the consumer injects BOTH the LLM factory and the embedder, the real
-    // provider/credentials/model are never used — skip provider-runtime config
-    // validation (structural checks still run).
-    const skipProviderRuntimeChecks = !!(deps?.makeLlm && deps?.embedder);
+    // With an injected embedder the configured embedder model is never used, so the
+    // provider-runtime checks (models required) are skipped; structural ones run.
+    // makeLlm is always the caller's now, so this is the old `makeLlm && embedder`.
+    const skipProviderRuntimeChecks = deps.embedder !== undefined;
     const normalized = resolveSmartServerConfig(
       {},
-      this.toConfig({ skipProviderRuntimeChecks }) as YamlConfig,
+      this.toConfig() as YamlConfig,
       process.env,
       { skipProviderRuntimeChecks },
     );
-    const mergedDeps: BuildAgentDeps | undefined =
-      this._mcpClients || deps
-        ? {
-            ...(this._mcpClients ? { mcpClients: this._mcpClients } : {}),
-            ...deps,
-          }
-        : undefined;
-    return buildAgent(normalized as SmartServerConfig, mergedDeps);
+    return buildAgent(normalized as SmartServerConfig, {
+      ...(this._mcpClients ? { mcpClients: this._mcpClients } : {}),
+      ...deps,
+    });
   }
 }

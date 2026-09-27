@@ -61,6 +61,7 @@ import {
   type SessionAgentParts,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { fakeControllerServerCtx } from '../../pipelines/__tests__/fixtures.js';
 import { ControllerPipelinePlugin } from '../../pipelines/controller.js';
 import type { IServerPipelineContext } from '../../pipelines/server-context.js';
@@ -68,11 +69,22 @@ import { buildStepperRoot } from '../build-stepper-root.js';
 import { makeKnowledgeSemanticIndex } from '../embedder-knowledge-index.js';
 import { buildSessionMcpClients } from '../mcp/build-session-mcp-clients.js';
 import { buildNamespacedMcpBridge } from '../mcp/namespaced-bridge.js';
+import { parseControllerSettings } from '../pipeline-settings.js';
 import {
   connectMcpClientsWithDescriptorsFromConfig,
   SmartServer,
   type SmartServerMcpConfig,
 } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
+
+/** Every real-boot SmartServer in this file needs the seams; the library defaults none of them. */
+const llmDeps = {
+  ...constructionSeams,
+  makeLlm: async (cfg: { model?: string }) => ({
+    ...makeTestLlm([{ content: 'ok' }]),
+    model: cfg.model ?? 'stub',
+  }),
+};
 
 // ---------------------------------------------------------------------------
 // A REAL in-process MCP streamable-HTTP stub (hermetic — no SDK, no spawn).
@@ -255,12 +267,15 @@ async function bootTwoServerSmartServer(t: {
     { type: 'http', url: stub0.url },
     { type: 'http', url: stub1.url },
   ];
-  const server = new SmartServer({
-    port: 0,
-    llm: { apiKey: 'test', model: 'test-model' },
-    skipModelValidation: true,
-    mcp: mcpCfg,
-  });
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      mcp: mcpCfg,
+    },
+    llmDeps,
+  );
   const handle = await server.start();
   return {
     server,
@@ -492,15 +507,18 @@ test('mcp[].name labels — yaml-builder path (real boot) yields label__Search a
   const stubPrimary = await startStubOrSkip(t, ['Search'], 'primary-result');
   if (!stubPrimary) return;
   const stubSecondary = await startMcpStub(['Search'], 'secondary-result');
-  const server = new SmartServer({
-    port: 0,
-    llm: { apiKey: 'test', model: 'test-model' },
-    skipModelValidation: true,
-    mcp: [
-      { type: 'http', url: stubPrimary.url, name: 'primary' },
-      { type: 'http', url: stubSecondary.url, name: 'secondary' },
-    ],
-  });
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      mcp: [
+        { type: 'http', url: stubPrimary.url, name: 'primary' },
+        { type: 'http', url: stubSecondary.url, name: 'secondary' },
+      ],
+    },
+    llmDeps,
+  );
   const handle = await server.start();
   const internals = server as unknown as Internals;
   try {
@@ -603,12 +621,13 @@ test('bare custom connectMcp seam (no descriptors) falls back to s0__Search and 
 
   const server = new SmartServer(
     {
-      llm: { apiKey: 'test', model: 'test-model' },
+      llm: { model: 'test-model' },
       skipModelValidation: true,
       mcp: { type: 'http', url: 'http://127.0.0.1:9/unused' },
     },
     {
       connectMcp: async () => [fakeClient('c0'), fakeClient('c1')],
+      ...llmDeps,
     },
   );
   const internals = server as unknown as Internals;
@@ -692,14 +711,20 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       ]),
     };
 
-    const plugin = new ControllerPipelinePlugin('controller', 'smart-executor');
-    const cfg = plugin.parseConfig({
-      subagents: {
-        evaluator: { provider: 'openai', model: 'm-eval' },
-        planner: { provider: 'openai', model: 'm-plan' },
-        executor: { provider: 'openai', model: 'm-exec' },
-      },
-    });
+    const plugin = new ControllerPipelinePlugin(
+      'controller',
+      'smart-executor',
+      parseControllerSettings(
+        {
+          subagents: {
+            evaluator: { llm: 'm-eval' },
+            planner: { llm: 'm-plan' },
+            executor: { llm: 'm-exec' },
+          },
+        },
+        new Set(['main', 'm-eval', 'm-plan', 'm-exec']),
+      ),
+    );
 
     const base = fakeControllerServerCtx();
     const fullCtx = {
@@ -722,11 +747,14 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       // bridge, never by a correctly-namespaced dispatch.
       mcpClients: internals._sharedMcpClients,
       toolClientMap: ctx.toolClientMap,
-      makeLlm: async (c: { model?: string }) =>
-        byModel[c.model ?? ''] ?? byModel['m-exec'],
-    } as unknown as Parameters<typeof plugin.build>[1];
+      resolveNamedLlm: async (key: string) => {
+        const hit = byModel[key];
+        if (!hit) throw new Error(`no llm: entry '${key}'`);
+        return hit;
+      },
+    } as unknown as Parameters<typeof plugin.build>[0];
 
-    const inst = await plugin.build(cfg, fullCtx);
+    const inst = await plugin.build(fullCtx);
     try {
       for await (const chunk of inst.agent.streamProcess('search stuff')) {
         void chunk;

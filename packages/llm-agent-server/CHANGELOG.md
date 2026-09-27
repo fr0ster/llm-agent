@@ -1,5 +1,41 @@
 # @mcp-abap-adt/llm-agent-server
 
+## [Unreleased]
+
+The CLI creates the directory of its `log:` file, and reports a log that cannot
+be written on stderr and exits 1. The stepper examples log to `./.run/…`; run
+from a directory without `.run`, the stream error went uncaught — and with
+`sap-ai-sdk` loaded, that SDK's handler printed it to stdout.
+
+A malformed service key is reported under the variable that held it
+(`LLM_SERVICE_KEY: service key is not valid JSON …`). A startup that fails
+because the default LLM ref resolved to nothing, with `AICORE_SERVICE_KEY` still
+set, adds a `Hint:` line naming the rename — only beside that failure, since
+`AICORE_SERVICE_KEY` stays valid for `credentialRef: AICORE`.
+Startup errors no longer print `Error: Error:`, and the "listening" line names
+the configured host instead of always `0.0.0.0`.
+
+**BREAKING:** the CLI is the composition root — it owns the credentials and
+reads them from the environment by reference: `<REF>_API_KEY`,
+`<REF>_SERVICE_KEY`, or `<REF>_USER` + `<REF>_PASSWORD`, with `LLM`,
+`RAG_STORE` and `RAG_EMBEDDER` as the refs a section without `credentialRef`
+uses — so an `llm:` entry with no `credentialRef` now reads `LLM_API_KEY` (or
+`LLM_SERVICE_KEY` for `sap-ai-sdk`) (see the README's Credentials section).
+`AICORE_SERVICE_KEY` is no
+longer read — set `LLM_SERVICE_KEY` (or `credentialRef: AICORE`, which reads
+`AICORE_SERVICE_KEY`). An unknown named ref, a wrong kind, and a missing
+`apiBaseUrl` all fail at the first construction that needs them, naming the
+ref. An Ollama LLM receives a credential only from a ref that names one, and
+a qdrant skill store's `credentialRef` is resolved like every other ref.
+`PUT /v1/config` model switching now works in the CLI — it was refused with
+400 for want of a resolver.
+
+`@mcp-abap-adt/sap-aicore-llm` is now loaded only when an `llm:` entry selects
+`sap-ai-sdk`. It was imported statically by the composition root, and
+`@sap-ai-sdk/orchestration` installs two process `uncaughtException` listeners
+at import time — so every deployment, whatever its provider, survived uncaught
+exceptions and printed them to stdout instead of exiting.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

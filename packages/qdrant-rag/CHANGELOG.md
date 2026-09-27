@@ -1,5 +1,61 @@
 # @mcp-abap-adt/qdrant-rag
 
+## [Unreleased]
+
+A record with a negative `metadata.ttl` is expired, as in every other store. The
+query told "no ttl" apart from "ttl in the past" with `must_not: ttl >= 0`, so
+`ttl: -1` passed as if it had none; the no-ttl branch now uses `is_empty`.
+
+**Tests:** the shared conformance kit (identity, namespace, expiry) runs against `QdrantRag` in the
+unit tests, through a stub that now evaluates Qdrant search filters (`must` / `should` /
+`must_not`, `match`, `range`) and orders by cosine; it also passes against a live Qdrant 1.18.
+No behaviour change.
+
+**Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId`: each
+becomes a top-level `must` match condition on the payload key of the same name (upsert spreads
+metadata flat into the payload), ANDed with the existing namespace/TTL filter. Before, only
+`namespace` was filtered, so a session- or user-scoped query returned every session's points.
+Qdrant filters inside the search, so `limit: k` counts only matching points. A point without the
+key is excluded. Verified against a live Qdrant.
+
+`QdrantRagProvider.openCollection` answers a failed `Result`
+(`RAG_OPEN_ERROR`) when building a handle throws — an `idStrategyFactory` that
+throws, for one — instead of rejecting, as the pg and HANA providers do.
+
+**BREAKING:** `apiKey` is gone from `QdrantRagConfig` and
+`QdrantRagProviderConfig`, replaced by an optional `credential` (an
+`IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`). The `api-key`
+header is now built by asking the credential for its secret on every
+request — inside `_fetch`'s header builder and in `deleteCollection`/
+`listCollections` — never once at construction, so a rotating key rotates.
+
+Migration: `new QdrantRag({ ..., apiKey })` becomes
+`new QdrantRag({ ..., credential: staticApiKey(apiKey) })` (`staticApiKey`
+is exported from `@mcp-abap-adt/llm-agent`); same for
+`QdrantRagProviderConfig`.
+
+**BREAKING:** a catalogued `QdrantRagProvider` requires Qdrant 1.17 or later (the
+record is written with `update_mode: "insert_only"`). Verified against real
+servers: on v1.17.0 a repeated `PUT /collections/{name}` is `409` and a second
+`insert_only` write to an existing point id is silently ignored (payload
+unchanged); on v1.12.4 the repeated `PUT` is still `409`, but `update_mode` is
+not recognised at all, so the "insert_only" write behaves like a plain upsert
+and overwrites the existing point — on an older server, two concurrent
+creations of one collection are not reliably told apart.
+
+`QdrantRagProvider` implements `describeCollections()` and `openCollection(record)`,
+so a fresh registry hydrates its collections from the catalog instead of
+re-creating them. It keeps a catalog collection (`rag_collection_catalog`,
+configurable as `catalogCollection`) the key must be able to create and write
+(the README lists what the key needs); `createCollection` creates the
+collection immediately, spending **one embedding call** to learn the vector
+size, instead of on the first write, and refuses a taken name
+(`RAG_DUPLICATE_COLLECTION` / `RAG_ORPHAN_STORE`, the latter lifted by
+`adoptExisting: true`); handles from the provider never create their
+collection; `deleteCollection` removes the record first and can fail with
+`CatalogRecordDeleteError`; `QdrantRag` gains `autoCreateCollection` (default
+`true`).
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

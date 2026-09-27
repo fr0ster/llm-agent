@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import {
   LlmFinalizer,
   PassthroughFinalizer,
@@ -7,65 +8,44 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { buildFinalizer } from '../config.js';
 
-const stubLlm = {
-  chat: async () => ({ content: '', usage: { input: 0, output: 0 } }),
-  model: 'stub',
+const stubLlm = { chat: async () => ({}), model: 'stub' } as unknown as ILlm;
+const never = async (): Promise<ILlm> => {
+  throw new Error('only type=llm may ask for an LLM');
 };
 
-const stubLlmConfig = { provider: 'openai' as const, apiKey: 'k', model: 'm' };
-
-test('buildFinalizer: absent block returns PassthroughFinalizer', async () => {
-  const f = await buildFinalizer(
-    undefined,
-    undefined,
-    undefined,
-    async () => stubLlm as never,
+test('absent block, passthrough and template ask for no LLM', async () => {
+  assert.ok(
+    (await buildFinalizer(undefined, never)) instanceof PassthroughFinalizer,
   );
-  assert.ok(f instanceof PassthroughFinalizer);
+  assert.ok(
+    (await buildFinalizer({ type: 'passthrough' }, never)) instanceof
+      PassthroughFinalizer,
+  );
+  assert.ok(
+    (await buildFinalizer({ type: 'template' }, never)) instanceof
+      TemplateFinalizer,
+  );
 });
 
-test('buildFinalizer: type=passthrough returns PassthroughFinalizer', async () => {
+test('type=llm asks once and wraps the instance', async () => {
+  let asked = 0;
   const f = await buildFinalizer(
-    { type: 'passthrough' },
-    undefined,
-    undefined,
-    async () => stubLlm as never,
-  );
-  assert.ok(f instanceof PassthroughFinalizer);
-});
-
-test('buildFinalizer: type=template returns TemplateFinalizer', async () => {
-  const f = await buildFinalizer(
-    { type: 'template' },
-    undefined,
-    undefined,
-    async () => stubLlm as never,
-  );
-  assert.ok(f instanceof TemplateFinalizer);
-});
-
-test('buildFinalizer: type=llm calls makeLlm with resolved config', async () => {
-  let calledWith: unknown;
-  const llmMap = { main: stubLlmConfig };
-  const f = await buildFinalizer(
-    { type: 'llm', finalizerLlm: 'main' },
-    llmMap,
-    undefined,
-    async (cfg) => {
-      calledWith = cfg;
-      return stubLlm as never;
+    { type: 'llm', systemPrompt: 'CUSTOM' },
+    async () => {
+      asked++;
+      return stubLlm;
     },
   );
   assert.ok(f instanceof LlmFinalizer);
-  assert.deepEqual(calledWith, stubLlmConfig);
+  assert.equal(asked, 1);
 });
 
-test('buildFinalizer: type=llm without any LLM config throws', async () => {
+test('type=llm propagates a failed lookup', async () => {
   await assert.rejects(
     () =>
-      buildFinalizer({ type: 'llm' }, undefined, undefined, async () => {
-        throw new Error('should not be called');
+      buildFinalizer({ type: 'llm', finalizerLlm: 'cheep' }, async () => {
+        throw new Error("llm: has no entry named 'cheep'");
       }),
-    /requires an LLM config/,
+    /'cheep'/,
   );
 });

@@ -646,3 +646,54 @@ test('store.carryForward ingest passes wait:true', async () => {
   assert.ok(client._upsertWaits.length > 0);
   assert.ok(client._upsertWaits.every((w) => w === true));
 });
+
+// --- credential (not a plain apiKey string) is asked on every request -------
+
+test('makeQdrantClient asks its credential on every request, so a rotating key rotates', async () => {
+  const seen: (string | undefined)[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    seen.push(
+      (init?.headers as Record<string, string> | undefined)?.['api-key'],
+    );
+    return { ok: true, status: 200 } as Response;
+  }) as typeof fetch;
+  let n = 0;
+  const credential = {
+    kind: 'api-key' as const,
+    secret: async () => `key-${++n}`,
+  };
+  try {
+    const client = makeQdrantClient({
+      url: 'http://q',
+      collection: 'skills',
+      credential,
+    });
+    const pts = [{ id: 'p1', vector: [1, 0, 0], payload: { generation: 'g' } }];
+    await client.upsertPoints(pts);
+    await client.upsertPoints(pts);
+    assert.deepEqual(seen, ['key-1', 'key-2']);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('makeQdrantClient sends no api-key header without a credential', async () => {
+  const seen: (string | undefined)[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    seen.push(
+      (init?.headers as Record<string, string> | undefined)?.['api-key'],
+    );
+    return { ok: true, status: 200 } as Response;
+  }) as typeof fetch;
+  try {
+    const client = makeQdrantClient({ url: 'http://q', collection: 'skills' });
+    await client.upsertPoints([
+      { id: 'p1', vector: [1], payload: { generation: 'g' } },
+    ]);
+    assert.deepEqual(seen, [undefined]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

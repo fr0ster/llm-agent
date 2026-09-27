@@ -5,11 +5,13 @@ import type {
   IKnowledgeRagHandle,
   ILlm,
 } from '@mcp-abap-adt/llm-agent';
+import type { ControllerHandlerDeps } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import { ControllerCoordinatorHandler } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import type { ControllerConfig } from '../../smart-agent/controller/types.js';
 import {
   ControllerFactory,
   type ControllerFactoryDeps,
+  makeControllerRoleLlm,
 } from '../controller-factory.js';
 
 const llm = (model: string): ILlm =>
@@ -29,10 +31,10 @@ const rag: IKnowledgeRagHandle = {
 // 3-role config (no reviewer/finalizer subagent → both default to the planner LLM).
 const config: ControllerConfig = {
   subagents: {
-    evaluator: { provider: 'x', model: 'm-eval' },
-    planner: { provider: 'x', model: 'm-plan' },
-    executor: { provider: 'x', model: 'm-exec' },
-  } as never,
+    evaluator: {},
+    planner: {},
+    executor: {},
+  },
   targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.5 },
   sessionMemory: { collection: 'c' },
   budgets: { maxSteps: 5, maxRetries: 2, maxRewinds: 2 },
@@ -102,4 +104,37 @@ test('ControllerFactory.build rejects a board budget that cannot fit', async () 
     () => new ControllerFactory().build(badBudgetConfig, semanticCapableDeps()),
     /maxBoardChars/,
   );
+});
+
+test('absent reviewer/finalizer blocks take the planner instance, resolved by the planner key', async () => {
+  const asked: string[] = [];
+  const subagents: ControllerConfig['subagents'] = {
+    evaluator: {},
+    planner: { llm: 'cheap' },
+    executor: {},
+  };
+  const makeRoleLlm = makeControllerRoleLlm(subagents, {
+    resolveLlm: async (role) => {
+      asked.push(`role:${role}`);
+      return llm(`default-${role}`);
+    },
+    resolveNamedLlm: async (key) => {
+      asked.push(`key:${key}`);
+      return llm(key);
+    },
+  });
+  const { handler } = await new ControllerFactory().build(
+    { ...config, subagents },
+    { ...semanticCapableDeps(), makeRoleLlm },
+  );
+  const models = (handler as unknown as { deps: ControllerHandlerDeps }).deps
+    .models;
+  assert.equal(models.planner, 'cheap');
+  assert.equal(models.reviewer, 'cheap');
+  assert.equal(models.finalizer, 'cheap');
+  assert.deepEqual(asked.sort(), [
+    'key:cheap',
+    'role:evaluator',
+    'role:executor',
+  ]);
 });

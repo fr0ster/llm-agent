@@ -9,20 +9,28 @@ mode: smart
 
 # Mixed-model controller: heavy model for the deciding roles (evaluator,
 # planner), a lighter model for the executor (which only carries out a single
-# fetch step + emits tool calls). Demonstrates per-role model assignment.
+# fetch step + emits tool calls). Demonstrates per-role model assignment via
+# named `llm:` entries — each subagent role below names one.
 llm:
-  provider: sap-ai-sdk
-  model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-  temperature: 0.7
+  main:
+    provider: sap-ai-sdk
+    model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+    temperature: 0.7
+  evaluator: { provider: sap-ai-sdk, model: "${EVAL_MODEL:-anthropic--claude-4.6-sonnet}" }
+  planner:   { provider: sap-ai-sdk, model: "${PLANNER_MODEL:-anthropic--claude-4.6-sonnet}" }
+  executor:  { provider: openai, model: "${EXEC_MODEL:-gpt-4o-mini}", credentialRef: OPENAI }
 
 mcp:
   type: http
   url: ${MCP_ENDPOINT}
 
 rag:
-  type: in-memory
-  embedder: sap-ai-core
-  model: text-embedding-3-small
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: text-embedding-3-small
+    credentialRef: LLM   # the same SAP AI Core account as llm.main
 
 pipeline:
   name: controller-weak
@@ -32,19 +40,14 @@ pipeline:
     # (the sonnet deciders below) need none, so they carry no hint.
     subagents:
       # Heavy model — goal formulation + planning (the judgment-heavy roles).
-      evaluator:
-        provider: sap-ai-sdk
-        model: ${EVAL_MODEL:-anthropic--claude-4.6-sonnet}
-      planner:
-        provider: sap-ai-sdk
-        model: ${PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+      evaluator: { llm: evaluator }
+      planner:   { llm: planner }
       # Light model — step execution + tool calls (mechanical role).
       # NOTE: claude-3-haiku CANNOT do tools via this AI Core orchestration
       # (rejects the tool `type` field → 400). Use a tool-capable light model;
       # gpt-4o-mini uses the native function format the orchestration accepts.
       executor:
-        provider: sap-ai-sdk
-        model: ${EXEC_MODEL:-gpt-4o-mini}
+        llm: executor
         # Operational scaffolding for the small model: keep it strict so it does
         # not shortcut the tool loop. (A capable executor would not need this.)
         hint: >-

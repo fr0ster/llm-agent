@@ -49,10 +49,17 @@ export async function summarizeAndStore(
   if (!ragWriter) {
     log?.('history_upsert_failed', { error: 'RAG writer not available' });
   } else {
+    // The owner goes into the metadata: the history store is queried with
+    // scope 'session', and every store filters on metadata.sessionId (and
+    // userId for scope 'user'). An untagged record is invisible to its own
+    // session — and, before stores honoured the filter, visible to all.
     const upsertResult = await ragWriter.upsertRaw(
       `turn:${sessionId}:${turn.turnIndex}`,
       summary,
-      {},
+      {
+        sessionId,
+        ...(options?.userId !== undefined ? { userId: options.userId } : {}),
+      },
       options,
     );
     if (!upsertResult.ok) {

@@ -7,9 +7,11 @@
 export interface ToolCatalogStatus {
   /** Tools successfully listed across all MCP clients. */
   total: number;
-  /** Tools whose write returned ok: true. */
+  /** Distinct tool records written: writes that returned ok: true, counted
+   *  once per record id (a later write to the same id replaces the earlier). */
   vectorized: number;
-  /** Names of tools that failed to be written. */
+  /** Names of tools that failed to be written, or whose record was replaced
+   *  by a later tool's write to the same id. */
   failed: string[];
   /** Clients whose listTools() failed; their tools never reached `total`. */
   clientFailures: number;

@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 // Structural parse-check for every standalone example server config YAML:
 // loadYamlConfig + resolveSmartServerConfig(skipProviderRuntimeChecks) and report
-// SHAPE errors (removed/renamed keys, legacy pipeline shape). Credential errors
-// (missing AICORE_SERVICE_KEY / apiKey — env not set, or a known subconfig-propagation
-// gap) are NOT shape bugs and are reported separately, not counted as failures.
+// SHAPE errors (removed/renamed keys, legacy pipeline shape).
+// Credentials are not checked here: a config carries only credentialRef names, which
+// llm-agent-server's composition root resolves at startup, and this script does not run it.
+// An example may read an environment variable (`${MCP_ENDPOINT}`); unset, it
+// substitutes '' and a required field reads as missing. That is the checking
+// machine's environment, not the config's shape, so a file that fails with unset
+// variables is re-checked with a placeholder for each: passing then, it is
+// reported as ENV-MISSING (naming the variables) and does not fail the run;
+// failing still, it is a SHAPE-FAIL. Every other failure is a SHAPE-FAIL.
 // docker-compose*.yml are skipped (not SmartServer configs).
 // Usage: node scripts/check-example-configs.mjs [root ...]
-import { readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import {
   loadYamlConfig,
   resolveSmartServerConfig,
@@ -15,9 +21,7 @@ import {
 
 const roots = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ['docs/examples', 'examples'];
-
-const CRED_RE = /AICORE_SERVICE_KEY|requires llm\.apiKey|apiKey to resolve/;
+  : ['docs/examples', 'examples', 'pipelines'];
 
 function* walk(dir) {
   for (const name of readdirSync(dir)) {
@@ -36,26 +40,123 @@ for (const r of roots) {
 }
 files.sort();
 
-let shape = 0;
-let cred = 0;
+// A DAG/subagent worker file's `llm:` names keys of its MAIN file's `llm:` map
+// instead of holding a config of its own (§4.6.7): `llm: <key>` or
+// `llm: { main?: <key>, helper?: <key>, classifier?: <key> }`. Real resolution
+// strips it and resolves the rest with requireLlmSection:false, exactly what
+// resolveSmartServerConfig does internally for a `subagents:` entry
+// (resolveWorkerConfig) — mirror that here so a worker file validates
+// standalone instead of failing on a section only its parent can complete.
+//
+// This shape-check alone is not enough to decide "this is a worker file": a
+// MAIN file that mistakenly wrote `llm: someRole` (instead of a flat config or
+// a named map with `main:`) has the exact same shape, and must still fail.
+// The distinguishing fact is whether some OTHER file's `subagents:` actually
+// references this one via `config:` — only then is `llm:` resolved by a
+// parent rather than required here. So this script first collects every
+// `config:` path any file's `subagents:` list points at, and only treats a
+// file matching the worker llm shape as a worker if it is itself one of
+// those referenced paths.
+const WORKER_LLM_ROLES = new Set(['main', 'helper', 'classifier']);
+function isWorkerLlmShape(rawLlm) {
+  if (typeof rawLlm === 'string') return rawLlm.length > 0;
+  if (typeof rawLlm !== 'object' || rawLlm === null || Array.isArray(rawLlm)) {
+    return false;
+  }
+  const entries = Object.entries(rawLlm);
+  if (entries.length === 0) return false;
+  return entries.every(
+    ([k, v]) =>
+      WORKER_LLM_ROLES.has(k) && typeof v === 'string' && v.length > 0,
+  );
+}
+
+const referencedConfigPaths = new Set();
 for (const f of files) {
+  let yaml;
   try {
-    const yaml = loadYamlConfig(f);
+    yaml = loadYamlConfig(f);
+  } catch {
+    continue; // reported as SHAPE-FAIL in the main pass below
+  }
+  const subagents = yaml?.subagents;
+  if (!Array.isArray(subagents)) continue;
+  for (const sub of subagents) {
+    const cfg = sub && typeof sub === 'object' ? sub.config : undefined;
+    if (typeof cfg === 'string' && cfg.length > 0) {
+      referencedConfigPaths.add(resolvePath(dirname(f), cfg));
+    }
+  }
+}
+
+// The variables a file reads WITHOUT a `:-default` that the environment leaves
+// unset (a commented-out one is harmless: it only widens the placeholder env).
+function unsetVariables(f) {
+  const names = new Set();
+  for (const m of readFileSync(f, 'utf8').matchAll(/\$\{([^}:]+)\}/g)) {
+    if (!process.env[m[1]]) names.add(m[1]);
+  }
+  return names;
+}
+
+// The real environment with `placeholder` for each of `names`.
+function placeholderEnv(names, placeholder) {
+  const env = { ...process.env };
+  for (const n of names) env[n] = placeholder;
+  return env;
+}
+
+function check(f, env) {
+  const yaml = loadYamlConfig(f, env);
+  const { llm: rawLlm, ...rest } = yaml;
+  const isReferencedWorker = referencedConfigPaths.has(resolvePath(f));
+  if (isReferencedWorker && isWorkerLlmShape(rawLlm)) {
+    resolveSmartServerConfig({}, rest, process.env, {
+      skipProviderRuntimeChecks: true,
+      configPath: f,
+      requireLlmSection: false,
+    });
+  } else {
     resolveSmartServerConfig({}, yaml, process.env, {
       skipProviderRuntimeChecks: true,
       configPath: f,
     });
+  }
+}
+
+const firstLine = (err) => {
+  const s = String(err);
+  return s.split('\n').filter((l) => l.trim())[1] ?? s.split('\n')[0];
+};
+
+let shape = 0;
+let envMissing = 0;
+for (const f of files) {
+  const missing = unsetVariables(f);
+  try {
+    check(f, process.env);
   } catch (err) {
-    const s = String(err);
-    if (CRED_RE.test(s)) {
-      cred++;
+    let failure = err;
+    if (missing.size > 0) {
+      try {
+        check(f, placeholderEnv(missing, 'http://env-placeholder.invalid'));
+        failure = undefined;
+      } catch (placeholderErr) {
+        failure = placeholderErr;
+      }
+    }
+    if (failure === undefined) {
+      envMissing++;
+      console.log(
+        `ENV-MISSING ${f}\n        → unset: ${[...missing].join(', ')}`,
+      );
     } else {
       shape++;
-      console.log(`SHAPE-FAIL  ${f}\n        → ${s.split('\n').filter((l) => l.trim())[1] ?? s.split('\n')[0]}`);
+      console.log(`SHAPE-FAIL  ${f}\n        → ${firstLine(failure)}`);
     }
   }
 }
 console.log(
-  `\n${files.length} configs — ${shape} SHAPE-FAIL, ${cred} credential-only (env not set; not a shape bug)`,
+  `\n${files.length} configs — ${shape} SHAPE-FAIL, ${envMissing} ENV-MISSING`,
 );
 process.exit(shape > 0 ? 1 : 0);

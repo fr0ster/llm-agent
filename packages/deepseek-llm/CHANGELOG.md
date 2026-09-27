@@ -1,5 +1,23 @@
 # @mcp-abap-adt/deepseek-llm
 
+## [Unreleased]
+
+**BREAKING:** `DeepSeekConfig.apiKey` is gone. `DeepSeekConfig.credential` (a
+typed `IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`) replaces it,
+required, forwarded unchanged to `OpenAIProvider` through the existing
+`super({ ...config })` call, so it is asked for fresh on every request the
+same way OpenAI's own provider does.
+
+Migration: `new DeepSeekProvider({ apiKey: 'sk-…', model })` becomes
+`new DeepSeekProvider({ credential: staticApiKey('sk-…'), model })`
+(`staticApiKey` is exported from `@mcp-abap-adt/llm-agent`).
+
+Quota scoping keys on the credential OBJECT's identity, not the secret's
+value — calling `staticApiKey(key)` twice creates two separate credential
+objects and therefore two separate rate-limit buckets, even for the same key.
+Reuse one credential object, or set `quotaScope` explicitly, to make two
+providers share a gate.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

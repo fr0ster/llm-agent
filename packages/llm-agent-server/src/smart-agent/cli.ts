@@ -25,21 +25,27 @@
  *   --version, -v                Print package version
  *
  * Secrets vs settings:
- *   Secrets (API keys) go in .env / secrets-dir, settings go in YAML config.
- *   Priority: YAML config > env vars > defaults.
+ *   A YAML config carries no secret — only `credentialRef: <REF>` names. This
+ *   binary reads the account from the environment (.env / secrets-dir included)
+ *   by one rule: <REF>_API_KEY, <REF>_SERVICE_KEY (SAP AI Core), or
+ *   <REF>_USER + <REF>_PASSWORD. A section without credentialRef uses its role
+ *   default: LLM (each llm: entry), RAG_STORE (rag.store and a qdrant skill
+ *   store), RAG_EMBEDDER (rag.embedder). See the README's Credentials section.
  *   To disable MCP, omit the `mcp:` block or set `mcp.type: none` in YAML.
  *
  * YAML config example (smart-server.yaml):
  *   port: 4004
  *   llm:
  *     provider: deepseek
- *     apiKey: ${DEEPSEEK_API_KEY}
  *     model: deepseek-chat
+ *     # credentialRef: DEEPSEEK       # omitted: reads LLM_API_KEY
  *   rag:
- *     type: in-memory
- *     embedder: ollama
- *     url: http://localhost:11434
- *     model: bge-m3
+ *     store:
+ *       type: in-memory
+ *     embedder:
+ *       provider: ollama
+ *       url: http://localhost:11434
+ *       model: bge-m3
  *   mcp:
  *     type: http
  *     url: http://localhost:3000/mcp/stream/http
@@ -63,10 +69,20 @@ import {
   type SmartServerConfig,
 } from '@mcp-abap-adt/llm-agent-server-libs';
 import { configDotenv } from 'dotenv';
+import {
+  buildCompositionDeps,
+  createModelResolver,
+  legacyEnvHint,
+} from '../composition/index.js';
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing — must happen before dotenv so --env is available
 // ---------------------------------------------------------------------------
+
+/** An Error's own message — `String(err)` would print "Error: Error: …". */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 function parseCliArgs() {
   try {
@@ -213,7 +229,7 @@ try {
     { configPath: path.resolve(configPath) },
   );
 } catch (err) {
-  process.stderr.write(`Error: ${String(err)}\n`);
+  process.stderr.write(`Error: ${errorText(err)}\n`);
   process.exit(1);
 }
 
@@ -233,7 +249,19 @@ const logFile = logToStdout
 
 let logStream: fs.WriteStream | null = null;
 if (logFile) {
+  // A relative `log:` names a directory that may not exist in the launch cwd
+  // (the examples use ./.run/…); a stream opened into it errored
+  // asynchronously, uncaught — and with sap-ai-sdk loaded, that SDK's handler
+  // printed it to stdout. Create the directory, and fail loudly on stderr if
+  // the log still cannot be written.
+  fs.mkdirSync(path.dirname(path.resolve(logFile as string)), {
+    recursive: true,
+  });
   logStream = fs.createWriteStream(logFile as string, { flags: 'a' });
+  logStream.on('error', (err) => {
+    process.stderr.write(`Error: log file ${logFile}: ${err.message}\n`);
+    process.exit(1);
+  });
 }
 
 const config: SmartServerConfig = {
@@ -253,26 +281,16 @@ const config: SmartServerConfig = {
 // ---------------------------------------------------------------------------
 
 {
+  // Only a built-in embedder has a peer package; a `factory` is the consumer's own,
+  // registered in extraFactories rather than imported. A vector store with no
+  // embedder section uses the ollama default, so its peer is needed too.
   const ragCfg = baseConfig.rag;
   const embedderNames = new Set<string>();
-  const pushEmbedderFor = (cfg: { type?: string; embedder?: string }): void => {
-    if (cfg.type && cfg.type !== 'in-memory') {
-      embedderNames.add(cfg.embedder ?? 'ollama');
-    } else if (cfg.embedder) {
-      // in-memory + explicit embedder upgrades to VectorRag — still needs the peer
-      embedderNames.add(cfg.embedder);
-    }
-  };
-  if (ragCfg) pushEmbedderFor(ragCfg);
-  // Pipeline mode: each `pipeline.rag.{name}` entry can declare its own embedder
-  const pipelineRag = (
-    baseConfig as { pipeline?: { rag?: Record<string, unknown> } }
-  ).pipeline?.rag;
-  if (pipelineRag) {
-    for (const cfg of Object.values(pipelineRag)) {
-      if (cfg && typeof cfg === 'object')
-        pushEmbedderFor(cfg as { type?: string; embedder?: string });
-    }
+  if (ragCfg?.embedder) {
+    if (ragCfg.embedder.factory === undefined)
+      embedderNames.add(ragCfg.embedder.provider);
+  } else if (ragCfg && ragCfg.store.type !== 'in-memory') {
+    embedderNames.add('ollama');
   }
   await prefetchEmbedderFactories([...embedderNames]);
 }
@@ -282,30 +300,51 @@ const config: SmartServerConfig = {
 // ---------------------------------------------------------------------------
 
 {
-  const ragCfg = baseConfig.rag;
-  const ragBackendNames = new Set<string>();
-  const peerBackend = (t: string | undefined): t is string =>
-    t === 'qdrant' || t === 'hana-vector' || t === 'pg-vector';
-  if (ragCfg && peerBackend(ragCfg.type)) ragBackendNames.add(ragCfg.type);
-  const pipelineRag = (
-    baseConfig as {
-      pipeline?: { rag?: Record<string, { type?: string }> };
-    }
-  ).pipeline?.rag;
-  if (pipelineRag) {
-    for (const cfg of Object.values(pipelineRag)) {
-      if (cfg?.type && peerBackend(cfg.type)) ragBackendNames.add(cfg.type);
-    }
-  }
-  await prefetchRagFactories([...ragBackendNames]);
+  const storeType = baseConfig.rag?.store.type;
+  const ragBackendNames =
+    storeType === 'qdrant' ||
+    storeType === 'hana-vector' ||
+    storeType === 'pg-vector'
+      ? [storeType]
+      : [];
+  await prefetchRagFactories(ragBackendNames);
 }
 
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 
-const server = new SmartServer(config);
-const handle = await server.start();
+// This binary is the composition root (§8 item 4): it owns the credentials and
+// constructs every authenticated object through the seams the library no longer
+// defaults — makeLlm, resolveEmbedder, makeRag, and buildSkillHost for the skill
+// store's account — plus the model resolver PUT /v1/config needs.
+//
+// Caught here (rather than left to propagate) so a construction-time failure —
+// a bad credentialRef, a missing apiBaseUrl — prints once to stderr and exits
+// 1, matching every other startup failure in this file (see the config-resolve
+// catch above). Left uncaught with provider sap-ai-sdk, the peer SDK that
+// provider loads (@sap-ai-sdk/orchestration) registers its own process-wide
+// winston exception handler, which intercepts it first and prints to stdout.
+let handle: Awaited<ReturnType<SmartServer['start']>>;
+try {
+  const deps = buildCompositionDeps(process.env);
+  const server = new SmartServer(
+    {
+      ...config,
+      modelResolver:
+        config.modelResolver ?? createModelResolver(deps.makeLlm, config.llm),
+    },
+    deps,
+  );
+  handle = await server.start();
+} catch (err) {
+  process.stderr.write(`Error: ${errorText(err)}\n`);
+  const hint = legacyEnvHint(process.env, err);
+  if (hint) process.stderr.write(`Hint: ${hint}\n`);
+  process.exit(1);
+}
 
-process.stderr.write(`llm-agent listening on http://0.0.0.0:${handle.port}\n`);
+process.stderr.write(
+  `llm-agent listening on http://${config.host ?? '0.0.0.0'}:${handle.port}\n`,
+);
 if (logFile) process.stderr.write(`logs → ${logFile}\n`);

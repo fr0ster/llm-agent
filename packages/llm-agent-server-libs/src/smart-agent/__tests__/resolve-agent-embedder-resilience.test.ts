@@ -6,6 +6,7 @@ import {
   resolveAgentEmbedder,
   resolveToolsStoreEmbedder,
 } from '../resolve-agent-embedder.js';
+import { constructionSeams } from './construction-seams.js';
 
 class GeminiLike {
   readonly maxBatchSize = 250;
@@ -22,8 +23,12 @@ describe('SmartServer embedder resilience threading', () => {
     const events: LogEvent[] = [];
     const logger = { log: (e: LogEvent) => events.push(e) };
     const agentEmbedder = await resolveAgentEmbedder(
-      { type: 'qdrant', embedder: 'sap-ai-core' },
+      {
+        store: { type: 'qdrant', url: 'http://q', collectionName: 'c' },
+        embedder: { provider: 'sap-ai-core' },
+      },
       new GeminiLike(),
+      constructionSeams.resolveEmbedder,
       {},
       logger,
     );
@@ -36,15 +41,23 @@ describe('SmartServer embedder resilience threading', () => {
     const events: LogEvent[] = [];
     const logger = { log: (e: LogEvent) => events.push(e) };
     const shared = await resolveAgentEmbedder(
-      { type: 'qdrant', embedder: 'sap-ai-core' },
+      {
+        store: { type: 'qdrant', url: 'http://q', collectionName: 'c' },
+        embedder: { provider: 'sap-ai-core' },
+      },
       new GeminiLike(),
+      constructionSeams.resolveEmbedder,
       {},
       logger,
     );
     const reused = await resolveToolsStoreEmbedder(
       shared,
-      { type: 'qdrant', embedder: 'sap-ai-core', maxBatchSize: 64 },
+      {
+        store: { type: 'qdrant', url: 'http://q', collectionName: 'c' },
+        embedder: { provider: 'sap-ai-core', maxBatchSize: 64 },
+      },
       undefined,
+      constructionSeams.resolveEmbedder,
       {},
       logger,
     );

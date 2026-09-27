@@ -20,9 +20,14 @@ export function createExtensionSql(): string {
   return 'CREATE EXTENSION IF NOT EXISTS vector';
 }
 
-export function createTableSql(collection: string, dimension: number): string {
+export function createTableSql(
+  collection: string,
+  dimension: number,
+  opts: { ifNotExists?: boolean } = {},
+): string {
   const table = quoteIdent(collection);
-  return `CREATE TABLE IF NOT EXISTS ${table} (
+  const clause = opts.ifNotExists === false ? '' : 'IF NOT EXISTS ';
+  return `CREATE TABLE ${clause}${table} (
     id VARCHAR(255) PRIMARY KEY,
     text TEXT,
     vector vector(${dimension}),

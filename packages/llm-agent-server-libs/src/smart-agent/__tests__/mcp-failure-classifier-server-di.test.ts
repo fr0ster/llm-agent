@@ -7,13 +7,14 @@ import { test } from 'node:test';
 import type { IMcpFailureClassifier } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerConfig } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 const MINIMAL_CFG = {
-  llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+  llm: { main: { provider: 'openai', model: 'gpt-4o' } },
 } as unknown as SmartServerConfig;
 
 test('(c) SmartServer: default constructor uses DefaultMcpFailureClassifier (non-null)', () => {
-  const server = new SmartServer(MINIMAL_CFG);
+  const server = new SmartServer(MINIMAL_CFG, constructionSeams);
   const classifier = (
     server as unknown as { _mcpFailureClassifier: IMcpFailureClassifier }
   )._mcpFailureClassifier;
@@ -29,7 +30,10 @@ test('(c) SmartServer: injected classifier from BuildAgentDeps is stored on _mcp
   const custom: IMcpFailureClassifier = {
     classify: async () => 'unavailable',
   };
-  const server = new SmartServer(MINIMAL_CFG, { mcpFailureClassifier: custom });
+  const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
+    mcpFailureClassifier: custom,
+  });
   const stored = (
     server as unknown as { _mcpFailureClassifier: IMcpFailureClassifier }
   )._mcpFailureClassifier;
@@ -64,7 +68,10 @@ test('(c) SmartServer: custom classifier is used by callMcp bridge (Route B)', a
     },
   };
 
-  const server = new SmartServer(MINIMAL_CFG, { mcpFailureClassifier: spy });
+  const server = new SmartServer(MINIMAL_CFG, {
+    ...constructionSeams,
+    mcpFailureClassifier: spy,
+  });
   // Manually wire _sharedMcpClients (normally set by start()) so callMcp has clients.
   (server as unknown as { _sharedMcpClients: unknown[] })._sharedMcpClients = [
     failingClient as unknown as import('@mcp-abap-adt/llm-agent').IMcpClient,

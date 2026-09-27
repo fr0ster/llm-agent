@@ -1,5 +1,4 @@
 export type {
-  FoundationModelsCredentials,
   SapAiCoreEmbedderConfig,
   SapAiCoreEmbedderScenario,
 } from './sap-ai-core-embedder.js';

@@ -2,13 +2,17 @@
  * SAP AI SDK LLM Provider
  *
  * Implementation of LLMProvider interface using @sap-ai-sdk/orchestration.
- * Authentication is handled automatically via AICORE_SERVICE_KEY environment variable.
+ * Authentication is an `IBearerCredential` resolved fresh for every call —
+ * see `buildDestination`. No environment variable is read here; a caller that
+ * has only a service key turns it into `{ credential, apiBaseUrl }` with
+ * `serviceKeyCredential` from `@mcp-abap-adt/sap-aicore-auth`.
  *
  * Architecture:
  * - Agent → SapCoreAIProvider → OrchestrationClient → SAP AI Core → External LLM
  */
 
 import https from 'node:https';
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IModelInfo,
   LLMCallOptions,
@@ -22,22 +26,26 @@ import {
   OrchestrationClient,
 } from '@sap-ai-sdk/orchestration';
 
-/**
- * OAuth2 Client Credentials for programmatic SAP AI Core authentication.
- * When provided, bypasses the AICORE_SERVICE_KEY environment variable.
- */
-export interface SapAICoreCredentials {
-  /** OAuth2 client ID (e.g. 'sb-xxx...') */
-  clientId: string;
-  /** OAuth2 client secret */
-  clientSecret: string;
-  /** Token endpoint URL (e.g. 'https://xxx.authentication.xxx.hana.ondemand.com/oauth/token') */
-  tokenServiceUrl: string;
-  /** SAP AI Core API base URL (e.g. 'https://api.ai.xxx.aicore.cfapps.xxx.hana.ondemand.com') */
-  servicUrl: string;
+/** The constructed-destination shape the SAP AI SDK documents. */
+export interface SapCoreAIDestination {
+  url: string;
+  authentication: 'NoAuthentication';
+  headers: Record<string, string>;
 }
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
+  /**
+   * The bearer credential presented to SAP AI Core. Asked for fresh on every
+   * call via `buildDestination` — never cached here, so a rotating token
+   * (client-credentials exchange, Entra ID, ...) keeps rotating.
+   */
+  credential: IBearerCredential;
+  /**
+   * SAP AI Core orchestration/REST base URL. Not part of the credential
+   * (§4.6.3) — the address is its own field, the name `parseServiceKey`
+   * returns and `sap-aicore-embedder` already used.
+   */
+  apiBaseUrl: string;
   /** Model name (e.g. 'gpt-4o', 'claude-3-5-sonnet'). Required — the constructor throws if absent (no default). */
   model?: string;
   /** Temperature for generation. Default: 0.7 */
@@ -46,15 +54,34 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
   maxTokens?: number;
   /** SAP AI Core resource group */
   resourceGroup?: string;
-  /**
-   * Programmatic OAuth2 credentials for SAP AI Core.
-   * When set, the SDK uses these instead of the AICORE_SERVICE_KEY env var.
-   */
-  credentials?: SapAICoreCredentials;
   /** Optional logger */
   log?: {
     debug(message: string, meta?: Record<string, unknown>): void;
     error(message: string, meta?: Record<string, unknown>): void;
+  };
+}
+
+/**
+ * Build the constructed-destination the SDK documents —
+ * `{ url, authentication: 'NoAuthentication', headers: { Authorization } }`.
+ * Not `authTokens`: its TypeScript type is `{ type; value; expiresIn?; error:
+ * string | null }` with no `http_header` field, so the shape some blog posts
+ * show does not compile.
+ *
+ * Called from inside the per-call / per-retry-attempt path (never at
+ * construction, never cached), which is free: the client is already rebuilt
+ * on every call because tools change between them, and a retry must re-ask
+ * the credential rather than resend a token that may already be the reason
+ * the previous attempt failed.
+ */
+export async function buildDestination(cfg: {
+  apiBaseUrl: string;
+  credential: IBearerCredential;
+}): Promise<SapCoreAIDestination> {
+  return {
+    url: cfg.apiBaseUrl,
+    authentication: 'NoAuthentication',
+    headers: { Authorization: `Bearer ${await cfg.credential.token()}` },
   };
 }
 
@@ -68,7 +95,6 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   readonly model: string;
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];
-  private readonly destination?: Record<string, unknown>;
   private modelsCache: IModelInfo[] | null = null;
   private modelsCacheExpiry = 0;
   private static readonly MODELS_CACHE_TTL_MS = 300_000; // 5 min
@@ -153,23 +179,15 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
   constructor(config: SapCoreAIConfig) {
     super(config);
-    // Skip validateConfig() — SAP SDK handles auth via AICORE_SERVICE_KEY env var
+    // `credential` and `apiBaseUrl` are required fields on SapCoreAIConfig, so
+    // an absent one is a compile error, not a runtime check. The credential itself is resolved per call (see buildDestination),
+    // never here, so a rotating token keeps rotating.
     if (!config.model) {
       throw new Error("SAP AI Core provider requires a 'model'");
     }
     this.model = config.model;
     this.resourceGroup = config.resourceGroup;
     this.log = config.log;
-
-    if (config.credentials) {
-      this.destination = {
-        url: config.credentials.servicUrl,
-        authentication: 'OAuth2ClientCredentials',
-        clientId: config.credentials.clientId,
-        clientSecret: config.credentials.clientSecret,
-        tokenServiceUrl: config.credentials.tokenServiceUrl,
-      };
-    }
   }
 
   async chat(
@@ -187,18 +205,27 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       });
 
       const formatted = this.formatMessages(messages);
-      const client = this.createClient(formatted, tools);
       // Each non-streaming call gets its own agent to prevent connection
       // multiplexing. A shared keepAlive agent can cause SAP AI Core to route a
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
       const response = await this.withThrottleRetry(
-        () => {
+        async () => {
           // No timeout of ours. Sixty seconds used to sit here, and it was a
           // guess about somebody else's model, prompt and tool loop — a large
           // input legitimately outruns it, and the call then died for a reason
           // that had nothing to do with the server. The deadline belongs to
           // the caller and arrives as `options.signal`.
+          //
+          // The destination — and with it the credential's token() — is asked
+          // fresh on every attempt, inside this closure: a retry re-asks
+          // rather than resending a token that may be why the previous
+          // attempt failed.
+          const destination = await buildDestination({
+            apiBaseUrl: this.config.apiBaseUrl,
+            credential: this.config.credential,
+          });
+          const client = this.createClient(formatted, tools, destination);
           const callAgent = new https.Agent({ keepAlive: false });
           return client.chatCompletion(undefined, {
             httpsAgent: callAgent,
@@ -302,11 +329,6 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         formattedMessageCount: formatted.length,
         messageSummary,
       });
-      const client = this.createClient(formatted, tools);
-      this.log?.debug('SAP AI SDK streamChat client created', {
-        model,
-        toolCount,
-      });
       // Each stream gets its own agent to prevent connection multiplexing.
       // A shared keepAlive agent can cause SAP AI Core to route SSE chunks
       // to the wrong stream when multiple requests share the same XSUAA user.
@@ -315,9 +337,19 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         keepAlive: false,
       });
       const streamResponse = await this.withThrottleRetry(
-        () => {
+        async () => {
           // As above: the caller's signal is the deadline, and the SDK takes
-          // it directly.
+          // it directly. The destination (and the credential's token()) is
+          // rebuilt on every attempt, same as chat().
+          const destination = await buildDestination({
+            apiBaseUrl: this.config.apiBaseUrl,
+            credential: this.config.credential,
+          });
+          const client = this.createClient(formatted, tools, destination);
+          this.log?.debug('SAP AI SDK streamChat client created', {
+            model,
+            toolCount,
+          });
           const streamAgent = new https.Agent({ keepAlive: false });
           // The SDK takes the signal as its own second parameter, so an abort
           // ends the stream itself and not only the waiting around it.
@@ -505,17 +537,26 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   }
 
   /**
-   * The quota belongs to a service instance, not to the process. Two instances
-   * in one process — a tenant each, say — must not share a pause. Auth falls
-   * back to `AICORE_SERVICE_KEY` when no credentials are passed, and that is
-   * one instance for the whole process, so it is one scope.
+   * The quota belongs to a service instance, not to the process. Two
+   * instances in one process — a tenant each, say — must not share a pause.
+   * The base class's default `quotaScope()` already combines `quotaEndpoint()`
+   * (below) with the credential object's own identity (`quotaCredential()`),
+   * so no override is needed here — only the two hooks it reads.
    */
-  protected override quotaScope(): string {
-    const creds = this.config.credentials;
-    if (!creds) return 'aicore-service-key';
-    return `${this.canonicalEndpoint(creds.servicUrl)}|${this.credentialFingerprint(
-      creds.clientId,
-    )}`;
+
+  /** Two instances at different SAP AI Core base URLs never share a quota. */
+  protected override quotaEndpoint(): string {
+    return this.config.apiBaseUrl;
+  }
+
+  /**
+   * The credential this provider authenticates with. Identity-based (see
+   * `BaseLLMProvider.credentialScope`) — two providers wrapping the same
+   * service key in two separate credential objects are, correctly, two
+   * buckets; a consumer that means them to share sets `quotaScope` explicitly.
+   */
+  protected override quotaCredential(): object | undefined {
+    return this.config.credential;
   }
 
   private static extractErrorDetail(error: unknown): string {
@@ -535,10 +576,14 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   /**
    * Create an OrchestrationClient with the given tools configuration.
    * Tools are expected in OpenAI function format (already converted by the agent layer).
+   *
+   * `destination` is built by the caller via `buildDestination()`, per call —
+   * so the client and the token behind it are both fresh every time.
    */
   private createClient(
     messages: ChatMessage[],
-    tools?: unknown[],
+    tools: unknown[] | undefined,
+    destination: SapCoreAIDestination,
   ): OrchestrationClient {
     // biome-ignore lint/suspicious/noExplicitAny: SDK model type is a string literal union but the API accepts any model name
     const orchConfig: any = {
@@ -561,7 +606,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     return new OrchestrationClient(
       orchConfig,
       this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
-      this.destination,
+      destination,
     );
   }
 

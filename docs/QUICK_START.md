@@ -47,19 +47,17 @@ Put your API keys in .env, adjust settings in smart-server.yaml, then run llm-ag
 Create `.env` in the same directory as `smart-server.yaml`:
 
 ```dotenv
-# Primary LLM (DeepSeek by default)
-DEEPSEEK_API_KEY=sk-your-deepseek-key
-
-# Optional — needed only if you use pipeline.llm with these providers
-# OPENAI_API_KEY=sk-your-openai-key
-# ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
+# Primary LLM (DeepSeek by default) — the LLM ref's default variable
+LLM_API_KEY=sk-your-deepseek-key
 
 # Optional — override Ollama URL (default: http://localhost:11434)
 # OLLAMA_URL=http://localhost:11434
 ```
 
-**Secrets go in `.env`, settings go in `smart-server.yaml`.** The YAML resolves `${VAR}` references
-from `.env` at startup.
+**Secrets go in `.env`.** The YAML names accounts with `credentialRef:` and never holds a secret; the
+server reads `<REF>_API_KEY` (or `<REF>_SERVICE_KEY`) for each ref, and `LLM_API_KEY` when an `llm:`
+entry names none ([mapping](../packages/llm-agent-server/README.md#credentials)). `${VAR}` still
+works for non-secret settings such as URLs and model names.
 
 ---
 
@@ -73,15 +71,17 @@ mode: smart       # hard | pass | smart (default: smart)
 
 llm:
   provider: deepseek      # deepseek | openai | anthropic | sap-ai-sdk | ollama
-  apiKey: ${DEEPSEEK_API_KEY}
+  # credentialRef omitted: reads LLM_API_KEY
   model: deepseek-chat
   temperature: 0.7
 
 rag:
-  type: in-memory         # in-memory | qdrant | hana-vector | pg-vector
-  embedder: ollama        # ollama | openai | sap-ai-core (omit embedder for BM25 keyword-only)
-  url: http://localhost:11434
-  model: bge-m3
+  store:
+    type: in-memory         # in-memory | qdrant | hana-vector | pg-vector
+  embedder:
+    provider: ollama        # ollama | openai | sap-ai-core (omit embedder for BM25 keyword-only)
+    url: http://localhost:11434
+    model: bge-m3
 
 mcp:
   type: http
@@ -187,45 +187,43 @@ llm-agent --config /path/to/my-config.yaml   # creates template if file is absen
 
 ---
 
-## Advanced: Pipeline Configuration
+## Advanced: several models
 
-For multi-LLM setups, per-store RAG, or multiple MCP servers, add a `pipeline:` section to
-`smart-server.yaml`. It overrides only the components you specify; everything else falls back to the
-flat config above.
+For multi-LLM setups or multiple MCP servers, `llm:` becomes a map of named entries instead of one
+flat config, and `rag:` splits its store from its embedder. (The old `pipeline: { llm, rag, mcp }`
+override was removed in v19 — a config using it fails loud at startup; see
+[PIPELINES.md](PIPELINES.md).)
 
 ```yaml
-pipeline:
-  llm:
-    main:
-      provider: deepseek        # deepseek | openai | anthropic | sap-ai-sdk | ollama
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.7
-    classifier:                 # cheaper model for intent classification
-      provider: openai
-      apiKey: ${OPENAI_API_KEY}
-      model: gpt-4o-mini
-      temperature: 0.1
+llm:
+  main:
+    provider: deepseek        # deepseek | openai | anthropic | sap-ai-sdk | ollama
+    model: deepseek-chat      # credentialRef omitted: reads LLM_API_KEY
+    temperature: 0.7
+  classifier:                 # cheaper model for intent classification
+    provider: openai
+    credentialRef: OPENAI     # reads OPENAI_API_KEY
+    model: gpt-4o-mini
+    temperature: 0.1
 
-  rag:
-    tools:
-      type: in-memory           # store: in-memory | qdrant | hana-vector | pg-vector
-      embedder: ollama          # embedder: ollama | openai | sap-ai-core (neural embeddings for tool/skill selection)
-    history:
-      type: in-memory           # semantic conversation history (optional)
+rag:
+  store:
+    type: in-memory            # in-memory | qdrant | hana-vector | pg-vector
+  embedder:
+    provider: ollama           # ollama | openai | sap-ai-core (neural embeddings for tool/skill selection)
 
-  mcp:
-    - type: http
-      url: http://sap-server:3000/mcp/stream/http
-    - type: stdio
-      command: npx
-      args: [github-mcp-server]
+mcp:
+  - type: http
+    url: http://sap-server:3000/mcp/stream/http
+  - type: stdio
+    command: npx
+    args: [github-mcp-server]
 ```
 
-When `pipeline.llm.main` is set, the flat `llm:` block is used only as a fallback for
-anything the pipeline does not explicitly configure.
+An `llm:` entry with no `credentialRef` uses that role's default ref (`LLM` for `main`); naming one
+reads `<REF>_API_KEY` / `<REF>_SERVICE_KEY` instead.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full pipeline and programmatic API reference.
+See [docs/ARCHITECTURE.md](ARCHITECTURE.md) for full pipeline and programmatic API reference.
 
 ---
 
@@ -244,8 +242,9 @@ const { agent } = await new SmartAgentBuilder({ /* ... */ })
 
 // LLM can call rag_create_collection via MCP:
 //   rag_create_collection({ provider: 'scratch', name: 'phase-results', scope: 'session' })
+// (scope is 'session' or 'user'; the tools never create a 'global')
 // Later:
-await agent.closeSession('session-id');  // clears all session-scoped collections
+await agent.closeSession('session-id');  // deletes the session's collections (catalog record first, then data)
 ```
 
 See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full provider setup,
@@ -288,14 +287,15 @@ pipeline:
     activation: explicit
 ```
 
-See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinator-orchestration-deepseek.yaml` for complete configurations, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full strategy and subagent infrastructure reference.
+See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinator-orchestration-deepseek.yaml` for complete configurations, and [docs/ARCHITECTURE.md](ARCHITECTURE.md) for the full strategy and subagent infrastructure reference.
 
 ---
 
 ## Troubleshooting
 
-### "LLM API key is required"
-Set the provider credential in `.env` (e.g. `DEEPSEEK_API_KEY`), or `llm.apiKey` in `smart-server.yaml`, or `pipeline.llm.main.apiKey`. The `ollama` provider requires no API key.
+### "credentialRef 'LLM' must hold a api-key credential for deepseek, got none"
+Set `LLM_API_KEY` in `.env` (or `<REF>_API_KEY` for the ref the entry names, via `credentialRef:`).
+`ollama` needs none.
 
 ### Ollama embed errors
 Run Ollama locally and pull the model:

@@ -202,7 +202,8 @@ results, correct errors, and let the consumer clean up on disconnect:
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import { QdrantRagProvider, buildRagCollectionToolEntries } from '@mcp-abap-adt/llm-agent';
+import { buildRagCollectionToolEntries, staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 
 // 1. Build agent with a Qdrant provider
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
@@ -210,14 +211,15 @@ const { agent } = await new SmartAgentBuilder({ /* ... */ })
   .addRagProvider(new QdrantRagProvider({
     name: 'qdrant-rw',
     url: 'http://qdrant:6333',
-    apiKey: process.env.QDRANT_API_KEY,
+    credential: staticApiKey(process.env.QDRANT_API_KEY!),
     embedder: myEmbedder,
   }))
   .build();
 
 // 2. Register MCP tool handlers on your own MCP server
 //    (llm-agent does not host an embedded MCP server for RAG editing)
-const entries = buildRagCollectionToolEntries({ registry, providerRegistry });
+// identity is required: the entries are built for one caller.
+const entries = buildRagCollectionToolEntries({ registry, identity, providerRegistry });
 myMcpServer.registerTools(entries);
 
 // 3. LLM creates a session-scoped collection via MCP:
@@ -234,16 +236,18 @@ await agent.closeSession(sessionId);
 ### Programmatic embedding (`SmartAgentBuilder`)
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
+import { InMemoryRag, staticApiKey } from '@mcp-abap-adt/llm-agent';
 
+const provider = new DeepSeekProvider({
+  credential: staticApiKey(process.env.DEEPSEEK_API_KEY!),
+  model: 'deepseek-chat',
+  temperature: 0.7,
+});
 const handle = await new SmartAgentBuilder()
-  .withMainLlm({
-    provider: 'deepseek',
-    apiKey: process.env.DEEPSEEK_API_KEY!,
-    model: 'deepseek-chat',
-    temperature: 0.7,
-  })
-  .withRag({ type: 'in-memory' })
+  .withMainLlm(new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model }))
+  .setToolsRag(new InMemoryRag())
   .build();
 
 process.on('SIGTERM', async () => {
@@ -253,15 +257,28 @@ process.on('SIGTERM', async () => {
 
 ### Custom embedder injection
 
+Construct the embedder and the provider yourself, and hand in the instances:
+
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
+import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
+import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+
+const provider = new DeepSeekProvider({
+  credential: staticApiKey(process.env.DEEPSEEK_API_KEY!),
+  model: 'deepseek-chat',
+});
+const llm = new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model });
+
+const sapKey = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
+const embedder = new SapAiCoreEmbedder({ model: 'text-embedding-3-small', ...sapKey });
 
 const handle = await new SmartAgentBuilder()
-  .withMainLlm({ provider: 'deepseek', apiKey: process.env.DEEPSEEK_API_KEY! })
-  .withRag({ type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' })
-  .withEmbedderFactories({
-    'sap-ai-sdk': (cfg) => new SapAiCoreEmbedder({ model: cfg.model }),
-  })
+  .withMainLlm(llm)
+  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url: 'http://qdrant:6333', embedder }))
   .build();
 ```
 

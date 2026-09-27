@@ -27,6 +27,13 @@ describe('plugins: [specifier] dynamic-load merge path', () => {
     assert.ok(pipeline, "pipelinePlugins must contain 'demo-ext'");
     assert.equal(pipeline?.name, 'demo-ext');
 
+    // …pipelinePluginFactories from the SAME module register, uncalled…
+    assert.equal(
+      typeof plugins.pipelinePluginFactories?.get('demo-factory'),
+      'function',
+      "pipelinePluginFactories must contain 'demo-factory'",
+    );
+
     // …AND embedderFactories from the SAME module register.
     assert.equal(
       typeof plugins.embedderFactories['demo-embedder'],

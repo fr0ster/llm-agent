@@ -1,5 +1,69 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## [Unreleased]
+
+**Fixed:** `vectorizeMcpTools` counts records, not writes. When a tool record key maps two tools
+to one id (possible with a custom `IToolRecordKey`), the later write replaces the earlier: the
+summary now reports the distinct records written and lists the replaced tool in `failed`, so
+`complete` is false instead of claiming N/N. No read-back, so it works on every store. The other
+cause of a short catalog — an in-memory store merging distinct ids by similarity — is fixed in
+`@mcp-abap-adt/llm-agent`.
+
+**Security:** a `rag-query` stage with `scope: 'user'` and no `userId` on the
+call returns no results and does not query the store. It used to query without
+a filter and return every user's records.
+
+**Security:** the history stage tags each history record with its owner — `sessionId`, and
+`userId` when the call carries one — in the record's metadata. It wrote `{}`: with every store now
+filtering the session-scoped `history` query on `metadata.sessionId`, an untagged record would be
+invisible to its own session (on `InMemoryRag`, which already filtered, history retrieval returned
+nothing). History records written before this release carry no owner and are not returned to a
+session-scoped query.
+
+`SessionGraphFactoryOptions` gains the optional async `ragRegistryFactory(identity)`;
+the registry it returns is the session's own — handed to `buildAgent` and closed by
+`dispose()` in place of the shared one. **BREAKING** for a consumer that *reads* the
+options: `SessionGraphFactoryOptions.ragRegistry` is now optional (`IRagRegistry |
+undefined`), and `build()` rejects when neither it nor `ragRegistryFactory` is given.
+
+**BREAKING:** the `ragStores` projection keys a global by its bare name and a
+user or session collection `user/<name>` / `session/<name>`, so a stage
+configuration that named an owned collection by its bare name now names the
+prefixed key. The circuit-breaker wrap keeps each entry's scope, owner,
+editor, provider and store name — it used to re-register every entry as a
+read-only global, which left a hydrated collection undeletable.
+`addRagStore`/`removeRagStore` and the `tools`/`history` probes address the
+`global` scope, which is where those deployment stores live.
+
+**BREAKING:** `createRagCollection` takes `RagRegistryCreateCollectionParams`
+(from `@mcp-abap-adt/llm-agent`) in place of its own inline `{ scope;
+sessionId?; userId? }` shape.
+
+**BREAKING:** `makeQdrantReader`/`makeQdrantClient` take `credential?:
+IApiKeyCredential` instead of `apiKey?: string`. The credential is asked on
+every request, never cached, so a rotating key rotates — matching
+`qdrant-rag`'s `QdrantRag`.
+
+**BREAKING:** `makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver`
+are removed. Construct the provider in your composition root and pass the resulting
+`ILlm` to `withMainLlm` / `agent.reconfigure`. `IModelResolver` is unchanged. The five
+`*-llm` packages are no longer optional peers of this package.
+
+The config watcher now reads `vectorWeight`/`keywordWeight` from `rag.store`,
+and only when `rag.store.type` is `in-memory` — the flat `rag:` section split
+into a store and an embedder, and the search knobs live on the store that
+reads them.
+
+**BREAKING:** `mergePluginExports` refuses a pipeline plugin whose `name` differs
+from the key it is registered under, where it used to load under the key silently.
+Every refused pipeline export — a missing `build`, a non-string `name`, a
+non-function factory, a non-object `pipelinePlugins`/`pipelinePluginFactories`
+export — is now reported in `errors` instead of silently skipped. Also accepts
+`pipelinePluginFactories`, sharing one key namespace with `pipelinePlugins`; the
+loader only checks that each entry is a function and never calls it.
+`describePipelinePluginDefect(value, key)` is exported for the same check on a
+factory's result.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

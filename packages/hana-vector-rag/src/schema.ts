@@ -16,9 +16,14 @@ export function quoteIdent(ident: string): string {
   return `"${ident}"`;
 }
 
-export function createTableSql(collection: string, dimension: number): string {
+export function createTableSql(
+  collection: string,
+  dimension: number,
+  opts: { ifNotExists?: boolean } = {},
+): string {
   const table = quoteIdent(collection);
-  return `CREATE TABLE IF NOT EXISTS ${table} (
+  const clause = opts.ifNotExists === false ? '' : 'IF NOT EXISTS ';
+  return `CREATE TABLE ${clause}${table} (
     id NVARCHAR(255) PRIMARY KEY,
     text NCLOB,
     vector REAL_VECTOR(${dimension}),

@@ -1,2 +1,4 @@
-npx biome check --write packages
-git add -A
+npx biome check --write --diagnostic-level=error packages
+# Re-stage only what was already staged: `git add -A` here would sweep every
+# untracked or unstaged file into the commit.
+git update-index --again

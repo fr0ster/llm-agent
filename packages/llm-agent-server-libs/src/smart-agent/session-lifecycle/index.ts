@@ -30,6 +30,11 @@ import type {
   SessionMetaRow,
 } from '../session-meta-store.js';
 
+export {
+  buildSessionRagRegistry,
+  type SessionRagRegistryInput,
+} from './session-rag-registry.js';
+
 /**
  * Share the parent RAG registry with subagents (per-session worker re-wire).
  * Session/user/global collections written at the top level become visible to
@@ -66,7 +71,12 @@ export interface SessionLifecycleOptions {
   /** Total configured `mcp[]` slots, paired with `mcpClientDescriptors` (#244). */
   configuredSlotCount?: number;
   toolsRag: IRag | undefined;
-  ragRegistry: IRagRegistry;
+  /** One registry shared by every session; see SessionGraphFactoryOptions.ragRegistry. */
+  ragRegistry?: IRagRegistry;
+  /** The registry each session owns; see SessionGraphFactoryOptions.ragRegistryFactory. */
+  ragRegistryFactory?: (
+    identity: SessionGraphIdentity,
+  ) => Promise<IRagRegistry>;
   buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
   /** Optional logger forwarded to SessionGraphFactory for cleanup-failure surfacing. */
   logger?: AnyLogger;
@@ -188,7 +198,10 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
       };
     },
     toolsRag: opts.toolsRag,
-    ragRegistry: opts.ragRegistry,
+    ...(opts.ragRegistry ? { ragRegistry: opts.ragRegistry } : {}),
+    ...(opts.ragRegistryFactory
+      ? { ragRegistryFactory: opts.ragRegistryFactory }
+      : {}),
     buildAgent: opts.buildAgent,
     logger: opts.logger,
     ...(opts.closePipeline ? { closePipeline: opts.closePipeline } : {}),

@@ -34,10 +34,10 @@ const rag: IKnowledgeRagHandle = {
 };
 const config: ControllerConfig = {
   subagents: {
-    evaluator: { provider: 'x', model: 'm-eval' },
-    planner: { provider: 'x', model: 'm-plan' },
-    executor: { provider: 'x', model: 'm-exec' },
-  } as never,
+    evaluator: {},
+    planner: {},
+    executor: {},
+  },
   targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.5 },
   sessionMemory: { collection: 'c' },
   budgets: { maxSteps: 5, maxRetries: 2, maxRewinds: 2 },

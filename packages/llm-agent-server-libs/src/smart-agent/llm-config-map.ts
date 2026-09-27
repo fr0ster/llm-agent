@@ -6,15 +6,16 @@ export type NormalizedLlmMap = { main: SmartServerLlmConfig } & LlmConfigMap;
 /**
  * Detect whether an object is a flat SmartServerLlmConfig shape.
  * Flat shape is identified by the presence of ANY of the known flat-shape
- * fields: `provider`, `apiKey`, `model`, or `url`. This covers keyless
- * providers (Ollama, SAP AI Core) that omit `apiKey` — using `apiKey`-only
- * detection silently misclassified those configs as a "map" shape.
+ * fields: `provider`, `credentialRef`, `model`, or `url`. This covers keyless
+ * providers (Ollama, SAP AI Core) that omit `credentialRef` — using
+ * `credentialRef`-only detection silently misclassified those configs as a
+ * "map" shape.
  */
 function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
   const flat = input as Partial<SmartServerLlmConfig>;
   return (
     typeof flat.provider === 'string' ||
-    typeof flat.apiKey === 'string' ||
+    typeof flat.credentialRef === 'string' ||
     typeof flat.model === 'string' ||
     typeof flat.url === 'string'
   );
@@ -23,7 +24,7 @@ function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
 /**
  * Normalize the optional top-level `llm:` block.
  * - undefined → undefined (pipeline-only configs stay valid)
- * - flat shape (has `provider` | `apiKey` | `model` | `url`) → { main: flat } (backward compat)
+ * - flat shape (has `provider` | `credentialRef` | `model` | `url`) → { main: flat } (backward compat)
  * - map shape → must include `main`; returned as NormalizedLlmMap
  */
 export function normalizeLlmConfig(
@@ -92,4 +93,29 @@ export function resolveReviewerLlmName(
     return block.plannerLlm;
   }
   return undefined;
+}
+
+/**
+ * Fields that belong to an LLM configuration and therefore to an `llm:` entry
+ * only. A pipeline section or a worker file that carries one of them is holding
+ * an inline model, which §4.6.7 refuses: the file configures each model once.
+ */
+export const INLINE_LLM_CONFIG_FIELDS: readonly string[] = [
+  'provider',
+  'model',
+  'url',
+  'apiKey',
+  'credentialRef',
+  'temperature',
+  'classifierTemperature',
+  'maxTokens',
+  'whenThrottled',
+  'resourceGroup',
+];
+
+/** The keys a file may name: a flat `llm:` block normalizes to `{ main }`. */
+export function llmKeySet(
+  map: NormalizedLlmMap | undefined,
+): ReadonlySet<string> {
+  return new Set(map ? Object.keys(map) : []);
 }

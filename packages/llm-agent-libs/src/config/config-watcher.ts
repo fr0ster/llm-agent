@@ -109,7 +109,11 @@ export class ConfigWatcher extends EventEmitter {
     yaml: Record<string, unknown>,
   ): HotReloadableConfig {
     const agent = (yaml.agent ?? {}) as Record<string, unknown>;
-    const rag = (yaml.rag ?? {}) as Record<string, unknown>;
+    // The weights belong to the in-memory store, the only one that applies them
+    // (VectorRag.updateWeights) — read from rag.store, and only for that type (§4.6.4).
+    const ragStore = ((yaml.rag as Record<string, unknown> | undefined)
+      ?.store ?? {}) as Record<string, unknown>;
+    const inMemory = ragStore.type === 'in-memory';
     const prompts = yaml.prompts as Record<string, string> | undefined;
     const cb = yaml.circuitBreaker as Record<string, unknown> | undefined;
 
@@ -138,10 +142,10 @@ export class ConfigWatcher extends EventEmitter {
     if (agent.classificationEnabled !== undefined)
       config.classificationEnabled = Boolean(agent.classificationEnabled);
 
-    if (rag.vectorWeight !== undefined)
-      config.vectorWeight = Number(rag.vectorWeight);
-    if (rag.keywordWeight !== undefined)
-      config.keywordWeight = Number(rag.keywordWeight);
+    if (inMemory && ragStore.vectorWeight !== undefined)
+      config.vectorWeight = Number(ragStore.vectorWeight);
+    if (inMemory && ragStore.keywordWeight !== undefined)
+      config.keywordWeight = Number(ragStore.keywordWeight);
 
     if (prompts) config.prompts = prompts;
     if (cb) {

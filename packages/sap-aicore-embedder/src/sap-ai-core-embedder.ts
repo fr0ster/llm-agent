@@ -1,12 +1,10 @@
+import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   CallOptions,
   IEmbedderBatch,
   IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  type FoundationModelsCredentials,
-  FoundationModelsEmbedder,
-} from './foundation-embedder.js';
+import { FoundationModelsEmbedder } from './foundation-embedder.js';
 import { OrchestrationScenarioEmbedder } from './orchestration-embedder.js';
 
 export type SapAiCoreEmbedderScenario = 'foundation-models' | 'orchestration';
@@ -27,14 +25,17 @@ export interface SapAiCoreEmbedderConfig {
    */
   scenario?: SapAiCoreEmbedderScenario;
   /**
-   * Explicit credentials for the `foundation-models` scenario.
-   * When omitted, `AICORE_SERVICE_KEY` env var is parsed instead.
-   * Ignored for `scenario: 'orchestration'` (the SAP SDK handles auth there).
+   * The bearer credential presented to SAP AI Core, for both scenarios.
+   * Resolved fresh per call by the backend — never cached here. Build one
+   * from a service key with `serviceKeyCredential` (`@mcp-abap-adt/sap-aicore-auth`).
    */
-  credentials?: FoundationModelsCredentials;
+  credential: IBearerCredential;
+  /**
+   * SAP AI Core base URL (orchestration or REST inference, depending on
+   * `scenario`). Not part of the credential (§4.6.3).
+   */
+  apiBaseUrl: string;
 }
-
-export type { FoundationModelsCredentials };
 
 export class SapAiCoreEmbedder implements IEmbedderBatch {
   private readonly backend: IEmbedderBatch;
@@ -45,12 +46,15 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
       this.backend = new OrchestrationScenarioEmbedder({
         model: config.model,
         resourceGroup: config.resourceGroup,
+        credential: config.credential,
+        apiBaseUrl: config.apiBaseUrl,
       });
     } else {
       this.backend = new FoundationModelsEmbedder({
         model: config.model,
         resourceGroup: config.resourceGroup,
-        credentials: config.credentials,
+        credential: config.credential,
+        apiBaseUrl: config.apiBaseUrl,
       });
     }
   }

@@ -21,6 +21,7 @@ import type {
   IModelResolver,
   IPipelineInstance,
   IPipelinePlugin,
+  IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
   ISkillManager,
@@ -34,6 +35,7 @@ import type {
   McpCallResult,
   McpClientDescriptor,
   NamespaceClientInput,
+  PipelinePluginFactory,
   PluginExports,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -47,12 +49,14 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
+  SimpleRagProviderRegistry,
   type ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
   SessionAgentParts,
   SessionGraph,
+  SessionGraphIdentity,
   SmartAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -65,7 +69,6 @@ import {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
   KnowledgeRag,
-  makeLlm,
   mergePluginExports,
   SessionRequestLogger,
   SmartAgentBuilder,
@@ -78,15 +81,8 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
-import type {
-  EmbedderResolutionConfig,
-  EmbedderResolutionOptions,
-} from '@mcp-abap-adt/llm-agent-rag';
-import {
-  makeRag,
-  prefetchEmbedderFactories,
-  resolveEmbedder,
-} from '@mcp-abap-adt/llm-agent-rag';
+import type { EmbedderResolutionOptions } from '@mcp-abap-adt/llm-agent-rag';
+import { prefetchEmbedderFactories } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { ConfigReloadWatcher } from './config-reload-watcher.js';
 import { handleAdapterRequest } from './http/adapter-route-handler.js';
@@ -114,11 +110,19 @@ import {
 import { handleUsageRoute } from './http/usage-route-handler.js';
 import {
   type IRoleLlmResolver,
-  makeDefaultRoleLlm,
   RoleLlmResolver,
 } from './llm/role-llm-resolver.js';
+import {
+  assertRagConfigShape,
+  embedderSectionFor,
+  type MakeRagInput,
+  type SmartServerEmbedderConfig,
+  type SmartServerRagConfig,
+  toMakeRagInput,
+} from './rag-config.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
+import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
 export { writeNotReady } from './http/response-helpers.js';
 
@@ -129,7 +133,12 @@ export { writeNotReady } from './http/response-helpers.js';
 export interface SmartServerLlmConfig {
   /** Provider id for the flat schema. Required when no pipeline.llm.main is set. */
   provider?: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
-  apiKey: string;
+  /**
+   * Names the account this role uses; the composition root resolves it to a
+   * credential. Omit it and the root's default entry applies. Never a secret:
+   * the value never enters this object, which is what `${VAR}` got wrong (§4.6.2).
+   */
+  credentialRef?: string;
   /** Custom base URL (OpenAI-compatible endpoints: Ollama, Azure, vLLM). */
   url?: string;
   model?: string;
@@ -145,46 +154,6 @@ export interface SmartServerLlmConfig {
    * waiting at the other end, which this library cannot see.
    */
   whenThrottled?: IThrottleStrategy;
-}
-
-export interface SmartServerRagConfig {
-  type?: 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector';
-  /**
-   * Embedder name — resolved from the embedder factory registry.
-   * Built-in: 'ollama', 'openai', 'sap-ai-core'. Consumers can register custom factories.
-   * When omitted, defaults to 'ollama' for stores that require one.
-   */
-  embedder?: string;
-  url?: string;
-  model?: string;
-  collectionName?: string;
-  dedupThreshold?: number;
-  vectorWeight?: number;
-  keywordWeight?: number;
-  connectionString?: string;
-  host?: string;
-  port?: number;
-  user?: string;
-  password?: string;
-  database?: string;
-  schema?: string;
-  dimension?: number;
-  autoCreateSchema?: boolean;
-  poolMax?: number;
-  connectTimeout?: number;
-  /**
-   * Cap on texts per embedBatch call. Precedence: this value → the provider's
-   * declared cap → the library default (100). Set it when the tenant's real
-   * limit is lower than the model's documented one.
-   */
-  maxBatchSize?: number;
-  /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
-  resourceGroup?: string;
-  /**
-   * SAP AI Core scenario for the embedding model deployment.
-   * `'orchestration'` (default) uses the SAP SDK; `'foundation-models'` calls the REST inference API.
-   */
-  scenario?: 'orchestration' | 'foundation-models';
 }
 
 export interface SmartServerMcpConfig {
@@ -268,10 +237,12 @@ export interface SmartServerConfig {
   prompts?: SmartServerPromptsConfig;
   mode?: SmartServerMode;
   /**
-   * Pipeline selection: which pipeline plugin runs the agent, plus its
-   * plugin-specific config dialect (validated by the plugin's `parseConfig`).
-   * Built-in names: `flat` | `linear` | `dag` | `stepper`. Plugins may register
-   * additional names. When omitted, defaults to `flat`.
+   * Pipeline selection: which pipeline plugin runs the agent, plus its section
+   * (`config`), parsed by the server for a built-in or by the plugin's factory
+   * for a dynamic plugin; a plugin reads no configuration (§4.6.7). Built-in
+   * names: `flat` | `linear` | `dag` | `stepper` | `controller` |
+   * `controller-weak`. Plugins may register additional names. When omitted,
+   * defaults to `flat`.
    *
    * NOTE: this REPLACES the legacy `pipeline:` block (mcp/rag/stages/llm
    * overrides). Top-level `mcp:`, `rag:`, and `llm:` now own those concerns.
@@ -351,17 +322,30 @@ export interface SmartServerConfig {
 
 /**
  * DI seam for SmartServer's LLM / embedder / skill-host / MCP construction.
- * Every member is optional and defaults to the real implementation, so omitting
- * `deps` (or passing `{}`) preserves the original behaviour exactly. Used by
- * tests (and a future no-listen `buildAgent()`) to substitute canned
- * implementations without network or port I/O.
+ *
+ * `makeLlm` and `resolveEmbedder` are REQUIRED (spec §4.6.3 item 3): the library
+ * constructs no authenticated provider from configuration, so the composition root
+ * supplies them. `makeLlm` receives the SERIALIZABLE section, whose `credentialRef`
+ * the root resolves. Passing `{}` no longer compiles, and an untyped caller that
+ * omits one is refused at construction. Every other member is optional and defaults
+ * to the real implementation; tests substitute canned ones the same way.
  */
 export interface BuildAgentDeps {
-  makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
-  resolveEmbedder?: (
-    cfg: EmbedderResolutionConfig,
+  makeLlm: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
+  /**
+   * Receives the serializable embedder section; the root resolves its credentialRef
+   * and turns the section into the library's `EmbedderResolution`.
+   */
+  resolveEmbedder: (
+    cfg: SmartServerEmbedderConfig,
     options?: EmbedderResolutionOptions,
   ) => IEmbedder;
+  /**
+   * Builds a store from its serializable section and, where it needs one, the
+   * embedder `resolveEmbedder` built. Required (§4.6.4): the library constructs no
+   * authenticated store from configuration any more than an authenticated LLM.
+   */
+  makeRag: (input: MakeRagInput) => Promise<IRag>;
   prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
   buildSkillHost?: (
     cfg: SkillPluginsConfig,
@@ -429,10 +413,28 @@ export interface BuildAgentDeps {
   toolNamespace?: IToolNamespace;
 }
 
+/** A DAG worker's own models: keys of the MAIN file's `llm:` map (§4.6.7).
+ *  An omitted role resolves as that name does for the pipeline — the held
+ *  helper/classifier, or the held main where no helper is configured. */
+export interface SmartServerWorkerLlmKeys {
+  main?: string;
+  helper?: string;
+  classifier?: string;
+}
+
+/** A worker file: everything a main file holds except its own `llm:` map and
+ *  nested `subagents:`. Its `llm` names keys of the main file's map — a string
+ *  is shorthand for `{ main: <key> }`. An inline LLM configuration is refused. */
+export type SmartServerWorkerConfig = Omit<
+  SmartServerConfig,
+  'log' | 'llm' | 'subAgentConfigs'
+> & { llm?: string | SmartServerWorkerLlmKeys };
+
 /**
  * A nested sub-agent declared via the top-level `subagents:` YAML block.
- * The `config` field is the resolved `SmartServerConfig` for the sub-agent
- * (without `subagents:` of its own — nested orchestration is not supported).
+ * The `config` field is the resolved `SmartServerWorkerConfig` for the
+ * sub-agent (without `subagents:` of its own — nested orchestration is not
+ * supported).
  */
 export interface SmartServerSubAgentConfig {
   name: string;
@@ -443,7 +445,7 @@ export interface SmartServerSubAgentConfig {
    * routes by name alone.
    */
   description?: string;
-  config: Omit<SmartServerConfig, 'log'>;
+  config: SmartServerWorkerConfig;
 }
 
 export interface SmartServerHandle {
@@ -496,6 +498,7 @@ import {
   resolveToolSelectionStrategy,
 } from './config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
+import { llmKeySet } from './llm-config-map.js';
 import {
   buildSessionMcpClients,
   serverOwnsMcpConnection,
@@ -507,6 +510,15 @@ import {
   rebindProvenanceToClients,
 } from './mcp/namespaced-bridge.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
+import {
+  assertNamedLlmKeys,
+  dagNamedLlmKeys,
+  parseControllerSettings,
+  parseDagSettings,
+  parseLinearSettings,
+  parseStepperSettings,
+} from './pipeline-settings.js';
+import { selectPipelinePlugin } from './select-pipeline-plugin.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
@@ -575,6 +587,7 @@ import {
 
 import {
   buildSessionLifecycle,
+  buildSessionRagRegistry,
   recordSessionEnd,
   recordSessionStart,
   resolveSubAgentRagRegistry,
@@ -584,6 +597,7 @@ import {
 
 export {
   buildSessionLifecycle,
+  buildSessionRagRegistry,
   handleDeleteSession,
   handleListSessions,
   handleResumeSession,
@@ -593,6 +607,7 @@ export {
   type SessionLifecycle,
   type SessionLifecycleOptions,
   type SessionListBody,
+  type SessionRagRegistryInput,
   type SessionResumeBody,
   seedSessionKnowledge,
 } from './session-lifecycle/index.js';
@@ -725,6 +740,30 @@ export function buildMcpBridge(
   };
 }
 
+/**
+ * The seams the library no longer defaults. The type already makes them required;
+ * this runs for callers with no types to check, so a plain-JS embedder of
+ * SmartServer is told at construction instead of starting without an LLM.
+ */
+const REQUIRED_CONSTRUCTION_SEAMS = [
+  'makeLlm',
+  'resolveEmbedder',
+  'makeRag',
+] as const;
+
+function assertConstructionSeams(deps: BuildAgentDeps | undefined): void {
+  const missing = REQUIRED_CONSTRUCTION_SEAMS.filter(
+    (k) => typeof deps?.[k] !== 'function',
+  );
+  if (missing.length === 0) return;
+  throw new Error(
+    `${missing.map((k) => `BuildAgentDeps.${k}`).join(', ')} ` +
+      `${missing.length > 1 ? 'are' : 'is'} required: the library constructs no ` +
+      'LLM, embedder or store from configuration, because doing so meant carrying ' +
+      'a secret through a framework config. Supply them from your composition root.',
+  );
+}
+
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
@@ -772,7 +811,6 @@ export class SmartServer {
    *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
    *  context factory (mirrors the inline DAG/linear resolution). */
   private _llmMap?: NormalizedLlmMap;
-  private _pipelineFallback?: SmartServerLlmConfig;
   private _mainTemp?: number;
   private _roleLlm?: IRoleLlmResolver;
   private _requestLogger?: IRequestLogger;
@@ -787,6 +825,22 @@ export class SmartServer {
    * (the stepper catalog handle), which falls back to catalog order regardless.
    */
   private _toolsRag?: IRag;
+  /**
+   * The providers every build of this server creates through, and the catalogs
+   * a session registry is hydrated from. One object, handed to every build:
+   * without it each session build replaced the registry's provider registry
+   * with a fresh empty one.
+   */
+  private readonly _ragProviderRegistry: IRagProviderRegistry =
+    new SimpleRagProviderRegistry();
+  /**
+   * Catalog findings (rejected rows, skipped globals) already logged by one of
+   * this server's sessions, so the next session does not repeat them. One per
+   * server, never module-global: see SessionRagRegistryInput.reported.
+   */
+  private readonly _reportedCatalogFindings = new Set<string>();
+  /** The deployment's registry, whose globals every session registry holds. */
+  private _globalRagRegistry?: IRagRegistry;
   /**
    * MCP clients connected for the Stepper path from the YAML `mcp:` config
    * block. These are connected ONCE in `start()` (lazily resolved by
@@ -873,12 +927,12 @@ export class SmartServer {
   private readonly _sessionMetaStore: ISessionMetaStore =
     new InMemorySessionMetaStore();
   /**
-   * Pipeline-plugin registry, populated in `start()` after plugins load: the 6
-   * built-ins (flat/linear/dag/stepper/controller/controller-weak) plus any
-   * `plugins.pipelinePlugins`, fail-fast on name collision.
-   * `buildPipelineInstance` selects by `cfg.pipeline.name` (default 'flat').
+   * The ONE pipeline plugin this server runs: its factory was selected by
+   * `cfg.pipeline.name` (default 'flat') and called once in `_buildInfra`, with
+   * `cfg.pipeline.config` parsed by the server (built-ins) or by the plugin author's
+   * factory (dynamic). `buildPipelineInstance` only builds it per session.
    */
-  private _pipelineRegistry!: Map<string, IPipelinePlugin>;
+  private _pipelinePlugin!: IPipelinePlugin;
   /**
    * Per-session `IPipelineInstance.close()` hooks, keyed by sessionId. Populated
    * by `buildPipelineInstance` (via `buildSessionAgent`) and invoked from the
@@ -917,6 +971,7 @@ export class SmartServer {
       BuildAgentDeps,
       | 'makeLlm'
       | 'resolveEmbedder'
+      | 'makeRag'
       | 'prefetchEmbedderFactories'
       | 'buildSkillHost'
       | 'connectMcp'
@@ -927,8 +982,13 @@ export class SmartServer {
       'skillHost' | 'embedder' | 'mcpClients' | 'connectMcpWithDescriptors'
     >;
 
-  constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
+  constructor(config: SmartServerConfig, deps: BuildAgentDeps) {
+    assertConstructionSeams(deps);
     this.cfg = config;
+    assertRagConfigShape(config.rag, 'rag');
+    for (const sub of config.subAgentConfigs ?? []) {
+      assertRagConfigShape(sub.config.rag, `subagent '${sub.name}' rag`);
+    }
     this._mcpSeamInjected =
       deps.mcpClients !== undefined ||
       deps.connectMcp !== undefined ||
@@ -951,8 +1011,9 @@ export class SmartServer {
     this._waitStrategy = deps.waitStrategy;
     this._toolNamespace = deps.toolNamespace ?? defaultToolNamespace;
     this._deps = {
-      makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
-      resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
+      makeLlm: deps.makeLlm,
+      resolveEmbedder: deps.resolveEmbedder,
+      makeRag: deps.makeRag,
       prefetchEmbedderFactories:
         deps.prefetchEmbedderFactories ?? prefetchEmbedderFactories,
       buildSkillHost: deps.buildSkillHost ?? buildSkillHostFromConfig,
@@ -1021,15 +1082,9 @@ export class SmartServer {
 
     // ---- Composition root: resolve config → interfaces --------------------
 
-    // LLM resolution — normalize the flat/map top-level `llm:` block. The legacy
-    // per-pipeline `pipeline.llm.*` override is gone; role LLMs derive entirely
-    // from the top-level map (resolveLlmConfig falls back to map.main), so the
-    // pipelineFallback chain is no longer fed a separate config — it stays
-    // undefined and the map.main fallback in resolveLlmConfig covers it.
+    // LLM resolution — normalize the flat/map top-level `llm:` block.
     const llmMap = normalizeLlmConfig(this.cfg.llm);
-    const pipelineFallback: SmartServerLlmConfig | undefined = undefined;
-
-    const topMain = resolveLlmConfig(llmMap, 'main', pipelineFallback);
+    const topMain = resolveLlmConfig(llmMap, 'main');
 
     const mainTemp = Number(topMain?.temperature ?? 0.7);
     const mainLlm = topMain
@@ -1038,12 +1093,15 @@ export class SmartServer {
           throw new Error('no LLM configured: provide top-level llm.main');
         })();
 
+    const classifierEntry = resolveLlmConfigStrict(llmMap, 'classifier');
     const classifierTemp = Number(topMain?.classifierTemperature ?? 0.1);
-    const classifierLlm = topMain
-      ? await this._deps.makeLlm({ ...topMain, temperature: classifierTemp })
-      : (() => {
-          throw new Error('no LLM configured: provide top-level llm.main');
-        })();
+    const classifierLlm = classifierEntry
+      ? await this._deps.makeLlm(classifierEntry)
+      : topMain
+        ? await this._deps.makeLlm({ ...topMain, temperature: classifierTemp })
+        : (() => {
+            throw new Error('no LLM configured: provide top-level llm.main');
+          })();
 
     // A 'helper' role LLM derives from the top-level `llm:` map when present
     // (built only when an explicit map entry exists).
@@ -1058,16 +1116,18 @@ export class SmartServer {
     this._classifierLlm = classifierLlm;
     this._helperLlm = helperLlm;
     this._llmMap = llmMap;
-    this._pipelineFallback = pipelineFallback;
     this._mainTemp = mainTemp;
     this._roleLlm = new RoleLlmResolver({
       getMain: () => this._mainLlm,
       getHelper: () => this._helperLlm,
       getClassifier: () => this._classifierLlm,
       getLlmMap: () => this._llmMap,
-      getPipelineFallback: () => this._pipelineFallback,
-      makeLlm: (lc) => this._deps.makeLlm(lc),
+      build: (entry) => this._deps.makeLlm(entry),
     });
+
+    // The programmatic subAgentConfigs path never passed the YAML check, so a
+    // worker's named keys are checked here too (§4.6.7): startup fails loudly.
+    assertWorkerLlmConfig(this.cfg.subAgentConfigs, llmMap);
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
@@ -1119,36 +1179,79 @@ export class SmartServer {
       log({ event: 'plugin_specifier_loaded', spec, registered });
     }
 
-    // ---- Pipeline-plugin registry (sub-goal C) ---------------------------
-    // The 6 built-ins are STATIC; plugin-supplied pipelines are merged on top.
-    // Fail-fast on a name collision so a plugin cannot silently shadow a
-    // built-in (or another plugin). `buildPipelineInstance` selects by
-    // `cfg.pipeline.name` (default 'flat') at session-build time.
-    const pipelineRegistry = new Map<string, IPipelinePlugin>();
-    for (const builtin of [
-      new FlatPipelinePlugin(),
-      new LinearPipelinePlugin(),
-      new DagPipelinePlugin(),
-      new StepperPipelinePlugin(),
-      new ControllerPipelinePlugin('controller', 'smart-executor'),
-      new ControllerPipelinePlugin('controller-weak', 'weak-executor'),
-    ]) {
-      pipelineRegistry.set(builtin.name, builtin);
-    }
-    for (const [name, plugin] of plugins.pipelinePlugins) {
+    // ---- Pipeline-plugin registry: factories (§4.6.7) -------------------
+    // Built-ins are server code — parse, validate, construct with typed settings.
+    // A dynamic instance export is registered as a factory that ignores its
+    // section; a dynamic factory is the plugin author's parser. Only the selected
+    // entry is ever called, once, below.
+    const warn = (m: string) => this.warn(m);
+    const pipelineRegistry = new Map<string, PipelinePluginFactory>([
+      ['flat', () => new FlatPipelinePlugin()],
+      ['linear', (s) => new LinearPipelinePlugin(parseLinearSettings(s))],
+      [
+        'dag',
+        (s) => {
+          const settings = parseDagSettings(s, warn);
+          assertNamedLlmKeys(
+            dagNamedLlmKeys(settings),
+            this._llmMap,
+            "pipeline 'dag'",
+          );
+          return new DagPipelinePlugin(settings);
+        },
+      ],
+      ['stepper', (s) => new StepperPipelinePlugin(parseStepperSettings(s))],
+      [
+        'controller',
+        (s) =>
+          new ControllerPipelinePlugin(
+            'controller',
+            'smart-executor',
+            parseControllerSettings(s, llmKeySet(this._llmMap)),
+          ),
+      ],
+      [
+        'controller-weak',
+        (s) =>
+          new ControllerPipelinePlugin(
+            'controller-weak',
+            'weak-executor',
+            parseControllerSettings(s, llmKeySet(this._llmMap)),
+          ),
+      ],
+    ]);
+    const pipelineSources = new Map<string, string>(
+      [...pipelineRegistry.keys()].map((k) => [k, 'built-in']),
+    );
+    const registerPipeline = (
+      name: string,
+      factory: PipelinePluginFactory,
+    ): void => {
+      const source = plugins.pipelinePluginSources.get(name) ?? 'unknown';
       if (pipelineRegistry.has(name)) {
         throw new Error(
           `pipeline plugin name collision: '${name}' is already registered ` +
-            '(built-in or another plugin)',
+            `(built-in or another plugin) — '${source}' against '${pipelineSources.get(name)}'`,
         );
       }
-      pipelineRegistry.set(name, plugin);
+      pipelineRegistry.set(name, factory);
+      pipelineSources.set(name, source);
+    };
+    for (const [name, plugin] of plugins.pipelinePlugins)
+      registerPipeline(name, () => plugin);
+    for (const [name, factory] of plugins.pipelinePluginFactories ?? []) {
+      registerPipeline(name, factory);
     }
-    this._pipelineRegistry = pipelineRegistry;
     log({
       event: 'pipeline_registry_loaded',
       pipelines: [...pipelineRegistry.keys()],
     });
+    this._pipelinePlugin = selectPipelinePlugin(
+      pipelineRegistry,
+      pipelineSources,
+      this.cfg.pipeline?.name ?? 'flat',
+      this.cfg.pipeline?.config ?? {},
+    );
 
     // Merge plugin embedder factories with config-provided ones
     const mergedEmbedderFactories = {
@@ -1168,7 +1271,7 @@ export class SmartServer {
       buildSubAgent: (name, subCfg, parentLogger, factories, injected) =>
         this.buildSubAgent(
           name,
-          subCfg as Omit<SmartServerConfig, 'log'>,
+          subCfg as SmartServerWorkerConfig,
           parentLogger,
           factories,
           injected,
@@ -1180,6 +1283,7 @@ export class SmartServer {
     const resolvedEmbedder = await resolveAgentEmbedder(
       this.cfg.rag,
       this._deps.embedder ?? this.cfg.embedder,
+      this._deps.resolveEmbedder,
       mergedEmbedderFactories,
       this._fileLogger,
     );
@@ -1203,9 +1307,10 @@ export class SmartServer {
       // Prefetch the named embedder factory only when we will actually build a
       // dedicated one (the agent embedder is already prefetched + wrapped).
       if (!reuseAgentEmbedder) {
-        await this._deps.prefetchEmbedderFactories([
-          skillCfg.embedder?.provider ?? 'ollama',
-        ]);
+        const section = embedderSectionFor(skillCfg.embedder?.provider);
+        if (section.factory === undefined) {
+          await this._deps.prefetchEmbedderFactories([section.provider]);
+        }
       }
       // Build → load → validate as one fail-fast unit. If ANY step throws, the
       // captured pg pools are ended INSIDE initSkillHost (the later closeFns
@@ -1218,9 +1323,10 @@ export class SmartServer {
               resolveEmbedder: (ec) =>
                 reuseAgentEmbedder
                   ? ((injectedEmbedder ?? resolvedEmbedder) as IEmbedder)
-                  : this._deps.resolveEmbedder(ec, {
-                      extraFactories: mergedEmbedderFactories,
-                    }),
+                  : this._deps.resolveEmbedder(
+                      embedderSectionFor(ec.embedder, ec.model),
+                      { extraFactories: mergedEmbedderFactories },
+                    ),
               // Real pg `Pool` provider for a `postgres` catalog (qdrant
               // deployment). Lazily imports `pg` and ensures the catalog table
               // exists on first use; pass the configured table so the DDL targets
@@ -1264,12 +1370,12 @@ export class SmartServer {
       meta: { displayName: string; scope: 'global' };
     }> = [];
     if (this.cfg.rag) {
-      const ragOptions = {
-        injectedEmbedder: resolvedEmbedder,
-        extraFactories: mergedEmbedderFactories,
-      };
-      toolsRag = await makeRag(this.cfg.rag, ragOptions);
-      historyRag = await makeRag({ ...this.cfg.rag }, ragOptions);
+      // The embedder was resolved through the seam above; the store is built
+      // through its own. Two calls, two stores — the history store never shared
+      // the tools store's instance.
+      const input = toMakeRagInput(this.cfg.rag.store, resolvedEmbedder, 'rag');
+      toolsRag = await this._deps.makeRag(input);
+      historyRag = await this._deps.makeRag(input);
     }
     // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
     // (and white-box vectorization assertions). See field doc.
@@ -1446,6 +1552,15 @@ export class SmartServer {
     } = agentHandle;
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
+    this._globalRagRegistry = globalRagRegistry;
+    // Two limits of this server, stated rather than fixed (§6.4): it registers
+    // no RAG providers, so no session registry has a catalog to hydrate from —
+    // each holds only the deployment's globals; and its sessions carry a
+    // sessionId and no userId (llm-agent-libs session-registry.ts builds them
+    // from { sessionId }), so user collections are neither hydrated nor
+    // creatable through it. Not logged: in today's default deployment it would
+    // fire at every start, and an expected warning trains readers to skip the
+    // real ones — the limits are stated here, in the CHANGELOG and in the docs.
 
     // ---- Authoritative namespaced snapshot — yaml-builder path (#244) --------
     // The startup builder computes `namespacedTools`/`toolProvenance` (+ the
@@ -1547,7 +1662,13 @@ export class SmartServer {
       // `this._toolsRag` === the `toolsRag` local captured in start(); reference
       // the field as the single source of truth for the tools store.
       toolsRag: this._toolsRag,
-      ragRegistry: globalRagRegistry,
+      // A registry per session, seeded with the deployment's globals and
+      // hydrated for its identity (§6.4). Never the shared one: collections are
+      // addressed by name, so sharing it would put every session's collections
+      // in every session's address space. Hydration finds nothing until a
+      // provider is registered, and no user collection while sessions carry no
+      // userId — see the limits stated above.
+      ragRegistryFactory: (identity) => this._sessionRagRegistry(identity),
       buildAgent: (parts) => this.buildSessionAgent(parts),
       logger: fileLogger,
       // Per-session pipeline teardown: run the IPipelineInstance.close captured
@@ -1819,7 +1940,7 @@ export class SmartServer {
    */
   private async buildSubAgent(
     name: string,
-    subCfg: Omit<SmartServerConfig, 'log'>,
+    subCfg: SmartServerWorkerConfig,
     parentLogger: ILogger,
     embedderFactories: Record<string, EmbedderFactory>,
     injected?: {
@@ -1827,26 +1948,19 @@ export class SmartServer {
       toolsRag: IRag | undefined;
       mcpClients: IMcpClient[];
       requestLogger: IRequestLogger;
-      mainLlm: ILlm;
-      classifierLlm: ILlm;
-      helperLlm?: ILlm;
       embedder?: IEmbedder;
     },
   ): Promise<SmartAgent> {
-    // Normalize subagent llm: either flat { provider, apiKey, ... } or a map
-    // { main: {...}, planner: {...} }. normalizeLlmConfig wraps flat shape as
-    // { main: flat } so downstream code always reads from .main.
-    const subLlmMap = normalizeLlmConfig(subCfg.llm);
-    const subLlmMain = subLlmMap?.main;
-    if (
-      !subLlmMain?.apiKey &&
-      subLlmMain?.provider !== 'sap-ai-sdk' &&
-      subLlmMain?.provider !== 'ollama'
-    ) {
-      throw new Error(`subagent '${name}': LLM API key is required`);
-    }
-    // The subagent's helper role derives from its own top-level `llm:` map.
-    const subHelperCfg = resolveLlmConfigStrict(subLlmMap, 'helper');
+    // A worker's three LLM slots come from the SAME resolver as the pipeline's
+    // (§4.6.7): a named key resolves strictly, an omitted role as that name
+    // does for the pipeline. Instances are held by the resolver, so nothing is
+    // built per session and a PUT /v1/config swap reaches workers too.
+    const keys = parseWorkerLlm(name, subCfg.llm);
+    const [mainLlm, classifierLlm, helperLlm] = await Promise.all([
+      this.resolveWorkerRoleLlm(keys.main, 'main'),
+      this.resolveWorkerRoleLlm(keys.classifier, 'classifier'),
+      this.resolveWorkerRoleLlm(keys.helper, 'helper'),
+    ]);
 
     // LLM/embedder clients: when the per-session re-wire injected them, use
     // those cached instances by reference (NEVER reconstruct). Otherwise (the
@@ -1855,76 +1969,39 @@ export class SmartServer {
     // instances.
     // Note: a per-worker embedder slot is carried in WorkerLlmSet and the
     // injected record for forward-compat with Task A8/A10 per-session wiring.
-    // Today's buildSubAgent does not separately resolve an embedder here —
-    // embedders are carried by the worker's own store via makeRag's
-    // `injectedEmbedder` — so we ignore the embedder field below.
-    // Resolve (build-once or load from cache) the worker's own LLMs +
+    // The worker's embedder is resolved through `BuildAgentDeps.resolveEmbedder`
+    // inside the factories below (`_workerRagInput`), not separately here.
+    // Resolve (build-once or load from cache) the worker's own
     // toolsRag/historyRag/mcpClients. The cache is keyed by worker name; the
     // primary build() populates it (no `injected` arg), and per-session
     // re-wires (`injected` set) read from it via the same call below — the
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
-    const subFlatLlm = subLlmMain;
-    const mainTemp = Number(subFlatLlm?.temperature ?? 0.7);
-    const classifierTemp = Number(subFlatLlm?.classifierTemperature ?? 0.1);
     const cached = await resolveWorkerLlmSet({
       name,
       cache: this._workers.cache,
-      // Preserve the existing makeLlm derivation exactly.
-      makeMain: () =>
-        makeLlm(
-          {
-            // ?? 'deepseek' is a TS type-narrowing net only; the config
-            // validator rejects a missing flat-schema provider before
-            // this runs.
-            provider: subFlatLlm?.provider ?? 'deepseek',
-            apiKey: subFlatLlm?.apiKey ?? '',
-            baseURL: subFlatLlm?.url,
-            model: subFlatLlm?.model,
-          },
-          mainTemp,
-        ),
-      makeClassifier: () =>
-        makeLlm(
-          {
-            provider: subFlatLlm?.provider ?? 'deepseek',
-            apiKey: subFlatLlm?.apiKey ?? '',
-            baseURL: subFlatLlm?.url,
-            model: subFlatLlm?.model,
-          },
-          classifierTemp,
-        ),
-      makeHelper: subHelperCfg
-        ? (
-            (h) => () =>
-              makeLlm(
-                {
-                  provider: h.provider ?? 'deepseek',
-                  apiKey: h.apiKey,
-                  baseURL: h.url,
-                  model: h.model,
-                },
-                Number(h.temperature ?? 0.1),
-              )
-          )(subHelperCfg)
-        : undefined,
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
       // re-wired per-session by reference — never re-vectorized.
       makeToolsRag: subCfg.rag
-        ? () =>
-            makeRag(subCfg.rag as SmartServerRagConfig, {
-              injectedEmbedder: subCfg.embedder,
-              extraFactories: embedderFactories,
-            })
+        ? async () =>
+            this._deps.makeRag(
+              await this._workerRagInput(
+                name,
+                subCfg.rag as SmartServerRagConfig,
+                subCfg.embedder,
+                embedderFactories,
+              ),
+            )
         : undefined,
       makeHistoryRag: subCfg.rag
-        ? () =>
-            makeRag(
-              { ...(subCfg.rag as SmartServerRagConfig) },
-              {
-                injectedEmbedder: subCfg.embedder,
-                extraFactories: embedderFactories,
-              },
+        ? async () =>
+            this._deps.makeRag(
+              await this._workerRagInput(
+                name,
+                subCfg.rag as SmartServerRagConfig,
+                subCfg.embedder,
+                embedderFactories,
+              ),
             )
         : undefined,
       // Worker-OWN MCP clients. DI list (subCfg.mcpClients) wins; otherwise
@@ -1936,9 +2013,6 @@ export class SmartServer {
           ? async () => subCfg.mcpClients as IMcpClient[]
           : undefined,
     });
-    const mainLlm: ILlm = cached.mainLlm;
-    const classifierLlm: ILlm = cached.classifierLlm;
-    const helperLlm: ILlm | undefined = cached.helperLlm;
 
     let subBuilder = new SmartAgentBuilder({
       mcp: subCfg.mcp,
@@ -1951,9 +2025,7 @@ export class SmartServer {
       .withLogger(parentLogger)
       .withMode(subCfg.mode ?? 'smart');
 
-    if (helperLlm) {
-      subBuilder = subBuilder.withHelperLlm(helperLlm);
-    }
+    subBuilder = subBuilder.withHelperLlm(helperLlm);
 
     // SHARE the parent RAG registry + session logger when injected (per-session
     // worker re-wire). The per-call scope filter isolates by ctx.sessionId.
@@ -2013,28 +2085,51 @@ export class SmartServer {
   // -- Pipeline-context dep sources (promoted from the inline coordinator-gate
   //    closures; consumed by buildServerCtx, which later tasks call) ----------
 
-  /** Build an LLM from a SmartServerLlmConfig (mirrors stepperMakeLlm/DAG).
-   *  Routes through the BuildAgentDeps seam so an injected `makeLlm` overrides
-   *  the real builder. */
-  private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
-    return this._deps.makeLlm(lc);
+  /** A worker's own store input: its embedder through the seam, then paired. */
+  private async _workerRagInput(
+    name: string,
+    rag: SmartServerRagConfig,
+    diEmbedder: IEmbedder | undefined,
+    extraFactories: Record<string, EmbedderFactory>,
+  ): Promise<MakeRagInput> {
+    const embedder = await resolveAgentEmbedder(
+      rag,
+      diEmbedder,
+      this._deps.resolveEmbedder,
+      extraFactories,
+      this._fileLogger,
+    );
+    return toMakeRagInput(rag.store, embedder, `subagent '${name}' rag`);
   }
 
-  /** The real `makeLlm`-backed construction (the seam's default). */
-  private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
-    return makeDefaultRoleLlm(lc, this._mainTemp);
-  }
-
-  /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.
-   *  'main' returns the captured mainLlm; 'helper'/'classifier' return the
-   *  prebuilt instances when present; otherwise the map/fallback config is built. */
+  /** `ctx.resolveLlm(role)` — the role's default, through the held role map. */
   private async resolveRoleLlm(role: string): Promise<ILlm> {
+    return this.roleLlm().resolve(role);
+  }
+
+  /** `ctx.resolveNamedLlm(key)` — strict: an `llm:` entry of exactly that name. */
+  private async resolveNamedRoleLlm(key: string): Promise<ILlm> {
+    return this.roleLlm().resolveNamed(key);
+  }
+
+  /** A worker role's LLM: its named key strictly, else the role's own name —
+   *  the same resolver the pipeline reads, so instances are shared (§4.6.7). */
+  private async resolveWorkerRoleLlm(
+    key: string | undefined,
+    role: 'main' | 'helper' | 'classifier',
+  ): Promise<ILlm> {
+    return key !== undefined
+      ? this.roleLlm().resolveNamed(key)
+      : this.roleLlm().resolve(role);
+  }
+
+  private roleLlm(): IRoleLlmResolver {
     if (!this._roleLlm) {
       throw new Error(
-        'resolveRoleLlm invoked before _buildInfra built the resolver',
+        'role LLM lookup invoked before _buildInfra built the resolver',
       );
     }
-    return this._roleLlm.resolve(role);
+    return this._roleLlm;
   }
 
   /**
@@ -2328,27 +2423,16 @@ export class SmartServer {
   }
 
   /**
-   * Build the per-session pipeline instance from the registry. Selects the
-   * plugin by `cfg.pipeline.name` (default 'flat'), parses its config dialect,
-   * and builds it against a session-scoped pipeline context. The returned
-   * `IPipelineInstance` carries `{ agent, close }` — the session consumes
-   * `agent`; `buildSessionAgent` registers `close` into the session-dispose path.
+   * Build the per-session pipeline instance from the plugin selected at startup,
+   * against a session-scoped pipeline context. The returned `IPipelineInstance`
+   * carries `{ agent, close }`; `buildSessionAgent` registers `close` into the
+   * session-dispose path.
    */
   private async buildPipelineInstance(scope: {
     sessionId: string;
     parts: SessionAgentParts;
   }): Promise<IPipelineInstance> {
-    const name = this.cfg.pipeline?.name ?? 'flat';
-    const plugin = this._pipelineRegistry.get(name);
-    if (!plugin) {
-      throw new Error(
-        `unknown pipeline '${name}'; available: ${[
-          ...this._pipelineRegistry.keys(),
-        ].join(', ')}`,
-      );
-    }
-    const cfg = plugin.parseConfig(this.cfg.pipeline?.config ?? {});
-    return plugin.build(cfg, await this.buildServerCtx(scope));
+    return this._pipelinePlugin.build(await this.buildServerCtx(scope));
   }
 
   private warn(msg: string): void {
@@ -2460,6 +2544,7 @@ export class SmartServer {
       : undefined;
     return createServerPipelineContext({
       resolveLlm: (role) => this.resolveRoleLlm(role),
+      resolveNamedLlm: (key) => this.resolveNamedRoleLlm(key),
       knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),
       // Durable backend + resolved embedder shared with every pipeline; the
       // controller pipeline consumes both (session-bundle persistence +
@@ -2529,9 +2614,6 @@ export class SmartServer {
         this.buildBaseBuilder(
           this.partsToBaseInput(scope.parts, workerRegistry, extras),
         ),
-      makeLlm: (c) => this._makeLlm(c),
-      llmMap: this._llmMap,
-      pipelineFallback: this._pipelineFallback,
       mainLlm: this._mainLlm as ILlm,
       helperLlm: this._helperLlm,
       mainTemp: this._mainTemp ?? 0.7,
@@ -2608,6 +2690,10 @@ export class SmartServer {
     if (parts.ragRegistry) {
       builder = builder.setRagRegistry(parts.ragRegistry);
     }
+    // The server's one provider registry: without it build() substitutes an
+    // empty one and sets it on the session's registry, and an adopted
+    // collection's delete then reaches no provider.
+    builder = builder.setRagProviderRegistry(this._ragProviderRegistry);
     if (parts.requestLogger) {
       builder = builder.withRequestLogger(parts.requestLogger);
     }
@@ -2707,6 +2793,24 @@ export class SmartServer {
     );
 
     return builder;
+  }
+
+  /** The registry one session owns; see buildSessionRagRegistry. */
+  private _sessionRagRegistry(
+    identity: SessionGraphIdentity,
+  ): Promise<IRagRegistry> {
+    if (!this._globalRagRegistry) {
+      throw new Error(
+        'A session RAG registry was requested before the server infra was built',
+      );
+    }
+    return buildSessionRagRegistry({
+      identity,
+      globals: this._globalRagRegistry,
+      providers: this._ragProviderRegistry,
+      logger: this._fileLogger,
+      reported: this._reportedCatalogFindings,
+    });
   }
 
   /**
@@ -3039,6 +3143,7 @@ export class SmartServer {
   private _configUpdateTarget(): IConfigUpdateTarget {
     return {
       modelResolver: this.cfg.modelResolver,
+      skipModelValidation: this.cfg.skipModelValidation === true,
       setMainLlm: (llm) => {
         this._mainLlm = llm;
       },
@@ -3066,7 +3171,7 @@ export class SmartServer {
  *  `SmartServer.start()` is the default impl that adds HTTP `listen` on top. */
 export async function buildAgent(
   cfg: SmartServerConfig,
-  deps?: BuildAgentDeps,
+  deps: BuildAgentDeps,
 ): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
   const server = new SmartServer(cfg, deps);
   const built = await server._buildEmbeddedAgent();

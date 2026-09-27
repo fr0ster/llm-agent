@@ -10,6 +10,7 @@
     "dist",
     "node_modules",
     "**/__tests__/**",
+    "**/__typechecks__/**",
     "**/*.test.ts",
     "src/**/plan-analysis.ts"
   ],

@@ -8,9 +8,10 @@
 #   $env:LLM_MODEL="gpt-4o"; .\tools\claude-via-agent.ps1  # override model
 #
 # Required environment (set in .env or before running):
-#   LLM_PROVIDER  — openai | anthropic | deepseek | sap-ai-sdk
-#   LLM_API_KEY   — provider API key (or AICORE_SERVICE_KEY for sap-ai-sdk)
-#   LLM_MODEL     — model name as the provider expects
+#   LLM_PROVIDER    — openai | anthropic | deepseek | sap-ai-sdk
+#   LLM_API_KEY     — provider API key (openai / anthropic / deepseek)
+#   LLM_SERVICE_KEY — the SAP AI Core service-key JSON (sap-ai-sdk)
+#   LLM_MODEL       — model name as the provider expects
 #
 # Optional:
 #   MCP_ENDPOINT  — MCP server URL (default: none)

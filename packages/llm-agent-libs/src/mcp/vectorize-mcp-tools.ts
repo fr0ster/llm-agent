@@ -309,6 +309,8 @@ export async function vectorizeMcpTools(
   // All-or-nothing, so on failure we fall through to the per-tool loop, which
   // classifies exactly which record is bad.
   let bulkWritten = false;
+  // Which tools' writes returned ok — turned into the record count below.
+  const written: boolean[] = new Array(tools.length).fill(false);
   if (vectors && writer.upsertManyPrecomputedRaw) {
     const bulk = await writer
       .upsertManyPrecomputedRaw(
@@ -327,7 +329,7 @@ export async function vectorizeMcpTools(
         error: err instanceof Error ? err : new Error(String(err)),
       }));
     if (bulk.ok) {
-      acc.vectorized += tools.length;
+      written.fill(true);
       bulkWritten = true;
     }
     // else: fall through to the per-tool loop below.
@@ -354,7 +356,7 @@ export async function vectorizeMcpTools(
         ok = false;
       }
       if (!ok) acc.failed.push(tools[i].name);
-      else acc.vectorized++;
+      else written[i] = true;
 
       // Sequential path only: without precomputed vectors each write embeds
       // one text, so this loop is one provider request per tool. Retry reacts
@@ -374,6 +376,22 @@ export async function vectorizeMcpTools(
       }
     }
   }
+
+  // Count RECORDS, not writes. Two tools whose ids collide (a custom
+  // IToolRecordKey can do it) write into one record: the later write replaces
+  // the earlier, the store holds one, and counting writes would report N/N
+  // for a catalog missing a tool. The overwritten tool is reported as failed.
+  // Cheap and store-agnostic (no read-back). A store that merges records with
+  // DIFFERENT ids breaks the IRagBackendWriter contract and is not detected
+  // here — the shipped in-memory stores no longer do.
+  const lastWriter = new Map<string, number>();
+  written.forEach((ok, i) => {
+    if (ok) lastWriter.set(ids[i], i);
+  });
+  written.forEach((ok, i) => {
+    if (ok && lastWriter.get(ids[i]) !== i) acc.failed.push(tools[i].name);
+  });
+  acc.vectorized = lastWriter.size;
 
   const summary: ToolVectorizationSummary = {
     total: acc.total,

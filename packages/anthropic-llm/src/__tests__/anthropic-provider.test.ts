@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   type Message,
   resetQuotaGates,
+  staticApiKey,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { AnthropicProvider } from '../anthropic-provider.js';
@@ -12,45 +13,69 @@ import { AnthropicProvider } from '../anthropic-provider.js';
 // ---------------------------------------------------------------------------
 
 describe('AnthropicProvider — constructor', () => {
-  it('throws when apiKey is missing', () => {
+  it('throws when credential is missing', () => {
+    // B1 removed `LLMProviderConfig.apiKey`, so there is no longer a field to
+    // leave empty; `credential` is required and its absence is normally a
+    // compile error. This asserts the runtime fallback for a caller that
+    // bypasses the type (plain JS, or `as any`) still refuses to construct.
     assert.throws(
       () =>
         new AnthropicProvider({
-          apiKey: '',
           model: 'claude-3-5-sonnet-20241022',
-        }),
-      /API key is required/,
+          // biome-ignore lint/suspicious/noExplicitAny: intentional missing credential for test
+        } as any),
+      /credential/i,
     );
   });
 
   it('throws when model is missing', () => {
     assert.throws(
-      // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
-      () => new AnthropicProvider({ apiKey: 'sk-test' } as any),
+      () =>
+        // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
+        new AnthropicProvider({ credential: staticApiKey('sk-test') } as any),
       /model/i,
     );
   });
 
   it('uses custom model when provided', () => {
     const p = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-opus-20240229',
     });
     assert.equal(p.model, 'claude-3-opus-20240229');
   });
 
-  it('sets x-api-key header', () => {
+  it('sends an x-api-key header, resolved per request', async () => {
+    // Task B3: the credential is no longer baked into `client.defaults.headers`
+    // at construction — a secret resolved once there would be frozen for the
+    // object's lifetime. It is asked for fresh on each request instead; see
+    // credential.test.ts for the "asked twice, differs twice" case.
     const p = new AnthropicProvider({
-      apiKey: 'sk-ant-test',
+      credential: staticApiKey('sk-ant-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
-    const headers = p.client.defaults.headers as Record<string, unknown>;
-    assert.equal(headers['x-api-key'], 'sk-ant-test');
+    let capturedHeaders: Record<string, unknown> | undefined;
+    // @ts-expect-error — stub axios for test
+    p.client.post = async (
+      _url: string,
+      _body: unknown,
+      config?: { headers?: Record<string, unknown> },
+    ) => {
+      capturedHeaders = config?.headers;
+      return {
+        data: {
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+        },
+      };
+    };
+    await p.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(capturedHeaders?.['x-api-key'], 'sk-ant-test');
   });
 
   it('sets anthropic-version header', () => {
     const p = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
     const headers = p.client.defaults.headers as Record<string, unknown>;
@@ -59,7 +84,7 @@ describe('AnthropicProvider — constructor', () => {
 
   it('uses default baseURL', () => {
     const p = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
     assert.equal(p.client.defaults.baseURL, 'https://api.anthropic.com/v1');
@@ -67,7 +92,7 @@ describe('AnthropicProvider — constructor', () => {
 
   it('uses custom baseURL', () => {
     const p = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       baseURL: 'https://proxy.example.com/v1',
     });
@@ -81,7 +106,7 @@ describe('AnthropicProvider — constructor', () => {
 
 describe('AnthropicProvider — formatMessages', () => {
   const provider = new AnthropicProvider({
-    apiKey: 'sk-test',
+    credential: staticApiKey('sk-test'),
     model: 'claude-3-5-sonnet-20241022',
   });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
@@ -118,7 +143,7 @@ describe('AnthropicProvider — formatMessages', () => {
 describe('AnthropicProvider — chat error handling', () => {
   it('wraps API errors with "Anthropic API error:" prefix', async () => {
     const provider = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       baseURL: 'http://localhost:1',
     });
@@ -139,7 +164,7 @@ describe('AnthropicProvider — chat error handling', () => {
 describe('AnthropicProvider — chat() options forwarding', () => {
   it('uses per-request overrides', async () => {
     const provider = new AnthropicProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -168,7 +193,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
   it('forwards tools to the request body', async () => {
     const provider = new AnthropicProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -192,7 +217,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
   it('forwards topP and stop options', async () => {
     const provider = new AnthropicProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -219,7 +244,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
   it('handles multi-block response (text + tool_use)', async () => {
     const provider = new AnthropicProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
     // @ts-expect-error — stub axios for test
@@ -240,7 +265,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
   it('extracts system message from messages array', async () => {
     const provider = new AnthropicProvider({
-      apiKey: 'test-key',
+      credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
     let capturedBody: Record<string, unknown> = {};
@@ -275,7 +300,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 describe('AnthropicProvider — streamChat', () => {
   it('is a callable function (no longer throws)', () => {
     const provider = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
     assert.equal(typeof provider.streamChat, 'function');
@@ -289,7 +314,7 @@ describe('AnthropicProvider — streamChat', () => {
 describe('AnthropicProvider — chat() usage', () => {
   it('returns usage from response', async () => {
     const provider = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
     // @ts-expect-error — stub axios for test
@@ -322,7 +347,7 @@ describe('AnthropicProvider — rate limiting', () => {
   it('retries a 429 on chat() and returns the eventual answer', async () => {
     resetQuotaGates();
     const provider = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       whenThrottled: waits,
     });
@@ -356,7 +381,7 @@ describe('AnthropicProvider — rate limiting', () => {
   it('retries a 429 on the streaming path, which runs on fetch', async () => {
     resetQuotaGates();
     const provider = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       whenThrottled: waits,
     });
@@ -399,24 +424,37 @@ describe('AnthropicProvider — one quota per account and endpoint', () => {
   const model = 'claude-3-5-sonnet-20241022';
 
   it('treats an omitted endpoint and the explicit default as one quota', () => {
-    const implicit = new AnthropicProvider({ apiKey: 'sk-a', model });
+    // Task B3: the quota key separates accounts by credential OBJECT
+    // identity now, not by the secret's value — so these two must share ONE
+    // credential object; two `staticApiKey('sk-a')` calls would make two
+    // objects and therefore two buckets, which is what "separates two
+    // credentials" above is testing, not this.
+    const cred = staticApiKey('sk-a');
+    const implicit = new AnthropicProvider({ credential: cred, model });
     const explicit = new AnthropicProvider({
-      apiKey: 'sk-a',
+      credential: cred,
       model,
       baseURL: 'https://api.anthropic.com/v1',
     });
     assert.equal(keyOf(implicit), keyOf(explicit));
   });
 
-  it('separates two API keys', () => {
+  it('separates two credentials', () => {
+    // B1 removed the apiKey the quota key used to be fingerprinted from. The
+    // 429 gate is separated by credential OBJECT identity now
+    // (BaseLLMProvider.credentialScope), wired up here by this provider's own
+    // `quotaCredential()` override.
     assert.notEqual(
-      keyOf(new AnthropicProvider({ apiKey: 'sk-a', model })),
-      keyOf(new AnthropicProvider({ apiKey: 'sk-b', model })),
+      keyOf(new AnthropicProvider({ credential: staticApiKey('sk-a'), model })),
+      keyOf(new AnthropicProvider({ credential: staticApiKey('sk-b'), model })),
     );
   });
 
   it('never puts the credential itself in the key', () => {
-    const p = new AnthropicProvider({ apiKey: 'sk-secret-value', model });
+    const p = new AnthropicProvider({
+      credential: staticApiKey('sk-secret-value'),
+      model,
+    });
     assert.ok(!keyOf(p).includes('sk-secret-value'));
   });
 });
@@ -428,7 +466,7 @@ describe("AnthropicProvider — the caller's deadline", () => {
     // here, and "every provider honours it" was true of two out of three.
     resetQuotaGates();
     const provider = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
     const originalFetch = globalThis.fetch;
@@ -467,7 +505,7 @@ describe("AnthropicProvider — the caller's deadline", () => {
   it('ends the streaming wait when the caller aborts', async () => {
     resetQuotaGates();
     const provider = new AnthropicProvider({
-      apiKey: 'sk-test',
+      credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       // Bounded so a regression fails on the clock rather than hanging.
       whenThrottled: new WaitAsTold({ maxAttempts: 2 }),

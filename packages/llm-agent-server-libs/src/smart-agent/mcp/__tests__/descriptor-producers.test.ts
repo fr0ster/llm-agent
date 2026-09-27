@@ -17,6 +17,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IEmbedder, ILlm } from '@mcp-abap-adt/llm-agent';
+import { constructionSeams } from '../../__tests__/construction-seams.js';
 import {
   connectMcpClientsFromConfig,
   connectMcpClientsWithDescriptorsFromConfig,
@@ -93,7 +94,7 @@ const stubEmbedder = {
 
 const mcpCfg = {
   skipModelValidation: true,
-  llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+  llm: { main: { provider: 'openai', model: 'gpt-4o' } },
   mcp: {
     type: 'http',
     url: 'http://127.0.0.1:9/should-not-connect/mcp/stream/http',
@@ -103,6 +104,7 @@ const mcpCfg = {
 test('seam detection: connectMcpWithDescriptors ONLY (no mcpClients/connectMcp) sets _mcpSeamInjected and is the sole provisioning point', async () => {
   let descriptorCalls = 0;
   const server = new SmartServer(mcpCfg, {
+    ...constructionSeams,
     makeLlm: async () => cannedLlm,
     embedder: stubEmbedder,
     connectMcpWithDescriptors: async () => {
@@ -131,6 +133,7 @@ test('precedence: connectMcpWithDescriptors wins over a bare connectMcp when bot
   let descriptorCalls = 0;
   let bareCalls = 0;
   const server = new SmartServer(mcpCfg, {
+    ...constructionSeams,
     makeLlm: async () => cannedLlm,
     embedder: stubEmbedder,
     connectMcpWithDescriptors: async () => {

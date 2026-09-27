@@ -2,66 +2,51 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 import { _resetPrefetchedForTests } from '../embedder-factories.js';
-import {
-  _resetPrefetchedRagForTests,
-  makeRag,
-  prefetchRagFactories,
-  resolveRag,
-} from '../rag-factories.js';
+import { makeRag, prefetchRagFactories } from '../rag-factories.js';
+
+// `resolveRag`, `RagFactoryOpts` and `_resetPrefetchedRagForTests` are gone
+// (task B6b): `resolveRag` had no consumer outside this package once
+// `makeRag` dispatched over literal import specifiers directly, and there is
+// no module cache left for `_resetPrefetchedRagForTests` to clear — every
+// call, in `prefetchRagFactories` and in `makeRag` alike, imports through
+// its own literal specifier, and the ES module loader's cache is what makes
+// repeating that free. The two tests that only existed to exercise
+// `resolveRag`'s prefetch-then-resolve split are deleted with it; what they
+// covered (a credential's kind checked before a constructor runs) is now a
+// compile-time property of `RagResolution`, asserted in
+// `../__typechecks__/rag-resolution.ts`, not a runtime path to test here.
+
+const stubEmbedder = {
+  async embed() {
+    return { vector: [0] };
+  },
+  async embedBatch(texts: string[]) {
+    return texts.map(() => ({ vector: [0] }));
+  },
+};
 
 describe('rag-factories', () => {
   it('throws MissingProviderError for unknown backend name', async () => {
-    _resetPrefetchedRagForTests();
     await assert.rejects(
       () => prefetchRagFactories(['nope']),
       MissingProviderError,
     );
   });
 
-  it('throws MissingProviderError at resolveRag when not prefetched', () => {
-    _resetPrefetchedRagForTests();
-    assert.throws(
-      () =>
-        resolveRag('hana-vector', {
-          collectionName: 'x',
-          embedder: {
-            async embed() {
-              return { vector: [0] };
-            },
-          },
-        }),
-      MissingProviderError,
-    );
-  });
-
-  it('prefetches known packages (qdrant already a workspace dev dep)', async () => {
-    _resetPrefetchedRagForTests();
-    await prefetchRagFactories(['qdrant']);
-    const rag = resolveRag('qdrant', {
-      url: 'http://localhost:6333',
-      collectionName: 't',
-      embedder: {
-        async embed() {
-          return { vector: [0, 0, 0] };
-        },
-      },
-    });
-    assert.equal(typeof rag.query, 'function');
-  });
-
-  it('makeRag qdrant auto-prefetches without prior prefetch (no MissingProviderError)', async () => {
-    _resetPrefetchedRagForTests();
-    _resetPrefetchedForTests();
-    // Verify it does NOT throw MissingProviderError — actual Qdrant connection
-    // failure is fine; the test only guards against missing-provider regression.
+  it('makeRag qdrant imports its peer on demand (no MissingProviderError)', async () => {
+    // No prior prefetchRagFactories call: makeRag's own literal import must
+    // succeed on its own — qdrant-rag is a workspace dev dependency, so this
+    // is a real, live import, not a stand-in.
+    // Actual Qdrant connection failure is fine; this test only guards
+    // against a missing-provider regression.
     try {
-      await makeRag({
+      const rag = await makeRag({
         type: 'qdrant',
         url: 'http://localhost:6333',
         collectionName: 'test',
-        embedder: 'ollama',
-        model: 'bge-m3',
+        embedder: stubEmbedder,
       });
+      assert.equal(typeof rag.query, 'function');
     } catch (err) {
       assert.ok(
         !(err instanceof MissingProviderError),
@@ -70,30 +55,28 @@ describe('rag-factories', () => {
     }
   });
 
-  it('makeRag in-memory+openai embedder auto-prefetches without prior prefetch (no MissingProviderError)', async () => {
-    _resetPrefetchedRagForTests();
+  it('makeRag in-memory builds a real VectorRag from an already-built embedder', async () => {
+    // Embedder-BY-NAME resolution ('openai', a credential, a model string)
+    // is resolveEmbedder's job now, called by the caller BEFORE makeRag —
+    // RagResolution.embedder is always an already-built IEmbedder. This
+    // replaces the old test that resolved 'openai' by name inside makeRag,
+    // which is no longer a thing makeRag does at all.
     _resetPrefetchedForTests();
-    // Verify it does NOT throw MissingProviderError — actual OpenAI network
-    // failure is fine; the test only guards against missing-provider regression.
-    try {
-      await makeRag({
-        type: 'in-memory',
-        embedder: 'openai',
-        apiKey: 'test',
-        model: 'text-embedding-3-small',
-      });
-    } catch (err) {
-      assert.ok(
-        !(err instanceof MissingProviderError),
-        `Expected no MissingProviderError but got: ${err}`,
-      );
-    }
+    const rag = await makeRag({
+      type: 'in-memory',
+      embedder: stubEmbedder,
+      collectionName: 'my-namespace',
+    });
+    assert.ok(
+      rag,
+      'an in-memory RAG must be constructible from a built embedder',
+    );
   });
 
   it('makeRag unknown type throws a clear error (not MissingProviderError)', async () => {
     await assert.rejects(
       // biome-ignore lint/suspicious/noExplicitAny: intentional invalid type for test
-      () => makeRag({ type: 'ollama' as any }),
+      () => makeRag({ type: 'ollama' } as any),
       /Unknown rag\.type.*Use one of/,
     );
   });

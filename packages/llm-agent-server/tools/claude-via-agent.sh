@@ -6,11 +6,11 @@
 #   ./tools/claude-via-agent.sh --config pipelines/deepseek.yaml  # explicit pipeline
 #
 # All credentials in .env:
-#   LLM_PROVIDER       — selects pipeline: pipelines/<provider>.yaml
-#   DEEPSEEK_API_KEY   — for deepseek pipeline
-#   AICORE_SERVICE_KEY — for sap-ai-core pipeline (JSON)
-#   MCP_ENDPOINT       — MCP server URL (optional)
-#   PORT               — llm-agent port (default: 4004)
+#   LLM_PROVIDER    — selects pipeline: pipelines/<provider>.yaml
+#   LLM_API_KEY     — for deepseek/openai/anthropic pipelines
+#   LLM_SERVICE_KEY — for sap-ai-core pipeline (the service-key JSON)
+#   MCP_ENDPOINT    — MCP server URL (optional)
+#   PORT            — llm-agent port (default: 4004)
 
 set -euo pipefail
 

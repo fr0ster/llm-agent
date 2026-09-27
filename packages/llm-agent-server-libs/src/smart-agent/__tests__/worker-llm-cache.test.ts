@@ -14,70 +14,54 @@ import {
 test('resolveWorkerLlmSet builds once per worker and returns the cached set by reference', async () => {
   let built = 0;
   const cache = new Map<string, WorkerLlmSet>();
-  // biome-ignore lint/suspicious/noExplicitAny: test stub for ILlm
-  const fakeMake = async (): Promise<any> => {
+  const makeToolsRag = async (): Promise<IRag> => {
     built++;
-    return {};
+    return {} as IRag;
   };
 
   const first = await resolveWorkerLlmSet({
     name: 'w',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
+    makeToolsRag,
   });
   const second = await resolveWorkerLlmSet({
     name: 'w',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
+    makeToolsRag,
   });
 
   assert.equal(first, second, 'same cached set instance returned by reference');
-  assert.equal(first.mainLlm, second.mainLlm, 'main LLM not rebuilt');
-  assert.equal(
-    first.classifierLlm,
-    second.classifierLlm,
-    'classifier LLM not rebuilt',
-  );
-  assert.equal(
-    built,
-    2,
-    'exactly two constructions total (main + classifier), once — NOT per call',
-  );
+  assert.equal(first.toolsRag, second.toolsRag, 'toolsRag not rebuilt');
+  assert.equal(built, 1, 'built once — NOT per call');
 });
 
 test('resolveWorkerLlmSet builds once per distinct worker name', async () => {
   let built = 0;
   const cache = new Map<string, WorkerLlmSet>();
-  // biome-ignore lint/suspicious/noExplicitAny: test stub for ILlm
-  const fakeMake = async (): Promise<any> => {
+  const makeToolsRag = async (): Promise<IRag> => {
     built++;
-    return {};
+    return {} as IRag;
   };
 
   const w1a = await resolveWorkerLlmSet({
     name: 'w1',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
+    makeToolsRag,
   });
   const w2a = await resolveWorkerLlmSet({
     name: 'w2',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
+    makeToolsRag,
   });
   const w1b = await resolveWorkerLlmSet({
     name: 'w1',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
+    makeToolsRag,
   });
 
   assert.equal(w1a, w1b, 'w1 cached by reference across calls');
   assert.notEqual(w1a, w2a, 'distinct names yield distinct sets');
-  assert.equal(built, 4, '2 builds per worker × 2 distinct workers');
+  assert.equal(built, 2, '1 build per worker × 2 distinct workers');
 });
 
 test('resolveWorkerLlmSet caches worker-OWN toolsRag/historyRag/mcpClients and reuses them by reference (review HIGH #1)', async () => {
@@ -85,8 +69,6 @@ test('resolveWorkerLlmSet caches worker-OWN toolsRag/historyRag/mcpClients and r
   let historyBuilt = 0;
   let mcpBuilt = 0;
   const cache = new Map<string, WorkerLlmSet>();
-  // biome-ignore lint/suspicious/noExplicitAny: test stub for ILlm
-  const fakeMake = async (): Promise<any> => ({});
   const makeToolsRag = async (): Promise<IRag> => {
     toolsBuilt++;
     return {} as IRag;
@@ -103,8 +85,6 @@ test('resolveWorkerLlmSet caches worker-OWN toolsRag/historyRag/mcpClients and r
   const a = await resolveWorkerLlmSet({
     name: 'w',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
     makeToolsRag,
     makeHistoryRag,
     makeMcpClients,
@@ -112,8 +92,6 @@ test('resolveWorkerLlmSet caches worker-OWN toolsRag/historyRag/mcpClients and r
   const b = await resolveWorkerLlmSet({
     name: 'w',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
     makeToolsRag,
     makeHistoryRag,
     makeMcpClients,
@@ -136,8 +114,7 @@ test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache
   // per-session re-wires read the worker's own MCP, not the parent's empty
   // list.
   const fakeClient = { id: 'auto-connected' } as unknown as IMcpClient;
-  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  const entry: WorkerLlmSet = {};
   const handle = {
     mcpClients: [fakeClient],
     ragRegistry: { get: () => undefined },
@@ -164,8 +141,7 @@ test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache
 test('backfillWorkerCacheFromHandle: captures toolsRag/historyRag from ragRegistry when not already cached', async () => {
   const tools = { id: 'tools' } as unknown as IRag;
   const history = { id: 'history' } as unknown as IRag;
-  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  const entry: WorkerLlmSet = {};
   const handle = {
     mcpClients: [],
     ragRegistry: {
@@ -183,8 +159,7 @@ test('backfillWorkerCacheFromHandle: captures toolsRag/historyRag from ragRegist
 });
 
 test('backfillWorkerCacheFromHandle: empty handle.mcpClients leaves cache slot undefined (re-wire falls back to parent)', async () => {
-  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  const entry: WorkerLlmSet = {};
   await backfillWorkerCacheFromHandle(entry, {
     mcpClients: [],
     ragRegistry: { get: () => undefined },
@@ -254,20 +229,18 @@ test('Fix #18: resolveWorkerLlmSet repopulates the cache on miss after clear (co
   // a cleared cache simply rebuilds the entry rather than throwing.
   let built = 0;
   const cache = new Map<string, WorkerLlmSet>();
-  // biome-ignore lint/suspicious/noExplicitAny: test stub for ILlm
-  const fakeMake = async (): Promise<any> => {
+  const makeToolsRag = async (): Promise<IRag> => {
     built++;
-    return {};
+    return {} as IRag;
   };
   // Prime the cache.
   await resolveWorkerLlmSet({
     name: 'w',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
+    makeToolsRag,
   });
   assert.equal(cache.size, 1);
-  assert.equal(built, 2);
+  assert.equal(built, 1);
 
   // Simulate the config-reload `_workerLlmCache.clear()`.
   cache.clear();
@@ -277,23 +250,18 @@ test('Fix #18: resolveWorkerLlmSet repopulates the cache on miss after clear (co
   const set2 = await resolveWorkerLlmSet({
     name: 'w',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
+    makeToolsRag,
   });
   assert.equal(cache.size, 1, 'cache repopulated on miss');
   assert.equal(cache.get('w'), set2, 'cache holds the freshly built set');
-  assert.equal(built, 4, '2 more LLM constructions (main + classifier)');
+  assert.equal(built, 2, '1 more build after the cache was cleared');
 });
 
 test('worker WITHOUT own toolsRag/MCP factories leaves those cache slots undefined (re-wire falls back to injected)', async () => {
   const cache = new Map<string, WorkerLlmSet>();
-  // biome-ignore lint/suspicious/noExplicitAny: test stub for ILlm
-  const fakeMake = async (): Promise<any> => ({});
   const set = await resolveWorkerLlmSet({
     name: 'lean',
     cache,
-    makeMain: fakeMake,
-    makeClassifier: fakeMake,
   });
   assert.equal(
     set.toolsRag,
@@ -310,8 +278,7 @@ test('worker WITHOUT own toolsRag/MCP factories leaves those cache slots undefin
 
 test('Fix #21: backfillWorkerCacheFromHandle captures handle.close into the cache entry', async () => {
   const closeFn = async () => {};
-  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  const entry: WorkerLlmSet = {};
   await backfillWorkerCacheFromHandle(entry, {
     mcpClients: [],
     ragRegistry: { get: () => undefined },
@@ -324,30 +291,17 @@ test('Fix #21: drainWorkerCache invokes close on every entry and clears the cach
   const calls: string[] = [];
   const cache = new Map<string, WorkerLlmSet>();
   cache.set('w1', {
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    mainLlm: {} as any,
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    classifierLlm: {} as any,
     close: async () => {
       calls.push('w1');
     },
   });
   cache.set('w2', {
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    mainLlm: {} as any,
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    classifierLlm: {} as any,
     close: async () => {
       calls.push('w2');
     },
   });
   // Entry without close must not blow up drain.
-  cache.set('w3', {
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    mainLlm: {} as any,
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    classifierLlm: {} as any,
-  });
+  cache.set('w3', {});
   await drainWorkerCache(cache);
   assert.deepEqual(calls.sort(), ['w1', 'w2']);
   assert.equal(cache.size, 0, 'cache cleared after drain');
@@ -357,20 +311,12 @@ test('Fix #21: drainWorkerCache continues when one close rejects (allSettled)', 
   const calls: string[] = [];
   const cache = new Map<string, WorkerLlmSet>();
   cache.set('bad', {
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    mainLlm: {} as any,
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    classifierLlm: {} as any,
     close: async () => {
       calls.push('bad');
       throw new Error('boom');
     },
   });
   cache.set('good', {
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    mainLlm: {} as any,
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    classifierLlm: {} as any,
     close: async () => {
       calls.push('good');
     },
@@ -387,10 +333,6 @@ test('Fix #21: re-backfilling the same cache entry awaits the previous close bef
     resolvePrev = r;
   });
   const entry: WorkerLlmSet = {
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    mainLlm: {} as any,
-    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
-    classifierLlm: {} as any,
     close: async () => {
       order.push('prev-close-start');
       await prevDone;

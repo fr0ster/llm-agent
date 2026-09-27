@@ -1,3 +1,4 @@
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IEmbedder,
   IQueryEmbedding,
@@ -11,13 +12,14 @@ import {
   type RagMetadata,
   type RagResult,
   type Result,
+  ragIdentityFilter,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Derive a deterministic UUID from a stable string key using SHA-256.
  * The first 16 bytes of the hash are formatted as a UUID v5-style string.
  */
-async function deterministicUUID(key: string): Promise<string> {
+export async function deterministicUUID(key: string): Promise<string> {
   const data = new TextEncoder().encode(key);
   const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', data);
   const bytes = new Uint8Array(hashBuffer, 0, 16);
@@ -29,33 +31,49 @@ export interface QdrantRagConfig {
   url: string;
   collectionName: string;
   embedder: IEmbedder;
-  apiKey?: string;
+  /**
+   * Asked for fresh on every request — never cached — so a rotating key
+   * rotates and a resolved-once secret is never frozen for this object's
+   * lifetime. Optional: an unauthenticated Qdrant deployment works today
+   * without one.
+   */
+  credential?: IApiKeyCredential;
   /**
    * Per-request timeout in ms. **No default** — unset, a request is bounded
    * only by the caller's own signal.
    */
   timeoutMs?: number;
+  /**
+   * Create the collection on the first write when it is missing, sized from
+   * that write's vector. Default `true` — a store configured directly relies on
+   * it. `QdrantRagProvider` passes `false`: its collections are created by
+   * `createCollection` only, so a handle whose collection is gone fails instead
+   * of recreating it without a catalog record (§6.3).
+   */
+  autoCreateCollection?: boolean;
 }
 
 export class QdrantRag implements IRag {
   private readonly url: string;
   private readonly collectionName: string;
   private readonly embedder: IEmbedder;
-  private readonly apiKey?: string;
+  private readonly credential?: IApiKeyCredential;
   private readonly timeoutMs: number | undefined;
+  private readonly autoCreateCollection: boolean;
   private collectionEnsured = false;
 
   constructor(config: QdrantRagConfig) {
     this.url = config.url.replace(/\/+$/, '');
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
-    this.apiKey = config.apiKey;
+    this.credential = config.credential;
     this.timeoutMs = config.timeoutMs;
+    this.autoCreateCollection = config.autoCreateCollection ?? true;
   }
 
-  private _headers(): Record<string, string> {
+  private async _headers(): Promise<Record<string, string>> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.apiKey) h['api-key'] = this.apiKey;
+    if (this.credential) h['api-key'] = await this.credential.secret();
     return h;
   }
 
@@ -82,7 +100,7 @@ export class QdrantRag implements IRag {
       return await fetch(`${this.url}${path}`, {
         ...init,
         signal: ctrl.signal,
-        headers: { ...this._headers(), ...(init.headers ?? {}) },
+        headers: { ...(await this._headers()), ...(init.headers ?? {}) },
       });
     } finally {
       if (timer) clearTimeout(timer);
@@ -155,7 +173,9 @@ export class QdrantRag implements IRag {
     options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
-      await this._ensureCollection(vector.length, options?.signal);
+      if (this.autoCreateCollection) {
+        await this._ensureCollection(vector.length, options?.signal);
+      }
 
       const pointId = metadata?.id
         ? await deterministicUUID(metadata.id)
@@ -244,20 +264,40 @@ export class QdrantRag implements IRag {
         limit: k,
         with_payload: true,
       };
+      // The session/user scope. upsert spreads metadata flat into the
+      // payload, so `sessionId` / `userId` are top-level payload keys. A point
+      // without the key does not match a `match` condition, so an unowned
+      // point is never returned to a scoped query. Qdrant applies the filter
+      // inside the search, so `limit: k` counts only matching points.
+      const identity = ragIdentityFilter(options);
+      const identityMust: unknown[] = [];
+      if (identity?.sessionId !== undefined) {
+        identityMust.push({
+          key: 'sessionId',
+          match: { value: identity.sessionId },
+        });
+      }
+      if (identity?.userId !== undefined) {
+        identityMust.push({ key: 'userId', match: { value: identity.userId } });
+      }
       if (must.length > 0) {
         body.filter = {
+          // Top-level `must` is ANDed with the `should` below (at least one
+          // of which must hold), so the identity scope applies to both the
+          // TTL-bearing and the TTL-less branch.
+          ...(identityMust.length > 0 ? { must: identityMust } : {}),
           should: [
             { must },
-            // Also match points without TTL set (no ttl field)
+            // Points with NO ttl field. `is_empty`, not "no ttl >= 0": that
+            // let a negative ttl — a time in the past, so expired — through
+            // as if it had none (PR #308 review).
             {
-              must_not: [{ key: 'ttl', range: { gte: 0 } }],
-              ...(targetNamespace !== undefined
-                ? {
-                    must: [
-                      { key: 'namespace', match: { value: targetNamespace } },
-                    ],
-                  }
-                : {}),
+              must: [
+                { is_empty: { key: 'ttl' } },
+                ...(targetNamespace !== undefined
+                  ? [{ key: 'namespace', match: { value: targetNamespace } }]
+                  : []),
+              ],
             },
           ],
         };
@@ -444,7 +484,12 @@ export class QdrantRag implements IRag {
       upsertManyPrecomputedRaw: async (items, options) => {
         if (items.length === 0) return { ok: true, value: undefined };
         try {
-          await this._ensureCollection(items[0].vector.length, options?.signal);
+          if (this.autoCreateCollection) {
+            await this._ensureCollection(
+              items[0].vector.length,
+              options?.signal,
+            );
+          }
           const points = await Promise.all(
             items.map(async ({ id, text, vector, metadata }) => ({
               id: await deterministicUUID(id),

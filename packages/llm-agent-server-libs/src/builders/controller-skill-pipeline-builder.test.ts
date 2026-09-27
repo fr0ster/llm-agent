@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { constructionSeams } from '../smart-agent/__tests__/construction-seams.js';
 import type { SkillPluginsConfig } from '../smart-agent/skill-plugins-config.js';
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
 import { ControllerSkillPipelineBuilder } from './controller-skill-pipeline-builder.js';
@@ -17,7 +18,7 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
     .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
     .withRoleLlm('planner', {
       provider: 'openai',
-      apiKey: 'k',
+      credentialRef: 'PLANNER',
       model: 'gpt-4o',
     })
     .withMcp({ url: 'http://localhost:3001/mcp/stream/http' })
@@ -33,10 +34,11 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
   assert.ok(cfg.pipeline, 'a pipeline must be configured');
   assert.equal(cfg.pipeline.name, 'controller');
   const sub = (cfg.pipeline.config as any).subagents;
-  assert.equal(sub.evaluator.provider, 'sap-ai-sdk');
-  assert.equal(sub.executor.provider, 'sap-ai-sdk');
-  assert.equal(sub.planner.provider, 'openai');
-  assert.equal(sub.planner.apiKey, 'k');
+  assert.deepEqual(sub.evaluator, {});
+  assert.deepEqual(sub.executor, {});
+  assert.deepEqual(sub.planner, { llm: 'planner' });
+  assert.equal((cfg as any).llm.planner.provider, 'openai');
+  assert.equal((cfg as any).llm.main.provider, 'sap-ai-sdk');
   assert.equal((cfg.pipeline.config as any).budgets.maxToolCalls, 30);
   assert.deepEqual(cfg.mcp, [
     { type: 'http', url: 'http://localhost:3001/mcp/stream/http' },
@@ -50,10 +52,10 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
     (cfg as any).skillPlugins.sources[0].strategyConfig.collection,
     'sap',
   );
-  assert.equal((cfg as any).rag.embedder, 'sap-ai-core');
+  assert.equal((cfg as any).rag.embedder.provider, 'sap-ai-core');
 });
 
-test('embedder scenario/resourceGroup land on rag; skillPlugins.embedder is omitted (reuse the rag embedder)', () => {
+test('embedder scenario/resourceGroup land on rag.embedder; skillPlugins.embedder is omitted (reuse the rag embedder)', () => {
   const cfg = new ControllerSkillPipelineBuilder()
     .withLlm({ provider: 'sap-ai-sdk', model: 'm' })
     .withSkillSource({ github: 'a/b', enabled: ['x'], collection: 'sap' })
@@ -65,8 +67,8 @@ test('embedder scenario/resourceGroup land on rag; skillPlugins.embedder is omit
     })
     .toConfig();
   // Full embedder config (incl. scenario/resourceGroup) lives on rag…
-  assert.equal((cfg as any).rag.scenario, 'foundation-models');
-  assert.equal((cfg as any).rag.resourceGroup, 'default');
+  assert.equal((cfg as any).rag.embedder.scenario, 'foundation-models');
+  assert.equal((cfg as any).rag.embedder.resourceGroup, 'default');
   // …and skillPlugins carries NO embedder, so SmartServer reuses the resolved
   // agent-RAG embedder (which has scenario/resourceGroup) — review P1: setting it
   // would build a separate skill-host embedder from provider/model only.
@@ -126,6 +128,7 @@ test('build(deps): normalized skill config reaches buildSkillHost (P1a), injecte
   } as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
   let skillCfgSeen: SkillPluginsConfig | undefined;
   const deps: BuildAgentDeps = {
+    ...constructionSeams,
     makeLlm: async () => cannedLlm,
     embedder: stubEmbedder,
     buildSkillHost: async (cfg) => {
@@ -175,6 +178,7 @@ test('build(deps) with a prebuilt skillHost still routes through load/validate (
     })
     .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
     .build({
+      ...constructionSeams,
       makeLlm: async () => cannedLlm,
       // biome-ignore lint/suspicious/noExplicitAny: stub embedder for test
       embedder: { embed: async () => ({ vector: [0] }) } as any,
@@ -207,6 +211,7 @@ test('build(): .withMcpClients forwards clients into deps (no connect runs)', as
     })
     .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
     .build({
+      ...constructionSeams,
       makeLlm: async () => cannedLlm,
       embedder: {
         embed: async () => ({ vector: [0] }),
@@ -246,6 +251,7 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
       })
       .withEmbedder({ provider: 'sap-ai-core' })
       .build({
+        ...constructionSeams,
         makeLlm: async () => cannedLlm,
         embedder: {
           embed: async () => ({ vector: [0] }),
@@ -267,7 +273,7 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
   }
 });
 
-test('build({makeLlm,embedder}) with a KEYED provider needs no API key (skip reaches toLlmConfig)', async () => {
+test('build(deps) with a keyed provider reads no key from the environment', async () => {
   const prevOpenai = process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_API_KEY;
   try {
@@ -284,6 +290,7 @@ test('build({makeLlm,embedder}) with a KEYED provider needs no API key (skip rea
       })
       .withEmbedder({ provider: 'openai' }) // keyed embedder provider too
       .build({
+        ...constructionSeams,
         makeLlm: async () => cannedLlm,
         embedder: {
           embed: async () => ({ vector: [0] }),

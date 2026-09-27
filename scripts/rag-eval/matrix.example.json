@@ -1,0 +1,87 @@
+{
+  "configs": [
+    {
+      "name": "in-memory-keyword",
+      "store": { "type": "in-memory" }
+    },
+    {
+      "name": "in-memory-ollama",
+      "store": { "type": "in-memory" },
+      "embedder": {
+        "provider": "ollama",
+        "model": "nomic-embed-text",
+        "url": "http://127.0.0.1:11434"
+      }
+    },
+    {
+      "name": "in-memory-aicore",
+      "store": { "type": "in-memory" },
+      "embedder": {
+        "provider": "sap-ai-core",
+        "model": "text-embedding-3-small",
+        "scenario": "foundation-models",
+        "resourceGroup": "default"
+      }
+    },
+    {
+      "name": "qdrant-ollama",
+      "store": {
+        "type": "qdrant",
+        "url": "http://127.0.0.1:16333",
+        "collectionName": "rag_eval"
+      },
+      "embedder": {
+        "provider": "ollama",
+        "model": "nomic-embed-text",
+        "url": "http://127.0.0.1:11434"
+      }
+    },
+    {
+      "name": "qdrant-aicore",
+      "store": {
+        "type": "qdrant",
+        "url": "http://127.0.0.1:16333",
+        "collectionName": "rag_eval"
+      },
+      "embedder": {
+        "provider": "sap-ai-core",
+        "model": "text-embedding-3-small",
+        "scenario": "foundation-models",
+        "resourceGroup": "default"
+      }
+    },
+    {
+      "name": "pg-ollama",
+      "store": {
+        "type": "pg-vector",
+        "host": "127.0.0.1",
+        "port": 15432,
+        "database": "rag",
+        "collectionName": "rag_eval",
+        "dimension": 768
+      },
+      "embedder": {
+        "provider": "ollama",
+        "model": "nomic-embed-text",
+        "url": "http://127.0.0.1:11434"
+      }
+    },
+    {
+      "name": "pg-aicore",
+      "store": {
+        "type": "pg-vector",
+        "host": "127.0.0.1",
+        "port": 15432,
+        "database": "rag",
+        "collectionName": "rag_eval",
+        "dimension": 1536
+      },
+      "embedder": {
+        "provider": "sap-ai-core",
+        "model": "text-embedding-3-small",
+        "scenario": "foundation-models",
+        "resourceGroup": "default"
+      }
+    }
+  ]
+}

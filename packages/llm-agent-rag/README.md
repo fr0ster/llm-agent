@@ -7,12 +7,19 @@ RAG and embedder composition for the SmartAgent runtime.
 
 ## Exports
 
-- `makeRag(cfg, options): Promise<IRag>` — async, dynamic-imports the configured backend (e.g. `OllamaRag`).
-- `resolveEmbedder(cfg, options): IEmbedder` — synchronous, requires prior `prefetchEmbedderFactories(...)`.
-- `prefetchEmbedderFactories(names): Promise<void>`, `prefetchRagFactories(names): Promise<void>` — warm-up helpers.
-- `resolvePrefetchedEmbedder(name, opts)`, `resolveRag(name, opts)` — synchronous resolvers from the prefetched cache.
-- `builtInEmbedderFactories` — registry record of built-in embedder factories.
-- Types: `RagResolutionConfig`, `RagResolutionOptions`, `EmbedderResolutionConfig`, `EmbedderResolutionOptions`, `EmbedderFactoryOpts`.
+- `makeRag(cfg: RagResolution, options?: RagResolutionOptions): Promise<IRag>` — async,
+  dynamic-imports the configured backend, typed per target (`type` discriminates the union).
+- `resolveEmbedder(cfg: EmbedderResolution, options?: EmbedderResolutionOptions): IEmbedder` —
+  synchronous, requires prior `prefetchEmbedderFactories(...)`; discriminated by `provider`.
+- `composeEmbedder(embedder, options?)` — wraps an embedder a consumer already holds with the same
+  chunking/retry/resilience `resolveEmbedder` composes for a built-in one.
+- `prefetchEmbedderFactories(names): Promise<void>`, `prefetchRagFactories(names): Promise<void>` —
+  warm-up helpers; each caches the named backends' dynamic imports for later synchronous use.
+- `ragBackendNames` — the list of store type names `makeRag` recognises.
+- Types: `RagResolution`, `RagResolutionOptions`, `EmbedderResolution`, `EmbedderResolutionOptions`.
+
+A leftover `apiKey`/`user`/`password` from an untyped source (a loaded YAML object) is refused at
+resolution, naming the target — these functions carry no secret of their own.
 
 ## Two patterns
 
@@ -21,25 +28,21 @@ RAG and embedder composition for the SmartAgent runtime.
 ```ts
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 const rag = await makeRag(
-  { type: 'ollama', model: 'llama3', /* ... */ },
-  { embedder: yourEmbedder, breaker: yourBreaker },
+  { type: 'in-memory', embedder: yourEmbedder },
+  { breaker: yourBreaker },
 );
 ```
 
-### Hot-path consumers (prefetch once, sync resolve)
+### Hot-path consumers (prefetch once, then resolve)
 
 ```ts
-import {
-  prefetchEmbedderFactories,
-  prefetchRagFactories,
-  resolveRag,
-} from '@mcp-abap-adt/llm-agent-rag';
+import { prefetchRagFactories, makeRag } from '@mcp-abap-adt/llm-agent-rag';
 
-await prefetchEmbedderFactories(['openai']);
+// At startup:
 await prefetchRagFactories(['qdrant']);
 
-// Inside a hot loop:
-const rag = resolveRag('qdrant', { embedder, breaker, /* ... */ });
+// Inside a hot loop — the ES loader caches, so this call costs nothing further:
+const rag = await makeRag({ type: 'qdrant', embedder, collectionName, url }, { breaker });
 ```
 
 ## Optional peer dependencies

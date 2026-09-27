@@ -10,7 +10,7 @@
  * |---------|--------------------------------|----------|--------------------------------------|
  * | `store` | string                         | required | Store key (must exist in `ctx.ragStores`) |
  * | `k`     | number                         | from ctx | Number of results to retrieve        |
- * | `scope` | `global` \| `user` \| `session` | —        | Scope filter: `user` adds userId filter, `session` adds sessionId filter, `global` adds no filter |
+ * | `scope` | `global` \| `user` \| `session` | —        | Scope filter: `user` adds userId filter (no userId → no results, the store is not asked), `session` adds sessionId filter, `global` adds no filter |
  * | `queryText` | `'toolQueryText'` \| string | —       | Overrides the query text for this call. `'toolQueryText'` reads the enriched text from `ctx.toolQueryText` (falls back to `ragText`). Any other string is used literally. When set, a one-off embedding is built for this call without touching the cached `ctx.queryEmbedding`. |
  *
  * ## Parallel safety
@@ -73,7 +73,15 @@ export class RagQueryHandler implements IStageHandler {
     // Build scope filter based on config
     const scope = config.scope as RagScope | undefined;
     const scopeFilter: Record<string, unknown> = {};
-    if (scope === 'user' && ctx.options?.userId) {
+    if (scope === 'user') {
+      if (!ctx.options?.userId) {
+        // A user-scoped read with no user has no records of its own. Querying
+        // unfiltered instead returned every user's records.
+        ctx.ragResults[storeName] = [];
+        span.setAttribute('results', 0);
+        span.setAttribute('skipped', 'user scope without userId');
+        return true;
+      }
       scopeFilter.userId = ctx.options.userId;
     }
     if (scope === 'session') {

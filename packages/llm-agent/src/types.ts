@@ -76,8 +76,17 @@ export interface LLMResponse {
 }
 
 export interface LLMProviderConfig {
-  /** API key for authentication. Optional for providers with custom auth (e.g. SAP AI Core). */
-  apiKey?: string;
+  /**
+   * Which 429 gate this provider's calls share, when the default is not what you
+   * meant.
+   *
+   * A rate limit is per account, so by default two providers holding different
+   * credentials get separate gates — see `BaseLLMProvider.credentialScope`. Two
+   * providers wrapping the same account in separate credential objects also get
+   * separate gates, which is safe but loses the coordination; naming the same
+   * scope on both puts them back on one. Not a secret: a label you choose.
+   */
+  quotaScope?: string;
   baseURL?: string;
   model?: string;
   temperature?: number;

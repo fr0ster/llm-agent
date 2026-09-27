@@ -96,9 +96,8 @@ export interface BuiltStepperRoot {
 
 const STUB_LLM_CFG: SmartServerLlmConfig = {
   provider: 'openai',
-  apiKey: '',
   model: 'stub',
-} as never;
+};
 
 // StepperCompositionSpec + CompositionNode are defined in stepper-config.ts (so
 // the yaml parser can produce them without a circular import) and re-exported

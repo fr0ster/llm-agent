@@ -13,6 +13,8 @@ export * from './smart-agent/jsonl-knowledge-backend.js';
 export * from './smart-agent/mcp/mcp-clients-with-descriptors.js';
 export { makePgPool, makePgReadPool } from './smart-agent/pg-pool.js';
 export * from './smart-agent/pipeline.js';
+export * from './smart-agent/pipeline-settings.js';
+export * from './smart-agent/rag-config.js';
 export * from './smart-agent/resolve-agent-embedder.js';
 export * from './smart-agent/session-identity-resolver.js';
 export * from './smart-agent/session-meta-store.js';

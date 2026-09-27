@@ -80,7 +80,7 @@ services:
     ports:
       - "4004:4004"
     environment:
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - LLM_API_KEY=${LLM_API_KEY}
     volumes:
       - ./smart-server.yaml:/app/smart-server.yaml:ro
     depends_on:
@@ -113,14 +113,17 @@ volumes:
 
 ```yaml
 llm:
-  apiKey: ${DEEPSEEK_API_KEY}
   model: ${LLM_MODEL:-deepseek-chat}
+  # credentialRef omitted: reads LLM_API_KEY
 
 rag:
-  type: qdrant
-  url: ${QDRANT_URL:-http://qdrant:6333}
+  store:
+    type: qdrant
+    url: ${QDRANT_URL:-http://qdrant:6333}
 ```
 
+Secrets are never substituted into the config: the server reads `LLM_API_KEY` (or the variables of
+the ref an entry names). `${VAR}` still works for non-secret settings such as URLs and model names.
 Variables are resolved at startup by `resolveEnvVars()` in `packages/llm-agent-server-libs/src/smart-agent/yaml-loader.ts` (re-exported from `.../config.ts`).
 
 ## systemd
@@ -183,13 +186,19 @@ For file-based logging (when `log:` is set in `smart-server.yaml`), use `logrota
 For serverless environments, use `SmartAgent` programmatically without the HTTP layer:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
+import { InMemoryRag, staticApiKey } from '@mcp-abap-adt/llm-agent';
 
 // Build once per cold start (or pool across invocations)
-const handle = await new SmartAgentBuilder({
-  llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
-  rag: { type: 'in-memory' },
-}).build();
+const provider = new DeepSeekProvider({
+  credential: staticApiKey(process.env.DEEPSEEK_API_KEY!),
+  model: 'deepseek-chat',
+});
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model }))
+  .setToolsRag(new InMemoryRag())
+  .build();
 
 // Stateless invocation
 export async function handler(event: { message: string }) {
@@ -242,15 +251,21 @@ Configure Qdrant for multi-instance deployments:
 
 ```yaml
 rag:
-  type: qdrant
-  url: http://qdrant.internal:6333
-  collectionName: llm-agent-production
-  dedupThreshold: 0.92
-  # Optional. Texts per embedBatch call: this → the provider's declared cap →
-  # 100. Set it only when the tenant's quota is stricter than the model's
-  # documented limit; exceeding a hard cap is a 400, not a slowdown.
-  # maxBatchSize: 250
+  store:
+    type: qdrant
+    url: http://qdrant.internal:6333
+    collectionName: llm-agent-production
+    credentialRef: QDRANT       # the server reads QDRANT_API_KEY
+  embedder:
+    provider: openai
+    model: text-embedding-3-small
+    # Optional. Texts per embedBatch call: this → the provider's declared cap →
+    # 100. Set it only when the tenant's quota is stricter than the model's
+    # documented limit; exceeding a hard cap is a 400, not a slowdown.
+    # maxBatchSize: 250
 ```
+
+`dedupThreshold` is not shown here: it is read only by the `in-memory` store, not Qdrant.
 
 All instances share the same vector store, ensuring consistent tool discovery and knowledge retrieval.
 
@@ -371,10 +386,12 @@ curl -X PUT http://qdrant:6333/collections/llm-agent/snapshots/recover \
 Keep `smart-server.yaml` under version control. The `ConfigWatcher` supports hot-reload — changes to weights, thresholds, and logging levels are applied without restart:
 
 ```yaml
-# These values are hot-reloadable (no restart needed):
+# These values are hot-reloadable (no restart needed). vectorWeight/keywordWeight
+# are read from rag.store, and only for the in-memory store type:
 rag:
-  vectorWeight: 0.7
-  keywordWeight: 0.3
+  store:
+    vectorWeight: 0.7
+    keywordWeight: 0.3
 agent:
   ragQueryK: 10
   historyAutoSummarizeLimit: 10
@@ -382,7 +399,7 @@ agent:
 
 ## Security Checklist
 
-- **API key management** — Use environment variables or secret managers (AWS Secrets Manager, Vault). Never store API keys as YAML literals in committed files.
+- **API key management** — Use environment variables or secret managers (AWS Secrets Manager, Vault). Configs hold `credentialRef` names only; a secret never enters a loaded config, so there is no YAML literal to store in a committed file.
 - **Network binding** — Bind to `127.0.0.1` for local-only access. Use a reverse proxy (nginx, Caddy) for public exposure with TLS termination.
 - **MCP transport security** — Use TLS (`https://`) for remote MCP HTTP endpoints. For local MCP stdio servers, ensure the spawned process is trusted.
 - **Rate limiting** — Add rate limiting at the reverse proxy layer. SmartServer does not implement rate limiting internally.

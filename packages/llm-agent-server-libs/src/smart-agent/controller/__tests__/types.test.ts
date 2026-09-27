@@ -37,11 +37,7 @@ describe('controller types', () => {
       pending: marker,
     };
     const cfg: ControllerConfig = {
-      subagents: {
-        evaluator: { provider: 'openai', apiKey: 'k' },
-        planner: { provider: 'openai', apiKey: 'k' },
-        executor: { provider: 'openai', apiKey: 'k' },
-      },
+      subagents: { evaluator: {}, planner: {}, executor: {} },
       targetState: { strategy: 'auto', distanceThreshold: 0.25 },
       sessionMemory: { collection: 'session-memory' },
       budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5 },
@@ -53,11 +49,7 @@ describe('controller types', () => {
   it('ControllerConfig has no user planner field; PlannerKind is capability-tuned', () => {
     // planner selection is preset-encoded, not a config field (§C clean break).
     const cfg: Partial<ControllerConfig> = {
-      subagents: {
-        evaluator: { provider: 'openai', apiKey: 'k' },
-        planner: { provider: 'openai', apiKey: 'k' },
-        executor: { provider: 'openai', apiKey: 'k' },
-      },
+      subagents: { evaluator: {}, planner: {}, executor: {} },
     } as Partial<ControllerConfig>;
     // @ts-expect-error — `planner` is no longer a ControllerConfig field
     cfg.planner;

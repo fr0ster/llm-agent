@@ -8,7 +8,11 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { FallbackQueryEmbedding, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  FallbackQueryEmbedding,
+  RagError,
+  ragIdentityFilter,
+} from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
 import {
@@ -30,6 +34,30 @@ export interface PgClient {
 
 function vectorLiteral(vec: number[]): string {
   return `'[${vec.join(',')}]'::vector`;
+}
+
+/** Opens the pool a handle, or a provider's catalog work, talks through. */
+export async function createPgClient(
+  cfg: PgVectorRagConfig,
+): Promise<PgClient> {
+  const args = await resolvePgConnectArgs(cfg);
+  const mod = (await import('pg')) as unknown as {
+    default?: {
+      Pool: new (
+        a: unknown,
+      ) => { query: PgClient['query']; end: () => Promise<void> };
+    };
+    Pool?: new (
+      a: unknown,
+    ) => { query: PgClient['query']; end: () => Promise<void> };
+  };
+  const PoolCtor = mod.Pool ?? mod.default?.Pool;
+  if (!PoolCtor) throw new Error('pg module did not expose Pool');
+  const pool = new PoolCtor(args);
+  return {
+    query: (sql, params = []) => pool.query(sql, params as unknown[]),
+    end: () => pool.end(),
+  };
 }
 
 export class PgVectorRag implements IRag {
@@ -54,30 +82,9 @@ export class PgVectorRag implements IRag {
     // The rejection is re-thrown when clientPromise is actually awaited.
     const driverPromise = injectedClient
       ? Promise.resolve(injectedClient)
-      : this.createDriverClient(config);
+      : createPgClient(config);
     driverPromise.catch(() => {});
     this.clientPromise = driverPromise;
-  }
-
-  private async createDriverClient(cfg: PgVectorRagConfig): Promise<PgClient> {
-    const args = resolvePgConnectArgs(cfg);
-    const mod = (await import('pg')) as unknown as {
-      default?: {
-        Pool: new (
-          a: unknown,
-        ) => { query: PgClient['query']; end: () => Promise<void> };
-      };
-      Pool?: new (
-        a: unknown,
-      ) => { query: PgClient['query']; end: () => Promise<void> };
-    };
-    const PoolCtor = mod.Pool ?? mod.default?.Pool;
-    if (!PoolCtor) throw new Error('pg module did not expose Pool');
-    const pool = new PoolCtor(args);
-    return {
-      query: (sql, params = []) => pool.query(sql, params as unknown[]),
-      end: () => pool.end(),
-    };
   }
 
   async ensureSchema(): Promise<void> {
@@ -109,11 +116,43 @@ export class PgVectorRag implements IRag {
       const client = await this.clientPromise;
       const table = quoteIdent(this.collectionName);
       const lit = vectorLiteral(vector);
-      const sql = `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table} ORDER BY vector <=> ${lit} LIMIT ${Math.max(1, k)}`;
-      const { rows } = await client.query(sql);
+      // The filters, as parameterised conditions on the jsonb metadata (never
+      // interpolated) — the same contract VectorRag / QdrantRag apply:
+      // - session/user scope: `->>` yields NULL for a missing key, and
+      //   NULL = $n is not true, so an unowned row is excluded;
+      // - `ragFilter.namespace`: the same, on `metadata.namespace`;
+      // - expiry: a numeric `metadata.ttl` (epoch seconds) in the past drops
+      //   the row; a missing or non-numeric ttl never expires. The CASE keeps
+      //   the float8 cast away from a non-numeric value, which would fail the
+      //   whole query.
+      // The WHERE runs before ORDER BY … LIMIT: the table has no ANN index, so
+      // the scan is exact and LIMIT counts only matching rows.
+      const identity = ragIdentityFilter(options);
+      const targetNamespace = options?.ragFilter?.namespace;
+      const conditions: string[] = [];
+      const params: Array<string | number> = [];
+      if (identity?.sessionId !== undefined) {
+        params.push(identity.sessionId);
+        conditions.push(`metadata->>'sessionId' = $${params.length}`);
+      }
+      if (identity?.userId !== undefined) {
+        params.push(identity.userId);
+        conditions.push(`metadata->>'userId' = $${params.length}`);
+      }
+      if (typeof targetNamespace === 'string') {
+        params.push(targetNamespace);
+        conditions.push(`metadata->>'namespace' = $${params.length}`);
+      }
+      params.push(Date.now() / 1000);
+      conditions.push(
+        `COALESCE(CASE WHEN jsonb_typeof(metadata->'ttl') = 'number' THEN (metadata->>'ttl')::float8 END, 'infinity'::float8) >= $${params.length}`,
+      );
+      const where = ` WHERE ${conditions.join(' AND ')}`;
+      const sql = `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table}${where} ORDER BY vector <=> ${lit} LIMIT ${Math.max(1, k)}`;
+      const { rows } = await client.query(sql, params);
       const results: RagResult[] = rows.map((row) => ({
         text: String(row.text ?? ''),
-        metadata: (row.metadata as RagMetadata) ?? {},
+        metadata: withId(row),
         score: 1 - Number(row.score ?? 0),
       }));
       return { ok: true, value: results };
@@ -141,7 +180,7 @@ export class PgVectorRag implements IRag {
         ok: true,
         value: {
           text: String(row.text ?? ''),
-          metadata: (row.metadata as RagMetadata) ?? {},
+          metadata: withId(row),
           score: 1,
         },
       };
@@ -241,4 +280,13 @@ export class PgVectorRag implements IRag {
         this.upsertPrecomputed(text, vector, { ...metadata, id }),
     };
   }
+}
+
+/**
+ * upsert keeps the id in its own column and out of the jsonb, so a read puts
+ * it back: readers find a record's id in its metadata, as every other store
+ * returns it (tool selection's toolNameFromRecord keys on it).
+ */
+function withId(row: Record<string, unknown>): RagMetadata {
+  return { ...((row.metadata as RagMetadata) ?? {}), id: String(row.id) };
 }

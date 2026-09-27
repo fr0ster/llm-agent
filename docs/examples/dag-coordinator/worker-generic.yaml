@@ -5,22 +5,15 @@ agent:
   maxIterations: 25
   ragQueryK: 10
   healthTimeoutMs: 15000
-llm:
-  main:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.2
-  classifier:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-    temperature: 0.1
+llm: abap-analyst
 rag:
-  type: in-memory
-  embedder: sap-ai-core
-  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    credentialRef: LLM
 mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://localhost:3001/mcp/stream/http}

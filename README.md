@@ -24,7 +24,8 @@ It ships two ways:
 
 The shape of the run is configuration, not code. `pipeline: { name, config }`
 resolves against a plugin registry; six pipelines are built in, and a deployment
-adds its own by exporting an `IPipelinePlugin` (a name collision with a built-in
+adds its own by exporting an `IPipelinePlugin` instance, or a factory under
+`pipelinePluginFactories` when it takes settings (a name collision with a built-in
 fails loud at startup rather than shadowing it).
 
 | `name` | Shape |
@@ -36,8 +37,8 @@ fails loud at startup rather than shadowing it).
 | `dag` ⚠️ | Legacy. Planner → parallel workers → finalizer, on its own step interpreter. Selectable for backward compatibility only. |
 | `stepper` ⚠️ | Legacy. Composition flow (`cyclic-react` / `planned-react` / `deep-stepper`). Selectable for backward compatibility only. |
 
-The three subagent roles are independent LLM endpoints, so a heavy planner and a
-light executor can sit on different providers and models in the same run.
+Each subagent role names a key of the top-level `llm:` map, so a heavy planner
+and a light executor can sit on different providers and models in the same run.
 
 > ⚠️ `dag` and `stepper` still run, but they are no longer the active development
 > path and receive no new planner/replan/metering work. Choose `controller` for
@@ -73,7 +74,8 @@ Store and embedder are chosen independently and resolved from registries:
 - **Embedders** — `ollama`, `openai`, `sap-ai-core`, or your own factory
   registered by name.
 - **Hybrid retrieval** — vector and keyword scores are blended
-  (`vectorWeight` / `keywordWeight`), with cosine dedup (`dedupThreshold`).
+  (`vectorWeight` / `keywordWeight`), with cosine dedup (`dedupThreshold`) —
+  set under `rag.store` for the in-memory store.
   Omit the embedder entirely and tool selection falls back to BM25 keyword
   matching — the whole stack still runs with no embedding service at all.
 - **Runtime domain knowledge.** A second, separate skills-RAG (`skillPlugins:`)
@@ -100,10 +102,18 @@ Store and embedder are chosen independently and resolved from registries:
 
 ### Everything the consumer should own is a seam
 
-A plugin module can contribute `pipelinePlugins`, `stageHandlers`,
-`embedderFactories`, `mcpClients`, `clientAdapters`, and `apiAdapters`. The core
-package has zero provider dependencies: consumers depend on interfaces, and any
-`ILlm`, `IEmbedder`, `IRag`, or `IMcpConnectionStrategy` implementation drops in.
+A plugin module can contribute `pipelinePlugins`, `pipelinePluginFactories`,
+`stageHandlers`, `embedderFactories`, `mcpClients`, `clientAdapters`, and
+`apiAdapters`. The core package has zero provider dependencies: consumers
+depend on interfaces, and any `ILlm`, `IEmbedder`, `IRag`, or
+`IMcpConnectionStrategy` implementation drops in.
+
+### Credentials are objects, not strings
+
+A provider or store is authorized by the credential it is **constructed** with —
+`IApiKeyCredential`, `IBearerCredential` or `ISecretLoginCredential` — and no contract or config
+carries a secret. YAML names an account with `credentialRef:`; the server's composition root turns
+that name into a credential ([how](packages/llm-agent-server/README.md#credentials)).
 
 ### HTTP surface
 
@@ -118,7 +128,7 @@ package has zero provider dependencies: consumers depend on interfaces, and any
 | [`@mcp-abap-adt/llm-agent`](packages/llm-agent/README.md) | Core interfaces, types, `MissingProviderError`, lightweight helpers (`CircuitBreaker`, `FallbackRag`, LLM call strategies, `ToolCache`, adapters, normalizers). Zero provider dependencies. |
 | [`@mcp-abap-adt/llm-agent-mcp`](packages/llm-agent-mcp/README.md) | `MCPClientWrapper`, `McpClientAdapter`, `createDefaultMcpClient`, and MCP connection strategies. |
 | [`@mcp-abap-adt/llm-agent-rag`](packages/llm-agent-rag/README.md) | RAG/embedder composition — `makeRag` (async), `resolveEmbedder` (sync), prefetch helpers, backend factories. |
-| [`@mcp-abap-adt/llm-agent-libs`](packages/llm-agent-libs/README.md) | Core composition runtime: `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, resilience, observability, plugins, skills, `makeLlm`/`makeDefaultLlm`. |
+| [`@mcp-abap-adt/llm-agent-libs`](packages/llm-agent-libs/README.md) | Core composition runtime: `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, resilience, observability, plugins, skills. |
 | [`@mcp-abap-adt/llm-agent-server-libs`](packages/llm-agent-server-libs/README.md) | SmartServer composition library: `SmartServer`, `buildStepperRoot`/`buildFromComposition`, `StepperCoordinatorHandler`, coordinator config parsing, sessions, and the pipeline builder-factories (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory`). Importable. |
 | [`@mcp-abap-adt/llm-agent-server`](packages/llm-agent-server/README.md) | **Binary only** — CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP `SmartServer`. Not importable as a library. Thin wrapper over `llm-agent-server-libs`. |
 | [`@mcp-abap-adt/openai-llm`](packages/openai-llm/README.md) | OpenAI LLM provider (`OpenAIProvider`). |
@@ -132,6 +142,7 @@ package has zero provider dependencies: consumers depend on interfaces, and any
 | [`@mcp-abap-adt/qdrant-rag`](packages/qdrant-rag/README.md) | Qdrant vector store RAG (`QdrantRag`, `QdrantRagProvider`). |
 | [`@mcp-abap-adt/hana-vector-rag`](packages/hana-vector-rag/README.md) | SAP HANA Cloud Vector Engine RAG (`HanaVectorRag`, `HanaVectorRagProvider`). Optional peer. |
 | [`@mcp-abap-adt/pg-vector-rag`](packages/pg-vector-rag/README.md) | PostgreSQL + pgvector RAG (`PgVectorRag`, `PgVectorRagProvider`). Optional peer. |
+| [`@mcp-abap-adt/sap-aicore-auth`](packages/sap-aicore-auth/README.md) | SAP AI Core service key → bearer credential + `apiBaseUrl` (`serviceKeyCredential`). |
 
 ## Quick install
 
@@ -177,6 +188,9 @@ npm install @mcp-abap-adt/llm-agent
 ```
 
 Build your own agent against the interfaces exported by core. Supply your own `ILlm` and `IEmbedder` implementations.
+
+**Upgrading to v27?** Secrets moved out of configs and contracts, and the binary reads new
+environment variable names; read [docs/MIGRATION-v27.md](docs/MIGRATION-v27.md) first.
 
 Upgrading? The `coordinator:` block and the legacy
 `pipeline: { mcp | rag | stages | llm }` overrides were removed in **v19** —

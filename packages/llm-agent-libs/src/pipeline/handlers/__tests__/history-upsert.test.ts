@@ -10,6 +10,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import { summarizeAndStore } from '../history-upsert.js';
 
 function makeFakeMemory(): IHistoryMemory & { entries: Map<string, string[]> } {
@@ -213,5 +214,50 @@ describe('history-upsert: summarizeAndStore', () => {
     assert.deepEqual(memory.getRecent('s1', 10), ['do something → done it']);
     assert.equal(rag.upserted.length, 1);
     assert.equal(rag.upserted[0].text, 'do something → done it');
+  });
+});
+
+describe('history-upsert: the record carries its owner (security)', () => {
+  const turn: HistoryTurn = {
+    sessionId: 's1',
+    turnIndex: 7,
+    userText: 'show open purchase orders',
+    assistantText: '',
+    toolCalls: [],
+    toolResults: [],
+    timestamp: 1000,
+  };
+
+  it('tags the history record with sessionId, and userId when the call has one', async () => {
+    const rag = makeFakeRag();
+    await summarizeAndStore({
+      turn,
+      summarizer: makeFakeSummarizer('listed open purchase orders'),
+      memory: makeFakeMemory(),
+      rag,
+      sessionId: 's1',
+      options: { userId: 'u1' },
+    });
+    assert.deepEqual(rag.upserted[0].meta, { sessionId: 's1', userId: 'u1' });
+  });
+
+  it('a session-scoped history query finds its own turn and not another session’s', async () => {
+    // The default pipeline queries `history` with scope: 'session', which
+    // every store now filters on metadata.sessionId — an untagged record
+    // would be invisible to its own session.
+    const rag = new InMemoryRag();
+    await summarizeAndStore({
+      turn,
+      summarizer: makeFakeSummarizer('listed open purchase orders'),
+      memory: makeFakeMemory(),
+      rag,
+      sessionId: 's1',
+    });
+    const q = { text: 'purchase orders', toVector: async () => [] };
+    const own = await rag.query(q, 5, { ragFilter: { sessionId: 's1' } });
+    const other = await rag.query(q, 5, { ragFilter: { sessionId: 's2' } });
+    assert.ok(own.ok && other.ok);
+    assert.equal(own.ok && own.value.length, 1);
+    assert.equal(other.ok && other.value.length, 0);
   });
 });

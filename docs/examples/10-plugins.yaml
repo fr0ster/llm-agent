@@ -29,14 +29,16 @@
 #
 #   class MyPipeline {
 #     get name() { return 'my-pipeline'; }
-#     parseConfig(raw) { return raw ?? {}; }
-#     async build(cfg, ctx) {
+#     constructor(settings) { this.settings = settings; }
+#     async build(ctx) {
 #       const builder = await ctx.createAgentBuilder();
 #       const handle = await builder.build();
 #       return { agent: handle.agent, close: () => handle.close() };
 #     }
 #   }
-#   export const pipelinePlugins = { 'my-pipeline': new MyPipeline() };
+#   export const pipelinePluginFactories = {
+#     'my-pipeline': (raw) => new MyPipeline(raw ?? {}),
+#   };
 #
 # See docs/examples/plugins/ for full working examples of each plugin type.
 
@@ -48,15 +50,16 @@ pluginDir: ./my-plugins
 
 llm:
   provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
 
 rag:
-  type: in-memory
-  embedder: ollama
-  url: http://localhost:11434
-  model: bge-m3
+  store:
+    type: in-memory
+  embedder:
+    provider: ollama
+    url: http://localhost:11434
+    model: bge-m3
 
 mcp:
   type: http

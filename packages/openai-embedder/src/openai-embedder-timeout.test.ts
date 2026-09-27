@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import { OpenAiEmbedder } from './openai-embedder.js';
 
 /**
@@ -27,7 +28,10 @@ function captureSignal() {
 }
 
 const embedder = () =>
-  new OpenAiEmbedder({ apiKey: 'sk-test', model: 'text-embedding-3-small' });
+  new OpenAiEmbedder({
+    credential: staticApiKey('sk-test'),
+    model: 'text-embedding-3-small',
+  });
 
 describe('OpenAiEmbedder — the caller owns the bound', () => {
   it('sends the caller signal unchanged', async () => {

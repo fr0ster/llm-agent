@@ -19,6 +19,20 @@
     "packages/llm-agent/src/logger/normalise-logger.test.ts",
     "packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts",
     "packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts",
-    "packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts"
+    "packages/llm-agent-mcp/src/strategies/lazy-connection-strategy-text-logger.test.ts",
+    "packages/openai-llm/src/__tests__/credential.test.ts",
+    "packages/anthropic-llm/src/__tests__/credential.test.ts",
+    "packages/deepseek-llm/src/__tests__/credential.test.ts",
+    "packages/ollama-llm/src/__tests__/credential.test.ts",
+    "packages/openai-embedder/src/__tests__/credential.test.ts",
+    "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts",
+    "packages/llm-agent-rag/src/__typechecks__/embedder-resolution.ts",
+    "packages/llm-agent-mcp/src/servers/__tests__/credential.test.ts",
+    "packages/llm-agent-server-libs/src/__typechecks__/construction-seams.ts",
+    "packages/llm-agent/src/interfaces/__tests__/pipeline-context.typecheck.ts",
+    "packages/llm-agent/src/interfaces/__tests__/pipeline-plugin-contract.typecheck.ts",
+    "packages/llm-agent-server-libs/src/pipelines/__tests__/server-context-lookups-only.typecheck.ts",
+    "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts",
+    "packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts"
   ]
 }

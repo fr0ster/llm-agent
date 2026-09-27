@@ -2,6 +2,7 @@
  * OpenAI LLM Provider
  */
 
+import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IModelInfo,
   LLMCallOptions,
@@ -13,6 +14,20 @@ import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
 
 export interface OpenAIConfig extends LLMProviderConfig {
+  /**
+   * Asked for fresh on every request — never cached — so a rotating key
+   * rotates and a resolved-once secret is never frozen for the object's
+   * lifetime. `LLMProviderConfig` carries no credential field any more (each
+   * provider is typed for what its own target speaks), so this one is
+   * required here: this provider cannot authenticate without it.
+   *
+   * Quota scoping (`quotaCredential`) keys on this object's IDENTITY, not its
+   * secret: two calls to `staticApiKey(key)` create two credential objects
+   * and therefore two separate rate-limit buckets, even for the same key.
+   * Reuse one credential object — or set `quotaScope` explicitly — to make
+   * two providers share a gate.
+   */
+  credential: IApiKeyCredential;
   model?: string;
   temperature?: number;
   maxTokens?: number;
@@ -25,17 +40,38 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   readonly model: string;
   protected readonly providerName: string = 'OpenAI';
 
+  /**
+   * Every direct instantiation authenticates. Ollama overrides this to
+   * `false` — its target ignores the key locally, though a gateway in front
+   * of it may still require one — without duplicating this constructor.
+   *
+   * Called from the constructor below, before it returns — so an override
+   * MUST be a constant (as both existing overrides are) and must never read
+   * instance state: `this` is not fully constructed yet at that point, and a
+   * field read here could see it half-initialized.
+   *
+   * `OllamaConfig`/`DeepSeekConfig` reach this constructor through an
+   * `as OpenAIConfig` cast (see their own files), which is what lets a
+   * possibly-`undefined` `credential` satisfy a field typed here as
+   * required. This hook, not the type, is what actually keeps a subclass
+   * honest about whether that's allowed.
+   */
+  protected requiresCredential(): boolean {
+    return true;
+  }
+
   constructor(config: OpenAIConfig) {
     super(config);
-    this.validateConfig();
 
+    if (this.requiresCredential() && !config.credential) {
+      throw new Error("OpenAI provider requires a 'credential'");
+    }
     if (!config.model) {
       throw new Error("OpenAI provider requires a 'model'");
     }
     this.model = config.model;
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${config.apiKey}`,
       'Content-Type': 'application/json',
     };
 
@@ -53,6 +89,33 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       baseURL: config.baseURL || 'https://api.openai.com/v1',
       headers,
     });
+  }
+
+  /**
+   * `Authorization`, resolved fresh for this one request — never baked into
+   * `client.defaults.headers`, which would freeze whatever secret the
+   * credential returned at construction time.
+   *
+   * BEHAVIOUR CHANGE for Ollama: it used to send `Authorization: Bearer
+   * <key or the literal 'ollama'>` on every request unconditionally — a
+   * dummy value existed only because the OpenAI SDK this class no longer
+   * goes through demanded a non-empty key. Now, with no credential
+   * configured, no header is sent at all. That is a real change for exactly
+   * the case the credential stayed optional for: an Ollama instance sitting
+   * behind a gateway that DOES check auth silently stops being authorized
+   * (`requiresCredential() === false`, so nothing throws either). Correct,
+   * because the SDK's constraint that produced the dummy is gone — but it
+   * is not "the same as before", so it is not described that way here.
+   */
+  private async authHeader(): Promise<Record<string, string>> {
+    const credential = this.config.credential;
+    if (!credential) return {};
+    return { Authorization: `Bearer ${await credential.secret()}` };
+  }
+
+  /** Quota isolation (base class): this provider's account is its credential. */
+  protected override quotaCredential(): object | undefined {
+    return this.config.credential;
   }
 
   /**
@@ -90,7 +153,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
       const response = await this.withThrottleRetry(
-        () =>
+        async () =>
           this.client.post(
             '/chat/completions',
             {
@@ -103,7 +166,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
               ...(options?.stop ? { stop: options.stop } : {}),
             },
-            { signal: options?.signal },
+            { signal: options?.signal, headers: await this.authHeader() },
           ),
         { model, signal: options?.signal },
       );
@@ -150,7 +213,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
 
       const response = await this.withThrottleRetry(
-        () =>
+        async () =>
           this.client.post(
             '/chat/completions',
             {
@@ -165,7 +228,11 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               stream: true,
               stream_options: { include_usage: true },
             },
-            { responseType: 'stream', signal: options?.signal },
+            {
+              responseType: 'stream',
+              signal: options?.signal,
+              headers: await this.authHeader(),
+            },
           ),
         { model, signal: options?.signal },
       );
@@ -249,14 +316,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   }
 
   async getModels(): Promise<IModelInfo[]> {
-    const response = await this.client.get('/models');
+    const response = await this.client.get('/models', {
+      headers: await this.authHeader(),
+    });
     return (response.data.data as Array<{ id: string; owned_by?: string }>).map(
       (m) => ({ id: m.id, owned_by: m.owned_by }),
     );
   }
 
   async getEmbeddingModels(): Promise<IModelInfo[]> {
-    const response = await this.client.get('/models');
+    const response = await this.client.get('/models', {
+      headers: await this.authHeader(),
+    });
     return (response.data.data as Array<{ id: string; owned_by?: string }>)
       .filter((m) => /embed/i.test(m.id))
       .map((m) => ({ id: m.id, owned_by: m.owned_by }));

@@ -5,6 +5,7 @@ import {
   resolveAgentEmbedder,
   resolveToolsStoreEmbedder,
 } from '../resolve-agent-embedder.js';
+import { constructionSeams } from './construction-seams.js';
 
 describe('resolveAgentEmbedder', () => {
   it('returns the DI-injected embedder when present (wins over rag config)', async () => {
@@ -12,8 +13,9 @@ describe('resolveAgentEmbedder', () => {
       embed: async () => ({ vector: [42] }),
     } as unknown as IEmbedder;
     const result = await resolveAgentEmbedder(
-      { type: 'in-memory', embedder: 'ollama' },
+      { store: { type: 'in-memory' }, embedder: { provider: 'ollama' } },
       di,
+      constructionSeams.resolveEmbedder,
       {},
     );
     // The DI embedder wins over rag config — it is wrapped (UsageLoggingEmbedder)
@@ -23,14 +25,20 @@ describe('resolveAgentEmbedder', () => {
   });
 
   it('returns undefined when there is no rag config', async () => {
-    const result = await resolveAgentEmbedder(undefined, undefined, {});
+    const result = await resolveAgentEmbedder(
+      undefined,
+      undefined,
+      constructionSeams.resolveEmbedder,
+      {},
+    );
     assert.equal(result, undefined);
   });
 
   it('returns undefined for a bare in-memory store (BM25, no embedder)', async () => {
     const result = await resolveAgentEmbedder(
-      { type: 'in-memory' },
+      { store: { type: 'in-memory' } },
       undefined,
+      constructionSeams.resolveEmbedder,
       {},
     );
     assert.equal(result, undefined);
@@ -40,12 +48,15 @@ describe('resolveAgentEmbedder', () => {
     // in-memory + explicit embedder → hybrid vector store needs an embedder.
     const result = await resolveAgentEmbedder(
       {
-        type: 'in-memory',
-        embedder: 'ollama',
-        url: 'http://localhost:11434',
-        model: 'bge-m3',
+        store: { type: 'in-memory' },
+        embedder: {
+          provider: 'ollama',
+          url: 'http://localhost:11434',
+          model: 'bge-m3',
+        },
       },
       undefined,
+      constructionSeams.resolveEmbedder,
       {},
     );
     assert.ok(result, 'expected a constructed embedder, got undefined');
@@ -55,8 +66,16 @@ describe('resolveAgentEmbedder', () => {
   it('builds an embedder for a vector store even without explicit rag.embedder', async () => {
     // qdrant/hana/pg always use an embedder; default is ollama.
     const result = await resolveAgentEmbedder(
-      { type: 'qdrant', url: 'http://localhost:6333', model: 'bge-m3' },
+      {
+        store: {
+          type: 'qdrant',
+          url: 'http://localhost:6333',
+          collectionName: 'c',
+        },
+        embedder: { provider: 'ollama', model: 'bge-m3' },
+      },
       undefined,
+      constructionSeams.resolveEmbedder,
       {},
     );
     assert.ok(result, 'expected a default embedder for a vector store');
@@ -69,8 +88,12 @@ describe('resolveToolsStoreEmbedder (#141: pipeline.rag.tools sharing)', () => {
     const result = await resolveToolsStoreEmbedder(
       current,
       // store config that WOULD build a different embedder — must be ignored.
-      { type: 'in-memory', embedder: 'ollama', model: 'bge-m3' },
+      {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'ollama', model: 'bge-m3' },
+      },
       undefined,
+      constructionSeams.resolveEmbedder,
       {},
     );
     assert.strictEqual(
@@ -84,12 +107,15 @@ describe('resolveToolsStoreEmbedder (#141: pipeline.rag.tools sharing)', () => {
     const result = await resolveToolsStoreEmbedder(
       undefined,
       {
-        type: 'in-memory',
-        embedder: 'ollama',
-        url: 'http://localhost:11434',
-        model: 'bge-m3',
+        store: { type: 'in-memory' },
+        embedder: {
+          provider: 'ollama',
+          url: 'http://localhost:11434',
+          model: 'bge-m3',
+        },
       },
       undefined,
+      constructionSeams.resolveEmbedder,
       {},
     );
     assert.ok(result, 'expected a constructed embedder for the tools store');
@@ -99,8 +125,9 @@ describe('resolveToolsStoreEmbedder (#141: pipeline.rag.tools sharing)', () => {
   it('stays undefined for a bare in-memory (BM25) tools store', async () => {
     const result = await resolveToolsStoreEmbedder(
       undefined,
-      { type: 'in-memory' },
+      { store: { type: 'in-memory' } },
       undefined,
+      constructionSeams.resolveEmbedder,
       {},
     );
     assert.equal(result, undefined);
@@ -112,8 +139,12 @@ describe('resolveToolsStoreEmbedder (#141: pipeline.rag.tools sharing)', () => {
     } as unknown as IEmbedder;
     const result = await resolveToolsStoreEmbedder(
       undefined,
-      { type: 'in-memory', embedder: 'ollama', model: 'bge-m3' },
+      {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'ollama', model: 'bge-m3' },
+      },
       di,
+      constructionSeams.resolveEmbedder,
       {},
     );
     // DI embedder must win over store config (wrapped for usage accounting).

@@ -14,6 +14,7 @@ import {
 import {
   ControllerFactory,
   type ControllerFactoryDeps,
+  makeControllerRoleLlm,
 } from '../factories/controller-factory.js';
 import {
   assertNoAuxCollision,
@@ -45,6 +46,7 @@ import type { IControllerServerPipelineContext } from './server-context.js';
 export {
   ControllerFactory,
   type ControllerFactoryDeps,
+  makeControllerRoleLlm,
 } from '../factories/controller-factory.js';
 export {
   ControllerCoordinatorHandler,
@@ -60,100 +62,31 @@ export type {
 } from '../smart-agent/controller/types.js';
 
 /**
- * Built-in `controller` pipeline plugin. Validates the controller config
- * dialect (three required subagent roles + defaulted target-state / session
- * memory / budgets), wires the {@link ControllerCoordinatorHandler} from the
- * server pipeline context, registers it on a fresh agent builder, and returns
- * the runnable agent plus a disposal hook.
+ * Built-in `controller` pipeline plugin. Constructed with settings the server
+ * parsed (`parseControllerSettings`); wires the {@link ControllerCoordinatorHandler}
+ * from the server pipeline context, registers it on a fresh agent builder, and
+ * returns the runnable agent plus a disposal hook.
  */
-export class ControllerPipelinePlugin
-  implements IPipelinePlugin<ControllerConfig>
-{
+export class ControllerPipelinePlugin implements IPipelinePlugin {
   readonly name: string;
   private readonly plannerKind: PlannerKind;
+  private readonly settings: ControllerConfig;
+  /** `controller` and `controller-weak` are two registry entries over this class;
+   *  `settings` come from the server's `parseControllerSettings`. */
   constructor(
-    name = 'controller',
-    plannerKind: PlannerKind = 'smart-executor',
+    name: string,
+    plannerKind: PlannerKind,
+    settings: ControllerConfig,
   ) {
     this.name = name;
     this.plannerKind = plannerKind;
-  }
-
-  parseConfig(raw: unknown): ControllerConfig {
-    const cfg = (raw ?? {}) as Record<string, unknown>;
-    const subagents = (cfg.subagents ?? {}) as Record<string, unknown>;
-    for (const role of ['evaluator', 'planner', 'executor'] as const) {
-      if (subagents[role] === undefined) {
-        throw new Error(
-          `pipeline 'controller' requires 'subagents.${role}' (each an LLM config with at least a 'provider')`,
-        );
-      }
-    }
-
-    const targetStateRaw = (cfg.targetState ?? {}) as Record<string, unknown>;
-    const sessionMemoryRaw = (cfg.sessionMemory ?? {}) as Record<
-      string,
-      unknown
-    >;
-    const budgetsRaw = (cfg.budgets ?? {}) as Record<string, unknown>;
-
-    if ('planner' in (cfg as Record<string, unknown>)) {
-      throw new Error(
-        'controller: `planner:` removed — capability is preset-encoded. Select ' +
-          'pipeline: { name: controller } (smart-executor) or ' +
-          '{ name: controller-weak } (weak-executor), or pass the kind to ' +
-          '`new ControllerFactory().build(config, deps, "weak-executor")` when ' +
-          'composing in code. No `planner:` alias exists.',
-      );
-    }
-
-    const requireInt = (
-      key: 'maxWaitMs' | 'maxTotalWaitMs',
-      min: number,
-    ): void => {
-      const v = budgetsRaw[key];
-      if (v === undefined) return;
-      if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
-        throw new Error(
-          `controller: 'budgets.${key}' must be a ${min > 0 ? 'positive' : 'non-negative'} finite integer (ms), got ${JSON.stringify(v)}`,
-        );
-      }
-    };
-    requireInt('maxWaitMs', 1);
-    requireInt('maxTotalWaitMs', 0);
-
-    return {
-      subagents: subagents as ControllerConfig['subagents'],
-      targetState: {
-        strategy: 'auto',
-        distanceThreshold: 0.25,
-        ...targetStateRaw,
-      } as ControllerConfig['targetState'],
-      sessionMemory: {
-        collection: 'session-memory',
-        ...sessionMemoryRaw,
-      } as ControllerConfig['sessionMemory'],
-      budgets: {
-        maxSteps: 20,
-        maxRetries: 3,
-        maxRewinds: 5,
-        maxToolCalls: 10,
-        maxDigestChars: 500,
-        maxIntentChars: 120,
-        maxActiveSteps: 16,
-        maxBoardChars: 12000,
-        keepRecentDigests: 8,
-        maxWaitMs: 600_000,
-        maxTotalWaitMs: 1_800_000,
-        ...budgetsRaw,
-      } as ControllerConfig['budgets'],
-    };
+    this.settings = settings;
   }
 
   async build(
-    cfg: ControllerConfig,
     ctx: IControllerServerPipelineContext,
   ): Promise<IPipelineInstance> {
+    const cfg = this.settings;
     const mcpClients = ctx.mcpClients ?? [];
     // Honor the consumer-injected MCP failure classifier on the `pipeline: controller`
     // path (ctx carries it from SmartServer/builder DI). Without this the bridge would
@@ -332,10 +265,7 @@ export class ControllerPipelinePlugin
     // handler. external-tool routing is decided PER-REQUEST inside the handler
     // from `ctx.externalTools`, so we do NOT wire `isExternalTool` here.
     const deps: ControllerFactoryDeps = {
-      makeRoleLlm: (role) =>
-        ctx.makeLlm(
-          cfg.subagents[role as 'evaluator' | 'planner' | 'executor'],
-        ),
+      makeRoleLlm: makeControllerRoleLlm(this.settings.subagents, ctx),
       callMcp: (name, args, signal) => auxCallMcp(name, args, signal),
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),

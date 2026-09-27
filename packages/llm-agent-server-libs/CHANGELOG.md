@@ -1,5 +1,166 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## [Unreleased]
+
+`PUT /v1/config` asks each new model once before applying anything, as startup
+does: a model that does not answer returns 400 naming it, and nothing changes
+(`skipModelValidation` skips it). It used to accept any name the resolver
+could construct, after which every request failed while `/health` stayed healthy.
+
+Every `SmartServer` session owns its RAG registry — a fresh one per session,
+holding the deployment's globals by reference and hydrated for the session's
+identity (`describeCollections`, rejected rows logged, the caller's records
+opened and `adopt`ed with their provider's name) — instead of one registry
+shared by every session; hydration is the only way back to a collection after
+a restart. One provider registry is handed to every build. **Two limits,
+stated:** per-session hydration is unreachable in the shipped `SmartServer` —
+its provider registry is private and no option, YAML key or method registers
+a provider in it, so there is no catalog to hydrate from and a session's
+registry holds only the globals (a consumer wires providers itself, e.g.
+`buildSessionRagRegistry` in its own `ragRegistryFactory`); and its sessions
+carry no `userId`, so `user` collections are neither hydrated nor creatable
+through it. New exports
+`buildSessionRagRegistry`, `SessionRagRegistryInput`; `SessionLifecycleOptions`
+gains `ragRegistryFactory?`, and its `ragRegistry` is optional — a consumer
+that reads it must handle `undefined`.
+
+`SessionRagRegistryInput` gains `reported?: Set<string>`: catalog findings
+(`rag_catalog_row_rejected`, `rag_hydration_skipped`) already logged, keyed
+per provider and row, so a caller passing one set logs each once instead of
+once per session. `SmartServer` holds one per server — never module-global, so
+two servers in one process do not silence each other. Read and open failures
+are still logged every time.
+
+**BREAKING:** a DAG worker file's `llm:` is no longer a complete LLM
+configuration resolved on its own — it names keys of the MAIN file's `llm:`
+map: a bare string is shorthand for `{ main: <key> }`, or a worker may spell
+out `{ main?, helper?, classifier? }`. Resolution goes through the server's
+`IRoleLlmResolver`, the same one the pipeline reads, so a worker naming a key
+shares the held instance and observes a `PUT /v1/config` swap — a worker used
+to build its own copy per worker name, which a config swap never reached. An
+inline LLM configuration in a worker file (`provider`, `model`, `apiKey`, …,
+`INLINE_LLM_CONFIG_FIELDS`) is refused at parse, naming the worker and the
+main file's `llm:` map; a named key with no entry in that map is refused at
+parse for a YAML `subagents:` file, and again in `start()` for a programmatic
+`subAgentConfigs` entry — both name the subagent, the role and the key.
+`SmartServerSubAgentConfig.config` is now `SmartServerWorkerConfig` (`Omit<SmartServerConfig,
+'log' | 'llm' | 'subAgentConfigs'> & { llm?: string | SmartServerWorkerLlmKeys }`),
+and `SmartServerWorkerLlmKeys = { main?: string; helper?: string; classifier?:
+string }` is new. `worker-llm.ts` exports `parseWorkerLlm(worker, raw)` and
+`assertWorkerLlmConfig(subs, llmMap)`. `ResolveSmartServerConfigOptions` gains
+`requireLlmSection?: boolean` (false for a worker file, whose `llm:` is
+resolved separately). `WorkerLlmSet` and `resolveWorkerLlmSet` lose their
+`mainLlm`/`classifierLlm`/`helperLlm` members — a worker's LLM slots no longer
+live in the per-worker cache; only its own embedder, tools RAG, history RAG
+and MCP clients still do. Two behaviour changes follow: a worker with no
+declared helper now resolves to the held helper (or `main`, where none is
+configured) instead of having none; a worker with no declared classifier now
+resolves to the held classifier instead of its own `main` at
+`classifierTemperature`. The shipped example worker and main files follow
+this shape, and every `apiKey` their `llm:` blocks carried becomes a
+`credentialRef` naming the same environment variable.
+
+**BREAKING:** a controller subagent (`pipeline.config.subagents.<role>`) is now
+`{ llm?: string; hint?: string }` — `ControllerSubagentConfig` no longer accepts
+`provider`, `model`, `temperature` or any other LLM field inline. An inline LLM
+configuration in a subagent is refused at parse, naming the top-level `llm:`
+map; a named key with no `llm:` entry is refused in `start()`, at startup,
+naming the key and the declared entries. An absent reviewer/finalizer block
+still means the planner's instance — obtained through the planner's key, or
+its default when it named none — so a per-role temperature that used to live
+on the subagent block now moves onto the `llm:` entry it names.
+`makeControllerRoleLlm(subagents, ctx)` is exported (from
+`factories/controller-factory.ts` and re-exported from `pipelines/controller.ts`)
+for code-level composition of the controller's `makeRoleLlm`.
+`ControllerSkillPipelineBuilder.withRoleLlm(role, …)` now emits an `llm.<role>`
+entry that the role names, instead of an inline subagent config.
+`parseControllerSettings(raw, llmKeys)` takes the set of `llm:` keys the
+section may name; `parseControllerSubagents(raw, llmKeys)` and
+`llmKeySet(map)` are new exports (`pipelines/controller-subagents.ts` and
+`smart-agent/llm-config-map.ts`). `IServerPipelineContext.makeLlm` is removed
+(its last reader, `controller`, moved to `resolveNamedLlm`/`resolveLlm`) — a
+step reaches an LLM only through `resolveLlm(role)` or
+`resolveNamedLlm(key)`, so an implementation or test double of the context
+drops the `makeLlm` member.
+
+**BREAKING:** the built-in pipeline plugins take settings in their
+constructors instead of reading a `parseConfig(raw)`/`build(cfg, ctx)` pair —
+`FlatPipelinePlugin()`, `LinearPipelinePlugin(settings)`,
+`StepperPipelinePlugin(settings)`, `DagPipelinePlugin(settings)`,
+`ControllerPipelinePlugin(name, plannerKind, settings)`. The four dialects
+move to `pipeline-settings.ts` and are exported: `parseLinearSettings`,
+`parseDagSettings`, `parseStepperSettings`, `parseControllerSettings`,
+`dagNamedLlmKeys`, `assertNamedLlmKeys`. `SmartServer`'s registry is now a map
+of `PipelinePluginFactory`; the selected one is constructed once at startup
+(not per session) and its result is checked where it is called, naming the
+module and the key. A `dag` section naming an `llm:` key with no entry, and an
+unknown pipeline name, now fail at startup instead of at the first session.
+`buildDagCoordinatorDeps` takes `{ settings: DagPipelineSettings, ... }`
+instead of a raw `coordCfg`, and never returns `undefined` (the settings are
+already validated to have a planner).
+
+**BREAKING:** `IServerPipelineContext` loses `llmMap` and `pipelineFallback`;
+`IRoleLlmResolver` loses `makeLlm` and gains `resolveNamed` (a declared
+`main`/`classifier`/`helper` key answers with the held instance `PUT
+/v1/config` swaps); a role with no `llm:` entry shares the held `main` instance
+instead of a fresh build per call; every other entry is built once and held
+for the server's lifetime (the deployment scope — `SmartServer` ships no
+per-session resolver); `buildDagCoordinatorDeps` and `buildFinalizer` take
+lookups; a `dag` key with no entry fails rather than falling back; an omitted
+`dag` planner key follows the pipeline-wide default (helper when configured);
+a declared `llm.classifier` now builds the held classifier (it was always
+built from `llm.main`, ignoring the entry and its `credentialRef`).
+`IServerPipelineContext.makeLlm` is deprecated; Task B15 removes it.
+
+**BREAKING:** the skill store's `apiKey` becomes `credentialRef`.
+`SkillPluginsStoreConfig`'s `qdrant` arm loses `apiKey` and gains
+`credentialRef?: string`; a leftover `apiKey` in config is refused, naming
+`credentialRef`. `BuildSkillHostDeps.storeCredential?: IApiKeyCredential`
+carries the resolved credential; `buildSkillHostFromConfig` stays the default
+`buildSkillHost` and refuses a named `credentialRef` that nothing resolved
+(never sent anonymously) rather than falling back to no auth.
+
+**BREAKING:** `SmartServerLlmConfig.apiKey` is removed, and `credentialRef`
+names the account instead. A YAML that still carries `apiKey` is refused with
+`credentialRef` in the message. `PipelineLlmProviderConfig` is deleted, with
+the `llm` member of the legacy `PipelineConfig`; nothing read either.
+`BuildAgentDeps.makeLlm` and `resolveEmbedder` are required, and
+`resolveEmbedder` is typed with `EmbedderResolution` from
+`@mcp-abap-adt/llm-agent-rag`. `SmartServer`, `buildAgent` and
+`ControllerSkillPipelineBuilder#build` require `deps`. The validator no longer
+asks for an api key or `AICORE_SERVICE_KEY`. `BuilderLlmInput.apiKey` becomes
+`credentialRef`, and the builder reads no environment variable.
+
+`SmartServer` no longer defaults `BuildAgentDeps.makeLlm`: build without it and
+the server refuses on first use, naming the seam. Subagent workers now build
+their LLMs through the same injected seam the top-level roles already used, so
+`maxTokens` and `whenThrottled` — previously dropped by a hand-copied field
+list — now reach them too. `makeDefaultRoleLlm` is removed.
+
+Behaviour change: an `llm:` entry built for a role other than the held
+main/classifier/helper now reaches `makeLlm` exactly as written — without a
+`temperature` of its own it no longer inherits main's, a fallback only the
+removed default applied (an injected `makeLlm` never received it).
+
+**BREAKING:** `SmartServerRagConfig` is now `{ store, embedder? }` — `rag.store`
+and `rag.embedder` in YAML. The store
+is discriminated by `type`, and the store and the embedder each carry
+`credentialRef`. The embedder section, `SmartServerEmbedderConfig`, names a
+built-in with `provider` (`openai`, `sap-ai-core`/`sap-aicore`, `ollama`, the
+default) or an embedder registered in `extraFactories` with `factory`, which
+carries no `credentialRef`. A custom name under `provider` is refused,
+pointing at `factory`. `apiBaseUrl` is not part of it and is refused in YAML:
+SAP AI Core's address comes from the credential entry (the same service key).
+`PipelineRagStoreConfig` is deleted, with the `rag` member of the legacy
+`PipelineConfig`; nothing read either. The search knobs live on the in-memory
+store. A flat `rag:` is refused with the new shape in the message. A secret
+inside either section is refused with that section's `credentialRef` named.
+`BuildAgentDeps.makeRag` is required, and `resolveEmbedder` receives the
+embedder section. An injected embedder is composed (`composeEmbedder`), never
+resolved. `resolveAgentEmbedder` and `resolveToolsStoreEmbedder` take the
+embedder seam as a new parameter. `isInMemoryInput` narrows a `MakeRagInput`.
+YAML pg-vector and HANA address fields are now actually read.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

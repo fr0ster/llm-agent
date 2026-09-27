@@ -17,10 +17,15 @@ npm install @mcp-abap-adt/sap-aicore-embedder
 
 ```typescript
 import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
+
+const { credential, apiBaseUrl } = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
 
 const embedder = new SapAiCoreEmbedder({
   model: 'text-embedding-3-small',
   resourceGroup: 'default', // optional
+  credential,
+  apiBaseUrl,
 });
 
 // Embed a single text
@@ -39,21 +44,30 @@ interface SapAiCoreEmbedderConfig {
   model: string;
   resourceGroup?: string;                             // default: 'default'
   scenario?: 'foundation-models' | 'orchestration';   // default: 'orchestration'
-  credentials?: FoundationModelsCredentials;          // foundation-models only; falls back to AICORE_SERVICE_KEY
+  credential: IBearerCredential;                       // required, both scenarios — resolved fresh per call
+  apiBaseUrl: string;                                  // required, both scenarios
 }
 ```
 
+`credential` and `apiBaseUrl` are required for both scenarios and are never
+read from the environment inside this package. Build them from a raw SAP AI
+Core service key with `serviceKeyCredential` from `@mcp-abap-adt/sap-aicore-auth`
+— see [Authentication](#authentication) below. `IBearerCredential` comes from
+`@mcp-abap-adt/interfaces-auth`.
+
 ### Orchestration (default)
 
-The default scenario — matches v11.0.0 behavior. Use this when the embedding model is deployed under the `orchestration` scenario. Authentication is handled automatically by the SAP AI SDK orchestration client using `AICORE_SERVICE_KEY`.
+The default scenario — matches v11.0.0 behavior. Use this when the embedding model is deployed under the `orchestration` scenario.
 
 ```ts
 import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 
-const embedder = new SapAiCoreEmbedder({ model: 'text-embedding-3-small' });
+const embedder = new SapAiCoreEmbedder({
+  model: 'text-embedding-3-small',
+  ...serviceKeyCredential(process.env.AICORE_SERVICE_KEY!),
+});
 ```
-
-Existing v11.0.0 consumers require no config changes.
 
 ### Foundation-models
 
@@ -63,8 +77,8 @@ Opt-in path for tenants where embedding models (such as `gemini-embedding` or `t
 const embedder = new SapAiCoreEmbedder({
   model: 'gemini-embedding',
   scenario: 'foundation-models',
+  ...serviceKeyCredential(process.env.AICORE_SERVICE_KEY!),
 });
-// Auth: process.env.AICORE_SERVICE_KEY (client_credentials flow)
 ```
 
 #### Batch size cap
@@ -81,9 +95,21 @@ quota is stricter than the model's documented limit.
 
 ## Authentication
 
-For the `orchestration` scenario (default), authentication is handled automatically by the SAP AI SDK orchestration client using `AICORE_SERVICE_KEY`.
+Neither scenario reads an environment variable inside this package — the
+caller resolves the credential and passes it in. `serviceKeyCredential(raw)`
+(`@mcp-abap-adt/sap-aicore-auth`) turns a raw SAP AI Core service-key JSON
+string into the `{ credential, apiBaseUrl }` pair both scenarios need:
 
-For the `foundation-models` scenario, authentication uses the `AICORE_SERVICE_KEY` environment variable directly (client credentials flow). You can also pass credentials explicitly via the `credentials` option.
+```ts
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
+
+const { credential, apiBaseUrl } = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
+```
+
+`credential.token()` is asked fresh on every `embed()`/`embedBatch()` call —
+never cached on the embedder instance — so a rotating token keeps rotating.
+Reading `AICORE_SERVICE_KEY` (or any other environment variable) is the
+composition root's job, not this package's.
 
 ## License
 

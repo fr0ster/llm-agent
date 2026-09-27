@@ -14,22 +14,27 @@ mode: smart
 
 llm:
   provider: deepseek                  # deepseek | openai | anthropic | sap-ai-sdk | ollama
-  apiKey: \${DEEPSEEK_API_KEY}        # not required for ollama / sap-ai-sdk
+  # No secret here: your composition root holds the credential. To use an account
+  # other than its default, name it:  credentialRef: <NAME>
   model: deepseek-chat
   temperature: 0.7
   classifierTemperature: 0.1
 
 rag:
-  type: in-memory                     # in-memory | qdrant | hana-vector | pg-vector
-  embedder: ollama                    # Embedder to use: ollama | openai | sap-ai-core | <custom>
-  url: http://localhost:11434
-  model: bge-m3
-  # resourceGroup: default            # SAP AI Core resource group (sap-ai-core embedder)
-  # scenario: orchestration           # SAP AI Core scenario: orchestration (default) | foundation-models
-  # collectionName: llm-agent         # Collection/table name (qdrant | hana-vector | pg-vector)
-  dedupThreshold: 0.92
-  vectorWeight: 0.7                   # Semantic similarity weight (0..1)
-  keywordWeight: 0.3                  # Lexical matching weight (0..1)
+  store:                              # the vector store: its own address and account
+    type: in-memory                   # in-memory | qdrant | hana-vector | pg-vector
+    # collectionName: llm-agent       # qdrant (default llm-agent) | hana-vector | pg-vector (required)
+    # credentialRef: QDRANT           # the store's account, resolved by your composition root
+    dedupThreshold: 0.92              # in-memory only
+    vectorWeight: 0.7                 # in-memory only: semantic similarity weight (0..1)
+    keywordWeight: 0.3                # in-memory only: lexical matching weight (0..1)
+  embedder:                           # omit for a keyword-only in-memory store
+    provider: ollama                  # ollama | openai | sap-ai-core | <custom>
+    url: http://localhost:11434
+    model: bge-m3
+    # resourceGroup: default          # SAP AI Core resource group (sap-ai-core)
+    # scenario: orchestration         # SAP AI Core scenario: orchestration (default) | foundation-models
+    # credentialRef: AICORE           # the embedder's own account
 
 mcp:
   # type: none | http | stdio
@@ -71,17 +76,15 @@ agent:
 # llm:
 #   main:
 #     provider: deepseek              # deepseek | openai | anthropic | sap-ai-sdk
-#     apiKey: \${DEEPSEEK_API_KEY}
 #     model: deepseek-chat
 #     temperature: 0.7
 #   classifier:                       # optional; if absent, main config is reused
-#     provider: deepseek
-#     apiKey: \${DEEPSEEK_API_KEY}
-#     model: deepseek-chat
+#     provider: openai
+#     credentialRef: OPENAI_KEY_CHEAP # a second account, named — resolved by your composition root
+#     model: gpt-4o-mini
 #     temperature: 0.1
 #   helper:                           # optional; if absent, main config is reused
 #     provider: deepseek
-#     apiKey: \${DEEPSEEK_API_KEY}
 #     model: deepseek-chat
 #     temperature: 0.1
 
@@ -112,7 +115,7 @@ log: smart-server.log                 # path to log file; omit for stdout
 
 # pipeline:                           # Optional: select the request pipeline.
 #   name: flat                        # flat (default) | linear | dag | stepper | controller | controller-weak | <plugin>
-#   config:                           # Opaque per-pipeline dialect (validated by the plugin)
+#   config:                           # The selected pipeline's section (parsed at startup by the server, or by a dynamic plugin's factory)
 #     mode: planned-react             # e.g. stepper: cyclic-react | planned-react | deep-stepper
 #     knowledgeSeed: []               # stepper: deployment-supplied tool guidance
 #

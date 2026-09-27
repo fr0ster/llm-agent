@@ -6,7 +6,7 @@
 # under `pipeline:`). The flat pipeline runs the full DefaultPipeline flow
 # automatically.
 #
-# Requires: AICORE_SERVICE_KEY env variable with SAP AI Core service key JSON.
+# Requires: LLM_SERVICE_KEY (the SAP AI Core service-key JSON) env variable.
 # See docs/SAP_AI_CORE.md for detailed setup instructions.
 #
 # Usage:
@@ -32,7 +32,8 @@ llm:
     temperature: 0.1
 
 rag:
-  type: in-memory
+  store:
+    type: in-memory
 
 mcp:
   - type: http

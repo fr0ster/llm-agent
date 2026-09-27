@@ -4,6 +4,7 @@ import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
 
 function httpRequest(
   port: number,
@@ -47,10 +48,13 @@ function makeServer() {
   return new SmartServer(
     {
       port: 0,
-      llm: { provider: 'deepseek', apiKey: 'test-key', model: 'test-model' },
+      llm: { provider: 'deepseek', model: 'test-model' },
       skipModelValidation: true,
     },
-    { makeLlm: async () => makeLlm([{ content: 'hello there' }]) },
+    {
+      ...constructionSeams,
+      makeLlm: async () => makeLlm([{ content: 'hello there' }]),
+    },
   );
 }
 

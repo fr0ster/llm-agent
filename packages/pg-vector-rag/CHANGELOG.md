@@ -1,5 +1,65 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## [Unreleased]
+
+**Security:** `query` honours `ragFilter.namespace` and record expiry, as `VectorRag` and
+`QdrantRag` do. Both were ignored, so a namespace-scoped query returned every namespace's rows and
+expired rows (`metadata.ttl` in epoch seconds, in the past) kept coming back. Both are
+parameterised `WHERE` conditions before `ORDER BY … LIMIT`: `metadata->>'namespace' = $n`, and
+`COALESCE(CASE WHEN jsonb_typeof(metadata->'ttl') = 'number' THEN (metadata->>'ttl')::float8 END,
+'infinity'::float8) >= $n` — a missing or non-numeric `ttl` never expires and cannot fail the
+float8 cast. Every query now carries the expiry condition. Verified against a live pgvector (pg16),
+the shared conformance kit included.
+
+**Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId` as
+parameterised `WHERE metadata->>'sessionId' = $n` / `metadata->>'userId' = $n` conditions before
+`ORDER BY … LIMIT` (values are bound, never interpolated). Before, the query filtered nothing, so a
+session- or user-scoped query returned every session's rows. A row without the key is excluded.
+Verified against a live pgvector (pg16).
+
+A `connectionString` no longer discards the credential: pg merges the parsed
+string over the config, and a URL without userinfo parses to an empty user and
+password, so the pool connected as the OS user with no password. The string is
+now parsed here (with pg's own parser) and the credential applied on top.
+
+`query` and `getById` return the record's id in its metadata. It is kept in its
+own column, so readers never saw it — and tool selection, which recovers a tool
+from `metadata.id`, selected no tool from a pg-vector tools store.
+
+**BREAKING:** the provider keeps a catalog table (`rag_collection_catalog`, configurable as
+`catalogTable`), which the connection's account must be able to create and write (the README's new
+section lists the rights); `createCollection` refuses a collection whose record exists
+(`RAG_DUPLICATE_COLLECTION`) and a table that exists without one (`RAG_ORPHAN_STORE`) unless
+`adoptExisting: true`; re-creating a collection no longer reattaches it — hydrate through
+`describeCollections`/`openCollection`; `deleteCollection` can fail with `CatalogRecordDeleteError`
+(nothing deleted, retry); with `autoCreateSchema: false` the operator also creates the catalog
+(`createCatalogTableSql`), and the flag governs creation only — `deleteCollection` still drops the
+table; without `clientFactory`, catalog work runs on a pool the provider opens itself (delete and
+list no longer throw for its absence).
+
+**BREAKING:** `user`/`password` are gone from `PgVectorRagConfig`, replaced
+by an optional `credential` (an `ISecretLoginCredential` from
+`@mcp-abap-adt/interfaces-auth`). `resolvePgConnectArgs` is now `async`.
+`user` (the identity) is resolved once, since a principal does not rotate.
+The password is handed to the `pg` pool **as a function**, not resolved to a
+string here — `pg` calls it once per physical connection it opens over the
+pool's lifetime (`@types/pg`: `password?: string | (() => string |
+Promise<string>)`; the runtime checks `typeof this.password === 'function'`
+per client), so a rotating credential genuinely rotates across the pool's
+life, not only across pool construction. The resolver now also applies the
+credential when `connectionString` is set, closing the gap where a discrete
+`user`/`password` used to be silently ignored once a connection string was
+provided. A `connectionString` carrying embedded credentials
+(`postgres://user:pass@host/db`) is now refused at construction, naming
+`staticLogin` in the message — silently ignoring the embedded password is
+the failure this replaces.
+
+Migration: `resolvePgConnectArgs({ host, user, password })` becomes
+`await resolvePgConnectArgs({ host, credential: staticLogin(user, password) })`
+(`staticLogin` is exported from `@mcp-abap-adt/llm-agent`); a caller's own
+`connectionString` must now carry the address only. A caller reading
+`PgPoolConfig.password` directly must now handle it being a function.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

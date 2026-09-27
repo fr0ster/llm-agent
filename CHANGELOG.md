@@ -9,6 +9,53 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking — see [docs/MIGRATION-v27.md](docs/MIGRATION-v27.md)
+
+Eleven changes need an edit; the guide numbers them and shows each before/after.
+
+1. **Secrets leave every contract.** `apiKey` is removed from `LLMProviderConfig`,
+   `EmbedderFactoryConfig` and every provider and store config; each concrete provider and store
+   takes a typed `credential` instead (`staticApiKey` / `staticLogin` convert a call site).
+   A connection string carrying credentials is refused at construction. `hana-vector-rag`'s
+   credential is required. `BaseLLMProvider.validateConfig()`, which only checked `apiKey`, is
+   removed.
+2. **`makeLlm`, `makeDefaultLlm`, `MakeLlmConfig` and `DefaultModelResolver` are removed** from
+   `llm-agent-libs`. `IModelResolver` is unchanged.
+3. **SAP AI Core providers no longer read `AICORE_SERVICE_KEY`**, and their `credentials` option and
+   `SapAICoreCredentials` are gone; build `{ credential, apiBaseUrl }` with `serviceKeyCredential`
+   from the new `@mcp-abap-adt/sap-aicore-auth`.
+4. **`BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag` are required.** YAML `apiKey: ${VAR}`
+   becomes `credentialRef`; `rag:` splits into `store:` and `embedder:`, each with its own
+   `credentialRef`, and the in-memory search knobs move under `store:`. `PipelineLlmProviderConfig`
+   and `PipelineRagStoreConfig` are deleted. **The `llm-agent` binary reads credentials by
+   reference**: `<REF>_API_KEY`, `<REF>_SERVICE_KEY` or `<REF>_USER` + `<REF>_PASSWORD`, with `LLM`,
+   `RAG_STORE` and `RAG_EMBEDDER` as the refs a section without `credentialRef` uses. A deployment
+   that wrote `apiKey: ${DEEPSEEK_API_KEY}` now sets `LLM_API_KEY`; one that set `AICORE_SERVICE_KEY`
+   sets `LLM_SERVICE_KEY` — or names a ref after the old variable (`credentialRef: AICORE`).
+5. **`IServerPipelineContext` loses `makeLlm`, `llmMap`, `pipelineFallback`; `IRoleLlmResolver`
+   loses `makeLlm(lc)`; `IPipelineContext` gains the required `resolveNamedLlm(key)`.**
+6. **`buildRagCollectionToolEntries` requires an `identity`.**
+7. **`RagToolContext` loses `sessionId?`/`userId?`; `rag_create_collection` creates no `global`.**
+8. **`IPipelinePlugin` loses `parseConfig` and `build`'s `config` parameter**; configurable plugins
+   export `pipelinePluginFactories`; the loader reports what it used to skip; controller subagents
+   and DAG worker files name `llm:` keys, and an inline LLM configuration there is refused.
+9. **Six readable logger options widen** (see Changed).
+10. **The shipped stores keep a catalog**: the store's account needs rights to create and write it;
+    a catalogued Qdrant store requires **Qdrant ≥ 1.17**; `deleteCollection` can fail with
+    `CatalogRecordDeleteError` (`RAG_CATALOG_RECORD_DELETE`); a taken name is refused
+    (`RAG_DUPLICATE_COLLECTION`, `RAG_ORPHAN_STORE`); a name in several scopes needs its `scope`
+    (`RAG_AMBIGUOUS_COLLECTION`); a global named `user/…` or `session/…` is refused
+    (`RAG_RESERVED_COLLECTION_NAME`); v26.x collections are adopted once with `adoptExisting`.
+11. **Re-creating a collection no longer reattaches it** — hydrate through the catalog
+    (`describeCollections` → `openCollection` → `adopt(record, rag, editor, providerName)`).
+
+Also changed, no edit of their own: a `dag` planner key must exist, and an omitted one resolves as
+`planner` (the helper when configured); a configured embedder URL now reaches the embedder; the
+`llm-agent-rag` resolution inputs are discriminated unions (`RagResolution`, and `EmbedderResolution`
+on `provider`, formerly `embedder`); `PUT /v1/config` model switching works in the shipped server; an
+`llm:` entry without its own `temperature` no longer inherits main's; a declared `llm.classifier` now
+builds the classifier.
+
 ### Added
 
 - **`IMcpServer`** — starting and stopping an MCP server is now a contract of
@@ -67,9 +114,32 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (a `warning` carries its own text) and the whole event as `meta`, at `error`
   for `pipeline_error`, `warn` for `warning`, `debug` for
   `rag_upsert`/`rag_query`/`tools_selected`, and `info` for everything else.
+- `@mcp-abap-adt/sap-aicore-auth` (new package): `serviceKeyCredential`, `parseServiceKey`.
+- `staticApiKey`, `staticLogin` in `@mcp-abap-adt/llm-agent`.
+- `HttpMcpServer` and `StdioMcpServer` in `@mcp-abap-adt/llm-agent-mcp`: typed `IMcpServer`
+  implementations whose `auth` demands the credential kind for its scheme.
+- `credentialRef` on every serializable LLM, store and embedder config.
+- `IPipelineContext.resolveNamedLlm(key)`; `PluginExports.pipelinePluginFactories`.
+- RAG catalog: `RagCollectionOwner`, `RagCollectionRecord`, `RagJsonValue`, `attributes` on
+  creation, `IRagProvider.describeCollections?()` / `openCollection?()`,
+  `IRagRegistry.adopt?(record, rag, editor?, providerName?)`, `adoptExisting`,
+  `createCatalogTableSql` (pg-vector, hana-vector).
+- Named RAG errors and their codes: `OrphanStoreError` (`RAG_ORPHAN_STORE`),
+  `AmbiguousCollectionError` (`RAG_AMBIGUOUS_COLLECTION`), `InvalidOwnerError` (`RAG_INVALID_OWNER`),
+  `InvalidAttributesError` (`RAG_INVALID_ATTRIBUTES`), `ReservedCollectionNameError`
+  (`RAG_RESERVED_COLLECTION_NAME`), `CatalogRecordDeleteError` (`RAG_CATALOG_RECORD_DELETE`),
+  `DuplicateCollectionError` (`RAG_DUPLICATE_COLLECTION`, the code itself is not new).
+- `SessionGraphFactoryOptions.ragRegistryFactory(identity)` with session-owned disposal.
 
 ### Changed
 
+- `VectorRag`'s default `WeightedFusionStrategy` normalises BM25 per query before weighting, so
+  the 0.7 / 0.3 weights are the real shares. Tool-retrieval MRR: Ollama 0.900 → 0.983, AI Core
+  0.950 → 0.983 (RRF, measured on the same configs: 0.843 / 0.958, so it stays non-default).
+- The in-memory stores' keyword tokenizer splits identifiers (camelCase, PascalCase, snake_case)
+  into their parts and keeps the whole identifier, so "function include" finds
+  `ReadFunctionInclude`. Tool-retrieval MRR: keyword-only 0.828 → 0.869, Ollama 0.883 → 0.900,
+  AI Core 0.900 → 0.950; no recall@5 lost.
 - **`SmartAgentHandle.close()` no longer rejects when a connection strategy's
   `dispose()` throws.** Teardown continues — every MCP server started via
   `withMcpServers` is still stopped — and the failure is logged through the
@@ -90,6 +160,39 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   either. What does, measured:
   `if (options.logger) normaliseLogger(options.logger).log(event);`
   Nothing changes at runtime.
+- A 429 quota bucket keys on the credential object's identity, not on the secret.
+- Each `SmartServer` session owns a collection registry hydrated for its identity, instead of
+  sharing `globalRagRegistry`. Per-session hydration is **unreachable in the shipped server**
+  today: its provider registry is private and nothing registers a provider in it, so there is no
+  catalog to hydrate and a session sees
+  only the globals; and its sessions carry **no `userId`**, so `user` collections are neither
+  hydrated nor creatable through it.
+- `llm-agent-server` is the composition root: it reads the environment, builds credentials,
+  dispatches providers and implements `IModelResolver` behind `PUT /v1/config`.
+
+### Fixed
+
+- The in-memory stores no longer merge records with different ids on similarity: a tool record
+  (`ReadFunctionInclude`) could be overwritten by a near-identical one and vanish, while startup
+  still reported the full catalog vectorized. `vectorizeMcpTools` now also counts distinct
+  records, so an id collision shows as a failed tool instead of N/N.
+
+### Security
+
+- Every RAG store honours the session and user scope of a query (`ragFilter.sessionId` /
+  `userId`), before top-k. `VectorRag`, `QdrantRag`, `PgVectorRag` and `HanaVectorRag` ignored
+  it, so the default pipeline's session-scoped `history` query could return one user's history
+  summaries to another; the history stage now tags its records with their owner. HANA filters in
+  the client and is not verified against a live instance. Conformance cases for any store:
+  `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance`.
+- `PgVectorRag` and `HanaVectorRag` honour `ragFilter.namespace` and drop expired records
+  (`metadata.ttl` in the past), and `InMemoryRag` honours `ragFilter.namespace`; all three ignored
+  them. HANA applies them in the client, not verified live. The conformance kit covers namespace
+  and expiry, and every shipped store runs it.
+- `VectorRag`'s keyword (BM25) statistics are computed over the query's own candidates, not the
+  whole store, so another session's records no longer change a session's ranking.
+- AS-6 (RAG collection tools reaching another caller's collections) is mitigated: the tool
+  entries are built for one caller, and no framework tool mutates a `global` collection.
 
 ### Deprecated
 

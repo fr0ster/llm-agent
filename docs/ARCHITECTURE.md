@@ -37,10 +37,13 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    store and to end a session. Narrowing an address space is *addressing*; deciding who may is
    *policy*. A credential is therefore a constructor argument and never a per-call one: a
    forgotten per-call credential does not fail, it proceeds as somebody else.
-   *Corollary:* where addressing cannot settle the question — a `global` collection whose
-   authorization is `role` — the framework's own tools **refuse** rather than decide. Declining
-   with no basis is honest; inventing a default permits on someone's behalf.
-   See `docs/superpowers/specs/2026-09-16-auth-contracts-design.md` §1.4, §4.1 and §5.1.
+   *Corollary:* a `global` collection is addressed by every caller whose registry holds it — reading
+   one is never narrowed or refused, because there is no per-collection authorization field to check.
+   What addressing settles instead is who may **change** shared data: the framework's own tools
+   refuse every mutation and deletion of a `global`, always, rather than deciding who is allowed.
+   Role-based access to a shared global is the assembly's job, built by choosing which globals go
+   into a given caller's registry in the first place — not a check inside the framework.
+   See [MIGRATION-v27.md](MIGRATION-v27.md) items 6/7.
 9. **A secret belongs in a contract only where the secret IS the contract.** The test is to
    remove it and see what is left. Take `secret()` out of `IApiKeyCredential` and nothing
    remains — the secret was the whole subject, which is why the credential contracts are the
@@ -48,9 +51,10 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    freely. Take `apiKey` out of `LLMProviderConfig` and a complete LLM configuration remains —
    model, temperature, base URL, throttling. There the secret was a passenger on a contract about
    something else, and a passenger is where it must never be: not on a shared provider base, not
-   on a framework-carried options object, not on a convenience config. So `LLMProviderConfig`,
-   `EmbedderFactoryConfig` and `MakeLlmConfig` carry none, while `interfaces-auth`'s three
-   credential contracts are made of nothing else.
+   on a framework-carried options object, not on a convenience config. So `LLMProviderConfig` and
+   `EmbedderFactoryConfig` carry none (the library's LLM factory config, which existed only to
+   carry one, was removed in v27), while `interfaces-auth`'s three credential contracts are made of
+   nothing else.
    *A constructor parameter is a contract too — the question is only what may be in one.* Model,
    temperature and `maxTokens` are behaviour knobs, and `LLMCallOptions` already accepts all three
    **per request**; authorization is not a knob but a property of the object's identity, fixed
@@ -65,7 +69,7 @@ and at review time (before approving); a violation is a blocking issue, not a ni
    an embedder for a worker, a provider for a switched model — it takes a **factory** from the
    consumer, never a credential. The factory is the consumer's own code and closes over the secret
    it already holds. `EmbedderFactory` has this shape; `IModelResolver` must take it instead of a
-   stored provider config. See the spec §4.6.2.
+   stored provider config. See [MIGRATION-v27.md](MIGRATION-v27.md) items 2/4.
 
 > See also **Current Technical Debt** at the end of this document for the residual
 > composition-root files (e.g. `smart-server.ts`) left large by design after the
@@ -108,11 +112,11 @@ The codebase is split across **six npm packages**:
 
 - **`@mcp-abap-adt/llm-agent-rag`** — RAG and embedder composition. `makeRag` is **async** (`Promise<IRag>`); it auto-prefetches backends so no manual warm-up is needed for one-shot use. `resolveEmbedder` stays **synchronous** (call `prefetchEmbedderFactories([...])` once at startup for hot-path sync resolves). Embedder/RAG backend packages are optional peers of this package — library-mode consumers install only what they use. (At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all backends as regular deps; config selects which to activate.) Depends on `llm-agent`.
 
-- **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills, plus LLM factories (`makeLlm`, `makeDefaultLlm` — both **async**). LLM provider packages are optional peers of this package — library-mode consumers install only what they use. (At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all providers as regular deps.) `SmartAgentBuilder.build()` is async (unchanged externally). Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
+- **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills. `SmartAgentBuilder.build()` is async (unchanged externally). Constructs no provider: `BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag` are required seams. Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
 
-- **`@mcp-abap-adt/llm-agent-server-libs`** — the SmartServer composition runtime as an importable library: `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, coordinator config parsing, session stores, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory` — each builds one pipeline's `coordinator` stage handler from a typed config + role-resolving deps). Depends on `llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`.
+- **`@mcp-abap-adt/llm-agent-server-libs`** — the SmartServer composition runtime as an importable library: `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, coordinator config parsing, session stores, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory` — each builds one pipeline's `coordinator` stage handler from a typed config + role-resolving deps). Parses the selected pipeline section in `start()` and constructs that plugin with typed settings. Depends on `llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`.
 
-- **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) and HTTP server. **Not a library** — importing from this package as a library is not supported as of 12.0.1. A thin wrapper over `llm-agent-server-libs`. Depends on `llm-agent-server-libs`.
+- **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) and HTTP server, **and the composition root**: reads the environment, turns each `credentialRef` into a credential, dispatches providers, implements `IModelResolver`. **Not a library** — importing from this package as a library is not supported as of 12.0.1. A thin wrapper over `llm-agent-server-libs`. Depends on `llm-agent-server-libs`.
 
 ### Package dependency graph
 
@@ -128,13 +132,16 @@ llm-agent-server
 ```
 
 Optional peer dependencies (not in the graph above):
-- `llm-agent-libs` → `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`, `@mcp-abap-adt/ollama-llm`
 - `llm-agent-rag` → `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`, `@mcp-abap-adt/qdrant-rag`, `@mcp-abap-adt/hana-vector-rag`, `@mcp-abap-adt/pg-vector-rag`
+
+`llm-agent-libs` constructs no LLM provider — it takes `BuildAgentDeps.makeLlm` as a required seam.
+`llm-agent-server` depends on the five LLM provider packages directly — its composition root
+constructs them.
 
 ### Key API notes (since 12.0.1)
 
-- `makeLlm(cfg, temperature)` → `Promise<ILlm>` (async)
-- `makeDefaultLlm(cfg)` → `Promise<ILlm>` (async)
+- `staticApiKey`/`staticLogin` (`llm-agent`) → credential from a static secret
+- `serviceKeyCredential` (`sap-aicore-auth`) → `{ credential, apiBaseUrl }`
 - `makeRag(cfg, options)` → `Promise<IRag>` (async)
 - `resolveEmbedder(cfg, options)` → `IEmbedder` (sync — call `prefetchEmbedderFactories([...])` once at startup before using this hot-path resolver; NOT required before `makeRag`)
 - `SmartAgentBuilder.build()` → `Promise<SmartAgentHandle>` (async, unchanged externally)
@@ -256,14 +263,16 @@ Primary embeddable surfaces:
 Minimal programmatic integration:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 
+const provider = new DeepSeekProvider({
+  credential: staticApiKey(process.env.DEEPSEEK_API_KEY!),
+  model: 'deepseek-chat',
+});
 const handle = await new SmartAgentBuilder()
-  .withMainLlm({
-    provider: 'deepseek',
-    apiKey: process.env.DEEPSEEK_API_KEY!,
-    model: 'deepseek-chat',
-  })
+  .withMainLlm(new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model }))
   .build();
 
 // handle.agent.process(messages, options)
@@ -416,10 +425,11 @@ Abstractions:
 - `ILlm` interface — in `@mcp-abap-adt/llm-agent`
 - `LlmAdapter` — in `@mcp-abap-adt/llm-agent-libs`; bridges legacy `BaseAgent` implementations to `ILlm`
 
-Concrete provider resolution is centralized in `makeLlm`/`makeDefaultLlm` (in `@mcp-abap-adt/llm-agent-libs`). LLM provider packages are optional peers of `llm-agent-libs` (library mode):
+Concrete provider construction belongs to the consumer's composition root; the shipped one is
+`llm-agent-server` (`BuildAgentDeps.makeLlm`), which depends directly on all five provider packages:
 - `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`, `@mcp-abap-adt/ollama-llm`
 
-At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all five as regular deps so `npm install -g @mcp-abap-adt/llm-agent-server` works without further peer install. Configuration (YAML/CLI) chooses which one to activate per request.
+Configuration (YAML/CLI) chooses which one to activate per request; `credentialRef` names the account.
 
 Pipeline config types (`deepseek`, `openai`, `anthropic`, `sap-ai-sdk`, `ollama`) are defined in:
 - `@mcp-abap-adt/llm-agent` (types only, no provider logic)
@@ -477,7 +487,7 @@ This is a **storage-level** guarantee — it improves recall (both records survi
 
 **Idempotent upsert contract:** when `metadata.id` is provided, implementations MUST treat it as an idempotent key — repeated upserts with the same id replace the previous record instead of creating duplicates. All built-in implementations (`QdrantRag`, `InMemoryRag`, `VectorRag`) enforce this.
 
-**v9.1 additions:** `IRagProviderRegistry` manages named `IRagProvider` instances that the LLM can use (via MCP tools) to create collections at runtime. `IRagRegistry` is extended with `createCollection` / `deleteCollection` / `closeSession` to support this lifecycle. The existing `ragStores` map remains as a backwards-compatible live projection of all currently active collections. See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full details.
+**v9.1 additions:** `IRagProviderRegistry` manages named `IRagProvider` instances that the LLM can use (via MCP tools) to create collections at runtime. `IRagRegistry` is extended with `createCollection` / `deleteCollection` / `closeSession` to support this lifecycle. The existing `ragStores` map remains as a backwards-compatible live projection of all currently active collections. See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full details. Since v27 a collection is identified by (scope, owner, name), each shipped store keeps a catalog record per collection, and a restarted registry reattaches by hydrating from that catalog (`describeCollections` → `openCollection` → `adopt`) — see INTEGRATION.md#iragprovider.
 
 ### 5. MCP Layer
 
@@ -616,9 +626,8 @@ vendored into the repo.
 ### Separation of concerns
 
 - **`SmartAgentBuilder`** (in `@mcp-abap-adt/llm-agent-libs`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, `IPipeline`, etc. Has no knowledge of concrete providers. RAG stores are injected via `.setToolsRag(rag)` and `.setHistoryRag(rag)`; a custom pipeline is injected via `.setPipeline(pipeline)`. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
-- **`makeLlm`/`makeDefaultLlm`** (in `@mcp-abap-adt/llm-agent-libs`) — composition root for LLMs. The only place that imports concrete LLM provider packages. Resolves config → `ILlm` instance. **Async** since 12.0.1.
 - **`makeRag`/`resolveEmbedder`** (in `@mcp-abap-adt/llm-agent-rag`) — composition root for RAG/embedders. Resolves config → `IRag`/`IEmbedder`. `makeRag` is **async** and auto-prefetches — no warm-up needed for one-shot use. `resolveEmbedder` is **sync** — call `prefetchEmbedderFactories([...])` once at startup before using this hot-path resolver.
-- **`SmartServer`** (in `@mcp-abap-adt/llm-agent-server-libs`) — uses `makeLlm`/`makeRag` to resolve config, then injects interfaces into `SmartAgentBuilder`.
+- **`SmartServer`** (in `@mcp-abap-adt/llm-agent-server-libs`) — calls the injected `BuildAgentDeps` seams to construct, then injects interfaces into `SmartAgentBuilder`; the seams are filled by the composition root (`llm-agent-server`).
 
 ## Execution Modes
 
@@ -830,7 +839,6 @@ Action policy:
 | `SmartAgent` | `@mcp-abap-adt/llm-agent-libs` | Orchestration loop and tool execution control |
 | `SmartServer` | `@mcp-abap-adt/llm-agent-server-libs` | Production OpenAI-compatible HTTP server |
 | `SmartAgentBuilder` | `@mcp-abap-adt/llm-agent-libs` | Interface-only dependency wiring (no provider knowledge) |
-| `makeLlm` / `makeDefaultLlm` | `@mcp-abap-adt/llm-agent-libs` | Composition root — concrete LLM provider resolution (async) |
 | `makeRag` / `resolveEmbedder` | `@mcp-abap-adt/llm-agent-rag` | RAG/embedder resolution |
 | `DefaultPipeline` / `PipelineExecutor` | `@mcp-abap-adt/llm-agent-libs` | Built-in `IPipeline` implementation |
 | `ContextAssembler` | `@mcp-abap-adt/llm-agent-libs` | Final LLM context construction |
@@ -867,7 +875,7 @@ packages/
       make-rag.ts          # makeRag(cfg, options): Promise<IRag>
       resolve-embedder.ts  # resolveEmbedder(cfg, options): IEmbedder (sync, needs prefetch)
       prefetch.ts          # prefetchEmbedderFactories, prefetchRagFactories
-      factories/           # builtInEmbedderFactories registry, dynamic backend imports
+      factories/           # typed embedder and store resolution, literal dynamic imports
 
   llm-agent-libs/          # @mcp-abap-adt/llm-agent-libs
     src/
@@ -885,7 +893,6 @@ packages/
       validator/           # NoopValidator
       health/              # HealthChecker
       config/              # ConfigWatcher
-      make-llm.ts          # makeLlm, makeDefaultLlm (async)
       testing/             # test doubles
 
   llm-agent-server/        # @mcp-abap-adt/llm-agent-server — binary only
@@ -1133,6 +1140,10 @@ A plugin module can export any subset of:
 | `outputValidator`    | `IOutputValidator`                | Output validator        |
 | `skillManager`       | `ISkillManager`                   | Skill manager           |
 | `mcpClients`         | `IMcpClient[]`                    | MCP clients             |
+| `pipelinePluginFactories` | `Record<string, (raw: unknown) => IPipelinePlugin>` | Configurable pipeline plugins — the server calls the selected one with its YAML section |
+
+The loader validates every pipeline export (`name` a string, `build` a function, `name` equal to its
+key) and records each refusal in `errors`; it no longer skips one silently.
 
 ### Default: FileSystemPluginLoader
 
@@ -1376,7 +1387,7 @@ pipeline:
 The pipeline is resolved by `pipeline.name` — a built-in (`flat`, `linear`,
 `dag`, `stepper`) or a custom pipeline plugin (loaded via `plugins: [<specifier>]`).
 The old top-level `coordinator:` block has been removed; its keys now live under
-`pipeline.config`, where each pipeline's `parseConfig` consumes the same dialect
+`pipeline.config`, which the server parses in `start()` into the selected plugin's typed settings
 (linear → `planning`/`dispatch`; dag → `planner`/`reviewer`/`finalizer`; stepper →
 `mode`/`knowledgeSeed`/`maxParallelSteps`). The coordinator does NOT replace
 `DefaultPipeline`; it is one optional stage inside it. All earlier stages

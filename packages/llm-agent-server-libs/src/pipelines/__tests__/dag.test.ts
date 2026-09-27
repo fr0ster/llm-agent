@@ -5,26 +5,24 @@ import type {
   ISkillsRagHandle,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { parseDagSettings } from '../../smart-agent/pipeline-settings.js';
 import { DagPipelinePlugin } from '../dag.js';
 import { fakeServerCtx } from './fixtures.js';
 
 describe('DagPipelinePlugin', () => {
   it('parses config, builds an instance, streams, and closes', async () => {
-    const plugin = new DagPipelinePlugin();
-    const cfg = plugin.parseConfig({ planner: { type: 'llm' } });
-    const inst = await plugin.build(cfg, fakeServerCtx());
+    const plugin = new DagPipelinePlugin(
+      parseDagSettings({ planner: { type: 'llm' } }, () => {}),
+    );
+    const inst = await plugin.build(fakeServerCtx());
     assert.equal(typeof inst.agent.streamProcess, 'function');
     await inst.close();
   });
 
-  it('parseConfig rejects config without a planner', () => {
-    const plugin = new DagPipelinePlugin();
-    assert.throws(() => plugin.parseConfig({}), /planner/);
-  });
-
   it('registers implicit skill plugin-host RAG sources', async () => {
-    const plugin = new DagPipelinePlugin();
-    const cfg = plugin.parseConfig({ planner: { type: 'llm' } });
+    const plugin = new DagPipelinePlugin(
+      parseDagSettings({ planner: { type: 'llm' } }, () => {}),
+    );
     const ctx = fakeServerCtx();
     const registered: string[] = [];
     const originalCreateBuilder = ctx.createAgentBuilder;
@@ -55,7 +53,7 @@ describe('DagPipelinePlugin', () => {
     } as ISkillPluginHost;
     ctx.skillRecall = { k: 3, threshold: 0.4, serveCollections: ['abap'] };
 
-    const inst = await plugin.build(cfg, ctx);
+    const inst = await plugin.build(ctx);
 
     assert.deepEqual(registered, ['relevant-skills:abap']);
     await inst.close();

@@ -239,32 +239,22 @@ interface IModelResolver {
 }
 ```
 
-### DefaultModelResolver
+### Implementing `IModelResolver`
 
-Wraps `makeLlm()` with provider settings. Pass the same provider config used at startup:
-
-```yaml
-# smart-server.yaml — configure DefaultModelResolver via YAML
-llm:
-  provider: openai
-  apiKey: ${OPENAI_API_KEY}
-  model: gpt-4o
-modelResolver:
-  provider: openai
-  apiKey: ${OPENAI_API_KEY}
-```
-
-For programmatic embedding without the CLI binary, use `SmartAgentBuilder` with `makeLlm`:
+**Since v27:** the library's built-in resolver implementation is gone (see docs/MIGRATION-v27.md
+item 2). `IModelResolver` is unchanged — implement its one method where your credential lives:
 
 ```ts
-import { SmartAgentBuilder, DefaultModelResolver, makeLlm } from '@mcp-abap-adt/llm-agent-libs';
-
-const mainLlm = await makeLlm({ provider: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' });
-const handle = await new SmartAgentBuilder()
-  .withMainLlm(mainLlm)
-  .withModelResolver(new DefaultModelResolver({ provider: 'openai', apiKey: process.env.OPENAI_API_KEY! }))
-  .build();
+const modelResolver: IModelResolver = {
+  async resolve(modelName, role) {
+    const provider = new OpenAIProvider({ credential: myCredential, model: modelName });
+    return new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model });
+  },
+};
 ```
+
+The shipped server's implementation lives in `llm-agent-server`; with YAML you configure nothing —
+`PUT /v1/config` resolves the new model through the same `llm:` entries and credentials.
 
 ### Runtime config endpoints
 
@@ -286,6 +276,8 @@ curl -X PUT http://localhost:4004/v1/config \
 ```
 
 Model fields require `modelResolver` on `SmartServerConfig`. Agent fields are validated against a whitelist — unsupported fields return 400.
+Each new model is asked once ("Reply with OK") before anything is applied, as at startup: a model that
+does not answer returns 400 naming it, and nothing changes. `skipModelValidation: true` skips the check.
 
 ## IRag
 
@@ -322,6 +314,35 @@ interface IRagBackendWriter {
 
 `IRag` is the read path (query + health). `IRagBackendWriter` is the raw storage write path (no embeddings). `IRagEditor` is the consumer-facing write API — it handles embedding and ID assignment before delegating to `IRagBackendWriter`. Use `DirectEditStrategy` to wrap a backend writer into an `IRagEditor`.
 
+**Identity scope — every store must honour it.** `query` receives `options.ragFilter`; the pipeline sets `ragFilter.sessionId` for a `scope: 'session'` stage (the default pipeline queries the shared `history` store that way) and `ragFilter.userId` for `scope: 'user'`. A store that ignores them returns one user's records — conversation-history summaries included — to another user. The contract:
+
+- `ragFilter.sessionId` set → only records whose `metadata.sessionId` equals it; `ragFilter.userId` → the same for `metadata.userId`; both → both match.
+- A record without the filtered key is excluded.
+- Filter **before** top-k: a scoped query returns up to `k` of its own records, not `k` minus everyone else's.
+
+**Namespace and expiry — the same rules.** Every store also applies:
+
+- `ragFilter.namespace` set → only records whose `metadata.namespace` equals it; a record without `namespace` is excluded. Not set → every namespace.
+- `metadata.ttl` is an expiry in epoch seconds: a record whose numeric `ttl` is in the past is never returned. No `ttl` → never expires.
+- Both apply before top-k too.
+
+Every shipped store (`InMemoryRag`, `VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag`) implements all of it (HANA in the client, not verified against a live instance). Check your own store with the conformance cases — identity, namespace and expiry:
+
+```ts
+import { it } from 'node:test';
+import {
+  conformanceEmbedder,
+  ragFilterConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
+
+for (const c of ragFilterConformanceCases) {
+  // A FRESH, empty store per case; the cases seed it through writer().upsertRaw.
+  it(c.name, () => c.run(async () => new PineconeRag(freshIndex(), conformanceEmbedder())));
+}
+```
+
+`matchesRagIdentity(metadata, ragIdentityFilter(options))` (exported from `@mcp-abap-adt/llm-agent`) is the same predicate for a store that filters in code.
+
 Implement `upsertManyPrecomputedRaw` when the store has a native bulk API (Qdrant accepts many points per PUT). Startup tool vectorization uses it to write the whole catalog in one call instead of one per tool; a writer without it is unaffected and takes the per-record path.
 
 ### Example: Wrapping Pinecone
@@ -345,7 +366,22 @@ class PineconeRag implements IRag {
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
     try {
-      const results = await this.index.query({ vector: embedding.vector, topK: k, includeMetadata: true });
+      // Identity, namespace and expiry, applied by the index before topK
+      // (see "Identity scope" and "Namespace and expiry" above).
+      const f = options?.ragFilter;
+      const filter: Record<string, unknown> = {};
+      if (f?.sessionId !== undefined) filter.sessionId = { $eq: f.sessionId };
+      if (f?.userId !== undefined) filter.userId = { $eq: f.userId };
+      if (f?.namespace !== undefined) filter.namespace = { $eq: f.namespace };
+      // Records written with a ttl; a record without one must still match, so
+      // write a far-future ttl for "never expires" or filter expiry in code.
+      filter.ttl = { $gte: Date.now() / 1000 };
+      const results = await this.index.query({
+        vector: await embedding.toVector(),
+        topK: k,
+        includeMetadata: true,
+        ...(Object.keys(filter).length > 0 ? { filter } : {}),
+      });
       return {
         ok: true,
         value: results.matches.map((m: any) => ({
@@ -512,10 +548,20 @@ interface IRagProvider {
   readonly supportedScopes: readonly RagCollectionScope[];
   createCollection(
     name: string,
-    opts: { scope: RagCollectionScope; sessionId?: string; userId?: string },
+    opts: RagCollectionOwner & {
+      collectionName?: string;
+      attributes?: RagJsonValue;
+      adoptExisting?: boolean;
+    },
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
   deleteCollection?(name: string): Promise<Result<void, RagError>>;
   listCollections?(): Promise<Result<string[], RagError>>;
+  /** The catalog, read back. A provider without one does not declare this. */
+  describeCollections?(): Promise<Result<RagCatalogDescription, RagError>>;
+  /** Handles for a store that EXISTS. Creates nothing, writes no catalog record. */
+  openCollection?(
+    record: RagCollectionRecord,
+  ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
 }
 ```
 
@@ -525,7 +571,10 @@ interface IRagProvider {
 |-------|----------|------------------------|------------------|
 | `session` | Until `SmartAgent.closeSession()` is called | Session owner only | Scratch pads, phase results, temporary analysis |
 | `user` | Persistent across sessions for that user | Same user only | Personal notes, user preferences |
-| `global` | Permanent until explicitly deleted | Any caller (admin-level) | Shared knowledge bases, team fact stores |
+| `global` | Permanent until explicitly deleted | Nobody via the framework tools — create and delete globals in your own code | Shared knowledge bases, team fact stores |
+
+A collection shared by several users is a `global` with your own role-based access around it —
+`user`/`session` collections belong to one caller, so a registry that holds them serves one caller.
 
 ### Shipped providers
 
@@ -562,6 +611,11 @@ with the collection already unregistered:
 `rag_delete_collection` answers `{ ok: true, warning }` in that case: the
 collection is gone for the caller, and the warning says what was left.
 
+**Catalogued providers (`qdrant-rag`, `pg-vector-rag`, `hana-vector-rag`) delete their catalog
+record first, then the data.** If the record cannot be removed, nothing is deleted, and the call
+fails with `CatalogRecordDeleteError` (`RAG_CATALOG_RECORD_DELETE`): `rag_delete_collection` answers
+`{ ok: false }`, and the registry re-registers the entry so the delete can be retried.
+
 **A store belongs to its owner.** A provider that keeps stores by name —
 Qdrant, a database — opens whatever is there when a name is created again, so
 the name the registry passes it is not the bare collection name. It is the
@@ -571,16 +625,63 @@ digest over the scope, the owner — the `sessionId` of a session collection,
 the `userId` of a user one — and the name; at most 63 characters in all (the
 PostgreSQL and HANA rule). The provider is later asked to delete that same name.
 
-The same collection of the same owner gets the same store, so a user or global
-collection finds its data again after a restart. Another session or user gets
-another store, so it never opens what someone else's deletion left — failed or
-still running.
+**Creating a collection is an insert, not an upsert.** A catalogued provider creates the store with
+an operation that fails cleanly if it already exists, then writes the catalog record last. A taken
+name is refused: `RAG_DUPLICATE_COLLECTION` when a record exists, `RAG_ORPHAN_STORE` when the store
+exists without one (a v26.x collection, or one whose record write never completed) — recover the
+latter with `createCollection(name, { ...opts, adoptExisting: true })`, which records the existing
+store instead of creating a new one. A deletion in progress reserves the name — creating it again is
+refused until the deletion finishes.
 
-A store name is released only once its deletion has finished. The same owner
-creating the collection again while its deletion is still running waits for
-that deletion, so it cannot remove what the new collection writes. Two
-creations of the same collection at once are not both let through: the second
-is refused with `RAG_DUPLICATE_COLLECTION`.
+### Reattaching after a restart
+
+Until now a fresh registry got a `user` or `global` collection back by calling `createCollection`
+with the same identity. That call is now refused, so a restarted assembly reads the catalog and
+adopts what it finds:
+
+```ts
+import type {
+  IRagProvider,
+  IRagRegistry,
+  RagCollectionRecord,
+  RagError,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+
+type Caller = { sessionId: string; userId?: string };
+
+function unwrap<T>(result: Result<T, RagError>): T {
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
+function belongsTo(caller: Caller) {
+  return (record: RagCollectionRecord): boolean =>
+    (record.scope === 'user' && record.userId === caller.userId) ||
+    (record.scope === 'session' && record.sessionId === caller.sessionId);
+}
+
+export async function hydrate(
+  provider: IRagProvider,
+  registry: IRagRegistry,
+  caller: Caller,
+): Promise<void> {
+  if (!provider.describeCollections || !provider.openCollection || !registry.adopt) return;
+  const { records } = unwrap(await provider.describeCollections());
+  for (const record of records.filter(belongsTo(caller))) {
+    const { rag, editor } = unwrap(await provider.openCollection(record));
+    registry.adopt(record, rag, editor, provider.name);
+  }
+}
+```
+
+**Per-session hydration is unreachable in the shipped `SmartServer` today.** Its
+`ragRegistryFactory` hydrates, but from a provider registry private to the server that no option,
+YAML key or method registers a provider in — so there is no catalog to read, and a session's
+registry holds only the globals. Its sessions also carry **no `userId`**, so `user` collections would
+be neither hydrated nor creatable through it. A consumer that needs hydration wires its providers
+itself — `buildSessionRagRegistry({ identity, globals, providers })` from
+`@mcp-abap-adt/llm-agent-server-libs` in its own `ragRegistryFactory`, or the loop above.
 
 ### AbstractRagProvider
 
@@ -596,8 +697,10 @@ import {
   AbstractRagProvider,
   type IRag,
   type IRagEditor,
+  type RagCollectionOwner,
   type RagCollectionScope,
   type RagError,
+  type RagJsonValue,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -609,16 +712,25 @@ class MyDbRagProvider extends AbstractRagProvider {
 
   // The registry passes a store name of the collection's owner, not the bare
   // collection name (see "A store belongs to its owner" above) — keep the data
-  // under exactly that name, and delete it by the same one.
+  // under exactly that name, and delete it by the same one. A real backend
+  // must also write its catalog record LAST (after the store exists) and
+  // implement describeCollections/openCollection, or its collections can
+  // never be hydrated back after a restart (see "Reattaching after a
+  // restart" above).
   async createCollection(
     storeName: string,
-    opts: { scope: RagCollectionScope; sessionId?: string; userId?: string },
+    opts: RagCollectionOwner & {
+      collectionName?: string;
+      attributes?: RagJsonValue;
+      adoptExisting?: boolean;
+    },
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>> {
     const scopeCheck = this.checkScope(opts.scope);  // Result — UnsupportedScopeError if the scope isn't in supportedScopes
     if (!scopeCheck.ok) return scopeCheck;
 
     try {
-      // Create / ensure the collection exists in your DB
+      // Create / ensure the collection exists in your DB, then write the
+      // catalog record last (opts.adoptExisting: true skips creation).
       const dbCollection = await myDb.ensureCollection(storeName);
       const rag = new MyDbRag(dbCollection, this.embedder);
       const idStrategy = this.pickIdStrategy(opts.scope, opts);
@@ -644,12 +756,13 @@ class MyDbRagProvider extends AbstractRagProvider {
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import { QdrantRagProvider, ImmutableEditStrategy } from '@mcp-abap-adt/llm-agent';
+import { ImmutableEditStrategy, staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
   .withMainLlm(myLlm)
   // Register a provider — the LLM can create collections on demand via MCP tools:
-  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url, apiKey, embedder }))
+  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url, credential: staticApiKey(key), embedder }))
   // Register a static collection (read-only from the LLM's perspective):
   .addRagCollection({
     name: 'corp-facts',
@@ -672,27 +785,32 @@ const { agent } = await new SmartAgentBuilder({ /* ... */ })
 ```ts
 import { buildRagCollectionToolEntries } from '@mcp-abap-adt/llm-agent';
 
-const entries = buildRagCollectionToolEntries({ registry, providerRegistry });
+const entries = buildRagCollectionToolEntries({ registry, identity, providerRegistry, attributesFor });
 // Returns RagToolEntry[]:
 //   Content tools:    rag_add, rag_correct, rag_deprecate
 //   Collection mgmt:  rag_list_collections, rag_describe_collection, rag_delete_collection
-//   Creation:         rag_create_collection  (only when providerRegistry is supplied)
+//   Creation:         rag_create_collection  (only when providerRegistry is supplied; scope is
+//                      session | user only — no framework tool creates or mutates a global)
 ```
+
+`identity` is required — the entries are built for one caller, and its `sessionId`/`userId` bound the
+collections it may address. Tools that take a collection name accept an optional `scope`; a name held
+by several scopes is refused with `RAG_AMBIGUOUS_COLLECTION` when omitted.
 
 The consumer hosts their own MCP server and registers these handlers there. `llm-agent` does not run an embedded MCP server for RAG editing.
 
-### RagToolContext
+### Caller identity
 
-Each MCP tool call must supply a typed context so scope enforcement can resolve session/user identity:
+The identity is bound when the entries are built — it is not read per call. `RagToolContext` no
+longer declares `sessionId?`/`userId?`: a caller that *passes* them still compiles (the values are
+ignored); one that *reads* them gets `TS2339` or `TS2322`.
 
 ```ts
-interface RagToolContext {
-  sessionId?: string;
+interface RagCallerIdentity {
+  sessionId: string;
   userId?: string;
 }
 ```
-
-The consumer's MCP server populates this from its own session state (e.g. HTTP request headers, WebSocket metadata) before forwarding the call. Collections scoped to `session` or `user` are rejected if the matching field is absent.
 
 ### Session cleanup
 
@@ -701,6 +819,9 @@ await agent.closeSession(sessionId);
 ```
 
 Call this from your session lifecycle hook (user logout, WebSocket disconnect). It flushes all session-scoped RAG collections created under that `sessionId` and clears the associated conversation history from memory. A collection whose data cannot be deleted is unregistered all the same; `agent.closeSession` logs the registry's `SessionCloseIncompleteError` as a warning rather than throwing it. See [Deleting a collection](#deleting-a-collection).
+
+Under `SmartServer`, each session owns its registry (`ragRegistryFactory`), which is disposed with
+the session.
 
 ### Session cookie support (HTTP server)
 
@@ -1662,13 +1783,16 @@ export const apiAdapters = [new MyProtocolAdapter()];
 ### SmartServer config options
 
 ```ts
-new SmartServer({
-  llm: { apiKey: process.env.API_KEY! },
-  // Register additional adapters alongside built-ins:
-  apiAdapters: [new MyProtocolAdapter()],
-  // Disable built-in adapters and supply only your own:
-  disableBuiltInAdapters: true,
-});
+new SmartServer(
+  {
+    llm: { main: { provider: 'openai', model: 'gpt-4o', credentialRef: 'OPENAI' } },
+    // Register additional adapters alongside built-ins:
+    apiAdapters: [new MyProtocolAdapter()],
+    // Disable built-in adapters and supply only your own:
+    disableBuiltInAdapters: true,
+  },
+  deps, // BuildAgentDeps — makeLlm, resolveEmbedder, makeRag all required (see MIGRATION-v27.md item 4)
+);
 ```
 
 ## IMcpClient — DI injection
@@ -1755,10 +1879,14 @@ new SessionGraphFactory({
   mcpServerFactory: (identity) => [serverFor(identity.userId)],
   closePipeline: async (sessionId) => pipelines.get(sessionId)?.close(),
   ragRegistry,
+  // or ragRegistryFactory: (identity) => hydrateRegistryFor(identity)
   toolsRag,
   buildAgent,
 });
 ```
+
+`ragRegistry` is now optional, and `ragRegistryFactory` gives each session its own registry,
+disposed with the session — see [item 11](MIGRATION-v27.md#11-reattach-collections-after-a-restart-by-hydrating-them-not-by-creating-them-again).
 
 Teardown then runs in one order: `closePipeline`, the session's RAG
 `closeSession`, your `onDispose`, and the servers' `stop()` last.
@@ -1949,7 +2077,7 @@ Two additive `BuildAgentDeps` fields (`packages/llm-agent-server-libs/src/smart-
 
 ```ts
 interface BuildAgentDeps {
-  // ... existing fields (makeLlm, connectMcp, mcpClients, ...)
+  // ... existing fields (makeLlm, resolveEmbedder, makeRag — all three required, connectMcp, mcpClients, ...)
 
   /** The SAME IToolNamespace instance the library-level withToolNamespace()
    *  seam consumes. Reaches BOTH the startup builder's own snapshot (yaml
@@ -2234,38 +2362,25 @@ When set in YAML, SmartServer automatically injects the corresponding strategy i
 
 ### Per-provider streaming control
 
-For multi-model pipelines, control streaming per provider with the `streaming` flag:
-
-```yaml
-pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: gpt-4o
-      streaming: false          # non-streaming for SAP AI Core
-    classifier:
-      provider: deepseek
-      model: deepseek-chat
-      streaming: true           # streaming for DeepSeek (default)
-```
-
-When `streaming: false`, `makeLlm()` wraps the provider with `NonStreamingLlm` — `streamChat()` is replaced with `chat()` yielding a single chunk. This is independent of `llmCallStrategy` and works per-provider.
+There is no per-provider `streaming` flag in the current YAML schema — `llmCallStrategy` above
+controls streaming for the whole tool-loop. To force one role non-streaming, wrap the instance
+yourself with `NonStreamingLlm` (`@mcp-abap-adt/llm-agent-libs`): `streamChat()` is replaced with
+`chat()` yielding a single chunk, independent of `llmCallStrategy`.
 
 ### Custom base URL (`baseURL`)
 
 Use `baseURL` to point any OpenAI-compatible provider at a custom endpoint (Azure OpenAI, Ollama, vLLM, etc.):
 
 ```yaml
-pipeline:
-  llm:
-    main:
-      provider: openai
-      apiKey: ${OPENAI_API_KEY}
-      baseURL: https://my-azure-openai.openai.azure.com/openai/deployments/gpt-4o
-      model: gpt-4o
+llm:
+  main:
+    provider: openai
+    baseURL: https://my-azure-openai.openai.azure.com/openai/deployments/gpt-4o
+    model: gpt-4o
+    # credentialRef omitted: reads LLM_API_KEY
 ```
 
-`makeLlm()` forwards `baseURL` to `OpenAIProvider`, `AnthropicProvider`, and `DeepSeekProvider`. When omitted, each provider uses its default API URL.
+Resolution goes through the server's `makeLlm` seam (the composition root), which forwards `baseURL` to `OpenAIProvider`, `AnthropicProvider`, and `DeepSeekProvider`. When omitted, each provider uses its default API URL.
 
 ### Per-request LLM parameters
 
@@ -2310,13 +2425,17 @@ All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLi
 Swap LLM instances at runtime without restarting the server:
 
 ```typescript
-import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
+import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+import { LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 
 // Create a new classifier LLM
-const newClassifier = makeLlm(
-  { provider: 'openai', apiKey: key, model: 'gpt-4.1-mini' },
-  0.1,
-);
+const provider = new OpenAIProvider({
+  credential: staticApiKey(key),
+  model: 'gpt-4.1-mini',
+  temperature: 0.1,
+});
+const newClassifier = new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model });
 
 // Swap it at runtime
 agent.reconfigure({ classifierLlm: newClassifier });
@@ -2373,13 +2492,14 @@ and neither invents a number.
 
 ```ts
 import { ReportThrottling, WaitAsTold } from '@mcp-abap-adt/llm-agent';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 
 // The default: report what the server said and let the caller decide.
-new OpenAIProvider({ apiKey, model: 'gpt-4o' });
+new OpenAIProvider({ credential: staticApiKey(key), model: 'gpt-4o' });
 
 // Opt in where waiting is acceptable — a batch job, a CLI.
 new OpenAIProvider({
-  apiKey,
+  credential: staticApiKey(key),
   model: 'gpt-4o',
   whenThrottled: new WaitAsTold({ maxAttempts: 3 }),
 });
@@ -2654,17 +2774,29 @@ await handle.close();
 
 ### Custom embedder injection via SmartAgentBuilder
 
-For YAML-driven configs, inject a custom `IEmbedder` or register embedder factories:
+Construct the LLM, the embedder and the RAG provider yourself, and hand in the instances —
+`SmartAgentBuilder` builds nothing on your behalf:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
+import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
+import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+
+const provider = new OpenAIProvider({
+  credential: staticApiKey(process.env.OPENAI_API_KEY!),
+  model: 'gpt-4o',
+});
+const llm = new LlmAdapter(new LlmProviderBridge(provider), { model: provider.model });
+
+const sapKey = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
+const embedder = new SapAiCoreEmbedder({ model: 'text-embedding-3-small', ...sapKey });
 
 const handle = await new SmartAgentBuilder()
-  .withMainLlm({ provider: 'openai', apiKey: process.env.API_KEY! })
-  .withRag({ type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' })
-  .withEmbedderFactories({
-    'sap-ai-sdk': (cfg) => new SapAiCoreEmbedder({ model: cfg.model }),
-  })
+  .withMainLlm(llm)
+  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url: 'http://qdrant:6333', embedder }))
   .build();
 ```
 
@@ -2686,7 +2818,7 @@ Select a pipeline in `smart-server.yaml` with the `pipeline.name` key (default: 
 pipeline:
   name: stepper        # flat | linear | dag | stepper | controller | controller-weak
   config:
-    maxDepth: 4        # pipeline-specific config passed to the plugin's parseConfig()
+    maxDepth: 4        # pipeline-specific config, parsed by the server into the plugin's typed settings
 ```
 
 Omit `pipeline:` entirely (or omit `name`) to use the `flat` default.
@@ -2720,10 +2852,9 @@ The plugin system is the canonical way to ship a reusable named pipeline (or oth
 ```ts
 import type { IPipelinePlugin, IPipelineContext, IPipelineInstance } from '@mcp-abap-adt/llm-agent';
 
-interface IPipelinePlugin<Config = unknown> {
+interface IPipelinePlugin {
   readonly name: string;
-  parseConfig(raw: unknown): Config;               // validates + parses pipeline.config
-  build(config: Config, ctx: IPipelineContext): Promise<IPipelineInstance>;
+  build(ctx: IPipelineContext): Promise<IPipelineInstance>;
 }
 
 interface IPipelineInstance {
@@ -2732,7 +2863,12 @@ interface IPipelineInstance {
 }
 ```
 
-`IPipelineContext` gives a plugin opaque access to per-role LLMs (`resolveLlm(role)`), the session-scoped knowledge RAG, the tools RAG handle, and MCP clients — without importing server-internal types.
+`parseConfig` and `build`'s `config` parameter are gone: the plugin reads no configuration. Its
+constructor takes a typed settings object instead — whoever constructs it (a factory, see below)
+parses and validates it. `IPipelineContext` gives a plugin `ctx.resolveNamedLlm(key)` for a key its
+settings named (strict — throws if absent) and `ctx.resolveLlm(role)` for a role with no key (falls
+back to `main`), plus the session-scoped knowledge RAG, the tools RAG handle, and MCP clients —
+without importing server-internal types.
 
 #### IPluginLoader interface
 
@@ -2750,7 +2886,8 @@ All fields are optional — a plugin can register any subset:
 
 | Export               | Type                                   | Effect                                    |
 |----------------------|----------------------------------------|-------------------------------------------|
-| `pipelinePlugins`    | `Record<string, IPipelinePlugin>`      | Named pipeline variants (selected by YAML `pipeline.name`) |
+| `pipelinePlugins`    | `Record<string, IPipelinePlugin>`      | Named pipeline variants that need no settings (selected by YAML `pipeline.name`) |
+| `pipelinePluginFactories` | `Record<string, (raw: unknown) => IPipelinePlugin>` | Configurable pipeline plugins — the server calls the selected one with its YAML section |
 | `embedderFactories`  | `Record<string, EmbedderFactory>`      | Available in YAML `rag.embedder:`         |
 | `reranker`           | `IReranker`                            | Replaces default reranker                 |
 | `queryExpander`      | `IQueryExpander`                       | Replaces default query expander           |
@@ -2758,6 +2895,9 @@ All fields are optional — a plugin can register any subset:
 | `skillManager`       | `ISkillManager`                        | Replaces default skill manager            |
 | `mcpClients`         | `IMcpClient[]`                         | Accumulated MCP clients                   |
 | `stageHandlers`      | `Record<string, IStageHandler>`        | Internal stage handlers (used by stepper/DAG pipelines) |
+
+The loader validates every pipeline export (`name` a string, `build` a function, `name` equal to its
+key) and records each refusal in `errors`; it no longer skips one silently.
 
 #### Option 1: FileSystemPluginLoader (default)
 
@@ -2778,30 +2918,31 @@ import type {
   IPipelineInstance,
 } from '@mcp-abap-adt/llm-agent';
 
-interface MyConfig {
+interface MySettings {
   maxRetries: number;
 }
 
-const myPlugin: IPipelinePlugin<MyConfig> = {
-  name: 'my-pipeline',
+function parseMySettings(raw: unknown): MySettings {
+  const cfg = (raw ?? {}) as Record<string, unknown>;
+  return { maxRetries: typeof cfg.maxRetries === 'number' ? cfg.maxRetries : 3 };
+}
 
-  parseConfig(raw: unknown): MyConfig {
-    const cfg = (raw ?? {}) as Record<string, unknown>;
-    return { maxRetries: typeof cfg.maxRetries === 'number' ? cfg.maxRetries : 3 };
-  },
+class MyPipeline implements IPipelinePlugin {
+  readonly name = 'my-pipeline';
+  constructor(private readonly settings: MySettings) {}
 
-  async build(config: MyConfig, ctx: IPipelineContext): Promise<IPipelineInstance> {
+  async build(ctx: IPipelineContext): Promise<IPipelineInstance> {
     const llm = await ctx.resolveLlm('main');
-    // ... build and return your agent instance
+    // ... build and return your agent instance, using this.settings.maxRetries
     return {
       agent: myAgent,
       close: async () => { /* release resources */ },
     };
-  },
-};
+  }
+}
 
-export const pipelinePlugins = {
-  'my-pipeline': myPlugin,
+export const pipelinePluginFactories = {
+  'my-pipeline': (raw: unknown) => new MyPipeline(parseMySettings(raw)),
 };
 ```
 
@@ -3317,11 +3458,28 @@ Each subagent is constructed through its own `SmartAgentBuilder` call with its o
 `plannerLlm`, and each subagent's LLM are fully independent — they can come from different providers.
 
 ```ts
-import { makeLlm, SmartAgentBuilder, ReplanOnErrorPlanning, SubAgentDispatch } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder, LlmAdapter, LlmProviderBridge, ReplanOnErrorPlanning, SubAgentDispatch } from '@mcp-abap-adt/llm-agent-libs';
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
+import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
+import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
+import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 
-const plannerLlm  = await makeLlm({ provider: 'deepseek',   apiKey: process.env.DEEPSEEK_API_KEY!,   model: 'deepseek-chat' });
-const coderLlm    = await makeLlm({ provider: 'sap-ai-sdk', model: 'gpt-4o', resourceGroup: 'default' });
-const reviewerLlm = await makeLlm({ provider: 'anthropic',  apiKey: process.env.ANTHROPIC_API_KEY!,  model: 'claude-haiku-4-5' });
+const deepseekProvider = new DeepSeekProvider({
+  credential: staticApiKey(process.env.DEEPSEEK_API_KEY!),
+  model: 'deepseek-chat',
+});
+const plannerLlm = new LlmAdapter(new LlmProviderBridge(deepseekProvider), { model: deepseekProvider.model });
+
+const sapKey = serviceKeyCredential(process.env.AICORE_SERVICE_KEY!);
+const coderProvider = new SapCoreAIProvider({ model: 'gpt-4o', resourceGroup: 'default', ...sapKey });
+const coderLlm = new LlmAdapter(new LlmProviderBridge(coderProvider), { model: coderProvider.model });
+
+const anthropicProvider = new AnthropicProvider({
+  credential: staticApiKey(process.env.ANTHROPIC_API_KEY!),
+  model: 'claude-haiku-4-5',
+});
+const reviewerLlm = new LlmAdapter(new LlmProviderBridge(anthropicProvider), { model: anthropicProvider.model });
 
 const coderHandle    = await new SmartAgentBuilder().withMainLlm(coderLlm).build();
 const reviewerHandle = await new SmartAgentBuilder().withMainLlm(reviewerLlm).build();
@@ -3408,11 +3566,13 @@ const { handler } = await new DagFactory().build(dagCoordinatorHandlerDeps, base
 `ControllerSkillPipelineBuilder` assembles a ready-to-run controller pipeline
 (with a GitHub skill source) as a single importable component — no HTTP server,
 no hand-built config. Variable parts are set through fluent methods; the
-composition (controller + skill-host + sensible defaults) is baked in. `.build()`
+composition (controller + skill-host + sensible defaults) is baked in. `.build(deps)`
 returns `{ agent, close }` with NO port bound.
 
 ```ts
 import { ControllerSkillPipelineBuilder } from '@mcp-abap-adt/llm-agent-server-libs';
+// deps: BuildAgentDeps — your composition root's makeLlm/resolveEmbedder/makeRag seams
+// (see the llm-agent-server README's Credentials section for a reference implementation).
 
 const { agent, close } = await new ControllerSkillPipelineBuilder()
   .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
@@ -3424,7 +3584,7 @@ const { agent, close } = await new ControllerSkillPipelineBuilder()
   })
   .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small',
                   scenario: 'foundation-models', resourceGroup: 'default' })
-  .build();
+  .build(deps);
 
 // agent is a SmartAgent — its entry point is process()
 const res = await agent.process('Review ABAP program ZDAZ_R_DELAYED_UPDATE, check security, performance, CleanCore, maintainability');
@@ -3432,16 +3592,13 @@ if (res.ok) console.log(res.value.content);
 await close();
 ```
 
-Dependencies are injected, not decided by the library. Provide your own MCP
-in-process clients with `.withMcpClients([...])` (no connect runs), or a custom
-provisioning function via `.build({ connectMcp: async (cfg) => [...] })`. The same
-applies to the LLM provider, embedder, and skill source. For tests/embedding,
-`.build(deps)` accepts a `BuildAgentDeps` to inject stubs (`makeLlm`, `embedder`,
-`buildSkillHost`/`skillHost`, `connectMcp`/`mcpClients`) so no network or port is used.
-
-Note that even the bare `.build()` (no injected deps) still runs config validation,
-so a `sap-ai-sdk` provider requires `AICORE_SERVICE_KEY` in the environment, and each
-role/embedder needs a `model`.
+`BuilderLlmInput`/`BuilderEmbedderInput` take `credentialRef?` (naming an account the composition
+root resolves), not a secret — the builder reads no environment variable itself. `.build(deps)`
+**requires** `deps: BuildAgentDeps` (`makeLlm`, `resolveEmbedder`, `makeRag`, and optionally
+`embedder`, `buildSkillHost`/`skillHost`, `connectMcp`/`mcpClients` for tests) — there is no bare
+`.build()`. Provide your own MCP in-process clients with `.withMcpClients([...])` (no connect runs).
+With an injected `deps.embedder`, the configured embedder's provider-runtime checks (its `model`) are
+skipped; structural validation still runs.
 
 ### Tool-error policy is the planner's
 

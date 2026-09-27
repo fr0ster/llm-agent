@@ -6,7 +6,7 @@ All tunable parameters can be set in `smart-server.yaml` and many support hot-re
 
 ## Embedder Model Selection
 
-The embedder model must be set **explicitly** in `rag.model` — there is no default. A missing `model` is a startup error.
+The embedder model must be set **explicitly** in `rag.embedder.model` — there is no default. A missing `model` is a startup error.
 
 ### Recommended: `bge-m3` (multilingual)
 
@@ -14,8 +14,9 @@ All shipped examples use `bge-m3` (BAAI/bge-m3 via Ollama):
 
 ```yaml
 rag:
-  embedder: ollama
-  model: bge-m3
+  embedder:
+    provider: ollama
+    model: bge-m3
 ```
 
 ```bash
@@ -34,16 +35,17 @@ The embedding dimensions are model-specific: `nomic-embed-text` produces 768-dim
 
 ### maxBatchSize — requests vs. request size
 
-`rag.maxBatchSize` caps how many texts go into one `embedBatch` call. It trades the number of requests against the size of each one, and it is the knob that keeps startup tool vectorization inside a provider's limits.
+`rag.embedder.maxBatchSize` caps how many texts go into one `embedBatch` call. It trades the number of requests against the size of each one, and it is the knob that keeps startup tool vectorization inside a provider's limits.
 
 ```yaml
 rag:
-  embedder: sap-ai-core
-  model: gemini-embedding
-  maxBatchSize: 250
+  embedder:
+    provider: sap-ai-core
+    model: gemini-embedding
+    maxBatchSize: 250
 ```
 
-Precedence: `rag.maxBatchSize` → the provider's declared cap → **100**.
+Precedence: `rag.embedder.maxBatchSize` → the provider's declared cap → **100**.
 
 A catalog of `N` texts costs `ceil(N / maxBatchSize)` requests. Nothing in the agent is tuned to a particular catalog size — MCP servers add and remove tools, and the cap is a property of the embedding provider, not of the tool set.
 
@@ -62,12 +64,19 @@ One shared embedder has one cap. When several stores share an instance, the firs
 The hybrid RAG engine (`VectorRag`) combines semantic similarity (vector cosine) and lexical matching (BM25) using configurable weights:
 
 ```yaml
+# read by the in-memory store only
 rag:
-  vectorWeight: 0.7    # Semantic similarity weight (0..1)
-  keywordWeight: 0.3   # Lexical matching weight (0..1)
+  store:
+    vectorWeight: 0.7    # Semantic similarity weight (0..1)
+    keywordWeight: 0.3   # Lexical matching weight (0..1)
 ```
 
 **Default:** 0.7 / 0.3 (favors semantic understanding).
+
+Both parts are in [0, 1]: the BM25 score is divided by the best BM25 score among the query's
+candidates, so the best keyword match contributes exactly `keywordWeight` and the weights are the
+real shares. (Before this release BM25 was scaled by a fixed `/5` and clamped at 1, so strong
+keyword matches saturated into a tie.)
 
 **When to adjust:**
 
@@ -140,13 +149,18 @@ Because filtering is score-based, no SAP-specific or domain-specific classifier 
 Cosine similarity threshold for deduplication on upsert:
 
 ```yaml
+# read by the in-memory store only
 rag:
-  dedupThreshold: 0.92   # Default: 0.92
+  store:
+    dedupThreshold: 0.92   # Default: 0.92
 ```
 
 - **Higher (0.95+):** Keeps near-duplicates, larger index, slightly better recall.
 - **Lower (0.85–0.90):** Aggressively deduplicates, smaller index, faster queries.
-- Applied during `upsert()` — if a new document is >= threshold similar to an existing one, it is skipped.
+- Applied during `upsert()` **only to records written without an id**: a new id-less document
+  that is >= threshold similar to an existing id-less one replaces it. A record with an id
+  (every tool and skill record) is replaced only by a write with the same id — two tools with
+  near-identical descriptions are both kept.
 
 ## Search Strategies
 
@@ -156,7 +170,7 @@ rag:
 
 | Strategy | Description | Best for |
 |----------|-------------|----------|
-| `WeightedFusionStrategy` | `score = vectorScore × w1 + bm25Score × w2` (default 0.7/0.3) | General-purpose, configurable weights |
+| `WeightedFusionStrategy` | `score = cosine × w1 + (bm25 / best bm25 of the candidates) × w2` (default 0.7/0.3) | General-purpose, configurable weights — the default, and the best on the eval below |
 | `RrfStrategy` | Reciprocal Rank Fusion — rank-based, magnitude-independent | Stable ranking when score distributions differ |
 | `VectorOnlyStrategy` | Pure cosine similarity | When BM25 tokenization doesn't match the domain |
 | `Bm25OnlyStrategy` | Pure BM25 keyword matching | Exact terms, no embedder available |
@@ -180,7 +194,26 @@ const rag = new VectorRag(embedder, {
 });
 ```
 
-### Benchmarks (159 ABAP MCP tools, Ollama bge-m3)
+### Benchmarks — tool-retrieval eval (`scripts/rag-eval`, 63 tools, 30 queries)
+
+Measured for this release with `npm run eval:rag` (see `scripts/rag-eval/README.md`), in-memory
+store, K=5:
+
+| Config | Strategy | recall@1 | recall@5 | MRR |
+|--------|----------|----------|----------|-----|
+| keyword-only (`InMemoryRag`) | — | 80.0% | 93.3% | 0.869 |
+| Ollama `nomic-embed-text` | Weighted 0.7/0.3 (default) | **96.7%** | **100%** | **0.983** |
+| Ollama `nomic-embed-text` | RRF | 76.7% | 90.0% | 0.843 |
+| SAP AI Core `text-embedding-3-small` | Weighted 0.7/0.3 (default) | **96.7%** | **100%** | **0.983** |
+| SAP AI Core `text-embedding-3-small` | RRF | 93.3% | 100% | 0.958 |
+
+Before this release's BM25 normalisation and identifier tokenizer, the default gave MRR 0.883
+(Ollama) and 0.900 (AI Core), keyword-only 0.828.
+
+### Older benchmarks (159 ABAP MCP tools, before the BM25 normalisation)
+
+> Historical: measured with the old fixed-scale, clamped BM25 and the old tokenizer; the ranking
+> of Weighted vs RRF no longer holds (see the table above).
 
 > **Note:** benchmarks were run with `nomic-embed-text` (768 dimensions). The shipped examples now use `bge-m3` (multilingual, 1024 dimensions). Relative strategy rankings remain valid; absolute scores may differ slightly with `bge-m3`.
 
@@ -276,10 +309,20 @@ for (const tool of tools) {
 
 `InvertedIndex` (in `packages/llm-agent/src/rag/inverted-index.ts`) maintains an in-memory inverted index with BM25 scoring:
 
-1. **On upsert:** Tokenizes text, updates document frequency (DF) maps, stores term positions.
-2. **On query:** Computes BM25 score per document using IDF × TF saturation × length normalization.
+The built-in strategies compute BM25 statistics — document frequency, document count, average
+length — over **the query's candidates only**: the records that passed the namespace, TTL, session
+and user filters. Statistics over the whole store would make one session's ranking depend on
+another session's records. `VectorRag` builds an `InvertedIndex` over those candidates per query
+(lazily, for custom strategies that read `ISearchContext.index`); it keeps no store-wide index.
 
-Term lookups are O(1) via `Map`, compared to the O(n) corpus scan of the older TF-IDF approach.
+### Tokenizer
+
+Both in-memory stores tokenize records and queries the same way: split on anything but ASCII
+letters, digits and `_`, lower-case, drop one-character tokens, and split identifiers into their
+parts while keeping the whole identifier — `ReadFunctionInclude` → `readfunctioninclude`, `read`,
+`function`, `include`; `GetXMLParser` → … `xml`, `parser`; `get_sql_query` → … `get`, `sql`,
+`query`. There is no stemming: a plural / `-ing` / `-ed` rule was measured on the eval above and
+lowered MRR.
 
 ### BM25 parameters
 
@@ -303,23 +346,22 @@ These are hardcoded constants. For most use cases, the defaults work well.
 The pipeline supports heterogeneous models for different internal tasks:
 
 ```yaml
-pipeline:
-  llm:
-    main:
-      provider: openai
-      apiKey: ${OPENAI_API_KEY}
-      model: gpt-4o
-      temperature: 0.7
-    classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
+llm:
+  main:
+    provider: openai
+    credentialRef: OPENAI      # reads OPENAI_API_KEY
+    model: gpt-4o
+    temperature: 0.7
+  classifier:
+    provider: deepseek
+    credentialRef: DEEPSEEK    # reads DEEPSEEK_API_KEY
+    model: deepseek-chat
+    temperature: 0.1
+  helper:
+    provider: deepseek
+    credentialRef: DEEPSEEK
+    model: deepseek-chat
+    temperature: 0.1
 ```
 
 An optional `onBeforeStream` hook can be configured via `.withOnBeforeStream(hook)` on the builder. When set, it receives the fully accumulated response content before it is streamed to the caller, allowing reformatting, summarization, or any other post-processing via an async generator. See the Integration guide for usage examples.
@@ -413,7 +455,8 @@ agent:
 The circuit breaker wraps LLM and embedder calls with automatic failure detection and recovery:
 
 ```ts
-const handle = await new SmartAgentBuilder({ llm: { apiKey } })
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
   .withCircuitBreaker({
     failureThreshold: 5,       // Open after 5 consecutive failures
     recoveryWindowMs: 30_000,  // Try half-open after 30s

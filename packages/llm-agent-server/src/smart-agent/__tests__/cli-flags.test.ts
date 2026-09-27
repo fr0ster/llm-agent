@@ -72,3 +72,30 @@ describe('cli strict flag parsing', () => {
     assert.match(r.stdout, /@mcp-abap-adt\/llm-agent-server@/);
   });
 });
+
+describe('cli composition root', () => {
+  it('fails at startup naming the default credentialRef when nothing supplies it', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-root-'));
+    const cfg = path.join(dir, 'smart-server.yaml');
+    writeFileSync(
+      cfg,
+      [
+        'port: 0',
+        'llm:',
+        '  main: { provider: openai, model: gpt-4o-mini }',
+      ].join('\n'),
+    );
+    const env = { ...process.env };
+    delete env.LLM_API_KEY;
+    const r = spawnSync('node', ['--import', 'tsx/esm', CLI, '--config', cfg], {
+      encoding: 'utf8',
+      env,
+      timeout: 60_000,
+    });
+    assert.notEqual(r.status, 0);
+    assert.match(
+      r.stderr,
+      /credentialRef 'LLM' must hold a api-key credential for openai, got none/,
+    );
+  });
+});

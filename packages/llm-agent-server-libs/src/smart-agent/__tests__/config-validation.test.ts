@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parse } from 'yaml';
-import { resolveSmartServerConfig, YAML_TEMPLATE } from '../config.js';
+import { resolveSmartServerConfig } from '../config.js';
 
 describe('resolveSmartServerConfig — flat llm provider/url', () => {
   it('reads provider and url from YAML', () => {
@@ -14,7 +13,6 @@ describe('resolveSmartServerConfig — flat llm provider/url', () => {
           url: 'http://h:11434/v1',
           // dummy apiKey so the legacy 'API key required' guard does not fire
           // (Task 6 replaces that guard with provider-aware validation).
-          apiKey: 'x',
         },
       },
       {},
@@ -27,7 +25,7 @@ describe('resolveSmartServerConfig — flat llm provider/url', () => {
   it('does not invent a deepseek-chat model default', () => {
     const explicit = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' } },
+      { llm: { provider: 'openai', model: 'gpt-4o' } },
       {},
     );
     assert.equal(explicit.llm.model, 'gpt-4o');
@@ -44,15 +42,18 @@ describe('resolveSmartServerConfig — no silent env/default fallbacks', () => {
   it('does not read DEEPSEEK_API_KEY / OLLAMA_URL / MCP_ENDPOINT from env', () => {
     const cfg = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' } },
+      { llm: { provider: 'openai', model: 'gpt-4o', credentialRef: 'OPENAI' } },
       {
         DEEPSEEK_API_KEY: 'env-key',
         OLLAMA_URL: 'http://env-host:11434',
         MCP_ENDPOINT: 'http://env-mcp/mcp',
       } as NodeJS.ProcessEnv,
     );
-    assert.equal(cfg.llm.apiKey, 'sk-x'); // not 'env-key'
-    assert.equal(cfg.rag?.url, undefined); // not the env value
+    assert.equal(
+      (cfg.llm as { credentialRef?: string }).credentialRef,
+      'OPENAI',
+    ); // not an env value
+    assert.equal(cfg.rag, undefined); // no rag block in YAML
     assert.equal(cfg.mcp?.url, undefined); // no mcp block in YAML → env ignored
   });
 });
@@ -62,7 +63,7 @@ describe('config validation — fail loud, human-readable', () => {
 
   it('flat schema requires explicit provider', () => {
     assert.throws(
-      () => resolveSmartServerConfig({}, base({ apiKey: 'k', model: 'm' }), {}),
+      () => resolveSmartServerConfig({}, base({ model: 'm' }), {}),
       /provider.*required|one of: openai, anthropic, deepseek, sap-ai-sdk, ollama/i,
     );
   });
@@ -79,15 +80,13 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
-  it('openai requires a resolvable apiKey', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          base({ provider: 'openai', model: 'gpt-4o' }),
-          {},
-        ),
-      /openai requires.*apiKey/i,
+  it('openai needs no key in configuration', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        base({ provider: 'openai', model: 'gpt-4o' }),
+        {},
+      ),
     );
   });
 
@@ -100,15 +99,13 @@ describe('config validation — fail loud, human-readable', () => {
     assert.equal(cfg.llm.provider, 'ollama');
   });
 
-  it('sap-ai-sdk requires AICORE_SERVICE_KEY', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          base({ provider: 'sap-ai-sdk', model: 'gpt-4o' }),
-          {},
-        ),
-      /sap-ai-sdk requires.*AICORE_SERVICE_KEY/i,
+  it('sap-ai-sdk needs no AICORE_SERVICE_KEY here — only the composition root reads it', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        base({ provider: 'sap-ai-sdk', model: 'gpt-4o' }),
+        {},
+      ),
     );
   });
 
@@ -148,108 +145,138 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
-  it('rag block requires rag.type', () => {
+  it('rag block requires rag.store', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          { llm: { provider: 'ollama', model: 'm' }, rag: { url: 'http://x' } },
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { store: { url: 'http://x' } },
+          },
           {},
         ),
-      /rag\.type.*required/i,
+      /rag\.store\.type.*required/i,
     );
-  });
-
-  it('rag.type ollama is rejected with a migration hint', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'ollama' } },
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { embedder: { provider: 'ollama', model: 'm' } },
+          },
           {},
         ),
-      /rag\.type.*embedder, not a store/i,
+      /rag\.store: required/,
     );
   });
 
-  it('rag.type qdrant requires url', () => {
+  it('rag.store.type ollama is rejected with a migration hint', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
-          { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'qdrant' } },
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { store: { type: 'ollama' } },
+          },
           {},
         ),
-      /rag\.url.*required.*qdrant/i,
+      /rag\.store\.type.*embedder, not a store/i,
     );
   });
 
-  it('rag.type in-memory needs nothing', () => {
+  it('rag.store.type qdrant requires url', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { store: { type: 'qdrant' } },
+          },
+          {},
+        ),
+      /rag\.store\.url.*required.*qdrant/i,
+    );
+  });
+
+  it('rag.store.type in-memory needs nothing', () => {
     const cfg = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'in-memory' } },
+      {
+        llm: { provider: 'ollama', model: 'm' },
+        rag: { store: { type: 'in-memory' } },
+      },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
-  it('rag.embedder deepseek is rejected (no embedder)', () => {
+  it('rag.embedder.provider deepseek is rejected (no embedder)', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'in-memory', embedder: 'deepseek' },
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { provider: 'deepseek' },
+            },
           },
           {},
         ),
-      /rag\.embedder.*no embedder/i,
+      /rag\.embedder\.provider.*no embedder/i,
     );
   });
 
-  it('rag.type hana-vector requires collectionName', () => {
+  it('rag.store.type hana-vector requires collectionName', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'hana-vector' },
+            rag: { store: { type: 'hana-vector' } },
           },
           {},
         ),
-      /rag\.collectionName.*required.*hana-vector/i,
+      /rag\.store\.collectionName.*required.*(hana|pg)-vector/i,
     );
   });
 
-  it('rag.type pg-vector requires collectionName', () => {
+  it('rag.store.type pg-vector requires collectionName', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'pg-vector' },
+            rag: { store: { type: 'pg-vector' } },
           },
           {},
         ),
-      /rag\.collectionName.*required.*pg-vector/i,
+      /rag\.store\.collectionName.*required.*(hana|pg)-vector/i,
     );
   });
 
-  it('rag.embedder anthropic is rejected (no embedder)', () => {
+  it('rag.embedder.provider anthropic is rejected (no embedder)', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'in-memory', embedder: 'anthropic' },
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { provider: 'anthropic' },
+            },
           },
           {},
         ),
-      /rag\.embedder.*no embedder/i,
+      /rag\.embedder\.provider.*no embedder/i,
     );
   });
 
@@ -262,7 +289,7 @@ describe('config validation — fail loud, human-readable', () => {
     const cfg = resolveSmartServerConfig(
       {},
       {
-        llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+        llm: { provider: 'openai', model: 'gpt-4o' },
         pipeline: 'stepper',
       },
       {},
@@ -274,7 +301,7 @@ describe('config validation — fail loud, human-readable', () => {
     const cfg = resolveSmartServerConfig(
       {},
       {
-        llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+        llm: { provider: 'openai', model: 'gpt-4o' },
         pipeline: { name: 'dag', config: { planner: { type: 'dag' } } },
       },
       {},
@@ -289,7 +316,7 @@ describe('config validation — fail loud, human-readable', () => {
         resolveSmartServerConfig(
           {},
           {
-            llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+            llm: { provider: 'openai', model: 'gpt-4o' },
             pipeline: { config: { foo: 1 } },
           },
           {},
@@ -310,10 +337,13 @@ describe('config validation — fail loud, human-readable', () => {
   it('a present rag block is still resolved', () => {
     const cfg = resolveSmartServerConfig(
       {},
-      { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'in-memory' } },
+      {
+        llm: { provider: 'ollama', model: 'm' },
+        rag: { store: { type: 'in-memory' } },
+      },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
   it('rag block with embedder but no model is rejected', () => {
@@ -323,11 +353,14 @@ describe('config validation — fail loud, human-readable', () => {
           {},
           {
             llm: { provider: 'ollama', model: 'm' },
-            rag: { type: 'in-memory', embedder: 'ollama' },
+            rag: {
+              store: { type: 'in-memory' },
+              embedder: { provider: 'ollama' },
+            },
           },
           {},
         ),
-      /rag\.model.*required/i,
+      /rag\.embedder\.model.*required/i,
     );
   });
 
@@ -336,11 +369,14 @@ describe('config validation — fail loud, human-readable', () => {
       {},
       {
         llm: { provider: 'ollama', model: 'm' },
-        rag: { type: 'in-memory', embedder: 'ollama', model: 'bge-m3' },
+        rag: {
+          store: { type: 'in-memory' },
+          embedder: { provider: 'ollama', model: 'bge-m3' },
+        },
       },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
   it('bare in-memory rag (no embedder, no model) still passes (BM25)', () => {
@@ -348,11 +384,11 @@ describe('config validation — fail loud, human-readable', () => {
       {},
       {
         llm: { provider: 'ollama', model: 'm' },
-        rag: { type: 'in-memory' },
+        rag: { store: { type: 'in-memory' } },
       },
       {},
     );
-    assert.equal(cfg.rag?.type, 'in-memory');
+    assert.equal(cfg.rag?.store.type, 'in-memory');
   });
 
   it('qdrant rag without model is rejected', () => {
@@ -363,25 +399,17 @@ describe('config validation — fail loud, human-readable', () => {
           {
             llm: { provider: 'ollama', model: 'm' },
             rag: {
-              type: 'qdrant',
-              url: 'http://localhost:6333',
-              collectionName: 'test',
+              store: {
+                type: 'qdrant',
+                url: 'http://localhost:6333',
+                collectionName: 'test',
+              },
             },
           },
           {},
         ),
-      /rag\.model.*required/i,
+      /rag\.embedder\.model.*required/i,
     );
-  });
-});
-
-describe('first-run YAML template', () => {
-  it('passes validation once the apiKey env is filled', () => {
-    // Mirrors first-run UX: template is generated, user fills DEEPSEEK_API_KEY.
-    const filled = YAML_TEMPLATE.replace(/\$\{DEEPSEEK_API_KEY\}/g, 'sk-test');
-    const cfg = resolveSmartServerConfig({}, parse(filled), {});
-    assert.equal(cfg.llm.provider, 'deepseek');
-    assert.ok(cfg.llm.apiKey);
   });
 });
 
@@ -391,7 +419,7 @@ describe('validateResolvedConfig — llm map shape', () => {
       resolveSmartServerConfig(
         {},
         {
-          llm: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+          llm: { provider: 'deepseek', model: 'm' },
           mode: 'agent',
         },
         {},
@@ -405,8 +433,8 @@ describe('validateResolvedConfig — llm map shape', () => {
         {},
         {
           llm: {
-            main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
-            planner: { provider: 'openai', apiKey: 'k2', model: 'gpt' },
+            main: { provider: 'deepseek', model: 'm' },
+            planner: { provider: 'openai', model: 'gpt' },
           },
           mode: 'agent',
         },
@@ -422,7 +450,7 @@ describe('validateResolvedConfig — llm map shape', () => {
           {},
           {
             llm: {
-              planner: { provider: 'openai', apiKey: 'k', model: 'gpt' },
+              planner: { provider: 'openai', model: 'gpt' },
             },
             mode: 'agent',
           },
@@ -439,8 +467,8 @@ describe('validateResolvedConfig — llm map shape', () => {
           {},
           {
             llm: {
-              main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
-              planner: { apiKey: 'k', model: 'gpt' },
+              main: { provider: 'deepseek', model: 'm' },
+              planner: { model: 'gpt' },
             },
             mode: 'agent',
           },
@@ -458,7 +486,7 @@ describe('validateResolvedConfig — llm map shape', () => {
 
 describe('resolveSmartServerConfig — top-level mcp: array form', () => {
   const base = {
-    llm: { provider: 'ollama', model: 'qwen2', apiKey: 'x' },
+    llm: { provider: 'ollama', model: 'qwen2' },
   };
 
   it('preserves array mcp: as cfg.mcp (not silently undefined)', () => {
@@ -517,7 +545,6 @@ describe('legacy coordinator:/pipeline: migration guard (clean break)', () => {
     provider: 'ollama',
     model: 'm',
     url: 'http://h',
-    apiKey: 'x',
   };
 
   it('throws on a legacy coordinator: block', () => {
@@ -642,14 +669,13 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
       pipeline: {
         name: 'controller',
         config: {
-          subagents: {
-            evaluator: { provider: 'sap-ai-sdk' },
-            planner: { provider: 'sap-ai-sdk' },
-            executor: { provider: 'sap-ai-sdk' },
-          },
+          subagents: { evaluator: {}, planner: {}, executor: {} },
         },
       },
-      rag: { type: 'in-memory', embedder: 'sap-ai-core' },
+      rag: {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'sap-ai-core' },
+      },
     };
     assert.doesNotThrow(() =>
       resolveSmartServerConfig(
@@ -666,18 +692,18 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
   it('WITHOUT the flag, the same config throws (server path unchanged)', () => {
     const yaml = {
       llm: { main: { provider: 'sap-ai-sdk' } },
-      rag: { type: 'in-memory', embedder: 'sap-ai-core' },
+      rag: {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'sap-ai-core' },
+      },
     };
-    assert.throws(
-      () => resolveSmartServerConfig({}, yaml, {}, {}),
-      /AICORE_SERVICE_KEY|model/,
-    );
+    assert.throws(() => resolveSmartServerConfig({}, yaml, {}, {}), /model/);
   });
 
   it('still enforces STRUCTURAL validation', () => {
     const yaml = {
       llm: { main: { provider: 'bogus-provider' } },
-      rag: { type: 'in-memory' },
+      rag: { store: { type: 'in-memory' } },
     };
     assert.throws(
       () =>

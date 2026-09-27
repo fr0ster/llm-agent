@@ -68,6 +68,17 @@ export interface McpClientFactoryResult {
   close?: () => Promise<void> | void;
 }
 
+/**
+ * Builds a connected MCP client from a connection config.
+ *
+ * @deprecated as a CONSUMER seam: hand an `IMcpServer` to `withMcpServers`
+ * instead — `HttpMcpServer` or `StdioMcpServer` from `@mcp-abap-adt/llm-agent-mcp`,
+ * whose `auth` demands the credential the target needs, or
+ * `mcpServerFromFactory` for anything else. The type itself stays: it is the
+ * default implementation's factory, which `mcpServerFromFactory` and those two
+ * servers consume (their optional constructor argument, `createDefaultMcpClient`
+ * by default). Removal of the consumer-facing options is a later major.
+ */
 export type McpClientFactory = (
   config: McpConnectionConfig,
 ) => Promise<McpClientFactoryResult>;

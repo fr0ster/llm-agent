@@ -7,7 +7,20 @@ import {
   makeDefaultDeps,
   makeLlm as makeTestLlm,
 } from '@mcp-abap-adt/llm-agent-libs/testing';
+import type { BuildAgentDeps } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
+
+/** Every test here builds a real SmartServer; the seams are required now. */
+function makeLlmDeps(): Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder'> {
+  return {
+    ...constructionSeams,
+    makeLlm: async (cfg) => ({
+      ...makeTestLlm([{ content: 'ok' }]),
+      model: cfg.model ?? 'stub',
+    }),
+  };
+}
 
 function makeResolver(results: Record<string, ILlm | Error>): IModelResolver {
   return {
@@ -106,12 +119,15 @@ describe('SmartAgent.getAgentConfig', () => {
 
 describe('GET /v1/config', () => {
   it('returns models and agent config', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      agent: { maxIterations: 8 },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        agent: { maxIterations: 8 },
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'GET', '/v1/config');
@@ -127,11 +143,14 @@ describe('GET /v1/config', () => {
   });
 
   it('works with /config alias', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'GET', '/config');
@@ -144,12 +163,15 @@ describe('GET /v1/config', () => {
   });
 
   it('returns only whitelisted fields, not raw SmartAgentConfig', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      agent: { maxIterations: 5, timeoutMs: 9999, tokenLimit: 4096 },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        agent: { maxIterations: 5, timeoutMs: 9999, tokenLimit: 4096 },
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'GET', '/v1/config');
@@ -167,12 +189,15 @@ describe('GET /v1/config', () => {
 
 describe('PUT /v1/config', () => {
   it('updates agent parameters and returns updated config', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      agent: { maxIterations: 10 },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        agent: { maxIterations: 10 },
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
@@ -189,11 +214,14 @@ describe('PUT /v1/config', () => {
   });
 
   it('rejects unsupported agent fields', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
@@ -206,11 +234,14 @@ describe('PUT /v1/config', () => {
   });
 
   it('rejects invalid JSON body', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       // Send raw non-JSON body
@@ -257,11 +288,14 @@ describe('PUT /v1/config', () => {
   });
 
   it('returns 405 for unsupported methods on /v1/config', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'DELETE', '/v1/config');
@@ -272,12 +306,15 @@ describe('PUT /v1/config', () => {
   });
 
   it('works with /config alias for PUT', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      agent: { maxIterations: 10 },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        agent: { maxIterations: 10 },
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'PUT', '/config', {
@@ -298,12 +335,15 @@ describe('PUT /v1/config — models', () => {
     const newMain = { ...makeTestLlm([{ content: 'ok' }]), model: 'gpt-4o' };
     const resolver = makeResolver({ 'gpt-4o': newMain });
 
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      modelResolver: resolver,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        modelResolver: resolver,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
@@ -319,11 +359,14 @@ describe('PUT /v1/config — models', () => {
   });
 
   it('returns 400 when models sent but no resolver configured', async () => {
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
@@ -345,12 +388,15 @@ describe('PUT /v1/config — models', () => {
       'bad-model': new Error('Provider unreachable'),
     });
 
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      modelResolver: resolver,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        modelResolver: resolver,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
@@ -368,12 +414,15 @@ describe('PUT /v1/config — models', () => {
         throw new Error(`Unknown model: ${modelName}`);
       },
     };
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      modelResolver: resolver,
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        modelResolver: resolver,
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
@@ -398,13 +447,16 @@ describe('PUT /v1/config — models', () => {
       'bad-model': new Error('resolution failed'),
     });
 
-    const server = new SmartServer({
-      port: 0,
-      llm: { apiKey: 'test', model: 'test-model' },
-      skipModelValidation: true,
-      modelResolver: resolver,
-      agent: { maxIterations: 10 },
-    });
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        modelResolver: resolver,
+        agent: { maxIterations: 10 },
+      },
+      makeLlmDeps(),
+    );
     const handle = await server.start();
     try {
       // Attempt to update both models + agent param — one model fails
@@ -419,6 +471,47 @@ describe('PUT /v1/config — models', () => {
       const body = getRes.body as Record<string, unknown>;
       const agent = body.agent as Record<string, unknown>;
       assert.equal(agent.maxIterations, 10); // unchanged
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('refuses a model that resolves but does not answer — nothing applied', async () => {
+    // A resolver only constructs; a wrong model name surfaces on the first
+    // call. Found live: PUT accepted "no-such-model", and every chat after it
+    // failed while /health stayed healthy.
+    const dead = {
+      ...makeTestLlm([]),
+      model: 'no-such-model',
+      chat: async () => ({
+        ok: false as const,
+        error: new Error('Request failed with status code 400'),
+      }),
+    } as unknown as ILlm;
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        modelResolver: makeResolver({ 'no-such-model': dead }),
+        agent: { ragQueryK: 5 },
+      },
+      makeLlmDeps(),
+    );
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'no-such-model' },
+        agent: { ragQueryK: 3 },
+      });
+      assert.equal(res.status, 400);
+      const error = (res.body as Record<string, Record<string, unknown>>).error;
+      assert.match(String(error.message), /no-such-model/);
+      assert.match(String(error.message), /status code 400/);
+
+      const after = (await httpRequest(handle.port, 'GET', '/v1/config'))
+        .body as Record<string, Record<string, unknown>>;
+      assert.equal(after.models.mainModel, 'test-model');
+      assert.equal(after.agent.ragQueryK, 5);
     } finally {
       await handle.close();
     }

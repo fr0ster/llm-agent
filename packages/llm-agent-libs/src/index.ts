@@ -162,6 +162,7 @@ export type {
 // Plugins
 // ---------------------------------------------------------------------------
 export {
+  describePipelinePluginDefect,
   emptyLoadedPlugins,
   FileSystemPluginLoader,
   type FileSystemPluginLoaderConfig,
@@ -169,15 +170,6 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './plugins/index.js';
-// ---------------------------------------------------------------------------
-// Providers (LLM)
-// ---------------------------------------------------------------------------
-export {
-  DefaultModelResolver,
-  type MakeLlmConfig,
-  makeDefaultLlm,
-  makeLlm,
-} from './providers.js';
 export {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,

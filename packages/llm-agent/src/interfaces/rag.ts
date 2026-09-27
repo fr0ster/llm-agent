@@ -20,8 +20,6 @@ export interface IEmbedder {
 export interface EmbedderFactoryConfig {
   /** Base URL for the embedding service (Ollama URL, OpenAI base, etc.) */
   url?: string;
-  /** API key when required by the embedding provider */
-  apiKey?: string;
   /** Embedding model name */
   model?: string;
   /** Per-request timeout in milliseconds */
@@ -35,6 +33,18 @@ export interface EmbedderFactoryConfig {
 export type EmbedderFactory = (cfg: EmbedderFactoryConfig) => IEmbedder;
 
 export interface IRag {
+  /**
+   * Top-`k` records for `embedding`.
+   *
+   * Identity scope (a security contract, not a hint): when
+   * `options.ragFilter.sessionId` is set, return only records whose
+   * `metadata.sessionId` equals it; the same for `ragFilter.userId` and
+   * `metadata.userId`; both set → both must match. A record without the
+   * filtered key is excluded. The filter applies BEFORE top-k, so a scoped
+   * query returns up to `k` of its own records. Neither set → no identity
+   * filtering. Conformance cases:
+   * `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance`.
+   */
   query(
     embedding: IQueryEmbedding,
     k: number,
@@ -148,6 +158,74 @@ export interface IRagBackendWriter {
 
 export type RagCollectionScope = 'session' | 'user' | 'global';
 
+/**
+ * What a catalog can store and give back unchanged on every backend: JSON, with
+ * finite numbers only. `unknown` admitted cycles, BigInt, functions and class
+ * instances, which the three backends cannot round-trip alike. NaN, ±Infinity
+ * and a cycle reached through an untyped caller are refused at runtime with
+ * RAG_INVALID_ATTRIBUTES (validateRagAttributes), before anything is created.
+ */
+export type RagJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly RagJsonValue[]
+  | { readonly [key: string]: RagJsonValue };
+
+/**
+ * The scope is required and selects its owner key. One type, used by the record
+ * AND by both createCollection contracts, so no layer can hold a user or session
+ * collection without its owner (§6.3).
+ */
+export type RagCollectionOwner =
+  | { readonly scope: 'global' }
+  | { readonly scope: 'user'; readonly userId: string }
+  | { readonly scope: 'session'; readonly sessionId: string };
+
+/** A catalog record. It says whose it is, or it is not a record at all. */
+export type RagCollectionRecord = {
+  /** What the PROVIDER knows the store by — the name createCollection was given. */
+  readonly storeName: string;
+  /** The LOGICAL name a registry registers it under. */
+  readonly name: string;
+  /** Opaque: persisted and returned exactly as given, never interpreted here. */
+  readonly attributes?: RagJsonValue;
+} & RagCollectionOwner;
+
+/** IRagProvider.createCollection's options. */
+export type RagProviderCreateCollectionOptions = RagCollectionOwner & {
+  /** The logical name; `name` is the store name. Absent → the provider records `name`. */
+  collectionName?: string;
+  attributes?: RagJsonValue;
+  /** Take over a store that exists without a record; never create one. */
+  adoptExisting?: boolean;
+};
+
+/** IRagRegistry.createCollection's params. */
+export type RagRegistryCreateCollectionParams = {
+  providerName: string;
+  /** Logical — passed on to the provider as opts.collectionName. */
+  collectionName: string;
+  displayName?: string;
+  description?: string;
+  tags?: readonly string[];
+  /** Opaque, passed through unchanged (§9.5). */
+  attributes?: RagJsonValue;
+  /** Forwarded to the provider unchanged. */
+  adoptExisting?: boolean;
+} & RagCollectionOwner;
+
+/** What IRagProvider.describeCollections reads back. */
+export type RagCatalogDescription = {
+  readonly records: readonly RagCollectionRecord[];
+  /** Catalog rows that are not valid records — reported, never returned as records. */
+  readonly rejected: readonly {
+    readonly storeName?: string;
+    readonly reason: string;
+  }[];
+};
+
 export interface RagCollectionMeta {
   readonly name: string;
   readonly displayName: string;
@@ -161,35 +239,64 @@ export interface RagCollectionMeta {
 }
 
 export interface IRagRegistry {
+  /**
+   * Throws `DuplicateCollectionError` when its scope (default `'global'`)
+   * already holds `name`, and `ReservedCollectionNameError` for a global named
+   * `user/…` or `session/…`.
+   */
   register(
     name: string,
     rag: IRag,
     editor?: IRagEditor,
     meta?: Omit<RagCollectionMeta, 'name' | 'editable'>,
   ): void;
-  unregister(name: string): boolean;
-  get(name: string): IRag | undefined;
-  getEditor(name: string): IRagEditor | undefined;
+  /**
+   * Entries are keyed by scope and name (§6.4): a caller may hold a global, a
+   * user and a session collection of one name. `scope` selects the entry. When
+   * it is omitted the name must be held by exactly one scope; a name several
+   * hold fails with AmbiguousCollectionError (RAG_AMBIGUOUS_COLLECTION, naming
+   * them in `.scopes`) — thrown by `unregister`, `get` and `getEditor`, whose
+   * return values cannot tell "ambiguous" from "absent", and returned by
+   * `deleteCollection`.
+   */
+  unregister(name: string, scope?: RagCollectionScope): boolean;
+  get(name: string, scope?: RagCollectionScope): IRag | undefined;
+  getEditor(name: string, scope?: RagCollectionScope): IRagEditor | undefined;
   list(): readonly RagCollectionMeta[];
 
   /** Create a collection via a provider and register it atomically. */
-  createCollection(params: {
-    providerName: string;
-    collectionName: string;
-    scope: RagCollectionScope;
-    sessionId?: string;
-    userId?: string;
-    displayName?: string;
-    description?: string;
-    tags?: readonly string[];
-  }): Promise<Result<RagCollectionMeta, RagError>>;
+  createCollection(
+    params: RagRegistryCreateCollectionParams,
+  ): Promise<Result<RagCollectionMeta, RagError>>;
+
+  /**
+   * Register a collection whose store EXISTS, from its catalog record, under its
+   * logical name, keeping the store name the record gives (§6.3). Creates
+   * nothing and asks no provider for anything. `providerName` is the name the
+   * owning provider is registered under in the IRagProviderRegistry: with it,
+   * deleting the entry reaches that provider under `record.storeName`; without
+   * it the entry is a reference and deleting it only unregisters — so a
+   * hydrated collection adopted without it could never be deleted, and would
+   * come back at the next hydration. Throws InvalidOwnerError,
+   * ReservedCollectionNameError or DuplicateCollectionError. Optional so an
+   * external implementation is not broken by gaining a member.
+   */
+  adopt?(
+    record: RagCollectionRecord,
+    rag: IRag,
+    editor?: IRagEditor,
+    providerName?: string,
+  ): void;
 
   /**
    * Delete a collection: unregister it, then delete its data through the
    * provider that created it. A failure is returned with the collection
    * already unregistered.
    */
-  deleteCollection(name: string): Promise<Result<void, RagError>>;
+  deleteCollection(
+    name: string,
+    scope?: RagCollectionScope,
+  ): Promise<Result<void, RagError>>;
 
   /**
    * Delete every session-scoped collection with the given sessionId, going
@@ -208,15 +315,28 @@ export interface IRagProvider {
 
   createCollection(
     name: string,
-    opts: {
-      scope: RagCollectionScope;
-      sessionId?: string;
-      userId?: string;
-    },
+    opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
 
+  /**
+   * Delete a store. A provider with a catalog deletes the record FIRST, then the
+   * data; if the record cannot be deleted it stops, leaves both, and fails with
+   * CatalogRecordDeleteError.
+   */
   deleteCollection?(name: string): Promise<Result<void, RagError>>;
   listCollections?(): Promise<Result<string[], RagError>>;
+
+  /** The catalog, read back. A provider without one does not declare this. */
+  describeCollections?(): Promise<Result<RagCatalogDescription, RagError>>;
+
+  /**
+   * Handles for a store that EXISTS. Creates nothing, ensures nothing, writes no
+   * catalog record — now or on any later call through the handles: an operation
+   * on a store that is gone fails.
+   */
+  openCollection?(
+    record: RagCollectionRecord,
+  ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
 }
 
 export interface IRagProviderRegistry {

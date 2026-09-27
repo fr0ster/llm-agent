@@ -1,5 +1,160 @@
 # @mcp-abap-adt/llm-agent
 
+## [Unreleased]
+
+**Changed:** `WeightedFusionStrategy` (the `VectorRag` default) normalises BM25 per query — divided
+by the best BM25 score among the candidates — before weighting, so both parts are in [0, 1] and
+`vectorWeight` / `keywordWeight` are the real shares (the best keyword match contributes exactly
+`keywordWeight`). It used a fixed `min(bm25 / 5, 1)`, which saturated: strong keyword matches tied.
+`RrfStrategy` and `Bm25OnlyStrategy` now rank by the raw BM25 score for the same reason;
+`Bm25OnlyStrategy` still reports `min(bm25 / 5, 1)` as the score. No strategy or config field is
+removed. Tool-retrieval eval (`scripts/rag-eval`), recall@5 / MRR, before → after:
+Ollama `nomic-embed-text` 100% / 0.900 → 100% / 0.983; SAP AI Core `text-embedding-3-small`
+100% / 0.950 → 100% / 0.983 (keyword-only unaffected, 0.869). The default stays weighted fusion:
+`RrfStrategy` on the same configs scored 90.0% / 0.843 (Ollama) and 100% / 0.958 (AI Core).
+
+**Changed:** `InMemoryRag` and `VectorRag` (its BM25 part) share one keyword tokenizer, for
+records and queries alike, that splits identifiers: camelCase / PascalCase (an acronym run ends
+before the next word, `GetXMLParser` → get, xml, parser) and snake_case become their parts, and the
+whole identifier is kept too. Before, `ReadFunctionInclude` was one token and the query "function
+include" did not match it. No suffix normalisation: a plural / `-ing` / `-ed` rule was measured
+and lowered MRR on the keyword-only and Ollama configs. Tool-retrieval eval (`scripts/rag-eval`, 63
+tools, 30 queries), recall@5 / MRR before → after: keyword-only 93.3% / 0.828 → 93.3% / 0.869;
+Ollama `nomic-embed-text` 96.7% / 0.883 → 100% / 0.900; SAP AI Core `text-embedding-3-small`
+96.7% / 0.900 → 100% / 0.950.
+
+**Fixed:** `InMemoryRag` and `VectorRag` no longer merge records with different ids. Similarity
+dedup (`dedupThreshold`, default 0.92) folded any near-identical record into an existing one
+whatever its `metadata.id` — the tool record `ReadFunctionInclude` was overwritten by
+`ReadFunctionGroup` and vanished from the catalog. A record with an id is now replaced only by a
+write with the same id; similarity dedup applies only between records written without an id.
+`ToolCatalogStatus.vectorized` is documented as distinct records, and `failed` as including a tool
+whose record a later write to the same id replaced.
+
+**Security:** `InMemoryRag` honours `ragFilter.namespace`. It filtered on its own configured
+namespace only and ignored the query's, so a namespace-scoped query returned records of every
+namespace; `VectorRag` and `QdrantRag` already honoured it. The conformance kit
+(`@mcp-abap-adt/llm-agent/testing/rag-filter-conformance`) gains five cases —
+`ragFilter.namespace` (records without a namespace excluded; none set → all namespaces), expiry by
+a past `metadata.ttl` (epoch seconds; no `ttl` never expires), both before top-k, and all filters
+combined — and every shipped store now runs the whole kit in its unit tests.
+
+**Security:** `VectorRag`'s keyword ranking no longer spans every session. BM25 document
+frequency, document count and average length came from one index over the whole store, so a
+session's scores changed when another session added records — and so leaked a signal about them.
+The built-in strategies (`WeightedFusionStrategy`, `RrfStrategy`, `Bm25OnlyStrategy`,
+`CompositeStrategy`) now compute these statistics from the candidates they score, i.e. the
+records that passed the namespace / TTL / session / user filters; `ISearchContext.index` is now
+documented as, and built by `VectorRag` as, an index over those candidates only (for custom
+strategies). `VectorRag` no longer maintains a store-wide index.
+
+**Security (BREAKING):** every `IRag` store honours the identity scope of a query.
+`IRag.query` now documents it as a contract: `ragFilter.sessionId` returns only records whose
+`metadata.sessionId` equals it, `ragFilter.userId` the same for `metadata.userId`, both set →
+both match; a record without the filtered key is excluded; the filter applies before top-k, so a
+scoped query still returns up to `k` of its own records. `VectorRag` (and `OllamaRag`, which
+extends it) ignored both keys and returned every session's records — the default pipeline queries
+the shared `history` store with `scope: 'session'`, so one user's history summaries could reach
+another user's context. `InMemoryRag` honoured `sessionId` only and now honours `userId` too.
+New: `ragIdentityFilter(options)` / `matchesRagIdentity(metadata, filter)` (the predicate), and
+the `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance` subpath — `ragFilterConformanceCases`
+plus a deterministic `conformanceEmbedder()` — to check any store, a custom one included.
+Migration: a consumer that relied on a scoped query returning records without `sessionId` /
+`userId` must tag those records with their owner, or query without the scope.
+
+**BREAKING:** `BaseLLMProvider.validateConfig()` is removed. It refused a config with
+no `apiKey`; with no credential field left on the base it had become an empty body,
+kept only for the `openai-llm` and `anthropic-llm` constructors that still called it.
+A subclass that called `this.validateConfig()` deletes the call — each provider's
+required `credential` is now checked by its own type.
+
+**BREAKING:** `LLMProviderConfig.apiKey` and `EmbedderFactoryConfig.apiKey` are removed — a
+contract carries no secret. `staticApiKey(secret)` and `staticLogin(principal, secret)` are new and
+convert a call site in one line. A 429 gate's quota bucket now keys on the credential object's
+identity, so one account is one bucket however many providers share it. Migration: see
+docs/MIGRATION-v27.md item 1.
+
+**BREAKING:** `buildRagCollectionToolEntries` requires `identity: RagCallerIdentity`
+and resolves every collection inside that caller's address space (its own
+collections and the globals); `RagToolContext` no longer declares
+`sessionId`/`userId` (call sites passing them still compile, nothing reads
+them); the tools that take a collection name take an optional `scope`, and a
+name several scopes hold answers `RAG_AMBIGUOUS_COLLECTION`; no framework
+tool writes or deletes a global, and `rag_create_collection` accepts
+`session | user` only; the attributes of a tool-created collection come from
+the optional `attributesFor` callback, never from the model;
+`rag_delete_collection` answers `{ ok: false }` for `CatalogRecordDeleteError`, and
+`{ ok: false, code: 'RAG_DELETE_UNSUPPORTED' }` for `DeleteUnsupportedError` (its provider is not
+registered or cannot delete, so its record was never touched) instead of `ok: true` with a warning.
+New exported types `RagCallerIdentity`, `RagCollectionToolOptions`.
+
+`SimpleRagRegistry.replaceRag(name, scope, rag)` swaps an entry's store
+handle in place, keeping its editor, provider name, store name and meta —
+the operation a decorator (such as the builder's circuit-breaker wrap) needs
+to swap the handle without losing what makes a hydrated collection
+deletable; `false` when the entry is absent, never re-inserting.
+
+`SimpleRagRegistry.adopt(record, rag, editor?, providerName?)` registers a
+store that exists under its logical name and keeps its store name, creating
+nothing; with `providerName` a later delete reaches that provider, without it
+the entry is a reference; it throws `InvalidOwnerError`,
+`ReservedCollectionNameError` or `DuplicateCollectionError`.
+
+**BREAKING:** a collection that exists is no longer reattached by creating it
+again — the provider refuses it (`DuplicateCollectionError` / `OrphanStoreError`)
+and hydration (`describeCollections` returning each `RagCollectionRecord`,
+`openCollection`, `adopt`) is the way back after a restart; a creation during a running deletion of the same
+(scope, name) is refused with `DuplicateCollectionError` instead of waiting
+for it; on `CatalogRecordDeleteError` the registry re-registers the entry, so
+the same delete or `closeSession` can be retried; `createCollection` forwards
+`attributes` to the provider only when given, and `adoptExisting` only when
+`true`.
+
+**BREAKING:** both `createCollection` inputs take `RagCollectionOwner` — the
+scope with the key it selects — instead of `scope` beside optional
+`sessionId`/`userId`, so a `user` or `session` owner without its key is a
+build error, and at runtime `RAG_INVALID_OWNER`; `attributes?: RagJsonValue`
+and `adoptExisting?` are accepted by both and NaN/±Infinity/cycles are
+refused with `RAG_INVALID_ATTRIBUTES` before anything is created;
+`IRagProvider` gains optional `describeCollections` and `openCollection`,
+`IRagRegistry` optional `adopt(record, rag, editor?, providerName?)`; new
+exported errors (`InvalidOwnerError`, `InvalidAttributesError`,
+`DuplicateCollectionError`, `OrphanStoreError`, `AmbiguousCollectionError`,
+`CatalogRecordDeleteError`, `ReservedCollectionNameError`) and the catalog
+validators.
+
+**BREAKING:** `SimpleRagRegistry` is keyed by scope and name, so one name may
+be held once per scope; `get`, `getEditor`, `unregister` and
+`deleteCollection` take an optional `scope`, and a name several scopes hold
+without one fails with `AmbiguousCollectionError` (`RAG_AMBIGUOUS_COLLECTION`)
+— thrown by the three synchronous ones, returned by `deleteCollection`; an
+`IRagRegistry` implementation must accept that `scope`; `register` throws
+`DuplicateCollectionError` (a `RagError`) instead of a plain `Error`, and
+refuses a global named `user/…` or `session/…` with
+`ReservedCollectionNameError` (`RAG_RESERVED_COLLECTION_NAME`), which
+`createCollection` returns too; `closeSession` deletes with
+`scope: 'session'`; new export `ragStoreKey`.
+
+**BREAKING:** `IPipelinePlugin` is `name` + `build(ctx)`: it loses `parseConfig`
+and `build`'s config parameter. A plugin reads no configuration — whoever
+assembles the pipeline parses its section and constructs it with typed
+settings. A plugin with settings is exported through
+`PluginExports.pipelinePluginFactories`, whose factory takes the raw section
+and constructs itself.
+
+**BREAKING:** `IPipelineContext` gains the required `resolveNamedLlm(key)` — a
+strict lookup that answers only from an `llm:` entry of exactly that name — so
+every implementation must add it.
+
+Deprecated: `McpClientFactory` as a consumer-facing seam — pass an `IMcpServer`
+(`HttpMcpServer`, `StdioMcpServer`, `mcpServerFromFactory`) to `withMcpServers`. The type
+stays as the default implementation's factory.
+
+Added `PipelinePluginFactory` — builds a pipeline plugin from its `pipeline.config`
+section, for a plugin with settings. `PluginExports.pipelinePluginFactories` and
+`LoadedPlugins.pipelinePluginFactories?` carry it alongside `pipelinePlugins`;
+both are additive.
+
 ## 26.0.0
 
 A deleted RAG collection is gone, whatever happens to its data (#301).

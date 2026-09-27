@@ -44,8 +44,13 @@ export interface IPipelineInstance {
 /** Infra handles the host provides to a pipeline. NOT the flow — the pipeline owns
  *  its flow. Core-only; the server closes over its own config behind resolveLlm. */
 export interface IPipelineContext {
-  /** Opaque per-role LLM. The server closes over SmartServerLlmConfig/llmMap. */
+  /** The DEFAULT LLM for a role. What a name means — an alias, an `llm:` entry,
+   *  a fallback — is the server's decision; right for a role asked by default. */
   resolveLlm(role: string): Promise<ILlm>;
+  /** The STRICT LLM for a key a plugin's settings NAMED: answered only by the
+   *  entry of exactly that name; rejects, naming the key, otherwise — no alias,
+   *  no fallback. Ask `resolveLlm(role)` when no key was named (§4.6.7). */
+  resolveNamedLlm(key: string): Promise<ILlm>;
   /** Session-scoped knowledge RAG handle. MaybePromise: may need async init. */
   knowledgeRagFor(sessionId: string): MaybePromise<IKnowledgeRagHandle>;
   /** Tools RAG handle. Always present: the host supplies an EMPTY handle when no
@@ -86,10 +91,16 @@ export interface IPipelineContext {
   waitStrategy?: IWaitStrategy;
 }
 
-/** A pipeline plugin = the implementation of an agent variant. It names itself,
- *  validates its own config dialect, and builds the agent. */
-export interface IPipelinePlugin<Config = unknown> {
+/** A pipeline plugin = the implementation of an agent variant. It names itself and
+ *  builds the agent. It reads no configuration: whoever assembles the pipeline
+ *  parses its section and constructs it with typed settings, and every assembled or
+ *  authorized instance it uses reaches it through `ctx` (§4.6.7). */
+export interface IPipelinePlugin {
   readonly name: string;
-  parseConfig(raw: unknown): Config;
-  build(config: Config, ctx: IPipelineContext): Promise<IPipelineInstance>;
+  build(ctx: IPipelineContext): Promise<IPipelineInstance>;
 }
+
+/** Builds a plugin from its `pipeline.config` section. The server calls only the
+ *  selected factory, once, at startup; what the section holds is the factory's
+ *  business — it is the plugin author's piece of the assembler (§4.6.7). */
+export type PipelinePluginFactory = (section: unknown) => IPipelinePlugin;

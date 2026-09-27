@@ -492,6 +492,32 @@ describe('vectorizeMcpTools tool record key', () => {
     assert.deepEqual(writer.upsertCalls, ['tool:srv1/Search']);
   });
 
+  it('counts records, not writes: tools whose key collides are not reported as vectorized', async () => {
+    // A key strategy that maps two tools to one id writes two records into one
+    // slot — the store holds one. The summary must say so instead of 2/2.
+    for (const opts of [{}, { hasBatchRaw: true, hasBulk: true }]) {
+      const writer = makeWriter(opts);
+      const rag = makeRagWithEmbedder(
+        'hasBulk' in opts ? makeBatchEmbedder() : undefined,
+        writer,
+      );
+      const logger = new CapturingLogger();
+      const summary = await vectorizeMcpTools(
+        [makeClient([makeTool('A'), makeTool('B'), makeTool('C')])],
+        rag,
+        new CapturingRequestLogger(),
+        logger,
+        { key: ({ toolName }) => (toolName === 'C' ? 'tool:C' : 'tool:same') },
+      );
+      assert.equal(summary?.total, 3);
+      assert.equal(summary?.vectorized, 2);
+      // A's record was overwritten by B's.
+      assert.deepEqual(summary?.failed, ['A']);
+      assert.equal(summary?.complete, false);
+      assert.match(String(logger.events.at(-1)?.message), /2\/3 .*A/);
+    }
+  });
+
   it('fails fast when a key strategy drops the tool: prefix', async () => {
     // Such a record would be written and counted, but every retrieval path
     // ignores a non-tool: id — so reject it at write time instead.

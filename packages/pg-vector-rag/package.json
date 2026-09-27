@@ -24,8 +24,10 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^1.1.0",
     "@mcp-abap-adt/llm-agent": "^26.0.0",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "pg-connection-string": "^2.14.0"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1"

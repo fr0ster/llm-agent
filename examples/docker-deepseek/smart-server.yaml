@@ -4,18 +4,19 @@ mode: smart
 
 llm:
   provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
   maxTokens: 8192
 
 rag:
-  type: in-memory
-  embedder: ollama
-  url: ${OLLAMA_URL:-http://localhost:11434}
-  model: bge-m3
-  vectorWeight: 0.7
-  keywordWeight: 0.3
+  store:
+    type: in-memory
+    vectorWeight: 0.7
+    keywordWeight: 0.3
+  embedder:
+    provider: ollama
+    url: ${OLLAMA_URL:-http://localhost:11434}
+    model: bge-m3
 
 mcp:
   type: http

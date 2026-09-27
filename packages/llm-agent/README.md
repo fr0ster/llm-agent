@@ -35,6 +35,8 @@ Symbols that briefly appeared only in `@mcp-abap-adt/llm-agent-server@12.0.0` ar
 
 `makeLlm`, `makeDefaultLlm`, and `makeRag` are now **async** (`Promise<ILlm>` / `Promise<IRag>`). Direct callers add one `await`. `makeRag` auto-prefetches the backends it needs — no manual warm-up required. `resolveEmbedder(cfg, options)` remains synchronous and is intended for hot-path callers that need sync resolution — call `prefetchEmbedderFactories([...])` once at startup before using this sync resolver. Consumers that build SmartAgent only via `SmartAgentBuilder` are unaffected (the builder's `build()` is already async).
 
+**Since v27:** makeLlm, makeDefaultLlm and DefaultModelResolver (llm-agent-libs) and resolveRag, resolvePrefetchedEmbedder and builtInEmbedderFactories (llm-agent-rag) are removed — see docs/MIGRATION-v27.md.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

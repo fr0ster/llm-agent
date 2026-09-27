@@ -28,8 +28,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
-import { ControllerPipelinePlugin } from '../controller.js';
-import { fakeControllerServerCtx } from './fixtures.js';
+import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
 // Non-zero constant embedder so goal/prompt semantic distance is 0 (target-state
 // established, not the ambiguity gate): the fixture's dim-1 [0] embedder yields
@@ -112,20 +111,27 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       ]),
     };
 
-    const plugin = new ControllerPipelinePlugin('controller', 'smart-executor');
-    const cfg = plugin.parseConfig({
-      subagents: {
-        evaluator: { provider: 'openai', model: 'm-eval' },
-        planner: { provider: 'openai', model: 'm-plan' },
-        executor: { provider: 'openai', model: 'm-exec' },
+    const plugin = controllerPlugin(
+      'controller',
+      'smart-executor',
+      {
+        subagents: {
+          evaluator: { llm: 'm-eval' },
+          planner: { llm: 'm-plan' },
+          executor: { llm: 'm-exec' },
+        },
       },
-    });
+      new Set(['main', 'm-eval', 'm-plan', 'm-exec']),
+    );
 
     const base = fakeControllerServerCtx();
     const ctx = {
       ...base,
-      makeLlm: async (c: { model?: string }) =>
-        byModel[c.model ?? ''] ?? base.mainLlm,
+      resolveNamedLlm: async (key: string) => {
+        const hit = byModel[key];
+        if (!hit) throw new Error(`no llm: entry '${key}'`);
+        return hit;
+      },
       // Consistent non-zero embedder + matching semantic-index backend so the
       // goal clears the target-state gate and the run proceeds to plan/execute.
       embedder: constEmbedder,
@@ -147,9 +153,9 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       },
       mcpClients: [fakeClient],
       mcpFailureClassifier: spyClassifier,
-    } as unknown as Parameters<typeof plugin.build>[1];
+    } as unknown as Parameters<typeof plugin.build>[0];
 
-    const inst = await plugin.build(cfg, ctx);
+    const inst = await plugin.build(ctx);
 
     const captured: string[] = [];
     for await (const chunk of inst.agent.streamProcess('do the thing')) {
