@@ -38,13 +38,13 @@ Dependency order: `llm-agent-server → llm-agent-server-libs → llm-agent-libs
 LLM provider, embedder, and RAG backend packages are bundled as regular
 dependencies of `@mcp-abap-adt/llm-agent-server` so `npm install -g
 @mcp-abap-adt/llm-agent-server` works out-of-the-box. Selection happens
-via YAML/CLI config. (At the lower `llm-agent-libs` / `llm-agent-rag`
-package level they remain optional peers — embed-as-library users
-still install only what they need.)
+via YAML/CLI config. (At the lower level the embedder and RAG-store
+packages remain optional peers of `llm-agent-rag` — embed-as-library users
+still install only what they need; `llm-agent-libs` has no LLM peers.)
 
 ### Key API notes
 
-- `makeLlm` / `makeDefaultLlm` (in `llm-agent-libs`) → **async** `Promise<ILlm>`
+- The CLI is the composition root: `buildCompositionDeps(env)` (in `llm-agent-server/src/composition`) builds the `makeLlm` / `resolveEmbedder` / `makeRag` / `buildSkillHost` seams `SmartServer` requires; credentials come from env by `credentialRef`
 - `makeRag` (in `llm-agent-rag`) → **async** `Promise<IRag>`
 - `resolveEmbedder` (in `llm-agent-rag`) → sync (call `prefetchEmbedderFactories` once at startup)
 - `SmartAgentBuilder.build()` → async (unchanged externally)
@@ -56,7 +56,7 @@ still install only what they need.)
 | **Interfaces & types** | `@mcp-abap-adt/llm-agent` | All `I*` interfaces, shared types, lightweight helpers (CircuitBreaker, FallbackRag, LLM call strategies, ToolCache, adapters, normalizers) |
 | **MCP client** | `@mcp-abap-adt/llm-agent-mcp` | `MCPClientWrapper`, `McpClientAdapter`, connection strategies |
 | **RAG/embedder** | `@mcp-abap-adt/llm-agent-rag` | `makeRag`, `resolveEmbedder`, prefetch helpers, backend factories |
-| **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins, `makeLlm` |
+| **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins |
 | **SmartServer library** | `@mcp-abap-adt/llm-agent-server-libs` | `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, config parsing, sessions, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory`) |
 | **Binary** | `@mcp-abap-adt/llm-agent-server` | CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP listen; thin wrapper over `llm-agent-server-libs` |
 
@@ -125,8 +125,8 @@ Copy `.env.template` to `.env`. Key variables:
 | Variable | Purpose |
 |----------|---------|
 | `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` / `ollama` |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | Provider credentials |
-| `AICORE_SERVICE_KEY` | SAP AI Core service key JSON (for `sap-ai-sdk` provider) |
+| `LLM_API_KEY` / `LLM_SERVICE_KEY` | Credential of every `llm:` entry without `credentialRef` — an API key, or a SAP AI Core service-key JSON for `sap-ai-sdk` |
+| `<REF>_API_KEY` / `<REF>_SERVICE_KEY` / `<REF>_USER` + `<REF>_PASSWORD` | A section with `credentialRef: <REF>` reads these; `RAG_STORE` and `RAG_EMBEDDER` are the defaults for `rag.store` / `rag.embedder` (`AICORE_SERVICE_KEY` is no longer read) |
 | `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI SDK model name and resource group |
 | `MCP_ENDPOINT` | MCP server URL (default: `http://localhost:4004/mcp/stream/http`) |
 | `DEBUG_LLM_REASON` | `true` to log LLM reasoning |
