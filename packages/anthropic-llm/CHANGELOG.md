@@ -1,6 +1,8 @@
 # @mcp-abap-adt/anthropic-llm
 
-## [Unreleased]
+## 27.0.0
+
+Credentials leave every contract; RAG collections get an identity; every store honours the session, user, namespace and TTL filters (#308). Breaking — see [docs/MIGRATION-v27.md](https://github.com/fr0ster/llm-agent/blob/main/docs/MIGRATION-v27.md).
 
 **BREAKING:** `AnthropicConfig.apiKey` is gone. `AnthropicConfig.credential`
 (a typed `IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`) replaces
