@@ -82,6 +82,9 @@ describe('HanaVectorRag', () => {
     assert.equal(res.value.length, 1);
     assert.equal(res.value[0].text, 'hello');
     assert.equal(res.value[0].metadata?.namespace, 'n');
+    // The id lives in its own column; a reader (tool selection's
+    // toolNameFromRecord) finds it in metadata, as every other store returns it.
+    assert.equal(res.value[0].metadata?.id, 'a');
   });
 
   it('upsertRaw issues UPSERT with vector literal', async () => {

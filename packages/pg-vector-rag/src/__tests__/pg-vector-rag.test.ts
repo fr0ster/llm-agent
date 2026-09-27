@@ -70,6 +70,9 @@ describe('PgVectorRag', () => {
     if (!r.ok) throw new Error('unreachable');
     assert.equal(r.value[0].text, 'hello');
     assert.equal(r.value[0].metadata?.namespace, 'n');
+    // The id lives in its own column; a reader (tool selection's
+    // toolNameFromRecord) finds it in metadata, as every other store returns it.
+    assert.equal(r.value[0].metadata?.id, 'a');
     assert.ok(client.calls.some((c) => c.sql.includes('<=>')));
   });
 

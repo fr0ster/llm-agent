@@ -116,7 +116,7 @@ export class PgVectorRag implements IRag {
       const { rows } = await client.query(sql);
       const results: RagResult[] = rows.map((row) => ({
         text: String(row.text ?? ''),
-        metadata: (row.metadata as RagMetadata) ?? {},
+        metadata: withId(row),
         score: 1 - Number(row.score ?? 0),
       }));
       return { ok: true, value: results };
@@ -144,7 +144,7 @@ export class PgVectorRag implements IRag {
         ok: true,
         value: {
           text: String(row.text ?? ''),
-          metadata: (row.metadata as RagMetadata) ?? {},
+          metadata: withId(row),
           score: 1,
         },
       };
@@ -244,4 +244,13 @@ export class PgVectorRag implements IRag {
         this.upsertPrecomputed(text, vector, { ...metadata, id }),
     };
   }
+}
+
+/**
+ * upsert keeps the id in its own column and out of the jsonb, so a read puts
+ * it back: readers find a record's id in its metadata, as every other store
+ * returns it (tool selection's toolNameFromRecord keys on it).
+ */
+function withId(row: Record<string, unknown>): RagMetadata {
+  return { ...((row.metadata as RagMetadata) ?? {}), id: String(row.id) };
 }

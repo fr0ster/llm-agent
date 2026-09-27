@@ -158,8 +158,7 @@ export class HanaVectorRag implements IRag {
       const sql = `SELECT id, text, metadata, COSINE_SIMILARITY(vector, ${this.vectorLiteral(vector)}) AS score FROM ${table} ORDER BY score DESC LIMIT ${Math.max(1, k)}`;
       const rows = await client.query(sql);
       const results: RagResult[] = rows.map((row) => {
-        const metaRaw = row.metadata as string | null | undefined;
-        const metadata = metaRaw ? (JSON.parse(metaRaw) as RagMetadata) : {};
+        const metadata = withId(row);
         return {
           text: String(row.text ?? ''),
           metadata,
@@ -187,8 +186,7 @@ export class HanaVectorRag implements IRag {
       );
       const row = rows[0];
       if (!row) return { ok: true, value: null };
-      const metaRaw = row.metadata as string | null | undefined;
-      const metadata = metaRaw ? (JSON.parse(metaRaw) as RagMetadata) : {};
+      const metadata = withId(row);
       return {
         ok: true,
         value: { text: String(row.text ?? ''), metadata, score: 1 },
@@ -291,4 +289,15 @@ export class HanaVectorRag implements IRag {
         this.upsertPrecomputed(text, vector, { ...metadata, id }),
     };
   }
+}
+
+/**
+ * upsert keeps the id in its own column and out of the JSON, so a read puts it
+ * back: readers find a record's id in its metadata, as every other store
+ * returns it (tool selection's toolNameFromRecord keys on it).
+ */
+function withId(row: Record<string, unknown>): RagMetadata {
+  const raw = row.metadata as string | null | undefined;
+  const parsed = raw ? (JSON.parse(raw) as RagMetadata) : {};
+  return { ...parsed, id: String(row.id) };
 }

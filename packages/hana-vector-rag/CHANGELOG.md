@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+`query` and `getById` return the record's id in its metadata. It is kept in its
+own column, so readers never saw it — and tool selection, which recovers a tool
+from `metadata.id`, selected no tool from a HANA tools store.
+
 A `HanaVectorRag` connects on its first query or write instead of in its
 constructor, so `HanaVectorRagProvider.openCollection` opens no connection;
 before, per-session hydration opened one connection per catalog record per

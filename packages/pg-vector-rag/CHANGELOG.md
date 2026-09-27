@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+A `connectionString` no longer discards the credential: pg merges the parsed
+string over the config, and a URL without userinfo parses to an empty user and
+password, so the pool connected as the OS user with no password. The string is
+now parsed here (with pg's own parser) and the credential applied on top.
+
+`query` and `getById` return the record's id in its metadata. It is kept in its
+own column, so readers never saw it — and tool selection, which recovers a tool
+from `metadata.id`, selected no tool from a pg-vector tools store.
+
 **BREAKING:** the provider keeps a catalog table (`rag_collection_catalog`, configurable as
 `catalogTable`), which the connection's account must be able to create and write (the README's new
 section lists the rights); `createCollection` refuses a collection whose record exists

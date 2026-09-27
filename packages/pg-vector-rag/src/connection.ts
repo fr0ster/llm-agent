@@ -1,4 +1,5 @@
 import type { ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
+import { parse as parseConnectionString } from 'pg-connection-string';
 
 export interface PgVectorRagConfig {
   /** The ADDRESS only. A string carrying credentials is refused below. */
@@ -27,7 +28,6 @@ export interface PgVectorRagConfig {
 }
 
 export interface PgPoolConfig {
-  connectionString?: string;
   host?: string;
   port?: number;
   user?: string;
@@ -44,6 +44,8 @@ export interface PgPoolConfig {
   database?: string;
   max: number;
   connectionTimeoutMillis: number;
+  /** The rest of a connection string's settings (`ssl`, `options`, …), as pg parses them. */
+  [setting: string]: unknown;
 }
 
 export async function resolvePgConnectArgs(
@@ -69,8 +71,24 @@ export async function resolvePgConnectArgs(
   const password = credential ? () => credential.secret() : undefined;
 
   if (cfg.connectionString) {
+    // Parsed here, NOT handed to pg as `connectionString`: pg merges the parsed
+    // string OVER the config, and a URL without userinfo parses to user "" and
+    // password "" — which silently replaced the credential, so the pool
+    // connected as the OS user with no password. The same parser pg uses, so
+    // every setting the string carries (ssl, options, …) still applies.
+    const {
+      user: _user,
+      password: _password,
+      port,
+      host,
+      database,
+      ...settings
+    } = parseConnectionString(cfg.connectionString);
     return {
-      connectionString: cfg.connectionString,
+      ...settings,
+      host: host ?? undefined,
+      port: port ? Number(port) : undefined,
+      database: database ?? undefined,
       user,
       password,
       max,
