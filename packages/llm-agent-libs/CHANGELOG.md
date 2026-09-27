@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+**Security:** a `rag-query` stage with `scope: 'user'` and no `userId` on the
+call returns no results and does not query the store. It used to query without
+a filter and return every user's records.
+
 **Security:** the history stage tags each history record with its owner — `sessionId`, and
 `userId` when the call carries one — in the record's metadata. It wrote `{}`: with every store now
 filtering the session-scoped `history` query on `metadata.sessionId`, an untagged record would be
