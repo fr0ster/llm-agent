@@ -8,7 +8,11 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { FallbackQueryEmbedding, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  FallbackQueryEmbedding,
+  RagError,
+  ragIdentityFilter,
+} from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
 import {
@@ -112,8 +116,26 @@ export class PgVectorRag implements IRag {
       const client = await this.clientPromise;
       const table = quoteIdent(this.collectionName);
       const lit = vectorLiteral(vector);
-      const sql = `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table} ORDER BY vector <=> ${lit} LIMIT ${Math.max(1, k)}`;
-      const { rows } = await client.query(sql);
+      // The session/user scope, as parameterised conditions on the jsonb
+      // metadata (never interpolated). `->>` yields NULL for a missing key,
+      // and NULL = $n is not true, so an unowned row is excluded. The WHERE
+      // runs before ORDER BY … LIMIT: the table has no ANN index, so the scan
+      // is exact and LIMIT counts only matching rows.
+      const identity = ragIdentityFilter(options);
+      const conditions: string[] = [];
+      const params: string[] = [];
+      if (identity?.sessionId !== undefined) {
+        params.push(identity.sessionId);
+        conditions.push(`metadata->>'sessionId' = $${params.length}`);
+      }
+      if (identity?.userId !== undefined) {
+        params.push(identity.userId);
+        conditions.push(`metadata->>'userId' = $${params.length}`);
+      }
+      const where =
+        conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+      const sql = `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table}${where} ORDER BY vector <=> ${lit} LIMIT ${Math.max(1, k)}`;
+      const { rows } = await client.query(sql, params);
       const results: RagResult[] = rows.map((row) => ({
         text: String(row.text ?? ''),
         metadata: withId(row),

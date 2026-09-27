@@ -7,6 +7,7 @@ import {
   type RagResult,
   type Result,
 } from '../interfaces/types.js';
+import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
 import { InvertedIndex } from './inverted-index.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 import { FallbackQueryEmbedding, QueryEmbedding } from './query-embedding.js';
@@ -224,7 +225,10 @@ export class VectorRag implements IRag {
           : new FallbackQueryEmbedding(embedding, this.embedder);
       const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
+      const identity = ragIdentityFilter(options);
 
+      // Filtered BEFORE the strategy scores and top-k slices, so a scoped
+      // query still gets up to k of its own records.
       const filtered = this.records.filter(
         (r): r is StoredRecord =>
           r !== null &&
@@ -237,7 +241,8 @@ export class VectorRag implements IRag {
             this.namespace !== undefined &&
             r.metadata.namespace !== undefined &&
             r.metadata.namespace !== this.namespace
-          ),
+          ) &&
+          matchesRagIdentity(r.metadata, identity),
       );
 
       const candidates: ISearchCandidate[] = filtered.map((r) => ({

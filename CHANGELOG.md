@@ -165,6 +165,12 @@ builds the classifier.
 
 ### Security
 
+- Every RAG store honours the session and user scope of a query (`ragFilter.sessionId` /
+  `userId`), before top-k. `VectorRag`, `QdrantRag`, `PgVectorRag` and `HanaVectorRag` ignored
+  it, so the default pipeline's session-scoped `history` query could return one user's history
+  summaries to another; the history stage now tags its records with their owner. HANA filters in
+  the client and is not verified against a live instance. Conformance cases for any store:
+  `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance`.
 - AS-6 (RAG collection tools reaching another caller's collections) is mitigated: the tool
   entries are built for one caller, and no framework tool mutates a `global` collection.
 

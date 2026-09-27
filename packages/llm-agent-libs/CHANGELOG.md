@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**Security:** the history stage tags each history record with its owner — `sessionId`, and
+`userId` when the call carries one — in the record's metadata. It wrote `{}`: with every store now
+filtering the session-scoped `history` query on `metadata.sessionId`, an untagged record would be
+invisible to its own session (on `InMemoryRag`, which already filtered, history retrieval returned
+nothing). History records written before this release carry no owner and are not returned to a
+session-scoped query.
+
 `SessionGraphFactoryOptions` gains the optional async `ragRegistryFactory(identity)`;
 the registry it returns is the session's own — handed to `buildAgent` and closed by
 `dispose()` in place of the shared one. **BREAKING** for a consumer that *reads* the

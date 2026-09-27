@@ -314,6 +314,29 @@ interface IRagBackendWriter {
 
 `IRag` is the read path (query + health). `IRagBackendWriter` is the raw storage write path (no embeddings). `IRagEditor` is the consumer-facing write API — it handles embedding and ID assignment before delegating to `IRagBackendWriter`. Use `DirectEditStrategy` to wrap a backend writer into an `IRagEditor`.
 
+**Identity scope — every store must honour it.** `query` receives `options.ragFilter`; the pipeline sets `ragFilter.sessionId` for a `scope: 'session'` stage (the default pipeline queries the shared `history` store that way) and `ragFilter.userId` for `scope: 'user'`. A store that ignores them returns one user's records — conversation-history summaries included — to another user. The contract:
+
+- `ragFilter.sessionId` set → only records whose `metadata.sessionId` equals it; `ragFilter.userId` → the same for `metadata.userId`; both → both match.
+- A record without the filtered key is excluded.
+- Filter **before** top-k: a scoped query returns up to `k` of its own records, not `k` minus everyone else's.
+
+Every shipped store (`InMemoryRag`, `VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag`) implements it. Check your own store with the conformance cases:
+
+```ts
+import { it } from 'node:test';
+import {
+  conformanceEmbedder,
+  ragFilterConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
+
+for (const c of ragFilterConformanceCases) {
+  // A FRESH, empty store per case; the cases seed it through writer().upsertRaw.
+  it(c.name, () => c.run(async () => new PineconeRag(freshIndex(), conformanceEmbedder())));
+}
+```
+
+`matchesRagIdentity(metadata, ragIdentityFilter(options))` (exported from `@mcp-abap-adt/llm-agent`) is the same predicate for a store that filters in code.
+
 Implement `upsertManyPrecomputedRaw` when the store has a native bulk API (Qdrant accepts many points per PUT). Startup tool vectorization uses it to write the whole catalog in one call instead of one per tool; a writer without it is unaffected and takes the per-record path.
 
 ### Example: Wrapping Pinecone
@@ -337,7 +360,16 @@ class PineconeRag implements IRag {
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
     try {
-      const results = await this.index.query({ vector: embedding.vector, topK: k, includeMetadata: true });
+      // The identity scope, applied by the index before topK (see "Identity scope" above).
+      const filter: Record<string, unknown> = {};
+      if (options?.ragFilter?.sessionId !== undefined) filter.sessionId = { $eq: options.ragFilter.sessionId };
+      if (options?.ragFilter?.userId !== undefined) filter.userId = { $eq: options.ragFilter.userId };
+      const results = await this.index.query({
+        vector: await embedding.toVector(),
+        topK: k,
+        includeMetadata: true,
+        ...(Object.keys(filter).length > 0 ? { filter } : {}),
+      });
       return {
         ok: true,
         value: results.matches.map((m: any) => ({

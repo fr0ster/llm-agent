@@ -134,3 +134,62 @@ describe('PgVectorRag', () => {
     );
   });
 });
+
+describe('PgVectorRag — session/user filter (security)', () => {
+  function makeRag() {
+    const client = makeFakeClient();
+    const rag = new PgVectorRag(
+      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      client,
+    );
+    const lastSelect = () => {
+      const c = [...client.calls]
+        .reverse()
+        .find((x) => x.sql.startsWith('SELECT id, text, metadata, vector'));
+      if (!c) throw new Error('no search SELECT issued');
+      return c;
+    };
+    return { rag, lastSelect };
+  }
+  const emb = { text: 'q', toVector: async () => [0.1, 0.2, 0.3] };
+
+  it('sessionId and userId become parameterised WHERE conditions before ORDER BY … LIMIT', async () => {
+    const { rag, lastSelect } = makeRag();
+    const r = await rag.query(emb, 4, {
+      ragFilter: { sessionId: 's1', userId: 'u1' },
+    });
+    assert.equal(r.ok, true);
+    const { sql, params } = lastSelect();
+    assert.match(
+      sql,
+      /WHERE metadata->>'sessionId' = \$1 AND metadata->>'userId' = \$2 ORDER BY vector <=> .* LIMIT 4$/,
+    );
+    assert.deepEqual(params, ['s1', 'u1']);
+  });
+
+  it('userId alone is filtered on its own parameter', async () => {
+    const { rag, lastSelect } = makeRag();
+    await rag.query(emb, 2, { ragFilter: { userId: 'u1' } });
+    const { sql, params } = lastSelect();
+    assert.match(sql, /WHERE metadata->>'userId' = \$1 ORDER BY/);
+    assert.ok(!sql.includes("'sessionId'"));
+    assert.deepEqual(params, ['u1']);
+  });
+
+  it('no identity filter issues the unfiltered query', async () => {
+    const { rag, lastSelect } = makeRag();
+    await rag.query(emb, 2, { ragFilter: { namespace: 'n' } });
+    const { sql, params } = lastSelect();
+    assert.ok(!sql.includes('WHERE'));
+    assert.deepEqual(params, []);
+  });
+
+  it('a hostile filter value is never interpolated into the SQL', async () => {
+    const { rag, lastSelect } = makeRag();
+    const hostile = "s1' OR '1'='1";
+    await rag.query(emb, 2, { ragFilter: { sessionId: hostile } });
+    const { sql, params } = lastSelect();
+    assert.ok(!sql.includes(hostile));
+    assert.deepEqual(params, [hostile]);
+  });
+});

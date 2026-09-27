@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+**Security (BREAKING):** every `IRag` store honours the identity scope of a query.
+`IRag.query` now documents it as a contract: `ragFilter.sessionId` returns only records whose
+`metadata.sessionId` equals it, `ragFilter.userId` the same for `metadata.userId`, both set →
+both match; a record without the filtered key is excluded; the filter applies before top-k, so a
+scoped query still returns up to `k` of its own records. `VectorRag` (and `OllamaRag`, which
+extends it) ignored both keys and returned every session's records — the default pipeline queries
+the shared `history` store with `scope: 'session'`, so one user's history summaries could reach
+another user's context. `InMemoryRag` honoured `sessionId` only and now honours `userId` too.
+New: `ragIdentityFilter(options)` / `matchesRagIdentity(metadata, filter)` (the predicate), and
+the `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance` subpath — `ragFilterConformanceCases`
+plus a deterministic `conformanceEmbedder()` — to check any store, a custom one included.
+Migration: a consumer that relied on a scoped query returning records without `sessionId` /
+`userId` must tag those records with their owner, or query without the scope.
+
 **BREAKING:** `BaseLLMProvider.validateConfig()` is removed. It refused a config with
 no `apiKey`; with no credential field left on the base it had become an empty body,
 kept only for the `openai-llm` and `anthropic-llm` constructors that still called it.

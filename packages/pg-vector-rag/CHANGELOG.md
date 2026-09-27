@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+**Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId` as
+parameterised `WHERE metadata->>'sessionId' = $n` / `metadata->>'userId' = $n` conditions before
+`ORDER BY … LIMIT` (values are bound, never interpolated). Before, the query filtered nothing, so a
+session- or user-scoped query returned every session's rows. A row without the key is excluded.
+Verified against a live pgvector (pg16).
+
 A `connectionString` no longer discards the credential: pg merges the parsed
 string over the config, and a URL without userinfo parses to an empty user and
 password, so the pool connected as the OS user with no password. The string is

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId`: each
+becomes a top-level `must` match condition on the payload key of the same name (upsert spreads
+metadata flat into the payload), ANDed with the existing namespace/TTL filter. Before, only
+`namespace` was filtered, so a session- or user-scoped query returned every session's points.
+Qdrant filters inside the search, so `limit: k` counts only matching points. A point without the
+key is excluded. Verified against a live Qdrant.
+
 `QdrantRagProvider.openCollection` answers a failed `Result`
 (`RAG_OPEN_ERROR`) when building a handle throws — an `idStrategyFactory` that
 throws, for one — instead of rejecting, as the pg and HANA providers do.

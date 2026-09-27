@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+**Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId`. Before,
+the query filtered nothing, so a session- or user-scoped query returned every session's rows.
+**The filter is applied in the client and has not been verified against a live HANA instance**
+(none was available to test HANA's JSON functions on): a scoped query selects every row by vector
+score with no `LIMIT`, filters on the parsed metadata, then takes the top `k` — correct, but it
+reads the whole table per scoped query. An unscoped query keeps the `LIMIT` query. A row without
+the key is excluded.
+
 `query` and `getById` return the record's id in its metadata. It is kept in its
 own column, so readers never saw it — and tool selection, which recovers a tool
 from `metadata.id`, selected no tool from a HANA tools store.

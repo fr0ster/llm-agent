@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
 import { staticLogin } from '@mcp-abap-adt/llm-agent';
+import {
+  CONFORMANCE_EMBEDDING_DIM,
+  conformanceEmbedder,
+  ragFilterConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { type HanaClient, HanaVectorRag } from '../hana-vector-rag.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
@@ -195,5 +200,106 @@ describe('HanaVectorRag', () => {
       (err: Error & { code?: string }) =>
         err.code === 'INVALID_COLLECTION_NAME',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session/user filter (security). No live HANA exists to test against, so the
+// store filters in the client; this fake stores rows and answers the search
+// SELECT like HANA would (cosine similarity, ORDER BY score DESC, optional
+// LIMIT), so the conformance cases exercise the real in-code filter.
+// ---------------------------------------------------------------------------
+
+function cosineOf(a: number[], b: number[]): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] ** 2;
+    nb += b[i] ** 2;
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
+}
+
+function parseVector(sql: string): number[] {
+  const m = sql.match(/TO_REAL_VECTOR\('\[([^\]]*)\]'\)/);
+  if (!m) throw new Error(`no vector literal in: ${sql}`);
+  return m[1].split(',').map(Number);
+}
+
+function makeStoringHana(): HanaClient & { searches: string[] } {
+  const rows = new Map<
+    string,
+    { id: string; text: string; vector: number[]; metadata: string }
+  >();
+  const searches: string[] = [];
+  return {
+    searches,
+    async exec(sql, params = []) {
+      if (sql.startsWith('UPSERT')) {
+        const [id, text, metadata] = params as string[];
+        rows.set(id, { id, text, metadata, vector: parseVector(sql) });
+      }
+      return { rowCount: 1 };
+    },
+    async query(sql) {
+      if (!sql.startsWith('SELECT id, text, metadata, COSINE_SIMILARITY')) {
+        return [];
+      }
+      searches.push(sql);
+      const q = parseVector(sql);
+      const scored = [...rows.values()]
+        .map((r) => ({
+          id: r.id,
+          text: r.text,
+          metadata: r.metadata,
+          score: cosineOf(q, r.vector),
+        }))
+        .sort((a, b) => b.score - a.score);
+      const limit = sql.match(/LIMIT (\d+)$/);
+      return limit ? scored.slice(0, Number(limit[1])) : scored;
+    },
+    async close() {},
+  };
+}
+
+describe('HanaVectorRag — session/user filter (security)', () => {
+  for (const c of ragFilterConformanceCases) {
+    it(`conformance: ${c.name}`, () =>
+      c.run(
+        async () =>
+          new HanaVectorRag(
+            {
+              collectionName: 'docs',
+              dimension: CONFORMANCE_EMBEDDING_DIM,
+              embedder: conformanceEmbedder(),
+              credential: staticLogin('u', 'p'),
+            },
+            makeStoringHana(),
+          ),
+      ));
+  }
+
+  it('keeps the LIMIT query when no identity filter is given, drops it when one is', async () => {
+    const client = makeStoringHana();
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const emb = { text: 'q', toVector: async () => [0.1, 0.2, 0.3] };
+    await rag.query(emb, 5);
+    await rag.query(emb, 5, { ragFilter: { sessionId: 's1' } });
+    await rag.query(emb, 5, { ragFilter: { userId: 'u1' } });
+    assert.match(client.searches[0], /ORDER BY score DESC LIMIT 5$/);
+    assert.match(client.searches[1], /ORDER BY score DESC$/);
+    assert.match(client.searches[2], /ORDER BY score DESC$/);
+    // The filter value never reaches the SQL text.
+    assert.ok(!client.searches[1].includes('s1'));
   });
 });

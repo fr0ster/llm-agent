@@ -525,6 +525,14 @@ from `@mcp-abap-adt/llm-agent-server-libs` with a provider registry you own — 
   which the binary never set, so the route answered 400. The composition root now supplies one.
 - **Each `SmartServer` session owns its collection registry** (`ragRegistryFactory`), instead of
   sharing one process-wide registry. Not an edit, but a changed runtime (see item 11 for its limits).
+- **A session- or user-scoped RAG query returns only that owner's records — on every store.**
+  `VectorRag`, `QdrantRag`, `PgVectorRag` and `HanaVectorRag` ignored `ragFilter.sessionId` /
+  `userId` (a security fix: the shared `history` store leaked across users). A record without the
+  filtered key is now excluded. Check: records you write into a store you query with
+  `scope: 'session' | 'user'` carry `metadata.sessionId` / `metadata.userId`. History records the
+  framework wrote before this release carry no owner and stop being returned (clear the store to
+  drop them). A custom `IRag` store must honour the same contract — run
+  `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance` against it (INTEGRATION.md, IRag).
 
 ## New and optional (decline freely)
 

@@ -8,6 +8,7 @@ import type {
   Result,
 } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
+import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 
 // ---------------------------------------------------------------------------
@@ -174,9 +175,10 @@ export class InMemoryRag implements IRag {
     }
     const queryEmbedding = embed(searchText);
     const nowSecs = Date.now() / 1000;
-    const targetSessionId = options?.ragFilter?.sessionId;
+    const identity = ragIdentityFilter(options);
 
-    // Filter: namespace match + TTL not expired + sessionId match
+    // Filter BEFORE top-k: namespace match + TTL not expired + the
+    // sessionId/userId the query is scoped to.
     const candidates = this.records.filter((r) => {
       if (
         this.namespace !== undefined &&
@@ -185,12 +187,7 @@ export class InMemoryRag implements IRag {
         return false;
       if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
         return false;
-      if (
-        targetSessionId !== undefined &&
-        r.metadata.sessionId !== targetSessionId
-      )
-        return false;
-      return true;
+      return matchesRagIdentity(r.metadata, identity);
     });
 
     // Compute cosine similarity for each candidate

@@ -33,6 +33,18 @@ export interface EmbedderFactoryConfig {
 export type EmbedderFactory = (cfg: EmbedderFactoryConfig) => IEmbedder;
 
 export interface IRag {
+  /**
+   * Top-`k` records for `embedding`.
+   *
+   * Identity scope (a security contract, not a hint): when
+   * `options.ragFilter.sessionId` is set, return only records whose
+   * `metadata.sessionId` equals it; the same for `ragFilter.userId` and
+   * `metadata.userId`; both set → both must match. A record without the
+   * filtered key is excluded. The filter applies BEFORE top-k, so a scoped
+   * query returns up to `k` of its own records. Neither set → no identity
+   * filtering. Conformance cases:
+   * `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance`.
+   */
   query(
     embedding: IQueryEmbedding,
     k: number,

@@ -356,3 +356,71 @@ describe('QdrantRag', () => {
     assert.equal(state.collections.get('test-clear')?.length, 0);
   });
 });
+
+describe('QdrantRag — session/user filter (security)', () => {
+  async function searchBody(
+    ragFilter?: Record<string, unknown>,
+    k = 3,
+  ): Promise<Record<string, unknown>> {
+    let captured: Record<string, unknown> | undefined;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      if (String(input).endsWith('/points/search')) {
+        captured = JSON.parse(String(init?.body));
+      }
+      return new Response(JSON.stringify({ result: [] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const rag = new QdrantRag({
+        url: 'http://qdrant.invalid',
+        collectionName: 'c',
+        embedder: makeEmbedder(),
+      });
+      const r = await rag.query(
+        { text: 'q', toVector: async () => [0.1, 0.2, 0.3] },
+        k,
+        ragFilter ? { ragFilter } : undefined,
+      );
+      assert.equal(r.ok, true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    if (!captured) throw new Error('no search request issued');
+    return captured;
+  }
+
+  // upsert spreads metadata flat into the payload, so the keys are top-level.
+  const sessionCond = { key: 'sessionId', match: { value: 's1' } };
+  const userCond = { key: 'userId', match: { value: 'u1' } };
+
+  it('sessionId and userId become top-level must conditions of the search filter', async () => {
+    const body = await searchBody({ sessionId: 's1', userId: 'u1' }, 3);
+    const filter = body.filter as { must?: unknown[] };
+    assert.ok(Array.isArray(filter.must));
+    assert.deepEqual(
+      filter.must?.filter((c) =>
+        ['sessionId', 'userId'].includes((c as { key: string }).key),
+      ),
+      [sessionCond, userCond],
+    );
+    // Server-side filtering: the limit stays k (no over-fetch).
+    assert.equal(body.limit, 3);
+  });
+
+  it('userId alone adds only the userId condition', async () => {
+    const body = await searchBody({ userId: 'u1' });
+    const must = (body.filter as { must?: unknown[] }).must ?? [];
+    assert.deepEqual(
+      must.filter((c) =>
+        ['sessionId', 'userId'].includes((c as { key: string }).key),
+      ),
+      [userCond],
+    );
+  });
+
+  it('no identity filter adds no identity condition', async () => {
+    const body = await searchBody();
+    assert.ok(!JSON.stringify(body).includes('"sessionId"'));
+    assert.ok(!JSON.stringify(body).includes('"userId"'));
+  });
+});

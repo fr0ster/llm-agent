@@ -12,6 +12,7 @@ import {
   type RagMetadata,
   type RagResult,
   type Result,
+  ragIdentityFilter,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -263,8 +264,28 @@ export class QdrantRag implements IRag {
         limit: k,
         with_payload: true,
       };
+      // The session/user scope. upsert spreads metadata flat into the
+      // payload, so `sessionId` / `userId` are top-level payload keys. A point
+      // without the key does not match a `match` condition, so an unowned
+      // point is never returned to a scoped query. Qdrant applies the filter
+      // inside the search, so `limit: k` counts only matching points.
+      const identity = ragIdentityFilter(options);
+      const identityMust: unknown[] = [];
+      if (identity?.sessionId !== undefined) {
+        identityMust.push({
+          key: 'sessionId',
+          match: { value: identity.sessionId },
+        });
+      }
+      if (identity?.userId !== undefined) {
+        identityMust.push({ key: 'userId', match: { value: identity.userId } });
+      }
       if (must.length > 0) {
         body.filter = {
+          // Top-level `must` is ANDed with the `should` below (at least one
+          // of which must hold), so the identity scope applies to both the
+          // TTL-bearing and the TTL-less branch.
+          ...(identityMust.length > 0 ? { must: identityMust } : {}),
           should: [
             { must },
             // Also match points without TTL set (no ttl field)
