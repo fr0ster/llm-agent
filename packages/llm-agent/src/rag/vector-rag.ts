@@ -18,6 +18,7 @@ import type {
   ISearchStrategy,
 } from './search-strategy.js';
 import { WeightedFusionStrategy } from './search-strategy.js';
+import { tokenizeSearchText } from './tokenizer.js';
 
 interface StoredRecord {
   text: string;
@@ -89,10 +90,7 @@ export class VectorRag implements IRag {
   }
 
   private tokenize(s: string): string[] {
-    return s
-      .toLowerCase()
-      .split(/[^a-z0-9]/)
-      .filter((t) => t.length > 1);
+    return tokenizeSearchText(s);
   }
 
   private cosine(a: number[], b: number[]): number {

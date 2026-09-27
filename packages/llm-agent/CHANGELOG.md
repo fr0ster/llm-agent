@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+**Changed:** `InMemoryRag` and `VectorRag` (its BM25 part) share one keyword tokenizer, for
+records and queries alike, that splits identifiers: camelCase / PascalCase (an acronym run ends
+before the next word, `GetXMLParser` → get, xml, parser) and snake_case become their parts, and the
+whole identifier is kept too. Before, `ReadFunctionInclude` was one token and the query "function
+include" did not match it. No suffix normalisation: a plural / `-ing` / `-ed` rule was measured
+and lowered MRR (see the release notes' eval table). Tool-retrieval eval (`scripts/rag-eval`, 63
+tools, 30 queries), recall@5 / MRR before → after: keyword-only 93.3% / 0.828 → 93.3% / 0.869;
+Ollama `nomic-embed-text` 96.7% / 0.883 → 100% / 0.900; SAP AI Core `text-embedding-3-small`
+96.7% / 0.900 → 100% / 0.950.
+
 **Fixed:** `InMemoryRag` and `VectorRag` no longer merge records with different ids. Similarity
 dedup (`dedupThreshold`, default 0.92) folded any near-identical record into an existing one
 whatever its `metadata.id` — the tool record `ReadFunctionInclude` was overwritten by

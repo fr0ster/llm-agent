@@ -10,17 +10,14 @@ import type {
 import { RagError } from '../interfaces/types.js';
 import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
+import { tokenizeSearchText } from './tokenizer.js';
 
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 
 function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length > 1);
+  return tokenizeSearchText(text);
 }
 
 function embed(text: string): Map<string, number> {

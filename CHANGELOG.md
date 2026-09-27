@@ -133,6 +133,10 @@ builds the classifier.
 
 ### Changed
 
+- The in-memory stores' keyword tokenizer splits identifiers (camelCase, PascalCase, snake_case)
+  into their parts and keeps the whole identifier, so "function include" finds
+  `ReadFunctionInclude`. Tool-retrieval MRR: keyword-only 0.828 → 0.869, Ollama 0.883 → 0.900,
+  AI Core 0.900 → 0.950; no recall@5 lost.
 - **`SmartAgentHandle.close()` no longer rejects when a connection strategy's
   `dispose()` throws.** Teardown continues — every MCP server started via
   `withMcpServers` is still stopped — and the failure is logged through the
