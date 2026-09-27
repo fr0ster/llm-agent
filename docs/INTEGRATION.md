@@ -320,7 +320,13 @@ interface IRagBackendWriter {
 - A record without the filtered key is excluded.
 - Filter **before** top-k: a scoped query returns up to `k` of its own records, not `k` minus everyone else's.
 
-Every shipped store (`InMemoryRag`, `VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag`) implements it. Check your own store with the conformance cases:
+**Namespace and expiry — the same rules.** Every store also applies:
+
+- `ragFilter.namespace` set → only records whose `metadata.namespace` equals it; a record without `namespace` is excluded. Not set → every namespace.
+- `metadata.ttl` is an expiry in epoch seconds: a record whose numeric `ttl` is in the past is never returned. No `ttl` → never expires.
+- Both apply before top-k too.
+
+Every shipped store (`InMemoryRag`, `VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag`) implements all of it (HANA in the client, not verified against a live instance). Check your own store with the conformance cases — identity, namespace and expiry:
 
 ```ts
 import { it } from 'node:test';
@@ -360,10 +366,16 @@ class PineconeRag implements IRag {
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
     try {
-      // The identity scope, applied by the index before topK (see "Identity scope" above).
+      // Identity, namespace and expiry, applied by the index before topK
+      // (see "Identity scope" and "Namespace and expiry" above).
+      const f = options?.ragFilter;
       const filter: Record<string, unknown> = {};
-      if (options?.ragFilter?.sessionId !== undefined) filter.sessionId = { $eq: options.ragFilter.sessionId };
-      if (options?.ragFilter?.userId !== undefined) filter.userId = { $eq: options.ragFilter.userId };
+      if (f?.sessionId !== undefined) filter.sessionId = { $eq: f.sessionId };
+      if (f?.userId !== undefined) filter.userId = { $eq: f.userId };
+      if (f?.namespace !== undefined) filter.namespace = { $eq: f.namespace };
+      // Records written with a ttl; a record without one must still match, so
+      // write a far-future ttl for "never expires" or filter expiry in code.
+      filter.ttl = { $gte: Date.now() / 1000 };
       const results = await this.index.query({
         vector: await embedding.toVector(),
         topK: k,

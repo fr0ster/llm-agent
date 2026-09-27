@@ -171,6 +171,12 @@ builds the classifier.
   summaries to another; the history stage now tags its records with their owner. HANA filters in
   the client and is not verified against a live instance. Conformance cases for any store:
   `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance`.
+- `PgVectorRag` and `HanaVectorRag` honour `ragFilter.namespace` and drop expired records
+  (`metadata.ttl` in the past), and `InMemoryRag` honours `ragFilter.namespace`; all three ignored
+  them. HANA applies them in the client, not verified live. The conformance kit covers namespace
+  and expiry, and every shipped store runs it.
+- `VectorRag`'s keyword (BM25) statistics are computed over the query's own candidates, not the
+  whole store, so another session's records no longer change a session's ranking.
 - AS-6 (RAG collection tools reaching another caller's collections) is mitigated: the tool
   entries are built for one caller, and no framework tool mutates a `global` collection.
 

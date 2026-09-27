@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+**Tests:** the shared conformance kit (identity, namespace, expiry) runs against `QdrantRag` in the
+unit tests, through a stub that now evaluates Qdrant search filters (`must` / `should` /
+`must_not`, `match`, `range`) and orders by cosine; it also passes against a live Qdrant 1.18.
+No behaviour change.
+
 **Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId`: each
 becomes a top-level `must` match condition on the payload key of the same name (upsert spreads
 metadata flat into the payload), ANDed with the existing namespace/TTL filter. Before, only

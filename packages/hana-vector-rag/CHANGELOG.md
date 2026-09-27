@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**Security:** `query` honours `ragFilter.namespace` and record expiry (`metadata.ttl` in epoch
+seconds, in the past), as the other stores do; both were ignored. **Applied in the client, like the
+session/user filter, and not verified against a live HANA instance.** A namespace-scoped query
+drops the `LIMIT` (as a session/user-scoped one does). An unscoped query keeps its `LIMIT` query and
+drops expired rows from it; only when that removed a row from a full page does it re-run without
+`LIMIT`, so it still returns up to `k` live rows.
+
 **Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId`. Before,
 the query filtered nothing, so a session- or user-scoped query returned every session's rows.
 **The filter is applied in the client and has not been verified against a live HANA instance**

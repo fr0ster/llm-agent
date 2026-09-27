@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+**Security:** `query` honours `ragFilter.namespace` and record expiry, as `VectorRag` and
+`QdrantRag` do. Both were ignored, so a namespace-scoped query returned every namespace's rows and
+expired rows (`metadata.ttl` in epoch seconds, in the past) kept coming back. Both are
+parameterised `WHERE` conditions before `ORDER BY … LIMIT`: `metadata->>'namespace' = $n`, and
+`COALESCE(CASE WHEN jsonb_typeof(metadata->'ttl') = 'number' THEN (metadata->>'ttl')::float8 END,
+'infinity'::float8) >= $n` — a missing or non-numeric `ttl` never expires and cannot fail the
+float8 cast. Every query now carries the expiry condition. Verified against a live pgvector (pg16),
+the shared conformance kit included.
+
 **Security (BREAKING):** `query` honours `ragFilter.sessionId` and `ragFilter.userId` as
 parameterised `WHERE metadata->>'sessionId' = $n` / `metadata->>'userId' = $n` conditions before
 `ORDER BY … LIMIT` (values are bound, never interpolated). Before, the query filtered nothing, so a

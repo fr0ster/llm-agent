@@ -162,28 +162,61 @@ export class HanaVectorRag implements IRag {
       const table = quoteIdent(this.collectionName);
       const base = `SELECT id, text, metadata, COSINE_SIMILARITY(vector, ${this.vectorLiteral(vector)}) AS score FROM ${table} ORDER BY score DESC`;
       const identity = ragIdentityFilter(options);
-      // The session/user scope is applied HERE, in the client, and has NOT
-      // been verified against a live HANA instance (none was available to
-      // test HANA's JSON functions against). To stay correct without that,
-      // a scoped query selects every candidate by score with NO LIMIT and
-      // filters on the parsed metadata before taking the top k — never a
-      // LIMIT-then-filter, which would return fewer than k of the caller's
-      // own records. Correct, but it reads the whole table per scoped query;
-      // moving the filter into SQL needs a live instance to verify on. An
-      // unscoped query keeps the LIMIT query.
+      const rawNamespace = options?.ragFilter?.namespace;
+      const targetNamespace =
+        typeof rawNamespace === 'string' ? rawNamespace : undefined;
+      const nowSecs = Date.now() / 1000;
+      // Every filter — the session/user scope, `ragFilter.namespace`, and
+      // expiry (a numeric `metadata.ttl` in epoch seconds that is in the past)
+      // — is applied HERE, in the client, with the same semantics as
+      // VectorRag / QdrantRag / PgVectorRag. None of it has been verified
+      // against a live HANA instance (none was available to test HANA's JSON
+      // functions against). To stay correct without that:
+      // - a scoped query (identity or namespace) selects every candidate by
+      //   score with NO LIMIT and filters on the parsed metadata before taking
+      //   the top k — never a LIMIT-then-filter, which would return fewer than
+      //   k of the caller's own records. Correct, but it reads the whole table
+      //   per scoped query; moving the filters into SQL needs a live instance;
+      // - an unscoped query keeps the LIMIT query, and drops expired rows from
+      //   it; only when that dropped a row from a FULL page (so an unexpired
+      //   record may sit just below the cut) is it re-run without LIMIT.
       const limit = Math.max(1, k);
-      const sql = identity ? base : `${base} LIMIT ${limit}`;
-      const rows = await client.query(sql);
-      const results: RagResult[] = [];
-      for (const row of rows) {
-        if (results.length >= limit) break;
-        const metadata = withId(row);
-        if (!matchesRagIdentity(metadata, identity)) continue;
-        results.push({
-          text: String(row.text ?? ''),
-          metadata,
-          score: Number(row.score ?? 0),
-        });
+      const keep = (metadata: RagMetadata): boolean =>
+        !(typeof metadata.ttl === 'number' && metadata.ttl < nowSecs) &&
+        !(
+          targetNamespace !== undefined &&
+          metadata.namespace !== targetNamespace
+        ) &&
+        matchesRagIdentity(metadata, identity);
+      const pick = (rows: Array<Record<string, unknown>>) => {
+        const picked: RagResult[] = [];
+        let dropped = false;
+        for (const row of rows) {
+          if (picked.length >= limit) break;
+          const metadata = withId(row);
+          if (!keep(metadata)) {
+            dropped = true;
+            continue;
+          }
+          picked.push({
+            text: String(row.text ?? ''),
+            metadata,
+            score: Number(row.score ?? 0),
+          });
+        }
+        return { picked, dropped };
+      };
+      const scoped = identity !== undefined || targetNamespace !== undefined;
+      let results: RagResult[];
+      if (scoped) {
+        results = pick(await client.query(base)).picked;
+      } else {
+        const page = await client.query(`${base} LIMIT ${limit}`);
+        const first = pick(page);
+        results =
+          first.dropped && page.length >= limit
+            ? pick(await client.query(base)).picked
+            : first.picked;
       }
       return { ok: true, value: results };
     } catch (err) {

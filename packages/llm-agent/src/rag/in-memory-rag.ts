@@ -176,13 +176,19 @@ export class InMemoryRag implements IRag {
     const queryEmbedding = embed(searchText);
     const nowSecs = Date.now() / 1000;
     const identity = ragIdentityFilter(options);
+    const targetNamespace = options?.ragFilter?.namespace;
 
-    // Filter BEFORE top-k: namespace match + TTL not expired + the
-    // sessionId/userId the query is scoped to.
+    // Filter BEFORE top-k: store namespace + the query's `ragFilter.namespace`
+    // + TTL not expired + the sessionId/userId the query is scoped to.
     const candidates = this.records.filter((r) => {
       if (
         this.namespace !== undefined &&
         r.metadata.namespace !== this.namespace
+      )
+        return false;
+      if (
+        targetNamespace !== undefined &&
+        r.metadata.namespace !== targetNamespace
       )
         return false;
       if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)

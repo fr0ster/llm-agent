@@ -13,6 +13,15 @@
  * - the filter applies BEFORE top-k: a filtered query still returns up to `k`
  *   matching records.
  *
+ * The same kit covers the other two filters every store applies:
+ *
+ * - `ragFilter.namespace` set → only records whose `metadata.namespace`
+ *   equals it; a record without `namespace` is excluded. Not set → records of
+ *   every namespace (for a store configured without a namespace of its own).
+ * - `metadata.ttl` (epoch seconds) in the past → the record is expired and
+ *   never returned; a future or absent `ttl` keeps it.
+ * - both apply BEFORE top-k too.
+ *
  * Framework-agnostic: each case throws (`node:assert`) on a violation, so a
  * store package runs them under its own test runner:
  *
@@ -249,6 +258,141 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
       ]);
       assert.deepEqual(await queryIds(rag, Q, 1, { sessionId: 's1' }), [
         's1-a',
+      ]);
+    },
+  },
+  {
+    name: 'namespace filter returns only that namespace; none set returns all',
+    async run(makeStore) {
+      const rag = await makeStore();
+      await seed(rag, [
+        {
+          id: 'ns-a',
+          text: 'mike tundra reindeer',
+          metadata: { namespace: 'a' },
+        },
+        {
+          id: 'ns-b',
+          text: 'november jungle parrot',
+          metadata: { namespace: 'b' },
+        },
+        { id: 'ns-none', text: 'oscar steppe falcon', metadata: {} },
+      ]);
+      assert.deepEqual(await queryIds(rag, Q, 10, { namespace: 'a' }), [
+        'ns-a',
+      ]);
+      assert.deepEqual(await queryIds(rag, Q, 10, { namespace: 'b' }), [
+        'ns-b',
+      ]);
+      assert.deepEqual(await queryIds(rag, Q, 10), ['ns-a', 'ns-b', 'ns-none']);
+    },
+  },
+  {
+    name: 'the namespace filter applies before top-k',
+    async run(makeStore) {
+      const rag = await makeStore();
+      await seed(rag, [
+        {
+          id: 'b-1',
+          text: 'quarterly revenue forecast europe',
+          metadata: { namespace: 'b' },
+        },
+        {
+          id: 'b-2',
+          text: 'quarterly revenue forecast asia',
+          metadata: { namespace: 'b' },
+        },
+        {
+          id: 'a-1',
+          text: 'papa lagoon flamingo',
+          metadata: { namespace: 'a' },
+        },
+      ]);
+      assert.deepEqual(await queryIds(rag, Q, 1, { namespace: 'a' }), ['a-1']);
+    },
+  },
+  {
+    name: 'an expired record (metadata.ttl in the past) is never returned',
+    async run(makeStore) {
+      const rag = await makeStore();
+      const now = Math.floor(Date.now() / 1000);
+      await seed(rag, [
+        {
+          id: 'expired',
+          text: 'quebec marsh heron',
+          metadata: { ttl: now - 3600 },
+        },
+        {
+          id: 'live',
+          text: 'romeo cliff eagle',
+          metadata: { ttl: now + 3600 },
+        },
+        { id: 'no-ttl', text: 'sierra dune lizard', metadata: {} },
+      ]);
+      assert.deepEqual(await queryIds(rag, Q, 10), ['live', 'no-ttl']);
+    },
+  },
+  {
+    name: 'expiry applies before top-k',
+    async run(makeStore) {
+      const rag = await makeStore();
+      const now = Math.floor(Date.now() / 1000);
+      await seed(rag, [
+        {
+          id: 'old-1',
+          text: 'quarterly revenue forecast europe',
+          metadata: { ttl: now - 3600 },
+        },
+        {
+          id: 'old-2',
+          text: 'quarterly revenue forecast asia',
+          metadata: { ttl: now - 3600 },
+        },
+        { id: 'fresh', text: 'tango pampas rhea', metadata: {} },
+      ]);
+      assert.deepEqual(await queryIds(rag, Q, 1), ['fresh']);
+    },
+  },
+  {
+    name: 'namespace, expiry and identity filters combine',
+    async run(makeStore) {
+      const rag = await makeStore();
+      const now = Math.floor(Date.now() / 1000);
+      await seed(rag, [
+        {
+          id: 'a-live',
+          text: 'uniform bayou alligator',
+          metadata: { namespace: 'a', sessionId: 's1', ttl: now + 3600 },
+        },
+        {
+          id: 'a-nottl',
+          text: 'victor fjord seal',
+          metadata: { namespace: 'a', sessionId: 's1' },
+        },
+        {
+          id: 'a-expired',
+          text: 'whiskey atoll turtle',
+          metadata: { namespace: 'a', sessionId: 's1', ttl: now - 3600 },
+        },
+        {
+          id: 'a-other-session',
+          text: 'xray moor grouse',
+          metadata: { namespace: 'a', sessionId: 's2' },
+        },
+        {
+          id: 'b-nottl',
+          text: 'yankee taiga lynx',
+          metadata: { namespace: 'b', sessionId: 's1' },
+        },
+      ]);
+      assert.deepEqual(
+        await queryIds(rag, Q, 10, { namespace: 'a', sessionId: 's1' }),
+        ['a-live', 'a-nottl'],
+      );
+      assert.deepEqual(await queryIds(rag, Q, 10, { namespace: 'a' }), [
+        'a-live',
+        'a-nottl',
+        'a-other-session',
       ]);
     },
   },

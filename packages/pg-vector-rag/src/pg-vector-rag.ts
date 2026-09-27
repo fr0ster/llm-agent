@@ -116,14 +116,21 @@ export class PgVectorRag implements IRag {
       const client = await this.clientPromise;
       const table = quoteIdent(this.collectionName);
       const lit = vectorLiteral(vector);
-      // The session/user scope, as parameterised conditions on the jsonb
-      // metadata (never interpolated). `->>` yields NULL for a missing key,
-      // and NULL = $n is not true, so an unowned row is excluded. The WHERE
-      // runs before ORDER BY … LIMIT: the table has no ANN index, so the scan
-      // is exact and LIMIT counts only matching rows.
+      // The filters, as parameterised conditions on the jsonb metadata (never
+      // interpolated) — the same contract VectorRag / QdrantRag apply:
+      // - session/user scope: `->>` yields NULL for a missing key, and
+      //   NULL = $n is not true, so an unowned row is excluded;
+      // - `ragFilter.namespace`: the same, on `metadata.namespace`;
+      // - expiry: a numeric `metadata.ttl` (epoch seconds) in the past drops
+      //   the row; a missing or non-numeric ttl never expires. The CASE keeps
+      //   the float8 cast away from a non-numeric value, which would fail the
+      //   whole query.
+      // The WHERE runs before ORDER BY … LIMIT: the table has no ANN index, so
+      // the scan is exact and LIMIT counts only matching rows.
       const identity = ragIdentityFilter(options);
+      const targetNamespace = options?.ragFilter?.namespace;
       const conditions: string[] = [];
-      const params: string[] = [];
+      const params: Array<string | number> = [];
       if (identity?.sessionId !== undefined) {
         params.push(identity.sessionId);
         conditions.push(`metadata->>'sessionId' = $${params.length}`);
@@ -132,8 +139,15 @@ export class PgVectorRag implements IRag {
         params.push(identity.userId);
         conditions.push(`metadata->>'userId' = $${params.length}`);
       }
-      const where =
-        conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+      if (typeof targetNamespace === 'string') {
+        params.push(targetNamespace);
+        conditions.push(`metadata->>'namespace' = $${params.length}`);
+      }
+      params.push(Date.now() / 1000);
+      conditions.push(
+        `COALESCE(CASE WHEN jsonb_typeof(metadata->'ttl') = 'number' THEN (metadata->>'ttl')::float8 END, 'infinity'::float8) >= $${params.length}`,
+      );
+      const where = ` WHERE ${conditions.join(' AND ')}`;
       const sql = `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table}${where} ORDER BY vector <=> ${lit} LIMIT ${Math.max(1, k)}`;
       const { rows } = await client.query(sql, params);
       const results: RagResult[] = rows.map((row) => ({

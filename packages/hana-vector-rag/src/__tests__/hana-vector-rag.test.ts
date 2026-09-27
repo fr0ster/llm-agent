@@ -302,4 +302,54 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     // The filter value never reaches the SQL text.
     assert.ok(!client.searches[1].includes('s1'));
   });
+
+  it('drops the LIMIT for a namespace filter too, never putting it in the SQL', async () => {
+    const client = makeStoringHana();
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: makeEmbedder(3),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const emb = { text: 'q', toVector: async () => [0.1, 0.2, 0.3] };
+    await rag.query(emb, 5, { ragFilter: { namespace: 'ns-secret' } });
+    assert.match(client.searches[0], /ORDER BY score DESC$/);
+    assert.ok(!client.searches[0].includes('ns-secret'));
+  });
+
+  it('an unscoped query re-runs without LIMIT only when expiry emptied part of a full page', async () => {
+    const client = makeStoringHana();
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: CONFORMANCE_EMBEDDING_DIM,
+        embedder: conformanceEmbedder(),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const w = rag.writer();
+    const now = Math.floor(Date.now() / 1000);
+    await w.upsertRaw('old', 'alpha beta gamma', { ttl: now - 60 });
+    await w.upsertRaw('new', 'delta epsilon', {});
+    const q = async (text: string) => {
+      const vector = (await conformanceEmbedder().embed(text)).vector;
+      const r = await rag.query({ text, toVector: async () => vector }, 1);
+      if (!r.ok) throw r.error;
+      return r.value.map((x) => x.metadata.id);
+    };
+    // Top-1 by similarity is the expired record: the full page is emptied,
+    // so the store falls back to the unlimited query and finds 'new'.
+    assert.deepEqual(await q('alpha beta gamma'), ['new']);
+    assert.match(client.searches[0], /LIMIT 1$/);
+    assert.match(client.searches[1], /ORDER BY score DESC$/);
+    // Top-1 is live: one LIMIT query, no fallback.
+    const before = client.searches.length;
+    assert.deepEqual(await q('delta epsilon'), ['new']);
+    assert.equal(client.searches.length, before + 1);
+    assert.match(client.searches[before], /LIMIT 1$/);
+  });
 });

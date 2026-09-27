@@ -533,6 +533,11 @@ from `@mcp-abap-adt/llm-agent-server-libs` with a provider registry you own — 
   framework wrote before this release carry no owner and stop being returned (clear the store to
   drop them). A custom `IRag` store must honour the same contract — run
   `@mcp-abap-adt/llm-agent/testing/rag-filter-conformance` against it (INTEGRATION.md, IRag).
+- **`PgVectorRag` and `HanaVectorRag` honour `ragFilter.namespace` and expiry; `InMemoryRag`
+  honours `ragFilter.namespace`.** A record whose numeric `metadata.ttl` (epoch seconds) is in the
+  past is no longer returned, and a namespace-scoped query no longer returns other namespaces or
+  records without a namespace. Check: nothing you still need is written with a past `ttl`, and
+  records you query by namespace carry `metadata.namespace`.
 
 ## New and optional (decline freely)
 

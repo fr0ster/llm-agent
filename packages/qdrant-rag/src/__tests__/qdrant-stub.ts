@@ -133,7 +133,24 @@ export async function startQdrantStub(
         return;
       }
       if (r.method === 'POST' && action === '/search') {
-        reply(200, { result: [] });
+        // Qdrant's documented search: the filter is applied inside the
+        // search, then points are ordered by cosine similarity and cut at
+        // `limit` — so the conformance cases see what a real server returns.
+        const query = body.vector as number[];
+        const filter = body.filter as QdrantFilter | undefined;
+        const limit = Number(body.limit ?? 10);
+        const hits = [...c.points.values()]
+          .filter(
+            (p) => filter === undefined || matchesFilter(p.payload, filter),
+          )
+          .map((p) => ({
+            id: p.id,
+            score: cosine(query, p.vector),
+            payload: p.payload,
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit);
+        reply(200, { result: hits });
         return;
       }
     }
@@ -177,4 +194,73 @@ export async function startQdrantStub(
       ),
   };
   return stub;
+}
+
+// ---------------------------------------------------------------------------
+// Filter evaluation, per Qdrant's documented semantics: `must` — every
+// condition holds; `should` — at least one holds (when non-empty); `must_not`
+// — none holds. A field condition on a missing key does not hold (so under
+// `must_not` it does); `range` holds only for a numeric value.
+// ---------------------------------------------------------------------------
+
+type QdrantCondition =
+  | { key: string; match: { value: unknown } }
+  | {
+      key: string;
+      range: { gt?: number; gte?: number; lt?: number; lte?: number };
+    }
+  | QdrantFilter;
+
+export type QdrantFilter = {
+  must?: QdrantCondition[];
+  should?: QdrantCondition[];
+  must_not?: QdrantCondition[];
+};
+
+function holds(
+  payload: Record<string, unknown>,
+  cond: QdrantCondition,
+): boolean {
+  if ('match' in cond) {
+    return cond.key in payload && payload[cond.key] === cond.match.value;
+  }
+  if ('range' in cond) {
+    const v = payload[cond.key];
+    if (typeof v !== 'number') return false;
+    const { gt, gte, lt, lte } = cond.range;
+    return (
+      (gt === undefined || v > gt) &&
+      (gte === undefined || v >= gte) &&
+      (lt === undefined || v < lt) &&
+      (lte === undefined || v <= lte)
+    );
+  }
+  return matchesFilter(payload, cond);
+}
+
+export function matchesFilter(
+  payload: Record<string, unknown>,
+  filter: QdrantFilter,
+): boolean {
+  if (filter.must && !filter.must.every((c) => holds(payload, c))) return false;
+  if (
+    filter.should &&
+    filter.should.length > 0 &&
+    !filter.should.some((c) => holds(payload, c))
+  )
+    return false;
+  if (filter.must_not?.some((c) => holds(payload, c))) return false;
+  return true;
+}
+
+function cosine(a: number[], b: number[]): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] ** 2;
+    nb += b[i] ** 2;
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }

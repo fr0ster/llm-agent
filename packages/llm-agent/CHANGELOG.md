@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+**Security:** `InMemoryRag` honours `ragFilter.namespace`. It filtered on its own configured
+namespace only and ignored the query's, so a namespace-scoped query returned records of every
+namespace; `VectorRag` and `QdrantRag` already honoured it. The conformance kit
+(`@mcp-abap-adt/llm-agent/testing/rag-filter-conformance`) gains five cases —
+`ragFilter.namespace` (records without a namespace excluded; none set → all namespaces), expiry by
+a past `metadata.ttl` (epoch seconds; no `ttl` never expires), both before top-k, and all filters
+combined — and every shipped store now runs the whole kit in its unit tests.
+
 **Security:** `VectorRag`'s keyword ranking no longer spans every session. BM25 document
 frequency, document count and average length came from one index over the whole store, so a
 session's scores changed when another session added records — and so leaked a signal about them.

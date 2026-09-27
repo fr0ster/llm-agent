@@ -162,26 +162,44 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE metadata->>'sessionId' = \$1 AND metadata->>'userId' = \$2 ORDER BY vector <=> .* LIMIT 4$/,
+      /WHERE metadata->>'sessionId' = \$1 AND metadata->>'userId' = \$2 AND COALESCE\(.*\) >= \$3 ORDER BY vector <=> .* LIMIT 4$/,
     );
-    assert.deepEqual(params, ['s1', 'u1']);
+    assert.deepEqual(params.slice(0, 2), ['s1', 'u1']);
   });
 
   it('userId alone is filtered on its own parameter', async () => {
     const { rag, lastSelect } = makeRag();
     await rag.query(emb, 2, { ragFilter: { userId: 'u1' } });
     const { sql, params } = lastSelect();
-    assert.match(sql, /WHERE metadata->>'userId' = \$1 ORDER BY/);
+    assert.match(sql, /WHERE metadata->>'userId' = \$1 AND COALESCE/);
     assert.ok(!sql.includes("'sessionId'"));
-    assert.deepEqual(params, ['u1']);
+    assert.equal(params[0], 'u1');
+    assert.equal(params.length, 2);
   });
 
-  it('no identity filter issues the unfiltered query', async () => {
+  it('no filter at all still drops expired rows, and nothing else', async () => {
     const { rag, lastSelect } = makeRag();
-    await rag.query(emb, 2, { ragFilter: { namespace: 'n' } });
+    const before = Date.now() / 1000;
+    await rag.query(emb, 2);
     const { sql, params } = lastSelect();
-    assert.ok(!sql.includes('WHERE'));
-    assert.deepEqual(params, []);
+    assert.match(
+      sql,
+      /WHERE COALESCE\(CASE WHEN jsonb_typeof\(metadata->'ttl'\) = 'number' THEN \(metadata->>'ttl'\)::float8 END, 'infinity'::float8\) >= \$1 ORDER BY/,
+    );
+    assert.equal(params.length, 1);
+    assert.ok(Number(params[0]) >= before - 1);
+  });
+
+  it('ragFilter.namespace is a parameterised condition before LIMIT', async () => {
+    const { rag, lastSelect } = makeRag();
+    await rag.query(emb, 3, { ragFilter: { namespace: "n' OR '1'='1" } });
+    const { sql, params } = lastSelect();
+    assert.match(
+      sql,
+      /WHERE metadata->>'namespace' = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY vector <=> .* LIMIT 3$/,
+    );
+    assert.ok(!sql.includes("n' OR"));
+    assert.equal(params[0], "n' OR '1'='1");
   });
 
   it('a hostile filter value is never interpolated into the SQL', async () => {
@@ -190,6 +208,6 @@ describe('PgVectorRag — session/user filter (security)', () => {
     await rag.query(emb, 2, { ragFilter: { sessionId: hostile } });
     const { sql, params } = lastSelect();
     assert.ok(!sql.includes(hostile));
-    assert.deepEqual(params, [hostile]);
+    assert.equal(params[0], hostile);
   });
 });
