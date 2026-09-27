@@ -3143,6 +3143,7 @@ export class SmartServer {
   private _configUpdateTarget(): IConfigUpdateTarget {
     return {
       modelResolver: this.cfg.modelResolver,
+      skipModelValidation: this.cfg.skipModelValidation === true,
       setMainLlm: (llm) => {
         this._mainLlm = llm;
       },

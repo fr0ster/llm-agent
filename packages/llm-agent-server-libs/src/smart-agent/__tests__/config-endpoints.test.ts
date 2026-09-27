@@ -475,4 +475,45 @@ describe('PUT /v1/config — models', () => {
       await handle.close();
     }
   });
+
+  it('refuses a model that resolves but does not answer — nothing applied', async () => {
+    // A resolver only constructs; a wrong model name surfaces on the first
+    // call. Found live: PUT accepted "no-such-model", and every chat after it
+    // failed while /health stayed healthy.
+    const dead = {
+      ...makeTestLlm([]),
+      model: 'no-such-model',
+      chat: async () => ({
+        ok: false as const,
+        error: new Error('Request failed with status code 400'),
+      }),
+    } as unknown as ILlm;
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        modelResolver: makeResolver({ 'no-such-model': dead }),
+        agent: { ragQueryK: 5 },
+      },
+      makeLlmDeps(),
+    );
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'no-such-model' },
+        agent: { ragQueryK: 3 },
+      });
+      assert.equal(res.status, 400);
+      const error = (res.body as Record<string, Record<string, unknown>>).error;
+      assert.match(String(error.message), /no-such-model/);
+      assert.match(String(error.message), /status code 400/);
+
+      const after = (await httpRequest(handle.port, 'GET', '/v1/config'))
+        .body as Record<string, Record<string, unknown>>;
+      assert.equal(after.models.mainModel, 'test-model');
+      assert.equal(after.agent.ragQueryK, 5);
+    } finally {
+      await handle.close();
+    }
+  });
 });

@@ -276,6 +276,8 @@ curl -X PUT http://localhost:4004/v1/config \
 ```
 
 Model fields require `modelResolver` on `SmartServerConfig`. Agent fields are validated against a whitelist — unsupported fields return 400.
+Each new model is asked once ("Reply with OK") before anything is applied, as at startup: a model that
+does not answer returns 400 naming it, and nothing changes. `skipModelValidation: true` skips the check.
 
 ## IRag
 

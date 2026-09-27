@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+`PUT /v1/config` asks each new model once before applying anything, as startup
+does: a model that does not answer returns 400 naming it, and nothing changes
+(`skipModelValidation` skips it). It used to accept any name the resolver
+could construct, after which every request failed while `/health` stayed healthy.
+
 Every `SmartServer` session owns its RAG registry — a fresh one per session,
 holding the deployment's globals by reference and hydrated for the session's
 identity (`describeCollections`, rejected rows logged, the caller's records
