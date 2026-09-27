@@ -26,7 +26,8 @@ interface StoredRecord {
 }
 
 export interface VectorRagConfig {
-  /** Cosine similarity threshold for dedup. Default: 0.92 */
+  /** Cosine similarity threshold for dedup of records written without an id
+   *  (a record with an id is replaced only by the same id). Default: 0.92 */
   dedupThreshold?: number;
   /** Namespace for this store. */
   namespace?: string;
@@ -125,9 +126,13 @@ export class VectorRag implements IRag {
       }
     }
 
-    for (let i = 0; i < this.records.length; i++) {
+    // Similarity dedup only between records written WITHOUT an id: a record
+    // with an id is replaced only by the same id (above). Merging on
+    // similarity alone let a near-identical tool record overwrite another
+    // tool's record (ReadFunctionInclude vanished under ReadFunctionGroup).
+    for (let i = 0; !metadata.id && i < this.records.length; i++) {
       const slot = this.records[i];
-      if (slot === null) continue;
+      if (slot === null || slot.metadata.id) continue;
       if (this.cosine(slot.vector, vector) >= this.dedupThreshold) {
         slot.text = text;
         slot.vector = vector;

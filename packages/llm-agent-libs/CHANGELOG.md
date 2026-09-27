@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**Fixed:** `vectorizeMcpTools` counts records, not writes. When a tool record key maps two tools
+to one id (possible with a custom `IToolRecordKey`), the later write replaces the earlier: the
+summary now reports the distinct records written and lists the replaced tool in `failed`, so
+`complete` is false instead of claiming N/N. No read-back, so it works on every store. The other
+cause of a short catalog — an in-memory store merging distinct ids by similarity — is fixed in
+`@mcp-abap-adt/llm-agent`.
+
 **Security:** a `rag-query` stage with `scope: 'user'` and no `userId` on the
 call returns no results and does not query the store. It used to query without
 a filter and return every user's records.

@@ -163,6 +163,13 @@ builds the classifier.
 - `llm-agent-server` is the composition root: it reads the environment, builds credentials,
   dispatches providers and implements `IModelResolver` behind `PUT /v1/config`.
 
+### Fixed
+
+- The in-memory stores no longer merge records with different ids on similarity: a tool record
+  (`ReadFunctionInclude`) could be overwritten by a near-identical one and vanish, while startup
+  still reported the full catalog vectorized. `vectorizeMcpTools` now also counts distinct
+  records, so an id collision shows as a failed tool instead of N/N.
+
 ### Security
 
 - Every RAG store honours the session and user scope of a query (`ragFilter.sessionId` /

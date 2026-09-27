@@ -50,7 +50,9 @@ function cosineSimilarity(
 // ---------------------------------------------------------------------------
 
 export interface InMemoryRagConfig {
-  /** Cosine similarity above which upsert updates existing record. Default: 0.92 */
+  /** Cosine similarity above which an upsert without an id updates an existing
+   *  record without an id (a record with an id is replaced only by the same id).
+   *  Default: 0.92 */
   dedupThreshold?: number;
   /** Namespace for this store. Records with different namespace are invisible to query. */
   namespace?: string;
@@ -125,11 +127,18 @@ export class InMemoryRag implements IRag {
       }
     }
 
-    // Filter existing records by same namespace
-    const candidates =
-      this.namespace !== undefined
-        ? this.records.filter((r) => r.metadata.namespace === this.namespace)
-        : this.records;
+    // Similarity dedup only between records written WITHOUT an id: a record
+    // with an id is replaced only by the same id (above). Merging on
+    // similarity alone let a near-identical tool record overwrite another
+    // tool's record (ReadFunctionInclude vanished under ReadFunctionGroup).
+    const candidates = metadata.id
+      ? []
+      : this.records.filter(
+          (r) =>
+            !r.metadata.id &&
+            (this.namespace === undefined ||
+              r.metadata.namespace === this.namespace),
+        );
 
     // Find record with cosine similarity >= dedupThreshold
     let dupRecord: StoredRecord | undefined;

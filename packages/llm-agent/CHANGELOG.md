@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+**Fixed:** `InMemoryRag` and `VectorRag` no longer merge records with different ids. Similarity
+dedup (`dedupThreshold`, default 0.92) folded any near-identical record into an existing one
+whatever its `metadata.id` — the tool record `ReadFunctionInclude` was overwritten by
+`ReadFunctionGroup` and vanished from the catalog. A record with an id is now replaced only by a
+write with the same id; similarity dedup applies only between records written without an id.
+`ToolCatalogStatus.vectorized` is documented as distinct records, and `failed` as including a tool
+whose record a later write to the same id replaced.
+
 **Security:** `InMemoryRag` honours `ragFilter.namespace`. It filtered on its own configured
 namespace only and ignored the query's, so a namespace-scoped query returned records of every
 namespace; `VectorRag` and `QdrantRag` already honoured it. The conformance kit
