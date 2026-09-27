@@ -10,8 +10,6 @@ const has = (text: string, ...tokens: string[]) => {
   const got = tokenizeSearchText(text);
   for (const t of tokens) assert.ok(got.includes(t), `${t} in ${got}`);
 };
-const same = (a: string, b: string) =>
-  assert.deepEqual(tokenizeSearchText(a), tokenizeSearchText(b));
 
 describe('tokenizeSearchText', () => {
   it('splits PascalCase / camelCase into parts and keeps the whole token', () => {
