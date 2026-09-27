@@ -9,6 +9,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [27.0.0] — 2026-09-27
+
+Credentials leave every contract; RAG collections get an identity; every store honours the session, user, namespace and TTL filters (#308). Breaking — see [docs/MIGRATION-v27.md](https://github.com/fr0ster/llm-agent/blob/main/docs/MIGRATION-v27.md).
+
 ### Breaking — see [docs/MIGRATION-v27.md](docs/MIGRATION-v27.md)
 
 Eleven changes need an edit; the guide numbers them and shows each before/after.

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/openai-embedder",
-  "version": "26.0.0",
+  "version": "27.0.0",
   "description": "OpenAI embedding provider (IEmbedderBatch) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@mcp-abap-adt/interfaces-auth": "^1.1.0",
-    "@mcp-abap-adt/llm-agent": "^26.0.0"
+    "@mcp-abap-adt/llm-agent": "^27.0.0"
   },
   "license": "LGPL-3.0-only",
   "repository": {

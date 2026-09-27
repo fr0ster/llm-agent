@@ -1,6 +1,8 @@
 # @mcp-abap-adt/llm-agent-mcp
 
-## [Unreleased]
+## 27.0.0
+
+Credentials leave every contract; RAG collections get an identity; every store honours the session, user, namespace and TTL filters (#308). Breaking — see [docs/MIGRATION-v27.md](https://github.com/fr0ster/llm-agent/blob/main/docs/MIGRATION-v27.md).
 
 Added `HttpMcpServer` and `StdioMcpServer`, typed `IMcpServer` implementations whose `auth`
 names the scheme and demands the credential kind for it (`bearer`, `header` with optional

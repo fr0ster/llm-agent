@@ -1,6 +1,8 @@
 # @mcp-abap-adt/hana-vector-rag
 
-## [Unreleased]
+## 27.0.0
+
+Credentials leave every contract; RAG collections get an identity; every store honours the session, user, namespace and TTL filters (#308). Breaking — see [docs/MIGRATION-v27.md](https://github.com/fr0ster/llm-agent/blob/main/docs/MIGRATION-v27.md).
 
 **Security:** `query` honours `ragFilter.namespace` and record expiry (`metadata.ttl` in epoch
 seconds, in the past), as the other stores do; both were ignored. **Applied in the client, like the

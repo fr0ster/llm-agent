@@ -1,6 +1,8 @@
 # @mcp-abap-adt/ollama-llm
 
-## [Unreleased]
+## 27.0.0
+
+Credentials leave every contract; RAG collections get an identity; every store honours the session, user, namespace and TTL filters (#308). Breaking — see [docs/MIGRATION-v27.md](https://github.com/fr0ster/llm-agent/blob/main/docs/MIGRATION-v27.md).
 
 **BREAKING:** `OllamaConfig.apiKey` is gone. `OllamaConfig.credential` (an
 OPTIONAL typed `IApiKeyCredential` from `@mcp-abap-adt/interfaces-auth`)
