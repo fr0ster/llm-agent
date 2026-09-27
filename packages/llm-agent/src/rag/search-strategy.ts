@@ -105,7 +105,27 @@ function bm25(
       (tf + k1 * (1 - b + b * (docTokens.length / avgDocLength)));
     score += idf * tfScored;
   }
-  return Math.min(score / 5, 1.0);
+  return score;
+}
+
+/** Raw BM25 of every candidate, in candidate order. */
+function bm25Scores(
+  query: ISearchQuery,
+  candidates: ISearchCandidate[],
+  context: ISearchContext,
+): number[] {
+  const queryTokens = context.tokenize(query.text);
+  const stats = keywordStats(candidates, context.tokenize);
+  return candidates.map((_c, i) => bm25(queryTokens, i, stats));
+}
+
+/**
+ * Raw BM25 is unbounded; the historical absolute scale, kept for the score
+ * `Bm25OnlyStrategy` reports (ranking uses the raw value, so the clamp no
+ * longer flattens strong matches into a tie).
+ */
+function bm25Absolute(raw: number): number {
+  return Math.min(raw / 5, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -127,15 +147,18 @@ export class WeightedFusionStrategy implements ISearchStrategy {
     candidates: ISearchCandidate[],
     context: ISearchContext,
   ): IScoredResult[] {
-    const queryTokens = context.tokenize(query.text);
-    const stats = keywordStats(candidates, context.tokenize);
+    // BM25 normalised per query over these candidates (divided by the best
+    // one), so both parts are in [0, 1] and the weights mean what they say:
+    // the best keyword match contributes exactly `keywordWeight`.
+    const raw = bm25Scores(query, candidates, context);
+    const max = Math.max(0, ...raw);
     return candidates
       .map((c, i) => ({
         text: c.text,
         metadata: c.metadata,
         score:
           cosine(query.vector, c.vector) * this.vectorWeight +
-          bm25(queryTokens, i, stats) * this.keywordWeight,
+          (max > 0 ? raw[i] / max : 0) * this.keywordWeight,
       }))
       .sort((a, b) => b.score - a.score);
   }
@@ -166,30 +189,26 @@ export class RrfStrategy implements ISearchStrategy {
     candidates: ISearchCandidate[],
     context: ISearchContext,
   ): IScoredResult[] {
-    const queryTokens = context.tokenize(query.text);
-
     // Score by each method independently
     const vectorScores = candidates.map((c, i) => ({
       idx: i,
       score: cosine(query.vector, c.vector),
     }));
-    const stats = keywordStats(candidates, context.tokenize);
-    const bm25Scores = candidates.map((_c, i) => ({
-      idx: i,
-      score: bm25(queryTokens, i, stats),
-    }));
+    const bm25Ranked = bm25Scores(query, candidates, context).map(
+      (score, idx) => ({ idx, score }),
+    );
 
     // Sort each list desc to get ranks
     vectorScores.sort((a, b) => b.score - a.score);
-    bm25Scores.sort((a, b) => b.score - a.score);
+    bm25Ranked.sort((a, b) => b.score - a.score);
 
     // Build rank maps (0-indexed rank)
     const vectorRank = new Map<number, number>();
     const bm25Rank = new Map<number, number>();
     for (let i = 0; i < vectorScores.length; i++)
       vectorRank.set(vectorScores[i].idx, i);
-    for (let i = 0; i < bm25Scores.length; i++)
-      bm25Rank.set(bm25Scores[i].idx, i);
+    for (let i = 0; i < bm25Ranked.length; i++)
+      bm25Rank.set(bm25Ranked[i].idx, i);
 
     // Compute RRF score
     return candidates
@@ -246,15 +265,15 @@ export class Bm25OnlyStrategy implements ISearchStrategy {
     candidates: ISearchCandidate[],
     context: ISearchContext,
   ): IScoredResult[] {
-    const queryTokens = context.tokenize(query.text);
-    const stats = keywordStats(candidates, context.tokenize);
+    const raw = bm25Scores(query, candidates, context);
     return candidates
-      .map((c, i) => ({
+      .map((c, i) => ({ c, raw: raw[i] }))
+      .sort((a, b) => b.raw - a.raw)
+      .map(({ c, raw: r }) => ({
         text: c.text,
         metadata: c.metadata,
-        score: bm25(queryTokens, i, stats),
-      }))
-      .sort((a, b) => b.score - a.score);
+        score: bm25Absolute(r),
+      }));
   }
 }
 

@@ -73,6 +73,11 @@ rag:
 
 **Default:** 0.7 / 0.3 (favors semantic understanding).
 
+Both parts are in [0, 1]: the BM25 score is divided by the best BM25 score among the query's
+candidates, so the best keyword match contributes exactly `keywordWeight` and the weights are the
+real shares. (Before this release BM25 was scaled by a fixed `/5` and clamped at 1, so strong
+keyword matches saturated into a tie.)
+
 **When to adjust:**
 
 | Scenario | vectorWeight | keywordWeight | Rationale |
@@ -152,7 +157,10 @@ rag:
 
 - **Higher (0.95+):** Keeps near-duplicates, larger index, slightly better recall.
 - **Lower (0.85–0.90):** Aggressively deduplicates, smaller index, faster queries.
-- Applied during `upsert()` — if a new document is >= threshold similar to an existing one, it is skipped.
+- Applied during `upsert()` **only to records written without an id**: a new id-less document
+  that is >= threshold similar to an existing id-less one replaces it. A record with an id
+  (every tool and skill record) is replaced only by a write with the same id — two tools with
+  near-identical descriptions are both kept.
 
 ## Search Strategies
 
@@ -162,7 +170,7 @@ rag:
 
 | Strategy | Description | Best for |
 |----------|-------------|----------|
-| `WeightedFusionStrategy` | `score = vectorScore × w1 + bm25Score × w2` (default 0.7/0.3) | General-purpose, configurable weights |
+| `WeightedFusionStrategy` | `score = cosine × w1 + (bm25 / best bm25 of the candidates) × w2` (default 0.7/0.3) | General-purpose, configurable weights — the default, and the best on the eval below |
 | `RrfStrategy` | Reciprocal Rank Fusion — rank-based, magnitude-independent | Stable ranking when score distributions differ |
 | `VectorOnlyStrategy` | Pure cosine similarity | When BM25 tokenization doesn't match the domain |
 | `Bm25OnlyStrategy` | Pure BM25 keyword matching | Exact terms, no embedder available |
@@ -186,7 +194,26 @@ const rag = new VectorRag(embedder, {
 });
 ```
 
-### Benchmarks (159 ABAP MCP tools, Ollama bge-m3)
+### Benchmarks — tool-retrieval eval (`scripts/rag-eval`, 63 tools, 30 queries)
+
+Measured for this release with `npm run eval:rag` (see `scripts/rag-eval/README.md`), in-memory
+store, K=5:
+
+| Config | Strategy | recall@1 | recall@5 | MRR |
+|--------|----------|----------|----------|-----|
+| keyword-only (`InMemoryRag`) | — | 80.0% | 93.3% | 0.869 |
+| Ollama `nomic-embed-text` | Weighted 0.7/0.3 (default) | **96.7%** | **100%** | **0.983** |
+| Ollama `nomic-embed-text` | RRF | 76.7% | 90.0% | 0.843 |
+| SAP AI Core `text-embedding-3-small` | Weighted 0.7/0.3 (default) | **96.7%** | **100%** | **0.983** |
+| SAP AI Core `text-embedding-3-small` | RRF | 93.3% | 100% | 0.958 |
+
+Before this release's BM25 normalisation and identifier tokenizer, the default gave MRR 0.883
+(Ollama) and 0.900 (AI Core), keyword-only 0.828.
+
+### Older benchmarks (159 ABAP MCP tools, before the BM25 normalisation)
+
+> Historical: measured with the old fixed-scale, clamped BM25 and the old tokenizer; the ranking
+> of Weighted vs RRF no longer holds (see the table above).
 
 > **Note:** benchmarks were run with `nomic-embed-text` (768 dimensions). The shipped examples now use `bge-m3` (multilingual, 1024 dimensions). Relative strategy rankings remain valid; absolute scores may differ slightly with `bge-m3`.
 
@@ -282,10 +309,20 @@ for (const tool of tools) {
 
 `InvertedIndex` (in `packages/llm-agent/src/rag/inverted-index.ts`) maintains an in-memory inverted index with BM25 scoring:
 
-1. **On upsert:** Tokenizes text, updates document frequency (DF) maps, stores term positions.
-2. **On query:** Computes BM25 score per document using IDF × TF saturation × length normalization.
+The built-in strategies compute BM25 statistics — document frequency, document count, average
+length — over **the query's candidates only**: the records that passed the namespace, TTL, session
+and user filters. Statistics over the whole store would make one session's ranking depend on
+another session's records. `VectorRag` builds an `InvertedIndex` over those candidates per query
+(lazily, for custom strategies that read `ISearchContext.index`); it keeps no store-wide index.
 
-Term lookups are O(1) via `Map`, compared to the O(n) corpus scan of the older TF-IDF approach.
+### Tokenizer
+
+Both in-memory stores tokenize records and queries the same way: split on anything but ASCII
+letters, digits and `_`, lower-case, drop one-character tokens, and split identifiers into their
+parts while keeping the whole identifier — `ReadFunctionInclude` → `readfunctioninclude`, `read`,
+`function`, `include`; `GetXMLParser` → … `xml`, `parser`; `get_sql_query` → … `get`, `sql`,
+`query`. There is no stemming: a plural / `-ing` / `-ed` rule was measured on the eval above and
+lowered MRR.
 
 ### BM25 parameters
 

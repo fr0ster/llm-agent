@@ -2,12 +2,23 @@
 
 ## [Unreleased]
 
+**Changed:** `WeightedFusionStrategy` (the `VectorRag` default) normalises BM25 per query — divided
+by the best BM25 score among the candidates — before weighting, so both parts are in [0, 1] and
+`vectorWeight` / `keywordWeight` are the real shares (the best keyword match contributes exactly
+`keywordWeight`). It used a fixed `min(bm25 / 5, 1)`, which saturated: strong keyword matches tied.
+`RrfStrategy` and `Bm25OnlyStrategy` now rank by the raw BM25 score for the same reason;
+`Bm25OnlyStrategy` still reports `min(bm25 / 5, 1)` as the score. No strategy or config field is
+removed. Tool-retrieval eval (`scripts/rag-eval`), recall@5 / MRR, before → after:
+Ollama `nomic-embed-text` 100% / 0.900 → 100% / 0.983; SAP AI Core `text-embedding-3-small`
+100% / 0.950 → 100% / 0.983 (keyword-only unaffected, 0.869). The default stays weighted fusion:
+`RrfStrategy` on the same configs scored 90.0% / 0.843 (Ollama) and 100% / 0.958 (AI Core).
+
 **Changed:** `InMemoryRag` and `VectorRag` (its BM25 part) share one keyword tokenizer, for
 records and queries alike, that splits identifiers: camelCase / PascalCase (an acronym run ends
 before the next word, `GetXMLParser` → get, xml, parser) and snake_case become their parts, and the
 whole identifier is kept too. Before, `ReadFunctionInclude` was one token and the query "function
 include" did not match it. No suffix normalisation: a plural / `-ing` / `-ed` rule was measured
-and lowered MRR (see the release notes' eval table). Tool-retrieval eval (`scripts/rag-eval`, 63
+and lowered MRR on the keyword-only and Ollama configs. Tool-retrieval eval (`scripts/rag-eval`, 63
 tools, 30 queries), recall@5 / MRR before → after: keyword-only 93.3% / 0.828 → 93.3% / 0.869;
 Ollama `nomic-embed-text` 96.7% / 0.883 → 100% / 0.900; SAP AI Core `text-embedding-3-small`
 96.7% / 0.900 → 100% / 0.950.

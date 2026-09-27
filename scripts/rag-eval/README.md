@@ -102,8 +102,9 @@ Per config:
 Warnings to take seriously:
 
 - `counted as vectorized but not retrievable` — the store reported a write
-  but no longer returns that tool (the in-memory store's `dedupThreshold`
-  overwrites a near-duplicate vector).
+  but no longer returns that tool — the store merged records with different
+  ids, which breaks the writer contract (the in-memory stores did this through
+  `dedupThreshold` before they stopped merging distinct ids).
 - `results carried no tool id` — a store returned records without a
   `tool:*` `metadata.id`; selection cannot name them.
 - `score-order inversions` — results not sorted by score.

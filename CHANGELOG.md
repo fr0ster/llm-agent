@@ -133,6 +133,9 @@ builds the classifier.
 
 ### Changed
 
+- `VectorRag`'s default `WeightedFusionStrategy` normalises BM25 per query before weighting, so
+  the 0.7 / 0.3 weights are the real shares. Tool-retrieval MRR: Ollama 0.900 → 0.983, AI Core
+  0.950 → 0.983 (RRF, measured on the same configs: 0.843 / 0.958, so it stays non-default).
 - The in-memory stores' keyword tokenizer splits identifiers (camelCase, PascalCase, snake_case)
   into their parts and keeps the whole identifier, so "function include" finds
   `ReadFunctionInclude`. Tool-retrieval MRR: keyword-only 0.828 → 0.869, Ollama 0.883 → 0.900,
