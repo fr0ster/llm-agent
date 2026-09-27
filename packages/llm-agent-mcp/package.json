@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-mcp",
-  "version": "27.0.0",
+  "version": "27.0.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@mcp-abap-adt/interfaces-auth": "^1.1.0",
-    "@mcp-abap-adt/llm-agent": "^27.0.0",
+    "@mcp-abap-adt/llm-agent": "^27.0.1",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "publishConfig": {
