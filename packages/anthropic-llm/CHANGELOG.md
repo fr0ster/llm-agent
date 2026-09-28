@@ -2,7 +2,7 @@
 
 ## 27.0.2
 
-Accepts `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^1.1.0 || ^2.0.0`, so a consumer that also uses `lib` 13 / `connection` 9 / `auth-broker` 3 keeps one copy. The credential types this package uses are identical in 1.2 and 2.1. No code changes.
+Moves to `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^2.1.0` (and `@mcp-abap-adt/interfaces-utils` `^1.1.0`), so a consumer on `lib` 13 / `connection` 9 / `auth-broker` 3 resolves a single copy of the interface packages instead of two. The credential types this package uses are identical in 1.2 and 2.1: a consumer still on `interfaces-auth` 1.x keeps working, but gets a second copy until it upgrades. No code changes.
 
 ## 27.0.1
 

@@ -24,7 +24,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/interfaces-auth": "^1.1.0 || ^2.0.0",
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
     "@mcp-abap-adt/llm-agent": "^27.0.2",
     "@mcp-abap-adt/sap-aicore-auth": "^27.0.2",
     "@sap-ai-sdk/orchestration": "^2.15.0"

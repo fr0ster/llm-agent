@@ -11,11 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [27.0.2] — 2026-09-28
 
-Accepts `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^1.1.0 || ^2.0.0`, so a consumer that also uses `lib` 13 / `connection` 9 / `auth-broker` 3 keeps one copy. The credential types this package uses are identical in 1.2 and 2.1. No code changes.
+Moves to `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^2.1.0` (and `@mcp-abap-adt/interfaces-utils` `^1.1.0`), so a consumer on `lib` 13 / `connection` 9 / `auth-broker` 3 resolves a single copy of the interface packages instead of two. The credential types this package uses are identical in 1.2 and 2.1: a consumer still on `interfaces-auth` 1.x keeps working, but gets a second copy until it upgrades. No code changes.
 
-## [27.0.2] — 2026-09-28
-
-Accepts `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^1.1.0 || ^2.0.0`, so a consumer that also uses `lib` 13 / `connection` 9 / `auth-broker` 3 keeps one copy. The credential types this package uses are identical in 1.2 and 2.1. No code changes.
+Also picks up the grouped minor/patch dependency updates: `@sap/hana-client` 2.30, `zod` 4.6, `@sap-ai-sdk/*` 2.16, `yaml` 2.9.1, `@modelcontextprotocol/sdk` 1.30.1 (#311; published ranges raised accordingly) and dev tooling (#309).
 
 ## [27.0.1] — 2026-09-27
 
