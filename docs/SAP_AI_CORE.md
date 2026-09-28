@@ -79,8 +79,11 @@ sees the client secret.
 |----------|---------|
 | `LLM_SERVICE_KEY` | SAP AI Core service key JSON, read by the `llm-agent` binary for the default LLM ref (before v27: `AICORE_SERVICE_KEY`) |
 | `LLM_PROVIDER` | Set to `sap-ai-sdk` to use SAP AI Core |
-| `SAP_AI_MODEL` | Model name (used by CLI, maps to `model` config) |
-| `SAP_AI_RESOURCE_GROUP` | Resource group (used by CLI, maps to `resourceGroup` config) |
+| `SAP_AI_MODEL` | Model name — only where the YAML references it: `model: ${SAP_AI_MODEL}` |
+| `SAP_AI_RESOURCE_GROUP` | Resource group — only where the YAML references it: `resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}` |
+
+The server reads no model or resource group from the environment on its own; a variable reaches
+the config through `${VAR}` substitution in `smart-server.yaml`.
 
 ## Usage Examples
 
@@ -92,6 +95,12 @@ export LLM_SERVICE_KEY='{ ... }'
 export LLM_PROVIDER=sap-ai-sdk
 export SAP_AI_MODEL=gpt-4o
 export SAP_AI_RESOURCE_GROUP=default
+
+# smart-server.yaml references them:
+#   llm:
+#     provider: sap-ai-sdk
+#     model: ${SAP_AI_MODEL}
+#     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
 # Run
 npm run dev
@@ -129,9 +138,9 @@ When using the SmartAgent pipeline, SAP AI Core is configured through the pipeli
 llm:
   provider: sap-ai-sdk
   model: gpt-4o
-  temperature: 0.7
-  maxTokens: 4000
-  resourceGroup: default
+  temperature: 0.7        # optional: unset, none is sent (gpt-5 / o-series / claude-opus-4-7+ accept only 1)
+  maxTokens: 4000         # optional: unset, the model's own limit applies
+  resourceGroup: default  # optional: unset, AI Core's `default` group; sap-ai-sdk only
 ```
 
 ## Streaming Diagnostics

@@ -34,3 +34,25 @@ describe('optionalNumber', () => {
     assert.equal(optionalNumber(0), 0);
   });
 });
+
+describe('resolveLlmSection — resourceGroup', () => {
+  it('keeps a flat llm.resourceGroup', () => {
+    const llm = resolveLlmSection({
+      llm: { provider: 'sap-ai-sdk', model: 'gpt-4o', resourceGroup: 'rg-1' },
+    }) as { resourceGroup?: string };
+    assert.equal(llm.resourceGroup, 'rg-1');
+  });
+
+  it('keeps a map entry resourceGroup', () => {
+    const llm = resolveLlmSection({
+      llm: {
+        main: {
+          provider: 'sap-ai-sdk',
+          model: 'gpt-4o',
+          resourceGroup: 'rg-2',
+        },
+      },
+    }) as { main: { resourceGroup?: string } };
+    assert.equal(llm.main.resourceGroup, 'rg-2');
+  });
+});

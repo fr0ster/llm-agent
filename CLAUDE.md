@@ -127,7 +127,7 @@ Copy `.env.template` to `.env`. Key variables:
 | `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` / `ollama` |
 | `LLM_API_KEY` / `LLM_SERVICE_KEY` | Credential of every `llm:` entry without `credentialRef` — an API key, or a SAP AI Core service-key JSON for `sap-ai-sdk` |
 | `<REF>_API_KEY` / `<REF>_SERVICE_KEY` / `<REF>_USER` + `<REF>_PASSWORD` | A section with `credentialRef: <REF>` reads these; `RAG_STORE` and `RAG_EMBEDDER` are the defaults for `rag.store` / `rag.embedder` (`AICORE_SERVICE_KEY` is no longer read) |
-| `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI SDK model name and resource group |
+| `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI Core model name and resource group — read only where `smart-server.yaml` references them (`model: ${SAP_AI_MODEL}`, `resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}`) |
 | `MCP_ENDPOINT` | MCP server URL (default: `http://localhost:4004/mcp/stream/http`) |
 | `DEBUG_LLM_REASON` | `true` to log LLM reasoning |
 

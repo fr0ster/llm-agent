@@ -146,6 +146,12 @@ export interface SmartServerLlmConfig {
   maxTokens?: number;
   classifierTemperature?: number;
   /**
+   * SAP AI Core resource group (`provider: sap-ai-sdk` only). Unset, AI Core's
+   * `default` group applies; set on any other provider, startup fails rather
+   * than dropping it.
+   */
+  resourceGroup?: string;
+  /**
    * What the provider does when a server throttles it: `maxAttempts` and a
    * `strategy`. Omit and nothing waits — the failure comes back carrying what
    * the server said, and the caller decides.

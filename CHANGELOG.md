@@ -9,6 +9,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **`llm.resourceGroup` reaches SAP AI Core.** The key was accepted in an `llm:` entry — the shipped examples set `resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}` on every role — but `makeLlm` never passed it on, so every chat ran in AI Core's `default` group. It is now handed to the `sap-ai-sdk` provider (flat and map `llm:` shapes); set on any other provider it fails at startup instead of being dropped. `npm run models:check -- --config` probes each role in its resource group.
+- **Examples: `anthropic--claude-3-haiku` → `anthropic--claude-4.5-haiku`.** AWS retired claude-3-haiku (every call now answers `400 … This model version has reached the end of its life`); `examples/docker-sap-ai-core` and `examples/sap-ai-core-direct` defaulted classifier and helper to it. claude-4.5-haiku classifies and calls tools through AI Core.
+- Docs no longer say the server reads `SAP_AI_MODEL` / `SAP_AI_RESOURCE_GROUP` by itself; they reach the config only through `${VAR}` in the YAML.
+
+### Removed
+
+- The implemented v27 design spec and plan under `docs/superpowers/`.
+
 ## [29.0.0] — 2026-09-28
 
 **BREAKING — see [docs/MIGRATION-v29.md](docs/MIGRATION-v29.md).**

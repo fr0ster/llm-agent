@@ -27,12 +27,12 @@ llm:
     maxTokens: 32768
   classifier:
     provider: ${LLM_PROVIDER:-sap-ai-sdk}
-    model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-3-haiku}
+    model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-4.5-haiku}
     temperature: 0.1
     maxTokens: 2048
   helper:
     provider: ${LLM_PROVIDER:-sap-ai-sdk}
-    model: ${LLM_HELPER_MODEL:-anthropic--claude-3-haiku}
+    model: ${LLM_HELPER_MODEL:-anthropic--claude-4.5-haiku}
     temperature: 0.1
     maxTokens: 2048
 

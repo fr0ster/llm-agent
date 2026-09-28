@@ -43,9 +43,9 @@ pipeline:
       evaluator: { llm: evaluator }
       planner:   { llm: planner }
       # Light model — step execution + tool calls (mechanical role).
-      # NOTE: claude-3-haiku CANNOT do tools via this AI Core orchestration
-      # (rejects the tool `type` field → 400). Use a tool-capable light model;
-      # gpt-4o-mini uses the native function format the orchestration accepts.
+      # NOTE: the light model must call tools through AI Core orchestration —
+      # gpt-4o-mini or anthropic--claude-4.5-haiku do (claude-3-haiku did not,
+      # and AWS has since retired it).
       executor:
         llm: executor
         # Operational scaffolding for the small model: keep it strict so it does

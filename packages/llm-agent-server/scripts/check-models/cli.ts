@@ -185,7 +185,7 @@ interface IModelToCheck {
   model: string;
   probes: IModeProbe[];
   account: IAccount;
-  /** Chat: the server passes none (AI Core's 'default'); embed: its own. */
+  /** The role's resource group, or AI Core's 'default' when it names none. */
   resourceGroup: string;
   scenario: 'orchestration' | 'foundation-models';
   /** Config roles this row answers for (config mode only). */
@@ -261,7 +261,7 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
       'chat',
       entry.model,
       entry.credentialRef ?? DEFAULT_LLM_REF,
-      'default',
+      entry.resourceGroup ?? 'default',
       embedScenario as IModelToCheck['scenario'],
       {
         ...(entry.temperature !== undefined

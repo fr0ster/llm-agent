@@ -66,6 +66,14 @@ export function createMakeLlm(
       maxTokens: cfg.maxTokens,
       whenThrottled: cfg.whenThrottled,
     };
+    // A knob only one provider understands is refused elsewhere, not dropped:
+    // the config said something, and silently ignoring it runs against a
+    // resource group nobody chose.
+    if (cfg.resourceGroup !== undefined && cfg.provider !== 'sap-ai-sdk') {
+      throw new Error(
+        `llm resourceGroup applies to provider 'sap-ai-sdk' only, not '${String(cfg.provider)}'`,
+      );
+    }
     const provider: ProviderInstance = await (async () => {
       switch (cfg.provider) {
         case 'openai':
@@ -103,6 +111,9 @@ export function createMakeLlm(
             ...knobs,
             credential: entry.require('bearer'),
             apiBaseUrl: entry.requireApiBaseUrl(),
+            ...(cfg.resourceGroup !== undefined
+              ? { resourceGroup: cfg.resourceGroup }
+              : {}),
           });
         default:
           throw new Error(`unknown llm provider '${String(cfg.provider)}'`);

@@ -42,6 +42,9 @@ export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
             : {}),
           url: get(yaml, 'llm', 'url') as string | undefined,
           model: get(yaml, 'llm', 'model') as string | undefined,
+          ...(get(yaml, 'llm', 'resourceGroup') !== undefined
+            ? { resourceGroup: String(get(yaml, 'llm', 'resourceGroup')) }
+            : {}),
           // Unset stays unset: the provider then sends no temperature and
           // the model applies its own default.
           temperature: optionalNumber(get(yaml, 'llm', 'temperature')),
