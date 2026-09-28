@@ -26,7 +26,7 @@
   "dependencies": {
     "@mcp-abap-adt/interfaces-auth": "^1.1.0 || ^2.0.0",
     "@mcp-abap-adt/llm-agent": "^27.0.2",
-    "@sap/hana-client": "^2.29.27"
+    "@sap/hana-client": "^2.30.27"
   },
   "license": "LGPL-3.0-only",
   "repository": {
