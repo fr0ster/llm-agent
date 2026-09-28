@@ -1,8 +1,8 @@
 # @mcp-abap-adt/llm-agent-server
 
-## 27.0.2
+## 28.0.0
 
-`@mcp-abap-adt/interfaces-auth` (and, where used, `@mcp-abap-adt/interfaces-utils`) is now a **peer dependency** with the range `^2.1.0` (`interfaces-utils`: `^1.1.0`) — the same in every package — instead of a regular dependency accepting 1.x (#314). npm installs one copy, the consumer's, instead of nesting a second one under these packages. A consumer on `interfaces-auth` 1.x gets `ERESOLVE` and must upgrade to 2.x. No code changes.
+**BREAKING (install contract only — no API change).** Every `@mcp-abap-adt/*` package this library uses — ours (`llm-agent`, `llm-agent-mcp`, …) and the shared `interfaces-auth` (`^2.1.0`) / `interfaces-utils` (`^1.1.0`) — is now a **peer dependency**, with the same range in every package, so a consumer's install holds exactly one copy of each. A version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. `@mcp-abap-adt/llm-agent-server` (the binary) keeps them as regular dependencies. Also includes the minor/patch dependency updates (#309, #311). 27.0.2 was tagged but never published; its change is part of this release. See docs/MIGRATION-v28.md.
 
 ## 27.0.1
 
