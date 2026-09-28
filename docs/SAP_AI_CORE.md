@@ -143,6 +143,27 @@ llm:
   resourceGroup: default  # optional: unset, AI Core's `default` group; sap-ai-sdk only
 ```
 
+### Asymmetric embedding models
+
+`nvidia--llama-3.2-nv-embedqa-1b` embeds stored text and search text differently and
+answers `400 … requires 'type' ['document', 'query']` to a plain call. Mark it:
+
+```yaml
+rag:
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: nvidia--llama-3.2-nv-embedqa-1b
+    asymmetric: true          # orchestration scenario only
+```
+
+The server then builds two instances on the model: a document one for what it writes (the
+stores, tool vectorization, skills, knowledge entries) and a query one for what it searches
+with (the agent, the pipeline, tool selection). `asymmetric` on any other provider, or with
+`scenario: foundation-models`, is refused at startup. `npm run models:check -- --config …`
+probes both halves.
+
 ## Streaming Diagnostics
 
 SAP AI Core streaming can fail after successful MCP/tool execution but before the final response is fully delivered to the client. In production, if your host sees unstable `sap-ai-sdk` streaming behavior, prefer a non-streaming request path for SAP AI Core and use the streaming path only for diagnosis.

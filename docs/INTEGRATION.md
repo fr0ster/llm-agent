@@ -465,6 +465,37 @@ interface IEmbedder {
 
 `embed()` returns `IEmbedResult` rather than a raw `number[]`. Access the embedding via the `.vector` property. The optional `usage` field reports token consumption for providers that expose it (e.g. OpenAI, SAP AI Core).
 
+#### Document and query roles (asymmetric models)
+
+Some retrieval models embed stored text and search text differently —
+`nvidia--llama-3.2-nv-embedqa-1b` on SAP AI Core refuses a call without
+`type: document | query`. Two role interfaces name the two jobs; the method is
+the same `embed()`:
+
+```ts
+interface IDocumentEmbedder {            // text WRITTEN into a store
+  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
+  readonly embedderRole?: 'document';
+}
+interface IQueryEmbedder {               // text a store is SEARCHED with
+  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
+  readonly embedderRole?: 'query';
+}
+```
+
+- A **symmetric** embedder (every `IEmbedder` you already have) declares no role and fits
+  both — nothing to change.
+- An **asymmetric** model is two classes, one instance each, on the same model; each adds
+  its own parameter to the call and declares its role with `declare readonly embedderRole`
+  (type-only, nothing is set at runtime). The compiler then refuses one where the other is
+  expected. `SapAiCoreDocumentEmbedder` / `SapAiCoreQueryEmbedder` are the SAP AI Core pair.
+- The wrappers (retry, chunking, usage logging) are role-free, so a wrapped instance fits
+  either slot — wire the right one once, where you build them.
+
+`SmartServer` does this for you with `rag.embedder.asymmetric: true` (SAP AI Core,
+orchestration scenario): stores, skill indexing and knowledge entries get the document
+half; the agent, the pipeline and tool selection the query half.
+
 #### Batch support and provider caps
 
 Implement `IEmbedderBatch` when the provider accepts many inputs per call — startup MCP tool vectorization uses it, and falls back to one request per tool without it:

@@ -15,6 +15,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **Examples: `anthropic--claude-3-haiku` → `anthropic--claude-4.5-haiku`.** AWS retired claude-3-haiku (every call now answers `400 … This model version has reached the end of its life`); `examples/docker-sap-ai-core` and `examples/sap-ai-core-direct` defaulted classifier and helper to it. claude-4.5-haiku classifies and calls tools through AI Core.
 - Docs no longer say the server reads `SAP_AI_MODEL` / `SAP_AI_RESOURCE_GROUP` by itself; they reach the config only through `${VAR}` in the YAML.
 
+### Added
+
+- **Asymmetric embedding models** (e.g. `nvidia--llama-3.2-nv-embedqa-1b`, which refuses a call without `type: document | query`):
+  - `@mcp-abap-adt/llm-agent`: `IDocumentEmbedder` (text written into a store) and `IQueryEmbedder` (text a store is searched with) — the same `embed()` as `IEmbedder`, plus a type-only `embedderRole` tag. A symmetric embedder declares no role and fits both, so nothing existing changes; an asymmetric pair declares its roles and the compiler refuses one where the other is expected.
+  - `@mcp-abap-adt/sap-aicore-embedder`: `SapAiCoreDocumentEmbedder` / `SapAiCoreQueryEmbedder`, two classes on one model, each adding its own `type` to every call; `SapAiCoreEmbedder` gains `inputType` (orchestration scenario only — refused with `foundation-models`).
+  - `rag.embedder.asymmetric: true` (SAP AI Core): the server builds both instances — stores, tool vectorization, skills and knowledge entries get the document half; the agent, the pipeline and tool selection the query half. Refused on any other provider and with `scenario: foundation-models`. `models:check --config` probes both halves.
+
 ### Removed
 
 - The implemented v27 design spec and plan under `docs/superpowers/`.

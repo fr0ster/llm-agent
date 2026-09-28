@@ -190,6 +190,9 @@ export async function relevantExtract(
   maxChars: number,
   embedder: IEmbedder,
   options?: CallOptions,
+  /** Embeds the content windows (stored text) for an asymmetric model;
+   *  absent, `embedder` embeds both the ref and the windows. */
+  documentEmbedder: IEmbedder = embedder,
 ): Promise<string> {
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars));
@@ -202,7 +205,7 @@ export async function relevantExtract(
   let bestStart = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
   for (let s = 0; s < content.length; s += stride) {
-    const { vector } = await embedder.embed(
+    const { vector } = await documentEmbedder.embed(
       content.slice(s, s + body),
       options,
     );

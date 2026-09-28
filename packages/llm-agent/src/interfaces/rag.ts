@@ -16,6 +16,32 @@ export interface IEmbedder {
   embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
 }
 
+/**
+ * Embeds text that is WRITTEN into a store — records, tool descriptions,
+ * skills, knowledge entries. Same method as {@link IEmbedder}; the role exists
+ * for models that embed stored text and search text differently (asymmetric
+ * retrieval models such as `nvidia--llama-3.2-nv-embedqa-1b`).
+ *
+ * A symmetric embedder declares no role and fits both this and
+ * {@link IQueryEmbedder}. An asymmetric pair declares `embedderRole`, and the
+ * compiler then refuses one where the other is expected. `embedderRole` is a
+ * type-only tag — implementations use `declare readonly`, nothing is set at
+ * runtime.
+ */
+export interface IDocumentEmbedder {
+  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
+  readonly embedderRole?: 'document';
+}
+
+/**
+ * Embeds text a store is SEARCHED with — a user request, a step instruction.
+ * See {@link IDocumentEmbedder}.
+ */
+export interface IQueryEmbedder {
+  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
+  readonly embedderRole?: 'query';
+}
+
 /** Config subset passed to EmbedderFactory so it can configure the embedder. */
 export interface EmbedderFactoryConfig {
   /** Base URL for the embedding service (Ollama URL, OpenAI base, etc.) */

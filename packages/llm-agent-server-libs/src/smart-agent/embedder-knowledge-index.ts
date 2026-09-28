@@ -50,6 +50,9 @@ export function makeKnowledgeSemanticIndex(
     'controller-terminal',
   ],
   maxEmbedChars = 16000,
+  /** Embeds the search text for an asymmetric model; absent, `embedder`
+   *  (which always embeds the stored entries) serves both. */
+  queryEmbedder: IEmbedder = embedder,
 ) {
   const bySession = new Map<string, Indexed[]>();
   // Bound the text handed to the embedder so an over-limit document never 400s
@@ -87,7 +90,10 @@ export function makeKnowledgeSemanticIndex(
       const scoped = filter
         ? all.filter((x) => matchesKnowledgeFilter(x.entry.metadata, filter))
         : all; // PRE-cap
-      const { vector: q } = await embedder.embed(embedInput(text), options);
+      const { vector: q } = await queryEmbedder.embed(
+        embedInput(text),
+        options,
+      );
       const ranked = scoped
         .map((x) => ({ e: x.entry, s: cosine(q, x.vector) }))
         .sort((a, b) => b.s - a.s)

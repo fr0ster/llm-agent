@@ -110,6 +110,18 @@ export type SmartServerEmbedderConfig =
       /** SAP AI Core scenario: 'orchestration' (default) or 'foundation-models'. */
       scenario?: 'orchestration' | 'foundation-models';
       /**
+       * The model embeds stored text and search text differently (e.g.
+       * `nvidia--llama-3.2-nv-embedqa-1b`). The server then builds TWO instances
+       * on the same model — a document one for what it writes into stores, a
+       * query one for what it searches with. SAP AI Core, orchestration only.
+       */
+      asymmetric?: boolean;
+      /**
+       * Which half of an asymmetric pair to build — set by the server for each
+       * of the two instances, not by the YAML.
+       */
+      inputType?: 'document' | 'query';
+      /**
        * Cap on texts per embedBatch call. Precedence: this value → the provider's
        * declared cap → the library default (100).
        */

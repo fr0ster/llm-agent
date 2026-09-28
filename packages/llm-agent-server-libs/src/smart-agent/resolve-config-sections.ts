@@ -306,6 +306,10 @@ function resolveRagEmbedder(
     ...(typeof raw.credentialRef === 'string'
       ? { credentialRef: raw.credentialRef }
       : {}),
+    // checkRag already refused a non-boolean / non-SAP / foundation-models one.
+    ...(raw.asymmetric === true || raw.asymmetric === 'true'
+      ? { asymmetric: true }
+      : {}),
   };
 }
 

@@ -18,7 +18,16 @@ export interface OrchestrationScenarioEmbedderConfig {
    * (§4.6.3) — its own field, the name `parseServiceKey` returns.
    */
   apiBaseUrl: string;
+  /**
+   * The input `type` asymmetric retrieval models require (e.g.
+   * `nvidia--llama-3.2-nv-embedqa-1b`: `document` for stored text, `query` for
+   * search text). Sent on every call when set; unset, none is sent.
+   */
+  inputType?: SapAiCoreEmbedderInputType;
 }
+
+/** The input types an asymmetric embedding model distinguishes. */
+export type SapAiCoreEmbedderInputType = 'document' | 'query';
 
 /** The constructed-destination shape the SAP AI SDK documents. */
 export interface OrchestrationEmbedderDestination {
@@ -50,12 +59,18 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
   private readonly resourceGroup?: string;
   private readonly apiBaseUrl: string;
   private readonly credential: IBearerCredential;
+  private readonly inputType?: SapAiCoreEmbedderInputType;
 
   constructor(config: OrchestrationScenarioEmbedderConfig) {
     this.model = config.model;
     this.resourceGroup = config.resourceGroup;
     this.apiBaseUrl = config.apiBaseUrl;
     this.credential = config.credential;
+    this.inputType = config.inputType;
+  }
+
+  private typed<T>(input: T): { input: T; type?: SapAiCoreEmbedderInputType } {
+    return this.inputType ? { input, type: this.inputType } : { input };
   }
 
   async embed(text: string, _options?: CallOptions): Promise<IEmbedResult> {
@@ -64,7 +79,7 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       credential: this.credential,
     });
     const client = await this.createClient(destination);
-    const response = await client.embed({ input: text });
+    const response = await client.embed(this.typed(text));
     const embeddings = response.getEmbeddings();
     if (!embeddings || embeddings.length === 0) {
       throw new RagError('No embeddings returned from SAP AI Core');
@@ -82,7 +97,7 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       credential: this.credential,
     });
     const client = await this.createClient(destination);
-    const response = await client.embed({ input: texts });
+    const response = await client.embed(this.typed(texts));
     const embeddings = response.getEmbeddings();
     if (!embeddings || embeddings.length === 0) {
       throw new RagError('No embeddings returned from SAP AI Core batch');

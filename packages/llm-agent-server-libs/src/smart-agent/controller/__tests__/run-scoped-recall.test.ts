@@ -292,3 +292,26 @@ describe('relevantExtract', () => {
     assert.ok(out.length <= 1);
   });
 });
+
+describe('relevantExtract — asymmetric embedder', () => {
+  it('embeds the ref with the query embedder and the windows with the document one', async () => {
+    const seen: string[] = [];
+    const role = (name: string) => ({
+      embed: async (t: string) => {
+        seen.push(name);
+        return { vector: [t.length] };
+      },
+    });
+    await relevantExtract(
+      'x'.repeat(40),
+      'ref',
+      10,
+      role('query'),
+      undefined,
+      role('document'),
+    );
+    assert.equal(seen[0], 'query');
+    assert.ok(seen.length > 1);
+    assert.ok(seen.slice(1).every((r) => r === 'document'));
+  });
+});

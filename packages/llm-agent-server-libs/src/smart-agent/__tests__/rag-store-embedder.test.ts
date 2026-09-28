@@ -393,4 +393,52 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
       await handle.close();
     }
   });
+
+  it('an asymmetric embedder: stores get the document half, the rest the query half', async () => {
+    const asked: Array<string | undefined> = [];
+    const inputs: MakeRagInput[] = [];
+    const roleVector = { document: [1], query: [2], none: [0] } as const;
+    const server = new SmartServer(
+      {
+        port: 0,
+        skipModelValidation: true,
+        llm: { main: { provider: 'ollama', model: 'qwen2.5' } },
+        rag: {
+          store: { type: 'in-memory', collectionName: 'docs' },
+          embedder: {
+            provider: 'sap-ai-core',
+            model: 'nvidia--llama-3.2-nv-embedqa-1b',
+            asymmetric: true,
+          },
+        },
+      },
+      {
+        ...constructionSeams,
+        resolveEmbedder: (ec) => {
+          const inputType = ec.factory === undefined ? ec.inputType : undefined;
+          asked.push(inputType);
+          return {
+            embed: async () => ({
+              vector: [...roleVector[inputType ?? 'none']],
+            }),
+          };
+        },
+        makeRag: async (input): Promise<IRag> => {
+          inputs.push(input);
+          return new InMemoryRag();
+        },
+      },
+    );
+    const handle = await server.start();
+    try {
+      assert.deepEqual(asked.sort(), ['document', 'query']);
+      assert.equal(inputs.length, 2, 'tools store and history store');
+      for (const input of inputs) {
+        const { vector } = await (input.embedder as IEmbedder).embed('x');
+        assert.deepEqual(vector, [1], 'a store embeds with the document half');
+      }
+    } finally {
+      await handle.close();
+    }
+  });
 });

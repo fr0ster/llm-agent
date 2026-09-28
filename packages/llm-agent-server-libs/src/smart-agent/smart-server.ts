@@ -801,6 +801,12 @@ export class SmartServer {
    */
   private _resolvedEmbedder?: IEmbedder;
   /**
+   * The embedder for text written into stores. For an asymmetric model
+   * (`rag.embedder.asymmetric`) it is the DOCUMENT half and `_resolvedEmbedder`
+   * the QUERY half, on the same model; otherwise it IS `_resolvedEmbedder`.
+   */
+  private _documentEmbedder?: IEmbedder;
+  /**
    * The live skill plugin-host, built ONCE in `start()` from `skillPlugins:`
    * config and `await host.load()`-ed before serving. Held so `buildServerCtx`
    * can thread it onto every pipeline context. Undefined when `skillPlugins:` is
@@ -1289,16 +1295,39 @@ export class SmartServer {
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
+    // `resolvedEmbedder` embeds what we SEARCH with (agent, pipeline, tool
+    // selection). For an asymmetric model a second instance on the same model
+    // embeds what we WRITE (stores, skills, knowledge entries); for a symmetric
+    // one both are the same instance and the `inputType` is ignored.
     const resolvedEmbedder = await resolveAgentEmbedder(
       this.cfg.rag,
       this._deps.embedder ?? this.cfg.embedder,
       this._deps.resolveEmbedder,
       mergedEmbedderFactories,
       this._fileLogger,
+      'query',
     );
+    const embedderSection = this.cfg.rag?.embedder;
+    const asymmetric =
+      this._deps.embedder === undefined &&
+      this.cfg.embedder === undefined &&
+      embedderSection !== undefined &&
+      embedderSection.factory === undefined &&
+      embedderSection.asymmetric === true;
+    const documentEmbedder = asymmetric
+      ? await resolveAgentEmbedder(
+          this.cfg.rag,
+          undefined,
+          this._deps.resolveEmbedder,
+          mergedEmbedderFactories,
+          this._fileLogger,
+          'document',
+        )
+      : resolvedEmbedder;
     // Hold the resolved embedder so buildServerCtx can thread it onto every
     // pipeline context (the controller pipeline needs it for target-state).
     this._resolvedEmbedder = resolvedEmbedder;
+    this._documentEmbedder = documentEmbedder;
 
     // ---- Skill plugin-host (the `skillPlugins:` feature) ------------------
     // Build the host ONCE from config and `load()` it before serving, so its
@@ -1331,7 +1360,7 @@ export class SmartServer {
             this._deps.buildSkillHost(skillCfg, {
               resolveEmbedder: (ec) =>
                 reuseAgentEmbedder
-                  ? ((injectedEmbedder ?? resolvedEmbedder) as IEmbedder)
+                  ? ((injectedEmbedder ?? documentEmbedder) as IEmbedder)
                   : this._deps.resolveEmbedder(
                       embedderSectionFor(ec.embedder, ec.model),
                       { extraFactories: mergedEmbedderFactories },
@@ -1382,7 +1411,7 @@ export class SmartServer {
       // The embedder was resolved through the seam above; the store is built
       // through its own. Two calls, two stores — the history store never shared
       // the tools store's instance.
-      const input = toMakeRagInput(this.cfg.rag.store, resolvedEmbedder, 'rag');
+      const input = toMakeRagInput(this.cfg.rag.store, documentEmbedder, 'rag');
       toolsRag = await this._deps.makeRag(input);
       historyRag = await this._deps.makeRag(input);
     }
@@ -2101,12 +2130,14 @@ export class SmartServer {
     diEmbedder: IEmbedder | undefined,
     extraFactories: Record<string, EmbedderFactory>,
   ): Promise<MakeRagInput> {
+    // A store embeds what it writes: the document half of an asymmetric model.
     const embedder = await resolveAgentEmbedder(
       rag,
       diEmbedder,
       this._deps.resolveEmbedder,
       extraFactories,
       this._fileLogger,
+      'document',
     );
     return toMakeRagInput(rag.store, embedder, `subagent '${name}' rag`);
   }
@@ -2322,7 +2353,11 @@ export class SmartServer {
     if (this._stepperKnowledgeBackend) return;
     this._stepperKnowledgeBackend = makeKnowledgeBackend({
       logDir: this.cfg.logDir,
-      embedder: this._resolvedEmbedder,
+      embedder: this._documentEmbedder ?? this._resolvedEmbedder,
+      ...(this._documentEmbedder !== undefined &&
+      this._documentEmbedder !== this._resolvedEmbedder
+        ? { queryEmbedder: this._resolvedEmbedder }
+        : {}),
     });
   }
 
@@ -2561,6 +2596,10 @@ export class SmartServer {
       stepperKnowledgeBackend:
         this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend(),
       embedder: this._resolvedEmbedder,
+      ...(this._documentEmbedder !== undefined &&
+      this._documentEmbedder !== this._resolvedEmbedder
+        ? { documentEmbedder: this._documentEmbedder }
+        : {}),
       // Skill plugin-host (built + loaded once in start()); undefined when no
       // `skillPlugins:` config — pipelines that don't read it are unaffected.
       ...(this._skillHost

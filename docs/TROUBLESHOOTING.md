@@ -47,6 +47,16 @@ For new model families not covered by `^gemini` heuristic, extend `detectFamily`
 
 ---
 
+### `400 … Model '…' requires 'type' ['document', 'query'] to be defined via 'input'`
+
+**Symptom.** Every embedding call fails with this message for an asymmetric retrieval model such as `nvidia--llama-3.2-nv-embedqa-1b`, while `text-embedding-3-small` on the same account works.
+
+**Cause.** The model embeds stored text (`document`) and search text (`query`) differently and needs to be told which one each call is.
+
+**Fix.** Set `asymmetric: true` on `rag.embedder` (SAP AI Core, orchestration scenario). The server then builds a document and a query instance on the model and wires each where it belongs — see [SAP_AI_CORE.md → Asymmetric embedding models](SAP_AI_CORE.md#asymmetric-embedding-models).
+
+---
+
 ### `MissingProviderError: Provider 'sap-ai-core' is declared in config but package '@mcp-abap-adt/sap-aicore-embedder' is not installed`
 
 **Symptom.** Server fails to start; the npm-workspace symlink to the embedder exists, the package builds, `dist/` is present — but the prefetch step still treats it as missing.

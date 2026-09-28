@@ -43,6 +43,12 @@ export interface IServerPipelineContext extends IPipelineContext {
    */
   embedder?: IEmbedder;
   /**
+   * The embedder for text written into a store, when the model is asymmetric
+   * (`rag.embedder.asymmetric`): `embedder` above is then the QUERY half.
+   * Undefined for a symmetric model — `embedder` serves both.
+   */
+  documentEmbedder?: IEmbedder;
+  /**
    * The live skill plugin-host, built once at startup from `skillPlugins:` config
    * and `await host.load()`-ed before serving. Consumed by the implicit
    * assembler wiring (B3) and the controller recall hook (B4). Undefined when no

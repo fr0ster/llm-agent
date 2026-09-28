@@ -270,6 +270,9 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
+      ...(ctx.documentEmbedder
+        ? { documentEmbedder: ctx.documentEmbedder }
+        : {}),
       selectTools,
       ...(skillsRecall ? { skillsRecall } : {}),
       toolLoopContextStrategyFactory,

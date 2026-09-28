@@ -127,6 +127,9 @@ export interface ControllerHandlerDeps {
   /** Required only for distance-based target-state strategies
    *  (semantic-distance/auto); unused by consumer-confirm. */
   embedder?: IEmbedder;
+  /** Embeds stored text (recall evidence windows) when the model is
+   *  asymmetric; absent, `embedder` serves both. */
+  documentEmbedder?: IEmbedder;
   /** Executes an INTERNAL (MCP) tool and returns its textual result. The
    *  optional `signal` is the merged per-step budget + caller-cancel signal
    *  (Task 5/7); the bridge cancels the in-flight MCP call when it aborts. */
@@ -1281,6 +1284,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               // biome-ignore lint/style/noNonNullAssertion: distance strategies require an embedder; the factory enforces it (Task 17).
               deps.embedder!,
               ctx.options,
+              deps.documentEmbedder,
             )
           : undefined;
         evidence.push({ ref, hit: hits.length > 0, topArtifact });

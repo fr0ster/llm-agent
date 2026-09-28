@@ -14,10 +14,18 @@ import { JsonlKnowledgeBackend } from '../jsonl-knowledge-backend.js';
  */
 export function makeKnowledgeBackend(input: {
   logDir?: string;
+  /** Embeds stored entries. */
   embedder?: IEmbedder;
+  /** Embeds search text for an asymmetric model; absent, `embedder` does. */
+  queryEmbedder?: IEmbedder;
 }): KnowledgeBackend {
   const semantic = input.embedder
-    ? makeKnowledgeSemanticIndex(input.embedder)
+    ? makeKnowledgeSemanticIndex(
+        input.embedder,
+        undefined,
+        undefined,
+        input.queryEmbedder,
+      )
     : undefined;
   return input.logDir
     ? new JsonlKnowledgeBackend(input.logDir, semantic)

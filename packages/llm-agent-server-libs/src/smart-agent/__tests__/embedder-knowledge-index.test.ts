@@ -405,3 +405,28 @@ describe('JsonlKnowledgeBackend index lifecycle', () => {
     });
   });
 });
+
+describe('makeKnowledgeSemanticIndex — asymmetric embedder', () => {
+  it('embeds entries with the document embedder and the search text with the query one', async () => {
+    const seen: string[] = [];
+    const role = (name: string) =>
+      ({
+        embed: async (t: string) => {
+          seen.push(`${name}:${t}`);
+          return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+        },
+      }) as never;
+    const idx = makeKnowledgeSemanticIndex(
+      role('document'),
+      undefined,
+      undefined,
+      role('query'),
+    );
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+    });
+    await idx.query('s', 'alpha');
+    assert.deepEqual(seen, ['document:alpha', 'query:alpha']);
+  });
+});

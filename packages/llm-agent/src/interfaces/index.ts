@@ -140,10 +140,12 @@ export type { IQueryEmbedding } from './query-embedding.js';
 export type {
   EmbedderFactory,
   EmbedderFactoryConfig,
+  IDocumentEmbedder,
   IEmbedder,
   IEmbedderBatch,
   IEmbedResult,
   IIdStrategy,
+  IQueryEmbedder,
   IRag,
   IRagBackendWriter,
   IRagEditor,

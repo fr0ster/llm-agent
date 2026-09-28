@@ -35,6 +35,9 @@ export async function resolveAgentEmbedder(
   resolve: BuildAgentDeps['resolveEmbedder'],
   extraFactories: Record<string, EmbedderFactory>,
   logger?: AnyLogger,
+  /** For an asymmetric model (`rag.embedder.asymmetric`), which half to build;
+   *  ignored for a symmetric one and for an injected instance. */
+  inputType?: 'document' | 'query',
 ): Promise<IEmbedder | undefined> {
   // Canonical owner: every non-undefined embedder is wrapped here so its embed()
   // calls log token usage to the per-request logger. wrapEmbedder is idempotent.
@@ -63,8 +66,14 @@ export async function resolveAgentEmbedder(
   if (section.factory === undefined) {
     await prefetchEmbedderFactories([section.provider]);
   }
+  const typed =
+    inputType !== undefined &&
+    section.factory === undefined &&
+    section.asymmetric
+      ? { ...section, inputType }
+      : section;
   // Construction goes through the app's seam: the library builds no embedder.
-  return wrapEmbedder(resolve(section, { extraFactories, logger }));
+  return wrapEmbedder(resolve(typed, { extraFactories, logger }));
 }
 
 /**
