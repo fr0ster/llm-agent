@@ -4,9 +4,7 @@
   "description": "Default SmartAgent implementation with LLM providers, MCP client, HTTP server, and CLI.",
   "type": "module",
   "bin": {
-    "llm-agent": "bin/llm-agent",
-    "llm-agent-check": "bin/llm-agent-check",
-    "claude-via-agent": "tools/claude-via-agent.sh"
+    "llm-agent": "bin/llm-agent"
   },
   "exports": {
     "./package.json": "./package.json"
@@ -14,14 +12,13 @@
   "files": [
     "dist",
     "bin",
-    "tools",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "tsc -p tsconfig.json --clean",
-    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'",
+    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts' 'scripts/**/*.test.ts'",
     "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts",
     "test:server": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/server.test.ts",
     "smoke:adapters": "tsx src/smoke-adapters.ts",

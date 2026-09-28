@@ -1711,7 +1711,7 @@ export class SmartServer {
       circuitBreakers,
     });
 
-    // Startup health check removed — use llm-agent-check CLI for diagnostics.
+    // Startup health check removed — use `npm run models:check` for diagnostics.
     // Running health check at startup wastes rate-limit budget when combined
     // with tool vectorization (146+ embedding calls).
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Launch Claude CLI through llm-agent SmartServer.
 #
-# Usage:
-#   ./tools/claude-via-agent.sh                               # auto-selects pipeline by LLM_PROVIDER
-#   ./tools/claude-via-agent.sh --config pipelines/deepseek.yaml  # explicit pipeline
+# A repository tool (run from a checkout, after `npm run build`); it is not
+# part of the published @mcp-abap-adt/llm-agent-server package.
+#
+# Usage (from the repo root):
+#   npm run claude:via-agent                                      # auto-selects pipeline by LLM_PROVIDER
+#   npm run claude:via-agent -- --config pipelines/deepseek.yaml  # explicit pipeline
 #
 # All credentials in .env:
 #   LLM_PROVIDER    — selects pipeline: pipelines/<provider>.yaml

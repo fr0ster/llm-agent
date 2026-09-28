@@ -65,8 +65,8 @@ sees the client secret.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `model` | `string` | **required** | Model name deployed on SAP AI Core (no default — constructor throws if absent) |
-| `temperature` | `number` | `0.7` | Generation temperature |
-| `maxTokens` | `number` | `16384` | Max tokens for generation |
+| `temperature` | `number` | not sent | Generation temperature. Unset, none is sent and the model applies its own default; gpt-5, o-series and claude-opus-4-7+ accept only `1` and reject any other value |
+| `maxTokens` | `number` | not sent | Max tokens for generation. Unset, none is sent and the model's own limit applies |
 | `resourceGroup` | `string` | — | SAP AI Core resource group |
 | `credential` | `IBearerCredential` | **required** | From `serviceKeyCredential` — runs the OAuth exchange and refreshes the token |
 | `apiBaseUrl` | `string` | **required** | From the same `serviceKeyCredential` call — not part of the credential itself |

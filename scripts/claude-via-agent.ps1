@@ -4,8 +4,11 @@
 # and the server stops when Claude exits.
 #
 # Usage:
-#   .\tools\claude-via-agent.ps1                          # uses defaults from .env
-#   $env:LLM_MODEL="gpt-4o"; .\tools\claude-via-agent.ps1  # override model
+#   .\scripts\claude-via-agent.ps1                          # uses defaults from .env
+#   $env:LLM_MODEL="gpt-4o"; .\scripts\claude-via-agent.ps1  # override model
+#
+# A repository tool (run from a checkout, after `npm run build`); it is not
+# part of the published @mcp-abap-adt/llm-agent-server package.
 #
 # Required environment (set in .env or before running):
 #   LLM_PROVIDER    — openai | anthropic | deepseek | sap-ai-sdk

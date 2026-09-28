@@ -39,9 +39,8 @@ simpler one: **"did you hand someone a modified server."**
 | **`llm-agent-server`** | **`GPL-3.0-only`** | the ready-to-run product — CLI and HTTP server, no library exports |
 
 `llm-agent-server` declares no importable entry point (`exports` carries only
-`./package.json`); it ships `bin/` and `dist/` for the `llm-agent`,
-`llm-agent-check` and `claude-via-agent` executables. Because nothing can link
-against it, the LGPL's distinguishing permission — link and keep your own code
+`./package.json`); it ships `bin/` and `dist/` for the `llm-agent`
+executable. Because nothing can link against it, the LGPL's distinguishing permission — link and keep your own code
 closed — had nothing to apply to, and the full GPL costs embedders nothing while
 asking forks of the product to stay open. Everything you would actually build
 on, including the whole SmartServer composition runtime in

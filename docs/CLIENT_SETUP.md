@@ -47,21 +47,15 @@ export ANTHROPIC_BASE_URL=http://localhost:4004
 claude
 ```
 
-There is also a launcher script (`claude-via-agent`, on your PATH after a global
-install; `packages/llm-agent-server/tools/claude-via-agent.{sh,ps1}` in a checkout)
-that starts llm-agent and points Claude CLI at it in one step.
+In a repository checkout there is also a launcher that starts llm-agent and
+points Claude CLI at it in one step: `npm run claude:via-agent` from the repo root
+(`scripts/claude-via-agent.{sh,ps1}`; run `npm run build` first). It reads the
+root `.env` and picks `pipelines/<LLM_PROVIDER>.yaml`, or takes
+`-- --config <file>`. It is not part of the published package — a global
+install ships only `llm-agent`.
 
-**Caveat — config paths are resolved next to the server package.** The launcher
-reads `.env` and looks for `pipelines/<LLM_PROVIDER>.yaml` relative to the
-server-package directory (`packages/llm-agent-server/`) and `cd`s there before
-starting the agent. The shipped presets live at the **repo root** `pipelines/` and
-are **not** bundled into the published package, so from a repo checkout the
-auto-select finds nothing and a relative `--config pipelines/…` does not resolve
-(the CLI writes a template and exits). The launcher's auto-select only works when a
-`pipelines/` directory and `.env` sit next to the server package.
-
-The reliable path from a checkout is to start the agent yourself from the repo root
-(where `pipelines/` lives) with an explicit config, then point Claude CLI at it:
+Without the launcher, start the agent yourself with an explicit config, then
+point Claude CLI at it:
 
 ```bash
 # terminal 1 — from the repo root
