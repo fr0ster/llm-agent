@@ -35,6 +35,7 @@
     "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts",
     "packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts",
     "packages/llm-agent-server/scripts/check-models/*.ts",
-    "packages/llm-agent/src/rag/__tests__/embedder-roles.typecheck.ts"
+    "packages/llm-agent/src/rag/__tests__/embedder-roles.typecheck.ts",
+    "scripts/rag-eval/rag-eval.ts"
   ]
 }
