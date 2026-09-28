@@ -134,6 +134,8 @@ llm-agent-server
 Optional peer dependencies (not in the graph above):
 - `llm-agent-rag` → `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`, `@mcp-abap-adt/qdrant-rag`, `@mcp-abap-adt/hana-vector-rag`, `@mcp-abap-adt/pg-vector-rag`
 
+**Every edge above is a peer dependency (since 28.0.0).** A library declares each `@mcp-abap-adt/*` package it uses — ours, and the shared `@mcp-abap-adt/interfaces-auth` (`^2.1.0`) / `@mcp-abap-adt/interfaces-utils` (`^1.1.0`) — in `peerDependencies`, with the same range in every package, and imports from it directly. A consumer's install therefore holds exactly one copy of each: npm (≥ 7) installs a missing peer, and a version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. One copy matters at runtime, not only for types: `llm-agent-mcp` and `llm-agent-libs` use `instanceof` on classes of `llm-agent` (`McpError`, `ClarifySignal`, `NeedInfoSignal`, `CatalogCasError`), and the LLM throttle keeps its gates in module state. The binary `llm-agent-server` is the root of its own tree and takes all of them as regular dependencies. `test/repo/scoped-dependencies.test.ts` enforces this; see [MIGRATION-v28.md](MIGRATION-v28.md).
+
 `llm-agent-libs` constructs no LLM provider — it takes `BuildAgentDeps.makeLlm` as a required seam.
 `llm-agent-server` depends on the five LLM provider packages directly — its composition root
 constructs them.

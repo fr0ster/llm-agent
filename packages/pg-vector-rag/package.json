@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/pg-vector-rag",
-  "version": "27.0.2",
+  "version": "28.0.0",
   "description": "PgVectorRag (PostgreSQL + pgvector) and PgVectorRagProvider for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -24,8 +24,6 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/interfaces-auth": "^1.1.0 || ^2.0.0",
-    "@mcp-abap-adt/llm-agent": "^27.0.2",
     "pg": "^8.23.0",
     "pg-connection-string": "^2.14.0"
   },
@@ -39,5 +37,9 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
+    "@mcp-abap-adt/llm-agent": "^28.0.0"
   }
 }

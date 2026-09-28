@@ -1,8 +1,8 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
-## 27.0.2
+## 28.0.0
 
-Accepts `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^1.1.0 || ^2.0.0`, so a consumer that also uses `lib` 13 / `connection` 9 / `auth-broker` 3 keeps one copy. The credential types this package uses are identical in 1.2 and 2.1. No code changes.
+**BREAKING (install contract only — no API change).** Every `@mcp-abap-adt/*` package this library uses — ours (`llm-agent`, `llm-agent-mcp`, …) and the shared `interfaces-auth` (`^2.1.0`) / `interfaces-utils` (`^1.1.0`) — is now a **peer dependency**, with the same range in every package, so a consumer's install holds exactly one copy of each. A version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. `@mcp-abap-adt/llm-agent-server` (the binary) keeps them as regular dependencies. Also includes the minor/patch dependency updates of #311 (`@sap/hana-client` 2.30, `zod` 4.6, `@sap-ai-sdk/*` 2.16, `yaml` 2.9.1, `@modelcontextprotocol/sdk` 1.30.1; published ranges raised accordingly) and the dev tooling of #309. 27.0.2 was tagged but never published; its change is part of this release. See docs/MIGRATION-v28.md.
 
 ## 27.0.1
 

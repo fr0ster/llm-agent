@@ -26,6 +26,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
+    "@mcp-abap-adt/interfaces-utils": "^1.1.0",
     "@types/node": "^25.9.2",
     "rimraf": "^6.1.3",
     "tsx": "^4.22.4",

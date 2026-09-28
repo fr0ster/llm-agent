@@ -189,6 +189,10 @@ npm install @mcp-abap-adt/llm-agent
 
 Build your own agent against the interfaces exported by core. Supply your own `ILlm` and `IEmbedder` implementations.
 
+The libraries take every `@mcp-abap-adt/*` package they use — each other, and `@mcp-abap-adt/interfaces-auth` 2.x / `interfaces-utils` — as **peer dependencies**, so your install holds exactly one copy of each: npm installs missing peers, and a version that doesn't fit (e.g. `interfaces-auth` 1.x, or mixed majors of our packages) fails with `ERESOLVE`. See [docs/MIGRATION-v28.md](docs/MIGRATION-v28.md).
+
+**Upgrading to v28?** Install contract only — read [docs/MIGRATION-v28.md](docs/MIGRATION-v28.md).
+
 **Upgrading to v27?** Secrets moved out of configs and contracts, and the binary reads new
 environment variable names; read [docs/MIGRATION-v27.md](docs/MIGRATION-v27.md) first.
 

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/ollama-embedder",
-  "version": "27.0.2",
+  "version": "28.0.0",
   "description": "Ollama embedding provider and OllamaRag convenience class for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,9 +23,6 @@
     "clean": "tsc -p tsconfig.json --clean",
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
-  "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^27.0.2"
-  },
   "license": "LGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -33,5 +30,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@mcp-abap-adt/llm-agent": "^28.0.0"
   }
 }
