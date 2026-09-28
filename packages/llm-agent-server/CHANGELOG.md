@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 27.0.2
+
+Accepts `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^1.1.0 || ^2.0.0`, so a consumer that also uses `lib` 13 / `connection` 9 / `auth-broker` 3 keeps one copy. The credential types this package uses are identical in 1.2 and 2.1. No code changes.
+
 ## 27.0.1
 
 Node 26 is supported and now tested in CI alongside 22 and 24 (#312). No code changes.

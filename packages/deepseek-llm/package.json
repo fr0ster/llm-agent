@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/deepseek-llm",
-  "version": "27.0.1",
+  "version": "27.0.2",
   "description": "DeepSeek LLM provider (ILlm, extends OpenAIProvider) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -25,8 +25,8 @@
   },
   "dependencies": {
     "@mcp-abap-adt/interfaces-auth": "^1.1.0 || ^2.0.0",
-    "@mcp-abap-adt/llm-agent": "^27.0.1",
-    "@mcp-abap-adt/openai-llm": "^27.0.1"
+    "@mcp-abap-adt/llm-agent": "^27.0.2",
+    "@mcp-abap-adt/openai-llm": "^27.0.2"
   },
   "license": "LGPL-3.0-only",
   "repository": {

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-libs",
-  "version": "27.0.1",
+  "version": "27.0.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,9 +34,9 @@
   },
   "dependencies": {
     "@mcp-abap-adt/interfaces-auth": "^1.1.0 || ^2.0.0",
-    "@mcp-abap-adt/llm-agent": "^27.0.1",
-    "@mcp-abap-adt/llm-agent-mcp": "^27.0.1",
-    "@mcp-abap-adt/llm-agent-rag": "^27.0.1",
+    "@mcp-abap-adt/llm-agent": "^27.0.2",
+    "@mcp-abap-adt/llm-agent-mcp": "^27.0.2",
+    "@mcp-abap-adt/llm-agent-rag": "^27.0.2",
     "@opentelemetry/api": "^1.9.1",
     "dotenv": "^17.3.1",
     "yaml": "^2.9.0",
