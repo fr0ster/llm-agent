@@ -9,6 +9,28 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [29.0.0] — 2026-09-28
+
+**BREAKING — see [docs/MIGRATION-v29.md](docs/MIGRATION-v29.md).**
+
+### Breaking
+
+- **Sampling knobs you do not set are no longer sent.** `SmartServer` defaulted `temperature` to 0.7 (main) and 0.1 (classifier, helper); `SapCoreAIProvider` forced `temperature` 0.7 (`||`, so even `0` became 0.7) and `max_tokens` 16384; the OpenAI, DeepSeek, Ollama and Anthropic providers defaulted `temperature` to 0.7 and the OpenAI-family ones `max_tokens` to 4096. Now an unset knob is not sent and the model applies its own default; a set one is sent as is. Anthropic keeps its `max_tokens` 4096 default because the Messages API requires the field. `gpt-5*`, `o1`/`o3`/`o4-mini` and `anthropic--claude-4.7-opus`/`4.8-opus` accept only temperature 1, so through the server every call to them failed with HTTP 400; they now work. `IServerPipelineContext.mainTemp` is `number | undefined`.
+- **`@mcp-abap-adt/llm-agent-server` ships only the `llm-agent` command.** `llm-agent-check` and `claude-via-agent` never worked from a global install (the launcher looked for `.env` and `pipelines/` next to the installed package). They are repository tools now: `npm run models:check` and `npm run claude:via-agent`.
+
+### Changed
+
+- `models:check` (was `llm-agent-check`):
+  - probes through the server's own providers (`SapCoreAIProvider`, `SapAiCoreEmbedder`) and reads the account by the server's rule: `--credential-ref <REF>` → `<REF>_SERVICE_KEY`, default `LLM_SERVICE_KEY` (was the SDK's implicit `AICORE_SERVICE_KEY`). New `--env-path`, `--resource-group`, `--embed-scenario` and `--timeout`.
+  - probes every model for **chat** and for **embeddings** and prints a Chat / Embed matrix; `--chat` / `--embed` narrow it. Before, every catalog model got a chat request, so embedding models were reported as failing, and the fixed `temperature: 0` failed `gpt-5*` and `claude-4.7-opus`.
+  - a failure prints AI Core's reason (`HTTP 400: … Model name '…' is not supported`) for a mode the catalog declares or a model it does not list.
+  - `--config` reads the current config shape (top-level `llm:` map, `rag.embedder`) through the server's own config resolver, and probes each role with its `credentialRef` and the `temperature` / `maxTokens` the server would send (via the composition root's `createModelResolver`, so a derived classifier gets `classifierTemperature`); roles that would send different requests are separate rows. It used to read the `pipeline.llm` / `pipeline.rag` shape removed in v19.
+  - `--version` works; unknown flags are rejected instead of silently starting a full catalog check.
+
+### Fixed
+
+- `@mcp-abap-adt/sap-aicore-llm`: `getModels()` queries the model catalog with the configured credential, not the SDK's implicit `AICORE_SERVICE_KEY` lookup (a `<REF>_SERVICE_KEY`-only deployment got a one-model fallback list); `getEmbeddingModels()` matched `embeddings` but the catalog says `embedding`, so it always returned nothing; errors now carry AI Core's reason, which the SDK keeps on `cause`, instead of only the status line.
+
 ## [28.0.0] — 2026-09-28
 
 **BREAKING (install contract only — no API change).** Every `@mcp-abap-adt/*` package this library uses — ours (`llm-agent`, `llm-agent-mcp`, …) and the shared `interfaces-auth` (`^2.1.0`) / `interfaces-utils` (`^1.1.0`) — is now a **peer dependency**, with the same range in every package, so a consumer's install holds exactly one copy of each. A version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. `@mcp-abap-adt/llm-agent-server` (the binary) keeps them as regular dependencies. Also includes the minor/patch dependency updates of #311 (`@sap/hana-client` 2.30, `zod` 4.6, `@sap-ai-sdk/*` 2.16, `yaml` 2.9.1, `@modelcontextprotocol/sdk` 1.30.1; published ranges raised accordingly) and the dev tooling of #309. 27.0.2 was tagged but never published; its change is part of this release. See docs/MIGRATION-v28.md.

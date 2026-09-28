@@ -23,7 +23,8 @@ export interface IServerPipelineContext extends IPipelineContext {
   // Raw materials for the linear/DAG coordinator builders.
   mainLlm: ILlm;
   helperLlm?: ILlm;
-  mainTemp: number;
+  /** The main LLM's configured temperature; undefined = unset, the model's default applies. */
+  mainTemp?: number;
   /** Session-scoped worker registry (DAG workers / linear subagents). */
   workerRegistry: ReadonlyMap<string, ISubAgent>;
   warn(msg: string): void;

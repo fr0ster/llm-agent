@@ -67,6 +67,18 @@ For new model families not covered by `^gemini` heuristic, extend `detectFamily`
 
 ---
 
+## SAP AI Core LLM
+
+### `400 … don't support temperature=0.7` / `Only temperature=1 is supported`
+
+**Symptom.** Every chat to `gpt-5*`, `o1`/`o3`/`o4-mini` or `anthropic--claude-4.7-opus`/`4.8-opus` fails with HTTP 400, e.g. `gpt-5 models (including gpt-5-codex) don't support temperature=0.7` or `claude-opus-4-7 does not support temperature=0.7. Only temperature=1 is supported`, while `gpt-4o` on the same account works.
+
+**Cause.** These models accept only their own temperature (1). Before v29 the server always sent one — 0.7 for `main`, 0.1 for classifier/helper — even when the config set none. Since v29 an unset temperature is not sent, so the error now means the config itself sets `temperature` (or `classifierTemperature`) for that model.
+
+**Fix.** Remove `temperature` / `classifierTemperature` from that `llm:` entry (the model's default applies), or set it to `1`. `npm run models:check -- <model>` from a checkout shows whether a model answers with no knobs set.
+
+---
+
 ## Pipeline (`pipeline.rag.{store}`)
 
 ### Multi-store YAML config behaves like there's no RAG at all

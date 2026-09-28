@@ -116,7 +116,7 @@ The codebase is split across **six npm packages**:
 
 - **`@mcp-abap-adt/llm-agent-server-libs`** — the SmartServer composition runtime as an importable library: `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, coordinator config parsing, session stores, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory` — each builds one pipeline's `coordinator` stage handler from a typed config + role-resolving deps). Parses the selected pipeline section in `start()` and constructs that plugin with typed settings. Depends on `llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`.
 
-- **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) and HTTP server, **and the composition root**: reads the environment, turns each `credentialRef` into a credential, dispatches providers, implements `IModelResolver`. **Not a library** — importing from this package as a library is not supported as of 12.0.1. A thin wrapper over `llm-agent-server-libs`. Depends on `llm-agent-server-libs`.
+- **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`) and HTTP server, **and the composition root**: reads the environment, turns each `credentialRef` into a credential, dispatches providers, implements `IModelResolver`. **Not a library** — importing from this package as a library is not supported as of 12.0.1. A thin wrapper over `llm-agent-server-libs`. Depends on `llm-agent-server-libs`.
 
 ### Package dependency graph
 
@@ -260,7 +260,7 @@ Primary embeddable surfaces:
 - `@mcp-abap-adt/llm-agent-libs` -> `SmartAgentBuilder` (programmatic composition)
 - `@mcp-abap-adt/llm-agent-libs/testing` -> deterministic test doubles for consumer integration tests
 - `@mcp-abap-adt/llm-agent-libs/otel` -> OpenTelemetry tracer adapter
-- `@mcp-abap-adt/llm-agent-server` -> binary CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP server (not a library)
+- `@mcp-abap-adt/llm-agent-server` -> binary CLI (`llm-agent`) + HTTP server (not a library)
 
 Minimal programmatic integration:
 
@@ -899,10 +899,11 @@ packages/
 
   llm-agent-server/        # @mcp-abap-adt/llm-agent-server — binary only
     src/
-      smart-server.ts      # SmartServer — HTTP + SSE server
-      cli.ts               # llm-agent CLI entrypoint
-      check.ts             # llm-agent-check CLI
-      claude-via-agent.ts  # claude-via-agent convenience wrapper
+      composition/         # composition root: makeLlm, resolveEmbedder, makeRag, credentials
+      smart-agent/
+        cli.ts             # llm-agent CLI entrypoint
+        server.ts          # starts SmartServer (from llm-agent-server-libs)
+    scripts/check-models/  # `npm run models:check` (repo tool, not published)
 
   # LLM provider packages (optional peers of llm-agent-libs; bundled deps of llm-agent-server ≥ 13.1.0)
   openai-llm/              # @mcp-abap-adt/openai-llm

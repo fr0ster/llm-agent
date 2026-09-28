@@ -9,6 +9,7 @@ import {
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
+import { optionalNumber } from './llm-config-map.js';
 import type {
   BuiltInEmbedderProvider,
   SmartServerEmbedderConfig,
@@ -41,9 +42,11 @@ export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
             : {}),
           url: get(yaml, 'llm', 'url') as string | undefined,
           model: get(yaml, 'llm', 'model') as string | undefined,
-          temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),
-          classifierTemperature: Number(
-            get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
+          // Unset stays unset: the provider then sends no temperature and
+          // the model applies its own default.
+          temperature: optionalNumber(get(yaml, 'llm', 'temperature')),
+          classifierTemperature: optionalNumber(
+            get(yaml, 'llm', 'classifierTemperature'),
           ),
           // Both of these are declared on SmartServerLlmConfig and were missing
           // from this allow-list, which is exactly the disappearing act the

@@ -943,3 +943,44 @@ describe("OpenAIProvider — the caller's deadline", () => {
     );
   });
 });
+
+describe('OpenAIProvider — sampling knobs', () => {
+  const capture = (p: OpenAIProvider) => {
+    const bodies: Record<string, unknown>[] = [];
+    // @ts-expect-error — stub axios for test
+    p.client.post = async (_url: string, body: Record<string, unknown>) => {
+      bodies.push(body);
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    return bodies;
+  };
+
+  it('sends no temperature or token limit that is not configured', async () => {
+    const p = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-5',
+    });
+    const bodies = capture(p);
+    await p.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal('temperature' in bodies[0], false);
+    assert.equal('max_tokens' in bodies[0], false);
+    assert.equal('max_completion_tokens' in bodies[0], false);
+  });
+
+  it('sends the configured ones', async () => {
+    const p = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+      temperature: 0,
+      maxTokens: 50,
+    });
+    const bodies = capture(p);
+    await p.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(bodies[0].temperature, 0);
+    assert.equal(bodies[0].max_tokens, 50);
+  });
+});

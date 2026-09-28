@@ -48,6 +48,7 @@ export {
 export type { LlmConfigMap, NormalizedLlmMap } from './llm-config-map.js';
 export {
   normalizeLlmConfig,
+  optionalNumber,
   resolveLlmConfig,
   resolveLlmConfigStrict,
   resolveReviewerLlmName,

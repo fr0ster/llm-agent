@@ -1,5 +1,9 @@
 # @mcp-abap-adt/openai-llm
 
+## 29.0.0
+
+**BREAKING.** Sampling knobs a config does not set are no longer sent: `SmartServer` no longer defaults `temperature` to 0.7 (main) / 0.1 (classifier, helper), and the SAP AI Core, OpenAI, DeepSeek, Ollama and Anthropic providers no longer invent `temperature` (or, except Anthropic, whose API requires it, `max_tokens`) — the model applies its own default, so `gpt-5*`, `o1`/`o3`/`o4-mini` and `claude-opus-4-7`/`4-8`, which accept only temperature 1, now work. `@mcp-abap-adt/llm-agent-server` ships only the `llm-agent` command; `llm-agent-check` and `claude-via-agent` are repository tools (`npm run models:check`, `npm run claude:via-agent`). `@mcp-abap-adt/sap-aicore-llm`: the model catalog is queried with the configured credential, `getEmbeddingModels()` matches the catalog's `embedding` capability, and errors carry AI Core's reason. See docs/MIGRATION-v29.md.
+
 ## 28.0.0
 
 **BREAKING (install contract only — no API change).** Every `@mcp-abap-adt/*` package this library uses — ours (`llm-agent`, `llm-agent-mcp`, …) and the shared `interfaces-auth` (`^2.1.0`) / `interfaces-utils` (`^1.1.0`) — is now a **peer dependency**, with the same range in every package, so a consumer's install holds exactly one copy of each. A version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. `@mcp-abap-adt/llm-agent-server` (the binary) keeps them as regular dependencies. Also includes the minor/patch dependency updates of #311 (`@sap/hana-client` 2.30, `zod` 4.6, `@sap-ai-sdk/*` 2.16, `yaml` 2.9.1, `@modelcontextprotocol/sdk` 1.30.1; published ranges raised accordingly) and the dev tooling of #309. 27.0.2 was tagged but never published; its change is part of this release. See docs/MIGRATION-v28.md.

@@ -148,9 +148,11 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   ): Promise<LLMResponse> {
     try {
       const model = options?.model ?? this.model;
-      const temperature =
-        options?.temperature ?? this.config.temperature ?? 0.7;
-      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
+      // Unset knobs are not sent: the model applies its own default. A
+      // forced one breaks models that accept only theirs (gpt-5 and o-series
+      // reject any temperature but 1).
+      const temperature = options?.temperature ?? this.config.temperature;
+      const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
       const response = await this.withThrottleRetry(
         async () =>
@@ -161,8 +163,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               messages: this.formatMessages(messages),
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-              temperature,
-              ...this.getTokenLimitParam(model, maxTokens),
+              ...(temperature !== undefined ? { temperature } : {}),
+              ...(maxTokens !== undefined
+                ? this.getTokenLimitParam(model, maxTokens)
+                : {}),
               ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
               ...(options?.stop ? { stop: options.stop } : {}),
             },
@@ -208,9 +212,11 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   ): AsyncIterable<LLMResponse> {
     try {
       const model = options?.model ?? this.model;
-      const temperature =
-        options?.temperature ?? this.config.temperature ?? 0.7;
-      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
+      // Unset knobs are not sent: the model applies its own default. A
+      // forced one breaks models that accept only theirs (gpt-5 and o-series
+      // reject any temperature but 1).
+      const temperature = options?.temperature ?? this.config.temperature;
+      const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
       const response = await this.withThrottleRetry(
         async () =>
@@ -221,8 +227,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               messages: this.formatMessages(messages),
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-              temperature,
-              ...this.getTokenLimitParam(model, maxTokens),
+              ...(temperature !== undefined ? { temperature } : {}),
+              ...(maxTokens !== undefined
+                ? this.getTokenLimitParam(model, maxTokens)
+                : {}),
               ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
               ...(options?.stop ? { stop: options.stop } : {}),
               stream: true,

@@ -498,7 +498,7 @@ import {
   resolveToolSelectionStrategy,
 } from './config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
-import { llmKeySet } from './llm-config-map.js';
+import { llmKeySet, optionalNumber } from './llm-config-map.js';
 import {
   buildSessionMcpClients,
   serverOwnsMcpConnection,
@@ -1086,7 +1086,10 @@ export class SmartServer {
     const llmMap = normalizeLlmConfig(this.cfg.llm);
     const topMain = resolveLlmConfig(llmMap, 'main');
 
-    const mainTemp = Number(topMain?.temperature ?? 0.7);
+    // An unset temperature stays unset all the way to the provider, which then
+    // sends none and the model applies its own default — a forced value breaks
+    // models that accept only theirs (gpt-5, o-series, claude-opus-4-7+).
+    const mainTemp = optionalNumber(topMain?.temperature);
     const mainLlm = topMain
       ? await this._deps.makeLlm({ ...topMain, temperature: mainTemp })
       : (() => {
@@ -1094,7 +1097,7 @@ export class SmartServer {
         })();
 
     const classifierEntry = resolveLlmConfigStrict(llmMap, 'classifier');
-    const classifierTemp = Number(topMain?.classifierTemperature ?? 0.1);
+    const classifierTemp = optionalNumber(topMain?.classifierTemperature);
     const classifierLlm = classifierEntry
       ? await this._deps.makeLlm(classifierEntry)
       : topMain
@@ -1109,7 +1112,7 @@ export class SmartServer {
     const helperLlm = helperCfg
       ? await this._deps.makeLlm({
           ...helperCfg,
-          temperature: Number(helperCfg.temperature ?? 0.1),
+          temperature: optionalNumber(helperCfg.temperature),
         })
       : undefined;
     this._mainLlm = mainLlm;
@@ -1708,7 +1711,7 @@ export class SmartServer {
       circuitBreakers,
     });
 
-    // Startup health check removed — use llm-agent-check CLI for diagnostics.
+    // Startup health check removed — use `npm run models:check` for diagnostics.
     // Running health check at startup wastes rate-limit budget when combined
     // with tool vectorization (146+ embedding calls).
 
@@ -2616,7 +2619,7 @@ export class SmartServer {
         ),
       mainLlm: this._mainLlm as ILlm,
       helperLlm: this._helperLlm,
-      mainTemp: this._mainTemp ?? 0.7,
+      mainTemp: this._mainTemp,
       workerRegistry,
       warn: (m) => this.warn(m),
     });

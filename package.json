@@ -18,6 +18,8 @@
     "test:integration:skill-host": "node test/integration/skill-host-pg-qdrant/run.mjs",
     "eval:rag": "tsx scripts/rag-eval/rag-eval.ts",
     "dev": "tsx packages/llm-agent-server/src/smart-agent/cli.ts",
+    "models:check": "tsx packages/llm-agent-server/scripts/check-models/cli.ts",
+    "claude:via-agent": "bash scripts/claude-via-agent.sh",
     "dev:ollama": "npm run dev -- --config examples/docker-ollama/smart-server.yaml",
     "dev:deepseek": "npm run dev -- --config examples/docker-deepseek/smart-server.yaml",
     "dev:sap-ai-core": "npm run dev -- --config examples/docker-sap-ai-core/smart-server.yaml",

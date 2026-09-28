@@ -16,11 +16,51 @@ Importing from `@mcp-abap-adt/llm-agent-server` as a library is not supported as
 
 (... existing binary documentation continues below ...)
 
-## CLIs shipped
+## CLI shipped
 
-- `llm-agent` — primary runtime (`llm-agent --config smart-server.yaml`).
-- `llm-agent-check` — diagnostics CLI.
-- `claude-via-agent` — dev convenience wrapper that launches the Claude CLI through a SmartServer.
+- `llm-agent` — the runtime (`llm-agent --config smart-server.yaml`). It is the only command a
+  global install (`npm i -g @mcp-abap-adt/llm-agent-server`) puts on your PATH.
+
+### Repository tools (not published)
+
+Two helpers live in the source repository and run from a checkout only:
+
+| From the repo root | Does |
+|---|---|
+| `npm run models:check` | reports which SAP AI Core models work for chat and which for embeddings |
+| `npm run claude:via-agent` | starts `llm-agent` and points the Claude CLI at it (`npm run build` first) |
+
+`models:check` probes through the server's own providers (`SapCoreAIProvider`,
+`SapAiCoreEmbedder`) and reads the account by the server's credential rule, so a model it marks ✓
+works in the server with the same settings. Every model is probed in both modes; the output is a
+capability matrix:
+
+```text
+  Model                                  Chat               Embed
+  gpt-5                                  ✓ 2007ms           ✗
+  text-embedding-3-small                 ✗                  ✓ 1536 dimensions
+  nvidia--llama-3.2-nv-embedqa-1b        ✗                  ✗
+    ↳ embed declared, but failed: HTTP 400: Embedding Module: Model 'nvidia--llama-3.2-nv-embedqa-1b' requires 'type' …
+  Models: 3  Chat: 1/3  Embed: 1/3  Failed: 1
+```
+
+| Option (after `npm run models:check --`) | Effect |
+|---|---|
+| *(none)* | every model in the AI Core `foundation-models` catalog |
+| `gpt-4o text-embedding-3-small` | only the named models |
+| `--chat` / `--embed` | one mode only |
+| `--config <yaml>` | the SAP AI Core models a server config uses, each in the mode of its role, with that role's `credentialRef` and the `temperature` / `maxTokens` the server would send (a classifier derived from `main` at `classifierTemperature` is its own row); non-SAP roles are listed as not checked |
+| `--credential-ref <REF>` | the account: reads `<REF>_SERVICE_KEY` (default `LLM` → `LLM_SERVICE_KEY`) |
+| `--env-path <file>` | the env file to load (default `.env` in the current directory) |
+| `--resource-group <rg>` | AI Core resource group (default `$SAP_AI_RESOURCE_GROUP`, else `default`) |
+| `--embed-scenario <s>` | `orchestration` (default) or `foundation-models` |
+| `--timeout <ms>` / `--delay <ms>` | per-call timeout (default 60000) / pause between calls (default 2000) |
+| `--version` / `--help` | package version / usage |
+
+A ✗ in a mode the catalog does not declare for the model (an embedder under **Chat**) is expected
+and printed without a reason. A reason line appears when a declared mode fails, or for a model the
+catalog does not list. The exit code is `1` when such a failure exists. Unknown flags are rejected,
+and a missing account is an error naming the variable to set.
 
 See the repo docs for architecture, pipeline configuration and deployment:
 [`docs/ARCHITECTURE.md`](https://github.com/fr0ster/llm-agent/blob/main/docs/ARCHITECTURE.md), [`docs/PIPELINES.md`](https://github.com/fr0ster/llm-agent/blob/main/docs/PIPELINES.md), [`docs/DEPLOYMENT.md`](https://github.com/fr0ster/llm-agent/blob/main/docs/DEPLOYMENT.md).
