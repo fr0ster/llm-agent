@@ -49,7 +49,7 @@ capability matrix:
 | *(none)* | every model in the AI Core `foundation-models` catalog |
 | `gpt-4o text-embedding-3-small` | only the named models |
 | `--chat` / `--embed` | one mode only |
-| `--config <yaml>` | the SAP AI Core models a server config uses, each in the mode of its role, with that role's `credentialRef`; non-SAP roles are listed as not checked |
+| `--config <yaml>` | the SAP AI Core models a server config uses, each in the mode of its role, with that role's `credentialRef` and the `temperature` / `maxTokens` the server would send (a classifier derived from `main` at `classifierTemperature` is its own row); non-SAP roles are listed as not checked |
 | `--credential-ref <REF>` | the account: reads `<REF>_SERVICE_KEY` (default `LLM` → `LLM_SERVICE_KEY`) |
 | `--env-path <file>` | the env file to load (default `.env` in the current directory) |
 | `--resource-group <rg>` | AI Core resource group (default `$SAP_AI_RESOURCE_GROUP`, else `default`) |

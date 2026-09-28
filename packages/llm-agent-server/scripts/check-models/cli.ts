@@ -23,7 +23,6 @@ import { parseArgs } from 'node:util';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
   loadYamlConfig,
-  normalizeLlmConfig,
   resolveSmartServerConfig,
 } from '@mcp-abap-adt/llm-agent-server-libs';
 import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
@@ -49,6 +48,7 @@ import {
   type ProbeMode,
   planProbes,
 } from './catalog.js';
+import { roleLlmConfigs } from './roles.js';
 
 const HELP = `Usage: npm run models:check -- [model ...] [options]
 
@@ -190,6 +190,8 @@ interface IModelToCheck {
   scenario: 'orchestration' | 'foundation-models';
   /** Config roles this row answers for (config mode only). */
   roles: string[];
+  /** The role's sampling knobs, sent exactly as the server sends them. */
+  knobs: { temperature?: number; maxTokens?: number };
 }
 
 async function fetchCatalog(account: IAccount): Promise<ICatalogModel[]> {
@@ -206,7 +208,7 @@ async function fetchCatalog(account: IAccount): Promise<ICatalogModel[]> {
   }
 }
 
-function fromConfig(configPath: string): IModelToCheck[] {
+async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
   const resolved = path.resolve(configPath);
   if (!fs.existsSync(resolved)) fail(`Config file not found: ${configPath}`);
   let cfg: ReturnType<typeof resolveSmartServerConfig>;
@@ -226,9 +228,11 @@ function fromConfig(configPath: string): IModelToCheck[] {
     ref: string,
     group: string,
     scenario: IModelToCheck['scenario'],
+    knobs: IModelToCheck['knobs'] = {},
   ) => {
     if (!requestedModes.includes(mode)) return;
-    const key = `${model}|${ref}|${group}|${scenario}`;
+    // Roles share a row only when the server would send the same request.
+    const key = `${model}|${ref}|${group}|${scenario}|${knobs.temperature}|${knobs.maxTokens}`;
     const row = rows.get(key) ?? {
       model,
       probes: [],
@@ -236,6 +240,7 @@ function fromConfig(configPath: string): IModelToCheck[] {
       resourceGroup: group,
       scenario,
       roles: [],
+      knobs,
     };
     if (!row.probes.some((p) => p.mode === mode)) {
       row.probes.push({ mode, expected: true });
@@ -245,10 +250,8 @@ function fromConfig(configPath: string): IModelToCheck[] {
   };
 
   const skipped: string[] = [];
-  for (const [role, entry] of Object.entries(
-    normalizeLlmConfig(cfg.llm) ?? {},
-  )) {
-    if (!entry?.model) continue;
+  for (const { role, cfg: entry } of await roleLlmConfigs(cfg.llm)) {
+    if (!entry.model) continue;
     if (entry.provider !== 'sap-ai-sdk') {
       skipped.push(`llm.${role} (${entry.provider ?? 'no provider'})`);
       continue;
@@ -260,6 +263,14 @@ function fromConfig(configPath: string): IModelToCheck[] {
       entry.credentialRef ?? DEFAULT_LLM_REF,
       'default',
       embedScenario as IModelToCheck['scenario'],
+      {
+        ...(entry.temperature !== undefined
+          ? { temperature: entry.temperature }
+          : {}),
+        ...(entry.maxTokens !== undefined
+          ? { maxTokens: entry.maxTokens }
+          : {}),
+      },
     );
   }
   const embedder = cfg.rag?.embedder;
@@ -287,7 +298,7 @@ function fromConfig(configPath: string): IModelToCheck[] {
 
 let modelsToCheck: IModelToCheck[];
 if (args.config) {
-  modelsToCheck = fromConfig(args.config);
+  modelsToCheck = await fromConfig(args.config);
 } else {
   const account = accountFor(args['credential-ref'] ?? DEFAULT_LLM_REF);
   const catalog = await fetchCatalog(account);
@@ -303,6 +314,7 @@ if (args.config) {
     resourceGroup,
     scenario: embedScenario as IModelToCheck['scenario'],
     roles: [],
+    knobs: {},
   }));
 }
 
@@ -325,6 +337,7 @@ async function probeChat(row: IModelToCheck): Promise<CheckResult> {
       credential: row.account.credential,
       apiBaseUrl: row.account.apiBaseUrl,
       resourceGroup: row.resourceGroup,
+      ...row.knobs,
     });
     const response = await llm.chat(
       [{ role: 'user', content: 'Reply with OK' }],
@@ -423,8 +436,13 @@ for (const row of modelsToCheck) {
   }));
   if (isModelFailed(outcomes)) failedModels++;
 
-  const roles =
-    row.roles.length > 0 ? `  ${DIM}${row.roles.join(', ')}${RESET}` : '';
+  const knobText = Object.entries(row.knobs)
+    .map(([k, v]) => `${k} ${v}`)
+    .join(', ');
+  const label = [row.roles.join(', '), knobText && `(${knobText})`]
+    .filter(Boolean)
+    .join(' ');
+  const roles = label ? `  ${DIM}${label}${RESET}` : '';
   process.stdout.write(
     `  ${row.model.padEnd(38)} ${cell(results.get('chat'))} ${cell(results.get('embed'))}${roles}\n`,
   );

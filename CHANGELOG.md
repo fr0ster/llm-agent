@@ -22,7 +22,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - probes through the server's own providers (`SapCoreAIProvider`, `SapAiCoreEmbedder`) and reads the account by the server's rule: `--credential-ref <REF>` → `<REF>_SERVICE_KEY`, default `LLM_SERVICE_KEY` (was the SDK's implicit `AICORE_SERVICE_KEY`). New `--env-path`, `--resource-group`, `--embed-scenario` and `--timeout`.
   - probes every model for **chat** and for **embeddings** and prints a Chat / Embed matrix; `--chat` / `--embed` narrow it. Before, every catalog model got a chat request, so embedding models were reported as failing, and the fixed `temperature: 0` failed `gpt-5*` and `claude-4.7-opus`.
   - a failure prints AI Core's reason (`HTTP 400: … Model name '…' is not supported`) for a mode the catalog declares or a model it does not list.
-  - `--config` reads the current config shape (top-level `llm:` map, `rag.embedder`) through the server's own config resolver, with each role's `credentialRef`; it used to read the `pipeline.llm` / `pipeline.rag` shape removed in v19.
+  - `--config` reads the current config shape (top-level `llm:` map, `rag.embedder`) through the server's own config resolver, and probes each role with its `credentialRef` and the `temperature` / `maxTokens` the server would send (via the composition root's `createModelResolver`, so a derived classifier gets `classifierTemperature`); roles that would send different requests are separate rows. It used to read the `pipeline.llm` / `pipeline.rag` shape removed in v19.
   - `--version` works; unknown flags are rejected instead of silently starting a full catalog check.
 
 ### Fixed
