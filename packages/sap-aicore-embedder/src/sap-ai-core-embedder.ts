@@ -5,7 +5,10 @@ import type {
   IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
-import { OrchestrationScenarioEmbedder } from './orchestration-embedder.js';
+import {
+  OrchestrationScenarioEmbedder,
+  type SapAiCoreEmbedderInputType,
+} from './orchestration-embedder.js';
 
 export type SapAiCoreEmbedderScenario = 'foundation-models' | 'orchestration';
 
@@ -35,6 +38,14 @@ export interface SapAiCoreEmbedderConfig {
    * `scenario`). Not part of the credential (§4.6.3).
    */
   apiBaseUrl: string;
+  /**
+   * The input `type` an asymmetric retrieval model requires (`document` for
+   * stored text, `query` for search text). Orchestration scenario only; unset,
+   * none is sent. An asymmetric model is two instances on the same model —
+   * `inputType: 'document'` and `'query'` — joined by `asymmetricEmbedder`
+   * (`@mcp-abap-adt/llm-agent`).
+   */
+  inputType?: SapAiCoreEmbedderInputType;
 }
 
 export class SapAiCoreEmbedder implements IEmbedderBatch {
@@ -42,12 +53,21 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
 
   constructor(config: SapAiCoreEmbedderConfig) {
     const scenario = config.scenario ?? 'orchestration';
+    if (config.inputType !== undefined && scenario !== 'orchestration') {
+      // Said and not supported is an error, not a silent drop.
+      throw new Error(
+        `SapAiCoreEmbedder: inputType is supported with scenario 'orchestration' only, not '${scenario}'`,
+      );
+    }
     if (scenario === 'orchestration') {
       this.backend = new OrchestrationScenarioEmbedder({
         model: config.model,
         resourceGroup: config.resourceGroup,
         credential: config.credential,
         apiBaseUrl: config.apiBaseUrl,
+        ...(config.inputType !== undefined
+          ? { inputType: config.inputType }
+          : {}),
       });
     } else {
       this.backend = new FoundationModelsEmbedder({

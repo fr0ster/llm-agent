@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
-  IEmbedder,
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogRecordDeleteError, staticLogin } from '@mcp-abap-adt/llm-agent';
+import {
+  CatalogRecordDeleteError,
+  staticLogin,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { HanaVectorRag } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
 import { type FakeCatalogRow, type FakeHana, fakeHana } from './fake-hana.js';
 
 const CATALOG = 'rag_collection_catalog';
 const STORE = 'my_notes_a1b2c3d4e5f6';
-const embedder: IEmbedder = { embed: async () => ({ vector: [0, 0, 0] }) };
+const embedder = symmetricEmbedder({
+  embed: async () => ({ vector: [0, 0, 0] }),
+});
 const createOpts: RagProviderCreateCollectionOptions = {
   scope: 'session',
   sessionId: 's-1',

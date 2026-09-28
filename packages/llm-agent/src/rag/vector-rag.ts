@@ -1,5 +1,9 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IRag, IRagBackendWriter } from '../interfaces/rag.js';
+import type {
+  IRag,
+  IRagBackendWriter,
+  IRetrievalEmbedder,
+} from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -53,9 +57,13 @@ export class VectorRag implements IRag {
   private strategy: ISearchStrategy;
   private readonly queryPreprocessors: IQueryPreprocessor[];
   private readonly documentEnrichers: IDocumentEnricher[];
-
+  /**
+   * `embedder` writes the records (`embedDocument`) and embeds the search text
+   * this store embeds itself (`embedQuery`) — a text-only query, a
+   * preprocessed one, a failed caller embedding.
+   */
   constructor(
-    private readonly embedder: IEmbedder,
+    private readonly embedder: IRetrievalEmbedder,
     config: VectorRagConfig = {},
   ) {
     this.dedupThreshold = config.dedupThreshold ?? 0.92;
@@ -172,7 +180,10 @@ export class VectorRag implements IRag {
         const eResult = await enricher.enrich(enrichedText, options);
         if (eResult.ok) enrichedText = eResult.value;
       }
-      const { vector } = await this.embedder.embed(enrichedText, options);
+      const { vector } = await this.embedder.embedDocument(
+        enrichedText,
+        options,
+      );
       return this.upsertKnownVector(enrichedText, vector, metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
@@ -279,7 +290,7 @@ export class VectorRag implements IRag {
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
     try {
-      await this.embedder.embed('ping', options);
+      await this.embedder.embedQuery('ping', options);
       return { ok: true, value: undefined };
     } catch (err) {
       return {

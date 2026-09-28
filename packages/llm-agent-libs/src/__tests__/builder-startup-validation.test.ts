@@ -9,6 +9,7 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 
 // An LLM whose chat() fails the first `failures` times (with a status-code-LESS
 // message, like SAP AI Core's deployment-list blip), then succeeds.
@@ -65,7 +66,7 @@ describe('SmartAgentBuilder startup model validation — lenient retry', () => {
       modelValidationBackoffMs: 1, // fast test
     })
       .withMainLlm(llm)
-      .withEmbedder(stubEmbedder())
+      .withEmbedder(symmetricEmbedder(stubEmbedder()))
       .build();
     assert.ok(
       handle,
@@ -84,7 +85,7 @@ describe('SmartAgentBuilder startup model validation — lenient retry', () => {
           modelValidationBackoffMs: 1,
         })
           .withMainLlm(llm)
-          .withEmbedder(stubEmbedder())
+          .withEmbedder(symmetricEmbedder(stubEmbedder()))
           .build(),
       /Startup aborted.*after 2 attempts/s,
     );

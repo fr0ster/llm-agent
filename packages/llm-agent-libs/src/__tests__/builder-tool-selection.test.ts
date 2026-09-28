@@ -18,6 +18,7 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs (same pattern as builder-context-builder-wiring.test.ts)
@@ -77,7 +78,7 @@ describe('SmartAgentBuilder.withToolSelectionStrategy', () => {
       skipModelValidation: true,
     })
       .withMainLlm(stubLlm())
-      .withEmbedder(stubEmbedder())
+      .withEmbedder(symmetricEmbedder(stubEmbedder()))
       .withMcpClients([
         {
           async listTools() {

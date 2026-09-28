@@ -10,6 +10,7 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
 import {
   KnowledgeRag,
@@ -142,7 +143,7 @@ describe('#243 REOPENED — control-failure write hits a real embedder-backed RA
 
   it('Symptom A with a LIVE-shaped RAG (JsonlKnowledgeBackend + embedder-backed semantic index): control-failure(tool error) → replan → finalizer EMPTY must still surface the real tool error, never (no response)', async () => {
     const embedder = makeEmptyRejectingEmbedder();
-    const semantic = makeKnowledgeSemanticIndex(embedder);
+    const semantic = makeKnowledgeSemanticIndex(symmetricEmbedder(embedder));
     const backend = new JsonlKnowledgeBackend(logDir, semantic);
     const rag = new KnowledgeRag(backend, 'sess-1');
     const mcpCalls: Array<{ name: string; args: unknown }> = [];
@@ -164,7 +165,7 @@ describe('#243 REOPENED — control-failure write hits a real embedder-backed RA
       executor: scriptedClient([toolCall('ReadClass', { name: 'ZZ_QX9B7' })]),
       backend,
       knowledgeRagFor: () => rag,
-      embedder,
+      embedder: symmetricEmbedder(embedder),
       callMcp: async (name, args) => {
         mcpCalls.push({ name, args });
         return { text: 'Class ZZ_QX9B7 not found', isError: true };

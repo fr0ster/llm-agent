@@ -1,4 +1,8 @@
-import type { CallOptions, IEmbedder, LlmUsage } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  IQueryEmbedder,
+  LlmUsage,
+} from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
 import {
   diagnosticCallOptions,
@@ -9,7 +13,7 @@ import type { ControllerConfig } from './types.js';
 export interface TargetStateDeps {
   evaluator: ISubagentClient;
   /** Required only for distance strategies (semantic-distance/auto). */
-  embedder?: IEmbedder;
+  embedder?: IQueryEmbedder;
 }
 
 /**
@@ -85,8 +89,8 @@ export async function establishTargetState(
       );
     }
     const [te, pe] = await Promise.all([
-      deps.embedder.embed(target, options),
-      deps.embedder.embed(prompt, options),
+      deps.embedder.embedQuery(target, options),
+      deps.embedder.embedQuery(prompt, options),
     ]);
     const dist = cosineDistance(te.vector, pe.vector);
     if (dist > cfg.distanceThreshold) {

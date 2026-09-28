@@ -16,6 +16,40 @@ export interface IEmbedder {
   embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
 }
 
+/**
+ * Embeds text that is WRITTEN into a store — records, tool descriptions,
+ * skills, knowledge entries.
+ *
+ * Retrieval models may embed stored text and search text differently
+ * (`nvidia--llama-3.2-nv-embedqa-1b` refuses a call that does not say which).
+ * The two jobs are two methods with different NAMES, so the compiler tells
+ * them apart: nothing that needs a query embedder accepts a document one.
+ */
+export interface IDocumentEmbedder {
+  embedDocument(text: string, options?: CallOptions): Promise<IEmbedResult>;
+  /**
+   * Many documents in one call — the same result order as `texts`. Present
+   * only when the model batches (a capability, like `IEmbedderBatch`); absent,
+   * the caller embeds one document at a time.
+   */
+  embedDocuments?(
+    texts: string[],
+    options?: CallOptions,
+  ): Promise<IEmbedResult[]>;
+}
+
+/** Embeds text a store is SEARCHED with — a user request, a step instruction. */
+export interface IQueryEmbedder {
+  embedQuery(text: string, options?: CallOptions): Promise<IEmbedResult>;
+}
+
+/**
+ * What a store embeds with: it writes documents and embeds the search text it
+ * handles itself (a text-only query, a failed caller embedding). Build one
+ * with `symmetricEmbedder(embedder)` or `asymmetricEmbedder({ document, query })`.
+ */
+export interface IRetrievalEmbedder extends IDocumentEmbedder, IQueryEmbedder {}
+
 /** Config subset passed to EmbedderFactory so it can configure the embedder. */
 export interface EmbedderFactoryConfig {
   /** Base URL for the embedding service (Ollama URL, OpenAI base, etc.) */

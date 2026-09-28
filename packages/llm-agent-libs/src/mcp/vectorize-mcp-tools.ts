@@ -12,12 +12,12 @@
 
 import type {
   CallOptions,
-  IEmbedder,
   ILogger,
   IMcpClient,
   IRag,
   IRagBackendWriter,
   IRequestLogger,
+  IRetrievalEmbedder,
   ISkillManager,
   IToolNamespace,
   IToolRecordKey,
@@ -33,7 +33,6 @@ import {
   DefaultWaitStrategy,
   defaultToolNamespace,
   defaultToolRecordKey,
-  isBatchEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -167,7 +166,9 @@ export async function vectorizeMcpTools(
   // message that made #236 diagnosable in the first place.
   let batchFailure: string | undefined;
   // biome-ignore lint/suspicious/noExplicitAny: reading the store's private embedder for batch optimisation
-  const storeEmbedder = (toolsRag as any).embedder as IEmbedder | undefined;
+  const storeEmbedder = (toolsRag as any).embedder as
+    | IRetrievalEmbedder
+    | undefined;
 
   let tools: readonly LlmTool[];
   let provenance: ReadonlyMap<
@@ -263,13 +264,13 @@ export async function vectorizeMcpTools(
 
   let vectors: number[][] | undefined;
   if (
-    storeEmbedder &&
-    isBatchEmbedder(storeEmbedder) &&
+    storeEmbedder?.embedDocuments !== undefined &&
     writer.upsertPrecomputedRaw !== undefined
   ) {
     const start = Date.now();
     try {
-      const results = await storeEmbedder.embedBatch(texts, options);
+      // Tool descriptions are what the store holds: documents.
+      const results = await storeEmbedder.embedDocuments(texts, options);
       vectors = results.map((r) => r.vector);
       const real = results.reduce<{ p: number; t: number } | null>(
         (a, r) =>

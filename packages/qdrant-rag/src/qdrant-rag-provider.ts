@@ -1,9 +1,9 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
-  IEmbedder,
   IIdStrategy,
   IRag,
   IRagEditor,
+  IRetrievalEmbedder,
   RagCatalogDescription,
   RagCatalogRow,
   RagCollectionOwner,
@@ -43,7 +43,7 @@ export interface QdrantRagProviderConfig {
    * without one.
    */
   credential?: IApiKeyCredential;
-  embedder: IEmbedder;
+  embedder: IRetrievalEmbedder;
   editable?: boolean;
   timeoutMs?: number;
   supportedScopes?: readonly RagCollectionScope[];
@@ -64,7 +64,7 @@ export class QdrantRagProvider extends BaseRagProvider {
 
   private readonly url: string;
   private readonly credential?: IApiKeyCredential;
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly timeoutMs?: number;
   private readonly catalog: string;
   private catalogReady?: Promise<void>;
@@ -289,10 +289,10 @@ export class QdrantRagProvider extends BaseRagProvider {
     name: string,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<void, RagError>> {
-    // Qdrant fixes a collection's vector size at creation and IEmbedder
+    // Qdrant fixes a collection's vector size at creation and IRetrievalEmbedder
     // declares none, so one probe embedding learns it — once per collection
     // created, none per write.
-    const { vector } = await this.embedder.embed(DIMENSION_PROBE);
+    const { vector } = await this.embedder.embedDocument(DIMENSION_PROBE);
     const res = await this.request(`/collections/${name}`, {
       method: 'PUT',
       body: JSON.stringify({

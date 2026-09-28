@@ -179,7 +179,10 @@ rag:
 ### Configuration
 
 ```typescript
-import { VectorRag, RrfStrategy, CompositeStrategy, VectorOnlyStrategy, Bm25OnlyStrategy } from '@mcp-abap-adt/llm-agent';
+import { VectorRag, symmetricEmbedder, RrfStrategy, CompositeStrategy, VectorOnlyStrategy, Bm25OnlyStrategy } from '@mcp-abap-adt/llm-agent';
+
+// A store takes a retrieval embedder: your IEmbedder, given its two roles.
+const embedder = symmetricEmbedder(myEmbedder);
 
 // Single strategy
 const rag = new VectorRag(embedder, { strategy: new RrfStrategy() });
@@ -239,7 +242,10 @@ Before this release's BM25 normalisation and identifier tokenizer, the default g
 ### Configuration
 
 ```typescript
-import { VectorRag, RrfStrategy, TranslatePreprocessor, PreprocessorChain, ExpandPreprocessor } from '@mcp-abap-adt/llm-agent';
+import { VectorRag, symmetricEmbedder, RrfStrategy, TranslatePreprocessor, PreprocessorChain, ExpandPreprocessor } from '@mcp-abap-adt/llm-agent';
+
+// A store takes a retrieval embedder: your IEmbedder, given its two roles.
+const embedder = symmetricEmbedder(myEmbedder);
 
 // Translate only (recommended for multilingual)
 const rag = new VectorRag(embedder, {

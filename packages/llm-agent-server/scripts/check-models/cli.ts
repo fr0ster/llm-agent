@@ -185,13 +185,15 @@ interface IModelToCheck {
   model: string;
   probes: IModeProbe[];
   account: IAccount;
-  /** Chat: the server passes none (AI Core's 'default'); embed: its own. */
+  /** The role's resource group, or AI Core's 'default' when it names none. */
   resourceGroup: string;
   scenario: 'orchestration' | 'foundation-models';
   /** Config roles this row answers for (config mode only). */
   roles: string[];
   /** The role's sampling knobs, sent exactly as the server sends them. */
   knobs: { temperature?: number; maxTokens?: number };
+  /** The half of an asymmetric embedder (`rag.embedder.asymmetric`). */
+  inputType?: 'document' | 'query';
 }
 
 async function fetchCatalog(account: IAccount): Promise<ICatalogModel[]> {
@@ -229,10 +231,11 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
     group: string,
     scenario: IModelToCheck['scenario'],
     knobs: IModelToCheck['knobs'] = {},
+    inputType?: IModelToCheck['inputType'],
   ) => {
     if (!requestedModes.includes(mode)) return;
     // Roles share a row only when the server would send the same request.
-    const key = `${model}|${ref}|${group}|${scenario}|${knobs.temperature}|${knobs.maxTokens}`;
+    const key = `${model}|${ref}|${group}|${scenario}|${knobs.temperature}|${knobs.maxTokens}|${inputType}`;
     const row = rows.get(key) ?? {
       model,
       probes: [],
@@ -241,6 +244,7 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
       scenario,
       roles: [],
       knobs,
+      ...(inputType ? { inputType } : {}),
     };
     if (!row.probes.some((p) => p.mode === mode)) {
       row.probes.push({ mode, expected: true });
@@ -261,7 +265,7 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
       'chat',
       entry.model,
       entry.credentialRef ?? DEFAULT_LLM_REF,
-      'default',
+      entry.resourceGroup ?? 'default',
       embedScenario as IModelToCheck['scenario'],
       {
         ...(entry.temperature !== undefined
@@ -275,17 +279,26 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
   }
   const embedder = cfg.rag?.embedder;
   if (embedder && 'provider' in embedder && embedder.provider) {
-    if (embedder.provider !== 'sap-ai-core' || !embedder.model) {
+    const sap =
+      embedder.provider === 'sap-ai-core' || embedder.provider === 'sap-aicore';
+    if (!sap || !embedder.model) {
       skipped.push(`rag.embedder (${embedder.provider})`);
     } else {
-      add(
-        'rag.embedder',
-        'embed',
-        embedder.model,
-        embedder.credentialRef ?? DEFAULT_EMBEDDER_REF,
-        embedder.resourceGroup ?? 'default',
-        embedder.scenario ?? 'orchestration',
-      );
+      // An asymmetric model is two instances in the server: probe both.
+      const halves: Array<'document' | 'query' | undefined> =
+        embedder.asymmetric ? ['document', 'query'] : [undefined];
+      for (const inputType of halves) {
+        add(
+          inputType ? `rag.embedder (${inputType})` : 'rag.embedder',
+          'embed',
+          embedder.model,
+          embedder.credentialRef ?? DEFAULT_EMBEDDER_REF,
+          embedder.resourceGroup ?? 'default',
+          embedder.scenario ?? 'orchestration',
+          {},
+          inputType,
+        );
+      }
     }
   }
   if (skipped.length > 0) {
@@ -361,12 +374,17 @@ async function probeChat(row: IModelToCheck): Promise<CheckResult> {
 async function probeEmbed(row: IModelToCheck): Promise<CheckResult> {
   const start = Date.now();
   try {
-    const embedder = new SapAiCoreEmbedder({
+    const config = {
       model: row.model,
       credential: row.account.credential,
       apiBaseUrl: row.account.apiBaseUrl,
       resourceGroup: row.resourceGroup,
       scenario: row.scenario,
+    };
+    // The same instance the server builds for this half.
+    const embedder = new SapAiCoreEmbedder({
+      ...config,
+      ...(row.inputType ? { inputType: row.inputType } : {}),
     });
     const { vector } = await embedder.embed('ping', {
       signal: AbortSignal.timeout(timeoutMs),

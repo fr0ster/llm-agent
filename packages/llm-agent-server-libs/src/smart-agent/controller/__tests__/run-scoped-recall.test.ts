@@ -5,6 +5,7 @@ import type {
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   relevantExtract,
   runScopedRecall,
@@ -252,12 +253,12 @@ describe('relevantExtract', () => {
   // MARK-window) = 1 and cosine(ref, plain-window) = 0 — the EMBEDDING (not lexical
   // overlap) picks the MARK window. Counts embed calls.
   let calls = 0;
-  const embedder = {
+  const embedder = symmetricEmbedder({
     embed: async (t: string) => {
       calls++;
       return { vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] };
     },
-  } as never;
+  }) as never;
   it('the RETURNED body equals the SCORED window; bounded SEQUENTIAL embeds', async () => {
     calls = 0;
     const out = await relevantExtract(

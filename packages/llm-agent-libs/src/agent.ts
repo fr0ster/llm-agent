@@ -3,13 +3,13 @@ import type {
   CallOptions,
   IClientAdapter,
   IContextAssembler,
-  IEmbedder,
   IHistoryMemory,
   IHistorySummarizer,
   ILlm,
   ILlmCallStrategy,
   IMcpClient,
   IMcpFailureClassifier,
+  IQueryEmbedder,
   IRag,
   IRagProviderRegistry,
   IRagRegistry,
@@ -54,7 +54,6 @@ import {
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
-import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
@@ -132,7 +131,7 @@ export interface SmartAgentDeps {
   skillManager?: ISkillManager;
   clientAdapters?: IClientAdapter[];
   /** Shared embedder for RAG queries. When set, creates memoized IQueryEmbedding per request. */
-  embedder?: IEmbedder;
+  embedder?: IQueryEmbedder;
   connectionStrategy?: IMcpConnectionStrategy;
   /** Reports the startup tool-catalog vectorization result to health checks. */
   toolCatalogStatus?: IToolCatalogReporter;
@@ -297,9 +296,8 @@ export class SmartAgent {
     this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
     this.pendingToolResults = new PendingToolResultsRegistry();
     this.requestLogger = deps.requestLogger ?? new NoopRequestLogger();
-    // Meter embedding usage even for direct `new SmartAgent(deps)` construction
-    // (the builder/resolveAgentEmbedder also wrap; wrapEmbedder is idempotent).
-    if (deps.embedder) deps.embedder = wrapEmbedder(deps.embedder);
+    // Embedding usage is metered by `wrapEmbedder` on the IEmbedder underneath
+    // the query embedder (`symmetricEmbedder(wrapEmbedder(e))`).
     this.defaultLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
     this.mcpToolRegistry = new McpToolRegistry(

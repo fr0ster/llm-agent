@@ -88,6 +88,12 @@ still install only what they need; `llm-agent-libs` has no LLM peers.)
    put new logic in a small focused module and consume it (don't append to a god-object).
 7. **Don't break components.** Extend additively / backward-compatibly.
 
+**Design patterns** that apply these principles — a role is a method name (not a tag), roles are
+given at the boundary, decorators wrap below the role, a capability is optional but a role is
+not, unset is not sent / unsupported is an error — are in
+[`docs/ARCHITECTURE.md` → Design Patterns](docs/ARCHITECTURE.md#design-patterns), with the
+rejected alternatives. Check new designs against them too.
+
 ## Language
 
 - All artifacts (code, comments, docs, commit messages) must be written in **English**.
@@ -127,7 +133,7 @@ Copy `.env.template` to `.env`. Key variables:
 | `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` / `ollama` |
 | `LLM_API_KEY` / `LLM_SERVICE_KEY` | Credential of every `llm:` entry without `credentialRef` — an API key, or a SAP AI Core service-key JSON for `sap-ai-sdk` |
 | `<REF>_API_KEY` / `<REF>_SERVICE_KEY` / `<REF>_USER` + `<REF>_PASSWORD` | A section with `credentialRef: <REF>` reads these; `RAG_STORE` and `RAG_EMBEDDER` are the defaults for `rag.store` / `rag.embedder` (`AICORE_SERVICE_KEY` is no longer read) |
-| `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI SDK model name and resource group |
+| `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI Core model name and resource group — read only where `smart-server.yaml` references them (`model: ${SAP_AI_MODEL}`, `resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}`) |
 | `MCP_ENDPOINT` | MCP server URL (default: `http://localhost:4004/mcp/stream/http`) |
 | `DEBUG_LLM_REASON` | `true` to log LLM reasoning |
 

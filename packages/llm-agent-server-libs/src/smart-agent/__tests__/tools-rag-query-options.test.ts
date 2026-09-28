@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { QueryEmbedding } from '@mcp-abap-adt/llm-agent';
+import { QueryEmbedding, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   SessionRequestLogger,
   wrapEmbedder,
@@ -15,7 +15,7 @@ test('QueryEmbedding(text, wrappedEmbedder, options) logs one embedding entry', 
       usage: { promptTokens: 4, totalTokens: 4 },
     }),
   };
-  const qe = new QueryEmbedding('hi', wrapEmbedder(stub), {
+  const qe = new QueryEmbedding('hi', symmetricEmbedder(wrapEmbedder(stub)), {
     trace: { traceId: 'r1' },
     requestLogger: logger,
   } as never);

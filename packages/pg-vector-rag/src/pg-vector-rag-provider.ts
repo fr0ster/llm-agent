@@ -1,8 +1,8 @@
 import type {
-  IEmbedder,
   IIdStrategy,
   IRag,
   IRagEditor,
+  IRetrievalEmbedder,
   RagCatalogDescription,
   RagCollectionOwner,
   RagCollectionRecord,
@@ -46,7 +46,7 @@ type Refusal = { ok: false; error: RagError };
 
 export interface PgVectorRagProviderConfig {
   name: string;
-  embedder: IEmbedder;
+  embedder: IRetrievalEmbedder;
   connection: PgVectorRagConfig | string;
   defaultDimension?: number;
   /**
@@ -86,7 +86,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
   readonly editable: boolean;
   readonly supportedScopes: readonly RagCollectionScope[];
 
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly connection: PgVectorRagConfig;
   private readonly defaultDimension: number;
   private readonly autoCreateSchema: boolean;

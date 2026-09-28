@@ -5,6 +5,7 @@ import type {
   ISecretLoginCredential,
 } from '@mcp-abap-adt/interfaces-auth';
 import type { EmbedderFactoryConfig, IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   _resetPrefetchedForTests,
   type EmbedderResolution,
@@ -181,7 +182,7 @@ describe('the store bridge and credentials', () => {
     for (const field of ['apiKey', 'user', 'password'] as const) {
       const fromYaml = {
         type: 'qdrant',
-        embedder: stubEmbedder,
+        embedder: symmetricEmbedder(stubEmbedder),
         collectionName: 'c',
         url: 'http://localhost:6333',
         [field]: 'leftover',
@@ -203,7 +204,7 @@ describe('the store bridge and credentials', () => {
       type: 'qdrant',
       url: 'http://localhost:6333',
       collectionName: 'c',
-      embedder: stubEmbedder,
+      embedder: symmetricEmbedder(stubEmbedder),
       credential: apiKey,
     });
     const seen = (instance as unknown as { credential?: unknown }).credential;
@@ -218,7 +219,7 @@ describe('the store bridge and credentials', () => {
       type: 'pg-vector',
       host: 'db.example',
       collectionName: 'c',
-      embedder: stubEmbedder,
+      embedder: symmetricEmbedder(stubEmbedder),
       credential: login,
     });
     await assert.doesNotReject(
@@ -231,7 +232,7 @@ describe('the store bridge and credentials', () => {
   it('still builds a hybrid in-memory VectorRag, mapping collectionName to namespace', async () => {
     const instance = await makeRag({
       type: 'in-memory',
-      embedder: stubEmbedder,
+      embedder: symmetricEmbedder(stubEmbedder),
       collectionName: 'my-namespace',
     });
     assert.ok(

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { staticLogin } from '@mcp-abap-adt/llm-agent';
+import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { PgClient } from '../pg-vector-rag.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 
@@ -37,7 +37,7 @@ describe('PgVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new PgVectorRagProvider({
       name: 'pg',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -61,7 +61,7 @@ describe('PgVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new PgVectorRagProvider({
       name: 'pg',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -81,7 +81,7 @@ describe('PgVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new PgVectorRagProvider({
       name: 'pg',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -102,7 +102,7 @@ describe('PgVectorRagProvider', () => {
     ]);
     const provider = new PgVectorRagProvider({
       name: 'pg',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -121,7 +121,7 @@ describe('PgVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new PgVectorRagProvider({
       name: 'pg',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',

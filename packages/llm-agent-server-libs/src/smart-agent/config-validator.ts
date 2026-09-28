@@ -176,7 +176,12 @@ function checkRag(
     }
     // A consumer factory receives EmbedderFactoryConfig only (url, model, timeoutMs) and
     // closes over its own credential, so these would be dropped without a word.
-    for (const k of ['credentialRef', 'resourceGroup', 'scenario'] as const) {
+    for (const k of [
+      'credentialRef',
+      'resourceGroup',
+      'scenario',
+      'asymmetric',
+    ] as const) {
       if (e?.[k] !== undefined) {
         issues.push(
           `rag.embedder.${k}: not read for a factory — a consumer factory closes over its own ` +
@@ -196,6 +201,33 @@ function checkRag(
   }
   if (e && factory === undefined)
     checkCredentialRef('rag.embedder', e.credentialRef, issues);
+  if (e?.asymmetric !== undefined) {
+    // `${VAR}` substitution leaves a string, so 'true'/'false' count too.
+    const asymmetric =
+      e.asymmetric === true || e.asymmetric === 'true'
+        ? true
+        : e.asymmetric === false || e.asymmetric === 'false'
+          ? false
+          : undefined;
+    if (asymmetric === undefined) {
+      issues.push('rag.embedder.asymmetric: must be true or false');
+    } else if (
+      asymmetric &&
+      factory === undefined &&
+      provider !== 'sap-ai-core' &&
+      provider !== 'sap-aicore'
+    ) {
+      // Only SAP AI Core's embedder has a document/query pair; on any other
+      // provider the key would be dropped without a word.
+      issues.push(
+        `rag.embedder.asymmetric: supported for provider sap-ai-core only, not "${provider ?? 'ollama'}"`,
+      );
+    } else if (asymmetric && e.scenario === 'foundation-models') {
+      issues.push(
+        "rag.embedder.asymmetric: needs scenario 'orchestration' — the foundation-models scenario takes no input type",
+      );
+    }
+  }
   const usesEmbedder =
     ragType === 'qdrant' ||
     ragType === 'hana-vector' ||

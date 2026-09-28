@@ -2,6 +2,7 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   RagError,
+  symmetricEmbedder,
   VectorRag,
   type VectorRagConfig,
 } from '@mcp-abap-adt/llm-agent';
@@ -123,7 +124,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
  */
 export class OllamaRag extends VectorRag {
   constructor(config: OllamaEmbedderConfig & VectorRagConfig) {
-    const embedder = new OllamaEmbedder(config);
-    super(embedder, config);
+    // An Ollama embedding model is symmetric: one embedder for both jobs.
+    super(symmetricEmbedder(new OllamaEmbedder(config)), config);
   }
 }

@@ -1,9 +1,9 @@
 import type {
   CallOptions,
-  IEmbedder,
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
+  IRetrievalEmbedder,
   RagMetadata,
   RagResult,
   Result,
@@ -63,14 +63,14 @@ export async function createPgClient(
 export class PgVectorRag implements IRag {
   private readonly collectionName: string;
   private readonly dimension: number;
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
   private readonly clientPromise: Promise<PgClient>;
   private schemaReady = false;
   private schemaPromise?: Promise<void>;
 
   constructor(
-    config: PgVectorRagConfig & { embedder: IEmbedder },
+    config: PgVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: PgClient,
   ) {
     assertCollectionName(config.collectionName);
@@ -210,7 +210,7 @@ export class PgVectorRag implements IRag {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
-      const { vector } = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embedDocument(text, options);
       return this.upsertKnown(text, vector, metadata);
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };

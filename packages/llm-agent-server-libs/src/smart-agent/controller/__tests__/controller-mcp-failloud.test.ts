@@ -16,6 +16,7 @@ import {
   type LlmTool,
   McpError,
   type Result,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -83,9 +84,9 @@ function stubRag(): IKnowledgeRagHandle & { written: KnowledgeEntry[] } {
   };
 }
 
-const stubEmbedder = {
+const stubEmbedder = symmetricEmbedder({
   embed: async () => ({ vector: [1, 0, 0] }),
-} as never;
+}) as never;
 
 function baseConfig(): ControllerConfig {
   return {

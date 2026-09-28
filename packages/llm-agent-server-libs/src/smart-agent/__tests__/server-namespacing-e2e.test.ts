@@ -53,6 +53,7 @@ import {
   type LlmTool,
   McpError,
   type McpTool,
+  symmetricEmbedder,
   TokenLedger,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -672,10 +673,10 @@ function scriptedRoleLlm(model: string, queue: Partial<LlmResponse>[]): ILlm {
   } as unknown as ILlm;
 }
 
-const constEmbedder = {
+const constEmbedder = symmetricEmbedder({
   embed: async () => ({ vector: [1, 0, 0] }),
   dimensions: 3,
-} as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
+}) as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
 
 test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION client-1 instance, never the global clients', async (t) => {
   const boot = await bootTwoServerSmartServer(t);
@@ -731,7 +732,7 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       ...base,
       embedder: constEmbedder,
       stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-        makeKnowledgeSemanticIndex(constEmbedder),
+        makeKnowledgeSemanticIndex(symmetricEmbedder(constEmbedder)),
       ),
       knowledgeRagFor: () => ({
         query: async () => [],

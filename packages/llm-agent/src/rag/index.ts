@@ -23,6 +23,7 @@ export {
 } from './query-embedding.js';
 export { LlmQueryExpander, NoopQueryExpander } from './query-expander.js';
 export * from './registry/index.js';
+export { asymmetricEmbedder, symmetricEmbedder } from './retrieval-embedder.js';
 export type {
   IScoredResult,
   ISearchCandidate,

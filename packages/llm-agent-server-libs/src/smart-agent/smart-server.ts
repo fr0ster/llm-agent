@@ -24,6 +24,7 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
+  IRetrievalEmbedder,
   ISkillManager,
   ISkillPluginHost,
   ISmartAgent,
@@ -40,6 +41,7 @@ import type {
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  asymmetricEmbedder,
   buildNamespacedTools,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
@@ -50,6 +52,7 @@ import {
   type IWaitStrategy,
   isReadinessReporter,
   SimpleRagProviderRegistry,
+  symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type {
@@ -120,7 +123,7 @@ import {
   type SmartServerRagConfig,
   toMakeRagInput,
 } from './rag-config.js';
-import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
+import { resolveRetrievalEmbedder } from './resolve-agent-embedder.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
@@ -145,6 +148,12 @@ export interface SmartServerLlmConfig {
   temperature?: number;
   maxTokens?: number;
   classifierTemperature?: number;
+  /**
+   * SAP AI Core resource group (`provider: sap-ai-sdk` only). Unset, AI Core's
+   * `default` group applies; set on any other provider, startup fails rather
+   * than dropping it.
+   */
+  resourceGroup?: string;
   /**
    * What the provider does when a server throttles it: `maxAttempts` and a
    * `strategy`. Omit and nothing waits — the failure comes back carrying what
@@ -793,7 +802,7 @@ export class SmartServer {
    * every pipeline context (the controller pipeline needs it for target-state
    * semantic distance). Undefined when no embedder is configured.
    */
-  private _resolvedEmbedder?: IEmbedder;
+  private _resolvedEmbedder?: IRetrievalEmbedder;
   /**
    * The live skill plugin-host, built ONCE in `start()` from `skillPlugins:`
    * config and `await host.load()`-ed before serving. Held so `buildServerCtx`
@@ -1283,7 +1292,10 @@ export class SmartServer {
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
-    const resolvedEmbedder = await resolveAgentEmbedder(
+    // ONE retrieval embedder: stores write with its `embedDocument`, every
+    // search path embeds with its `embedQuery` (an asymmetric model is two
+    // halves behind it — see resolveRetrievalEmbedder).
+    const resolvedEmbedder = await resolveRetrievalEmbedder(
       this.cfg.rag,
       this._deps.embedder ?? this.cfg.embedder,
       this._deps.resolveEmbedder,
@@ -1323,13 +1335,32 @@ export class SmartServer {
         ? async () => this._deps.skillHost as ISkillPluginHost
         : () =>
             this._deps.buildSkillHost(skillCfg, {
-              resolveEmbedder: (ec) =>
-                reuseAgentEmbedder
-                  ? ((injectedEmbedder ?? resolvedEmbedder) as IEmbedder)
-                  : this._deps.resolveEmbedder(
-                      embedderSectionFor(ec.embedder, ec.model),
-                      { extraFactories: mergedEmbedderFactories },
-                    ),
+              resolveEmbedder: (ec) => {
+                // The agent's retrieval embedder (built from the DI instance
+                // when one was injected) serves the skills too.
+                if (reuseAgentEmbedder) {
+                  if (!resolvedEmbedder) {
+                    throw new Error(
+                      'skillPlugins: reusing the agent embedder, but none was resolved',
+                    );
+                  }
+                  return resolvedEmbedder;
+                }
+                const section = embedderSectionFor(ec.embedder, ec.model);
+                const build = (sec: SmartServerEmbedderConfig) =>
+                  this._deps.resolveEmbedder(sec, {
+                    extraFactories: mergedEmbedderFactories,
+                  });
+                return ec.asymmetric && section.factory === undefined
+                  ? asymmetricEmbedder({
+                      document: build({
+                        ...section,
+                        inputType: 'document' as const,
+                      }),
+                      query: build({ ...section, inputType: 'query' as const }),
+                    })
+                  : symmetricEmbedder(build(section));
+              },
               // Real pg `Pool` provider for a `postgres` catalog (qdrant
               // deployment). Lazily imports `pg` and ensures the catalog table
               // exists on first use; pass the configured table so the DDL targets
@@ -2095,7 +2126,7 @@ export class SmartServer {
     diEmbedder: IEmbedder | undefined,
     extraFactories: Record<string, EmbedderFactory>,
   ): Promise<MakeRagInput> {
-    const embedder = await resolveAgentEmbedder(
+    const embedder = await resolveRetrievalEmbedder(
       rag,
       diEmbedder,
       this._deps.resolveEmbedder,
@@ -2280,7 +2311,7 @@ export class SmartServer {
 
   private async buildSharedPipelineInfra(input: {
     toolsRag: IRag | undefined;
-    resolvedEmbedder: IEmbedder | undefined;
+    resolvedEmbedder: IRetrievalEmbedder | undefined;
     mcpClients: IMcpClient[] | undefined;
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder, mcpClients } = input;
@@ -2410,7 +2441,7 @@ export class SmartServer {
    */
   private async buildToolsRagHandle(input: {
     toolsRag: IRag | undefined;
-    resolvedEmbedder: IEmbedder | undefined;
+    resolvedEmbedder: IRetrievalEmbedder | undefined;
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder } = input;
     await this.resolveAuthoritativeSnapshot();

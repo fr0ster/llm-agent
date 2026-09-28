@@ -25,6 +25,7 @@ import {
   McpError,
   type McpFailureKind,
   type Result,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
@@ -34,10 +35,10 @@ import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 // established, not the ambiguity gate): the fixture's dim-1 [0] embedder yields
 // distance 1.00, which makes the controller ask for clarification and suspend
 // BEFORE it ever plans/executes.
-const constEmbedder: IEmbedder = {
+const constEmbedder = symmetricEmbedder({
   embed: async () => ({ vector: [1, 0, 0] }),
   dimensions: 3,
-} as unknown as IEmbedder;
+}) as unknown as IEmbedder;
 
 // A stateful scripted LLM: chat() shifts the next queued response; an exhausted
 // queue returns benign empty content so an unexpected extra round-trip cannot
@@ -136,7 +137,7 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       // goal clears the target-state gate and the run proceeds to plan/execute.
       embedder: constEmbedder,
       stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-        makeKnowledgeSemanticIndex(constEmbedder),
+        makeKnowledgeSemanticIndex(symmetricEmbedder(constEmbedder)),
       ),
       // Complete knowledge-rag handle (the controller writes goal/plan/step
       // artifacts through it — the fixture's minimal stub lacks write/list).

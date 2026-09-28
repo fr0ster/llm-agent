@@ -1,8 +1,8 @@
 import type {
-  IEmbedder,
   IIdStrategy,
   IRag,
   IRagEditor,
+  IRetrievalEmbedder,
   RagCatalogDescription,
   RagCatalogRow,
   RagCollectionOwner,
@@ -49,7 +49,7 @@ type Refusal = { ok: false; error: RagError };
 
 export interface HanaVectorRagProviderConfig {
   name: string;
-  embedder: IEmbedder;
+  embedder: IRetrievalEmbedder;
   /**
    * No `string` shorthand here, unlike pg-vector: that shorthand is
    * address-only, HANA has no anonymous login, and a type arm that can only
@@ -117,7 +117,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
   readonly editable: boolean;
   readonly supportedScopes: readonly RagCollectionScope[];
 
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly connection: HanaVectorRagConfig;
   private readonly defaultDimension: number;
   private readonly autoCreateSchema: boolean;

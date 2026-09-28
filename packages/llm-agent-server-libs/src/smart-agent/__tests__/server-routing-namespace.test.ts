@@ -30,6 +30,7 @@ import {
   type McpClientDescriptor,
   McpError,
   type Result,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryKnowledgeBackend,
@@ -134,10 +135,10 @@ function fakeSessionScope(
 
 // Non-zero constant embedder so goal/prompt semantic distance is 0 (target-state
 // established) — mirrors controller-mcp-classifier.test.ts's gate-bypass trick.
-const constEmbedder = {
+const constEmbedder = symmetricEmbedder({
   embed: async () => ({ vector: [1, 0, 0] }),
   dimensions: 3,
-} as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
+}) as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
 
 function scriptedLlm(model: string, queue: Partial<LlmResponse>[]): ILlm {
   return {
@@ -254,7 +255,7 @@ test('controller session-local: s1__Search routes to the SESSION client-1 instan
     ...base,
     embedder: constEmbedder,
     stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-      makeKnowledgeSemanticIndex(constEmbedder),
+      makeKnowledgeSemanticIndex(symmetricEmbedder(constEmbedder)),
     ),
     knowledgeRagFor: () => ({
       query: async () => [],

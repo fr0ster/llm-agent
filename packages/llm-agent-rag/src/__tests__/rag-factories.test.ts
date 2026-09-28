@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import {
+  asymmetricEmbedder,
+  MissingProviderError,
+  symmetricEmbedder,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { _resetPrefetchedForTests } from '../embedder-factories.js';
 import { makeRag, prefetchRagFactories } from '../rag-factories.js';
 
@@ -16,14 +21,14 @@ import { makeRag, prefetchRagFactories } from '../rag-factories.js';
 // compile-time property of `RagResolution`, asserted in
 // `../__typechecks__/rag-resolution.ts`, not a runtime path to test here.
 
-const stubEmbedder = {
+const stubEmbedder = symmetricEmbedder({
   async embed() {
     return { vector: [0] };
   },
   async embedBatch(texts: string[]) {
     return texts.map(() => ({ vector: [0] }));
   },
-};
+});
 
 describe('rag-factories', () => {
   it('throws MissingProviderError for unknown backend name', async () => {
@@ -44,7 +49,7 @@ describe('rag-factories', () => {
         type: 'qdrant',
         url: 'http://localhost:6333',
         collectionName: 'test',
-        embedder: stubEmbedder,
+        embedder: symmetricEmbedder(stubEmbedder),
       });
       assert.equal(typeof rag.query, 'function');
     } catch (err) {
@@ -64,7 +69,7 @@ describe('rag-factories', () => {
     _resetPrefetchedForTests();
     const rag = await makeRag({
       type: 'in-memory',
-      embedder: stubEmbedder,
+      embedder: symmetricEmbedder(stubEmbedder),
       collectionName: 'my-namespace',
     });
     assert.ok(
@@ -79,5 +84,27 @@ describe('rag-factories', () => {
       () => makeRag({ type: 'ollama' } as any),
       /Unknown rag\.type.*Use one of/,
     );
+  });
+});
+
+describe('makeRag — an asymmetric retrieval embedder', () => {
+  it('the store writes with the document half and embeds its own search text with the query half', async () => {
+    const seen: string[] = [];
+    const half = (role: string) => ({
+      embed: async (text: string) => {
+        seen.push(`${role}:${text}`);
+        return { vector: [1, 0] };
+      },
+    });
+    const rag = await makeRag({
+      type: 'in-memory',
+      embedder: asymmetricEmbedder({
+        document: half('document'),
+        query: half('query'),
+      }),
+    });
+    await rag.upsert('stored text', { id: '1' });
+    await rag.query(new TextOnlyEmbedding('search text'), 1);
+    assert.deepEqual(seen, ['document:stored text', 'query:search text']);
   });
 });

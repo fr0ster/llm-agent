@@ -45,6 +45,11 @@ export type EmbedderResolution =
       apiBaseUrl: string;
       resourceGroup?: string;
       scenario?: 'orchestration' | 'foundation-models';
+      /**
+       * Which half of an asymmetric model this instance is: `document` embeds
+       * stored text, `query` search text. Unset, no input type is sent.
+       */
+      inputType?: 'document' | 'query';
       maxBatchSize?: number;
       factory?: never;
     }
@@ -173,6 +178,7 @@ export function constructBuiltInEmbedder(
           ? { resourceGroup: cfg.resourceGroup }
           : {}),
         ...(cfg.scenario !== undefined ? { scenario: cfg.scenario } : {}),
+        ...(cfg.inputType !== undefined ? { inputType: cfg.inputType } : {}),
       });
     }
     case undefined:

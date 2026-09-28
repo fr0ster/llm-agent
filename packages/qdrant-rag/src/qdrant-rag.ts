@@ -1,9 +1,9 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
-  IEmbedder,
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
+  IRetrievalEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
@@ -30,7 +30,7 @@ export async function deterministicUUID(key: string): Promise<string> {
 export interface QdrantRagConfig {
   url: string;
   collectionName: string;
-  embedder: IEmbedder;
+  embedder: IRetrievalEmbedder;
   /**
    * Asked for fresh on every request — never cached — so a rotating key
    * rotates and a resolved-once secret is never frozen for this object's
@@ -56,7 +56,7 @@ export interface QdrantRagConfig {
 export class QdrantRag implements IRag {
   private readonly url: string;
   private readonly collectionName: string;
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly credential?: IApiKeyCredential;
   private readonly timeoutMs: number | undefined;
   private readonly autoCreateCollection: boolean;
@@ -219,7 +219,7 @@ export class QdrantRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const { vector } = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embedDocument(text, options);
       return this.upsertKnownVector(text, vector, metadata, options);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };

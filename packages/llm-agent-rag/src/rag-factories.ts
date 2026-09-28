@@ -9,6 +9,7 @@ import type {
   IEmbedder,
   IQueryPreprocessor,
   IRag,
+  IRetrievalEmbedder,
   ISearchStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -183,9 +184,12 @@ function constructFromExtraFactory(
  * wrong credential kind, a missing required one, or a field Task B6 removed
  * is a build error rather than something a guard has to notice at runtime.
  *
- * `embedder` is an already-built `IEmbedder`, not a factory name: a caller
- * resolves one first — `resolveEmbedder(cfg: EmbedderResolution)`, or
- * `composeEmbedder` for its own instance — and hands it in here.
+ * `embedder` is an already-built `IRetrievalEmbedder`, not a factory name: the
+ * store writes records with its `embedDocument` and embeds the search text it
+ * handles itself with its `embedQuery`. Build it over embedders that are
+ * already composed — `symmetricEmbedder(resolveEmbedder(cfg))`, or
+ * `asymmetricEmbedder({ document, query })` for a model that embeds the two
+ * differently — and hand it in here.
  *
  * Field sources, read from each store's own config (not invented):
  *   - qdrant: `QdrantRagConfig` (`packages/qdrant-rag/src/qdrant-rag.ts`) —
@@ -207,14 +211,14 @@ function constructFromExtraFactory(
  *     longer reachable through `makeRag` — a caller who wants that constructs
  *     `new InMemoryRag(...)` directly, which is still exported unchanged.
  *
- * `maxBatchSize` is on every arm because `makeRag` still composes chunking
- * and retry onto whatever embedder it is given (the same choke point
- * `resolveEmbedder` applies for its own callers) — see `makeRag` below.
+ * Chunking and retry belong to the embedders underneath (`resolveEmbedder`
+ * and `composeEmbedder` apply them), not to the store: `makeRag` takes the
+ * retrieval embedder as it is.
  */
 export type RagResolution =
   | {
       type: 'in-memory';
-      embedder: IEmbedder;
+      embedder: IRetrievalEmbedder;
       collectionName?: string;
       dedupThreshold?: number;
       vectorWeight?: number;
@@ -222,20 +226,18 @@ export type RagResolution =
       strategy?: ISearchStrategy;
       queryPreprocessors?: IQueryPreprocessor[];
       documentEnrichers?: IDocumentEnricher[];
-      maxBatchSize?: number;
     }
   | {
       type: 'qdrant';
-      embedder: IEmbedder;
+      embedder: IRetrievalEmbedder;
       collectionName: string;
       url: string;
       credential?: IApiKeyCredential;
       timeoutMs?: number;
-      maxBatchSize?: number;
     }
   | {
       type: 'pg-vector';
-      embedder: IEmbedder;
+      embedder: IRetrievalEmbedder;
       collectionName: string;
       credential?: ISecretLoginCredential;
       connectionString?: string;
@@ -247,11 +249,10 @@ export type RagResolution =
       connectTimeout?: number;
       dimension?: number;
       autoCreateSchema?: boolean;
-      maxBatchSize?: number;
     }
   | {
       type: 'hana-vector';
-      embedder: IEmbedder;
+      embedder: IRetrievalEmbedder;
       collectionName: string;
       credential: ISecretLoginCredential;
       connectionString?: string;
@@ -262,7 +263,6 @@ export type RagResolution =
       connectTimeout?: number;
       dimension?: number;
       autoCreateSchema?: boolean;
-      maxBatchSize?: number;
     };
 
 export interface RagResolutionOptions {
@@ -309,30 +309,13 @@ function refuseLegacySecretFields(cfg: RagResolution): void {
  */
 export async function makeRag(
   cfg: RagResolution,
-  options?: RagResolutionOptions,
+  _options?: RagResolutionOptions,
 ): Promise<IRag> {
   refuseLegacySecretFields(cfg);
 
-  // The same choke point resolveEmbedder applies for its own callers:
-  // whatever embedder a caller hands in gets chunking/retry composed here
-  // too, so a raw, uncomposed IEmbedder passed straight into RagResolution
-  // still gets it (composeResilientEmbedder is idempotent, so an already-
-  // composed one is untouched). Defined once, invoked per matched branch —
-  // NOT hoisted above the switch — so an unknown `cfg.type` still reaches
-  // the clear error below instead of failing inside embedder composition.
-  const compose = (raw: IEmbedder): IEmbedder =>
-    composeResilientEmbedder(raw, {
-      explicitMaxBatchSize: cfg.maxBatchSize,
-      fallbackMaxBatchSize: isBatchSizeLimited(raw)
-        ? raw.maxBatchSize
-        : DEFAULT_MAX_BATCH_SIZE,
-      logger: options?.logger,
-    });
-
   switch (cfg.type) {
     case 'in-memory': {
-      const embedder = compose(cfg.embedder);
-      return new VectorRag(embedder, {
+      return new VectorRag(cfg.embedder, {
         dedupThreshold: cfg.dedupThreshold,
         namespace: cfg.collectionName,
         vectorWeight: cfg.vectorWeight,
@@ -344,41 +327,33 @@ export async function makeRag(
     }
 
     case 'qdrant': {
-      const {
-        type: _type,
-        maxBatchSize: _mbs,
-        embedder: _e,
-        ...qdrantCfg
-      } = cfg;
+      const { type: _type, ...qdrantCfg } = cfg;
       const { QdrantRag } = await importPeer(
         () => import('@mcp-abap-adt/qdrant-rag'),
         '@mcp-abap-adt/qdrant-rag',
         'qdrant',
       );
-      return new QdrantRag({ ...qdrantCfg, embedder: compose(cfg.embedder) });
+      return new QdrantRag(qdrantCfg);
     }
 
     case 'hana-vector': {
-      const { type: _type, maxBatchSize: _mbs, embedder: _e, ...hanaCfg } = cfg;
+      const { type: _type, ...hanaCfg } = cfg;
       const { HanaVectorRag } = await importPeer(
         () => import('@mcp-abap-adt/hana-vector-rag'),
         '@mcp-abap-adt/hana-vector-rag',
         'hana-vector',
       );
-      return new HanaVectorRag({
-        ...hanaCfg,
-        embedder: compose(cfg.embedder),
-      });
+      return new HanaVectorRag(hanaCfg);
     }
 
     case 'pg-vector': {
-      const { type: _type, maxBatchSize: _mbs, embedder: _e, ...pgCfg } = cfg;
+      const { type: _type, ...pgCfg } = cfg;
       const { PgVectorRag } = await importPeer(
         () => import('@mcp-abap-adt/pg-vector-rag'),
         '@mcp-abap-adt/pg-vector-rag',
         'pg-vector',
       );
-      return new PgVectorRag({ ...pgCfg, embedder: compose(cfg.embedder) });
+      return new PgVectorRag(pgCfg);
     }
 
     default: {

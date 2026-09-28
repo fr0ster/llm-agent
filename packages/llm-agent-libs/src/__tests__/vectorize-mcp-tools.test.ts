@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
+  IEmbedder,
   IEmbedResult,
   ILogger,
   IMcpClient,
@@ -21,6 +22,7 @@ import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   McpError,
+  symmetricEmbedder,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -155,7 +157,10 @@ function makeRagWithEmbedder(
     writer: () => writer,
   } as unknown as IRag;
   if (embedder !== undefined) {
-    (rag as unknown as Record<string, unknown>).embedder = embedder;
+    // A store holds a retrieval embedder over the provider's IEmbedder.
+    (rag as unknown as Record<string, unknown>).embedder = symmetricEmbedder(
+      embedder as IEmbedder,
+    );
   }
   return rag;
 }

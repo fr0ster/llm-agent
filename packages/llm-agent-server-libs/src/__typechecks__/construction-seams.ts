@@ -1,4 +1,5 @@
 import type { IEmbedder, ILlm, IRag } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type {
   MakeRagInput,
   SmartServerEmbedderConfig,
@@ -48,7 +49,7 @@ const _qdrant: MakeRagInput = {
     collectionName: 'c',
     credentialRef: 'QDRANT',
   },
-  embedder,
+  embedder: symmetricEmbedder(embedder),
 };
 
 // biome-ignore format: one line — the error lands on the offending property

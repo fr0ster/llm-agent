@@ -5,6 +5,7 @@ import type {
   IKnowledgeRagHandle,
   ILlm,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { ControllerHandlerDeps } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import { ControllerCoordinatorHandler } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import type { ControllerConfig } from '../../smart-agent/controller/types.js';
@@ -52,7 +53,7 @@ test('builds a handler with reviewer+finalizer (semantic-capable backend + embed
   const { handler } = await factory.build(config, {
     ...baseDeps(),
     backend: { semanticRecallCapable: true } as never,
-    embedder,
+    embedder: symmetricEmbedder(embedder),
   });
   assert.ok(handler instanceof ControllerCoordinatorHandler);
   assert.equal(typeof (handler as { execute?: unknown }).execute, 'function');
@@ -76,7 +77,7 @@ test('throws when an embedder is present but the backend is NOT semantic-recall-
       new ControllerFactory().build(config, {
         ...baseDeps(),
         backend: { semanticRecallCapable: false } as never,
-        embedder,
+        embedder: symmetricEmbedder(embedder),
       }),
     /semantic-recall-capable/,
   );
@@ -85,7 +86,7 @@ test('throws when an embedder is present but the backend is NOT semantic-recall-
 const semanticCapableDeps = (): ControllerFactoryDeps => ({
   ...baseDeps(),
   backend: { semanticRecallCapable: true } as never,
-  embedder,
+  embedder: symmetricEmbedder(embedder),
 });
 
 test('ControllerFactory.build rejects a board budget that cannot fit', async () => {

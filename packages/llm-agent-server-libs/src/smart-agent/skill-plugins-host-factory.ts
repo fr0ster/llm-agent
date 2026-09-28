@@ -24,7 +24,7 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   CallOptions,
-  IEmbedder,
+  IRetrievalEmbedder,
   ISkillPluginHost,
   ISkillSource,
   ISkillsRagBackendProvider,
@@ -70,6 +70,8 @@ const RETRIEVAL_SCHEMA_VERSION = 1;
 export interface SkillHostEmbedderConfig {
   embedder?: string;
   model?: string;
+  /** `skillPlugins.embedder.asymmetric` — build the document/query pair. */
+  asymmetric?: boolean;
 }
 
 /** Injected dependencies (DI seams) for {@link buildSkillHostFromConfig}. */
@@ -79,7 +81,7 @@ export interface BuildSkillHostDeps {
    * server passes a resolver backed by `@mcp-abap-adt/llm-agent-rag`; tests pass
    * a stub returning a deterministic-vector embedder.
    */
-  resolveEmbedder: (cfg: SkillHostEmbedderConfig) => IEmbedder;
+  resolveEmbedder: (cfg: SkillHostEmbedderConfig) => IRetrievalEmbedder;
   /**
    * The qdrant store's credential, resolved by the composition root from
    * `store.credentialRef` (or its default store entry). The library holds no
@@ -265,9 +267,12 @@ export async function buildSkillHostFromConfig(
       ? { embedder: cfg.embedder.provider }
       : {}),
     ...(cfg.embedder?.model !== undefined ? { model: cfg.embedder.model } : {}),
+    ...(cfg.embedder?.asymmetric ? { asymmetric: true } : {}),
   });
+  // The store provider WRITES skills (documents); the host recalls with the
+  // query method of the same retrieval embedder.
   const embed: Embed = (text, options) =>
-    embedder.embed(text, options).then((r) => r.vector);
+    embedder.embedDocument(text, options).then((r) => r.vector);
 
   // ---- RECALL-ONLY (loadOnStartup:false) --------------------------------
   // Serve an already-materialised catalog through a READ-ONLY backend (least

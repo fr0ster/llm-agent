@@ -5,7 +5,10 @@ import type {
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
+import {
+  CatalogRecordDeleteError,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 import {
@@ -35,7 +38,11 @@ function providerOn(
   stub: QdrantStub,
   embedder: IEmbedder = new CountingEmbedder(),
 ): QdrantRagProvider {
-  return new QdrantRagProvider({ name: 'q', url: stub.baseUrl, embedder });
+  return new QdrantRagProvider({
+    name: 'q',
+    url: stub.baseUrl,
+    embedder: symmetricEmbedder(embedder),
+  });
 }
 async function withStub(
   run: (stub: QdrantStub) => Promise<void>,
@@ -218,7 +225,7 @@ describe('qdrant catalog: no handle creates its collection', () => {
     const provider = new QdrantRagProvider({
       name: 'q',
       url: 'http://127.0.0.1:9', // never contacted: no request is made
-      embedder: new CountingEmbedder(),
+      embedder: symmetricEmbedder(new CountingEmbedder()),
       idStrategyFactory: () => {
         throw new Error('id strategy refused');
       },

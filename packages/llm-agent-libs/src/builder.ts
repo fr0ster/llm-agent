@@ -54,8 +54,8 @@ import {
   collectServerDescriptors,
   defaultToolNamespace,
   FallbackRag,
-  type IEmbedder,
   InMemoryRag,
+  type IQueryEmbedder,
   type IRag,
   type IRagEditor,
   type IRagProvider,
@@ -70,7 +70,6 @@ import {
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
-import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import type {
   BuilderMcpConfig,
@@ -194,7 +193,7 @@ export class SmartAgentBuilder {
   private _clientAdapters: IClientAdapter[] = [];
   private _apiAdapters: Map<string, ILlmApiAdapter> = new Map();
   private _modelProvider?: IModelProvider;
-  private _embedder?: IEmbedder;
+  private _embedder?: IQueryEmbedder;
   private _toolSelectionStrategy?: IToolSelectionStrategy;
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
@@ -461,10 +460,10 @@ export class SmartAgentBuilder {
   }
 
   /** Set the shared embedder for RAG queries. When set, queries embed once and share the vector. */
-  withEmbedder(embedder: IEmbedder): this {
-    // wrapEmbedder is idempotent — safe even if the embedder was already wrapped
-    // by resolveAgentEmbedder (the canonical owner).
-    this._embedder = wrapEmbedder(embedder);
+  withEmbedder(embedder: IQueryEmbedder): this {
+    // Usage logging wraps the IEmbedder underneath (`symmetricEmbedder(
+    // wrapEmbedder(e))`, as resolveAgentEmbedder does); a role is not wrapped.
+    this._embedder = embedder;
     return this;
   }
 
@@ -763,7 +762,7 @@ export class SmartAgentBuilder {
    */
   private buildRetrievalSource(
     rag: IRag | undefined,
-    embedder: IEmbedder | undefined,
+    embedder: IQueryEmbedder | undefined,
   ): SubAgentRetrievalSource | undefined {
     if (!rag || !embedder) return undefined;
     return async (text, k, signal) => {

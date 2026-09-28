@@ -65,6 +65,15 @@ export function createResolveEmbedder(
       };
       return impl(resolution, options);
     }
+    if (
+      cfg.inputType !== undefined &&
+      cfg.provider !== 'sap-ai-core' &&
+      cfg.provider !== 'sap-aicore'
+    ) {
+      throw new Error(
+        `embedder inputType applies to provider 'sap-ai-core' only, not '${cfg.provider}'`,
+      );
+    }
     const entry = lookup(cfg.credentialRef, DEFAULT_EMBEDDER_REF, cfg.provider);
     const model = requireModel(cfg);
     const batch =
@@ -91,6 +100,9 @@ export function createResolveEmbedder(
               ? { resourceGroup: cfg.resourceGroup }
               : {}),
             ...(cfg.scenario !== undefined ? { scenario: cfg.scenario } : {}),
+            ...(cfg.inputType !== undefined
+              ? { inputType: cfg.inputType }
+              : {}),
             ...batch,
             credential: entry.require('bearer'),
             apiBaseUrl: entry.requireApiBaseUrl(),

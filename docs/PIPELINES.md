@@ -108,8 +108,9 @@ when composing in code — `ControllerFactory` is the public controller export).
 - Each subagent names a key of the top-level `llm:` map (`{ llm: <key>, hint? }`); an omitted `llm`
   means the role's own name, then `main`; an absent `reviewer`/`finalizer` uses the planner's key.
   Different roles can name different entries — e.g. a heavy planner + a light executor. The executor
-  must be a **tool-capable** model the backend accepts (OpenAI function format);
-  `anthropic--claude-3-haiku` cannot do tool calls via SAP AI Core orchestration.
+  must be a **tool-capable** model the backend accepts (OpenAI function format) — on SAP AI Core,
+  e.g. `gpt-4o-mini` or `anthropic--claude-4.5-haiku` (`anthropic--claude-3-haiku` could not call
+  tools there, and AWS has since retired it).
 - **Per-role hints (operational scaffolding for weaker models).** The engine's
   role system prompts are agnostic and concise. An optional `subagents.<role>.hint`
   is appended to that role's system prompt to give it extra **operational

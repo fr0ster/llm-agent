@@ -9,6 +9,34 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.0.0] — 2026-09-28
+
+**BREAKING — see [docs/MIGRATION-v30.md](docs/MIGRATION-v30.md).**
+
+### Breaking
+
+- **Embedders have two roles, told apart by method name.** A store writes records and embeds the search text it handles itself; a search path only searches. Some retrieval models embed the two differently — `nvidia--llama-3.2-nv-embedqa-1b` refuses a call without `type: document | query` — and one embedder instance used to serve both jobs. The roles are now separate contracts with different methods, so the compiler refuses one where the other is needed (verified by `embedder-roles.typecheck.ts`):
+  - `@mcp-abap-adt/llm-agent`: `IDocumentEmbedder` (`embedDocument`, optional `embedDocuments` for batching models), `IQueryEmbedder` (`embedQuery`), `IRetrievalEmbedder` (both). `symmetricEmbedder(embedder)` gives an `IEmbedder` both roles; `asymmetricEmbedder({ document, query })` joins the two halves of an asymmetric model. `IEmbedder` itself is unchanged — providers keep implementing `embed`.
+  - Stores and collection providers take an `IRetrievalEmbedder`: `VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag`, the four `*RagProvider`s and `makeRag`'s `RagResolution` (which no longer composes chunking/retry onto the embedder and drops `maxBatchSize` — compose the `IEmbedder` underneath).
+  - Search paths take an `IQueryEmbedder`: `QueryEmbedding`, `FallbackQueryEmbedding`, `SmartAgentBuilder.withEmbedder`, `SmartAgentDeps.embedder`, the pipeline context. `SmartAgent` and the builder no longer wrap the embedder for usage logging — `wrapEmbedder` goes on the `IEmbedder` underneath.
+  - `@mcp-abap-adt/llm-agent-server-libs`: the server context's `embedder`, `ControllerFactoryDeps.embedder`, `MakeRagInput.embedder`, `makeKnowledgeBackend` / `makeKnowledgeSemanticIndex` and `relevantExtract` take an `IRetrievalEmbedder`; `BuildSkillHostDeps.resolveEmbedder` returns one. New `resolveRetrievalEmbedder`; `resolveAgentEmbedder` is unchanged.
+  - `conformanceEmbedder()` (`@mcp-abap-adt/llm-agent/testing`) stays an `IEmbedder`: give it its roles with `symmetricEmbedder(...)` before handing it to a store.
+
+### Added
+
+- **Asymmetric embedding models on SAP AI Core.** `SapAiCoreEmbedder` gains `inputType: 'document' | 'query'` (orchestration scenario only — refused with `foundation-models`). `rag.embedder.asymmetric: true` makes the server resolve the model once per input type and join the halves with `asymmetricEmbedder`: every write (stores — a sub-agent's own included —, tool vectorization, skills, knowledge entries) goes through the document half, every search (agent, pipeline, tool selection, a store's own search text) through the query half. `skillPlugins.embedder.asymmetric: true` does the same for a dedicated skill embedder. Refused on any other provider, with `scenario: foundation-models`, and beside a factory. `npm run models:check -- --config` probes both halves.
+- Stores embed the search text they handle themselves — a text-only query (every sub-agent's), a preprocessed one, a failed caller embedding — through `embedQuery`; before, it went through the store's single embedder.
+
+### Fixed
+
+- **`llm.resourceGroup` reaches SAP AI Core.** The key was accepted in an `llm:` entry — the shipped examples set `resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}` on every role — but `makeLlm` never passed it on, so every chat ran in AI Core's `default` group. It is now handed to the `sap-ai-sdk` provider (flat and map `llm:` shapes); set on any other provider it fails at startup instead of being dropped. `npm run models:check -- --config` probes each role in its resource group.
+- **Examples: `anthropic--claude-3-haiku` → `anthropic--claude-4.5-haiku`.** AWS retired claude-3-haiku (every call now answers `400 … This model version has reached the end of its life`); `examples/docker-sap-ai-core` and `examples/sap-ai-core-direct` defaulted classifier and helper to it. claude-4.5-haiku classifies and calls tools through AI Core.
+- Docs no longer say the server reads `SAP_AI_MODEL` / `SAP_AI_RESOURCE_GROUP` by itself; they reach the config only through `${VAR}` in the YAML.
+
+### Removed
+
+- The implemented v27 design spec and plan under `docs/superpowers/`.
+
 ## [29.0.0] — 2026-09-28
 
 **BREAKING — see [docs/MIGRATION-v29.md](docs/MIGRATION-v29.md).**

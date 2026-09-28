@@ -8,6 +8,7 @@ import {
   type LlmTool,
   type Message,
   type Result,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   KnowledgeBackend,
@@ -96,9 +97,9 @@ function stubRag(
   };
 }
 
-const stubEmbedder = {
+const stubEmbedder = symmetricEmbedder({
   embed: async () => ({ vector: [1, 0, 0] }),
-} as never;
+}) as never;
 
 function baseConfig(
   over: Partial<ControllerConfig['budgets']> = {},
@@ -759,9 +760,9 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('goal clarify: orthogonal embedding → escalate + persist clarify pending', async () => {
     let n = 0;
-    const orthoEmbedder = {
+    const orthoEmbedder = symmetricEmbedder({
       embed: async () => ({ vector: n++ === 0 ? [1, 0] : [0, 1] }),
-    } as never;
+    }) as never;
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal: X' }],
       planner: [],

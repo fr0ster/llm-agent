@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/sap-aicore-auth",
-  "version": "29.0.0",
+  "version": "30.0.0",
   "description": "SAP AI Core service-key token exchange (TokenProvider, parseServiceKey, serviceKeyCredential).",
   "type": "module",
   "main": "dist/index.js",

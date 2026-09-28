@@ -7,7 +7,7 @@
  *
  * `credentialRef` is a NAME the composition root resolves — never a value.
  */
-import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { IRetrievalEmbedder } from '@mcp-abap-adt/llm-agent';
 
 /**
  * The in-memory store. The search knobs live here because this is the only store
@@ -110,6 +110,18 @@ export type SmartServerEmbedderConfig =
       /** SAP AI Core scenario: 'orchestration' (default) or 'foundation-models'. */
       scenario?: 'orchestration' | 'foundation-models';
       /**
+       * The model embeds stored text and search text differently (e.g.
+       * `nvidia--llama-3.2-nv-embedqa-1b`): the server builds it twice on the
+       * same model — `inputType: 'document'` and `'query'` — and joins the two
+       * with `asymmetricEmbedder`. SAP AI Core, orchestration only.
+       */
+      asymmetric?: boolean;
+      /**
+       * The input type ONE instance sends — set by the server for each half of
+       * an asymmetric model, not by the YAML.
+       */
+      inputType?: 'document' | 'query';
+      /**
        * Cap on texts per embedBatch call. Precedence: this value → the provider's
        * declared cap → the library default (100).
        */
@@ -157,17 +169,17 @@ export interface SmartServerRagConfig {
  * so the compiler demands an embedder exactly where a store cannot work without one.
  */
 export type MakeRagInput =
-  | { store: InMemoryStoreConfig; embedder?: IEmbedder }
+  | { store: InMemoryStoreConfig; embedder?: IRetrievalEmbedder }
   | {
       store: QdrantStoreConfig | PgVectorStoreConfig | HanaVectorStoreConfig;
-      embedder: IEmbedder;
+      embedder: IRetrievalEmbedder;
     };
 
 /**
  * Narrows a `MakeRagInput` to its in-memory arm — and, in the `false` branch, to the vector
- * arm with `embedder: IEmbedder`. TypeScript does not narrow the pair through
+ * arm with `embedder: IRetrievalEmbedder`. TypeScript does not narrow the pair through
  * `input.store.type` — the discriminant is nested — so without this a `makeRag` body sees
- * `embedder: IEmbedder | undefined` on every arm (§4.6.4's reference `makeRag` uses exactly
+ * `embedder: IRetrievalEmbedder | undefined` on every arm (§4.6.4's reference `makeRag` uses exactly
  * this guard). The one-line body restates the union's own pairing.
  */
 export function isInMemoryInput(
@@ -183,7 +195,7 @@ export function isInMemoryInput(
  */
 export function toMakeRagInput(
   store: SmartServerRagStoreConfig,
-  embedder: IEmbedder | undefined,
+  embedder: IRetrievalEmbedder | undefined,
   label: string,
 ): MakeRagInput {
   if (store.type === 'in-memory') {

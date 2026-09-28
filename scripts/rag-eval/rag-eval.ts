@@ -4,7 +4,7 @@
  * expected tool. No LLM is involved.
  *
  * Every step goes through the server's own code, imported from package sources:
- *   - embedder: resolveAgentEmbedder over the composition root's resolveEmbedder
+ *   - embedder: resolveRetrievalEmbedder over the composition root's resolveEmbedder
  *   - store:    toMakeRagInput + the composition root's makeRag
  *   - write:    vectorizeMcpTools, fed by a stub IMcpClient over the snapshot
  *   - select:   QueryEmbedding → store.query(K) → DEFAULT_TOOL_SELECTION →
@@ -21,10 +21,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import type {
-  IEmbedder,
   ILogger,
   IMcpClient,
   IRag,
+  IRetrievalEmbedder,
   McpTool,
   RagResult,
 } from '../../packages/llm-agent/src/index.js';
@@ -42,7 +42,7 @@ import {
   type SmartServerRagStoreConfig,
   toMakeRagInput,
 } from '../../packages/llm-agent-server-libs/src/smart-agent/rag-config.js';
-import { resolveAgentEmbedder } from '../../packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.js';
+import { resolveRetrievalEmbedder } from '../../packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORT_KS = [1, 5, 10, 15] as const;
@@ -171,20 +171,18 @@ async function evalConfig(
   const catalog = new Set(tools.map((t) => t.name));
   const maxK = Math.max(k, ...REPORT_KS);
 
-  // Resolved exactly as SmartServer.start does ("RAG resolution").
-  const embedder: IEmbedder | undefined = await resolveAgentEmbedder(
-    rag,
-    undefined,
-    deps.resolveEmbedder,
-    {},
-  );
+  // Resolved exactly as SmartServer.start does ("RAG resolution"): one
+  // retrieval embedder — the store writes with embedDocument, the search
+  // below embeds with embedQuery (an asymmetric model is two halves behind it).
+  const embedder: IRetrievalEmbedder | undefined =
+    await resolveRetrievalEmbedder(rag, undefined, deps.resolveEmbedder, {});
   const toolsRag = await deps.makeRag(
     toMakeRagInput(store, embedder, `matrix.${entry.name}`),
   );
 
   try {
     // Warm the embedder (model load, token fetch) outside every timing.
-    if (embedder) await embedder.embed('warm up');
+    if (embedder) await embedder.embedQuery('warm up');
     const logLines: string[] = [];
     const t0 = performance.now();
     const summary = await vectorizeMcpTools(

@@ -1,3 +1,4 @@
+export type { SapAiCoreEmbedderInputType } from './orchestration-embedder.js';
 export type {
   SapAiCoreEmbedderConfig,
   SapAiCoreEmbedderScenario,

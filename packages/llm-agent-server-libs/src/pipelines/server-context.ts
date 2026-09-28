@@ -1,7 +1,7 @@
 import type {
-  IEmbedder,
   ILlm,
   IPipelineContext,
+  IRetrievalEmbedder,
   ISkillPluginHost,
   ISubAgent,
   IToolsRagHandle,
@@ -41,7 +41,7 @@ export interface IServerPipelineContext extends IPipelineContext {
    * controller pipeline for target-state semantic distance. Undefined when no
    * embedder is configured.
    */
-  embedder?: IEmbedder;
+  embedder?: IRetrievalEmbedder;
   /**
    * The live skill plugin-host, built once at startup from `skillPlugins:` config
    * and `await host.load()`-ed before serving. Consumed by the implicit

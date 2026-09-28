@@ -1,11 +1,11 @@
 import type {
   BuiltCoordinator,
   CallOptions,
-  IEmbedder,
   IKnowledgeRagHandle,
   ILlm,
   IPipelineContext,
   IPipelineFactory,
+  IRetrievalEmbedder,
   IRunExecutionControl,
   IStepExecutionControl,
   IWaitStrategy,
@@ -41,7 +41,7 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
   /** ALWAYS required: results-RAG recall ranks by embedding similarity in every
    *  persistence mode (and distance target-state, if used). `build()` throws when
    *  absent — optional here only so the dep object can be assembled incrementally. */
-  embedder?: IEmbedder;
+  embedder?: IRetrievalEmbedder;
   /** Semantic top-K tool selection over the vectorized MCP catalog. */
   selectTools: (
     query: string,

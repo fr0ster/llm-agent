@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { staticApiKey, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { QdrantRag } from '../qdrant-rag.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
@@ -63,7 +63,7 @@ describe('QdrantRag credential', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-cred',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       credential,
     });
 
@@ -87,7 +87,7 @@ describe('QdrantRag credential', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-cred-static',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       credential: staticApiKey('static-secret'),
     });
     const result = await rag.healthCheck();
@@ -100,7 +100,7 @@ describe('QdrantRag credential', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-cred-none',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const result = await rag.healthCheck();
     assert.ok(result.ok);

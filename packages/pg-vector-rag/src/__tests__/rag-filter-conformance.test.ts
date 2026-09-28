@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
@@ -19,7 +20,7 @@ describe('PgVectorRag — filter conformance (storing fake)', () => {
             {
               collectionName: 'docs',
               dimension: CONFORMANCE_EMBEDDING_DIM,
-              embedder: conformanceEmbedder(),
+              embedder: symmetricEmbedder(conformanceEmbedder()),
             },
             storingPg(),
           ),

@@ -9,6 +9,10 @@ RAG and embedder composition for the SmartAgent runtime.
 
 - `makeRag(cfg: RagResolution, options?: RagResolutionOptions): Promise<IRag>` — async,
   dynamic-imports the configured backend, typed per target (`type` discriminates the union).
+  `cfg.embedder` is an `IRetrievalEmbedder` (`@mcp-abap-adt/llm-agent`): the store writes with
+  its `embedDocument` and embeds its own search text with its `embedQuery`. Build it over an
+  embedder that is already composed — `symmetricEmbedder(resolveEmbedder(...))`, or
+  `asymmetricEmbedder({ document, query })` for a model that embeds the two differently.
 - `resolveEmbedder(cfg: EmbedderResolution, options?: EmbedderResolutionOptions): IEmbedder` —
   synchronous, requires prior `prefetchEmbedderFactories(...)`; discriminated by `provider`.
 - `composeEmbedder(embedder, options?)` — wraps an embedder a consumer already holds with the same
@@ -26,11 +30,13 @@ resolution, naming the target — these functions carry no secret of their own.
 ### Common case (one-shot async resolution)
 
 ```ts
-import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
-const rag = await makeRag(
-  { type: 'in-memory', embedder: yourEmbedder },
-  { breaker: yourBreaker },
-);
+import { composeEmbedder, makeRag } from '@mcp-abap-adt/llm-agent-rag';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+const rag = await makeRag({
+  type: 'in-memory',
+  // chunking + retry on your instance, then its two roles
+  embedder: symmetricEmbedder(composeEmbedder(yourEmbedder)),
+});
 ```
 
 ### Hot-path consumers (prefetch once, then resolve)
@@ -41,8 +47,9 @@ import { prefetchRagFactories, makeRag } from '@mcp-abap-adt/llm-agent-rag';
 // At startup:
 await prefetchRagFactories(['qdrant']);
 
-// Inside a hot loop — the ES loader caches, so this call costs nothing further:
-const rag = await makeRag({ type: 'qdrant', embedder, collectionName, url }, { breaker });
+// Inside a hot loop — the ES loader caches, so this call costs nothing further
+// (`embedder` is the IRetrievalEmbedder built once, as above):
+const rag = await makeRag({ type: 'qdrant', embedder, collectionName, url });
 ```
 
 ## Optional peer dependencies

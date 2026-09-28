@@ -1,7 +1,7 @@
 import {
   type CallOptions,
-  type IEmbedder,
   type IMcpClient,
+  type IQueryEmbedder,
   type IRag,
   type IToolsRagHandle,
   type LlmTool,
@@ -19,7 +19,7 @@ import {
 export async function makeToolsRagHandle(
   clients: IMcpClient[],
   toolsRag: IRag | undefined,
-  resolvedEmbedder: IEmbedder | undefined,
+  resolvedEmbedder: IQueryEmbedder | undefined,
   log?: (event: Record<string, unknown>) => void,
   namespaced?: { namespacedTools: readonly LlmTool[] },
 ): Promise<IToolsRagHandle> {

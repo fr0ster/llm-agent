@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { IRag } from '../../interfaces/rag.js';
 import { conformanceEmbedder } from '../../testing/rag-filter-conformance.js';
 import { InMemoryRag } from '../in-memory-rag.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import { VectorRag } from '../vector-rag.js';
 
 // Similarity dedup must never merge two records that carry different ids: a
@@ -27,7 +28,10 @@ const stores: Array<[string, () => IRag]> = [
   ['InMemoryRag', () => new InMemoryRag({ dedupThreshold: 0.5 })],
   [
     'VectorRag',
-    () => new VectorRag(conformanceEmbedder(), { dedupThreshold: 0.5 }),
+    () =>
+      new VectorRag(symmetricEmbedder(conformanceEmbedder()), {
+        dedupThreshold: 0.5,
+      }),
   ],
 ];
 

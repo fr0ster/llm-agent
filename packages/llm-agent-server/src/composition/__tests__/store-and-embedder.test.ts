@@ -99,6 +99,33 @@ describe('resolveEmbedder seam: SmartServerEmbedderConfig → EmbedderResolution
     );
   });
 
+  it('sap-ai-core carries the input type of an asymmetric half, and none otherwise', () => {
+    const { seen, impl } = recorder();
+    const resolve = createResolveEmbedder(
+      lookupOver({ A: { credential: bearer, apiBaseUrl: 'https://a' } }),
+      impl,
+    );
+    resolve({
+      provider: 'sap-ai-core',
+      model: 'nv',
+      inputType: 'query',
+      credentialRef: 'A',
+    });
+    resolve({ provider: 'sap-ai-core', model: 'nv', credentialRef: 'A' });
+    assert.equal(seen[0]?.inputType, 'query');
+    assert.equal(seen[1] !== undefined && 'inputType' in seen[1], false);
+  });
+
+  it('refuses an input type on a provider without one', () => {
+    const { impl } = recorder();
+    const resolve = createResolveEmbedder(lookupOver({}), impl);
+    assert.throws(
+      () =>
+        resolve({ provider: 'ollama', model: 'bge-m3', inputType: 'query' }),
+      /inputType applies to provider 'sap-ai-core' only, not 'ollama'/,
+    );
+  });
+
   it('ollama sends nothing: a named ref is refused, an omitted one reads no entry', () => {
     const asked: string[] = [];
     const { seen, impl } = recorder();

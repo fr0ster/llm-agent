@@ -1,7 +1,7 @@
 import type {
   CallOptions,
-  IEmbedder,
   IKnowledgeRagHandle,
+  IRetrievalEmbedder,
   KnowledgeEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { cosine } from '../embedder-knowledge-index.js';
@@ -188,7 +188,8 @@ export async function relevantExtract(
   content: string,
   ref: string,
   maxChars: number,
-  embedder: IEmbedder,
+  /** Embeds the ref (`embedQuery`) and the content windows (`embedDocument`). */
+  embedder: IRetrievalEmbedder,
   options?: CallOptions,
 ): Promise<string> {
   if (content.length <= maxChars) return content;
@@ -198,11 +199,11 @@ export async function relevantExtract(
     Math.floor(body / 2),
     Math.ceil(content.length / MAX_EXTRACT_WINDOWS),
   );
-  const { vector: q } = await embedder.embed(ref, options);
+  const { vector: q } = await embedder.embedQuery(ref, options);
   let bestStart = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
   for (let s = 0; s < content.length; s += stride) {
-    const { vector } = await embedder.embed(
+    const { vector } = await embedder.embedDocument(
       content.slice(s, s + body),
       options,
     );

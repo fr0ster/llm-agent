@@ -1,8 +1,8 @@
 import type {
-  IEmbedder,
   IIdStrategy,
   IRag,
   IRagEditor,
+  IRetrievalEmbedder,
   RagCollectionScope,
   RagProviderCreateCollectionOptions,
 } from '../../interfaces/rag.js';
@@ -13,7 +13,8 @@ import { AbstractRagProvider } from './base-provider.js';
 
 export interface VectorRagProviderConfig {
   name: string;
-  embedder: IEmbedder;
+  /** Writes the stores' records and embeds the search text they embed themselves. */
+  embedder: IRetrievalEmbedder;
   editable?: boolean;
   /**
    * Scopes this provider accepts. Default `['session']`: its stores live in
@@ -35,7 +36,7 @@ export class VectorRagProvider extends AbstractRagProvider {
   readonly editable: boolean;
   readonly supportedScopes: readonly RagCollectionScope[];
 
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly vectorRagConfig?: VectorRagConfig;
 
   constructor(cfg: VectorRagProviderConfig) {

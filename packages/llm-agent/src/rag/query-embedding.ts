@@ -1,5 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IEmbedResult } from '../interfaces/rag.js';
+import type { IEmbedResult, IQueryEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 
@@ -15,14 +15,14 @@ export class QueryEmbedding implements IQueryEmbedding {
 
   constructor(
     text: string,
-    private readonly embedder: IEmbedder,
+    private readonly embedder: IQueryEmbedder,
     private readonly options?: CallOptions,
   ) {
     this.text = text;
   }
 
   private _getResult(): Promise<IEmbedResult> {
-    this._result ??= this.embedder.embed(this.text, this.options);
+    this._result ??= this.embedder.embedQuery(this.text, this.options);
     return this._result;
   }
 
@@ -64,7 +64,7 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
 
   constructor(
     private readonly inner: IQueryEmbedding,
-    private readonly fallback: IEmbedder,
+    private readonly fallback: IQueryEmbedder,
   ) {}
 
   get text(): string {
@@ -74,7 +74,7 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   toVector(): Promise<number[]> {
     this._vector ??= this.inner
       .toVector()
-      .catch(() => this.fallback.embed(this.text).then((r) => r.vector));
+      .catch(() => this.fallback.embedQuery(this.text).then((r) => r.vector));
     return this._vector;
   }
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { conformanceEmbedder } from '../../testing/rag-filter-conformance.js';
 import { InMemoryRag } from '../in-memory-rag.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import { Bm25OnlyStrategy } from '../search-strategy.js';
 import { tokenizeSearchText } from '../tokenizer.js';
 import { VectorRag } from '../vector-rag.js';
@@ -70,7 +71,9 @@ describe('the stores match a query against identifier parts', () => {
 
   it('VectorRag BM25: "function include" finds ReadFunctionInclude', async () => {
     const e = conformanceEmbedder();
-    const rag = new VectorRag(e, { strategy: new Bm25OnlyStrategy() });
+    const rag = new VectorRag(symmetricEmbedder(e), {
+      strategy: new Bm25OnlyStrategy(),
+    });
     for (const d of docs) await rag.writer().upsertRaw(d.id, d.text, {});
     const q = 'function include';
     const res = await rag.query(

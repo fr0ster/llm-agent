@@ -127,3 +127,29 @@ describe('makeLlm (§8 item 4)', () => {
     }
   });
 });
+
+describe('makeLlm — resourceGroup', () => {
+  it('reaches the SAP AI Core provider when set, and is absent when not', async () => {
+    const { seen, makeLlm } = harness({
+      [DEFAULT_LLM_REF]: { credential: bearer, apiBaseUrl: 'https://ai' },
+    });
+    await makeLlm({
+      provider: 'sap-ai-sdk',
+      model: 'm',
+      resourceGroup: 'rg-1',
+    });
+    await makeLlm({ provider: 'sap-ai-sdk', model: 'm' });
+    assert.equal(seen[0].cfg.resourceGroup, 'rg-1');
+    assert.equal('resourceGroup' in seen[1].cfg, false);
+  });
+
+  it('is refused on a provider that has no resource group', async () => {
+    const { makeLlm } = harness({
+      [DEFAULT_LLM_REF]: { credential: staticApiKey('k') },
+    });
+    await assert.rejects(
+      makeLlm({ provider: 'openai', model: 'm', resourceGroup: 'rg-1' }),
+      /resourceGroup applies to provider 'sap-ai-sdk' only, not 'openai'/,
+    );
+  });
+});

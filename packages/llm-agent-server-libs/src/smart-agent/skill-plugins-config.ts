@@ -67,8 +67,13 @@ export interface SkillPluginsConfig {
   store: SkillPluginsStoreConfig;
   /** Stable vector-space id; MANDATORY for a persistent (qdrant) store. */
   embeddingSpaceId?: string;
-  /** Serving embedder selection (provider + optional model). */
-  embedder?: { provider: string; model?: string };
+  /**
+   * Serving embedder selection (provider + optional model). `asymmetric`: the
+   * model embeds stored and search text differently (SAP AI Core, e.g.
+   * `nvidia--llama-3.2-nv-embedqa-1b`) — skills are written with its document
+   * half and recalled with its query half.
+   */
+  embedder?: { provider: string; model?: string; asymmetric?: boolean };
   /** Declared embedding dimension (skips the probe embed when set). */
   dimension?: number;
   catalog: SkillPluginsCatalogConfig;
@@ -285,6 +290,27 @@ function parseSource(raw: unknown): SkillPluginsSource {
  * Parse + validate the raw `skillPlugins:` YAML/object into a normalized
  * {@link SkillPluginsConfig}. Throws a fail-loud `Error` on any invalid config.
  */
+/**
+ * `skillPlugins.embedder.asymmetric` — SAP AI Core only; `${VAR}` substitution
+ * leaves a string, so 'true'/'false' count too. Said and not supported fails.
+ */
+function parseSkillEmbedderAsymmetric(raw: Record<string, unknown>): {
+  asymmetric?: true;
+} {
+  const v = raw.asymmetric;
+  if (v === undefined || v === false || v === 'false') return {};
+  if (v !== true && v !== 'true') {
+    throw new Error('skillPlugins.embedder.asymmetric: must be true or false');
+  }
+  const provider = String(raw.provider);
+  if (provider !== 'sap-ai-core' && provider !== 'sap-aicore') {
+    throw new Error(
+      `skillPlugins.embedder.asymmetric: supported for provider sap-ai-core only, not "${provider}"`,
+    );
+  }
+  return { asymmetric: true };
+}
+
 export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
   if (!isObject(raw)) fail('config must be an object');
 
@@ -440,6 +466,7 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
         ...(raw.embedder.model !== undefined
           ? { model: String(raw.embedder.model) }
           : {}),
+        ...parseSkillEmbedderAsymmetric(raw.embedder),
       }
     : undefined;
 

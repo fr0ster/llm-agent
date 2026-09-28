@@ -4,6 +4,7 @@ import {
   ragFilterConformanceCases,
 } from '../../testing/rag-filter-conformance.js';
 import { InMemoryRag } from '../in-memory-rag.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import { VectorRag } from '../vector-rag.js';
 
 describe('RAG identity filter conformance — InMemoryRag', () => {
@@ -14,6 +15,10 @@ describe('RAG identity filter conformance — InMemoryRag', () => {
 
 describe('RAG identity filter conformance — VectorRag', () => {
   for (const c of ragFilterConformanceCases) {
-    it(c.name, () => c.run(async () => new VectorRag(conformanceEmbedder())));
+    it(c.name, () =>
+      c.run(
+        async () => new VectorRag(symmetricEmbedder(conformanceEmbedder())),
+      ),
+    );
   }
 });

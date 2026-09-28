@@ -1,6 +1,6 @@
 // packages/sap-aicore-embedder/src/sap-ai-core-embedder.test.ts
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, test } from 'node:test';
+import { afterEach, beforeEach, describe, it, test } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { SapAiCoreEmbedder } from './sap-ai-core-embedder.js';
 
@@ -91,4 +91,70 @@ test('default scenario is orchestration (no REST fetch on construction)', async 
     apiBaseUrl: 'https://api.example.com',
   });
   assert.ok(emb);
+});
+
+// ---------------------------------------------------------------------------
+// Asymmetric models: the input `type`
+// ---------------------------------------------------------------------------
+
+describe('SapAiCoreEmbedder — input type', () => {
+  const base = {
+    model: 'nvidia--llama-3.2-nv-embedqa-1b',
+    credential: { kind: 'bearer' as const, token: async () => 't' },
+    apiBaseUrl: 'https://api.example.com',
+  };
+  /** Spy on the orchestration backend's client: what each embed call sends. */
+  const spy = (emb: object) => {
+    const sent: unknown[] = [];
+    // biome-ignore lint/suspicious/noExplicitAny: test spy on the private backend/createClient
+    (emb as any).backend.createClient = async () => ({
+      embed: async (req: unknown) => {
+        sent.push(req);
+        return {
+          getEmbeddings: () => [
+            { embedding: [1], index: 0 },
+            { embedding: [2], index: 1 },
+          ],
+        };
+      },
+    });
+    return sent;
+  };
+
+  it('sends no type when none is configured', async () => {
+    const emb = new SapAiCoreEmbedder(base);
+    const sent = spy(emb);
+    await emb.embed('a');
+    assert.deepEqual(sent, [{ input: 'a' }]);
+  });
+
+  it("inputType 'document' sends type document, on embed and embedBatch", async () => {
+    const emb = new SapAiCoreEmbedder({ ...base, inputType: 'document' });
+    const sent = spy(emb);
+    await emb.embed('a');
+    await emb.embedBatch(['a', 'b']);
+    assert.deepEqual(sent, [
+      { input: 'a', type: 'document' },
+      { input: ['a', 'b'], type: 'document' },
+    ]);
+  });
+
+  it("inputType 'query' sends type query", async () => {
+    const emb = new SapAiCoreEmbedder({ ...base, inputType: 'query' });
+    const sent = spy(emb);
+    await emb.embed('q');
+    assert.deepEqual(sent, [{ input: 'q', type: 'query' }]);
+  });
+
+  it('refuses an input type on the foundation-models scenario', () => {
+    assert.throws(
+      () =>
+        new SapAiCoreEmbedder({
+          ...base,
+          inputType: 'query',
+          scenario: 'foundation-models',
+        }),
+      /inputType is supported with scenario 'orchestration' only/,
+    );
+  });
 });

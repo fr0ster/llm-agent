@@ -10,7 +10,7 @@ import type {
   SkillIngestResult,
   SkillRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogCasError } from '@mcp-abap-adt/llm-agent';
+import { CatalogCasError, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { makeInMemoryStoreProvider } from './in-memory-store.js';
 import { makeSkillPluginHost } from './skill-plugin-host.js';
 
@@ -26,11 +26,11 @@ function hash3(text: string): number[] {
 // In-memory store provider embed: text → vector (number[]).
 const embed = async (text: string): Promise<number[]> => hash3(text);
 // Host serving embedder: text → IEmbedResult.
-const embedder = {
+const embedder = symmetricEmbedder({
   async embed(text: string): Promise<IEmbedResult> {
     return { vector: hash3(text) };
   },
-};
+});
 
 function rec(
   id: string,
@@ -591,12 +591,12 @@ test('strict:true source failure → throw, nothing committed', async () => {
 test('ingest: rag(g) is memoised — same reference, and the lazy dimension probe runs only ONCE across rag() calls', async () => {
   // Count embed calls so we can prove the wrapper's lazy dimension probe survives.
   let embedCalls = 0;
-  const countingEmbedder = {
+  const countingEmbedder = symmetricEmbedder({
     async embed(text: string): Promise<IEmbedResult> {
       embedCalls++;
       return { vector: hash3(text) };
     },
-  };
+  });
 
   const provider = makeInMemoryStoreProvider({ embed });
   // NO dimension declared → ensureDimension probes once during load(); the compat

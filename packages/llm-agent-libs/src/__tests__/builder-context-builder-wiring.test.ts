@@ -29,6 +29,7 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { DefaultSubAgentContextBuilderConfig } from '../subagent/default-context-builder.js';
 
 function stubLlm(): ILlm {
@@ -92,7 +93,7 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
       skipModelValidation: true,
     })
       .withMainLlm(stubLlm())
-      .withEmbedder(stubEmbedder())
+      .withEmbedder(symmetricEmbedder(stubEmbedder()))
       .withSubAgents(new Map([['leaf', makeConstrainedSubAgent('leaf')]]))
       .withCoordinator({})
       // Intentionally NOT calling setToolsRag()/withToolsRag() — this is

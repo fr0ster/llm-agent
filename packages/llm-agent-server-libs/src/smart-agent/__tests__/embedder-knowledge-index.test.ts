@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { makeKnowledgeSemanticIndex } from '../embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from '../jsonl-knowledge-backend.js';
 
@@ -12,11 +13,11 @@ const VOCAB: Record<string, number[]> = {
   beta: [0, 1, 0],
   gamma: [0, 0, 1],
 };
-const stub = {
+const stub = symmetricEmbedder({
   embed: async (t: string) => ({
     vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0],
   }),
-} as never;
+}) as never;
 const meta = (over: object) => ({
   traceId: 't',
   turnId: 't',
@@ -30,12 +31,12 @@ const meta = (over: object) => ({
 describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () => {
   it('controller-bundle entries are NOT embedded and NOT returned by query', async () => {
     let embedCalls = 0;
-    const counting = {
+    const counting = symmetricEmbedder({
       embed: async (t: string) => {
         embedCalls++;
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(counting);
     // Infrastructure artifact — must be silently skipped.
     await idx.upsert('s', {
@@ -65,12 +66,12 @@ describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () =>
 
   it('query forwards CallOptions to the embedder (Finding 3)', async () => {
     const receivedOptions: unknown[] = [];
-    const optCapture = {
+    const optCapture = symmetricEmbedder({
       embed: async (t: string, options?: unknown) => {
         receivedOptions.push(options);
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(optCapture);
     await idx.upsert('s', {
       content: 'alpha',
@@ -88,12 +89,12 @@ describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () =>
 describe('makeKnowledgeSemanticIndex — write-time options forwarding (Finding A)', () => {
   it('upsert forwards CallOptions to the embedder for an indexed (non-infra) entry', async () => {
     const receivedUpsertOptions: unknown[] = [];
-    const optCapture = {
+    const optCapture = symmetricEmbedder({
       embed: async (t: string, options?: unknown) => {
         receivedUpsertOptions.push(options);
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(optCapture);
     const sentinel = { requestLogger: 'WRITE-LOGGER' as unknown };
     await idx.upsert(
@@ -112,12 +113,12 @@ describe('makeKnowledgeSemanticIndex — write-time options forwarding (Finding 
 
   it('upsert does NOT call embed for infra artifact types (options irrelevant)', async () => {
     let embedCalls = 0;
-    const counting = {
+    const counting = symmetricEmbedder({
       embed: async (t: string, _options?: unknown) => {
         embedCalls++;
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(counting);
     const sentinel = { requestLogger: 'WRITE-LOGGER' as unknown };
     await idx.upsert(
@@ -185,12 +186,12 @@ describe('makeKnowledgeSemanticIndex', () => {
 describe('makeKnowledgeSemanticIndex — bounded embed input (large-result guard)', () => {
   it('truncates over-budget content to maxEmbedChars before embedding; stores full content', async () => {
     let lastEmbedLen = -1;
-    const recording = {
+    const recording = symmetricEmbedder({
       embed: async (t: string) => {
         lastEmbedLen = t.length;
         return { vector: [1, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(recording, undefined, 10);
     const huge = 'x'.repeat(5000); // ≫ maxEmbedChars (10)
     await idx.upsert('s', {
@@ -211,12 +212,12 @@ describe('makeKnowledgeSemanticIndex — bounded embed input (large-result guard
 
   it('does not truncate content within budget', async () => {
     let lastEmbedLen = -1;
-    const recording = {
+    const recording = symmetricEmbedder({
       embed: async (t: string) => {
         lastEmbedLen = t.length;
         return { vector: [1, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(recording, undefined, 100);
     await idx.upsert('s', {
       content: 'short',
@@ -227,12 +228,12 @@ describe('makeKnowledgeSemanticIndex — bounded embed input (large-result guard
 
   it('also bounds the query text', async () => {
     let lastEmbedLen = -1;
-    const recording = {
+    const recording = symmetricEmbedder({
       embed: async (t: string) => {
         lastEmbedLen = t.length;
         return { vector: [1, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(recording, undefined, 10);
     await idx.query('s', 'y'.repeat(9999), 5);
     assert.equal(lastEmbedLen, 10, 'query text truncated to maxEmbedChars');
@@ -242,12 +243,12 @@ describe('makeKnowledgeSemanticIndex — bounded embed input (large-result guard
 describe('makeKnowledgeSemanticIndex — empty/whitespace content skip (#243)', () => {
   it('empty content is NOT embedded and NOT returned by ranked query', async () => {
     const embedTexts: string[] = [];
-    const recording = {
+    const recording = symmetricEmbedder({
       embed: async (t: string) => {
         embedTexts.push(t);
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(recording);
     await idx.upsert('s', {
       content: '',
@@ -268,12 +269,12 @@ describe('makeKnowledgeSemanticIndex — empty/whitespace content skip (#243)', 
 
   it('whitespace-only content (spaces / newlines / tabs) is NOT embedded and NOT returned by ranked query', async () => {
     const embedTexts: string[] = [];
-    const recording = {
+    const recording = symmetricEmbedder({
       embed: async (t: string) => {
         embedTexts.push(t);
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(recording);
     await idx.upsert('s', {
       content: '   ',
@@ -298,12 +299,12 @@ describe('makeKnowledgeSemanticIndex — empty/whitespace content skip (#243)', 
 
   it('non-empty content is still embedded exactly as before (no regression)', async () => {
     const embedTexts: string[] = [];
-    const recording = {
+    const recording = symmetricEmbedder({
       embed: async (t: string) => {
         embedTexts.push(t);
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
-    } as never;
+    }) as never;
     const idx = makeKnowledgeSemanticIndex(recording);
     await idx.upsert('s', {
       content: 'alpha',

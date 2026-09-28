@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { UnsupportedScopeError } from '@mcp-abap-adt/llm-agent';
+import {
+  symmetricEmbedder,
+  UnsupportedScopeError,
+} from '@mcp-abap-adt/llm-agent';
 import { QdrantRagProvider } from './qdrant-rag-provider.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
@@ -118,7 +121,7 @@ describe('QdrantRagProvider', () => {
     const p = new QdrantRagProvider({
       name: 'qdrant',
       url: baseUrl,
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     assert.deepEqual([...p.supportedScopes].sort(), [
       'global',
@@ -131,7 +134,7 @@ describe('QdrantRagProvider', () => {
     const p = new QdrantRagProvider({
       name: 'q',
       url: baseUrl,
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       supportedScopes: ['global'],
     });
     const res = await p.createCollection('x', {
@@ -147,7 +150,7 @@ describe('QdrantRagProvider', () => {
     const p = new QdrantRagProvider({
       name: 'q',
       url: baseUrl,
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const res = await p.deleteCollection?.('to-delete');
     assert.ok(res?.ok);
@@ -160,7 +163,7 @@ describe('QdrantRagProvider', () => {
     const p = new QdrantRagProvider({
       name: 'q',
       url: baseUrl,
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const res = await p.listCollections?.();
     assert.ok(res?.ok);

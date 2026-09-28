@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { type PgClient, PgVectorRag } from '../pg-vector-rag.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
@@ -38,7 +39,11 @@ describe('PgVectorRag', () => {
   it('ensureSchema runs CREATE EXTENSION + CREATE TABLE once', async () => {
     const client = makeFakeClient();
     const rag = new PgVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
       client,
     );
     await rag.ensureSchema();
@@ -59,7 +64,11 @@ describe('PgVectorRag', () => {
     ];
     const client = makeFakeClient(rows);
     const rag = new PgVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
       client,
     );
     const r = await rag.query(
@@ -79,7 +88,11 @@ describe('PgVectorRag', () => {
   it('upsertRaw issues INSERT … ON CONFLICT', async () => {
     const client = makeFakeClient();
     const rag = new PgVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
       client,
     );
     const r = await rag.writer().upsertRaw('id1', 'text', { namespace: 'n' });
@@ -90,7 +103,11 @@ describe('PgVectorRag', () => {
   it('deleteByIdRaw issues DELETE', async () => {
     const client = makeFakeClient([{ '?column?': 1 }]);
     const rag = new PgVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
       client,
     );
     const r = await rag.writer().deleteByIdRaw('id1');
@@ -101,7 +118,11 @@ describe('PgVectorRag', () => {
   it('clearAll issues TRUNCATE', async () => {
     const client = makeFakeClient();
     const rag = new PgVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
       client,
     );
     const writer = rag.writer();
@@ -114,7 +135,11 @@ describe('PgVectorRag', () => {
   it('healthCheck runs SELECT 1', async () => {
     const client = makeFakeClient([{ '?column?': 1 }]);
     const rag = new PgVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
       client,
     );
     const r = await rag.healthCheck();
@@ -126,7 +151,10 @@ describe('PgVectorRag', () => {
     assert.throws(
       () =>
         new PgVectorRag(
-          { collectionName: "bad'; DROP", embedder: makeEmbedder() },
+          {
+            collectionName: "bad'; DROP",
+            embedder: symmetricEmbedder(makeEmbedder()),
+          },
           makeFakeClient(),
         ),
       (err: Error & { code?: string }) =>
@@ -139,7 +167,11 @@ describe('PgVectorRag — session/user filter (security)', () => {
   function makeRag() {
     const client = makeFakeClient();
     const rag = new PgVectorRag(
-      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
       client,
     );
     const lastSelect = () => {

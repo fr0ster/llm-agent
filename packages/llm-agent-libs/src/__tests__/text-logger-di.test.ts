@@ -11,6 +11,7 @@ import type {
   LogEvent,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 
 /** Always fails validation — the startup path is the one that logs. */
 function failingLlm(): ILlm {
@@ -73,7 +74,7 @@ describe('SmartAgentBuilder.withLogger() — text logger', () => {
           modelValidationBackoffMs: 1,
         })
           .withMainLlm(failingLlm())
-          .withEmbedder(stubEmbedder())
+          .withEmbedder(symmetricEmbedder(stubEmbedder()))
           .withLogger(logger)
           .build(),
       /Startup aborted/,
@@ -102,7 +103,7 @@ describe('SmartAgentBuilder.withLogger() — text logger', () => {
           modelValidationBackoffMs: 1,
         })
           .withMainLlm(failingLlm())
-          .withEmbedder(stubEmbedder())
+          .withEmbedder(symmetricEmbedder(stubEmbedder()))
           .withLogger({ log: (e: LogEvent) => void events.push(e) })
           .build(),
       /Startup aborted/,

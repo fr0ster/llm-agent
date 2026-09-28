@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SkillsIncompatibleError } from '@mcp-abap-adt/llm-agent';
+import {
+  SkillsIncompatibleError,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { makeCompatibleSkillsRag } from './compatible-skills-rag.js';
 
 const MANIFEST = {
@@ -42,7 +45,9 @@ test('lease: release(revision) is called in the finally on every non-null path',
   });
   const ragOk = makeCompatibleSkillsRag({
     backend: ok.backend as never,
-    embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never,
+    embedder: symmetricEmbedder({
+      embed: async () => ({ vector: [1, 0, 0] }),
+    }) as never,
     embeddingSpaceId: 'sp',
     retrievalSchemaVersion: 1,
     dimension: 3,
@@ -58,7 +63,9 @@ test('lease: release(revision) is called in the finally on every non-null path',
   });
   const ragBad = makeCompatibleSkillsRag({
     backend: bad.backend as never,
-    embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never,
+    embedder: symmetricEmbedder({
+      embed: async () => ({ vector: [1, 0, 0] }),
+    }) as never,
     embeddingSpaceId: 'sp',
     retrievalSchemaVersion: 1,
     dimension: 3,
@@ -89,7 +96,9 @@ test('recallTimeoutMs: a query that outlives the deadline aborts → empty (no c
   };
   const rag = makeCompatibleSkillsRag({
     backend: backend as never,
-    embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never,
+    embedder: symmetricEmbedder({
+      embed: async () => ({ vector: [1, 0, 0] }),
+    }) as never,
     embeddingSpaceId: 'sp',
     retrievalSchemaVersion: 1,
     dimension: 3,
@@ -107,12 +116,12 @@ test('compatible revision: embeds once, calls queryRevision', async () => {
   });
   const rag = makeCompatibleSkillsRag({
     backend: sb.backend as never,
-    embedder: {
+    embedder: symmetricEmbedder({
       embed: async () => {
         embeds++;
         return { vector: [1, 0, 0] };
       },
-    } as never,
+    }) as never,
     embeddingSpaceId: 'sp',
     retrievalSchemaVersion: 1,
     dimension: 3,
@@ -133,12 +142,12 @@ test('incompatible revision: query() degrades to empty (ZERO embeds), but active
   });
   const rag = makeCompatibleSkillsRag({
     backend: sb.backend as never,
-    embedder: {
+    embedder: symmetricEmbedder({
       embed: async () => {
         embeds++;
         return { vector: [1, 0, 0] };
       },
-    } as never,
+    }) as never,
     embeddingSpaceId: 'sp',
     retrievalSchemaVersion: 1,
     dimension: 3,
@@ -159,12 +168,12 @@ test('null snapshot: ZERO embeds, empty', async () => {
   const sb = stubBackend({ snapshot: async () => null });
   const rag = makeCompatibleSkillsRag({
     backend: sb.backend as never,
-    embedder: {
+    embedder: symmetricEmbedder({
       embed: async () => {
         embeds++;
         return { vector: [1, 0, 0] };
       },
-    } as never,
+    }) as never,
     embeddingSpaceId: 'sp',
     retrievalSchemaVersion: 1,
     dimension: 3,
@@ -180,12 +189,12 @@ test('lazy dimension probe: no embed at construction; first activeManifest probe
   });
   const rag = makeCompatibleSkillsRag({
     backend: sb.backend as never,
-    embedder: {
+    embedder: symmetricEmbedder({
       embed: async () => {
         embeds++;
         return { vector: [1, 0, 0] };
       },
-    } as never,
+    }) as never,
     embeddingSpaceId: 'sp',
     retrievalSchemaVersion: 1, // dimension undeclared
   });

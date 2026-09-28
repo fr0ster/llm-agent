@@ -27,7 +27,7 @@ One pass per config in the matrix:
 A case **hits** when any of its `expect` tools is selected.
 
 The embedder and store are built the way `SmartServer.start` builds them:
-`resolveAgentEmbedder` → the composition root's `resolveEmbedder`, then
+`resolveRetrievalEmbedder` → the composition root's `resolveEmbedder`, then
 `toMakeRagInput` → the composition root's `makeRag`.
 
 ## Files

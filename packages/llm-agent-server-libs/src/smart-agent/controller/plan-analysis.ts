@@ -64,7 +64,7 @@ import type {
   IEmbedResult,
   SkillIngestResult,
 } from '@mcp-abap-adt/llm-agent';
-import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { staticApiKey, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   buildIngestResult,
   makeInMemoryStoreProvider,
@@ -269,7 +269,7 @@ async function buildSkillsRecall(): Promise<(goal: string) => Promise<string>> {
       },
     ],
     storeProvider,
-    embedder,
+    embedder: symmetricEmbedder(embedder),
     embeddingSpaceId: 'eval',
     retrievalSchemaVersion: 1,
   });

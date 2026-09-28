@@ -4,6 +4,7 @@ import {
   type IEmbedder,
   InMemoryRag,
   type IRag,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { resolveSmartServerConfig } from '../config.js';
 import {
@@ -315,7 +316,11 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
       () => toMakeRagInput(qdrant, undefined, 'rag'),
       /rag\.store\.type 'qdrant' needs an embedder[\s\S]*rag\.embedder/,
     );
-    const paired = toMakeRagInput(qdrant, stubEmbedder, 'rag');
+    const paired = toMakeRagInput(
+      qdrant,
+      symmetricEmbedder(stubEmbedder),
+      'rag',
+    );
     assert.equal(isInMemoryInput(paired), false);
     const keywordOnly = toMakeRagInput({ type: 'in-memory' }, undefined, 'rag');
     assert.equal(isInMemoryInput(keywordOnly), true);
