@@ -6,6 +6,7 @@ import type {
   LlmStreamChunk,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryKnowledgeBackend,
   type PipelineContext,
@@ -67,7 +68,7 @@ test('controller terminal usage == getSummary(traceId), includes subagents + emb
     executor: client([]),
     backend: new InMemoryKnowledgeBackend(),
     knowledgeRagFor: () => rag,
-    embedder,
+    embedder: symmetricEmbedder(embedder),
     callMcp: async () => 'out',
     selectTools: async () => [],
     config,

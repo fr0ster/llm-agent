@@ -91,6 +91,65 @@ and at review time (before approving); a violation is a blocking issue, not a ni
     config lets the caller's own mistake be a build error rather than a thrown `Error`. Before adding a
     guard, ask which cast made it necessary and whether that cast was load-bearing.
 
+## Design Patterns
+
+The patterns below are how principle 10 is applied in this codebase. Each records what was
+tried and why it was rejected, so the rejected option is not proposed again.
+
+### 1. A role is a method name, not a tag
+
+When one object does two jobs that must not be confused, give the jobs **different method
+names**. TypeScript compares types by structure: two interfaces with the same method are the
+same type to the compiler, so a contract distinguished only by a comment is not distinguished at
+all.
+
+*Example — embedders.* A store writes records and embeds the search text it handles itself; a
+search path only searches. Retrieval models may embed the two differently
+(`nvidia--llama-3.2-nv-embedqa-1b` refuses a call without `type: document | query`). So:
+`IDocumentEmbedder.embedDocument`, `IQueryEmbedder.embedQuery`, and `IRetrievalEmbedder` for a
+store, which needs both. A store takes an `IRetrievalEmbedder`, a search path an
+`IQueryEmbedder`; handing one where the other is needed does not compile
+(`packages/llm-agent/src/rag/__tests__/embedder-roles.typecheck.ts` pins it).
+
+*Rejected, with the compiler's own answer:*
+
+| Tried | Result |
+|---|---|
+| Same method `embed`, a type-only tag `embedderRole?: 'document' \| 'query'` | Works only while the tag survives: every wrapper returning `IEmbedder` erased it, every parameter typed `IEmbedder` accepted either half, and an optional tag on an interface type needed a second mechanism to carry through wrappers. Each fix exposed the next hole. |
+| Two different `unique symbol` brands | Does not exclude: an extra property is allowed, so a document-branded object is assignable to the query type. |
+| A `private` member in the contract | Not allowed on an interface (TS1070). On an abstract class it is nominal — but every existing embedder stops fitting, and the contract is a class, not an interface (principle 3). |
+
+### 2. Give roles at the boundary, once
+
+The provider contract stays small and role-free (`IEmbedder.embed`). Roles are given where the
+object is built — `symmetricEmbedder(e)` for a model that embeds both jobs the same way,
+`asymmetricEmbedder({ document, query })` for one that does not — and everything past that point
+sees only roles. The composition root (`resolveRetrievalEmbedder`) is the one place that decides;
+no call site guesses.
+
+### 3. Decorators wrap the provider, below the role
+
+Retry, chunking, circuit breaking and usage logging wrap the `IEmbedder` underneath, before roles
+are given: `symmetricEmbedder(wrapEmbedder(composeEmbedder(e)))`. A decorator then never has to
+know how many roles exist, and an asymmetric model gets each half wrapped on its own.
+
+### 4. A capability is optional; a role is not
+
+`embedDocuments` (batching) is an optional method, present only when the model batches —
+a caller that finds it takes the batch path, one that does not embeds one document at a time.
+That is a capability of the model. A role is never optional: a store without `embedQuery` does
+not compile. Keep the two apart — a missing role is a type error, a missing capability is a code
+path.
+
+### 5. Unset is not sent; unsupported is an error
+
+A knob the configuration does not set is not sent, and the service applies its own default: the
+framework does not invent `temperature`, `max_tokens`, a resource group or an input type. A knob
+that is set is sent as is. A knob that is set where it cannot apply — `resourceGroup` on a
+non-SAP provider, `inputType` with the `foundation-models` scenario, `asymmetric` on a provider
+without a document/query pair — fails at startup instead of being dropped, because a dropped
+setting runs against a configuration nobody chose.
+
 ## Scope
 
 The codebase is split across **six npm packages**:
@@ -679,7 +738,7 @@ The `IEmbedder` chain has its own pair, composed once by `resolveEmbedder` (`@mc
 - **`RetryEmbedder` / `RetryBatchEmbedder`** — retry with exponential backoff, selected by the `withRetry` factory. Retry classification is shared with `RetryLlm` via `isRetryableStatus` (structured status first, word-boundary message match as a last resort), so the two decorators cannot drift.
 - **`CircuitBreakerEmbedder` / `CircuitBreakerEmbedderBase`** — fail-fast on sustained failures, selected by the `withCircuitBreaker` factory. Not part of the default chain; a consumer composes it explicitly.
 
-Composition order: `wrapEmbedder(BatchChunkingEmbedder(RetryBatchEmbedder(provider)))`. Retry sits **inside** chunking so each chunk retries independently — a failure on chunk 20 must not re-issue chunks 1-19.
+Composition order: `wrapEmbedder(BatchChunkingEmbedder(RetryBatchEmbedder(provider)))`. Retry sits **inside** chunking so each chunk retries independently — a failure on chunk 20 must not re-issue chunks 1-19. The roles come last, over the composed chain: `symmetricEmbedder(...)` — or, for an asymmetric model, `asymmetricEmbedder({ document, query })` over two composed chains (see [Design Patterns → 3](#3-decorators-wrap-the-provider-below-the-role)).
 
 Two invariants hold across that chain:
 

@@ -1,8 +1,6 @@
 import type {
   CallOptions,
-  IDocumentEmbedder,
-  IQueryEmbedder,
-  ISymmetricEmbedder,
+  IRetrievalEmbedder,
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
@@ -46,15 +44,13 @@ export function cosine(a: number[], b: number[]): number {
  *  pessimistic 2 chars/token) stays safely under the limit with ample ranking
  *  signal; override per deployment if needed. */
 export function makeKnowledgeSemanticIndex(
-  embedder: IDocumentEmbedder,
+  /** Embeds the stored entries (`embedDocument`) and the search text (`embedQuery`). */
+  embedder: IRetrievalEmbedder,
   skipArtifactTypes: readonly string[] = [
     'controller-bundle',
     'controller-terminal',
   ],
   maxEmbedChars = 16000,
-  /** Embeds the search text for an asymmetric model; absent, `embedder`
-   *  (which always embeds the stored entries) — then symmetric — serves both. */
-  queryEmbedder: IQueryEmbedder = embedder as ISymmetricEmbedder,
 ) {
   const bySession = new Map<string, Indexed[]>();
   // Bound the text handed to the embedder so an over-limit document never 400s
@@ -76,7 +72,10 @@ export function makeKnowledgeSemanticIndex(
       // persisted by the backend's own append/scan; it simply never ranks in
       // semantic recall, which is correct — there is no text to rank on. #243.
       if (e.content.trim().length === 0) return;
-      const { vector } = await embedder.embed(embedInput(e.content), options);
+      const { vector } = await embedder.embedDocument(
+        embedInput(e.content),
+        options,
+      );
       const arr = bySession.get(sid);
       if (arr) arr.push({ entry: e, vector });
       else bySession.set(sid, [{ entry: e, vector }]);
@@ -92,7 +91,7 @@ export function makeKnowledgeSemanticIndex(
       const scoped = filter
         ? all.filter((x) => matchesKnowledgeFilter(x.entry.metadata, filter))
         : all; // PRE-cap
-      const { vector: q } = await queryEmbedder.embed(
+      const { vector: q } = await embedder.embedQuery(
         embedInput(text),
         options,
       );

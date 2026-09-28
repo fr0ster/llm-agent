@@ -53,7 +53,7 @@ For new model families not covered by `^gemini` heuristic, extend `detectFamily`
 
 **Cause.** The model embeds stored text (`document`) and search text (`query`) differently and needs to be told which one each call is.
 
-**Fix.** Set `asymmetric: true` on `rag.embedder` (SAP AI Core, orchestration scenario). The server then builds a document and a query instance on the model and wires each where it belongs — see [SAP_AI_CORE.md → Asymmetric embedding models](SAP_AI_CORE.md#asymmetric-embedding-models).
+**Fix.** Set `asymmetric: true` on `rag.embedder` (SAP AI Core, orchestration scenario). The server then resolves the model once per input type and every write goes through the document half, every search through the query half — see [SAP_AI_CORE.md → Asymmetric embedding models](SAP_AI_CORE.md#asymmetric-embedding-models).
 
 ---
 

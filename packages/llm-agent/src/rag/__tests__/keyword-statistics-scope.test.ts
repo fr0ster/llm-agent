@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { IEmbedder } from '../../interfaces/rag.js';
 import { conformanceEmbedder } from '../../testing/rag-filter-conformance.js';
 import { InvertedIndex } from '../inverted-index.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import {
   Bm25OnlyStrategy,
   CompositeStrategy,
@@ -50,7 +51,7 @@ function tokenize(s: string): string[] {
 
 describe('VectorRag keyword statistics are scoped to the query candidates', () => {
   it("another session's records do not change this session's scores or order", async () => {
-    const rag = new VectorRag(embedder);
+    const rag = new VectorRag(symmetricEmbedder(embedder));
     const w = rag.writer();
     for (const r of S1) await w.upsertRaw(r.id, r.text, { sessionId: 's1' });
     const before = await scoresFor(rag, 's1');

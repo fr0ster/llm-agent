@@ -18,54 +18,37 @@ export interface IEmbedder {
 
 /**
  * Embeds text that is WRITTEN into a store — records, tool descriptions,
- * skills, knowledge entries. Same method as {@link IEmbedder}; the role exists
- * for models that embed stored text and search text differently (asymmetric
- * retrieval models such as `nvidia--llama-3.2-nv-embedqa-1b`).
+ * skills, knowledge entries.
  *
- * A symmetric embedder declares no role and fits both this and
- * {@link IQueryEmbedder}. An asymmetric pair declares `embedderRole`, and the
- * compiler then refuses one where the other is expected. `embedderRole` is a
- * type-only tag — implementations use `declare readonly`, nothing is set at
- * runtime.
+ * Retrieval models may embed stored text and search text differently
+ * (`nvidia--llama-3.2-nv-embedqa-1b` refuses a call that does not say which).
+ * The two jobs are two methods with different NAMES, so the compiler tells
+ * them apart: nothing that needs a query embedder accepts a document one.
  */
 export interface IDocumentEmbedder {
-  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
-  readonly embedderRole?: 'document';
+  embedDocument(text: string, options?: CallOptions): Promise<IEmbedResult>;
+  /**
+   * Many documents in one call — the same result order as `texts`. Present
+   * only when the model batches (a capability, like `IEmbedderBatch`); absent,
+   * the caller embeds one document at a time.
+   */
+  embedDocuments?(
+    texts: string[],
+    options?: CallOptions,
+  ): Promise<IEmbedResult[]>;
 }
 
-/**
- * Embeds text a store is SEARCHED with — a user request, a step instruction.
- * See {@link IDocumentEmbedder}.
- */
+/** Embeds text a store is SEARCHED with — a user request, a step instruction. */
 export interface IQueryEmbedder {
-  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
-  readonly embedderRole?: 'query';
+  embedQuery(text: string, options?: CallOptions): Promise<IEmbedResult>;
 }
 
 /**
- * The role tag of `E`, for a wrapper of `E` to carry: wrapping a document half
- * yields a document embedder, wrapping a role-free embedder a role-free one.
- * Type-only, like the tag itself.
+ * What a store embeds with: it writes documents and embeds the search text it
+ * handles itself (a text-only query, a failed caller embedding). Build one
+ * with `symmetricEmbedder(embedder)` or `asymmetricEmbedder({ document, query })`.
  */
-export type EmbedderRoleOf<E> = E extends { readonly embedderRole: infer R }
-  ? { readonly embedderRole: R }
-  : unknown;
-
-/**
- * An embedder that declares no role — symmetric, so it fits both slots. Every
- * plain {@link IEmbedder} is one; a role-tagged half is not.
- */
-export type ISymmetricEmbedder = IDocumentEmbedder & IQueryEmbedder;
-
-/**
- * What a store embeds with: one symmetric embedder for everything, or an
- * asymmetric pair — the document half for what it writes, the query half for
- * search text it embeds itself. A document half alone is refused: the store
- * would embed its search text as documents.
- */
-export type StoreEmbedders =
-  | { embedder: ISymmetricEmbedder; queryEmbedder?: undefined }
-  | { embedder: IDocumentEmbedder; queryEmbedder: IQueryEmbedder };
+export interface IRetrievalEmbedder extends IDocumentEmbedder, IQueryEmbedder {}
 
 /** Config subset passed to EmbedderFactory so it can configure the embedder. */
 export interface EmbedderFactoryConfig {

@@ -4,6 +4,7 @@ import {
   type IEmbedder,
   InMemoryRag,
   type IRag,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { resolveSmartServerConfig } from '../config.js';
 import {
@@ -315,7 +316,11 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
       () => toMakeRagInput(qdrant, undefined, 'rag'),
       /rag\.store\.type 'qdrant' needs an embedder[\s\S]*rag\.embedder/,
     );
-    const paired = toMakeRagInput(qdrant, stubEmbedder, 'rag');
+    const paired = toMakeRagInput(
+      qdrant,
+      symmetricEmbedder(stubEmbedder),
+      'rag',
+    );
     assert.equal(isInMemoryInput(paired), false);
     const keywordOnly = toMakeRagInput({ type: 'in-memory' }, undefined, 'rag');
     assert.equal(isInMemoryInput(keywordOnly), true);
@@ -392,71 +397,5 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
     } finally {
       await handle.close();
     }
-  });
-
-  it('an asymmetric embedder: stores get the document half, the rest the query half', async () => {
-    const asked: Array<string | undefined> = [];
-    const inputs: MakeRagInput[] = [];
-    const roleVector = { document: [1], query: [2], none: [0] } as const;
-    const server = new SmartServer(
-      {
-        port: 0,
-        skipModelValidation: true,
-        llm: { main: { provider: 'ollama', model: 'qwen2.5' } },
-        rag: {
-          store: { type: 'in-memory', collectionName: 'docs' },
-          embedder: {
-            provider: 'sap-ai-core',
-            model: 'nvidia--llama-3.2-nv-embedqa-1b',
-            asymmetric: true,
-          },
-        },
-      },
-      {
-        ...constructionSeams,
-        resolveEmbedder: (ec) => {
-          const inputType = ec.factory === undefined ? ec.inputType : undefined;
-          asked.push(inputType);
-          return {
-            embed: async () => ({
-              vector: [...roleVector[inputType ?? 'none']],
-            }),
-          };
-        },
-        makeRag: async (input): Promise<IRag> => {
-          inputs.push(input);
-          return new InMemoryRag();
-        },
-      },
-    );
-    const handle = await server.start();
-    try {
-      assert.deepEqual(asked.sort(), ['document', 'query']);
-      assert.equal(inputs.length, 2, 'tools store and history store');
-      for (const input of inputs) {
-        const { vector } = await (input.embedder as IEmbedder).embed('x');
-        assert.deepEqual(vector, [1], 'a store embeds with the document half');
-        const q = await (input.queryEmbedder as IEmbedder).embed('x');
-        assert.deepEqual(
-          q.vector,
-          [2],
-          'and embeds its own search text with the query half',
-        );
-      }
-    } finally {
-      await handle.close();
-    }
-  });
-
-  it('toMakeRagInput keeps a query half only beside an embedder', () => {
-    const doc = { embed: async () => ({ vector: [1] }) };
-    const query = { embed: async () => ({ vector: [2] }) };
-    const store = { type: 'in-memory' as const };
-    assert.equal(toMakeRagInput(store, doc, 'rag', query).queryEmbedder, query);
-    assert.equal(
-      'queryEmbedder' in toMakeRagInput(store, undefined, 'rag', query),
-      false,
-    );
-    assert.equal('queryEmbedder' in toMakeRagInput(store, doc, 'rag'), false);
   });
 });

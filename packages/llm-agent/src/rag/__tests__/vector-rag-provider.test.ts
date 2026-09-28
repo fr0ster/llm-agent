@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { IEmbedder } from '../../interfaces/rag.js';
 import { UnsupportedScopeError } from '../corrections/errors.js';
 import { VectorRagProvider } from '../providers/vector-rag-provider.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import { VectorRag } from '../vector-rag.js';
 
 const fakeEmbedder: IEmbedder = {
@@ -15,7 +16,10 @@ const fakeEmbedder: IEmbedder = {
 
 describe('VectorRagProvider', () => {
   it('creates a VectorRag per collection', async () => {
-    const p = new VectorRagProvider({ name: 'vec', embedder: fakeEmbedder });
+    const p = new VectorRagProvider({
+      name: 'vec',
+      embedder: symmetricEmbedder(fakeEmbedder),
+    });
     const res = await p.createCollection('x', {
       scope: 'session',
       sessionId: 'S',
@@ -29,7 +33,10 @@ describe('VectorRagProvider', () => {
   });
 
   it('supports only session scope', () => {
-    const p = new VectorRagProvider({ name: 'vec', embedder: fakeEmbedder });
+    const p = new VectorRagProvider({
+      name: 'vec',
+      embedder: symmetricEmbedder(fakeEmbedder),
+    });
     assert.deepEqual(p.supportedScopes, ['session']);
   });
 });
@@ -38,7 +45,7 @@ describe('VectorRagProvider configured scopes', () => {
   it('accepts the scopes it is configured with, and only those', async () => {
     const p = new VectorRagProvider({
       name: 'p',
-      embedder: fakeEmbedder,
+      embedder: symmetricEmbedder(fakeEmbedder),
       supportedScopes: ['session', 'user'],
     });
     assert.deepEqual(p.supportedScopes, ['session', 'user']);

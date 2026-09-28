@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { staticLogin } from '@mcp-abap-adt/llm-agent';
+import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
@@ -53,7 +53,7 @@ describe('HanaVectorRag', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -73,7 +73,7 @@ describe('HanaVectorRag', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -98,7 +98,7 @@ describe('HanaVectorRag', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -115,7 +115,7 @@ describe('HanaVectorRag', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -141,7 +141,7 @@ describe('HanaVectorRag', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -158,7 +158,7 @@ describe('HanaVectorRag', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -176,7 +176,7 @@ describe('HanaVectorRag', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -192,7 +192,7 @@ describe('HanaVectorRag', () => {
         new HanaVectorRag(
           {
             collectionName: "bad'; DROP",
-            embedder: makeEmbedder(),
+            embedder: symmetricEmbedder(makeEmbedder()),
             credential: staticLogin('u', 'p'),
           },
           makeFakeClient(),
@@ -273,7 +273,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
             {
               collectionName: 'docs',
               dimension: CONFORMANCE_EMBEDDING_DIM,
-              embedder: conformanceEmbedder(),
+              embedder: symmetricEmbedder(conformanceEmbedder()),
               credential: staticLogin('u', 'p'),
             },
             makeStoringHana(),
@@ -287,7 +287,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -309,7 +309,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
       {
         collectionName: 'docs',
         dimension: 3,
-        embedder: makeEmbedder(3),
+        embedder: symmetricEmbedder(makeEmbedder(3)),
         credential: staticLogin('u', 'p'),
       },
       client,
@@ -326,7 +326,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
       {
         collectionName: 'docs',
         dimension: CONFORMANCE_EMBEDDING_DIM,
-        embedder: conformanceEmbedder(),
+        embedder: symmetricEmbedder(conformanceEmbedder()),
         credential: staticLogin('u', 'p'),
       },
       client,

@@ -24,31 +24,17 @@ export function createMakeRag(
       const { credentialRef, ...address } = input.store;
       lookup(credentialRef, DEFAULT_STORE_REF, 'in-memory').refuseAny();
       return input.embedder
-        ? impl({
-            ...address,
-            embedder: input.embedder,
-            ...(input.queryEmbedder
-              ? { queryEmbedder: input.queryEmbedder }
-              : {}),
-          })
+        ? impl({ ...address, embedder: input.embedder })
         : // keyword-only: no namespace, as on main; preprocessors/enrichers are
           // not YAML fields, so nothing a file configured is lost (§4.6.4)
           new InMemoryRag({ dedupThreshold: address.dedupThreshold });
     }
     const { embedder, store } = input;
-    const query = input.queryEmbedder
-      ? { queryEmbedder: input.queryEmbedder }
-      : {};
     switch (store.type) {
       case 'qdrant': {
         const { credentialRef, ...address } = store;
         const entry = lookup(credentialRef, DEFAULT_STORE_REF, 'qdrant');
-        return impl({
-          ...address,
-          embedder,
-          ...query,
-          ...entry.optional('api-key'),
-        });
+        return impl({ ...address, embedder, ...entry.optional('api-key') });
       }
       case 'pg-vector': {
         const { credentialRef, ...address } = store;
@@ -56,7 +42,6 @@ export function createMakeRag(
         return impl({
           ...address,
           embedder,
-          ...query,
           ...entry.optional('secret-login'),
         });
       }
@@ -66,7 +51,6 @@ export function createMakeRag(
         return impl({
           ...address,
           embedder,
-          ...query,
           credential: entry.require('secret-login'),
         });
       }

@@ -89,8 +89,8 @@ export async function establishTargetState(
       );
     }
     const [te, pe] = await Promise.all([
-      deps.embedder.embed(target, options),
-      deps.embedder.embed(prompt, options),
+      deps.embedder.embedQuery(target, options),
+      deps.embedder.embedQuery(prompt, options),
     ]);
     const dist = cosineDistance(te.vector, pe.vector);
     if (dist > cfg.distanceThreshold) {

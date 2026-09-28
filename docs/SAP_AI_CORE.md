@@ -158,13 +158,15 @@ rag:
     asymmetric: true          # orchestration scenario only
 ```
 
-The server then builds two instances on the model: a document one for what it writes (the
-stores — a sub-agent's own included —, tool vectorization, skills, knowledge entries) and a
-query one for what it searches with (the agent, the pipeline, tool selection, and the search
-text a store embeds itself, e.g. for a sub-agent's text-only query). `asymmetric` on any other
-provider, or with `scenario: foundation-models`, is refused at startup. A dedicated skill
-embedder takes the same key: `skillPlugins.embedder: { provider: sap-ai-core, model: …,
-asymmetric: true }`. `npm run models:check -- --config …` probes both halves.
+The server then resolves the model twice — `inputType: 'document'` and `'query'` — and joins
+the two into one retrieval embedder: everything that is **written** (the stores, a sub-agent's
+own included, tool vectorization, skills, knowledge entries) goes through its `embedDocument`,
+everything that is **searched with** (the agent, the pipeline, tool selection, and the search
+text a store embeds itself) through its `embedQuery`. The two are different methods, so no code
+path can use one for the other. `asymmetric` on any other provider, or with
+`scenario: foundation-models`, is refused at startup. A dedicated skill embedder takes the same
+key: `skillPlugins.embedder: { provider: sap-ai-core, model: …, asymmetric: true }`.
+`npm run models:check -- --config …` probes both halves.
 
 ## Streaming Diagnostics
 

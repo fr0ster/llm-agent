@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { staticLogin } from '@mcp-abap-adt/llm-agent';
+import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { HanaClient } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
 
@@ -41,7 +41,7 @@ describe('HanaVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new HanaVectorRagProvider({
       name: 'hana',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -68,7 +68,7 @@ describe('HanaVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new HanaVectorRagProvider({
       name: 'hana',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -87,7 +87,7 @@ describe('HanaVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new HanaVectorRagProvider({
       name: 'hana',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -107,7 +107,7 @@ describe('HanaVectorRagProvider', () => {
     ]);
     const provider = new HanaVectorRagProvider({
       name: 'hana',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',
@@ -125,7 +125,7 @@ describe('HanaVectorRagProvider', () => {
     const client = makeFakeClient();
     const provider = new HanaVectorRagProvider({
       name: 'hana',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       connection: {
         collectionName: '__ignored',
         host: 'h',

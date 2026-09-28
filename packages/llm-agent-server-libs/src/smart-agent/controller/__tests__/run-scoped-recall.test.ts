@@ -5,6 +5,7 @@ import type {
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   relevantExtract,
   runScopedRecall,
@@ -252,12 +253,12 @@ describe('relevantExtract', () => {
   // MARK-window) = 1 and cosine(ref, plain-window) = 0 — the EMBEDDING (not lexical
   // overlap) picks the MARK window. Counts embed calls.
   let calls = 0;
-  const embedder = {
+  const embedder = symmetricEmbedder({
     embed: async (t: string) => {
       calls++;
       return { vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] };
     },
-  } as never;
+  }) as never;
   it('the RETURNED body equals the SCORED window; bounded SEQUENTIAL embeds', async () => {
     calls = 0;
     const out = await relevantExtract(
@@ -290,28 +291,5 @@ describe('relevantExtract', () => {
   it('returns a bare slice (no double markers) for a tiny maxChars', async () => {
     const out = await relevantExtract('X'.repeat(100), 'ref', 1, embedder);
     assert.ok(out.length <= 1);
-  });
-});
-
-describe('relevantExtract — asymmetric embedder', () => {
-  it('embeds the ref with the query embedder and the windows with the document one', async () => {
-    const seen: string[] = [];
-    const role = (name: string) => ({
-      embed: async (t: string) => {
-        seen.push(name);
-        return { vector: [t.length] };
-      },
-    });
-    await relevantExtract(
-      'x'.repeat(40),
-      'ref',
-      10,
-      role('query'),
-      undefined,
-      role('document'),
-    );
-    assert.equal(seen[0], 'query');
-    assert.ok(seen.length > 1);
-    assert.ok(seen.slice(1).every((r) => r === 'document'));
   });
 });

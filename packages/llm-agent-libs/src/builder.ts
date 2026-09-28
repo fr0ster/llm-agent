@@ -70,7 +70,6 @@ import {
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
-import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import type {
   BuilderMcpConfig,
@@ -462,9 +461,9 @@ export class SmartAgentBuilder {
 
   /** Set the shared embedder for RAG queries. When set, queries embed once and share the vector. */
   withEmbedder(embedder: IQueryEmbedder): this {
-    // wrapEmbedder is idempotent — safe even if the embedder was already wrapped
-    // by resolveAgentEmbedder (the canonical owner).
-    this._embedder = wrapEmbedder(embedder);
+    // Usage logging wraps the IEmbedder underneath (`symmetricEmbedder(
+    // wrapEmbedder(e))`, as resolveAgentEmbedder does); a role is not wrapped.
+    this._embedder = embedder;
     return this;
   }
 

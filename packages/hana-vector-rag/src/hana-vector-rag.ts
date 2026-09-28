@@ -1,15 +1,12 @@
 import type {
   CallOptions,
-  IDocumentEmbedder,
-  IQueryEmbedder,
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
-  ISymmetricEmbedder,
+  IRetrievalEmbedder,
   RagMetadata,
   RagResult,
   Result,
-  StoreEmbedders,
 } from '@mcp-abap-adt/llm-agent';
 import {
   FallbackQueryEmbedding,
@@ -85,8 +82,7 @@ export async function createHanaClient(
 export class HanaVectorRag implements IRag {
   private readonly collectionName: string;
   private readonly dimension: number;
-  private readonly embedder: IDocumentEmbedder;
-  private readonly queryEmbedder: IQueryEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
   private readonly connectConfig: HanaVectorRagConfig;
   private readonly injectedClient?: HanaClient;
@@ -95,17 +91,13 @@ export class HanaVectorRag implements IRag {
   private schemaPromise?: Promise<void>;
 
   constructor(
-    config: HanaVectorRagConfig & StoreEmbedders,
+    config: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: HanaClient,
   ) {
     assertCollectionName(config.collectionName);
     this.collectionName = config.collectionName;
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
-    this.queryEmbedder =
-      config.queryEmbedder ??
-      // Without a query half StoreEmbedders admits only a symmetric embedder.
-      (config.embedder as ISymmetricEmbedder);
     this.autoCreateSchema = config.autoCreateSchema ?? true;
     this.connectConfig = config;
     this.injectedClient = injectedClient;
@@ -164,7 +156,7 @@ export class HanaVectorRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
-      const safe = new FallbackQueryEmbedding(embedding, this.queryEmbedder);
+      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
       const vector = await safe.toVector();
       const client = await this.client();
       const table = quoteIdent(this.collectionName);
@@ -278,7 +270,7 @@ export class HanaVectorRag implements IRag {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
-      const { vector } = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embedDocument(text, options);
       return this.upsertKnown(text, vector, metadata);
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };

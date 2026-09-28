@@ -1,7 +1,4 @@
-import type {
-  IDocumentEmbedder,
-  IQueryEmbedder,
-} from '@mcp-abap-adt/llm-agent';
+import type { IRetrievalEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
@@ -17,18 +14,11 @@ import { JsonlKnowledgeBackend } from '../jsonl-knowledge-backend.js';
  */
 export function makeKnowledgeBackend(input: {
   logDir?: string;
-  /** Embeds stored entries. */
-  embedder?: IDocumentEmbedder;
-  /** Embeds search text for an asymmetric model; absent, `embedder` does. */
-  queryEmbedder?: IQueryEmbedder;
+  /** Embeds the stored entries (`embedDocument`) and the search text (`embedQuery`). */
+  embedder?: IRetrievalEmbedder;
 }): KnowledgeBackend {
   const semantic = input.embedder
-    ? makeKnowledgeSemanticIndex(
-        input.embedder,
-        undefined,
-        undefined,
-        input.queryEmbedder,
-      )
+    ? makeKnowledgeSemanticIndex(input.embedder)
     : undefined;
   return input.logDir
     ? new JsonlKnowledgeBackend(input.logDir, semantic)

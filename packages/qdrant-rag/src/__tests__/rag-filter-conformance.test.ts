@@ -1,4 +1,5 @@
 import { after, before, describe, it } from 'node:test';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   conformanceEmbedder,
   ragFilterConformanceCases,
@@ -26,7 +27,7 @@ describe('QdrantRag — filter conformance (stub)', () => {
           new QdrantRag({
             url: stub.baseUrl,
             collectionName: `conf_${n++}`,
-            embedder: conformanceEmbedder(),
+            embedder: symmetricEmbedder(conformanceEmbedder()),
           }),
       ),
     );

@@ -7,10 +7,7 @@
  *
  * `credentialRef` is a NAME the composition root resolves — never a value.
  */
-import type {
-  IDocumentEmbedder,
-  IQueryEmbedder,
-} from '@mcp-abap-adt/llm-agent';
+import type { IRetrievalEmbedder } from '@mcp-abap-adt/llm-agent';
 
 /**
  * The in-memory store. The search knobs live here because this is the only store
@@ -114,14 +111,14 @@ export type SmartServerEmbedderConfig =
       scenario?: 'orchestration' | 'foundation-models';
       /**
        * The model embeds stored text and search text differently (e.g.
-       * `nvidia--llama-3.2-nv-embedqa-1b`). The server then builds TWO instances
-       * on the same model — a document one for what it writes into stores, a
-       * query one for what it searches with. SAP AI Core, orchestration only.
+       * `nvidia--llama-3.2-nv-embedqa-1b`): the server builds it twice on the
+       * same model — `inputType: 'document'` and `'query'` — and joins the two
+       * with `asymmetricEmbedder`. SAP AI Core, orchestration only.
        */
       asymmetric?: boolean;
       /**
-       * Which half of an asymmetric pair to build — set by the server for each
-       * of the two instances, not by the YAML.
+       * The input type ONE instance sends — set by the server for each half of
+       * an asymmetric model, not by the YAML.
        */
       inputType?: 'document' | 'query';
       /**
@@ -172,26 +169,17 @@ export interface SmartServerRagConfig {
  * so the compiler demands an embedder exactly where a store cannot work without one.
  */
 export type MakeRagInput =
-  | {
-      store: InMemoryStoreConfig;
-      embedder?: IDocumentEmbedder;
-      queryEmbedder?: IQueryEmbedder;
-    }
+  | { store: InMemoryStoreConfig; embedder?: IRetrievalEmbedder }
   | {
       store: QdrantStoreConfig | PgVectorStoreConfig | HanaVectorStoreConfig;
-      embedder: IDocumentEmbedder;
-      /**
-       * The query half of an asymmetric model (`rag.embedder.asymmetric`): embeds
-       * search text the store embeds itself. Absent, `embedder` does.
-       */
-      queryEmbedder?: IQueryEmbedder;
+      embedder: IRetrievalEmbedder;
     };
 
 /**
  * Narrows a `MakeRagInput` to its in-memory arm — and, in the `false` branch, to the vector
- * arm with `embedder: IEmbedder`. TypeScript does not narrow the pair through
+ * arm with `embedder: IRetrievalEmbedder`. TypeScript does not narrow the pair through
  * `input.store.type` — the discriminant is nested — so without this a `makeRag` body sees
- * `embedder: IEmbedder | undefined` on every arm (§4.6.4's reference `makeRag` uses exactly
+ * `embedder: IRetrievalEmbedder | undefined` on every arm (§4.6.4's reference `makeRag` uses exactly
  * this guard). The one-line body restates the union's own pairing.
  */
 export function isInMemoryInput(
@@ -207,21 +195,18 @@ export function isInMemoryInput(
  */
 export function toMakeRagInput(
   store: SmartServerRagStoreConfig,
-  embedder: IDocumentEmbedder | undefined,
+  embedder: IRetrievalEmbedder | undefined,
   label: string,
-  /** The query half of an asymmetric model; `embedder` is then the document half. */
-  queryEmbedder?: IQueryEmbedder,
 ): MakeRagInput {
-  const query = embedder && queryEmbedder ? { queryEmbedder } : {};
   if (store.type === 'in-memory') {
-    return embedder ? { store, embedder, ...query } : { store };
+    return embedder ? { store, embedder } : { store };
   }
   if (!embedder) {
     throw new Error(
       `${label}.store.type '${store.type}' needs an embedder: configure ${label}.embedder (provider, model)`,
     );
   }
-  return { store, embedder, ...query };
+  return { store, embedder };
 }
 
 /**

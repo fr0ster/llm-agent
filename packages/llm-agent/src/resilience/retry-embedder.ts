@@ -9,7 +9,6 @@
  */
 
 import type {
-  EmbedderRoleOf,
   IEmbedder,
   IEmbedderBatch,
   IEmbedResult,
@@ -177,13 +176,11 @@ export class RetryBatchEmbedder
 }
 
 /** Preserves batch capability: never turns a non-batch embedder into one. */
-export function withRetry<E extends IEmbedder>(
-  inner: E,
+export function withRetry(
+  inner: IEmbedder,
   options?: Partial<EmbedderRetryOptions>,
-): IEmbedder & EmbedderRoleOf<E> {
-  // The role tag is type-only; the wrapper keeps the role of what it wraps.
-  return (isBatchEmbedder(inner)
+): IEmbedder {
+  return isBatchEmbedder(inner)
     ? new RetryBatchEmbedder(inner, options)
-    : new RetryEmbedder(inner, options)) as unknown as IEmbedder &
-    EmbedderRoleOf<E>;
+    : new RetryEmbedder(inner, options);
 }

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  asymmetricEmbedder,
   type IEmbedder,
   type ISkillPluginHost,
   type ISkillsStoreProvider,
   type SkillGroupInfo,
   SkillsIncompatibleError,
   staticApiKey,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   GitHubTransportOptions,
@@ -70,7 +72,7 @@ test('records source + in-memory store + in-process catalog → host serves the 
   });
 
   const host = await buildSkillHostFromConfig(cfg, {
-    resolveEmbedder: () => makeStubEmbedder(),
+    resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
   });
   await host.load();
 
@@ -137,7 +139,7 @@ test('store.type qdrant + catalog.type postgres selects the Qdrant provider path
   };
 
   const host = await buildSkillHostFromConfig(cfg, {
-    resolveEmbedder: () => makeStubEmbedder(),
+    resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
     makePgPool: () => fakePool,
     makeStoreProvider,
   });
@@ -171,7 +173,7 @@ test('qdrant + postgres catalog uses the injected makePgPool for the catalog', a
   const fakePool: IPgPool = { query: async () => ({ rows: [], rowCount: 0 }) };
 
   const host = await buildSkillHostFromConfig(cfg, {
-    resolveEmbedder: () => makeStubEmbedder(),
+    resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
     makePgPool: (connectionString) => {
       pgPoolCalledWith = connectionString;
       return fakePool;
@@ -203,7 +205,7 @@ test('postgres catalog WITHOUT makePgPool throws fail-loud', async () => {
   await assert.rejects(
     () =>
       buildSkillHostFromConfig(cfg, {
-        resolveEmbedder: () => makeStubEmbedder(),
+        resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
       }),
     /postgres catalog requires a pg pool provider/i,
   );
@@ -247,7 +249,7 @@ test('a named store credentialRef that nothing resolved is refused, never sent a
   await assert.rejects(
     () =>
       buildSkillHostFromConfig(namedRefCfg(), {
-        resolveEmbedder: () => makeStubEmbedder(),
+        resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
         makePgPool: () => makeNoDdlPool(),
       }),
     /credentialRef 'SKILLS_QDRANT'[\s\S]*buildSkillHost[\s\S]*storeCredential/,
@@ -256,7 +258,7 @@ test('a named store credentialRef that nothing resolved is refused, never sent a
 
 test('with the credential supplied, the ingest host builds', async () => {
   const host = await buildSkillHostFromConfig(namedRefCfg(), {
-    resolveEmbedder: () => makeStubEmbedder(),
+    resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
     makePgPool: () => makeNoDdlPool(),
     storeCredential: staticApiKey('k'),
   });
@@ -283,7 +285,7 @@ test('recall-only path uses makePgReadPool (NOT makePgPool) for the catalog read
   let writePoolCalled = false;
 
   const host = await buildSkillHostFromConfig(recallOnlyCfg(), {
-    resolveEmbedder: () => makeStubEmbedder(),
+    resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
     makePgPool: () => {
       writePoolCalled = true;
       return makeNoDdlPool();
@@ -311,7 +313,7 @@ test('recall-only WITHOUT makePgReadPool throws fail-loud (even when makePgPool 
   await assert.rejects(
     () =>
       buildSkillHostFromConfig(recallOnlyCfg(), {
-        resolveEmbedder: () => makeStubEmbedder(),
+        resolveEmbedder: () => symmetricEmbedder(makeStubEmbedder()),
         makePgPool: () => makeNoDdlPool(),
       }),
     /recall-only postgres catalog requires a read pool/i,
@@ -669,16 +671,18 @@ test('skills are written with the document half and recalled with the query half
     ],
   });
   const seen: string[] = [];
+  const half = (role: string): IEmbedder => {
+    const inner = makeStubEmbedder();
+    return {
+      embed: (text: string) => {
+        seen.push(`${role}:${text}`);
+        return inner.embed(text);
+      },
+    };
+  };
   const host = await buildSkillHostFromConfig(cfg, {
-    resolveEmbedder: (ec) => {
-      const inner = makeStubEmbedder();
-      return {
-        embed: (text: string) => {
-          seen.push(`${ec.inputType}:${text}`);
-          return inner.embed(text);
-        },
-      };
-    },
+    resolveEmbedder: () =>
+      asymmetricEmbedder({ document: half('document'), query: half('query') }),
   });
   await host.load();
   await host.rag('abap').query('make a class', { k: 1 });

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { type IEmbedder, staticLogin } from '@mcp-abap-adt/llm-agent';
+import {
+  type IEmbedder,
+  staticLogin,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 
 /**
@@ -30,7 +34,7 @@ describe('hana-vector / pg-vector server integration', () => {
   it('makeRag exposes ensureSchema() for hana-vector', async () => {
     const rag = (await makeRag({
       type: 'hana-vector',
-      embedder,
+      embedder: symmetricEmbedder(embedder),
       host: 'h',
       credential: staticLogin('u', 'p'),
       collectionName: 'direct_docs',
@@ -43,7 +47,7 @@ describe('hana-vector / pg-vector server integration', () => {
   it('makeRag exposes ensureSchema() for pg-vector', async () => {
     const rag = (await makeRag({
       type: 'pg-vector',
-      embedder,
+      embedder: symmetricEmbedder(embedder),
       host: 'h',
       database: 'd',
       credential: staticLogin('u', 'p'),

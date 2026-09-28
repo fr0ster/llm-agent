@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { QueryEmbedding, staticApiKey } from '@mcp-abap-adt/llm-agent';
+import {
+  QueryEmbedding,
+  staticApiKey,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { QdrantRag } from './qdrant-rag.js';
 
 // ---------------------------------------------------------------------------
@@ -194,7 +198,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-auto-create',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     assert.ok(!state.collections.has('test-auto-create'));
     const result = await rag.upsert('hello world', {});
@@ -207,13 +211,13 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-query',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
 
     await rag.upsert('ABAP SELECT statement', { namespace: 'docs' });
     await rag.upsert('JavaScript forEach loop', { namespace: 'docs' });
 
-    const embedder = makeEmbedder();
+    const embedder = symmetricEmbedder(makeEmbedder());
     const result = await rag.query(
       new QueryEmbedding('ABAP SELECT', embedder),
       5,
@@ -229,7 +233,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-health',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const result = await rag.healthCheck();
     assert.ok(result.ok);
@@ -239,7 +243,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'nonexistent',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const result = await rag.healthCheck();
     assert.ok(!result.ok);
@@ -250,7 +254,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: 'http://127.0.0.1:1',
       collectionName: 'unreachable',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       timeoutMs: 1000,
     });
     const result = await rag.healthCheck();
@@ -264,7 +268,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-auth',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
       credential: staticApiKey('test-secret'),
     });
     const result = await rag.healthCheck();
@@ -276,7 +280,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-get',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     await rag.upsert('hello', { id: 'r1' });
     const got = await rag.getById?.('r1');
@@ -290,7 +294,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-get-miss',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const got = await rag.getById?.('nope');
     assert.ok(got.ok);
@@ -302,7 +306,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-del',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const w = rag.writer();
     await w.upsertRaw('r1', 'hi', {});
@@ -325,7 +329,7 @@ describe('QdrantRag', () => {
       const rag = new QdrantRag({
         url: baseUrl,
         collectionName: 'test-bulk',
-        embedder: makeEmbedder(),
+        embedder: symmetricEmbedder(makeEmbedder()),
       });
       const w = rag.writer();
       const res = await w.upsertManyPrecomputedRaw?.([
@@ -346,7 +350,7 @@ describe('QdrantRag', () => {
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-clear',
-      embedder: makeEmbedder(),
+      embedder: symmetricEmbedder(makeEmbedder()),
     });
     const w = rag.writer();
     await w.upsertRaw('a', 't', {});
@@ -374,7 +378,7 @@ describe('QdrantRag — session/user filter (security)', () => {
       const rag = new QdrantRag({
         url: 'http://qdrant.invalid',
         collectionName: 'c',
-        embedder: makeEmbedder(),
+        embedder: symmetricEmbedder(makeEmbedder()),
       });
       const r = await rag.query(
         { text: 'q', toVector: async () => [0.1, 0.2, 0.3] },

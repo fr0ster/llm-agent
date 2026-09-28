@@ -23,6 +23,7 @@ export {
 } from './query-embedding.js';
 export { LlmQueryExpander, NoopQueryExpander } from './query-expander.js';
 export * from './registry/index.js';
+export { asymmetricEmbedder, symmetricEmbedder } from './retrieval-embedder.js';
 export type {
   IScoredResult,
   ISearchCandidate,
@@ -38,7 +39,6 @@ export {
   VectorOnlyStrategy,
   WeightedFusionStrategy,
 } from './search-strategy.js';
-export { storeEmbedders } from './store-embedders.js';
 export * from './strategies/edit/index.js';
 export * from './strategies/id/index.js';
 export type { VectorRagConfig } from './vector-rag.js';

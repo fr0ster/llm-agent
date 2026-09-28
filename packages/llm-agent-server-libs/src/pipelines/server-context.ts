@@ -1,8 +1,7 @@
 import type {
-  IDocumentEmbedder,
   ILlm,
   IPipelineContext,
-  IQueryEmbedder,
+  IRetrievalEmbedder,
   ISkillPluginHost,
   ISubAgent,
   IToolsRagHandle,
@@ -40,15 +39,9 @@ export interface IServerPipelineContext extends IPipelineContext {
    * The embedder resolved once at startup from `rag.embedder` (or the configured
    * embedder), shared with makeRag and the subagent context-builder. Used by the
    * controller pipeline for target-state semantic distance. Undefined when no
-   * embedder is configured. The QUERY role: it embeds what is searched with.
+   * embedder is configured.
    */
-  embedder?: IQueryEmbedder;
-  /**
-   * The embedder for text written into a store, when the model is asymmetric
-   * (`rag.embedder.asymmetric`): `embedder` above is then the QUERY half.
-   * Undefined for a symmetric model — `embedder` serves both.
-   */
-  documentEmbedder?: IDocumentEmbedder;
+  embedder?: IRetrievalEmbedder;
   /**
    * The live skill plugin-host, built once at startup from `skillPlugins:` config
    * and `await host.load()`-ed before serving. Consumed by the implicit

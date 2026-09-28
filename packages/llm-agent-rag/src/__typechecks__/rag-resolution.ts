@@ -3,6 +3,7 @@ import type {
   ISecretLoginCredential,
 } from '@mcp-abap-adt/interfaces-auth';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { RagResolution } from '../rag-factories.js';
 
 declare const embedder: IEmbedder;
@@ -31,21 +32,21 @@ const _legacy: RagResolution = { type: 'qdrant', embedder, collectionName: 'c', 
 const _ok: readonly RagResolution[] = [
   {
     type: 'qdrant',
-    embedder,
+    embedder: symmetricEmbedder(embedder),
     collectionName: 'c',
     url: 'http://localhost:6333',
     credential: apiKey,
   },
   {
     type: 'pg-vector',
-    embedder,
+    embedder: symmetricEmbedder(embedder),
     collectionName: 'c',
     host: 'db',
     credential: login,
   },
   {
     type: 'hana-vector',
-    embedder,
+    embedder: symmetricEmbedder(embedder),
     collectionName: 'c',
     host: 'h',
     credential: login,

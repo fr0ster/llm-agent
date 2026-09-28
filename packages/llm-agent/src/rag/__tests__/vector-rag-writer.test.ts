@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '../../interfaces/rag.js';
 import { TextOnlyEmbedding } from '../query-embedding.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import { VectorRag } from '../vector-rag.js';
 
 const fakeEmbedder: IEmbedder = {
@@ -14,7 +15,7 @@ const fakeEmbedder: IEmbedder = {
 
 describe('VectorRag.getById', () => {
   it('retrieves by metadata.id after upsert', async () => {
-    const rag = new VectorRag(fakeEmbedder);
+    const rag = new VectorRag(symmetricEmbedder(fakeEmbedder));
     await rag.upsert('hello', { id: 'v1' });
     const got = await rag.getById?.('v1');
     assert.ok(got?.ok);
@@ -22,7 +23,7 @@ describe('VectorRag.getById', () => {
     assert.equal(got?.value?.text, 'hello');
   });
   it('returns null for unknown id', async () => {
-    const rag = new VectorRag(fakeEmbedder);
+    const rag = new VectorRag(symmetricEmbedder(fakeEmbedder));
     const got = await rag.getById?.('nope');
     assert.ok(got?.ok);
     assert.equal(got?.value, null);
@@ -31,7 +32,7 @@ describe('VectorRag.getById', () => {
 
 describe('VectorRag backend writer', () => {
   it('upsertRaw adds a record', async () => {
-    const rag = new VectorRag(fakeEmbedder);
+    const rag = new VectorRag(symmetricEmbedder(fakeEmbedder));
     const w = rag.writer();
     const up = await w.upsertRaw('v1', 'hi there', {});
     assert.ok(up.ok);
@@ -39,7 +40,7 @@ describe('VectorRag backend writer', () => {
     assert.ok(got?.ok && got.value?.text === 'hi there');
   });
   it('deleteByIdRaw removes the record and returns whether it existed', async () => {
-    const rag = new VectorRag(fakeEmbedder);
+    const rag = new VectorRag(symmetricEmbedder(fakeEmbedder));
     const w = rag.writer();
     await w.upsertRaw('v1', 'hi', {});
     const first = await w.deleteByIdRaw('v1');
@@ -50,7 +51,7 @@ describe('VectorRag backend writer', () => {
     assert.ok(got?.ok && got.value === null);
   });
   it('queries skip deleted records', async () => {
-    const rag = new VectorRag(fakeEmbedder);
+    const rag = new VectorRag(symmetricEmbedder(fakeEmbedder));
     const w = rag.writer();
     await w.upsertRaw('v1', 'keepable', {});
     await w.upsertRaw('v2', 'removable', {});
@@ -61,7 +62,7 @@ describe('VectorRag backend writer', () => {
     assert.ok(!texts.includes('removable'));
   });
   it('clearAll empties the store', async () => {
-    const rag = new VectorRag(fakeEmbedder);
+    const rag = new VectorRag(symmetricEmbedder(fakeEmbedder));
     const w = rag.writer();
     await w.upsertRaw('v1', 'x', {});
     const cleared = await w.clearAll?.();

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { establishTargetState } from '../target-state.js';
 
 const evalClient = (text: string) =>
   ({ send: async () => ({ kind: 'content', content: text }) }) as never;
 // IEmbedResult field is `.vector` (confirmed from packages/llm-agent/src/interfaces/rag.ts)
 const embedder = (vec: number[]) =>
-  ({ embed: async () => ({ vector: vec }) }) as never;
+  symmetricEmbedder({ embed: async () => ({ vector: vec }) }) as never;
 
 describe('establishTargetState', () => {
   it('semantic-distance: close → established with the target as goal', async () => {
@@ -26,9 +27,9 @@ describe('establishTargetState', () => {
   });
   it('semantic-distance: far → needs-confirmation carrying the proposed target', async () => {
     let calls = 0;
-    const emb = {
+    const emb = symmetricEmbedder({
       embed: async () => ({ vector: calls++ === 0 ? [1, 0] : [0, 1] }),
-    } as never; // orthogonal → distance 1
+    }) as never; // orthogonal → distance 1
     const outcome = await establishTargetState(
       { evaluator: evalClient('Goal: X'), embedder: emb },
       'Y',

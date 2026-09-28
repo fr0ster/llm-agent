@@ -1,10 +1,8 @@
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   CallOptions,
-  IDocumentEmbedder,
   IEmbedderBatch,
   IEmbedResult,
-  IQueryEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
 import {
@@ -43,8 +41,9 @@ export interface SapAiCoreEmbedderConfig {
   /**
    * The input `type` an asymmetric retrieval model requires (`document` for
    * stored text, `query` for search text). Orchestration scenario only; unset,
-   * none is sent. Prefer {@link SapAiCoreDocumentEmbedder} /
-   * {@link SapAiCoreQueryEmbedder}, which fix it and carry the role type.
+   * none is sent. An asymmetric model is two instances on the same model —
+   * `inputType: 'document'` and `'query'` — joined by `asymmetricEmbedder`
+   * (`@mcp-abap-adt/llm-agent`).
    */
   inputType?: SapAiCoreEmbedderInputType;
 }
@@ -86,33 +85,5 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
 
   embedBatch(texts: string[], options?: CallOptions): Promise<IEmbedResult[]> {
     return this.backend.embedBatch(texts, options);
-  }
-}
-
-/**
- * The DOCUMENT half of an asymmetric pair: embeds stored text with
- * `type: document`. Build it beside a {@link SapAiCoreQueryEmbedder} on the same
- * model; the role type keeps the two from being swapped.
- */
-export class SapAiCoreDocumentEmbedder
-  extends SapAiCoreEmbedder
-  implements IDocumentEmbedder
-{
-  declare readonly embedderRole: 'document';
-
-  constructor(config: Omit<SapAiCoreEmbedderConfig, 'inputType'>) {
-    super({ ...config, inputType: 'document' });
-  }
-}
-
-/** The QUERY half of an asymmetric pair: embeds search text with `type: query`. */
-export class SapAiCoreQueryEmbedder
-  extends SapAiCoreEmbedder
-  implements IQueryEmbedder
-{
-  declare readonly embedderRole: 'query';
-
-  constructor(config: Omit<SapAiCoreEmbedderConfig, 'inputType'>) {
-    super({ ...config, inputType: 'query' });
   }
 }

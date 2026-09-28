@@ -96,27 +96,30 @@ quota is stricter than the model's documented limit.
 ### Asymmetric models (`type: document | query`)
 
 Retrieval models such as `nvidia--llama-3.2-nv-embedqa-1b` embed stored text and
-search text differently and refuse a call without an input `type`. Build two
-instances on the same model — each adds its own `type` to every call:
+search text differently and refuse a call without an input `type`. Build the
+model twice — `inputType: 'document'` and `'query'` — and give the two to
+`asymmetricEmbedder` (`@mcp-abap-adt/llm-agent`). The result is ONE
+`IRetrievalEmbedder`: a store writes through its `embedDocument` and searches
+through its `embedQuery`, so neither job can be done with the other's instance.
 
 ```ts
-import {
-  SapAiCoreDocumentEmbedder,   // IDocumentEmbedder: type 'document'
-  SapAiCoreQueryEmbedder,      // IQueryEmbedder:    type 'query'
-} from '@mcp-abap-adt/sap-aicore-embedder';
+import { asymmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
 
 const config = {
   model: 'nvidia--llama-3.2-nv-embedqa-1b',
   ...serviceKeyCredential(process.env.AICORE_SERVICE_KEY!),
 };
-const forStores = new SapAiCoreDocumentEmbedder(config); // what you write
-const forSearch = new SapAiCoreQueryEmbedder(config);    // what you search with
+const embedder = asymmetricEmbedder({
+  document: new SapAiCoreEmbedder({ ...config, inputType: 'document' }),
+  query: new SapAiCoreEmbedder({ ...config, inputType: 'query' }),
+});
 ```
 
-`SapAiCoreEmbedder` itself sends no `type` unless `inputType` is set. The
-orchestration scenario only: an input type with `scenario: 'foundation-models'`
-is refused at construction. Symmetric models (`text-embedding-3-*`,
-`gemini-embedding`, `amazon--titan-embed-text`) need neither.
+A symmetric model (`text-embedding-3-*`, `gemini-embedding`,
+`amazon--titan-embed-text`) is one instance: `symmetricEmbedder(new
+SapAiCoreEmbedder(config))`. `inputType` works with the orchestration scenario
+only — with `scenario: 'foundation-models'` it is refused at construction.
 
 ## Authentication
 

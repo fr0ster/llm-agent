@@ -25,11 +25,7 @@ import {
   loadYamlConfig,
   resolveSmartServerConfig,
 } from '@mcp-abap-adt/llm-agent-server-libs';
-import {
-  SapAiCoreDocumentEmbedder,
-  SapAiCoreEmbedder,
-  SapAiCoreQueryEmbedder,
-} from '@mcp-abap-adt/sap-aicore-embedder';
+import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
 import {
   buildDestination,
   SapCoreAIProvider,
@@ -385,13 +381,11 @@ async function probeEmbed(row: IModelToCheck): Promise<CheckResult> {
       resourceGroup: row.resourceGroup,
       scenario: row.scenario,
     };
-    // The same classes the server builds for each half.
-    const embedder =
-      row.inputType === 'document'
-        ? new SapAiCoreDocumentEmbedder(config)
-        : row.inputType === 'query'
-          ? new SapAiCoreQueryEmbedder(config)
-          : new SapAiCoreEmbedder(config);
+    // The same instance the server builds for this half.
+    const embedder = new SapAiCoreEmbedder({
+      ...config,
+      ...(row.inputType ? { inputType: row.inputType } : {}),
+    });
     const { vector } = await embedder.embed('ping', {
       signal: AbortSignal.timeout(timeoutMs),
     });

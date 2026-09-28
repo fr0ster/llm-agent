@@ -62,7 +62,12 @@ every handle and the provider's own catalog work then run on that client.
 
 ```ts
 const shared = await createHanaClient({ host, credential: staticLogin(user, password), collectionName: '_' });
-new HanaVectorRagProvider({ name: 'hana', embedder, connection, clientFactory: () => shared });
+new HanaVectorRagProvider({
+  name: 'hana',
+  embedder: symmetricEmbedder(myEmbedder), // writes with embedDocument, searches with embedQuery
+  connection,
+  clientFactory: () => shared,
+});
 ```
 
 ## License

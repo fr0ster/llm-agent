@@ -17,7 +17,9 @@ import type {
   AnyLogger,
   EmbedderFactory,
   IEmbedder,
+  IRetrievalEmbedder,
 } from '@mcp-abap-adt/llm-agent';
+import { asymmetricEmbedder, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
   composeEmbedder,
@@ -35,9 +37,6 @@ export async function resolveAgentEmbedder(
   resolve: BuildAgentDeps['resolveEmbedder'],
   extraFactories: Record<string, EmbedderFactory>,
   logger?: AnyLogger,
-  /** For an asymmetric model (`rag.embedder.asymmetric`), which half to build;
-   *  ignored for a symmetric one and for an injected instance. */
-  inputType?: 'document' | 'query',
 ): Promise<IEmbedder | undefined> {
   // Canonical owner: every non-undefined embedder is wrapped here so its embed()
   // calls log token usage to the per-request logger. wrapEmbedder is idempotent.
@@ -66,14 +65,63 @@ export async function resolveAgentEmbedder(
   if (section.factory === undefined) {
     await prefetchEmbedderFactories([section.provider]);
   }
-  const typed =
-    inputType !== undefined &&
-    section.factory === undefined &&
-    section.asymmetric
-      ? { ...section, inputType }
-      : section;
   // Construction goes through the app's seam: the library builds no embedder.
-  return wrapEmbedder(resolve(typed, { extraFactories, logger }));
+  return wrapEmbedder(resolve(section, { extraFactories, logger }));
+}
+
+/**
+ * The retrieval embedder the server hands its stores and its search path: one
+ * object whose `embedDocument` embeds what is written and whose `embedQuery`
+ * embeds what is searched with — so neither job can be done by the other's
+ * method by mistake.
+ *
+ * A symmetric model (the default) is ONE embedder behind both methods. For
+ * `rag.embedder.asymmetric` the model is resolved twice — `inputType:
+ * 'document'` and `'query'` — each half composed and usage-logged on its own,
+ * and joined by `asymmetricEmbedder`. A DI-injected embedder is symmetric.
+ */
+export async function resolveRetrievalEmbedder(
+  rag: SmartServerRagConfig | undefined,
+  diEmbedder: IEmbedder | undefined,
+  resolve: BuildAgentDeps['resolveEmbedder'],
+  extraFactories: Record<string, EmbedderFactory>,
+  logger?: AnyLogger,
+): Promise<IRetrievalEmbedder | undefined> {
+  const section = rag?.embedder;
+  if (
+    diEmbedder === undefined &&
+    rag !== undefined &&
+    section !== undefined &&
+    section.factory === undefined &&
+    section.asymmetric === true
+  ) {
+    const half = async (inputType: 'document' | 'query') =>
+      resolveAgentEmbedder(
+        { ...rag, embedder: { ...section, inputType } },
+        undefined,
+        resolve,
+        extraFactories,
+        logger,
+      );
+    const [document, query] = await Promise.all([
+      half('document'),
+      half('query'),
+    ]);
+    if (!document || !query) {
+      throw new Error(
+        'rag.embedder: an asymmetric embedder resolved to nothing',
+      );
+    }
+    return asymmetricEmbedder({ document, query });
+  }
+  const embedder = await resolveAgentEmbedder(
+    rag,
+    diEmbedder,
+    resolve,
+    extraFactories,
+    logger,
+  );
+  return embedder ? symmetricEmbedder(embedder) : undefined;
 }
 
 /**

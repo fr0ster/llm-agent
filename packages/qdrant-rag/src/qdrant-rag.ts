@@ -1,13 +1,9 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
-  IDocumentEmbedder,
-  IEmbedder,
-  IQueryEmbedder,
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
-  ISymmetricEmbedder,
-  StoreEmbedders,
+  IRetrievalEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
@@ -34,7 +30,7 @@ export async function deterministicUUID(key: string): Promise<string> {
 export interface QdrantRagConfig {
   url: string;
   collectionName: string;
-  embedder: IEmbedder;
+  embedder: IRetrievalEmbedder;
   /**
    * Asked for fresh on every request — never cached — so a rotating key
    * rotates and a resolved-once secret is never frozen for this object's
@@ -60,25 +56,16 @@ export interface QdrantRagConfig {
 export class QdrantRag implements IRag {
   private readonly url: string;
   private readonly collectionName: string;
-  private readonly embedder: IDocumentEmbedder;
-  private readonly queryEmbedder: IQueryEmbedder;
+  private readonly embedder: IRetrievalEmbedder;
   private readonly credential?: IApiKeyCredential;
   private readonly timeoutMs: number | undefined;
   private readonly autoCreateCollection: boolean;
   private collectionEnsured = false;
 
-  /**
-   * `embedder` alone must be symmetric; an asymmetric model passes its pair —
-   * `embedder` (document half) + `queryEmbedder` (query half).
-   */
-  constructor(config: Omit<QdrantRagConfig, 'embedder'> & StoreEmbedders) {
+  constructor(config: QdrantRagConfig) {
     this.url = config.url.replace(/\/+$/, '');
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
-    this.queryEmbedder =
-      config.queryEmbedder ??
-      // Without a query half StoreEmbedders admits only a symmetric embedder.
-      (config.embedder as ISymmetricEmbedder);
     this.credential = config.credential;
     this.timeoutMs = config.timeoutMs;
     this.autoCreateCollection = config.autoCreateCollection ?? true;
@@ -232,7 +219,7 @@ export class QdrantRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const { vector } = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embedDocument(text, options);
       return this.upsertKnownVector(text, vector, metadata, options);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
@@ -261,7 +248,7 @@ export class QdrantRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const safe = new FallbackQueryEmbedding(embedding, this.queryEmbedder);
+      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
       const vector = await safe.toVector();
 
       const must: unknown[] = [];

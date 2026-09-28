@@ -5,6 +5,7 @@ import type {
   IKnowledgeRagHandle,
   ILlm,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { ControllerHandlerDeps } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import { ControllerCoordinatorHandler } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import { makeControllerPlanner } from '../../smart-agent/controller/planner.js';
@@ -60,7 +61,7 @@ test('factory threads skillsRecall into the handler deps; the planner invokes it
   const { handler } = await new ControllerFactory().build(config, {
     ...baseDeps(),
     backend: { semanticRecallCapable: true } as never,
-    embedder,
+    embedder: symmetricEmbedder(embedder),
     skillsRecall: spy,
   });
 
@@ -106,7 +107,7 @@ test('factory omits skillsRecall from handler deps when not supplied', async () 
   const { handler } = await new ControllerFactory().build(config, {
     ...baseDeps(),
     backend: { semanticRecallCapable: true } as never,
-    embedder,
+    embedder: symmetricEmbedder(embedder),
   });
   const deps = (handler as unknown as { deps: ControllerHandlerDeps }).deps;
   assert.equal(deps.skillsRecall, undefined);

@@ -88,6 +88,12 @@ still install only what they need; `llm-agent-libs` has no LLM peers.)
    put new logic in a small focused module and consume it (don't append to a god-object).
 7. **Don't break components.** Extend additively / backward-compatibly.
 
+**Design patterns** that apply these principles — a role is a method name (not a tag), roles are
+given at the boundary, decorators wrap below the role, a capability is optional but a role is
+not, unset is not sent / unsupported is an error — are in
+[`docs/ARCHITECTURE.md` → Design Patterns](docs/ARCHITECTURE.md#design-patterns), with the
+rejected alternatives. Check new designs against them too.
+
 ## Language
 
 - All artifacts (code, comments, docs, commit messages) must be written in **English**.

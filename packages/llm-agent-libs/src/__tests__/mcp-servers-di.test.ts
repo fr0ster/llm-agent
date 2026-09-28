@@ -16,6 +16,7 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { IPipeline, PipelineDeps } from '../interfaces/pipeline.js';
 
 function stubMcpClient(id: string): IMcpClient {
@@ -299,7 +300,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
       .withMainLlm(stubLlm())
-      .withEmbedder(stubEmbedder())
+      .withEmbedder(symmetricEmbedder(stubEmbedder()))
       // Deliberately no .setToolsRag(...): the builder must auto-create one
       // because an embedder AND an injected MCP source (servers, not just
       // clients) are both present.

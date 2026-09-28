@@ -4,6 +4,7 @@ import type { IEmbedder, IEmbedResult } from '../../interfaces/rag.js';
 import type { CallOptions, RagResult } from '../../interfaces/types.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { QueryEmbedding, TextOnlyEmbedding } from '../query-embedding.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import {
   Bm25OnlyStrategy,
   RrfStrategy,
@@ -232,7 +233,7 @@ async function runQuery(
   embedder?: IEmbedder,
 ): Promise<RagResult[]> {
   const embedding = embedder
-    ? new QueryEmbedding(query, embedder)
+    ? new QueryEmbedding(query, symmetricEmbedder(embedder))
     : new TextOnlyEmbedding(query);
   const result = await rag.query(embedding, k);
   assert.ok(result.ok, `Query failed for: ${query}`);
@@ -317,7 +318,9 @@ describe('RAG Evaluation — VectorRag (hybrid)', () => {
       ...GOLDEN_QUERIES.map((q) => q.query),
     ];
     embedder.buildVocabulary(allTexts);
-    const rag = new VectorRag(embedder, { dedupThreshold: 0.99 });
+    const rag = new VectorRag(symmetricEmbedder(embedder), {
+      dedupThreshold: 0.99,
+    });
     return { rag, embedder };
   }
 
@@ -404,7 +407,7 @@ describe('RAG Evaluation — VectorRag (RRF)', () => {
       ...GOLDEN_QUERIES.map((q) => q.query),
     ];
     embedder.buildVocabulary(allTexts);
-    const rag = new VectorRag(embedder, {
+    const rag = new VectorRag(symmetricEmbedder(embedder), {
       dedupThreshold: 0.99,
       strategy: new RrfStrategy(),
     });
@@ -453,7 +456,7 @@ describe('RAG Evaluation — VectorRag (vector-only)', () => {
       ...GOLDEN_QUERIES.map((q) => q.query),
     ];
     embedder.buildVocabulary(allTexts);
-    const rag = new VectorRag(embedder, {
+    const rag = new VectorRag(symmetricEmbedder(embedder), {
       dedupThreshold: 0.99,
       strategy: new VectorOnlyStrategy(),
     });
@@ -505,7 +508,7 @@ describe('RAG Evaluation — VectorRag (BM25-only)', () => {
       ...GOLDEN_QUERIES.map((q) => q.query),
     ];
     embedder.buildVocabulary(allTexts);
-    const rag = new VectorRag(embedder, {
+    const rag = new VectorRag(symmetricEmbedder(embedder), {
       dedupThreshold: 0.99,
       strategy: new Bm25OnlyStrategy(),
     });

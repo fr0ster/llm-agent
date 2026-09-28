@@ -196,7 +196,7 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
   let resolvedDimension = deps.dimension;
   async function ensureDimension(options?: CallOptions): Promise<number> {
     if (resolvedDimension === undefined) {
-      const probe = await deps.embedder.embed('dimension probe', options);
+      const probe = await deps.embedder.embedQuery('dimension probe', options);
       resolvedDimension = probe.vector.length;
     }
     return resolvedDimension;

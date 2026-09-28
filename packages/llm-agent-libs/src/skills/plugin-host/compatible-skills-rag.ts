@@ -36,7 +36,7 @@ export function makeCompatibleSkillsRag(
 
   async function ensureDimension(options?: CallOptions): Promise<void> {
     if (dimension === undefined) {
-      const probe = await deps.embedder.embed('dimension probe', options);
+      const probe = await deps.embedder.embedQuery('dimension probe', options);
       dimension = probe.vector.length;
     }
   }
@@ -89,7 +89,7 @@ export function makeCompatibleSkillsRag(
       if (!snap) return [];
       try {
         if (!compatible(snap)) return []; // no embed on incompatible
-        const { vector } = await deps.embedder.embed(text, options); // PAID step, last
+        const { vector } = await deps.embedder.embedQuery(text, options); // PAID step, last
         // Bound the vector read with a DEADLINE so it cannot outlive a time-grace backend's
         // retention window (P1.4). For the exact-lease backend recallTimeoutMs is omitted.
         const sigs = [

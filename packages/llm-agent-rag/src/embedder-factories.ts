@@ -47,8 +47,7 @@ export type EmbedderResolution =
       scenario?: 'orchestration' | 'foundation-models';
       /**
        * Which half of an asymmetric model this instance is: `document` embeds
-       * stored text, `query` search text (`SapAiCoreDocumentEmbedder` /
-       * `SapAiCoreQueryEmbedder`). Unset → the symmetric `SapAiCoreEmbedder`.
+       * stored text, `query` search text. Unset, no input type is sent.
        */
       inputType?: 'document' | 'query';
       maxBatchSize?: number;
@@ -166,12 +165,12 @@ export function constructBuiltInEmbedder(
     }
     case 'sap-ai-core':
     case 'sap-aicore': {
-      const {
-        SapAiCoreEmbedder,
-        SapAiCoreDocumentEmbedder,
-        SapAiCoreQueryEmbedder,
-      } = prefetchedOrThrow(loaded.sapAiCore, SAP_AI_CORE, cfg.provider);
-      const config = {
+      const { SapAiCoreEmbedder } = prefetchedOrThrow(
+        loaded.sapAiCore,
+        SAP_AI_CORE,
+        cfg.provider,
+      );
+      return new SapAiCoreEmbedder({
         model: cfg.model,
         credential: cfg.credential,
         apiBaseUrl: cfg.apiBaseUrl,
@@ -179,12 +178,8 @@ export function constructBuiltInEmbedder(
           ? { resourceGroup: cfg.resourceGroup }
           : {}),
         ...(cfg.scenario !== undefined ? { scenario: cfg.scenario } : {}),
-      };
-      return cfg.inputType === 'document'
-        ? new SapAiCoreDocumentEmbedder(config)
-        : cfg.inputType === 'query'
-          ? new SapAiCoreQueryEmbedder(config)
-          : new SapAiCoreEmbedder(config);
+        ...(cfg.inputType !== undefined ? { inputType: cfg.inputType } : {}),
+      });
     }
     case undefined:
     case 'ollama': {

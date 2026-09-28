@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
-  IEmbedder,
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogRecordDeleteError } from '@mcp-abap-adt/llm-agent';
+import {
+  CatalogRecordDeleteError,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 import { type FakeCatalogRow, type FakePg, fakePg } from './fake-pg.js';
 
 const CATALOG = 'rag_collection_catalog';
 const STORE = 'my_notes_a1b2c3d4e5f6';
-const embedder: IEmbedder = { embed: async () => ({ vector: [0, 0, 0] }) };
+const embedder = symmetricEmbedder({
+  embed: async () => ({ vector: [0, 0, 0] }),
+});
 const createOpts: RagProviderCreateCollectionOptions = {
   scope: 'user',
   userId: 'u-1',

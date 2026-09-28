@@ -1,10 +1,8 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
-  IDocumentEmbedder,
-  IQueryEmbedder,
   IRag,
   IRagBackendWriter,
-  ISymmetricEmbedder,
+  IRetrievalEmbedder,
 } from '../interfaces/rag.js';
 import {
   type CallOptions,
@@ -59,31 +57,15 @@ export class VectorRag implements IRag {
   private strategy: ISearchStrategy;
   private readonly queryPreprocessors: IQueryPreprocessor[];
   private readonly documentEnrichers: IDocumentEnricher[];
-  private readonly queryEmbedder: IQueryEmbedder;
-  private readonly embedder: IDocumentEmbedder;
-
-  /** One symmetric embedder for everything. */
-  constructor(
-    embedder: ISymmetricEmbedder,
-    config?: VectorRagConfig & { queryEmbedder?: undefined },
-  );
   /**
-   * An asymmetric pair: `embedder` embeds what the store writes,
-   * `config.queryEmbedder` the search text it embeds itself (a text-only query,
-   * a preprocessed one, a failed caller embedding).
+   * `embedder` writes the records (`embedDocument`) and embeds the search text
+   * this store embeds itself (`embedQuery`) — a text-only query, a
+   * preprocessed one, a failed caller embedding.
    */
   constructor(
-    embedder: IDocumentEmbedder,
-    config: VectorRagConfig & { queryEmbedder: IQueryEmbedder },
-  );
-  constructor(
-    embedder: IDocumentEmbedder,
-    config: VectorRagConfig & { queryEmbedder?: IQueryEmbedder } = {},
+    private readonly embedder: IRetrievalEmbedder,
+    config: VectorRagConfig = {},
   ) {
-    this.embedder = embedder;
-    // Without a query half the overloads admit only a symmetric embedder.
-    this.queryEmbedder =
-      config.queryEmbedder ?? (embedder as ISymmetricEmbedder);
     this.dedupThreshold = config.dedupThreshold ?? 0.92;
     this.namespace = config.namespace;
     this.vectorWeight = config.vectorWeight ?? 0.7;
@@ -198,7 +180,10 @@ export class VectorRag implements IRag {
         const eResult = await enricher.enrich(enrichedText, options);
         if (eResult.ok) enrichedText = eResult.value;
       }
-      const { vector } = await this.embedder.embed(enrichedText, options);
+      const { vector } = await this.embedder.embedDocument(
+        enrichedText,
+        options,
+      );
       return this.upsertKnownVector(enrichedText, vector, metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
@@ -240,8 +225,8 @@ export class VectorRag implements IRag {
       // If preprocessors transformed the text, embed the transformed version
       const effectiveEmbedding =
         searchText !== text
-          ? new QueryEmbedding(searchText, this.queryEmbedder, options)
-          : new FallbackQueryEmbedding(embedding, this.queryEmbedder);
+          ? new QueryEmbedding(searchText, this.embedder, options)
+          : new FallbackQueryEmbedding(embedding, this.embedder);
       const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
       const identity = ragIdentityFilter(options);
@@ -305,7 +290,7 @@ export class VectorRag implements IRag {
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
     try {
-      await this.embedder.embed('ping', options);
+      await this.embedder.embedQuery('ping', options);
       return { ok: true, value: undefined };
     } catch (err) {
       return {

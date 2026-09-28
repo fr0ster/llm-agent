@@ -1,59 +1,49 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { isBatchEmbedder } from '../../interfaces/rag.js';
 import { VectorRagProvider } from '../providers/vector-rag-provider.js';
 import { TextOnlyEmbedding } from '../query-embedding.js';
-import { storeEmbedders } from '../store-embedders.js';
+import {
+  asymmetricEmbedder,
+  symmetricEmbedder,
+} from '../retrieval-embedder.js';
 import { VectorRag } from '../vector-rag.js';
 
-/** Records which half embedded which text. */
-function halves() {
+/** Records which instance embedded which text. */
+function recorder() {
   const seen: string[] = [];
-  const half = (role: string) => ({
+  const embedder = (name: string) => ({
     embed: async (text: string) => {
-      seen.push(`${role}:${text}`);
+      seen.push(`${name}:${text}`);
       return { vector: [1, 0] };
     },
   });
-  return { seen, document: half('document'), query: half('query') };
+  return { seen, embedder };
 }
 
-describe('a store with an asymmetric pair', () => {
+describe('a store over an asymmetric retrieval embedder', () => {
   it('writes with the document half and embeds its own search text with the query half', async () => {
-    const h = halves();
-    const rag = new VectorRag(h.document, { queryEmbedder: h.query });
+    const r = recorder();
+    const rag = new VectorRag(
+      asymmetricEmbedder({
+        document: r.embedder('document'),
+        query: r.embedder('query'),
+      }),
+    );
     await rag.upsert('stored text', { id: '1' });
-    // A text-only query (a worker's, for one) makes the store embed it itself.
+    // A text-only query (a sub-agent's, for one) makes the store embed it.
     await rag.query(new TextOnlyEmbedding('search text'), 1);
-    assert.deepEqual(h.seen, ['document:stored text', 'query:search text']);
+    assert.deepEqual(r.seen, ['document:stored text', 'query:search text']);
   });
 
-  it('with one symmetric embedder, that one does both, as before', async () => {
-    const h = halves();
-    const rag = new VectorRag(h.document);
-    await rag.upsert('stored text', { id: '1' });
-    await rag.query(new TextOnlyEmbedding('search text'), 1);
-    assert.deepEqual(h.seen, ['document:stored text', 'document:search text']);
-  });
-});
-
-describe('storeEmbedders', () => {
-  it('is the pair when a query half is given, the embedder alone when not', () => {
-    const h = halves();
-    assert.deepEqual(storeEmbedders(h.document, h.query), {
-      embedder: h.document,
-      queryEmbedder: h.query,
-    });
-    assert.deepEqual(storeEmbedders(h.document), { embedder: h.document });
-  });
-});
-
-describe('VectorRagProvider with a query half', () => {
-  it('hands the pair to the stores it creates', async () => {
-    const h = halves();
+  it('a collection provider hands the retrieval embedder to its stores', async () => {
+    const r = recorder();
     const provider = new VectorRagProvider({
       name: 'p',
-      embedder: h.document,
-      queryEmbedder: h.query,
+      embedder: asymmetricEmbedder({
+        document: r.embedder('document'),
+        query: r.embedder('query'),
+      }),
     });
     const created = await provider.createCollection('c', {
       scope: 'session',
@@ -62,6 +52,30 @@ describe('VectorRagProvider with a query half', () => {
     assert.ok(created.ok);
     await created.value.rag.upsert('stored text', { id: '1' });
     await created.value.rag.query(new TextOnlyEmbedding('search text'), 1);
-    assert.deepEqual(h.seen, ['document:stored text', 'query:search text']);
+    assert.deepEqual(r.seen, ['document:stored text', 'query:search text']);
+  });
+});
+
+describe('symmetricEmbedder', () => {
+  it('sends both jobs to the one embedder', async () => {
+    const r = recorder();
+    const e = symmetricEmbedder(r.embedder('one'));
+    await e.embedDocument('d');
+    await e.embedQuery('q');
+    assert.deepEqual(r.seen, ['one:d', 'one:q']);
+  });
+
+  it('offers embedDocuments only when the embedder batches', async () => {
+    const plain = { embed: async () => ({ vector: [1] }) };
+    const batching = {
+      embed: async () => ({ vector: [1] }),
+      embedBatch: async (texts: string[]) => texts.map(() => ({ vector: [2] })),
+    };
+    assert.ok(isBatchEmbedder(batching));
+    assert.equal(symmetricEmbedder(plain).embedDocuments, undefined);
+    assert.deepEqual(
+      await symmetricEmbedder(batching).embedDocuments?.(['a', 'b']),
+      [{ vector: [2] }, { vector: [2] }],
+    );
   });
 });

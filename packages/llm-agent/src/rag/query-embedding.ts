@@ -22,7 +22,7 @@ export class QueryEmbedding implements IQueryEmbedding {
   }
 
   private _getResult(): Promise<IEmbedResult> {
-    this._result ??= this.embedder.embed(this.text, this.options);
+    this._result ??= this.embedder.embedQuery(this.text, this.options);
     return this._result;
   }
 
@@ -74,7 +74,7 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   toVector(): Promise<number[]> {
     this._vector ??= this.inner
       .toVector()
-      .catch(() => this.fallback.embed(this.text).then((r) => r.vector));
+      .catch(() => this.fallback.embedQuery(this.text).then((r) => r.vector));
     return this._vector;
   }
 }

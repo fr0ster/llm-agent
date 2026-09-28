@@ -2,11 +2,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, test } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-import {
-  SapAiCoreDocumentEmbedder,
-  SapAiCoreEmbedder,
-  SapAiCoreQueryEmbedder,
-} from './sap-ai-core-embedder.js';
+import { SapAiCoreEmbedder } from './sap-ai-core-embedder.js';
 
 const originalFetch = globalThis.fetch;
 let lastUrl = '';
@@ -132,8 +128,8 @@ describe('SapAiCoreEmbedder — input type', () => {
     assert.deepEqual(sent, [{ input: 'a' }]);
   });
 
-  it('the document embedder sends type document, on embed and embedBatch', async () => {
-    const emb = new SapAiCoreDocumentEmbedder(base);
+  it("inputType 'document' sends type document, on embed and embedBatch", async () => {
+    const emb = new SapAiCoreEmbedder({ ...base, inputType: 'document' });
     const sent = spy(emb);
     await emb.embed('a');
     await emb.embedBatch(['a', 'b']);
@@ -143,8 +139,8 @@ describe('SapAiCoreEmbedder — input type', () => {
     ]);
   });
 
-  it('the query embedder sends type query', async () => {
-    const emb = new SapAiCoreQueryEmbedder(base);
+  it("inputType 'query' sends type query", async () => {
+    const emb = new SapAiCoreEmbedder({ ...base, inputType: 'query' });
     const sent = spy(emb);
     await emb.embed('q');
     assert.deepEqual(sent, [{ input: 'q', type: 'query' }]);
@@ -153,7 +149,11 @@ describe('SapAiCoreEmbedder — input type', () => {
   it('refuses an input type on the foundation-models scenario', () => {
     assert.throws(
       () =>
-        new SapAiCoreQueryEmbedder({ ...base, scenario: 'foundation-models' }),
+        new SapAiCoreEmbedder({
+          ...base,
+          inputType: 'query',
+          scenario: 'foundation-models',
+        }),
       /inputType is supported with scenario 'orchestration' only/,
     );
   });

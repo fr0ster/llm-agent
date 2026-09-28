@@ -10,6 +10,7 @@ import type {
 import { InMemoryRag } from '../in-memory-rag.js';
 import type { IQueryPreprocessor } from '../preprocessor.js';
 import { QueryEmbedding, TextOnlyEmbedding } from '../query-embedding.js';
+import { symmetricEmbedder } from '../retrieval-embedder.js';
 import {
   Bm25OnlyStrategy,
   RrfStrategy,
@@ -415,7 +416,7 @@ async function runQuery(
   embedder?: IEmbedder,
 ): Promise<RagResult[]> {
   const embedding = embedder
-    ? new QueryEmbedding(query, embedder)
+    ? new QueryEmbedding(query, symmetricEmbedder(embedder))
     : new TextOnlyEmbedding(query);
   const result = await rag.query(embedding, k);
   assert.ok(result.ok, `Query failed for: ${query}`);
@@ -458,7 +459,7 @@ function buildVectorRagFactory(strategyName: string): StrategyDef {
         strategy = new Bm25OnlyStrategy();
       }
 
-      const rag = new VectorRag(embedder, {
+      const rag = new VectorRag(symmetricEmbedder(embedder), {
         dedupThreshold: 0.99,
         ...(strategy !== undefined ? { strategy } : {}),
       });
@@ -617,7 +618,7 @@ describe('MCP Tools Evaluation — VectorRag + MockTranslatePreprocessor (RRF)',
       ...[...mockTranslate.translations.values()],
     ];
     embedder.buildVocabulary(allTexts);
-    const rag = new VectorRag(embedder, {
+    const rag = new VectorRag(symmetricEmbedder(embedder), {
       dedupThreshold: 0.99,
       strategy: new RrfStrategy(),
       queryPreprocessors: [mockTranslate],

@@ -349,7 +349,7 @@ Implement `upsertManyPrecomputedRaw` when the store has a native bulk API (Qdran
 
 ```ts
 import type {
-  IRag, IRagBackendWriter, IRagEditor, IEmbedder,
+  IRag, IRagBackendWriter, IRagEditor, IRetrievalEmbedder,
   IQueryEmbedding, RagMetadata, RagResult, RagError, Result, CallOptions,
 } from '@mcp-abap-adt/llm-agent';
 import { DirectEditStrategy, GlobalUniqueIdStrategy } from '@mcp-abap-adt/llm-agent';
@@ -357,7 +357,8 @@ import { DirectEditStrategy, GlobalUniqueIdStrategy } from '@mcp-abap-adt/llm-ag
 class PineconeRag implements IRag {
   constructor(
     private readonly index: any,  // Pinecone index client
-    private readonly embedder: IEmbedder,
+    // Writes with embedDocument, embeds its own search text with embedQuery.
+    private readonly embedder: IRetrievalEmbedder,
   ) {}
 
   async query(
@@ -421,7 +422,7 @@ class PineconeRag implements IRag {
     return {
       async upsertRaw(id, text, metadata, options) {
         try {
-          const { vector } = await embedder.embed(text, options);
+          const { vector } = await embedder.embedDocument(text, options);
           await index.upsert([{ id, values: vector, metadata: { text, ...metadata } }]);
           return { ok: true, value: undefined };
         } catch (err) {
@@ -465,53 +466,55 @@ interface IEmbedder {
 
 `embed()` returns `IEmbedResult` rather than a raw `number[]`. Access the embedding via the `.vector` property. The optional `usage` field reports token consumption for providers that expose it (e.g. OpenAI, SAP AI Core).
 
-#### Document and query roles (asymmetric models)
+#### Document and query roles
 
-Some retrieval models embed stored text and search text differently —
-`nvidia--llama-3.2-nv-embedqa-1b` on SAP AI Core refuses a call without
-`type: document | query`. Two role interfaces name the two jobs; the method is
-the same `embed()`:
-
-```ts
-interface IDocumentEmbedder {            // text WRITTEN into a store
-  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
-  readonly embedderRole?: 'document';
-}
-interface IQueryEmbedder {               // text a store is SEARCHED with
-  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
-  readonly embedderRole?: 'query';
-}
-```
-
-- A **symmetric** embedder (every `IEmbedder` you already have) declares no role and fits
-  both — nothing to change.
-- An **asymmetric** model is two classes, one instance each, on the same model; each adds
-  its own parameter to the call and declares its role with `declare readonly embedderRole`
-  (type-only, nothing is set at runtime). The compiler then refuses one where the other is
-  expected. `SapAiCoreDocumentEmbedder` / `SapAiCoreQueryEmbedder` are the SAP AI Core pair.
-- The wrappers keep the role of what they wrap: `withRetry`, `withCircuitBreaker`,
-  `composeResilientEmbedder`, `composeEmbedder` and `wrapEmbedder` return
-  `IEmbedder & EmbedderRoleOf<E>`, so a wrapped query half is still refused as a document
-  embedder.
-- A store takes `StoreEmbedders`: **one symmetric embedder**, or the **pair**
-  `{ embedder: <document half>, queryEmbedder: <query half> }`. A document half alone does
-  not compile — the store embeds search text itself (a text-only query, a failed caller
-  embedding) and would embed it as a document:
+A store does two different jobs with an embedder: it **writes** records and it **searches** —
+and some retrieval models embed the two differently (`nvidia--llama-3.2-nv-embedqa-1b` on SAP AI
+Core refuses a call that does not say `type: document | query`). The two jobs are two methods
+with different names, so the compiler tells them apart — no tag, no runtime check:
 
 ```ts
-new VectorRag(symmetric);                                       // as before
-new VectorRag(documentHalf, { queryEmbedder: queryHalf });      // asymmetric
-new QdrantRag({ url, collectionName, embedder: documentHalf, queryEmbedder: queryHalf });
-new VectorRag(documentHalf);                                    // compile error
+interface IDocumentEmbedder {          // text WRITTEN into a store
+  embedDocument(text: string, options?: CallOptions): Promise<IEmbedResult>;
+  embedDocuments?(texts: string[], options?: CallOptions): Promise<IEmbedResult[]>; // batching models only
+}
+interface IQueryEmbedder {             // text a store is SEARCHED with
+  embedQuery(text: string, options?: CallOptions): Promise<IEmbedResult>;
+}
+interface IRetrievalEmbedder extends IDocumentEmbedder, IQueryEmbedder {}
 ```
 
-  `makeRag`'s `RagResolution` and the four `*RagProvider`s take the same optional
-  `queryEmbedder`.
+Your embedder keeps implementing `IEmbedder` (`embed`). You give it its roles once, where you
+build it:
 
-`SmartServer` does this for you with `rag.embedder.asymmetric: true` (SAP AI Core,
-orchestration scenario): stores (including a sub-agent's own), skill indexing and knowledge
-entries get the document half; the agent, the pipeline, tool selection and every store's own
-search text the query half. `skillPlugins.embedder.asymmetric: true` does the same for a
+```ts
+import { asymmetricEmbedder, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+
+// Most models embed both the same way:
+const retrieval = symmetricEmbedder(myEmbedder);
+
+// An asymmetric model: the same model twice, each instance set up for its job.
+const retrieval = asymmetricEmbedder({
+  document: new SapAiCoreEmbedder({ ...config, inputType: 'document' }),
+  query: new SapAiCoreEmbedder({ ...config, inputType: 'query' }),
+});
+```
+
+- **Stores and collection providers take an `IRetrievalEmbedder`** (`VectorRag`, `QdrantRag`,
+  `PgVectorRag`, `HanaVectorRag`, the `*RagProvider`s, `makeRag`): they write with
+  `embedDocument` and embed the search text they handle themselves (a text-only query, a failed
+  caller embedding) with `embedQuery`.
+- **The search path takes an `IQueryEmbedder`** (`QueryEmbedding`, `SmartAgentBuilder.withEmbedder`,
+  `SmartAgentDeps.embedder`). A retrieval embedder is one; a document embedder is not.
+- Passing a bare `IEmbedder`, or one role where the other is needed, **does not compile**.
+- **Retry, chunking, circuit breaking and usage logging wrap the `IEmbedder` underneath**
+  (`composeEmbedder`, `wrapEmbedder`, `withRetry`, …), before the roles are given:
+  `symmetricEmbedder(wrapEmbedder(composeEmbedder(myEmbedder)))`. For an asymmetric model each
+  half is wrapped on its own.
+
+`SmartServer` does all of this for you: `rag.embedder.asymmetric: true` (SAP AI Core,
+orchestration scenario) resolves the two halves and joins them; a symmetric model is one
+embedder behind both methods. `skillPlugins.embedder.asymmetric: true` does the same for a
 dedicated skill embedder.
 
 #### Batch support and provider caps
@@ -561,7 +564,8 @@ When `translateQuery: true` is set, the pipeline translates the query to English
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import { QdrantRag } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 
 const { agent } = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
   .withMainLlm(myLlm)
@@ -571,7 +575,7 @@ const { agent } = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' 
 const tenantRag = new QdrantRag({
   url: 'http://qdrant:6333',
   collectionName: 'tenant-42-docs',
-  embedder,
+  embedder: symmetricEmbedder(myEmbedder), // your IEmbedder, given its two roles
 });
 agent.addRagStore('tenant-42', tenantRag);
 
@@ -805,13 +809,15 @@ class MyDbRagProvider extends AbstractRagProvider {
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import { ImmutableEditStrategy, staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { ImmutableEditStrategy, staticApiKey, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
   .withMainLlm(myLlm)
   // Register a provider — the LLM can create collections on demand via MCP tools:
-  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url, credential: staticApiKey(key), embedder }))
+  .addRagProvider(new QdrantRagProvider({
+    name: 'qdrant-rw', url, credential: staticApiKey(key), embedder: symmetricEmbedder(myEmbedder),
+  }))
   // Register a static collection (read-only from the LLM's perspective):
   .addRagCollection({
     name: 'corp-facts',
@@ -1252,9 +1258,9 @@ interface ISearchStrategy {
 ### Example: CompositeStrategy
 
 ```ts
-import { VectorRag, CompositeStrategy, VectorOnlyStrategy, Bm25OnlyStrategy } from '@mcp-abap-adt/llm-agent';
+import { VectorRag, symmetricEmbedder, CompositeStrategy, VectorOnlyStrategy, Bm25OnlyStrategy } from '@mcp-abap-adt/llm-agent';
 
-const rag = new VectorRag(embedder, {
+const rag = new VectorRag(symmetricEmbedder(myEmbedder), {
   strategy: new CompositeStrategy([
     { strategy: new VectorOnlyStrategy(), weight: 1.0 },
     { strategy: new Bm25OnlyStrategy(), weight: 0.5 },
@@ -1308,9 +1314,9 @@ interface IQueryPreprocessor {
 ### Example: Multilingual tool search
 
 ```ts
-import { VectorRag, RrfStrategy, TranslatePreprocessor } from '@mcp-abap-adt/llm-agent';
+import { VectorRag, symmetricEmbedder, RrfStrategy, TranslatePreprocessor } from '@mcp-abap-adt/llm-agent';
 
-const rag = new VectorRag(embedder, {
+const rag = new VectorRag(symmetricEmbedder(myEmbedder), {
   strategy: new RrfStrategy(),
   queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
 });
@@ -1366,9 +1372,9 @@ interface IDocumentEnricher {
 ### Example: VectorRag with document enricher
 
 ```ts
-import { VectorRag, IntentEnricher } from '@mcp-abap-adt/llm-agent';
+import { VectorRag, symmetricEmbedder, IntentEnricher } from '@mcp-abap-adt/llm-agent';
 
-const rag = new VectorRag(embedder, {
+const rag = new VectorRag(symmetricEmbedder(myEmbedder), {
   documentEnrichers: [new IntentEnricher(helperLlm)],
 });
 
@@ -2761,7 +2767,8 @@ When set, only the last N non-system messages from client history are passed to 
 ```ts
 import { SmartAgentBuilder, SessionManager, InMemoryMetrics } from '@mcp-abap-adt/llm-agent-libs';
 import { OllamaEmbedder } from '@mcp-abap-adt/ollama-embedder';
-import { QdrantRag, ToolCache } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder, ToolCache } from '@mcp-abap-adt/llm-agent';
+import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 
 const metrics = new InMemoryMetrics();
 
@@ -2771,7 +2778,7 @@ const embedder = new OllamaEmbedder({ model: 'bge-m3' }); // model is required; 
 const factsRag = new QdrantRag({
   url: 'http://qdrant:6333',
   collectionName: 'facts',
-  embedder,
+  embedder: symmetricEmbedder(embedder), // bge-m3 is symmetric
 });
 
 const handle = await new SmartAgentBuilder({
@@ -2832,7 +2839,7 @@ import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
 import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
-import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { staticApiKey, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 
 const provider = new OpenAIProvider({
   credential: staticApiKey(process.env.OPENAI_API_KEY!),
@@ -2845,7 +2852,9 @@ const embedder = new SapAiCoreEmbedder({ model: 'text-embedding-3-small', ...sap
 
 const handle = await new SmartAgentBuilder()
   .withMainLlm(llm)
-  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url: 'http://qdrant:6333', embedder }))
+  .addRagProvider(new QdrantRagProvider({
+    name: 'qdrant-rw', url: 'http://qdrant:6333', embedder: symmetricEmbedder(embedder),
+  }))
   .build();
 ```
 

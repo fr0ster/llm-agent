@@ -58,12 +58,13 @@ export function fakeControllerServerCtx(): IControllerServerPipelineContext {
   return {
     ...fakeServerCtx(),
     stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-      makeKnowledgeSemanticIndex(stubEmbedder),
+      makeKnowledgeSemanticIndex(symmetricEmbedder(stubEmbedder)),
     ),
-    embedder: stubEmbedder,
+    embedder: symmetricEmbedder(stubEmbedder),
   };
 }
 
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { PlannerKind } from '../../smart-agent/controller/types.js';
 import { parseControllerSettings } from '../../smart-agent/pipeline-settings.js';
 import { ControllerPipelinePlugin } from '../controller.js';

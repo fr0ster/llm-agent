@@ -202,7 +202,7 @@ results, correct errors, and let the consumer clean up on disconnect:
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import { buildRagCollectionToolEntries, staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { buildRagCollectionToolEntries, staticApiKey, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 
 // 1. Build agent with a Qdrant provider
@@ -212,7 +212,7 @@ const { agent } = await new SmartAgentBuilder({ /* ... */ })
     name: 'qdrant-rw',
     url: 'http://qdrant:6333',
     credential: staticApiKey(process.env.QDRANT_API_KEY!),
-    embedder: myEmbedder,
+    embedder: symmetricEmbedder(myEmbedder), // your IEmbedder, given its two roles
   }))
   .build();
 
@@ -265,7 +265,7 @@ import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
 import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
-import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { staticApiKey, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 
 const provider = new DeepSeekProvider({
   credential: staticApiKey(process.env.DEEPSEEK_API_KEY!),
@@ -278,7 +278,9 @@ const embedder = new SapAiCoreEmbedder({ model: 'text-embedding-3-small', ...sap
 
 const handle = await new SmartAgentBuilder()
   .withMainLlm(llm)
-  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url: 'http://qdrant:6333', embedder }))
+  .addRagProvider(new QdrantRagProvider({
+    name: 'qdrant-rw', url: 'http://qdrant:6333', embedder: symmetricEmbedder(embedder),
+  }))
   .build();
 ```
 

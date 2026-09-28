@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { establishTargetState } from '../target-state.js';
 
 test('establishTargetState forwards options to embedder.embed', async () => {
   const seen: unknown[] = [];
-  const embedder = {
+  const embedder = symmetricEmbedder({
     embed: async (_t: string, o?: unknown) => {
       seen.push(o);
       return { vector: [1, 0, 0] };
     },
-  };
+  });
   const evaluator = {
     send: async () => ({ kind: 'content' as const, content: 'Goal: X' }),
   };

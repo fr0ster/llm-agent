@@ -24,7 +24,7 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   CallOptions,
-  IEmbedder,
+  IRetrievalEmbedder,
   ISkillPluginHost,
   ISkillSource,
   ISkillsRagBackendProvider,
@@ -70,13 +70,7 @@ const RETRIEVAL_SCHEMA_VERSION = 1;
 export interface SkillHostEmbedderConfig {
   embedder?: string;
   model?: string;
-  /**
-   * Which half is asked for: `document` embeds the skills written into the
-   * store, `query` the recall text. A symmetric embedder may serve both — the
-   * resolver decides; an asymmetric one (`asymmetric`) must not.
-   */
-  inputType: 'document' | 'query';
-  /** The configured embedder is asymmetric (`skillPlugins.embedder.asymmetric`). */
+  /** `skillPlugins.embedder.asymmetric` — build the document/query pair. */
   asymmetric?: boolean;
 }
 
@@ -87,7 +81,7 @@ export interface BuildSkillHostDeps {
    * server passes a resolver backed by `@mcp-abap-adt/llm-agent-rag`; tests pass
    * a stub returning a deterministic-vector embedder.
    */
-  resolveEmbedder: (cfg: SkillHostEmbedderConfig) => IEmbedder;
+  resolveEmbedder: (cfg: SkillHostEmbedderConfig) => IRetrievalEmbedder;
   /**
    * The qdrant store's credential, resolved by the composition root from
    * `store.credentialRef` (or its default store entry). The library holds no
@@ -268,23 +262,17 @@ export async function buildSkillHostFromConfig(
   const qdrantAuth = deps.storeCredential
     ? { credential: deps.storeCredential }
     : {};
-  const selection = {
+  const embedder = deps.resolveEmbedder({
     ...(cfg.embedder?.provider !== undefined
       ? { embedder: cfg.embedder.provider }
       : {}),
     ...(cfg.embedder?.model !== undefined ? { model: cfg.embedder.model } : {}),
     ...(cfg.embedder?.asymmetric ? { asymmetric: true } : {}),
-  };
-  // The host recalls (and probes the dimension) with the query half; the store
-  // provider writes skills with the document half. A symmetric embedder is the
-  // same instance for both — the resolver's call.
-  const embedder = deps.resolveEmbedder({ ...selection, inputType: 'query' });
-  const documentEmbedder = deps.resolveEmbedder({
-    ...selection,
-    inputType: 'document',
   });
+  // The store provider WRITES skills (documents); the host recalls with the
+  // query method of the same retrieval embedder.
   const embed: Embed = (text, options) =>
-    documentEmbedder.embed(text, options).then((r) => r.vector);
+    embedder.embedDocument(text, options).then((r) => r.vector);
 
   // ---- RECALL-ONLY (loadOnStartup:false) --------------------------------
   // Serve an already-materialised catalog through a READ-ONLY backend (least
