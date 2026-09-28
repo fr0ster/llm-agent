@@ -24,8 +24,8 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@sap-ai-sdk/ai-api": "^2.15.0",
-    "@sap-ai-sdk/orchestration": "^2.15.0"
+    "@sap-ai-sdk/ai-api": "^2.16.0",
+    "@sap-ai-sdk/orchestration": "^2.16.0"
   },
   "license": "LGPL-3.0-only",
   "repository": {

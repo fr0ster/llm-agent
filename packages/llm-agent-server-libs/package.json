@@ -59,7 +59,7 @@
   },
   "dependencies": {
     "pg": "^8.23.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.1"
   },
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
