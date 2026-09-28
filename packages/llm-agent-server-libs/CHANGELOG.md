@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 30.0.0
+
+**BREAKING — see docs/MIGRATION-v30.md.** Embedders have two roles told apart by method name: `IDocumentEmbedder.embedDocument` (text written into a store) and `IQueryEmbedder.embedQuery` (text a store is searched with), `IRetrievalEmbedder` for both. Stores, collection providers and `makeRag` take an `IRetrievalEmbedder`; search paths (`QueryEmbedding`, `withEmbedder`, `SmartAgentDeps.embedder`) an `IQueryEmbedder` — give a provider's `IEmbedder` its roles with `symmetricEmbedder(e)` or `asymmetricEmbedder({ document, query })`. Asymmetric SAP AI Core models (`nvidia--llama-3.2-nv-embedqa-1b`) via `SapAiCoreEmbedder.inputType` and `rag.embedder.asymmetric` / `skillPlugins.embedder.asymmetric`. `llm.resourceGroup` now reaches SAP AI Core (refused on other providers). Examples move from the retired `anthropic--claude-3-haiku` to `anthropic--claude-4.5-haiku`.
+
 ## 29.0.0
 
 **BREAKING.** Sampling knobs a config does not set are no longer sent: `SmartServer` no longer defaults `temperature` to 0.7 (main) / 0.1 (classifier, helper), and the SAP AI Core, OpenAI, DeepSeek, Ollama and Anthropic providers no longer invent `temperature` (or, except Anthropic, whose API requires it, `max_tokens`) — the model applies its own default, so `gpt-5*`, `o1`/`o3`/`o4-mini` and `claude-opus-4-7`/`4-8`, which accept only temperature 1, now work. `@mcp-abap-adt/llm-agent-server` ships only the `llm-agent` command; `llm-agent-check` and `claude-via-agent` are repository tools (`npm run models:check`, `npm run claude:via-agent`). `@mcp-abap-adt/sap-aicore-llm`: the model catalog is queried with the configured credential, `getEmbeddingModels()` matches the catalog's `embedding` capability, and errors carry AI Core's reason. See docs/MIGRATION-v29.md.

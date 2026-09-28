@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-libs",
-  "version": "29.0.0",
+  "version": "30.0.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,8 +44,8 @@
   "license": "LGPL-3.0-only",
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^29.0.0",
-    "@mcp-abap-adt/llm-agent-mcp": "^29.0.0",
-    "@mcp-abap-adt/llm-agent-rag": "^29.0.0"
+    "@mcp-abap-adt/llm-agent": "^30.0.0",
+    "@mcp-abap-adt/llm-agent-mcp": "^30.0.0",
+    "@mcp-abap-adt/llm-agent-rag": "^30.0.0"
   }
 }
