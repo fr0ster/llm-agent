@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [29.0.0] — 2026-09-28
+
 **BREAKING — see [docs/MIGRATION-v29.md](docs/MIGRATION-v29.md).**
 
 ### Breaking

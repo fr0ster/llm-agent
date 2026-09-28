@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/hana-vector-rag",
-  "version": "28.0.0",
+  "version": "29.0.0",
   "description": "HanaVectorRag vector store (SAP HANA Cloud Vector Engine) and HanaVectorRagProvider for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -36,6 +36,6 @@
   },
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^28.0.0"
+    "@mcp-abap-adt/llm-agent": "^29.0.0"
   }
 }
