@@ -12,7 +12,7 @@
  * guard would then read a foreign object as ours.
  */
 
-import type { IEmbedder } from '../interfaces/rag.js';
+import type { EmbedderRoleOf, IEmbedder } from '../interfaces/rag.js';
 import { isBatchEmbedder, isBatchSizeLimited } from '../interfaces/rag.js';
 import type { AnyLogger } from '../logger/normalise-logger.js';
 import { normaliseLogger } from '../logger/normalise-logger.js';
@@ -68,7 +68,16 @@ export interface ComposeResilienceOptions {
   logger?: AnyLogger;
 }
 
-export function composeResilientEmbedder(
+export function composeResilientEmbedder<E extends IEmbedder>(
+  inner: E,
+  options?: ComposeResilienceOptions,
+): IEmbedder & EmbedderRoleOf<E> {
+  // The role tag is type-only; the composition keeps the role of what it wraps.
+  return composeResilient(inner, options) as unknown as IEmbedder &
+    EmbedderRoleOf<E>;
+}
+
+function composeResilient(
   inner: IEmbedder,
   options?: ComposeResilienceOptions,
 ): IEmbedder {

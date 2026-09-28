@@ -21,6 +21,7 @@ import {
   RagError,
   type Result,
   ragOwnerKeys,
+  storeEmbedders,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
@@ -44,6 +45,8 @@ export interface QdrantRagProviderConfig {
    */
   credential?: IApiKeyCredential;
   embedder: IEmbedder;
+  /** The query half of an asymmetric model, for the stores it builds. */
+  queryEmbedder?: IEmbedder;
   editable?: boolean;
   timeoutMs?: number;
   supportedScopes?: readonly RagCollectionScope[];
@@ -65,6 +68,7 @@ export class QdrantRagProvider extends BaseRagProvider {
   private readonly url: string;
   private readonly credential?: IApiKeyCredential;
   private readonly embedder: IEmbedder;
+  private readonly queryEmbedder?: IEmbedder;
   private readonly timeoutMs?: number;
   private readonly catalog: string;
   private catalogReady?: Promise<void>;
@@ -75,6 +79,7 @@ export class QdrantRagProvider extends BaseRagProvider {
     this.url = cfg.url.replace(/\/+$/, '');
     this.credential = cfg.credential;
     this.embedder = cfg.embedder;
+    this.queryEmbedder = cfg.queryEmbedder;
     this.timeoutMs = cfg.timeoutMs;
     this.editable = cfg.editable ?? true;
     this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
@@ -380,7 +385,7 @@ export class QdrantRagProvider extends BaseRagProvider {
     const rag = new QdrantRag({
       url: this.url,
       credential: this.credential,
-      embedder: this.embedder,
+      ...storeEmbedders(this.embedder, this.queryEmbedder),
       collectionName: storeName,
       timeoutMs: this.timeoutMs,
       autoCreateCollection: false,

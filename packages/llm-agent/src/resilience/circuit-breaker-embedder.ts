@@ -12,6 +12,7 @@
 
 import type {
   CallOptions,
+  EmbedderRoleOf,
   IEmbedder,
   IEmbedderBatch,
   IEmbedResult,
@@ -80,11 +81,13 @@ export class CircuitBreakerEmbedder
  * batch-capable inner gets the batch class, a non-batch inner the base class.
  * The same two-class-behind-a-factory shape as `wrapEmbedder` / `withRetry`.
  */
-export function withCircuitBreaker(
-  inner: IEmbedder,
+export function withCircuitBreaker<E extends IEmbedder>(
+  inner: E,
   breaker: CircuitBreaker,
-): IEmbedder {
-  return isBatchEmbedder(inner)
+): IEmbedder & EmbedderRoleOf<E> {
+  // The role tag is type-only; the wrapper keeps the role of what it wraps.
+  return (isBatchEmbedder(inner)
     ? new CircuitBreakerEmbedder(inner, breaker)
-    : new CircuitBreakerEmbedderBase(inner, breaker);
+    : new CircuitBreakerEmbedderBase(inner, breaker)) as unknown as IEmbedder &
+    EmbedderRoleOf<E>;
 }

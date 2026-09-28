@@ -38,6 +38,7 @@ export {
   VectorOnlyStrategy,
   WeightedFusionStrategy,
 } from './search-strategy.js';
+export { storeEmbedders } from './store-embedders.js';
 export * from './strategies/edit/index.js';
 export * from './strategies/id/index.js';
 export type { VectorRagConfig } from './vector-rag.js';

@@ -1,9 +1,9 @@
 import type {
   CallOptions,
   IContextAssembler,
-  IEmbedder,
   ILlm,
   IMcpClient,
+  IQueryEmbedder,
   IQueryExpander,
   IRag,
   IRequestLogger,
@@ -40,7 +40,7 @@ export interface RagOrchestratorDeps {
   mcpToolRegistry: IMcpToolRegistry;
   requestLogger: IRequestLogger;
   ragStores: Record<string, IRag>;
-  embedder: IEmbedder | undefined;
+  embedder: IQueryEmbedder | undefined;
   assembler: IContextAssembler;
   skillManager: ISkillManager | undefined;
   translateQueryStores: Set<string> | undefined;

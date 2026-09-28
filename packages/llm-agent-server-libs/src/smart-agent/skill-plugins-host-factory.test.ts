@@ -646,3 +646,75 @@ test('buildSources builds an http source from registry', () => {
   assert.equal(sources.length, 1);
   assert.equal(registry, 'http://h');
 });
+
+test('skills are written with the document half and recalled with the query half', async () => {
+  const cfg = parseSkillPluginsConfig({
+    mode: 'implicit',
+    store: { type: 'in-memory' },
+    catalog: { type: 'in-process' },
+    sources: [
+      {
+        id: 'vendor',
+        records: [
+          {
+            id: 'vendor:p@1/alpha#0',
+            group: 'abap',
+            name: 'p/alpha',
+            content: 'How to create an ABAP class',
+            retrievalText: 'How to create an ABAP class',
+            provenance: 'p@1/alpha',
+          },
+        ],
+      },
+    ],
+  });
+  const seen: string[] = [];
+  const host = await buildSkillHostFromConfig(cfg, {
+    resolveEmbedder: (ec) => {
+      const inner = makeStubEmbedder();
+      return {
+        embed: (text: string) => {
+          seen.push(`${ec.inputType}:${text}`);
+          return inner.embed(text);
+        },
+      };
+    },
+  });
+  await host.load();
+  await host.rag('abap').query('make a class', { k: 1 });
+  assert.ok(
+    seen.includes('document:How to create an ABAP class'),
+    `the skill is embedded by the document half: ${seen.join(' | ')}`,
+  );
+  assert.ok(
+    seen.includes('query:make a class'),
+    `the recall text by the query half: ${seen.join(' | ')}`,
+  );
+  assert.ok(
+    !seen.includes('query:How to create an ABAP class') &&
+      !seen.includes('document:make a class'),
+    "no half does the other one's job",
+  );
+});
+
+test('skillPlugins.embedder.asymmetric is accepted for sap-ai-core only', () => {
+  const base = {
+    mode: 'implicit',
+    store: { type: 'in-memory' },
+    catalog: { type: 'in-process' },
+    sources: [{ id: 'v', records: [] }],
+  };
+  const cfg = parseSkillPluginsConfig({
+    ...base,
+    embedder: { provider: 'sap-ai-core', model: 'nv', asymmetric: 'true' },
+  });
+  assert.equal(cfg.embedder?.asymmetric, true);
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        ...base,
+        embedder: { provider: 'openai', model: 'm', asymmetric: true },
+      }),
+    /supported for provider sap-ai-core only, not "openai"/,
+  );
+});

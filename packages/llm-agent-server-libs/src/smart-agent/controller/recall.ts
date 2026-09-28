@@ -1,7 +1,9 @@
 import type {
   CallOptions,
-  IEmbedder,
+  IDocumentEmbedder,
   IKnowledgeRagHandle,
+  IQueryEmbedder,
+  ISymmetricEmbedder,
   KnowledgeEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { cosine } from '../embedder-knowledge-index.js';
@@ -188,11 +190,11 @@ export async function relevantExtract(
   content: string,
   ref: string,
   maxChars: number,
-  embedder: IEmbedder,
+  embedder: IQueryEmbedder,
   options?: CallOptions,
   /** Embeds the content windows (stored text) for an asymmetric model;
-   *  absent, `embedder` embeds both the ref and the windows. */
-  documentEmbedder: IEmbedder = embedder,
+   *  absent, `embedder` — then symmetric — embeds both. */
+  documentEmbedder: IDocumentEmbedder = embedder as ISymmetricEmbedder,
 ): Promise<string> {
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars));

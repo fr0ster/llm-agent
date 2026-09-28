@@ -1,6 +1,8 @@
 import type {
   CallOptions,
-  IEmbedder,
+  IDocumentEmbedder,
+  IQueryEmbedder,
+  ISymmetricEmbedder,
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
@@ -44,15 +46,15 @@ export function cosine(a: number[], b: number[]): number {
  *  pessimistic 2 chars/token) stays safely under the limit with ample ranking
  *  signal; override per deployment if needed. */
 export function makeKnowledgeSemanticIndex(
-  embedder: IEmbedder,
+  embedder: IDocumentEmbedder,
   skipArtifactTypes: readonly string[] = [
     'controller-bundle',
     'controller-terminal',
   ],
   maxEmbedChars = 16000,
   /** Embeds the search text for an asymmetric model; absent, `embedder`
-   *  (which always embeds the stored entries) serves both. */
-  queryEmbedder: IEmbedder = embedder,
+   *  (which always embeds the stored entries) — then symmetric — serves both. */
+  queryEmbedder: IQueryEmbedder = embedder as ISymmetricEmbedder,
 ) {
   const bySession = new Map<string, Indexed[]>();
   // Bound the text handed to the embedder so an over-limit document never 400s

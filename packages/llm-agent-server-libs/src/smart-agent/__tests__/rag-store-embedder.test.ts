@@ -436,9 +436,27 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
       for (const input of inputs) {
         const { vector } = await (input.embedder as IEmbedder).embed('x');
         assert.deepEqual(vector, [1], 'a store embeds with the document half');
+        const q = await (input.queryEmbedder as IEmbedder).embed('x');
+        assert.deepEqual(
+          q.vector,
+          [2],
+          'and embeds its own search text with the query half',
+        );
       }
     } finally {
       await handle.close();
     }
+  });
+
+  it('toMakeRagInput keeps a query half only beside an embedder', () => {
+    const doc = { embed: async () => ({ vector: [1] }) };
+    const query = { embed: async () => ({ vector: [2] }) };
+    const store = { type: 'in-memory' as const };
+    assert.equal(toMakeRagInput(store, doc, 'rag', query).queryEmbedder, query);
+    assert.equal(
+      'queryEmbedder' in toMakeRagInput(store, undefined, 'rag', query),
+      false,
+    );
+    assert.equal('queryEmbedder' in toMakeRagInput(store, doc, 'rag'), false);
   });
 });

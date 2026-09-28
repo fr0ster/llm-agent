@@ -14,6 +14,8 @@ import { AbstractRagProvider } from './base-provider.js';
 export interface VectorRagProviderConfig {
   name: string;
   embedder: IEmbedder;
+  /** The query half of an asymmetric model, for the stores it builds. */
+  queryEmbedder?: IEmbedder;
   editable?: boolean;
   /**
    * Scopes this provider accepts. Default `['session']`: its stores live in
@@ -36,12 +38,14 @@ export class VectorRagProvider extends AbstractRagProvider {
   readonly supportedScopes: readonly RagCollectionScope[];
 
   private readonly embedder: IEmbedder;
+  private readonly queryEmbedder?: IEmbedder;
   private readonly vectorRagConfig?: VectorRagConfig;
 
   constructor(cfg: VectorRagProviderConfig) {
     super();
     this.name = cfg.name;
     this.embedder = cfg.embedder;
+    this.queryEmbedder = cfg.queryEmbedder;
     this.editable = cfg.editable ?? true;
     this.supportedScopes = cfg.supportedScopes ?? ['session'];
     this.vectorRagConfig = cfg.vectorRagConfig;
@@ -63,7 +67,12 @@ export class VectorRagProvider extends AbstractRagProvider {
         ),
       };
     }
-    const rag = new VectorRag(this.embedder, this.vectorRagConfig ?? {});
+    const rag = this.queryEmbedder
+      ? new VectorRag(this.embedder, {
+          ...this.vectorRagConfig,
+          queryEmbedder: this.queryEmbedder,
+        })
+      : new VectorRag(this.embedder, this.vectorRagConfig ?? {});
     const editor = this.buildEditor(rag, this.pickIdStrategy(checked.value));
     return { ok: true, value: { rag, editor } };
   }

@@ -1,5 +1,11 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IRag, IRagBackendWriter } from '../interfaces/rag.js';
+import type {
+  IDocumentEmbedder,
+  IQueryEmbedder,
+  IRag,
+  IRagBackendWriter,
+  ISymmetricEmbedder,
+} from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -53,11 +59,31 @@ export class VectorRag implements IRag {
   private strategy: ISearchStrategy;
   private readonly queryPreprocessors: IQueryPreprocessor[];
   private readonly documentEnrichers: IDocumentEnricher[];
+  private readonly queryEmbedder: IQueryEmbedder;
+  private readonly embedder: IDocumentEmbedder;
 
+  /** One symmetric embedder for everything. */
   constructor(
-    private readonly embedder: IEmbedder,
-    config: VectorRagConfig = {},
+    embedder: ISymmetricEmbedder,
+    config?: VectorRagConfig & { queryEmbedder?: undefined },
+  );
+  /**
+   * An asymmetric pair: `embedder` embeds what the store writes,
+   * `config.queryEmbedder` the search text it embeds itself (a text-only query,
+   * a preprocessed one, a failed caller embedding).
+   */
+  constructor(
+    embedder: IDocumentEmbedder,
+    config: VectorRagConfig & { queryEmbedder: IQueryEmbedder },
+  );
+  constructor(
+    embedder: IDocumentEmbedder,
+    config: VectorRagConfig & { queryEmbedder?: IQueryEmbedder } = {},
   ) {
+    this.embedder = embedder;
+    // Without a query half the overloads admit only a symmetric embedder.
+    this.queryEmbedder =
+      config.queryEmbedder ?? (embedder as ISymmetricEmbedder);
     this.dedupThreshold = config.dedupThreshold ?? 0.92;
     this.namespace = config.namespace;
     this.vectorWeight = config.vectorWeight ?? 0.7;
@@ -214,8 +240,8 @@ export class VectorRag implements IRag {
       // If preprocessors transformed the text, embed the transformed version
       const effectiveEmbedding =
         searchText !== text
-          ? new QueryEmbedding(searchText, this.embedder, options)
-          : new FallbackQueryEmbedding(embedding, this.embedder);
+          ? new QueryEmbedding(searchText, this.queryEmbedder, options)
+          : new FallbackQueryEmbedding(embedding, this.queryEmbedder);
       const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
       const identity = ragIdentityFilter(options);

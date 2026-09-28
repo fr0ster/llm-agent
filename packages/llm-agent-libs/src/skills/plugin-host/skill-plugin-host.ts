@@ -2,7 +2,7 @@ import type {
   CallOptions,
   CatalogEntry,
   CatalogSnapshot,
-  IEmbedder,
+  IQueryEmbedder,
   ISkillPluginHost,
   ISkillSource,
   ISkillsRagBackendProvider,
@@ -23,7 +23,7 @@ import { makeCompatibleSkillsRag } from './compatible-skills-rag.js';
 export interface RecallHostDeps {
   backendProvider: ISkillsRagBackendProvider;
   /** Serving embedder — text query embed + lazy dimension probe. */
-  embedder: IEmbedder;
+  embedder: IQueryEmbedder;
   embeddingSpaceId: string;
   retrievalSchemaVersion: number;
   dimension?: number;
@@ -43,8 +43,9 @@ function isRecallDeps(deps: SkillPluginHostDeps): deps is RecallHostDeps {
 export interface IngestHostDeps {
   sources: ReadonlyArray<{ id: string; source: ISkillSource }>;
   storeProvider: ISkillsStoreProvider;
-  /** Serving embedder (also used to vectorise upserts via the provider). */
-  embedder: IEmbedder;
+  /** Serving embedder: recall text + dimension probe (the store provider
+   *  writes skills with its own `embed`). */
+  embedder: IQueryEmbedder;
   embeddingSpaceId: string;
   retrievalSchemaVersion: number;
   dimension?: number;

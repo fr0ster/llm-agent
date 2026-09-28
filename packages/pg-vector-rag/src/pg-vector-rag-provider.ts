@@ -19,6 +19,7 @@ import {
   OrphanStoreError,
   RagError,
   ragOwnerKeys,
+  storeEmbedders,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -47,6 +48,8 @@ type Refusal = { ok: false; error: RagError };
 export interface PgVectorRagProviderConfig {
   name: string;
   embedder: IEmbedder;
+  /** The query half of an asymmetric model, for the stores it builds. */
+  queryEmbedder?: IEmbedder;
   connection: PgVectorRagConfig | string;
   defaultDimension?: number;
   /**
@@ -87,6 +90,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
   readonly supportedScopes: readonly RagCollectionScope[];
 
   private readonly embedder: IEmbedder;
+  private readonly queryEmbedder?: IEmbedder;
   private readonly connection: PgVectorRagConfig;
   private readonly defaultDimension: number;
   private readonly autoCreateSchema: boolean;
@@ -99,6 +103,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     super();
     this.name = cfg.name;
     this.embedder = cfg.embedder;
+    this.queryEmbedder = cfg.queryEmbedder;
     this.connection = normalizeConnection(cfg.connection);
     this.defaultDimension = cfg.defaultDimension ?? 1536;
     this.autoCreateSchema = cfg.autoCreateSchema ?? true;
@@ -305,7 +310,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
         dimension: this.dimension(),
         // No handle creates its store: createCollection does, and only it.
         autoCreateSchema: false,
-        embedder: this.embedder,
+        ...storeEmbedders(this.embedder, this.queryEmbedder),
       },
       this.clientFactory?.(),
     );

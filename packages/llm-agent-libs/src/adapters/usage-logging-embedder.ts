@@ -1,5 +1,6 @@
 import type {
   CallOptions,
+  EmbedderRoleOf,
   IEmbedder,
   IEmbedderBatch,
   IEmbedResult,
@@ -102,12 +103,17 @@ class UsageLoggingBatchEmbedder
  * caller holding this wrapper cannot see a brand that sits on a layer below,
  * and re-resolution would compose the resilience decorators a second time.
  */
-export function wrapEmbedder(inner: IEmbedder): IEmbedder {
-  if ((inner as { [BRAND]?: boolean })[BRAND]) return inner;
+export function wrapEmbedder<E extends IEmbedder>(
+  inner: E,
+): IEmbedder & EmbedderRoleOf<E> {
+  // The role tag is type-only; the wrapper keeps the role of what it wraps.
+  type Wrapped = IEmbedder & EmbedderRoleOf<E>;
+  if ((inner as { [BRAND]?: boolean })[BRAND])
+    return inner as unknown as Wrapped;
   const wrapped = isBatchEmbedder(inner)
     ? new UsageLoggingBatchEmbedder(inner)
     : new UsageLoggingEmbedder(inner);
   const meta = getResilienceMetadata(inner);
   if (meta) brandResilient(wrapped, meta);
-  return wrapped;
+  return wrapped as unknown as Wrapped;
 }

@@ -1,12 +1,15 @@
 import type {
   CallOptions,
-  IEmbedder,
+  IDocumentEmbedder,
+  IQueryEmbedder,
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
+  ISymmetricEmbedder,
   RagMetadata,
   RagResult,
   Result,
+  StoreEmbedders,
 } from '@mcp-abap-adt/llm-agent';
 import {
   FallbackQueryEmbedding,
@@ -63,20 +66,25 @@ export async function createPgClient(
 export class PgVectorRag implements IRag {
   private readonly collectionName: string;
   private readonly dimension: number;
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IDocumentEmbedder;
+  private readonly queryEmbedder: IQueryEmbedder;
   private readonly autoCreateSchema: boolean;
   private readonly clientPromise: Promise<PgClient>;
   private schemaReady = false;
   private schemaPromise?: Promise<void>;
 
   constructor(
-    config: PgVectorRagConfig & { embedder: IEmbedder },
+    config: PgVectorRagConfig & StoreEmbedders,
     injectedClient?: PgClient,
   ) {
     assertCollectionName(config.collectionName);
     this.collectionName = config.collectionName;
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
+    this.queryEmbedder =
+      config.queryEmbedder ??
+      // Without a query half StoreEmbedders admits only a symmetric embedder.
+      (config.embedder as ISymmetricEmbedder);
     this.autoCreateSchema = config.autoCreateSchema ?? true;
     // Attach a no-op catch so the eager import never becomes an unhandledRejection.
     // The rejection is re-thrown when clientPromise is actually awaited.
@@ -111,7 +119,7 @@ export class PgVectorRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
-      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
+      const safe = new FallbackQueryEmbedding(embedding, this.queryEmbedder);
       const vector = await safe.toVector();
       const client = await this.clientPromise;
       const table = quoteIdent(this.collectionName);

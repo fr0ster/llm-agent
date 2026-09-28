@@ -54,8 +54,8 @@ import {
   collectServerDescriptors,
   defaultToolNamespace,
   FallbackRag,
-  type IEmbedder,
   InMemoryRag,
+  type IQueryEmbedder,
   type IRag,
   type IRagEditor,
   type IRagProvider,
@@ -194,7 +194,7 @@ export class SmartAgentBuilder {
   private _clientAdapters: IClientAdapter[] = [];
   private _apiAdapters: Map<string, ILlmApiAdapter> = new Map();
   private _modelProvider?: IModelProvider;
-  private _embedder?: IEmbedder;
+  private _embedder?: IQueryEmbedder;
   private _toolSelectionStrategy?: IToolSelectionStrategy;
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
@@ -461,7 +461,7 @@ export class SmartAgentBuilder {
   }
 
   /** Set the shared embedder for RAG queries. When set, queries embed once and share the vector. */
-  withEmbedder(embedder: IEmbedder): this {
+  withEmbedder(embedder: IQueryEmbedder): this {
     // wrapEmbedder is idempotent — safe even if the embedder was already wrapped
     // by resolveAgentEmbedder (the canonical owner).
     this._embedder = wrapEmbedder(embedder);
@@ -763,7 +763,7 @@ export class SmartAgentBuilder {
    */
   private buildRetrievalSource(
     rag: IRag | undefined,
-    embedder: IEmbedder | undefined,
+    embedder: IQueryEmbedder | undefined,
   ): SubAgentRetrievalSource | undefined {
     if (!rag || !embedder) return undefined;
     return async (text, k, signal) => {

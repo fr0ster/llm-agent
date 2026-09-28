@@ -1,4 +1,8 @@
-import type { CallOptions, IEmbedder, LlmUsage } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  IQueryEmbedder,
+  LlmUsage,
+} from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
 import {
   diagnosticCallOptions,
@@ -9,7 +13,7 @@ import type { ControllerConfig } from './types.js';
 export interface TargetStateDeps {
   evaluator: ISubagentClient;
   /** Required only for distance strategies (semantic-distance/auto). */
-  embedder?: IEmbedder;
+  embedder?: IQueryEmbedder;
 }
 
 /**

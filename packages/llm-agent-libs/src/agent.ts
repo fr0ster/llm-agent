@@ -3,13 +3,13 @@ import type {
   CallOptions,
   IClientAdapter,
   IContextAssembler,
-  IEmbedder,
   IHistoryMemory,
   IHistorySummarizer,
   ILlm,
   ILlmCallStrategy,
   IMcpClient,
   IMcpFailureClassifier,
+  IQueryEmbedder,
   IRag,
   IRagProviderRegistry,
   IRagRegistry,
@@ -132,7 +132,7 @@ export interface SmartAgentDeps {
   skillManager?: ISkillManager;
   clientAdapters?: IClientAdapter[];
   /** Shared embedder for RAG queries. When set, creates memoized IQueryEmbedding per request. */
-  embedder?: IEmbedder;
+  embedder?: IQueryEmbedder;
   connectionStrategy?: IMcpConnectionStrategy;
   /** Reports the startup tool-catalog vectorization result to health checks. */
   toolCatalogStatus?: IToolCatalogReporter;

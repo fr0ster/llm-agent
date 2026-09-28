@@ -1,12 +1,15 @@
 import type {
   CallOptions,
-  IEmbedder,
+  IDocumentEmbedder,
+  IQueryEmbedder,
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
+  ISymmetricEmbedder,
   RagMetadata,
   RagResult,
   Result,
+  StoreEmbedders,
 } from '@mcp-abap-adt/llm-agent';
 import {
   FallbackQueryEmbedding,
@@ -82,7 +85,8 @@ export async function createHanaClient(
 export class HanaVectorRag implements IRag {
   private readonly collectionName: string;
   private readonly dimension: number;
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IDocumentEmbedder;
+  private readonly queryEmbedder: IQueryEmbedder;
   private readonly autoCreateSchema: boolean;
   private readonly connectConfig: HanaVectorRagConfig;
   private readonly injectedClient?: HanaClient;
@@ -91,13 +95,17 @@ export class HanaVectorRag implements IRag {
   private schemaPromise?: Promise<void>;
 
   constructor(
-    config: HanaVectorRagConfig & { embedder: IEmbedder },
+    config: HanaVectorRagConfig & StoreEmbedders,
     injectedClient?: HanaClient,
   ) {
     assertCollectionName(config.collectionName);
     this.collectionName = config.collectionName;
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
+    this.queryEmbedder =
+      config.queryEmbedder ??
+      // Without a query half StoreEmbedders admits only a symmetric embedder.
+      (config.embedder as ISymmetricEmbedder);
     this.autoCreateSchema = config.autoCreateSchema ?? true;
     this.connectConfig = config;
     this.injectedClient = injectedClient;
@@ -156,7 +164,7 @@ export class HanaVectorRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
-      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
+      const safe = new FallbackQueryEmbedding(embedding, this.queryEmbedder);
       const vector = await safe.toVector();
       const client = await this.client();
       const table = quoteIdent(this.collectionName);

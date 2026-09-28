@@ -121,6 +121,7 @@ import {
   toMakeRagInput,
 } from './rag-config.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
+import { skillHostEmbedderResolver } from './skill-host-embedder-resolver.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
@@ -1358,13 +1359,20 @@ export class SmartServer {
         ? async () => this._deps.skillHost as ISkillPluginHost
         : () =>
             this._deps.buildSkillHost(skillCfg, {
-              resolveEmbedder: (ec) =>
-                reuseAgentEmbedder
-                  ? ((injectedEmbedder ?? documentEmbedder) as IEmbedder)
-                  : this._deps.resolveEmbedder(
-                      embedderSectionFor(ec.embedder, ec.model),
-                      { extraFactories: mergedEmbedderFactories },
-                    ),
+              resolveEmbedder: skillHostEmbedderResolver({
+                reuse: reuseAgentEmbedder
+                  ? {
+                      document: (injectedEmbedder ??
+                        documentEmbedder) as IEmbedder,
+                      query: (injectedEmbedder ??
+                        resolvedEmbedder) as IEmbedder,
+                    }
+                  : undefined,
+                resolve: (section) =>
+                  this._deps.resolveEmbedder(section, {
+                    extraFactories: mergedEmbedderFactories,
+                  }),
+              }),
               // Real pg `Pool` provider for a `postgres` catalog (qdrant
               // deployment). Lazily imports `pg` and ensures the catalog table
               // exists on first use; pass the configured table so the DDL targets
@@ -1411,7 +1419,12 @@ export class SmartServer {
       // The embedder was resolved through the seam above; the store is built
       // through its own. Two calls, two stores — the history store never shared
       // the tools store's instance.
-      const input = toMakeRagInput(this.cfg.rag.store, documentEmbedder, 'rag');
+      const input = toMakeRagInput(
+        this.cfg.rag.store,
+        documentEmbedder,
+        'rag',
+        documentEmbedder !== resolvedEmbedder ? resolvedEmbedder : undefined,
+      );
       toolsRag = await this._deps.makeRag(input);
       historyRag = await this._deps.makeRag(input);
     }
@@ -2130,7 +2143,9 @@ export class SmartServer {
     diEmbedder: IEmbedder | undefined,
     extraFactories: Record<string, EmbedderFactory>,
   ): Promise<MakeRagInput> {
-    // A store embeds what it writes: the document half of an asymmetric model.
+    // A store embeds what it writes with the document half of an asymmetric
+    // model, and the search text it embeds itself — a worker's text-only query
+    // included — with the query half.
     const embedder = await resolveAgentEmbedder(
       rag,
       diEmbedder,
@@ -2139,7 +2154,27 @@ export class SmartServer {
       this._fileLogger,
       'document',
     );
-    return toMakeRagInput(rag.store, embedder, `subagent '${name}' rag`);
+    const asymmetric =
+      diEmbedder === undefined &&
+      rag.embedder !== undefined &&
+      rag.embedder.factory === undefined &&
+      rag.embedder.asymmetric === true;
+    const queryEmbedder = asymmetric
+      ? await resolveAgentEmbedder(
+          rag,
+          undefined,
+          this._deps.resolveEmbedder,
+          extraFactories,
+          this._fileLogger,
+          'query',
+        )
+      : undefined;
+    return toMakeRagInput(
+      rag.store,
+      embedder,
+      `subagent '${name}' rag`,
+      queryEmbedder,
+    );
   }
 
   /** `ctx.resolveLlm(role)` — the role's default, through the held role map. */

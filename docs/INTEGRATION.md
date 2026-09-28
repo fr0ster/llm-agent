@@ -489,12 +489,30 @@ interface IQueryEmbedder {               // text a store is SEARCHED with
   its own parameter to the call and declares its role with `declare readonly embedderRole`
   (type-only, nothing is set at runtime). The compiler then refuses one where the other is
   expected. `SapAiCoreDocumentEmbedder` / `SapAiCoreQueryEmbedder` are the SAP AI Core pair.
-- The wrappers (retry, chunking, usage logging) are role-free, so a wrapped instance fits
-  either slot — wire the right one once, where you build them.
+- The wrappers keep the role of what they wrap: `withRetry`, `withCircuitBreaker`,
+  `composeResilientEmbedder`, `composeEmbedder` and `wrapEmbedder` return
+  `IEmbedder & EmbedderRoleOf<E>`, so a wrapped query half is still refused as a document
+  embedder.
+- A store takes `StoreEmbedders`: **one symmetric embedder**, or the **pair**
+  `{ embedder: <document half>, queryEmbedder: <query half> }`. A document half alone does
+  not compile — the store embeds search text itself (a text-only query, a failed caller
+  embedding) and would embed it as a document:
+
+```ts
+new VectorRag(symmetric);                                       // as before
+new VectorRag(documentHalf, { queryEmbedder: queryHalf });      // asymmetric
+new QdrantRag({ url, collectionName, embedder: documentHalf, queryEmbedder: queryHalf });
+new VectorRag(documentHalf);                                    // compile error
+```
+
+  `makeRag`'s `RagResolution` and the four `*RagProvider`s take the same optional
+  `queryEmbedder`.
 
 `SmartServer` does this for you with `rag.embedder.asymmetric: true` (SAP AI Core,
-orchestration scenario): stores, skill indexing and knowledge entries get the document
-half; the agent, the pipeline and tool selection the query half.
+orchestration scenario): stores (including a sub-agent's own), skill indexing and knowledge
+entries get the document half; the agent, the pipeline, tool selection and every store's own
+search text the query half. `skillPlugins.embedder.asymmetric: true` does the same for a
+dedicated skill embedder.
 
 #### Batch support and provider caps
 

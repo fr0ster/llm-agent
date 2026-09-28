@@ -5,11 +5,13 @@ import type {
 import type {
   AnyLogger,
   EmbedderFactory,
+  EmbedderRoleOf,
   IDocumentEnricher,
   IEmbedder,
   IQueryPreprocessor,
   IRag,
   ISearchStrategy,
+  StoreEmbedders,
 } from '@mcp-abap-adt/llm-agent';
 import {
   composeResilientEmbedder,
@@ -95,10 +97,10 @@ export interface EmbedderResolutionOptions {
  * consumer's injected instance goes through too (an injected embedder would
  * otherwise bypass chunking entirely). Idempotent.
  */
-export function composeEmbedder(
-  raw: IEmbedder,
+export function composeEmbedder<E extends IEmbedder>(
+  raw: E,
   opts?: { maxBatchSize?: number; logger?: AnyLogger },
-): IEmbedder {
+): IEmbedder & EmbedderRoleOf<E> {
   return composeResilientEmbedder(raw, {
     explicitMaxBatchSize: opts?.maxBatchSize,
     fallbackMaxBatchSize: isBatchSizeLimited(raw)
@@ -215,6 +217,11 @@ export type RagResolution =
   | {
       type: 'in-memory';
       embedder: IEmbedder;
+      /**
+       * The query half of an asymmetric model — embeds search text the store
+       * embeds itself. Absent, `embedder` does (it must then be symmetric).
+       */
+      queryEmbedder?: IEmbedder;
       collectionName?: string;
       dedupThreshold?: number;
       vectorWeight?: number;
@@ -227,6 +234,11 @@ export type RagResolution =
   | {
       type: 'qdrant';
       embedder: IEmbedder;
+      /**
+       * The query half of an asymmetric model — embeds search text the store
+       * embeds itself. Absent, `embedder` does (it must then be symmetric).
+       */
+      queryEmbedder?: IEmbedder;
       collectionName: string;
       url: string;
       credential?: IApiKeyCredential;
@@ -236,6 +248,11 @@ export type RagResolution =
   | {
       type: 'pg-vector';
       embedder: IEmbedder;
+      /**
+       * The query half of an asymmetric model — embeds search text the store
+       * embeds itself. Absent, `embedder` does (it must then be symmetric).
+       */
+      queryEmbedder?: IEmbedder;
       collectionName: string;
       credential?: ISecretLoginCredential;
       connectionString?: string;
@@ -252,6 +269,11 @@ export type RagResolution =
   | {
       type: 'hana-vector';
       embedder: IEmbedder;
+      /**
+       * The query half of an asymmetric model — embeds search text the store
+       * embeds itself. Absent, `embedder` does (it must then be symmetric).
+       */
+      queryEmbedder?: IEmbedder;
       collectionName: string;
       credential: ISecretLoginCredential;
       connectionString?: string;
@@ -329,10 +351,18 @@ export async function makeRag(
       logger: options?.logger,
     });
 
+  // One symmetric embedder, or the document/query pair of an asymmetric model.
+  const embedders = (
+    embedder: IEmbedder,
+    queryEmbedder: IEmbedder | undefined,
+  ): StoreEmbedders =>
+    queryEmbedder
+      ? { embedder: compose(embedder), queryEmbedder: compose(queryEmbedder) }
+      : { embedder: compose(embedder) };
+
   switch (cfg.type) {
     case 'in-memory': {
-      const embedder = compose(cfg.embedder);
-      return new VectorRag(embedder, {
+      const vectorCfg = {
         dedupThreshold: cfg.dedupThreshold,
         namespace: cfg.collectionName,
         vectorWeight: cfg.vectorWeight,
@@ -340,7 +370,14 @@ export async function makeRag(
         strategy: cfg.strategy,
         queryPreprocessors: cfg.queryPreprocessors,
         documentEnrichers: cfg.documentEnrichers,
-      });
+      };
+      const pair = embedders(cfg.embedder, cfg.queryEmbedder);
+      return pair.queryEmbedder
+        ? new VectorRag(pair.embedder, {
+            ...vectorCfg,
+            queryEmbedder: pair.queryEmbedder,
+          })
+        : new VectorRag(pair.embedder, vectorCfg);
     }
 
     case 'qdrant': {
@@ -348,6 +385,7 @@ export async function makeRag(
         type: _type,
         maxBatchSize: _mbs,
         embedder: _e,
+        queryEmbedder: _q,
         ...qdrantCfg
       } = cfg;
       const { QdrantRag } = await importPeer(
@@ -355,11 +393,20 @@ export async function makeRag(
         '@mcp-abap-adt/qdrant-rag',
         'qdrant',
       );
-      return new QdrantRag({ ...qdrantCfg, embedder: compose(cfg.embedder) });
+      return new QdrantRag({
+        ...qdrantCfg,
+        ...embedders(cfg.embedder, cfg.queryEmbedder),
+      });
     }
 
     case 'hana-vector': {
-      const { type: _type, maxBatchSize: _mbs, embedder: _e, ...hanaCfg } = cfg;
+      const {
+        type: _type,
+        maxBatchSize: _mbs,
+        embedder: _e,
+        queryEmbedder: _q,
+        ...hanaCfg
+      } = cfg;
       const { HanaVectorRag } = await importPeer(
         () => import('@mcp-abap-adt/hana-vector-rag'),
         '@mcp-abap-adt/hana-vector-rag',
@@ -367,18 +414,27 @@ export async function makeRag(
       );
       return new HanaVectorRag({
         ...hanaCfg,
-        embedder: compose(cfg.embedder),
+        ...embedders(cfg.embedder, cfg.queryEmbedder),
       });
     }
 
     case 'pg-vector': {
-      const { type: _type, maxBatchSize: _mbs, embedder: _e, ...pgCfg } = cfg;
+      const {
+        type: _type,
+        maxBatchSize: _mbs,
+        embedder: _e,
+        queryEmbedder: _q,
+        ...pgCfg
+      } = cfg;
       const { PgVectorRag } = await importPeer(
         () => import('@mcp-abap-adt/pg-vector-rag'),
         '@mcp-abap-adt/pg-vector-rag',
         'pg-vector',
       );
-      return new PgVectorRag({ ...pgCfg, embedder: compose(cfg.embedder) });
+      return new PgVectorRag({
+        ...pgCfg,
+        ...embedders(cfg.embedder, cfg.queryEmbedder),
+      });
     }
 
     default: {

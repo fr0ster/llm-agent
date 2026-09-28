@@ -2,8 +2,9 @@ import {
   type CallOptions,
   DefaultWaitStrategy,
   externalToolCallId,
-  type IEmbedder,
+  type IDocumentEmbedder,
   type IKnowledgeRagHandle,
+  type IQueryEmbedder,
   type IRunExecutionControl,
   type IStageHandler,
   type IStepExecutionControl,
@@ -126,10 +127,10 @@ export interface ControllerHandlerDeps {
   ) => IKnowledgeRagHandle | Promise<IKnowledgeRagHandle>;
   /** Required only for distance-based target-state strategies
    *  (semantic-distance/auto); unused by consumer-confirm. */
-  embedder?: IEmbedder;
+  embedder?: IQueryEmbedder;
   /** Embeds stored text (recall evidence windows) when the model is
    *  asymmetric; absent, `embedder` serves both. */
-  documentEmbedder?: IEmbedder;
+  documentEmbedder?: IDocumentEmbedder;
   /** Executes an INTERNAL (MCP) tool and returns its textual result. The
    *  optional `signal` is the merged per-step budget + caller-cancel signal
    *  (Task 5/7); the bridge cancels the in-flight MCP call when it aborts. */

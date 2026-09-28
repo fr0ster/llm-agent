@@ -19,7 +19,6 @@
 import type {
   CallOptions,
   IContextAssembler,
-  IEmbedder,
   IHistoryMemory,
   IHistorySummarizer,
   ILlm,
@@ -27,6 +26,7 @@ import type {
   ILogger,
   IMcpClient,
   IMcpFailureClassifier,
+  IQueryEmbedder,
   IQueryEmbedding,
   IQueryExpander,
   IRagProviderRegistry,
@@ -122,7 +122,7 @@ export interface PipelineContext {
   readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   readonly pendingToolResults: PendingToolResultsRegistry;
   readonly skillManager: ISkillManager | undefined;
-  readonly embedder: IEmbedder | undefined;
+  readonly embedder: IQueryEmbedder | undefined;
   readonly toolSelectionStrategy: IToolSelectionStrategy | undefined;
   readonly historyMemory: IHistoryMemory | undefined;
   readonly historySummarizer: IHistorySummarizer | undefined;

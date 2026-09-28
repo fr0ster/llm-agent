@@ -42,6 +42,31 @@ export interface IQueryEmbedder {
   readonly embedderRole?: 'query';
 }
 
+/**
+ * The role tag of `E`, for a wrapper of `E` to carry: wrapping a document half
+ * yields a document embedder, wrapping a role-free embedder a role-free one.
+ * Type-only, like the tag itself.
+ */
+export type EmbedderRoleOf<E> = E extends { readonly embedderRole: infer R }
+  ? { readonly embedderRole: R }
+  : unknown;
+
+/**
+ * An embedder that declares no role — symmetric, so it fits both slots. Every
+ * plain {@link IEmbedder} is one; a role-tagged half is not.
+ */
+export type ISymmetricEmbedder = IDocumentEmbedder & IQueryEmbedder;
+
+/**
+ * What a store embeds with: one symmetric embedder for everything, or an
+ * asymmetric pair — the document half for what it writes, the query half for
+ * search text it embeds itself. A document half alone is refused: the store
+ * would embed its search text as documents.
+ */
+export type StoreEmbedders =
+  | { embedder: ISymmetricEmbedder; queryEmbedder?: undefined }
+  | { embedder: IDocumentEmbedder; queryEmbedder: IQueryEmbedder };
+
 /** Config subset passed to EmbedderFactory so it can configure the embedder. */
 export interface EmbedderFactoryConfig {
   /** Base URL for the embedding service (Ollama URL, OpenAI base, etc.) */

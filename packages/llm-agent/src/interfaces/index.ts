@@ -140,6 +140,7 @@ export type { IQueryEmbedding } from './query-embedding.js';
 export type {
   EmbedderFactory,
   EmbedderFactoryConfig,
+  EmbedderRoleOf,
   IDocumentEmbedder,
   IEmbedder,
   IEmbedderBatch,
@@ -152,6 +153,7 @@ export type {
   IRagProvider,
   IRagProviderRegistry,
   IRagRegistry,
+  ISymmetricEmbedder,
   RagCatalogDescription,
   RagCollectionMeta,
   RagCollectionOwner,
@@ -160,6 +162,7 @@ export type {
   RagJsonValue,
   RagProviderCreateCollectionOptions,
   RagRegistryCreateCollectionParams,
+  StoreEmbedders,
 } from './rag.js';
 export { isBatchEmbedder, isBatchSizeLimited } from './rag.js';
 export type { ILlmRateLimiter } from './rate-limiter.js';

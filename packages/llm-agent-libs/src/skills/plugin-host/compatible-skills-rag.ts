@@ -1,7 +1,7 @@
 import type {
   ActiveSnapshot,
   CallOptions,
-  IEmbedder,
+  IQueryEmbedder,
   ISkillsRagBackend,
   ISkillsRagHandle,
   SkillHit,
@@ -11,7 +11,8 @@ import { SkillsIncompatibleError } from '@mcp-abap-adt/llm-agent'; // value (cla
 
 export interface CompatibleSkillsRagDeps {
   backend: ISkillsRagBackend;
-  embedder: IEmbedder;
+  /** Embeds the recall text (and probes the dimension): the query role. */
+  embedder: IQueryEmbedder;
   embeddingSpaceId: string;
   retrievalSchemaVersion: number;
   dimension?: number; // declared → skip probe; else resolved lazily

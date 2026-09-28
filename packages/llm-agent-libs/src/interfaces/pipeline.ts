@@ -13,7 +13,6 @@
 import type {
   CallOptions,
   IContextAssembler,
-  IEmbedder,
   IHistoryMemory,
   IHistorySummarizer,
   ILlm,
@@ -21,6 +20,7 @@ import type {
   ILogger,
   IMcpClient,
   IMcpFailureClassifier,
+  IQueryEmbedder,
   IQueryExpander,
   IRag,
   IRagProviderRegistry,
@@ -105,7 +105,7 @@ export interface PipelineDeps {
   /** Optional skill manager for slash-command resolution. */
   skillManager?: ISkillManager;
   /** Optional embedder for on-the-fly embedding operations. */
-  embedder?: IEmbedder;
+  embedder?: IQueryEmbedder;
   /** Strategy that filters scored RAG results for tool exposure. Default: top-k. */
   toolSelectionStrategy?: IToolSelectionStrategy;
   /** Optional persistent history memory across sessions. */

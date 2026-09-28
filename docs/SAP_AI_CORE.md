@@ -159,10 +159,12 @@ rag:
 ```
 
 The server then builds two instances on the model: a document one for what it writes (the
-stores, tool vectorization, skills, knowledge entries) and a query one for what it searches
-with (the agent, the pipeline, tool selection). `asymmetric` on any other provider, or with
-`scenario: foundation-models`, is refused at startup. `npm run models:check -- --config …`
-probes both halves.
+stores — a sub-agent's own included —, tool vectorization, skills, knowledge entries) and a
+query one for what it searches with (the agent, the pipeline, tool selection, and the search
+text a store embeds itself, e.g. for a sub-agent's text-only query). `asymmetric` on any other
+provider, or with `scenario: foundation-models`, is refused at startup. A dedicated skill
+embedder takes the same key: `skillPlugins.embedder: { provider: sap-ai-core, model: …,
+asymmetric: true }`. `npm run models:check -- --config …` probes both halves.
 
 ## Streaming Diagnostics
 

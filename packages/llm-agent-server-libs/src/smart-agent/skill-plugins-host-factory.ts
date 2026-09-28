@@ -70,6 +70,14 @@ const RETRIEVAL_SCHEMA_VERSION = 1;
 export interface SkillHostEmbedderConfig {
   embedder?: string;
   model?: string;
+  /**
+   * Which half is asked for: `document` embeds the skills written into the
+   * store, `query` the recall text. A symmetric embedder may serve both — the
+   * resolver decides; an asymmetric one (`asymmetric`) must not.
+   */
+  inputType: 'document' | 'query';
+  /** The configured embedder is asymmetric (`skillPlugins.embedder.asymmetric`). */
+  asymmetric?: boolean;
 }
 
 /** Injected dependencies (DI seams) for {@link buildSkillHostFromConfig}. */
@@ -260,14 +268,23 @@ export async function buildSkillHostFromConfig(
   const qdrantAuth = deps.storeCredential
     ? { credential: deps.storeCredential }
     : {};
-  const embedder = deps.resolveEmbedder({
+  const selection = {
     ...(cfg.embedder?.provider !== undefined
       ? { embedder: cfg.embedder.provider }
       : {}),
     ...(cfg.embedder?.model !== undefined ? { model: cfg.embedder.model } : {}),
+    ...(cfg.embedder?.asymmetric ? { asymmetric: true } : {}),
+  };
+  // The host recalls (and probes the dimension) with the query half; the store
+  // provider writes skills with the document half. A symmetric embedder is the
+  // same instance for both — the resolver's call.
+  const embedder = deps.resolveEmbedder({ ...selection, inputType: 'query' });
+  const documentEmbedder = deps.resolveEmbedder({
+    ...selection,
+    inputType: 'document',
   });
   const embed: Embed = (text, options) =>
-    embedder.embed(text, options).then((r) => r.vector);
+    documentEmbedder.embed(text, options).then((r) => r.vector);
 
   // ---- RECALL-ONLY (loadOnStartup:false) --------------------------------
   // Serve an already-materialised catalog through a READ-ONLY backend (least

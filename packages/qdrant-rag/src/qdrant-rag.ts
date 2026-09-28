@@ -1,9 +1,13 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
+  IDocumentEmbedder,
   IEmbedder,
+  IQueryEmbedder,
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
+  ISymmetricEmbedder,
+  StoreEmbedders,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
@@ -56,16 +60,25 @@ export interface QdrantRagConfig {
 export class QdrantRag implements IRag {
   private readonly url: string;
   private readonly collectionName: string;
-  private readonly embedder: IEmbedder;
+  private readonly embedder: IDocumentEmbedder;
+  private readonly queryEmbedder: IQueryEmbedder;
   private readonly credential?: IApiKeyCredential;
   private readonly timeoutMs: number | undefined;
   private readonly autoCreateCollection: boolean;
   private collectionEnsured = false;
 
-  constructor(config: QdrantRagConfig) {
+  /**
+   * `embedder` alone must be symmetric; an asymmetric model passes its pair —
+   * `embedder` (document half) + `queryEmbedder` (query half).
+   */
+  constructor(config: Omit<QdrantRagConfig, 'embedder'> & StoreEmbedders) {
     this.url = config.url.replace(/\/+$/, '');
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
+    this.queryEmbedder =
+      config.queryEmbedder ??
+      // Without a query half StoreEmbedders admits only a symmetric embedder.
+      (config.embedder as ISymmetricEmbedder);
     this.credential = config.credential;
     this.timeoutMs = config.timeoutMs;
     this.autoCreateCollection = config.autoCreateCollection ?? true;
@@ -248,7 +261,7 @@ export class QdrantRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
+      const safe = new FallbackQueryEmbedding(embedding, this.queryEmbedder);
       const vector = await safe.toVector();
 
       const must: unknown[] = [];

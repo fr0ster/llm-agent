@@ -1,5 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IEmbedResult } from '../interfaces/rag.js';
+import type { IEmbedResult, IQueryEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 
@@ -15,7 +15,7 @@ export class QueryEmbedding implements IQueryEmbedding {
 
   constructor(
     text: string,
-    private readonly embedder: IEmbedder,
+    private readonly embedder: IQueryEmbedder,
     private readonly options?: CallOptions,
   ) {
     this.text = text;
@@ -64,7 +64,7 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
 
   constructor(
     private readonly inner: IQueryEmbedding,
-    private readonly fallback: IEmbedder,
+    private readonly fallback: IQueryEmbedder,
   ) {}
 
   get text(): string {

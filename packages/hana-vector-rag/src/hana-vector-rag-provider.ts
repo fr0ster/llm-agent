@@ -20,6 +20,7 @@ import {
   OrphanStoreError,
   RagError,
   ragOwnerKeys,
+  storeEmbedders,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -50,6 +51,8 @@ type Refusal = { ok: false; error: RagError };
 export interface HanaVectorRagProviderConfig {
   name: string;
   embedder: IEmbedder;
+  /** The query half of an asymmetric model, for the stores it builds. */
+  queryEmbedder?: IEmbedder;
   /**
    * No `string` shorthand here, unlike pg-vector: that shorthand is
    * address-only, HANA has no anonymous login, and a type arm that can only
@@ -118,6 +121,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
   readonly supportedScopes: readonly RagCollectionScope[];
 
   private readonly embedder: IEmbedder;
+  private readonly queryEmbedder?: IEmbedder;
   private readonly connection: HanaVectorRagConfig;
   private readonly defaultDimension: number;
   private readonly autoCreateSchema: boolean;
@@ -130,6 +134,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
     super();
     this.name = cfg.name;
     this.embedder = cfg.embedder;
+    this.queryEmbedder = cfg.queryEmbedder;
     this.connection = normalizeConnection(cfg.connection);
     this.defaultDimension = cfg.defaultDimension ?? 1536;
     this.autoCreateSchema = cfg.autoCreateSchema ?? true;
@@ -318,7 +323,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
         dimension: this.dimension(),
         // No handle creates its store: createCollection does, and only it.
         autoCreateSchema: false,
-        embedder: this.embedder,
+        ...storeEmbedders(this.embedder, this.queryEmbedder),
       },
       this.clientFactory?.(),
     );

@@ -7,7 +7,10 @@
  *
  * `credentialRef` is a NAME the composition root resolves — never a value.
  */
-import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type {
+  IDocumentEmbedder,
+  IQueryEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 
 /**
  * The in-memory store. The search knobs live here because this is the only store
@@ -169,10 +172,19 @@ export interface SmartServerRagConfig {
  * so the compiler demands an embedder exactly where a store cannot work without one.
  */
 export type MakeRagInput =
-  | { store: InMemoryStoreConfig; embedder?: IEmbedder }
+  | {
+      store: InMemoryStoreConfig;
+      embedder?: IDocumentEmbedder;
+      queryEmbedder?: IQueryEmbedder;
+    }
   | {
       store: QdrantStoreConfig | PgVectorStoreConfig | HanaVectorStoreConfig;
-      embedder: IEmbedder;
+      embedder: IDocumentEmbedder;
+      /**
+       * The query half of an asymmetric model (`rag.embedder.asymmetric`): embeds
+       * search text the store embeds itself. Absent, `embedder` does.
+       */
+      queryEmbedder?: IQueryEmbedder;
     };
 
 /**
@@ -195,18 +207,21 @@ export function isInMemoryInput(
  */
 export function toMakeRagInput(
   store: SmartServerRagStoreConfig,
-  embedder: IEmbedder | undefined,
+  embedder: IDocumentEmbedder | undefined,
   label: string,
+  /** The query half of an asymmetric model; `embedder` is then the document half. */
+  queryEmbedder?: IQueryEmbedder,
 ): MakeRagInput {
+  const query = embedder && queryEmbedder ? { queryEmbedder } : {};
   if (store.type === 'in-memory') {
-    return embedder ? { store, embedder } : { store };
+    return embedder ? { store, embedder, ...query } : { store };
   }
   if (!embedder) {
     throw new Error(
       `${label}.store.type '${store.type}' needs an embedder: configure ${label}.embedder (provider, model)`,
     );
   }
-  return { store, embedder };
+  return { store, embedder, ...query };
 }
 
 /**

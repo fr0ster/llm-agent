@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import {
+  MissingProviderError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { _resetPrefetchedForTests } from '../embedder-factories.js';
 import { makeRag, prefetchRagFactories } from '../rag-factories.js';
 
@@ -79,5 +82,25 @@ describe('rag-factories', () => {
       () => makeRag({ type: 'ollama' } as any),
       /Unknown rag\.type.*Use one of/,
     );
+  });
+});
+
+describe('makeRag — the query half of an asymmetric model', () => {
+  it('reaches the store: it embeds its own search text with the query half', async () => {
+    const seen: string[] = [];
+    const half = (role: string) => ({
+      embed: async (text: string) => {
+        seen.push(`${role}:${text}`);
+        return { vector: [1, 0] };
+      },
+    });
+    const rag = await makeRag({
+      type: 'in-memory',
+      embedder: half('document'),
+      queryEmbedder: half('query'),
+    });
+    await rag.upsert('stored text', { id: '1' });
+    await rag.query(new TextOnlyEmbedding('search text'), 1);
+    assert.deepEqual(seen, ['document:stored text', 'query:search text']);
   });
 });
