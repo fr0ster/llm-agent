@@ -134,6 +134,8 @@ llm-agent-server
 Optional peer dependencies (not in the graph above):
 - `llm-agent-rag` → `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`, `@mcp-abap-adt/qdrant-rag`, `@mcp-abap-adt/hana-vector-rag`, `@mcp-abap-adt/pg-vector-rag`
 
+Shared peer dependencies (since 27.0.2): every package that uses `@mcp-abap-adt/interfaces-auth` (`^2.1.0`) or `@mcp-abap-adt/interfaces-utils` (`^1.1.0`) declares it as a **peer**, with the same range everywhere, and imports the types directly from it. The consumer's copy is the one all of them use: npm (≥ 7) installs it when absent, and a version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. `test/repo/interface-packages.test.ts` enforces this.
+
 `llm-agent-libs` constructs no LLM provider — it takes `BuildAgentDeps.makeLlm` as a required seam.
 `llm-agent-server` depends on the five LLM provider packages directly — its composition root
 constructs them.

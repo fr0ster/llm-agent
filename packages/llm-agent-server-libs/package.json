@@ -58,7 +58,6 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
     "@mcp-abap-adt/llm-agent": "^27.0.2",
     "@mcp-abap-adt/llm-agent-libs": "^27.0.2",
     "@mcp-abap-adt/llm-agent-mcp": "^27.0.2",
@@ -67,6 +66,7 @@
     "yaml": "^2.9.0"
   },
   "peerDependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
     "@mcp-abap-adt/sap-aicore-llm": "^27.0.2"
   },
   "peerDependenciesMeta": {

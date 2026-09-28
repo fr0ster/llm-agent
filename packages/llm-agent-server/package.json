@@ -34,7 +34,6 @@
     "@mcp-abap-adt/anthropic-llm": "^27.0.2",
     "@mcp-abap-adt/deepseek-llm": "^27.0.2",
     "@mcp-abap-adt/hana-vector-rag": "^27.0.2",
-    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
     "@mcp-abap-adt/llm-agent": "^27.0.2",
     "@mcp-abap-adt/llm-agent-libs": "^27.0.2",
     "@mcp-abap-adt/llm-agent-mcp": "^27.0.2",
@@ -77,5 +76,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0"
   }
 }

@@ -33,7 +33,6 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
     "@mcp-abap-adt/llm-agent": "^27.0.2",
     "@mcp-abap-adt/llm-agent-mcp": "^27.0.2",
     "@mcp-abap-adt/llm-agent-rag": "^27.0.2",
@@ -45,5 +44,8 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "LGPL-3.0-only"
+  "license": "LGPL-3.0-only",
+  "peerDependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0"
+  }
 }

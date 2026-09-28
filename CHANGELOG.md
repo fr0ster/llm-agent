@@ -11,7 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [27.0.2] — 2026-09-28
 
-Moves to `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^2.1.0` (and `@mcp-abap-adt/interfaces-utils` `^1.1.0`), so a consumer on `lib` 13 / `connection` 9 / `auth-broker` 3 resolves a single copy of the interface packages instead of two. The credential types this package uses are identical in 1.2 and 2.1: a consumer still on `interfaces-auth` 1.x keeps working, but gets a second copy until it upgrades. No code changes.
+`@mcp-abap-adt/interfaces-auth` (and, where used, `@mcp-abap-adt/interfaces-utils`) is now a **peer dependency** with the range `^2.1.0` (`interfaces-utils`: `^1.1.0`) — the same in every package — instead of a regular dependency accepting 1.x (#314). npm installs one copy, the consumer's, instead of nesting a second one under these packages. A consumer on `interfaces-auth` 1.x gets `ERESOLVE` and must upgrade to 2.x. No code changes.
+
+**Migrating.** Nothing to do on npm ≥ 7 if you don't use `interfaces-auth` yourself — npm installs the peers. If you do, move it to `^2.1.0` (the credential types are identical in 1.2 and 2.1). With `--legacy-peer-deps`, add `@mcp-abap-adt/interfaces-auth@^2.1.0` and `@mcp-abap-adt/interfaces-utils@^1.1.0` to your own dependencies: runtime is unaffected (every import is type-only), but TypeScript needs them to resolve our declarations.
 
 Also picks up the grouped minor/patch dependency updates: `@sap/hana-client` 2.30, `zod` 4.6, `@sap-ai-sdk/*` 2.16, `yaml` 2.9.1, `@modelcontextprotocol/sdk` 1.30.1 (#311; published ranges raised accordingly) and dev tooling (#309).
 

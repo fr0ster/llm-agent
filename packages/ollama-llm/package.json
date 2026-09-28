@@ -1,7 +1,7 @@
 {
   "name": "@mcp-abap-adt/ollama-llm",
   "version": "27.0.2",
-  "description": "Ollama LLM provider (ILlm, extends OpenAIProvider — Ollama's OpenAI-compatible /v1 API) for @mcp-abap-adt/llm-agent.",
+  "description": "Ollama LLM provider (ILlm, extends OpenAIProvider \u2014 Ollama's OpenAI-compatible /v1 API) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,6 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
     "@mcp-abap-adt/llm-agent": "^27.0.2",
     "@mcp-abap-adt/openai-llm": "^27.0.2"
   },
@@ -35,5 +34,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0"
   }
 }

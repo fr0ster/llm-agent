@@ -2,7 +2,7 @@
 
 ## 27.0.2
 
-Moves to `@mcp-abap-adt/interfaces-auth` 2.x (#314). The range is `^2.1.0` (and `@mcp-abap-adt/interfaces-utils` `^1.1.0`), so a consumer on `lib` 13 / `connection` 9 / `auth-broker` 3 resolves a single copy of the interface packages instead of two. The credential types this package uses are identical in 1.2 and 2.1: a consumer still on `interfaces-auth` 1.x keeps working, but gets a second copy until it upgrades. No code changes.
+`@mcp-abap-adt/interfaces-auth` (and, where used, `@mcp-abap-adt/interfaces-utils`) is now a **peer dependency** with the range `^2.1.0` (`interfaces-utils`: `^1.1.0`) — the same in every package — instead of a regular dependency accepting 1.x (#314). npm installs one copy, the consumer's, instead of nesting a second one under these packages. A consumer on `interfaces-auth` 1.x gets `ERESOLVE` and must upgrade to 2.x. No code changes.
 
 ## 27.0.1
 

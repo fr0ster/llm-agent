@@ -24,7 +24,6 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
     "@mcp-abap-adt/llm-agent": "^27.0.2",
     "@sap-ai-sdk/ai-api": "^2.15.0",
     "@sap-ai-sdk/orchestration": "^2.15.0"
@@ -36,5 +35,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0"
   }
 }
