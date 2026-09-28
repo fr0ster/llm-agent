@@ -31,6 +31,11 @@ export interface AnthropicConfig extends LLMProviderConfig {
   maxTokens?: number;
 }
 
+/** `{ temperature }` when set, nothing otherwise — the model's default applies. */
+function temperatureParam(temperature: number | undefined) {
+  return temperature !== undefined ? { temperature } : {};
+}
+
 export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   readonly client: AxiosInstance;
   readonly model: string;
@@ -87,8 +92,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const requestBody: Record<string, unknown> = {
         model,
         messages: this.formatMessages(conversationMessages),
+        // The Messages API requires max_tokens, so it keeps a default;
+        // temperature is sent only when set (claude-opus-4-7+ accept only 1).
         max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
-        temperature: options?.temperature ?? this.config.temperature ?? 0.7,
+        ...temperatureParam(options?.temperature ?? this.config.temperature),
         ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
         ...(options?.stop ? { stop_sequences: options.stop } : {}),
       };
@@ -163,7 +170,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       model,
       messages: this.formatMessages(conversationMessages),
       max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
-      temperature: options?.temperature ?? this.config.temperature ?? 0.7,
+      ...temperatureParam(options?.temperature ?? this.config.temperature),
       stream: true,
       ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
       ...(options?.stop ? { stop_sequences: options.stop } : {}),

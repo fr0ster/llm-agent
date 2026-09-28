@@ -17,8 +17,11 @@ llm:
   # No secret here: your composition root holds the credential. To use an account
   # other than its default, name it:  credentialRef: <NAME>
   model: deepseek-chat
-  temperature: 0.7
-  classifierTemperature: 0.1
+  # Unset sampling knobs are not sent — the model applies its own default.
+  # Set them only for a model that accepts them (gpt-5, o-series and
+  # claude-opus-4-7+ accept temperature 1 only).
+  # temperature: 0.7
+  # classifierTemperature: 0.1
 
 rag:
   store:                              # the vector store: its own address and account

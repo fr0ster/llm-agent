@@ -191,6 +191,30 @@ describe('AnthropicProvider — chat() options forwarding', () => {
     assert.equal(capturedBody.max_tokens, 10);
   });
 
+  it('sends no temperature that is not configured, and the required max_tokens default', async () => {
+    const provider = new AnthropicProvider({
+      credential: staticApiKey('test-key'),
+      model: 'claude-opus-4-8',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal('temperature' in capturedBody, false);
+    assert.equal(capturedBody.max_tokens, 4096);
+  });
+
   it('forwards tools to the request body', async () => {
     const provider = new AnthropicProvider({
       credential: staticApiKey('test-key'),

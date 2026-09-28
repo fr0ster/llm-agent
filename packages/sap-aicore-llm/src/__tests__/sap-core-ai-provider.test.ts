@@ -7,7 +7,12 @@ import {
   resetQuotaGates,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
-import { SapCoreAIProvider } from '../sap-core-ai-provider.js';
+import {
+  orchestrationModelParams,
+  type SapCoreAICatalogModel,
+  type SapCoreAIDestination,
+  SapCoreAIProvider,
+} from '../sap-core-ai-provider.js';
 
 /** A bearer credential that hands out a fresh, distinguishable token each call. */
 function testCredential(prefix = 't'): IBearerCredential {
@@ -501,5 +506,92 @@ describe('SapCoreAIProvider — one quota per service instance', () => {
     // Draw a token so a leak into the key would have something to leak.
     await credential.token();
     assert.ok(!keyOf(p).includes('super-secret-token-'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
+
+class CatalogProvider extends SapCoreAIProvider {
+  readonly destinations: SapCoreAIDestination[] = [];
+  constructor(private readonly catalog: SapCoreAICatalogModel[]) {
+    super({ model: 'gpt-4o', apiBaseUrl, credential: testCredential('cat') });
+  }
+  protected override async queryModelCatalog(
+    destination: SapCoreAIDestination,
+  ): Promise<SapCoreAICatalogModel[]> {
+    this.destinations.push(destination);
+    return this.catalog;
+  }
+}
+
+describe('SapCoreAIProvider — model catalog', () => {
+  const catalog: SapCoreAICatalogModel[] = [
+    {
+      model: 'gpt-4o',
+      versions: [{ isLatest: true, capabilities: ['text-generation'] }],
+    },
+    {
+      model: 'text-embedding-3-small',
+      versions: [{ isLatest: true, capabilities: ['embedding'] }],
+    },
+  ];
+
+  it('queries the catalog with the configured credential', async () => {
+    const p = new CatalogProvider(catalog);
+    const models = await p.getModels();
+    assert.deepEqual(
+      models.map((m) => m.id),
+      ['gpt-4o', 'text-embedding-3-small'],
+    );
+    assert.equal(p.destinations.length, 1);
+    assert.equal(p.destinations[0].url, apiBaseUrl);
+    assert.equal(p.destinations[0].headers.Authorization, 'Bearer cat1');
+  });
+
+  it('getEmbeddingModels returns the models the catalog marks "embedding"', async () => {
+    const p = new CatalogProvider(catalog);
+    const models = await p.getEmbeddingModels();
+    assert.deepEqual(
+      models.map((m) => m.id),
+      ['text-embedding-3-small'],
+    );
+  });
+});
+
+describe('orchestrationModelParams', () => {
+  it('sends no sampling knobs that are not configured', () => {
+    assert.deepEqual(orchestrationModelParams({}, false), {});
+  });
+
+  it('sends the configured ones, temperature 0 included', () => {
+    assert.deepEqual(
+      orchestrationModelParams({ maxTokens: 100, temperature: 0 }, true),
+      { max_tokens: 100, temperature: 0, tool_choice: 'auto' },
+    );
+  });
+});
+
+describe('SapCoreAIProvider.extractErrorDetail', () => {
+  it('surfaces the AI Core body the SAP AI SDK keeps on cause', () => {
+    const err = Object.assign(
+      new Error('Request failed with status code 400.'),
+      {
+        cause: {
+          response: {
+            data: {
+              error: {
+                message: "gpt-5 models don't support temperature=0.7",
+              },
+            },
+          },
+        },
+      },
+    );
+    assert.match(
+      SapCoreAIProvider.extractErrorDetail(err),
+      /gpt-5 models don't support temperature=0\.7/,
+    );
   });
 });

@@ -64,6 +64,27 @@ describe('createModelResolver (PUT /v1/config)', () => {
     );
   });
 
+  it('leaves every role temperature unset when the config sets none', async () => {
+    const seen: SmartServerLlmConfig[] = [];
+    const makeLlm = async (cfg: SmartServerLlmConfig) => {
+      seen.push(cfg);
+      return { model: cfg.model } as unknown as ILlm;
+    };
+    const llm = {
+      main: { provider: 'sap-ai-sdk', model: 'a' },
+      helper: { provider: 'sap-ai-sdk', model: 'h' },
+    } as unknown as SmartServerConfig['llm'];
+    const resolver = createModelResolver(makeLlm, llm);
+    assert.ok(resolver);
+    await resolver.resolve('gpt-5', 'main');
+    await resolver.resolve('o3', 'classifier');
+    await resolver.resolve('gpt-5-mini', 'helper');
+    assert.deepEqual(
+      seen.map((c) => c.temperature),
+      [undefined, undefined, undefined],
+    );
+  });
+
   it('a declared classifier without a temperature keeps none after a swap, as at startup', async () => {
     const seen: SmartServerLlmConfig[] = [];
     const makeLlm = async (cfg: SmartServerLlmConfig) => {

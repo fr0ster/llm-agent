@@ -33,6 +33,20 @@ export interface SapCoreAIDestination {
   headers: Record<string, string>;
 }
 
+/** The fields of an AI Core model-catalog entry the provider reads. */
+export interface SapCoreAICatalogModel {
+  model: string;
+  displayName?: string;
+  provider?: string;
+  versions?: {
+    isLatest?: boolean;
+    deprecated?: boolean;
+    capabilities?: string[];
+    contextLength?: number;
+    streamingSupported?: boolean;
+  }[];
+}
+
 export interface SapCoreAIConfig extends LLMProviderConfig {
   /**
    * The bearer credential presented to SAP AI Core. Asked for fresh on every
@@ -48,9 +62,9 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
   apiBaseUrl: string;
   /** Model name (e.g. 'gpt-4o', 'claude-3-5-sonnet'). Required — the constructor throws if absent (no default). */
   model?: string;
-  /** Temperature for generation. Default: 0.7 */
+  /** Temperature for generation. Unset: not sent, the model default applies. */
   temperature?: number;
-  /** Max tokens for generation. Default: 16384 */
+  /** Max tokens for generation. Unset: not sent, the model default applies. */
   maxTokens?: number;
   /** SAP AI Core resource group */
   resourceGroup?: string;
@@ -82,6 +96,22 @@ export async function buildDestination(cfg: {
     url: cfg.apiBaseUrl,
     authentication: 'NoAuthentication',
     headers: { Authorization: `Bearer ${await cfg.credential.token()}` },
+  };
+}
+
+/**
+ * The orchestration `model.params`. Unset knobs are not sent: the model
+ * applies its own default. A forced one breaks models that accept only theirs
+ * (gpt-5, o-series and claude-opus-4-7+ reject any temperature but 1).
+ */
+export function orchestrationModelParams(
+  cfg: { maxTokens?: number; temperature?: number },
+  hasTools: boolean,
+): Record<string, unknown> {
+  return {
+    ...(cfg.maxTokens !== undefined ? { max_tokens: cfg.maxTokens } : {}),
+    ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(hasTools ? { tool_choice: 'auto' } : {}),
   };
 }
 
@@ -469,27 +499,15 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       return this.modelsCache;
     }
     try {
-      const { ScenarioApi } = await import('@sap-ai-sdk/ai-api');
-      const result = await ScenarioApi.scenarioQueryModels(
-        'foundation-models',
-        { 'AI-Resource-Group': this.resourceGroup ?? 'default' },
-      ).execute();
-
-      type AiModel = {
-        model: string;
-        displayName?: string;
-        provider?: string;
-        versions?: {
-          isLatest?: boolean;
-          deprecated?: boolean;
-          capabilities?: string[];
-          contextLength?: number;
-          streamingSupported?: boolean;
-        }[];
-      };
-
+      // The configured credential, not the SDK's implicit AICORE_SERVICE_KEY
+      // lookup — without it a deployment on `<REF>_SERVICE_KEY` alone got the
+      // fallback below instead of the catalog.
+      const destination = await buildDestination({
+        apiBaseUrl: this.config.apiBaseUrl,
+        credential: this.config.credential,
+      });
       const models: IModelInfo[] = [];
-      for (const r of result.resources as AiModel[]) {
+      for (const r of await this.queryModelCatalog(destination)) {
         const latest = r.versions?.find((v) => v.isLatest) ?? r.versions?.[0];
         if (!latest) continue;
         models.push({
@@ -514,13 +532,27 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     }
   }
 
+  /**
+   * One call to the AI Core `foundation-models` model catalog. A seam so a
+   * test can supply the catalog without the network.
+   */
+  protected async queryModelCatalog(
+    destination: SapCoreAIDestination,
+  ): Promise<SapCoreAICatalogModel[]> {
+    const { ScenarioApi } = await import('@sap-ai-sdk/ai-api');
+    const result = await ScenarioApi.scenarioQueryModels('foundation-models', {
+      'AI-Resource-Group': this.resourceGroup ?? 'default',
+    }).execute(destination);
+    return result.resources as SapCoreAICatalogModel[];
+  }
+
   async getModels(): Promise<IModelInfo[]> {
     return this._fetchAllModels();
   }
 
   async getEmbeddingModels(): Promise<IModelInfo[]> {
     const all = await this._fetchAllModels();
-    return all.filter((m) => m.capabilities?.includes('embeddings'));
+    return all.filter((m) => m.capabilities?.includes('embedding'));
   }
 
   /**
@@ -559,12 +591,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     return this.config.credential;
   }
 
-  private static extractErrorDetail(error: unknown): string {
+  static extractErrorDetail(error: unknown): string {
     if (error !== null && typeof error === 'object') {
       // biome-ignore lint/suspicious/noExplicitAny: axios error shape is untyped
       const axiosError = error as any;
-      if (axiosError.response?.data) {
-        const data = axiosError.response.data;
+      // The SAP AI SDK wraps the axios error: the body AI Core sent (with the
+      // reason, e.g. "gpt-5 models don't support temperature=0.7") is on
+      // `cause`, and the wrapper's own message is only the status line.
+      const data =
+        axiosError.response?.data ?? axiosError.cause?.response?.data;
+      if (data) {
         const detail =
           typeof data === 'string' ? data : JSON.stringify(data).slice(0, 500);
         return `${axiosError.message} — ${detail}`;
@@ -590,11 +626,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       promptTemplating: {
         model: {
           name: this.modelOverride ?? this.model,
-          params: {
-            max_tokens: this.config.maxTokens || 16384,
-            temperature: this.config.temperature || 0.7,
-            ...(tools?.length ? { tool_choice: 'auto' } : {}),
-          },
+          params: orchestrationModelParams(this.config, !!tools?.length),
         },
         prompt: {
           template: messages,
