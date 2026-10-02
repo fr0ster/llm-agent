@@ -182,6 +182,12 @@ Rules carried by the contract (documented in TSDoc):
   from provider failure.
 - `noul` is renamed `probability` and `legend` is not carried: the contract is
   vendor-neutral, and `legend` only echoes the request.
+- Numeric invariants an implementation guarantees on `ok: true` (§5 item 4
+  validates them for Jev): every probability and confidence is a finite number
+  in `[0, 1]`; a `choice` is one of its question's labels and its
+  `probabilities` cover exactly those labels; a `score` lies in
+  `[0, levels − 1]` and its `probabilities` cover exactly `0 … levels − 1`.
+  Consumers may rely on them without re-checking.
 
 Additive edit: `LlmComponent` (`interfaces/request-logger.ts`) gains `'decision'`.
 Consumers with an exhaustive `switch` over `LlmComponent` see a new case — noted
@@ -234,9 +240,21 @@ Behaviour of `decide()`:
    SDK `signal`.
 4. Response mapping: `noul` → `{ type: 'noul', probability }`; `choice` as is;
    `score` without `legend`, `probabilities` keys as numbers; `usage` →
-   `{ inputTokens, outputTokens }`. An answer missing for a requested key, or
-   with a `type` other than its question's → `DECISION_ERROR` (never a partial
-   result).
+   `{ inputTokens, outputTokens }`.
+   **Validation** — the SDK types the response but does not check it at run
+   time, so the provider does. Any of the following → `DECISION_ERROR` naming
+   the key and the violated rule (never a partial result):
+   - an answer missing for a requested key, or a `type` other than its
+     question's;
+   - `noul`: `probability` not a finite number in `[0, 1]`;
+   - `choice`: `choice` not one of the question's labels; `confidence` not finite
+     in `[0, 1]`; `probabilities` keys not exactly the question's labels, or a
+     value not finite in `[0, 1]`;
+   - `score`: `score` not finite in `[0, levels − 1]`; `confidence` not finite in
+     `[0, 1]`; `probabilities` keys not exactly the integers `0 … levels − 1`, or
+     a value not finite in `[0, 1]`.
+   Probabilities are **not** required to sum to 1 (rounding); that is not
+   checked.
 5. Error mapping:
 
    | SDK error | `DecisionErrorCode` |
@@ -262,8 +280,9 @@ to `LlmReranker` / `NoopReranker`.
 
 ```ts
 export interface DecisionRerankerOptions {
-  /** Override the default question wording (agnostic, no domain terms). */
-  instructions?: DecisionEntry;
+  /** Override the default task wording (agnostic, no domain terms). The passage
+   *  is always sent alongside it — this never replaces the passage. */
+  task?: DecisionEntry;
   criteria?: { true?: DecisionEntry; false?: DecisionEntry };
 }
 export class DecisionReranker implements IReranker {
@@ -275,10 +294,13 @@ export class DecisionReranker implements IReranker {
 
 - Empty `results` → returned unchanged, no call.
 - One `decide()` per call: `state = query`; `questions = { r0 … r(N-1) }`, each a
-  `noul` question with `instructions: { passage: results[i].text }` (or the
-  override) and default `criteria` — true: "The passage contains information
-  that helps answer the query", false: "The passage does not help answer the
-  query". Jev evaluates questions in parallel, so latency ≈ one question.
+  `noul` question with `instructions: { task: options.task ?? DEFAULT_TASK,
+  passage: results[i].text }` — the passage is **always** present, the override
+  replaces only the task — and `criteria: options.criteria ?? DEFAULT_CRITERIA`
+  (true: "The passage contains information that helps answer the query", false:
+  "The passage does not help answer the query"; `DEFAULT_TASK`: "Judge whether
+  this passage helps answer the query given as the state"). Jev evaluates
+  questions in parallel, so latency ≈ one question.
 - Each result gets `score = answers['r' + i].probability` (in `[0, 1]`, the
   `RagResult.score` range); results are sorted by score descending, stable;
   `text` and `metadata` untouched.
@@ -405,11 +427,42 @@ export async function resolveReranker(input: {
 - Only a plugin reranker → it (today's behaviour).
 - Neither → `undefined` (the agent's `NoopReranker` default).
 
-The only edit in `smart-server.ts` replaces the `if (plugins?.reranker)` block
-(around line 2740) with one `resolveReranker(...)` call feeding
-`builder.withReranker`. A `decision:` section without a `reranker:` is valid
-(the model is built only when a consumer asks for it — today, only the
-reranker); it is not built eagerly.
+A `decision:` section without a `reranker:` is valid (the model is built only
+when a consumer asks for it — today, only the reranker); it is not built eagerly.
+
+### 7.4 The reranker must reach the per-session agent
+
+Requests are served by the **per-session** agent, not the startup one: the
+startup agent "exists purely for infrastructure" (comment at
+`smart-server.ts:1563`), and `_handleChat` dispatches to `graph.agent`, built by
+`buildSessionAgent → buildPipelineInstance → buildServerCtx.createAgentBuilder →
+buildBaseBuilder(partsToBaseInput(parts, registry, extras))`. On that path
+`applyServerExtras` is `false` (`partsToBaseInput`, `?? false`), and today's
+`withReranker(plugins.reranker)` sits inside `if (parts.applyServerExtras)`
+(around line 2740). So a reranker wired only there never runs on a real request
+— that is already true of today's plugin reranker.
+
+Therefore:
+
+- `resolveReranker(...)` runs **once** in `start()`, after plugins are loaded,
+  and the result is kept in a hoisted field `this._reranker?: IReranker`, next to
+  `_mainLlm` / `_helperLlm` (the globals `buildSessionAgent` re-wires from). One
+  instance serves all sessions: `DecisionReranker` holds no per-request state, and
+  per-request accounting travels in `CallOptions.requestLogger`.
+- `buildBaseBuilder` applies `builder.withReranker(this._reranker)` **outside**
+  the `applyServerExtras` gate, so the startup and every session builder get the
+  same reranker. The old `if (plugins?.reranker)` line inside the gate is removed.
+- Consequence for plugin users: a plugin reranker now actually runs on requests.
+  This is a fix of a silent no-op, recorded under *Fixed* in the CHANGELOG.
+- Out of scope, reported separately as an issue: `queryExpander` and
+  `outputValidator` sit in the same gate and have the same defect.
+
+Required test (`smart-server` level, not just `resolveReranker`): YAML with
+`decision:` + `reranker: {type: decision}` and a fake `makeDecisionModel`
+recording calls → start the server → send a chat request that hits RAG on the
+flat pipeline with a session → assert the fake model's `decide()` was called
+with the query as `state`. The same test with a plugin reranker asserts the
+plugin is called (the fix).
 
 ## 8. Binary — `@mcp-abap-adt/llm-agent-server`
 
@@ -433,12 +486,13 @@ TDD; Node built-in runner; every package's `npm test`.
 | Unit | What is asserted |
 |---|---|
 | `llm-agent` contract | `DecisionError` name/code/default code; index exports |
-| `typesafe-decision` (injected `fetch`) | request body shape per question type; response mapping incl. `noul→probability`, no `legend`, numeric score keys, usage; every row of the error table; `secret()` called on each `decide()` (rotation); with `TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`TYPESAFE_DEFAULT_MODEL` set to sentinels, none of them reaches the request; unset `timeoutMs`/`maxRetries` not passed; missing / mistyped answer → `DECISION_ERROR`; abort → `DECISION_ABORTED` |
-| `DecisionReranker` | empty input → no call; question construction; sort by probability, stable; option overrides; error and missing-key paths → `RERANK_ERROR` |
+| `typesafe-decision` (injected `fetch`) | request body shape per question type; response mapping incl. `noul→probability`, no `legend`, numeric score keys, usage; every row of the error table; `secret()` called on each `decide()` (rotation); with `TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`TYPESAFE_DEFAULT_MODEL` set to sentinels, none of them reaches the request; unset `timeoutMs`/`maxRetries` not passed; missing / mistyped answer → `DECISION_ERROR`; every validation rule of §5 item 4 rejected with `DECISION_ERROR` (absent, string, `NaN`, `Infinity`, negative and > 1 probability/confidence; unknown choice label; label-set mismatch; score out of `[0, levels − 1]`; non-integer or missing score keys), and boundary values `0` / `1` accepted; abort → `DECISION_ABORTED` |
+| `DecisionReranker` | empty input → no call; question construction; sort by probability, stable; `task` override keeps every passage — each `r<i>` question carries `results[i].text` and the override task; `criteria` override; error and missing-key paths → `RERANK_ERROR` |
 | `wrapDecisionModel` | entry fields; estimate path; no logger → no-op; failure → no entry; idempotent wrap |
 | `RerankHandler` | failure sets span attribute + session step, still falls back |
 | config validator | every issue in §7.1 |
 | `resolveReranker` | all four branches incl. the YAML+plugin conflict and missing seam |
+| `SmartServer` session path (§7.4) | YAML `decision` + `reranker` → a chat request on a session reaches the fake decision model; a plugin reranker likewise reaches the session agent (regression for the gated wiring) |
 | binary composition | default ref `DECISION`; non-api-key credential refused; named-field config (no `credentialRef` leak) |
 | repo tests | `licensing.test.ts`, `scoped-dependencies.test.ts`, `readme-badges.test.ts` pass with the new package |
 
@@ -467,7 +521,8 @@ declared green.
   `reranker.type: decision`, the user query and retrieved passages are sent to
   TypeSafe's API (a third party).
 - `packages/typesafe-decision/README.md` (+ License section), `CHANGELOG.md`
-  (incl. the `LlmComponent` note), `CLAUDE.md` (package list and env table).
+  (incl. the `LlmComponent` note and, under *Fixed*, the plugin reranker
+  now reaching session agents), `CLAUDE.md` (package list and env table).
 
 No migration guide: nothing breaks.
 
@@ -500,8 +555,9 @@ No migration guide: nothing breaks.
 4. **ISP** — a new small interface; `ILlm` and `IReranker` are not grown.
    Health/model listing is left to a future separate interface.
 5. **Strategies** — the provider is swappable through the seam; the reranker's
-   wording is overridable.
+   task and criteria wording are overridable (the passage always stays).
 6. **File size** — new logic in small modules; `smart-server.ts` changes by one
    call site.
-7. **Don't break** — all additions are optional; the only visible change is the
-   new `LlmComponent` literal and failure telemetry in `RerankHandler`.
+7. **Don't break** — all additions are optional. Visible changes: the new
+   `LlmComponent` literal, failure telemetry in `RerankHandler`, and a plugin
+   reranker now running on session requests (a fix of a silent no-op, §7.4).
