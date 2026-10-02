@@ -380,7 +380,27 @@ decision?: SmartServerDecisionConfig;
 reranker?: SmartServerRerankerConfig;
 ```
 
-`config-validator.ts` additions (each an issue that fails startup):
+**Resolution into the runtime config.** `resolveSmartServerConfig()`
+(`config.ts`) builds `SmartServerConfig` from an explicit list of fields, with
+the per-section work in `resolve-config-sections.ts` (`resolveLlmSection`, …).
+Two resolvers are added there and listed in `resolveSmartServerConfig`:
+
+- `resolveDecisionSection(yaml)` → `SmartServerDecisionConfig | undefined`:
+  `undefined` when `decision:` is absent; otherwise named fields only
+  (`provider`, `model`, `credentialRef`, `baseUrl`, `timeoutMs`, `maxRetries`).
+  An optional field absent in YAML is **absent** in the result (no `undefined`
+  key, no default filled in — *unset is not sent*), and a present falsy value is
+  kept as is: `maxRetries: 0` stays `0` (it disables the SDK's retries).
+- `resolveRerankerSection(yaml)` → `SmartServerRerankerConfig | undefined`, same
+  rules.
+
+Both are spread conditionally into `resolved` (`...(x ? { decision: x } : {})`),
+like `skills`. `apiKey` is not copied — the validator rejects it from the raw
+YAML (below), exactly as it does for `llm`.
+
+`config-validator.ts` additions — checked on the **raw YAML**
+(`validateResolvedConfig` already reads `get(yaml, 'llm')`), each an issue that
+fails startup:
 
 - `decision.provider` missing or not `typesafe`;
 - `decision.credentialRef` present but empty (reuse `checkCredentialRef`);
@@ -444,9 +464,14 @@ buildBaseBuilder(partsToBaseInput(parts, registry, extras))`. On that path
 
 Therefore:
 
-- `resolveReranker(...)` runs **once** in `start()`, after plugins are loaded,
-  and the result is kept in a hoisted field `this._reranker?: IReranker`, next to
-  `_mainLlm` / `_helperLlm` (the globals `buildSessionAgent` re-wires from). One
+- `resolveReranker(...)` runs **once** in `_buildInfra()` — the infra build
+  shared by the HTTP path (`start()` → `_start()` → `_buildInfra()`) and the
+  embeddable path (`buildAgent()` → `_buildEmbeddedAgent()` → `_buildInfra()`) —
+  right after `pluginLoader.load()` and the explicit `plugins: […]` merge, and
+  before the first `buildBaseBuilder` call. Placing it in `start()` would leave
+  the embedded agent without a reranker. The result is kept in a hoisted field
+  `this._reranker?: IReranker`, next to `_mainLlm` / `_helperLlm` (the globals
+  `buildSessionAgent` re-wires from). One
   instance serves all sessions: `DecisionReranker` holds no per-request state, and
   per-request accounting travels in `CallOptions.requestLogger`.
 - `buildBaseBuilder` applies `builder.withReranker(this._reranker)` **outside**
@@ -462,7 +487,14 @@ Required test (`smart-server` level, not just `resolveReranker`): YAML with
 recording calls → start the server → send a chat request that hits RAG on the
 flat pipeline with a session → assert the fake model's `decide()` was called
 with the query as `state`. The same test with a plugin reranker asserts the
-plugin is called (the fix).
+plugin is called (the fix). The test starts from **YAML text through the real
+`resolveSmartServerConfig`**, not from a hand-built `SmartServerConfig`, so the
+resolver of §7.1 is on the path. A twin test covers the embeddable path:
+`buildAgent(cfg, deps)` from the same YAML → one chat call → the fake model is
+called.
+
+`decision:` and `reranker:` are not hot-reloadable (`HotReloadableConfig` carries
+agent knobs only, as for `llm:` / `rag:`); a change takes a restart.
 
 ## 8. Binary — `@mcp-abap-adt/llm-agent-server`
 
@@ -491,8 +523,9 @@ TDD; Node built-in runner; every package's `npm test`.
 | `wrapDecisionModel` | entry fields; estimate path; no logger → no-op; failure → no entry; idempotent wrap |
 | `RerankHandler` | failure sets span attribute + session step, still falls back |
 | config validator | every issue in §7.1 |
+| `resolveDecisionSection` / `resolveRerankerSection` | absent section → `undefined`; absent optional fields stay absent (no `undefined` keys); `maxRetries: 0` and `timeoutMs` preserved; `apiKey` not copied |
 | `resolveReranker` | all four branches incl. the YAML+plugin conflict and missing seam |
-| `SmartServer` session path (§7.4) | YAML `decision` + `reranker` → a chat request on a session reaches the fake decision model; a plugin reranker likewise reaches the session agent (regression for the gated wiring) |
+| `SmartServer` session path (§7.4) | from YAML text through `resolveSmartServerConfig`: an HTTP chat request on a session reaches the fake decision model; the embeddable `buildAgent()` path likewise; a plugin reranker reaches the session agent (regression for the gated wiring) |
 | binary composition | default ref `DECISION`; non-api-key credential refused; named-field config (no `credentialRef` leak) |
 | repo tests | `licensing.test.ts`, `scoped-dependencies.test.ts`, `readme-badges.test.ts` pass with the new package |
 
