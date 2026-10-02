@@ -22,6 +22,7 @@
 - *Unset is not sent:* optional config fields absent in YAML stay absent; never fill defaults into config objects; `maxRetries: 0` is a value.
 - Secrets never in YAML; credentials come from `credentialRef` → `<REF>_API_KEY`; default ref for decision is `DECISION`.
 - `npm run dev` resolves workspace imports to `dist/` — run `npm run build` before any live run.
+- **Exit codes are part of every expectation.** A verification command piped into `tail`/`grep` reports the filter's status, not the build's or the test's. Run every gate in a shell with `set -o pipefail` (works in bash and zsh), e.g. `set -o pipefail; npm test --workspace X 2>&1 | tail -15`, and read both the output and the exit status. "Expected: PASS" means exit 0 *and* `# fail 0`; "Expected: FAIL" means a non-zero exit.
 - Commit after every task (Conventional Commits, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`). Never `git stash` mid-run. Before each task: `git branch --show-current` is `feat/decision-model`.
 
 ## Review Focus
@@ -2082,8 +2083,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
+import { loadYamlConfig } from '../yaml-loader.js';
 
 const LLM = 'llm:\n  provider: openai\n  model: gpt-4o\n';
 
@@ -2134,6 +2139,40 @@ describe('decision: / reranker: resolution', () => {
 
   it('a decision: section without reranker: is valid', () => {
     assert.doesNotThrow(() => resolve('decision:\n  provider: typesafe\n'));
+  });
+});
+
+describe('${VAR}-substituted numbers (loadYamlConfig substitutes strings)', () => {
+  function fromFile(text: string, env: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'decision-cfg-'));
+    const path = join(dir, 'smart-server.yaml');
+    writeFileSync(path, LLM + text);
+    try {
+      return resolveSmartServerConfig({}, loadYamlConfig(path, env), env, {
+        skipProviderRuntimeChecks: true,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const SECTION =
+    'decision:\n  provider: typesafe\n  timeoutMs: ${DT}\n  maxRetries: ${DR}\n';
+
+  it('"5000" and "0" are accepted and become numbers', () => {
+    const cfg = fromFile(SECTION, { DT: '5000', DR: '0' });
+    assert.equal(cfg.decision?.timeoutMs, 5000);
+    assert.equal(cfg.decision?.maxRetries, 0);
+  });
+
+  it('an unset variable (empty string) is refused, never read as 0', () => {
+    assert.throws(() => fromFile(SECTION, { DT: '5000' }), /decision\.maxRetries/);
+  });
+
+  it('a non-numeric value is refused', () => {
+    assert.throws(
+      () => fromFile(SECTION, { DT: 'soon', DR: '1' }),
+      /decision\.timeoutMs/,
+    );
   });
 });
 
@@ -2205,6 +2244,25 @@ export interface SmartServerRerankerConfig {
   /** `decision` uses the model of the `decision:` section. */
   type: 'decision';
 }
+
+/**
+ * The one normalisation of an integer field, shared by the resolver and the
+ * validator. `loadYamlConfig` substitutes `${VAR}` as a STRING, so `"5000"` and
+ * `"0"` arrive as text and must count as integers; `""` (an unset variable with
+ * no fallback) is invalid, never 0.
+ */
+export function parseIntegerField(
+  value: unknown,
+): number | 'invalid' | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : 'invalid';
+  }
+  if (typeof value === 'string' && /^\s*-?\d+\s*$/.test(value)) {
+    return Number(value);
+  }
+  return 'invalid';
+}
 ```
 
 In `smart-server.ts`, import the two types and add to `SmartServerConfig` (after `rag?:`):
@@ -2224,7 +2282,7 @@ export * from './smart-agent/decision-config.js';
 
 - [ ] **Step 4: Implement the resolvers**
 
-Append to `resolve-config-sections.ts` (import the two types from `./decision-config.js`):
+Append to `resolve-config-sections.ts` (import the two types and `parseIntegerField` from `./decision-config.js`):
 
 ```ts
 /**
@@ -2243,8 +2301,11 @@ export function resolveDecisionSection(
     out.credentialRef = raw.credentialRef as string;
   }
   if (raw.baseUrl !== undefined) out.baseUrl = String(raw.baseUrl);
-  if (raw.timeoutMs !== undefined) out.timeoutMs = Number(raw.timeoutMs);
-  if (raw.maxRetries !== undefined) out.maxRetries = Number(raw.maxRetries);
+  // Invalid values are left out here; the validator (same parser) reports them.
+  const timeoutMs = parseIntegerField(raw.timeoutMs);
+  if (typeof timeoutMs === 'number') out.timeoutMs = timeoutMs;
+  const maxRetries = parseIntegerField(raw.maxRetries);
+  if (typeof maxRetries === 'number') out.maxRetries = maxRetries;
   return out;
 }
 
@@ -2304,16 +2365,12 @@ function checkDecision(yaml: YamlConfig, issues: string[]): void {
         `decision.provider: must be 'typesafe' (got ${JSON.stringify(d.provider)})`,
       );
     }
-    if (
-      d.timeoutMs !== undefined &&
-      !(Number.isInteger(d.timeoutMs) && (d.timeoutMs as number) > 0)
-    ) {
+    const timeoutMs = parseIntegerField(d.timeoutMs);
+    if (timeoutMs === 'invalid' || (timeoutMs !== undefined && timeoutMs <= 0)) {
       issues.push('decision.timeoutMs: must be a positive integer (milliseconds)');
     }
-    if (
-      d.maxRetries !== undefined &&
-      !(Number.isInteger(d.maxRetries) && (d.maxRetries as number) >= 0)
-    ) {
+    const maxRetries = parseIntegerField(d.maxRetries);
+    if (maxRetries === 'invalid' || (maxRetries !== undefined && maxRetries < 0)) {
       issues.push('decision.maxRetries: must be a non-negative integer');
     }
   }
@@ -2329,7 +2386,7 @@ function checkDecision(yaml: YamlConfig, issues: string[]): void {
 }
 ```
 
-Call `checkDecision(yaml, issues);` in `validateResolvedConfig` right before `if (issues.length > 0) throw …` (line ~471).
+(import `parseIntegerField` from `./decision-config.js`.) Call `checkDecision(yaml, issues);` in `validateResolvedConfig` right before `if (issues.length > 0) throw …` (line ~471).
 
 - [ ] **Step 6: Run tests**
 
@@ -2352,7 +2409,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/resolve-reranker.ts`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:342` (`BuildAgentDeps` gains the optional seam)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts:342` (`BuildAgentDeps` gains the optional seam), `:978-992` (`_deps` Pick) and `:1022-1036` (constructor copy)
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-reranker.test.ts`
 
 **Interfaces:**
@@ -2458,6 +2515,34 @@ In `smart-server.ts` `BuildAgentDeps` (line 342), after `makeRag`:
 
 (import `IDecisionModel` from `@mcp-abap-adt/llm-agent`.)
 
+`SmartServer` does not keep `deps` — it copies seams by name into a private
+`_deps` whose type is an explicit `Pick` (`smart-server.ts:978-992`, constructor
+copy at `:1022-1036`). A seam added only to `BuildAgentDeps` is therefore a
+compile error when read as `this._deps.makeDecisionModel`, and silently lost if
+only the type is widened. Change both:
+
+```ts
+  // the second (optional) Pick of `_deps`:
+    Pick<
+      BuildAgentDeps,
+      | 'skillHost'
+      | 'embedder'
+      | 'mcpClients'
+      | 'connectMcpWithDescriptors'
+      | 'makeDecisionModel'
+    >;
+```
+
+```ts
+      // in the constructor's `this._deps = { … }`, after connectMcpWithDescriptors:
+      ...(deps.makeDecisionModel
+        ? { makeDecisionModel: deps.makeDecisionModel }
+        : {}),
+```
+
+Task 10's wiring tests are what prove the seam survives the copy (they fail with
+"BuildAgentDeps.makeDecisionModel is required" if it is dropped).
+
 `packages/llm-agent-server-libs/src/smart-agent/resolve-reranker.ts`:
 
 ```ts
@@ -2549,6 +2634,7 @@ import { describe, it } from 'node:test';
 import type {
   DecisionRequest,
   IDecisionModel,
+  IEmbedder,
   IRag,
   IReranker,
   RagResult,
@@ -2563,15 +2649,35 @@ import {
 } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 
-const YAML = `
+// `rag:` is required: SmartServer builds the tools/history stores through the
+// makeRag seam only when `cfg.rag` is set (smart-server.ts, `if (this.cfg.rag)`),
+// and without a store the rerank stage never runs.
+const BASE_YAML = `
 llm:
   provider: openai
   model: gpt-4o
-decision:
+rag:
+  store:
+    type: in-memory
+`;
+const YAML = `${BASE_YAML}decision:
   provider: typesafe
 reranker:
   type: decision
 `;
+const QUERY = 'find the passage';
+const stubEmbedder = {
+  embed: async () => ({ vector: [1, 0] }),
+} as unknown as IEmbedder;
+
+/** The passages the reranker was asked about, in question order. */
+function passagesOf(req: DecisionRequest): unknown[] {
+  return Object.values(req.questions).map((q) =>
+    q.type === 'noul' && q.instructions && typeof q.instructions === 'object'
+      ? (q.instructions as { passage?: unknown }).passage
+      : undefined,
+  );
+}
 
 const HITS: RagResult[] = [
   { text: 'passage one', metadata: { id: '1' }, score: 0.5 },
@@ -2640,18 +2746,19 @@ describe('decision reranker wiring (§7.4)', () => {
     const server = new SmartServer(configFrom(YAML), {
       ...constructionSeams,
       makeRag,
+      embedder: stubEmbedder,
       makeDecisionModel: async () => model,
     });
     const handle = await server.start();
     try {
       const status = await post(handle.port, '/v1/chat/completions', {
         model: 'gpt-4o',
-        messages: [{ role: 'user', content: 'find the passage' }],
+        messages: [{ role: 'user', content: QUERY }],
       });
       assert.equal(status, 200);
       assert.ok(seen.length >= 1, 'the per-session agent must rerank');
-      assert.equal(typeof seen[0].state, 'string');
-      assert.ok(String(seen[0].state).length > 0);
+      assert.equal(seen[0].state, QUERY);
+      assert.deepEqual(passagesOf(seen[0]), HITS.map((h) => h.text));
     } finally {
       await handle.close();
     }
@@ -2662,21 +2769,24 @@ describe('decision reranker wiring (§7.4)', () => {
     const { agent, close } = await buildAgent(configFrom(YAML), {
       ...constructionSeams,
       makeRag,
+      embedder: stubEmbedder,
       makeDecisionModel: async () => model,
     });
     try {
-      await agent.process('find the passage');
+      await agent.process(QUERY);
       assert.ok(seen.length >= 1, 'the embedded agent must rerank');
+      assert.equal(seen[0].state, QUERY);
+      assert.deepEqual(passagesOf(seen[0]), HITS.map((h) => h.text));
     } finally {
       await close();
     }
   });
 
   it('regression: a plugin reranker reaches the session agent', async () => {
-    let called = 0;
+    const calls: Array<{ query: string; texts: string[] }> = [];
     const plugin: IReranker = {
-      rerank: async (_q, r) => {
-        called++;
+      rerank: async (query, r) => {
+        calls.push({ query, texts: r.map((x) => x.text) });
         return { ok: true, value: r };
       },
     };
@@ -2691,17 +2801,23 @@ describe('decision reranker wiring (§7.4)', () => {
     );
     (globalThis as Record<string, unknown>).__decisionWiringPlugin = plugin;
     const cfg = {
-      ...configFrom('llm:\n  provider: openai\n  model: gpt-4o\n'),
+      ...configFrom(BASE_YAML),
       plugins: [pluginPath],
     } as SmartServerConfig;
-    const server = new SmartServer(cfg, { ...constructionSeams, makeRag });
+    const server = new SmartServer(cfg, {
+      ...constructionSeams,
+      makeRag,
+      embedder: stubEmbedder,
+    });
     const handle = await server.start();
     try {
       await post(handle.port, '/v1/chat/completions', {
         model: 'gpt-4o',
-        messages: [{ role: 'user', content: 'find the passage' }],
+        messages: [{ role: 'user', content: QUERY }],
       });
-      assert.ok(called >= 1, 'a plugin reranker was a silent no-op on sessions');
+      assert.ok(calls.length >= 1, 'a plugin reranker was a silent no-op on sessions');
+      assert.equal(calls[0].query, QUERY);
+      assert.deepEqual(calls[0].texts, HITS.map((h) => h.text));
     } finally {
       await handle.close();
       delete (globalThis as Record<string, unknown>).__decisionWiringPlugin;
@@ -2712,6 +2828,9 @@ describe('decision reranker wiring (§7.4)', () => {
 ```
 
 Notes for the implementer:
+- `seen[0].state` must equal `QUERY` exactly. If it does not, a stage before
+  rerank rewrote `ctx.ragText` (classification or translation): report which
+  stage and what it produced — do not loosen the assertion.
 - Verified while planning: the chat route is `/v1/chat/completions` (`smart-server.ts:3140`); a plugin module's reranker export is named `reranker` (`llm-agent-libs/src/plugins/types.ts:104`).
 - If the flat pipeline answers the stub LLM's `'ok'` through a path that skips RAG (e.g. classification short-circuits), confirm with `DEBUG`-less logging which stages ran; the rerank stage is `rag-retrieval → after: rerank` in `default-pipeline.ts:363-370` and needs a non-empty `ragResults` store. `tools` and `history` stores are both built through `makeRag` (`smart-server.ts:1411-1412`), so the override above feeds them.
 
@@ -3196,25 +3315,33 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Clean-checkout build (spec §8.1)**
 
+`feat/decision-model` is checked out in the main working tree, so a second
+worktree cannot check it out again — use a detached worktree at `HEAD`, and run
+nothing unless it was created:
+
 ```bash
-D=$(mktemp -d) && git worktree add "$D" feat/decision-model
-( cd "$D" && npm ci && npm run build && npm run typecheck && npm test ) 2>&1 | tail -15
-git worktree remove "$D"
+set -euo pipefail
+git status --porcelain | grep -q . && { echo "commit first: the worktree sees HEAD only"; exit 1; }
+D=$(mktemp -d)
+git worktree add --detach "$D" HEAD
+trap 'git worktree remove --force "$D"' EXIT
+( cd "$D" && test ! -e packages/llm-agent/dist && npm ci && npm run build && npm run typecheck && npm test ) 2>&1 | tail -15
 ```
 
-Expected: build, typecheck and tests green with no pre-existing `dist/`.
+Expected: exit 0 — build, typecheck and tests green with no pre-existing `dist/`.
 
 - [ ] **Step 2: CI matrix locally (Node 22 and 24)**
 
 ```bash
+set -o pipefail
 for v in 22 24; do
-  docker run --rm -v "$PWD":/src -w /work node:$v bash -c \
-    'cp -a /src/. /work && rm -rf node_modules packages/*/node_modules packages/*/dist && npm ci && npm run build && npm run typecheck && npm test' \
-    2>&1 | tail -6
+  docker run --rm -v "$PWD":/src:ro node:$v bash -c \
+    'set -euo pipefail; mkdir /work && cd /work && cp -a /src/. . && rm -rf node_modules packages/*/node_modules packages/*/dist packages/*/tsconfig.tsbuildinfo && npm ci && npm run build && npm run typecheck && npm test' \
+    2>&1 | tail -6 || { echo "node:$v FAILED"; exit 1; }
 done
 ```
 
-Expected: green on both. A red leg is investigated against `main` (`git stash` is not used; check out `main` in a separate worktree) before calling anything "pre-existing".
+Expected: exit 0, green on both. A red leg is investigated against `main` (`git stash` is not used; check out `main` in a separate worktree) before calling anything "pre-existing".
 
 - [ ] **Step 3: Baseline diff vs main**
 
