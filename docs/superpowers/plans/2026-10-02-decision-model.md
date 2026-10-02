@@ -463,6 +463,32 @@ export function fakeFetch(
   return { fetch, calls };
 }
 
+/**
+ * A fetch that never answers, with real fetch semantics for cancellation: an
+ * ALREADY-aborted signal rejects at once (an 'abort' listener would never fire
+ * for it — the classic hang), and a later abort rejects when it happens.
+ * `entered` resolves once the request is inside fetch.
+ */
+export function blockingFetch() {
+  let markEntered: () => void = () => {};
+  const entered = new Promise<void>((r) => {
+    markEntered = r;
+  });
+  const fetch = (_input: string, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal?.addEventListener('abort', () => reject(signal.reason), {
+        once: true,
+      });
+      markEntered();
+    });
+  return { fetch, entered };
+}
+
 /** A well-formed SystemOne response for the given answers. */
 export function okBody(answers: Record<string, unknown>, model = 'jev-1.13.0') {
   return {
@@ -1207,7 +1233,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import { TypeSafeDecisionModel } from '../typesafe-decision-model.js';
-import { fakeFetch } from './fake-fetch.js';
+import { blockingFetch, fakeFetch } from './fake-fetch.js';
 
 async function codeFor(status: number) {
   const f = fakeFetch(() => ({ status, body: { error: 'nope' } }));
@@ -1256,38 +1282,50 @@ describe('non-HTTP failures', () => {
   });
 
   it('a timeout → DECISION_UNAVAILABLE', async () => {
+    const b = blockingFetch();
     const m = new TypeSafeDecisionModel({
       credential: staticApiKey('k'),
       maxRetries: 0,
       timeoutMs: 20,
-      fetch: (_u, init) =>
-        new Promise((_res, rej) => {
-          init?.signal?.addEventListener('abort', () =>
-            rej(init.signal?.reason),
-          );
-        }),
+      fetch: b.fetch,
     });
     const r = await m.decide({ state: 's', questions: { a: { type: 'noul' } } });
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'DECISION_UNAVAILABLE');
   });
 
-  it('a caller abort → DECISION_ABORTED', async () => {
+  it('a signal aborted before the request → DECISION_ABORTED', async () => {
+    // decide() awaits credential.secret() first, so the SDK hands fetch an
+    // ALREADY-aborted signal; a real fetch rejects at once, and so must the fake.
     const ac = new AbortController();
+    ac.abort();
+    const b = blockingFetch();
     const m = new TypeSafeDecisionModel({
       credential: staticApiKey('k'),
       maxRetries: 0,
-      fetch: (_u, init) =>
-        new Promise((_res, rej) => {
-          init?.signal?.addEventListener('abort', () =>
-            rej(init.signal?.reason),
-          );
-        }),
+      fetch: b.fetch,
+    });
+    const r = await m.decide(
+      { state: 's', questions: { a: { type: 'noul' } } },
+      { signal: ac.signal },
+    );
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'DECISION_ABORTED');
+  });
+
+  it('an abort while the request is in flight → DECISION_ABORTED', async () => {
+    const ac = new AbortController();
+    const b = blockingFetch();
+    const m = new TypeSafeDecisionModel({
+      credential: staticApiKey('k'),
+      maxRetries: 0,
+      fetch: b.fetch,
     });
     const p = m.decide(
       { state: 's', questions: { a: { type: 'noul' } } },
       { signal: ac.signal },
     );
+    await b.entered; // the request is inside fetch now
     ac.abort();
     const r = await p;
     assert.ok(!r.ok);
