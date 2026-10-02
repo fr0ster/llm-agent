@@ -511,6 +511,33 @@ agent knobs only, as for `llm:` / `rag:`); a change takes a restart.
 - `@mcp-abap-adt/typesafe-decision` becomes a regular dependency of
   `@mcp-abap-adt/llm-agent-server`, like the LLM providers.
 
+### 8.1 Build graph
+
+A `package.json` dependency is not enough: the repo builds with `tsc -b` from
+explicit lists. All of these name the new package:
+
+- `packages/typesafe-decision/tsconfig.json` — extends `../../tsconfig.base.json`
+  like `deepseek-llm`, `references: [{ "path": "../llm-agent" }]`;
+- root `package.json` `build` and `clean` (`tsc -b …` / `tsc -b --clean …`) —
+  `packages/typesafe-decision` after `packages/llm-agent`, before
+  `packages/llm-agent-server`;
+- `packages/llm-agent-server/tsconfig.json` `references` —
+  `{ "path": "../typesafe-decision" }`;
+- `tsconfig.typecheck.json` `include` — the provider's credential test, as for the
+  other providers' `credential.test.ts`;
+- `scripts/publish-all.sh` — see §11.
+
+`llm-agent-libs` and `llm-agent-server-libs` need no new reference: they consume
+only `@mcp-abap-adt/llm-agent` (already referenced) for the contract, and
+`server-libs` gets `DecisionReranker` / `wrapDecisionModel` from `llm-agent-libs`
+(already referenced). CI workflows hold no package list (`npm ci` → `build` →
+`typecheck` → `test`).
+
+**Clean-checkout check** before the PR is declared ready: a fresh `git worktree`
+of the branch with no `dist/` anywhere → `npm ci && npm run build && npm run
+typecheck && npm test` passes. This is what catches a missing reference that an
+incremental local build (stale `dist/`, `.tsbuildinfo`) hides.
+
 ## 9. Testing
 
 TDD; Node built-in runner; every package's `npm test`.
