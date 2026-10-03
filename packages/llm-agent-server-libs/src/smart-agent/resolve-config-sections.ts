@@ -9,6 +9,11 @@ import {
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  parseIntegerField,
+  type SmartServerDecisionConfig,
+  type SmartServerRerankerConfig,
+} from './decision-config.js';
 import { optionalNumber } from './llm-config-map.js';
 import type {
   BuiltInEmbedderProvider,
@@ -603,4 +608,37 @@ export function resolvePipelineSelection(yaml: YamlConfig): {
         : {}),
     },
   };
+}
+
+/**
+ * `decision:` → named fields only. An optional field absent in YAML is absent in
+ * the result (unset is not sent); a present falsy value (`maxRetries: 0`) is
+ * kept. `apiKey` is never copied — the validator refuses it from the raw YAML.
+ */
+export function resolveDecisionSection(
+  yaml: YamlConfig,
+): SmartServerDecisionConfig | undefined {
+  const raw = get(yaml, 'decision') as Record<string, unknown> | undefined;
+  if (raw === undefined || raw === null) return undefined;
+  const out = { provider: raw.provider } as SmartServerDecisionConfig;
+  if (raw.model !== undefined) out.model = String(raw.model);
+  if (raw.credentialRef !== undefined) {
+    out.credentialRef = raw.credentialRef as string;
+  }
+  if (raw.baseUrl !== undefined) out.baseUrl = String(raw.baseUrl);
+  // Invalid values are left out here; the validator (same parser) reports them.
+  const timeoutMs = parseIntegerField(raw.timeoutMs);
+  if (typeof timeoutMs === 'number') out.timeoutMs = timeoutMs;
+  const maxRetries = parseIntegerField(raw.maxRetries);
+  if (typeof maxRetries === 'number') out.maxRetries = maxRetries;
+  return out;
+}
+
+/** `reranker:` → `{ type }`, or undefined when absent. */
+export function resolveRerankerSection(
+  yaml: YamlConfig,
+): SmartServerRerankerConfig | undefined {
+  const raw = get(yaml, 'reranker') as Record<string, unknown> | undefined;
+  if (raw === undefined || raw === null) return undefined;
+  return { type: raw.type } as SmartServerRerankerConfig;
 }

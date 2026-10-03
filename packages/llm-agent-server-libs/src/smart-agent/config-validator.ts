@@ -1,3 +1,4 @@
+import { parseIntegerField } from './decision-config.js';
 import { isBuiltInEmbedderProvider } from './rag-config.js';
 import type { SmartServerConfig } from './smart-server.js';
 import type { YamlConfig } from './yaml-loader.js';
@@ -44,6 +45,58 @@ function checkCredentialRef(
   }
 }
 
+/** A secret arriving from the file is refused, not ignored (§4.6.3). */
+function checkNoSecret(
+  label: string,
+  section: Record<string, unknown> | undefined,
+  issues: string[],
+): void {
+  if (section?.apiKey !== undefined) {
+    issues.push(
+      `${label}.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with ${label}.credentialRef (your composition root resolves the name).`,
+    );
+  }
+}
+
+function checkDecision(yaml: YamlConfig, issues: string[]): void {
+  const d = get(yaml, 'decision') as Record<string, unknown> | undefined;
+  const r = get(yaml, 'reranker') as Record<string, unknown> | undefined;
+  if (d !== undefined && d !== null) {
+    checkNoSecret('decision', d, issues);
+    checkCredentialRef('decision', d.credentialRef, issues);
+    if (d.provider !== 'typesafe') {
+      issues.push(
+        `decision.provider: must be 'typesafe' (got ${JSON.stringify(d.provider)})`,
+      );
+    }
+    const timeoutMs = parseIntegerField(d.timeoutMs);
+    if (
+      timeoutMs === 'invalid' ||
+      (timeoutMs !== undefined && timeoutMs <= 0)
+    ) {
+      issues.push(
+        'decision.timeoutMs: must be a positive integer (milliseconds)',
+      );
+    }
+    const maxRetries = parseIntegerField(d.maxRetries);
+    if (
+      maxRetries === 'invalid' ||
+      (maxRetries !== undefined && maxRetries < 0)
+    ) {
+      issues.push('decision.maxRetries: must be a non-negative integer');
+    }
+  }
+  if (r !== undefined && r !== null) {
+    if (r.type !== 'decision') {
+      issues.push(
+        `reranker.type: must be 'decision' (got ${JSON.stringify(r.type)})`,
+      );
+    } else if (d === undefined || d === null) {
+      issues.push('reranker.type: decision requires a decision: section');
+    }
+  }
+}
+
 function checkLlmRole(
   label: string,
   role: Record<string, unknown> | undefined,
@@ -55,11 +108,7 @@ function checkLlmRole(
   // would leave an operator believing it was used. A loaded object is not a fresh
   // literal, so no excess-property check ever sees it — this boundary is the only
   // place it can be caught (§4.6.3).
-  if (role?.apiKey !== undefined) {
-    issues.push(
-      `${label}.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with ${label}.credentialRef (your composition root resolves the name).`,
-    );
-  }
+  checkNoSecret(label, role, issues);
   checkCredentialRef(label, role?.credentialRef, issues);
   const provider = role?.provider as string | undefined;
   if (!provider) {
@@ -467,6 +516,8 @@ export function validateResolvedConfig(
   // NOTE: the legacy `pipeline.rag.{name}` multistore was removed with the
   // `pipeline: {name,config}` migration; the top-level `rag:` block is the sole
   // RAG source, validated above.
+
+  checkDecision(yaml, issues);
 
   if (issues.length > 0) throw new ConfigValidationError([...new Set(issues)]);
 }

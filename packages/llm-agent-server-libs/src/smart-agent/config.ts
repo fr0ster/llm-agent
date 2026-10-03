@@ -11,11 +11,13 @@ import {
 import { normalizeLlmConfig } from './llm-config-map.js';
 import {
   resolveAgentSection,
+  resolveDecisionSection,
   resolveLlmSection,
   resolveMcpSection,
   resolvePipelineSelection,
   resolvePromptsSection,
   resolveRagSection,
+  resolveRerankerSection,
 } from './resolve-config-sections.js';
 import { parseSkillPluginsConfig } from './skill-plugins-config.js';
 import type {
@@ -284,6 +286,14 @@ export function resolveSmartServerConfig(
     ...(yaml.skillPlugins
       ? { skillPlugins: parseSkillPluginsConfig(yaml.skillPlugins) }
       : {}),
+    ...(() => {
+      const decision = resolveDecisionSection(yaml);
+      return decision ? { decision } : {};
+    })(),
+    ...(() => {
+      const reranker = resolveRerankerSection(yaml);
+      return reranker ? { reranker } : {};
+    })(),
   };
   validateResolvedConfig(resolved, yaml, env, {
     skipProviderRuntimeChecks: options.skipProviderRuntimeChecks,
