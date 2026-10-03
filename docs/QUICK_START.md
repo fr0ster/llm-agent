@@ -52,6 +52,9 @@ LLM_API_KEY=sk-your-deepseek-key
 
 # Optional — override Ollama URL (default: http://localhost:11434)
 # OLLAMA_URL=http://localhost:11434
+
+# Optional — only with a `decision:` section (decision reranker); see "Decision reranker" below.
+# DECISION_API_KEY=your-typesafe-key
 ```
 
 **Secrets go in `.env`.** The YAML names accounts with `credentialRef:` and never holds a secret; the
@@ -102,6 +105,21 @@ log: smart-server.log     # omit for stdout
 > **`rag.model` is required when an embedder is used.** There is no default — `model` must be set explicitly. The shipped examples use `bge-m3` (multilingual, 1024 dimensions, covers English and non-English corpora). Run `ollama pull bge-m3` before first start. If you previously used `nomic-embed-text` (768 dimensions) with a persistent store (qdrant/hana-vector/pg-vector), you must **re-index** — dimensions changed.
 
 > **No Ollama?** Omit `rag.embedder` (or remove the `rag:` block) — tool selection uses BM25 keyword matching instead of neural embeddings. Everything else works identically.
+
+### Optional: decision reranker
+
+To rerank RAG results with a decision model (TypeSafe Jev) add two sections to `smart-server.yaml`:
+
+```yaml
+decision:
+  provider: typesafe
+reranker:
+  type: decision
+```
+
+and set `DECISION_API_KEY` in `.env` (the default ref is `DECISION`). With `credentialRef: TYPESAFE` in the
+`decision:` section the key is read from `TYPESAFE_API_KEY` instead. Opt-in: the user query and the retrieved
+passages are sent to TypeSafe's API. More options: [EXAMPLES.md](EXAMPLES.md#decision-reranker).
 
 ---
 

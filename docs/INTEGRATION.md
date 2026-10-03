@@ -22,6 +22,7 @@ IRag                  ──►  Retrieves relevant facts/tools/feedback/state
   │
   ▼
 IReranker             ──►  Re-scores RAG results (optional)
+                           (a DecisionReranker asks an IDecisionModel)
   │
   ▼
 IContextAssembler     ──►  Packs context into LLM messages
@@ -1090,7 +1091,68 @@ class CrossEncoderReranker implements IReranker {
 }
 ```
 
-The library ships `LlmReranker` (uses the helper LLM for relevance scoring) and `NoopReranker` (pass-through).
+The library ships `LlmReranker` (uses the helper LLM for relevance scoring), `NoopReranker` (pass-through) and `DecisionReranker` (asks an `IDecisionModel`, see below).
+
+## IDecisionModel
+
+**File:** `packages/llm-agent/src/interfaces/decision-model.ts`
+
+A decision model is not an LLM: it answers typed questions about a **state** with numbers, never text. A
+question is `noul` (yes/no, answered with `probability`), `choice` (one of at least two labels) or `score`
+(an ordered rubric of at least two levels).
+
+```ts
+interface IDecisionModel {
+  /** Configured model identifier, for logs. */
+  readonly model?: string;
+  decide(
+    request: DecisionRequest,   // { state, questions }
+    options?: CallOptions,
+  ): Promise<Result<DecisionResult, DecisionError>>;
+}
+```
+
+Rules an implementation must keep:
+
+- **Return a `Result`; never throw** for provider failures. `DecisionError` carries a code from
+  `DecisionErrorCode`: `DECISION_UNSUPPORTED_QUESTION`, `DECISION_INVALID_REQUEST`, `DECISION_AUTH`,
+  `DECISION_RATE_LIMITED`, `DECISION_UNAVAILABLE`, `DECISION_ABORTED`, `DECISION_ERROR`.
+- **A question type you cannot answer fails the whole request** with `DECISION_UNSUPPORTED_QUESTION`.
+  Never drop or fake an answer.
+- **Cancellation** through `options.signal` yields `DECISION_ABORTED`.
+- **Numeric invariants** on `ok: true` (consumers rely on them without re-checking): `probability` and
+  `confidence` are finite and in [0, 1]; a `choice` answer's `probabilities` has exactly the question's
+  labels and `choice` is one of them; a `score` answer's `score` is in [0, levels - 1] and its
+  `probabilities` has exactly the keys 0 ... levels - 1; `answers` has the same keys as `questions`, each
+  with the matching `type`. A provider that receives a nonsensical number (`NaN`, `1.2`, a string) returns
+  `DECISION_ERROR` instead of passing it on.
+
+A minimal fake (as used in the `DecisionReranker` tests):
+
+```ts
+import type { DecisionRequest, IDecisionModel } from '@mcp-abap-adt/llm-agent';
+
+function fakeModel(probs: number[]) {
+  const seen: DecisionRequest[] = [];
+  const model: IDecisionModel = {
+    decide: async (req) => {
+      seen.push(req);
+      const answers: Record<string, { type: 'noul'; probability: number }> = {};
+      probs.forEach((p, i) => {
+        answers[`r${i}`] = { type: 'noul', probability: p };
+      });
+      return { ok: true, value: { model: 'fake', answers } };
+    },
+  };
+  return { model, seen };
+}
+```
+
+The package `@mcp-abap-adt/typesafe-decision` ships `TypeSafeDecisionModel` (TypeSafe Jev). Wrap any model
+in `wrapDecisionModel` (from `llm-agent-libs`) to account its calls to the request logger. For a
+SmartServer, supply the model through the optional `BuildAgentDeps.makeDecisionModel` seam: it receives the
+`decision:` section and returns an `IDecisionModel`; required only when the config asks for one
+(`reranker: { type: decision }`).
 
 ## IOutputValidator
 

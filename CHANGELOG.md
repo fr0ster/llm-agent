@@ -9,6 +9,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Decision models.** `IDecisionModel` (`@mcp-abap-adt/llm-agent`) answers typed questions (`noul`, `choice`, `score`) about a state with numbers, not text; `decide()` returns a `Result` with a `DecisionError`. New package `@mcp-abap-adt/typesafe-decision` (`TypeSafeDecisionModel`, TypeSafe Jev). `DecisionReranker` and `wrapDecisionModel` (usage accounting as `component: 'decision'`) in `@mcp-abap-adt/llm-agent-libs`. SmartServer: `decision:` and `reranker: { type: decision }` YAML sections and the optional `BuildAgentDeps.makeDecisionModel` seam; the binary supplies it (default credential ref `DECISION` -> `DECISION_API_KEY`). See README "Decision models", `docs/EXAMPLES.md`, `docs/INTEGRATION.md`.
+
+### Changed
+
+- `LlmComponent` gains `'decision'`: an exhaustive `switch` over it sees a new case.
+- `RerankHandler` records a reranker failure (span attribute `<store>.rerank_error`, session step `rerank_error`) instead of silently keeping the original order.
+
+### Fixed
+
+- A plugin reranker never ran on per-session agents (it was wired inside the `applyServerExtras` gate, which the per-session path skips). The reranker is now resolved once in `_buildInfra` and applied to every agent. `queryExpander` and `outputValidator` sit behind the same gate and are not changed by this.
+
 ## [30.0.0] — 2026-09-28
 
 **BREAKING — see [docs/MIGRATION-v30.md](docs/MIGRATION-v30.md).**

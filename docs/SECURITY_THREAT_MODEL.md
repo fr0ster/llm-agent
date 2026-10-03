@@ -113,6 +113,24 @@ server resources.
 
 ---
 
+### AS-7: Data sent to a third-party decision model
+
+**Threat:** With `reranker.type: decision`, the user query and the retrieved RAG passages are sent to
+TypeSafe AI's API (the `decision:` provider). Sensitive text in either leaves the deployment's
+trust boundary, and a leaked or misused key exposes the account.
+
+**Mitigation:** The feature is opt-in: nothing is sent unless both `decision:` and `reranker:
+{type: decision}` are configured. `TypeSafeDecisionModel` forces the SDK's logging off and passes every
+client option explicitly, so `TYPESAFE_*` environment variables on the host never redirect the key or
+URL or turn on body logging. Keys come from the environment by `credentialRef` (`decision.apiKey` in
+YAML is refused at startup). Error messages carry the error class, HTTP status and request id only —
+never the key or a request/response body.
+
+**Limitation:** Whatever the provider retains is governed by the provider's terms, not by this library.
+Do not enable it for data that may not leave the deployment.
+
+---
+
 ## Known Limitations
 
 | Limitation | Severity | Owner |

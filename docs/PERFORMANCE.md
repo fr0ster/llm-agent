@@ -102,6 +102,14 @@ agent:
 - **Higher values (15–20):** Better recall, larger context, higher latency and token cost.
 - Works best with a reranker — retrieve broadly (high k), then rerank to the top few.
 
+### Reranking cost: the decision reranker
+
+With `reranker.type: decision`, `DecisionReranker` makes **one request per RAG store per chat request**: the
+query is the state and every retrieved passage of that store is one yes/no question in the same request. Added
+latency is roughly that of one decision question, not one per passage; a larger `ragQueryK` makes the request
+bigger, not more numerous. The YAML `reranker:` section and a plugin's `reranker` export are exclusive. When
+the call fails the original order is kept (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#reranking-has-no-effect)).
+
 ## Tool Selection (Semantic Distance)
 
 Tools are chosen by semantic distance over the `tools` RAG store. After retrieval, a pluggable **tool-selection strategy** filters the result set before the tools are exposed to the LLM. No domain classifier rules are needed — tool exposure is driven purely by RAG semantic distance.

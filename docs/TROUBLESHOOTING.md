@@ -216,6 +216,44 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 ---
 
+## Reranking
+
+### Reranking has no effect
+
+**Symptom.** `reranker.type: decision` is configured, the server starts, but the order of RAG results never changes.
+
+**Cause.** When a reranker fails for a store, the original order is kept (it is not an error for the request) and the failure is recorded instead of surfaced.
+
+**Fix.** Look for the failure in two places: the span attribute `<store>.rerank_error` (value: the error code) and the session step `rerank_error` (fields `store`, `code`, `message`). Then act on the code:
+
+| Code | Meaning | Fix |
+|---|---|---|
+| `DECISION_AUTH` | TypeSafe rejected the key | Check `DECISION_API_KEY` (or `<REF>_API_KEY` for `decision.credentialRef`) |
+| `DECISION_RATE_LIMITED` | Quota exceeded; TypeSafe's published limit is 1 200 requests/min (secondary source, not verified by this repo) | Lower request concurrency, or raise the quota with the provider; the SDK already retries per `decision.maxRetries` |
+| `DECISION_UNAVAILABLE` | 5xx or connection/timeout failure | Check connectivity to the provider; raise `decision.timeoutMs` |
+| `DECISION_INVALID_REQUEST` | The request was rejected (bad model name, request too large) | Check `decision.model` and the size of the request (the query plus all passages of a store go in one request) |
+
+The error text carries the code and message of the failure (`decision rerank failed: <code>: <message>`); it never contains the key or the request body.
+
+### Startup fails on `decision:` / `reranker:`
+
+Config-validation issues are listed under `Configuration error in smart-server.yaml:` and each fails startup:
+
+- `decision.provider: must be 'typesafe' (got undefined)` — `decision.provider` is missing or not `typesafe`.
+- `decision.credentialRef: must be a non-empty string naming a credential (omit it for the default)`.
+- `decision.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with decision.credentialRef (your composition root resolves the name).`
+- `decision.timeoutMs: must be a positive integer (milliseconds)` / `decision.maxRetries: must be a non-negative integer` (`0` is valid for `maxRetries`).
+- `reranker.type: must be 'decision' (got …)`.
+- `reranker.type: decision requires a decision: section`.
+
+Errors raised while the server builds its reranker:
+
+- `reranker: decision is configured and a plugin reranker is loaded — choose one` — the YAML reranker and a plugin's `reranker` export are exclusive; remove one.
+- `BuildAgentDeps.makeDecisionModel is required: …` — a consumer of `SmartServer`/`buildAgent` asked for a decision model without supplying the seam (the `llm-agent` binary supplies it).
+- `credentialRef 'DECISION' must hold a api-key credential for decision typesafe, got none` — set `DECISION_API_KEY` (or the `<REF>_API_KEY` of the named ref; a named ref with no variable fails with `credentialRef '<REF>' for decision typesafe has no entry configured`).
+
+---
+
 ## Rate limiting
 
 ### `400 INVALID_ARGUMENT ... batchSize value of N but the supported range is from 1 (inclusive) to 251 (exclusive)`

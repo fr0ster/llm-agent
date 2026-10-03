@@ -163,9 +163,14 @@ The codebase is split across **six npm packages**:
 @mcp-abap-adt/llm-agent-server   binary only (CLI + HTTP server, no library exports)
 ```
 
+Alongside these, `@mcp-abap-adt/typesafe-decision` is a provider package like the LLM and embedder
+providers: it implements `IDecisionModel` over TypeSafe AI's Jev. It takes `llm-agent` and
+`interfaces-auth` as peers and `@typesafe-ai/sdk` as its one regular dependency; the
+binary `llm-agent-server` bundles it as a regular dependency.
+
 ### Package responsibilities
 
-- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces, shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, the embedder resilience decorators (`BatchChunkingEmbedder`, `RetryEmbedder`, `composeResilientEmbedder`), `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
+- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces (including `IDecisionModel`, next to `ILlm` and `IEmbedder`), shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, the embedder resilience decorators (`BatchChunkingEmbedder`, `RetryEmbedder`, `composeResilientEmbedder`), `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
 
 - **`@mcp-abap-adt/llm-agent-mcp`** — `MCPClientWrapper`, `McpClientAdapter`, factory (`createDefaultMcpClient`), and connection strategies (`LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`). Depends on `llm-agent`.
 
@@ -194,6 +199,20 @@ Optional peer dependencies (not in the graph above):
 - `llm-agent-rag` → `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`, `@mcp-abap-adt/qdrant-rag`, `@mcp-abap-adt/hana-vector-rag`, `@mcp-abap-adt/pg-vector-rag`
 
 **Every edge above is a peer dependency (since 28.0.0).** A library declares each `@mcp-abap-adt/*` package it uses — ours, and the shared `@mcp-abap-adt/interfaces-auth` (`^2.1.0`) / `@mcp-abap-adt/interfaces-utils` (`^1.1.0`) — in `peerDependencies`, with the same range in every package, and imports from it directly. A consumer's install therefore holds exactly one copy of each: npm (≥ 7) installs a missing peer, and a version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. One copy matters at runtime, not only for types: `llm-agent-mcp` and `llm-agent-libs` use `instanceof` on classes of `llm-agent` (`McpError`, `ClarifySignal`, `NeedInfoSignal`, `CatalogCasError`), and the LLM throttle keeps its gates in module state. The binary `llm-agent-server` is the root of its own tree and takes all of them as regular dependencies. `test/repo/scoped-dependencies.test.ts` enforces this; see [MIGRATION-v28.md](MIGRATION-v28.md).
+
+### Decision model and reranker seam
+
+`IDecisionModel` (in `llm-agent`, next to `ILlm` and `IEmbedder`) answers typed questions about a state with
+numbers, not text; `decide()` returns a `Result` and never throws for provider failures. `DecisionReranker`
+and `wrapDecisionModel` (usage accounting, `component: 'decision'`) live in `llm-agent-libs`.
+
+The reranker of a SmartServer is chosen by exactly one of the `reranker:` YAML section or a plugin's
+`reranker` export; naming both is a startup error. `resolveReranker` runs once in `_buildInfra()` — shared
+by the HTTP `start()` and the embeddable `buildAgent()` — and `buildBaseBuilder` applies the result outside
+the `applyServerExtras` gate, so the per-session agents that serve requests get it too. `decision:` and
+`reranker:` are not hot-reloadable. The `makeDecisionModel` seam (`BuildAgentDeps.makeDecisionModel`) is
+optional and required only when the config asks for a decision model; the binary supplies it in its
+composition root.
 
 `llm-agent-libs` constructs no LLM provider — it takes `BuildAgentDeps.makeLlm` as a required seam.
 `llm-agent-server` depends on the five LLM provider packages directly — its composition root
@@ -942,7 +961,7 @@ packages/
     src/
       builder.ts           # SmartAgentBuilder — interface-only factory
       agent.ts             # SmartAgent — orchestration loop
-      adapters/            # LlmAdapter, LlmProviderBridge
+      adapters/            # LlmAdapter, LlmProviderBridge, wrapDecisionModel
       pipeline/            # DefaultPipeline, PipelineExecutor, stage handlers
       session/             # SessionManager, NoopSessionManager
       history/             # HistoryMemory, HistorySummarizer
@@ -950,7 +969,7 @@ packages/
       plugins/             # FileSystemPluginLoader, plugin merge utilities
       metrics/             # InMemoryMetrics, NoopMetrics
       tracer/              # NoopTracer, OTel adapter
-      reranker/            # LlmReranker, NoopReranker
+      reranker/            # LlmReranker, NoopReranker, DecisionReranker
       validator/           # NoopValidator
       health/              # HealthChecker
       config/              # ConfigWatcher
@@ -978,6 +997,9 @@ packages/
   qdrant-rag/              # @mcp-abap-adt/qdrant-rag
   hana-vector-rag/         # @mcp-abap-adt/hana-vector-rag
   pg-vector-rag/           # @mcp-abap-adt/pg-vector-rag
+
+  # Decision-model provider package (bundled dep of llm-agent-server)
+  typesafe-decision/       # @mcp-abap-adt/typesafe-decision
 ```
 
 ## Pipeline Architecture

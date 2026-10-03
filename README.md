@@ -143,6 +143,29 @@ that name into a credential ([how](packages/llm-agent-server/README.md#credentia
 | [`@mcp-abap-adt/hana-vector-rag`](packages/hana-vector-rag/README.md) | SAP HANA Cloud Vector Engine RAG (`HanaVectorRag`, `HanaVectorRagProvider`). Optional peer. |
 | [`@mcp-abap-adt/pg-vector-rag`](packages/pg-vector-rag/README.md) | PostgreSQL + pgvector RAG (`PgVectorRag`, `PgVectorRagProvider`). Optional peer. |
 | [`@mcp-abap-adt/sap-aicore-auth`](packages/sap-aicore-auth/README.md) | SAP AI Core service key → bearer credential + `apiBaseUrl` (`serviceKeyCredential`). |
+| [`@mcp-abap-adt/typesafe-decision`](packages/typesafe-decision/README.md) | Decision model provider — TypeSafe Jev (`TypeSafeDecisionModel`, an `IDecisionModel`). |
+
+### Decision models
+
+A decision model is not an LLM: it answers typed questions (`noul` yes/no, `choice`, `score`) about a
+state with numbers only (`IDecisionModel`). The first consumer is the RAG reranker: with
+`reranker.type: decision`, each retrieved passage becomes one yes/no question and its `score` becomes
+P(relevant). It is opt-in: the user query and the retrieved passages are sent to TypeSafe's API. The key
+comes from the environment by `credentialRef` (default ref `DECISION` -> `DECISION_API_KEY`).
+
+```yaml
+decision:
+  provider: typesafe
+  model: jev-latest        # optional
+  credentialRef: TYPESAFE  # optional; default ref DECISION -> DECISION_API_KEY
+  baseUrl: https://...     # optional
+  timeoutMs: 10000         # optional
+  maxRetries: 2            # optional
+reranker:
+  type: decision           # uses the `decision:` model
+```
+
+See [docs/EXAMPLES.md](docs/EXAMPLES.md#decision-reranker) and [docs/INTEGRATION.md](docs/INTEGRATION.md#idecisionmodel).
 
 ## Quick install
 

@@ -255,6 +255,51 @@ process.on('SIGTERM', async () => {
 });
 ```
 
+### Decision reranker
+
+Rerank RAG results with a decision model (TypeSafe Jev). Not an LLM: each retrieved passage becomes one
+yes/no question, and its `score` becomes P(relevant). The user query and the retrieved passages are sent
+to TypeSafe's API, so it is opt-in.
+
+YAML (`smart-server.yaml`):
+
+```yaml
+decision:
+  provider: typesafe
+  model: jev-latest        # optional
+  credentialRef: TYPESAFE  # optional; default ref DECISION -> DECISION_API_KEY
+  baseUrl: https://...     # optional
+  timeoutMs: 10000         # optional
+  maxRetries: 2            # optional
+reranker:
+  type: decision           # uses the `decision:` model
+```
+
+The key is read from the environment: `DECISION_API_KEY` by default, or `<REF>_API_KEY` when the
+section names `credentialRef: <REF>` (here `TYPESAFE_API_KEY`). `decision.apiKey` is refused. The
+`reranker:` section and a plugin's `reranker` export are exclusive: configure one. `maxRetries: 0`
+disables the SDK's retries.
+
+Programmatic:
+
+```ts
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { DecisionReranker, SmartAgentBuilder, wrapDecisionModel } from '@mcp-abap-adt/llm-agent-libs';
+import { TypeSafeDecisionModel } from '@mcp-abap-adt/typesafe-decision';
+
+const model = wrapDecisionModel(
+  new TypeSafeDecisionModel({ credential: staticApiKey(process.env.DECISION_API_KEY ?? '') }),
+);
+const { agent } = await new SmartAgentBuilder({ /* ... */ })
+  .withMainLlm(myLlm)
+  .withReranker(new DecisionReranker(model))
+  .build();
+```
+
+`wrapDecisionModel` accounts every successful call to the request's logger (`component: 'decision'`).
+`DecisionReranker` also takes `{ task, criteria }` to reword the question; the passage is always sent
+with it.
+
 ### Custom embedder injection
 
 Construct the embedder and the provider yourself, and hand in the instances:

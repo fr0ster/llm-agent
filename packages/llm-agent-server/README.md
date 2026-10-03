@@ -92,6 +92,7 @@ ref and the section uses its role's default.
 | each `llm:` entry | `LLM` | `LLM_API_KEY`, or `LLM_SERVICE_KEY` for SAP AI Core |
 | `rag.store`, a qdrant `skillPlugins.store` | `RAG_STORE` | `RAG_STORE_API_KEY` (Qdrant) or `RAG_STORE_USER` + `RAG_STORE_PASSWORD` |
 | `rag.embedder` | `RAG_EMBEDDER` | `RAG_EMBEDDER_API_KEY`, or `RAG_EMBEDDER_SERVICE_KEY` for SAP AI Core |
+| `decision:` (TypeSafe) | `DECISION` | `DECISION_API_KEY` |
 
 **The skill store shares `RAG_STORE` with `rag.store`.** A qdrant `skillPlugins.store` with no
 `credentialRef` reads the `RAG_STORE` default too, so the two share its one credential kind:
