@@ -2,6 +2,7 @@ import type { BuildAgentDeps } from '@mcp-abap-adt/llm-agent-server-libs';
 import { createBuildSkillHost } from './build-skill-host.js';
 import { envCredentialEntries, memoizeCredentials } from './credential-for.js';
 import { createLookup } from './lookup.js';
+import { createMakeDecisionModel } from './make-decision-model.js';
 import { createMakeLlm } from './make-llm.js';
 import { createMakeRag } from './make-rag.js';
 import { createResolveEmbedder } from './resolve-embedder.js';
@@ -14,6 +15,7 @@ export type CompositionDeps = Pick<
   'makeLlm' | 'resolveEmbedder' | 'makeRag'
 > & {
   buildSkillHost: NonNullable<BuildAgentDeps['buildSkillHost']>;
+  makeDecisionModel: NonNullable<BuildAgentDeps['makeDecisionModel']>;
 };
 
 /**
@@ -31,5 +33,6 @@ export function buildCompositionDeps(
     resolveEmbedder: createResolveEmbedder(lookup),
     makeRag: createMakeRag(lookup),
     buildSkillHost: createBuildSkillHost(lookup),
+    makeDecisionModel: createMakeDecisionModel(lookup),
   };
 }

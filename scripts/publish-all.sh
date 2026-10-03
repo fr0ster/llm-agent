@@ -30,6 +30,7 @@ PACKAGES=(
   qdrant-rag
   hana-vector-rag
   pg-vector-rag
+  typesafe-decision
   llm-agent-libs
   llm-agent-server-libs
   llm-agent-server
