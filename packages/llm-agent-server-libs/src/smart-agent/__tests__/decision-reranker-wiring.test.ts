@@ -12,6 +12,7 @@ import type {
   IReranker,
   RagResult,
 } from '@mcp-abap-adt/llm-agent';
+import { emptyLoadedPlugins } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
 import {
@@ -79,6 +80,9 @@ function recordingModel() {
   return { model, seen };
 }
 
+/** Loads nothing, so the host's default plugin directories cannot leak in. */
+const noPlugins = { load: async () => emptyLoadedPlugins() };
+
 function configFrom(text: string): SmartServerConfig {
   return {
     ...resolveSmartServerConfig(
@@ -121,12 +125,15 @@ function post(port: number, path: string, body: unknown): Promise<number> {
 describe('decision reranker wiring (§7.4)', () => {
   it('HTTP: a chat request on a session reaches the decision model', async () => {
     const { model, seen } = recordingModel();
-    const server = new SmartServer(configFrom(YAML), {
-      ...constructionSeams,
-      makeRag,
-      embedder: stubEmbedder,
-      makeDecisionModel: async () => model,
-    });
+    const server = new SmartServer(
+      { ...configFrom(YAML), pluginLoader: noPlugins },
+      {
+        ...constructionSeams,
+        makeRag,
+        embedder: stubEmbedder,
+        makeDecisionModel: async () => model,
+      },
+    );
     const handle = await server.start();
     try {
       const status = await post(handle.port, '/v1/chat/completions', {
@@ -147,12 +154,15 @@ describe('decision reranker wiring (§7.4)', () => {
 
   it('embedded buildAgent(): the same YAML reaches the decision model', async () => {
     const { model, seen } = recordingModel();
-    const { agent, close } = await buildAgent(configFrom(YAML), {
-      ...constructionSeams,
-      makeRag,
-      embedder: stubEmbedder,
-      makeDecisionModel: async () => model,
-    });
+    const { agent, close } = await buildAgent(
+      { ...configFrom(YAML), pluginLoader: noPlugins },
+      {
+        ...constructionSeams,
+        makeRag,
+        embedder: stubEmbedder,
+        makeDecisionModel: async () => model,
+      },
+    );
     try {
       await agent.process(QUERY);
       assert.ok(seen.length >= 1, 'the embedded agent must rerank');
@@ -195,10 +205,11 @@ describe('decision reranker wiring (§7.4)', () => {
     });
     const handle = await server.start();
     try {
-      await post(handle.port, '/v1/chat/completions', {
+      const status = await post(handle.port, '/v1/chat/completions', {
         model: 'gpt-4o',
         messages: [{ role: 'user', content: QUERY }],
       });
+      assert.equal(status, 200);
       assert.ok(
         calls.length >= 1,
         'a plugin reranker was a silent no-op on sessions',
