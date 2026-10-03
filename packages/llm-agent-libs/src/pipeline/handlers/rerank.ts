@@ -4,8 +4,9 @@
  * Reads: `ctx.ragText`, `ctx.ragResults`
  * Writes: `ctx.ragResults` (replaces with re-scored versions)
  *
- * Runs reranking on all stores in parallel. Falls back to original
- * results if reranking fails for a store.
+ * Runs reranking on all stores in parallel. Falls back to original results if
+ * reranking fails for a store, recording `<store>.rerank_error` on the span and
+ * a `rerank_error` session step.
  */
 
 import type { ISpan } from '../../tracer/types.js';
@@ -28,6 +29,16 @@ export class RerankHandler implements IStageHandler {
             results,
             ctx.options,
           );
+          if (!rr.ok) {
+            // Behaviour unchanged (original order), but no longer silent: a
+            // reranker that always fails (e.g. a stale key) must be visible.
+            span.setAttribute(`${name}.rerank_error`, rr.error.code);
+            ctx.options?.sessionLogger?.logStep('rerank_error', {
+              store: name,
+              code: rr.error.code,
+              message: rr.error.message,
+            });
+          }
           return { name, results: rr.ok ? rr.value : results };
         }
         return { name, results };
