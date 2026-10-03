@@ -24,6 +24,7 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
+  IReranker,
   IRetrievalEmbedder,
   ISkillManager,
   ISkillPluginHost,
@@ -125,6 +126,7 @@ import {
   toMakeRagInput,
 } from './rag-config.js';
 import { resolveRetrievalEmbedder } from './resolve-agent-embedder.js';
+import { resolveReranker } from './resolve-reranker.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
@@ -811,6 +813,8 @@ export class SmartServer {
   private _mainLlm?: ILlm;
   private _classifierLlm?: ILlm;
   private _helperLlm?: ILlm;
+  /** The one reranker of this server, resolved once in `_buildInfra()` (§7.4). */
+  private _reranker?: IReranker;
   private _fileLogger?: ILogger;
   private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
   /**
@@ -1214,6 +1218,17 @@ export class SmartServer {
       const registered = mergePluginExports(plugins, mod, spec);
       log({ event: 'plugin_specifier_loaded', spec, registered });
     }
+
+    // ---- Reranker (§7.4) -------------------------------------------------
+    // Resolved ONCE here — the infra build shared by start() and the embeddable
+    // buildAgent() — and applied by buildBaseBuilder outside the
+    // applyServerExtras gate, so per-session agents get it too.
+    this._reranker = await resolveReranker({
+      rerankerCfg: this.cfg.reranker,
+      decisionCfg: this.cfg.decision,
+      makeDecisionModel: this._deps.makeDecisionModel,
+      pluginReranker: plugins.reranker,
+    });
 
     // ---- Pipeline-plugin registry: factories (§4.6.7) -------------------
     // Built-ins are server code — parse, validate, construct with typed settings.
@@ -2688,10 +2703,11 @@ export class SmartServer {
    * every `.withXxx` is applied conditionally on its `parts` field so both work.
    *
    * `applyServerExtras` gates the startup-only, config/plugin-derived wiring
-   * (circuit breaker, reranker/queryExpander/outputValidator, skill manager,
+   * (circuit breaker, queryExpander/outputValidator, skill manager,
    * LLM-call & tool-selection strategies, client adapters, and the YAML `mcp:`
    * connect path). The per-session re-wire omits these (it inherits a slimmer
    * agent) so they stay gated to preserve behavior.
+   * The reranker is not gated (§7.4).
    */
   private async buildBaseBuilder(parts: {
     mainLlm: ILlm;
@@ -2756,13 +2772,16 @@ export class SmartServer {
       builder = builder.withRequestLogger(parts.requestLogger);
     }
 
+    // Not gated: requests are served by per-session agents, built with
+    // applyServerExtras=false; the startup agent is infrastructure only.
+    if (this._reranker) {
+      builder = builder.withReranker(this._reranker);
+    }
+
     if (parts.applyServerExtras) {
       const plugins = parts.plugins;
       if (this.cfg.circuitBreaker) {
         builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
-      }
-      if (plugins?.reranker) {
-        builder = builder.withReranker(plugins.reranker);
       }
       if (plugins?.queryExpander) {
         builder = builder.withQueryExpander(plugins.queryExpander);
