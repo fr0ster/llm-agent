@@ -180,6 +180,12 @@ export {
 // ---------------------------------------------------------------------------
 // Reranker
 // ---------------------------------------------------------------------------
+export {
+  DECISION_RERANK_DEFAULT_CRITERIA,
+  DECISION_RERANK_DEFAULT_TASK,
+  DecisionReranker,
+  type DecisionRerankerOptions,
+} from './reranker/decision-reranker.js';
 export { LlmReranker } from './reranker/llm-reranker.js';
 export { NoopReranker } from './reranker/noop-reranker.js';
 // ---------------------------------------------------------------------------
