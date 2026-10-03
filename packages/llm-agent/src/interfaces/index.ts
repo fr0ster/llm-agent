@@ -29,6 +29,22 @@ export type {
 } from './coordinator.js';
 export type { DagPlan, PlanNode } from './dag-plan.js';
 export type {
+  ChoiceAnswer,
+  ChoiceQuestion,
+  DecisionAnswer,
+  DecisionEntry,
+  DecisionErrorCode,
+  DecisionQuestion,
+  DecisionRequest,
+  DecisionResult,
+  IDecisionModel,
+  NoulAnswer,
+  NoulQuestion,
+  ScoreAnswer,
+  ScoreQuestion,
+} from './decision-model.js';
+export { DecisionError } from './decision-model.js';
+export type {
   ErrorContext,
   ErrorReaction,
   IErrorStrategy,

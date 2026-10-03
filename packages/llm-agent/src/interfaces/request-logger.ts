@@ -11,7 +11,8 @@ export type LlmComponent =
   | 'executor'
   | 'reviewer'
   | 'finalizer'
-  | 'oracle';
+  | 'oracle'
+  | 'decision';
 
 export type TokenCategory = 'initialization' | 'auxiliary' | 'request';
 
