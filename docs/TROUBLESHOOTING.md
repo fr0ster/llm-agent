@@ -224,7 +224,7 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 **Cause.** When a reranker fails for a store, the original order is kept (it is not an error for the request) and the failure is recorded instead of surfaced.
 
-**Fix.** Look for the failure in two places: the span attribute `<store>.rerank_error` (value: the error code) and the session step `rerank_error` (fields `store`, `code`, `message`). Then act on the code:
+**Fix.** Look for the failure in two places: the span attribute `<store>.rerank_error` and the session step `rerank_error` (fields `store`, `code`, `message`). Both always carry `RERANK_ERROR` as the code: the decision model's own code appears only inside the step's `message`, which reads `decision rerank failed: <DECISION_CODE>: <message>`. Read that `<DECISION_CODE>` and act on it:
 
 | Code | Meaning | Fix |
 |---|---|---|
@@ -233,7 +233,7 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 | `DECISION_UNAVAILABLE` | 5xx or connection/timeout failure | Check connectivity to the provider; raise `decision.timeoutMs` |
 | `DECISION_INVALID_REQUEST` | The request was rejected (bad model name, request too large) | Check `decision.model` and the size of the request (the query plus all passages of a store go in one request) |
 
-The error text carries the code and message of the failure (`decision rerank failed: <code>: <message>`); it never contains the key or the request body.
+The `message` has the form `decision rerank failed: <DECISION_CODE>: <message>` and never contains the key or the request body.
 
 ### Startup fails on `decision:` / `reranker:`
 
@@ -246,7 +246,7 @@ Config-validation issues are listed under `Configuration error in smart-server.y
 - `reranker.type: must be 'decision' (got …)`.
 - `reranker.type: decision requires a decision: section`.
 
-Errors raised while the server builds its reranker:
+Errors raised while the server builds its reranker (they fire only when `reranker:` is set; a `decision:` section alone builds nothing):
 
 - `reranker: decision is configured and a plugin reranker is loaded — choose one` — the YAML reranker and a plugin's `reranker` export are exclusive; remove one.
 - `BuildAgentDeps.makeDecisionModel is required: …` — a consumer of `SmartServer`/`buildAgent` asked for a decision model without supplying the seam (the `llm-agent` binary supplies it).

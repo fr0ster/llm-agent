@@ -353,7 +353,7 @@ const tracer = new OtelTracerAdapter();
 ```
 
 Spans are emitted for: classification, RAG query, context assembly, LLM chat, tool execution, and reranking.
-A failed rerank sets the span attribute `<store>.rerank_error` (the error code) and logs a `rerank_error` session step.
+A failed rerank sets the span attribute `<store>.rerank_error` (always the code `RERANK_ERROR`) and logs a `rerank_error` session step whose `message` reads `decision rerank failed: <DECISION_CODE>: <message>` for a decision reranker.
 
 ### Session debug logs
 

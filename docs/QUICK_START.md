@@ -53,7 +53,7 @@ LLM_API_KEY=sk-your-deepseek-key
 # Optional — override Ollama URL (default: http://localhost:11434)
 # OLLAMA_URL=http://localhost:11434
 
-# Optional — only with a `decision:` section (decision reranker); see "Decision reranker" below.
+# Optional — read only when `reranker: { type: decision }` builds the model (a `decision:` section alone never reads it); see "Decision reranker" below.
 # DECISION_API_KEY=your-typesafe-key
 ```
 
