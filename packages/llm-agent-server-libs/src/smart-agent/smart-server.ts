@@ -45,6 +45,7 @@ import {
   buildNamespacedTools,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
+  type IDecisionModel,
   type IMcpFailureClassifier,
   type IRag,
   type IRunExecutionControl,
@@ -359,6 +360,14 @@ export interface BuildAgentDeps {
    * authenticated store from configuration any more than an authenticated LLM.
    */
   makeRag: (input: MakeRagInput) => Promise<IRag>;
+  /**
+   * Builds a decision model from the `decision:` section; the root resolves its
+   * credentialRef. Optional: required only when the config asks for a decision
+   * model (today: `reranker: { type: decision }`).
+   */
+  makeDecisionModel?: (
+    cfg: SmartServerDecisionConfig,
+  ) => Promise<IDecisionModel>;
   prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
   buildSkillHost?: (
     cfg: SkillPluginsConfig,
@@ -996,7 +1005,11 @@ export class SmartServer {
   > &
     Pick<
       BuildAgentDeps,
-      'skillHost' | 'embedder' | 'mcpClients' | 'connectMcpWithDescriptors'
+      | 'skillHost'
+      | 'embedder'
+      | 'mcpClients'
+      | 'connectMcpWithDescriptors'
+      | 'makeDecisionModel'
     >;
 
   constructor(config: SmartServerConfig, deps: BuildAgentDeps) {
@@ -1040,6 +1053,9 @@ export class SmartServer {
       ...(deps.mcpClients ? { mcpClients: deps.mcpClients } : {}),
       ...(deps.connectMcpWithDescriptors
         ? { connectMcpWithDescriptors: deps.connectMcpWithDescriptors }
+        : {}),
+      ...(deps.makeDecisionModel
+        ? { makeDecisionModel: deps.makeDecisionModel }
         : {}),
     };
   }
