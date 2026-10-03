@@ -150,7 +150,9 @@ that name into a credential ([how](packages/llm-agent-server/README.md#credentia
 A decision model is not an LLM: it answers typed questions (`noul` yes/no, `choice`, `score`) about a
 state with numbers only (`IDecisionModel`). The first consumer is the RAG reranker: with
 `reranker.type: decision`, each retrieved passage becomes one yes/no question and its `score` becomes
-P(relevant). It is opt-in: the user query and the retrieved passages are sent to TypeSafe's API. The key
+P(relevant). It is opt-in: the user query and the retrieved passages of every store queried before the rerank
+stage (knowledge collections, the MCP tool catalogue, session history) are sent to TypeSafe's API, and the
+reranked probabilities replace the cosine scores that a `threshold` tool-selection `minScore` compares. The key
 comes from the environment by `credentialRef` (default ref `DECISION` -> `DECISION_API_KEY`).
 
 ```yaml

@@ -232,6 +232,8 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 | `DECISION_RATE_LIMITED` | Quota exceeded; TypeSafe's published limit is 1 200 requests/min (secondary source, not verified by this repo) | Lower request concurrency, or raise the quota with the provider; the SDK already retries per `decision.maxRetries` |
 | `DECISION_UNAVAILABLE` | 5xx or connection/timeout failure | Check connectivity to the provider; raise `decision.timeoutMs` |
 | `DECISION_INVALID_REQUEST` | The request was rejected (bad model name, request too large) | Check `decision.model` and the size of the request (the query plus all passages of a store go in one request) |
+| `DECISION_ERROR` | An unexpected or invalid answer shape from the provider (e.g. API drift) or another failure with no specific code | Check the `message`; verify the installed `@mcp-abap-adt/typesafe-decision` and the provider API version match; report it if it persists |
+| `DECISION_ABORTED` | The request was cancelled (client disconnected or the pipeline was aborted) | Usually benign; if it recurs without a cancelled request, check `decision.timeoutMs` and the request's abort signal |
 
 The `message` has the form `decision rerank failed: <DECISION_CODE>: <message>` and never contains the key or the request body.
 

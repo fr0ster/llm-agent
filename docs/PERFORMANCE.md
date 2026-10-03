@@ -119,7 +119,7 @@ Tools are chosen by semantic distance over the `tools` RAG store. After retrieva
 | Strategy | YAML | Behaviour |
 |----------|------|-----------|
 | `top-k` (default) | `strategy: top-k` | Expose the K nearest tools; K is controlled by `agent.ragQueryK`. Unchanged from prior behavior. |
-| `threshold` | `strategy: threshold` | Expose only tools whose cosine score is ≥ `minScore`. An off-topic query whose nearest tools all fall below the cutoff surfaces **no tools**, so the LLM answers as plain chat. |
+| `threshold` | `strategy: threshold` | Expose only tools whose score is ≥ `minScore` (`agent.toolSelection.minScore`). The score is the cosine score unless a reranker runs: a reranker replaces `RagResult.score`, so with `reranker.type: decision` (or a plugin reranker) the threshold applies to the reranked probabilities, not to cosine similarity — recalibrate `minScore` (in default flat mode the `tools` store is reranked; with `enrichedToolSearch: true` it is queried after the rerank and keeps cosine scores). An off-topic query whose nearest tools all fall below the cutoff surfaces **no tools**, so the LLM answers as plain chat. |
 
 ### YAML configuration
 

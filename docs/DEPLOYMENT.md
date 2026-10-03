@@ -401,7 +401,12 @@ agent:
 ## Reranking with a decision model
 
 `reranker.type: decision` sends the user query and the retrieved passages to TypeSafe's API: one request per RAG
-store per chat request, so size the network egress and the provider quota (`decision.timeoutMs`,
+store per chat request. The stores are every one queried before the rerank stage: the `tools` store (MCP tool
+descriptions), the `history` store (session history, which may include earlier assistant answers derived from
+back-end tool output) and custom stores; with `enrichedToolSearch: true` the `tools` store is queried after the
+rerank and is not sent. Reranked scores also replace the cosine scores, so a `threshold` tool-selection
+strategy (`agent.toolSelection.minScore`) compares against reranked probabilities (see
+[PERFORMANCE.md](PERFORMANCE.md#tool-selection-semantic-distance)). Size the network egress and the provider quota (`decision.timeoutMs`,
 `decision.maxRetries`) accordingly. The key is `DECISION_API_KEY` (or `<REF>_API_KEY` with
 `decision.credentialRef`) in the server's environment. The YAML reranker and a plugin reranker are exclusive:
 configuring both fails startup. `decision:` and `reranker:` are not hot-reloadable; a change takes a restart.

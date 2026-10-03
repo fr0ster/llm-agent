@@ -20,7 +20,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
-- A plugin reranker never ran on per-session agents (it was wired inside the `applyServerExtras` gate, which the per-session path skips). The reranker is now resolved once in `_buildInfra` and applied to every agent. `queryExpander` and `outputValidator` sit behind the same gate and are not changed by this.
+- A plugin reranker never ran on per-session agents (it was wired inside the `applyServerExtras` gate, which the per-session path skips). The reranker is now resolved once in `_buildInfra` and applied to every agent. `queryExpander` and `outputValidator` sit behind the same gate and are not changed by this. Note: a reranker (plugin or decision) replaces `RagResult.score`, so a `threshold` tool-selection strategy (`agent.toolSelection.minScore`) now compares against reranked scores on session agents too, and in the default flat pipeline a decision reranker sends the records of every queried store (knowledge, `tools`, `history`) to the provider.
 
 ## [30.0.0] — 2026-09-28
 

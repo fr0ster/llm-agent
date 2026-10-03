@@ -117,7 +117,13 @@ server resources.
 
 **Threat:** With `reranker.type: decision`, the user query and the retrieved RAG passages are sent to
 TypeSafe AI's API (the `decision:` provider). Sensitive text in either leaves the deployment's
-trust boundary, and a leaked or misused key exposes the account.
+trust boundary, and a leaked or misused key exposes the account. The passages are those of **every store
+queried in the rerank stage**, not only knowledge collections: the `tools` store (MCP tool-catalogue
+records, i.e. tool descriptions), the `history` store (session history entries, which can contain earlier
+assistant answers built from back-end tool output) and any custom `ragStores` collections. In the default
+flat pipeline `rag-tools`, `rag-history` and the custom stores run in the parallel block that precedes
+the `rerank` stage. The one exception is `enrichedToolSearch: true`, where the `tools` store is queried
+after `rerank` and its records are not sent.
 
 **Mitigation:** The feature is opt-in: nothing is sent unless both `decision:` and `reranker:
 {type: decision}` are configured. `TypeSafeDecisionModel` forces the SDK's logging off and passes every
