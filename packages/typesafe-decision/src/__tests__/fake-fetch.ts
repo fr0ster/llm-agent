@@ -6,7 +6,11 @@ export interface Recorded {
 }
 
 export function fakeFetch(
-  respond: (req: Recorded) => { status: number; body: unknown },
+  respond: (req: Recorded) => {
+    status: number;
+    body: unknown;
+    headers?: Record<string, string>;
+  },
 ) {
   const calls: Recorded[] = [];
   const fetch = async (input: string, init?: RequestInit) => {
@@ -20,10 +24,10 @@ export function fakeFetch(
       body: init?.body ? JSON.parse(String(init.body)) : {},
     };
     calls.push(rec);
-    const { status, body } = respond(rec);
+    const { status, body, headers: extra } = respond(rec);
     return new Response(JSON.stringify(body), {
       status,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...extra },
     });
   };
   return { fetch, calls };

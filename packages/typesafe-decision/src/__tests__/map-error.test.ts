@@ -135,19 +135,45 @@ describe('non-HTTP failures', () => {
 });
 
 describe('messages', () => {
-  it('never contain the key or the request body', async () => {
-    const f = fakeFetch(() => ({ status: 401, body: { error: 'bad key' } }));
+  for (const status of [401, 500, 409]) {
+    it(`never contain the key or the request body (HTTP ${status})`, async () => {
+      // The response itself echoes both secrets, as a hostile or sloppy server
+      // might; the SDK puts that into its own message, mapError must not.
+      const f = fakeFetch(() => ({
+        status,
+        body: { error: 'echo sk-SECRET-123 PRIVATE-STATE-TEXT' },
+      }));
+      const m = new TypeSafeDecisionModel({
+        credential: staticApiKey('sk-SECRET-123'),
+        maxRetries: 0,
+        fetch: f.fetch,
+      });
+      const r = await m.decide({
+        state: 'PRIVATE-STATE-TEXT',
+        questions: { a: { type: 'noul' } },
+      });
+      assert.ok(!r.ok);
+      assert.doesNotMatch(r.error.message, /sk-SECRET-123/);
+      assert.doesNotMatch(r.error.message, /PRIVATE-STATE-TEXT/);
+    });
+  }
+
+  it('carries the request id', async () => {
+    const f = fakeFetch(() => ({
+      status: 500,
+      body: { error: 'x' },
+      headers: { 'x-typesafe-request-id': 'req-123' },
+    }));
     const m = new TypeSafeDecisionModel({
-      credential: staticApiKey('sk-SECRET-123'),
+      credential: staticApiKey('k'),
       maxRetries: 0,
       fetch: f.fetch,
     });
     const r = await m.decide({
-      state: 'PRIVATE-STATE-TEXT',
+      state: 's',
       questions: { a: { type: 'noul' } },
     });
     assert.ok(!r.ok);
-    assert.doesNotMatch(r.error.message, /sk-SECRET-123/);
-    assert.doesNotMatch(r.error.message, /PRIVATE-STATE-TEXT/);
+    assert.match(r.error.message, /req-123/);
   });
 });
