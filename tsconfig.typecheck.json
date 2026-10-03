@@ -23,6 +23,7 @@
     "packages/openai-llm/src/__tests__/credential.test.ts",
     "packages/anthropic-llm/src/__tests__/credential.test.ts",
     "packages/deepseek-llm/src/__tests__/credential.test.ts",
+    "packages/typesafe-decision/src/__tests__/credential.test.ts",
     "packages/ollama-llm/src/__tests__/credential.test.ts",
     "packages/openai-embedder/src/__tests__/credential.test.ts",
     "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts",
