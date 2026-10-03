@@ -69,6 +69,16 @@ function checkDecision(yaml: YamlConfig, issues: string[]): void {
         `decision.provider: must be 'typesafe' (got ${JSON.stringify(d.provider)})`,
       );
     }
+    for (const key of ['model', 'baseUrl'] as const) {
+      const v = d[key];
+      if (
+        v !== undefined &&
+        v !== null &&
+        (typeof v !== 'string' || !v.trim())
+      ) {
+        issues.push(`decision.${key}: must be a non-empty string`);
+      }
+    }
     const timeoutMs = parseIntegerField(d.timeoutMs);
     if (
       timeoutMs === 'invalid' ||

@@ -33,6 +33,12 @@ function fakeModel(probs: number[]) {
   return { model, seen };
 }
 
+describe('DECISION_RERANK_DEFAULT_CRITERIA', () => {
+  it('is frozen, so a consumer cannot change every reranker', () => {
+    assert.ok(Object.isFrozen(DECISION_RERANK_DEFAULT_CRITERIA));
+  });
+});
+
 describe('DecisionReranker', () => {
   it('empty input → unchanged, no call', async () => {
     const { model, seen } = fakeModel([]);

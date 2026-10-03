@@ -101,6 +101,44 @@ describe('${VAR}-substituted numbers (loadYamlConfig substitutes strings)', () =
   });
 });
 
+describe('decision.model / decision.baseUrl through ${VAR}', () => {
+  function fromFile(text: string, env: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'decision-cfg-'));
+    const path = join(dir, 'smart-server.yaml');
+    writeFileSync(path, LLM + text);
+    try {
+      return resolveSmartServerConfig({}, loadYamlConfig(path, env), env, {
+        skipProviderRuntimeChecks: true,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('an unset ${VAR} model is refused', () => {
+    assert.throws(
+      () => fromFile('decision:\n  provider: typesafe\n  model: ${DM}\n', {}),
+      /decision\.model: must be a non-empty string/,
+    );
+  });
+
+  it('an unset ${VAR} baseUrl is refused', () => {
+    assert.throws(
+      () => fromFile('decision:\n  provider: typesafe\n  baseUrl: ${DB}\n', {}),
+      /decision\.baseUrl: must be a non-empty string/,
+    );
+  });
+
+  it('set values are accepted', () => {
+    const cfg = fromFile(
+      'decision:\n  provider: typesafe\n  model: ${DM}\n  baseUrl: ${DB}\n',
+      { DM: 'jev-latest', DB: 'https://proxy.example' },
+    );
+    assert.equal(cfg.decision?.model, 'jev-latest');
+    assert.equal(cfg.decision?.baseUrl, 'https://proxy.example');
+  });
+});
+
 describe('decision: / reranker: validation', () => {
   for (const [yaml, re] of [
     ['decision:\n  model: x\n', /decision\.provider/],
@@ -112,6 +150,14 @@ describe('decision: / reranker: validation', () => {
     [
       'decision:\n  provider: typesafe\n  apiKey: sk-x\n',
       /decision\.apiKey: secrets are no longer read/,
+    ],
+    [
+      'decision:\n  provider: typesafe\n  model: ""\n',
+      /decision\.model: must be a non-empty string/,
+    ],
+    [
+      'decision:\n  provider: typesafe\n  baseUrl: ""\n',
+      /decision\.baseUrl: must be a non-empty string/,
     ],
     [
       'decision:\n  provider: typesafe\n  timeoutMs: 0\n',

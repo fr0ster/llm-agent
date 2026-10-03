@@ -12,13 +12,13 @@ import type { IReranker } from './types.js';
 export const DECISION_RERANK_DEFAULT_TASK =
   'Judge whether this passage helps answer the query given as the state.';
 
-export const DECISION_RERANK_DEFAULT_CRITERIA: {
+export const DECISION_RERANK_DEFAULT_CRITERIA: Readonly<{
   true: DecisionEntry;
   false: DecisionEntry;
-} = {
+}> = Object.freeze({
   true: 'The passage contains information that helps answer the query.',
   false: 'The passage does not help answer the query.',
-};
+});
 
 export interface DecisionRerankerOptions {
   /** Override the default task wording. The passage is always sent alongside
