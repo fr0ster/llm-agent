@@ -6,6 +6,7 @@ import {
   type NormalizedRequest,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraph, SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
+import { canWrite, createRequestAbort } from './request-abort.js';
 import { jsonError, readBody } from './response-helpers.js';
 import { attachSseKeepAlive } from './sse-heartbeat.js';
 
@@ -55,16 +56,20 @@ export async function handleAdapterRequest(
     normalized.messages,
   );
 
+  // Client disconnect before the response finished cancels the whole request.
+  const abort = createRequestAbort(res);
+
   const augmentedOptions = session
     ? {
         ...normalized.options,
+        signal: abort.signal,
         sessionId: session.sessionId,
         trace: { traceId: session.traceId },
         toolAvailability: session.graph.toolAvailability,
         pendingToolResults: session.graph.pendingToolResults,
         externalResults,
       }
-    : { ...normalized.options, externalResults };
+    : { ...normalized.options, signal: abort.signal, externalResults };
 
   if (normalized.stream) {
     res.writeHead(200, {
@@ -79,19 +84,30 @@ export async function handleAdapterRequest(
         agent.streamProcess(sanitizedMessages, augmentedOptions),
         normalized.context,
       )) {
+        if (!canWrite(res, abort.signal)) break;
         keepAlive.reset();
         const eventLine = event.event ? `event: ${event.event}\n` : '';
         res.write(`${eventLine}data: ${event.data}\n\n`);
       }
+    } catch (err) {
+      if (!abort.signal.aborted) throw err;
+      return;
     } finally {
       keepAlive.stop();
     }
-    res.end();
+    if (canWrite(res, abort.signal)) res.end();
     return;
   }
 
   // Non-streaming
-  const result = await agent.process(sanitizedMessages, augmentedOptions);
+  let result: Awaited<ReturnType<SmartAgent['process']>>;
+  try {
+    result = await agent.process(sanitizedMessages, augmentedOptions);
+  } catch (err) {
+    if (!abort.signal.aborted) throw err;
+    return;
+  }
+  if (!canWrite(res, abort.signal)) return;
   res.setHeader('Content-Type', 'application/json');
   if (!result.ok) {
     res.writeHead(500);

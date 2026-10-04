@@ -18,6 +18,7 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
 import { resolveTraceSink } from './debug-trace-sink.js';
+import { canWrite, createRequestAbort } from './request-abort.js';
 import {
   jsonError,
   jsonValidationError,
@@ -159,7 +160,13 @@ export async function handleChat(
   const t0 = Date.now();
   log({ event: 'request_start', stream: body.stream ?? false, traceId });
 
+  // Client disconnect before the response finished cancels the whole request.
+  const abort = createRequestAbort(res);
+  const logCancelled = (): void =>
+    log({ event: 'request_cancelled', durationMs: Date.now() - t0 });
+
   const opts = {
+    signal: abort.signal,
     stream: body.stream,
     externalTools,
     sessionId,
@@ -285,6 +292,7 @@ export async function handleChat(
 
     try {
       for await (const chunk of stream) {
+        if (!canWrite(res, abort.signal)) break;
         keepAlive.reset();
         if (!chunk.ok) {
           const errorChunk = {
@@ -373,6 +381,11 @@ export async function handleChat(
         }
       }
 
+      if (!canWrite(res, abort.signal)) {
+        logCancelled();
+        return;
+      }
+
       if (!finishReasonSent) {
         const baseResponse = {
           id,
@@ -395,6 +408,11 @@ export async function handleChat(
         );
       }
       res.write('data: [DONE]\n\n');
+    } catch (err) {
+      // An agent that throws because the client went away is a cancellation.
+      if (!abort.signal.aborted) throw err;
+      logCancelled();
+      return;
     } finally {
       keepAlive.stop();
     }
@@ -409,10 +427,21 @@ export async function handleChat(
     return;
   }
 
-  const result = await smartAgent.process(sanitizedMessages, {
-    ...opts,
-    externalResults,
-  });
+  let result: Awaited<ReturnType<SmartAgent['process']>>;
+  try {
+    result = await smartAgent.process(sanitizedMessages, {
+      ...opts,
+      externalResults,
+    });
+  } catch (err) {
+    if (!abort.signal.aborted) throw err;
+    logCancelled();
+    return;
+  }
+  if (!canWrite(res, abort.signal)) {
+    logCancelled();
+    return;
+  }
   log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
   const finalContent = result.ok
     ? result.value.content || (result.value.toolCalls ? null : '(no response)')
