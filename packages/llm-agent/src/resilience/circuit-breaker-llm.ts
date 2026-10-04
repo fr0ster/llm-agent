@@ -20,8 +20,13 @@ import type { CircuitBreaker } from './circuit-breaker.js';
 export class CircuitBreakerLlm implements ILlm {
   healthCheck?: ILlm['healthCheck'];
 
+  /**
+   * @param inner The wrapped LLM — read-only, so a composer can put a decorator
+   *   (e.g. retry) UNDER this breaker and re-wrap with the same `breaker`.
+   * @param breaker The breaker this wrapper records into (may be shared).
+   */
   constructor(
-    private readonly inner: ILlm,
+    readonly inner: ILlm,
     readonly breaker: CircuitBreaker,
   ) {
     if (inner.healthCheck) {

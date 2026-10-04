@@ -1,8 +1,9 @@
 /**
  * RateLimiterLlm — ILlm decorator that throttles outbound requests.
  *
- * Composition order: RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter
- * Rate limiter sits outermost so that retry attempts also respect the limit.
+ * Composition order: RateLimiterLlm → CircuitBreakerLlm → RetryLlm → LlmAdapter
+ * Rate limiter sits outermost: it takes one permit per outer call, so retry
+ * attempts below it are not counted against the window.
  */
 
 import type {

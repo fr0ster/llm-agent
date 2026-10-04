@@ -116,7 +116,7 @@ import type { IPluginLoader } from './plugins/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
 import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
-import { RetryLlm } from './resilience/retry-llm.js';
+import { retryInsideBreakers } from './resilience/retry-llm.js';
 import { applyRetrievalStrategy } from './retrieval/index.js';
 import { ownBuiltInStore } from './retrieval/strategy-rag.js';
 import type { ISessionManager } from './session/types.js';
@@ -503,7 +503,9 @@ export class SmartAgentBuilder {
    * Use breakers created and owned by the caller (shared across builders).
    * Only the embedder breaker is taken: registry stores are wrapped in a
    * `FallbackRag` on it unless a store already carries that same breaker. The
-   * main LLM is NOT wrapped (the caller passes pre-wrapped LLMs). When both
+   * main LLM gets no new breaker (the caller passes pre-wrapped LLMs); when it
+   * is a `CircuitBreakerLlm`, the builder's retry goes UNDER it, on the same
+   * breaker, so one call counts once. When both
    * this and `withCircuitBreaker(config)` are set, this wins for stores and
    * the LLM is not wrapped.
    */
@@ -1259,17 +1261,22 @@ export class SmartAgentBuilder {
         onBeforeStream: this._onBeforeStream,
       };
 
-      // ---- Retry wrapping (outside circuit breaker) ----------------------------
+      // ---- Retry wrapping (INSIDE the circuit breaker) -------------------------
       // Enable retry by default with sensible defaults; explicit config overrides.
+      // Composition: CircuitBreakerLlm → RetryLlm → LlmAdapter, so a breaker
+      // records ONE result per logical call, not one per retry attempt. This
+      // holds for the builder's own breaker and for a main LLM that already is
+      // a (shared) CircuitBreakerLlm: the retry goes under that wrapper, which
+      // is rebuilt on the same breaker.
       const retryOpts = agentCfg.retry ?? {
         maxAttempts: 3,
         backoffMs: 2000,
         retryOn: [429, 500, 502, 503],
         retryOnMidStream: [],
       };
-      wrappedMainLlm = new RetryLlm(wrappedMainLlm, retryOpts);
+      wrappedMainLlm = retryInsideBreakers(wrappedMainLlm, retryOpts);
 
-      // ---- Rate limiter wrapping (outermost — retry attempts also throttled) ----
+      // ---- Rate limiter wrapping (outermost — one permit per outer call) --------
       if (this._rateLimiter) {
         wrappedMainLlm = new RateLimiterLlm(wrappedMainLlm, this._rateLimiter);
       }

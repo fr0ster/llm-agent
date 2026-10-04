@@ -2659,7 +2659,7 @@ builder.withRateLimiter(new TokenBucketRateLimiter({
 }));
 ```
 
-The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter`.
+The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → CircuitBreakerLlm → RetryLlm → LlmAdapter`. Retry sits inside the circuit breaker, so the breaker records one result per logical call, not one per retry attempt.
 
 **It takes one permit per outer call, not per HTTP attempt.** `RateLimiterLlm.chat` awaits `acquire()` once and then hands off to the chain, so anything that retries below it — `RetryLlm`, or a provider's own throttling loop — sends requests the window never counted. A consumer metering a shared quota needs the accounting above the retrying, which means its own wrapper taking a permit around each attempt; this seam admits a call and cannot see inside it.
 

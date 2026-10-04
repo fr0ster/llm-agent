@@ -401,7 +401,7 @@ across resource groups, or raise the model's limit.
 
 **Symptom.** `/health` returns `"status": "degraded"` and a `circuitBreakers` array of `{ index, state }` entries, one with `"state": "open"`.
 
-**Cause.** The list is ordered, with no labels: first one breaker per `llm:` key (the `main`, `classifier` and `helper` entries and every key the role resolver builds), then the embedder breaker. Match `index` to that order. Requests of every pipeline, the controller and the stepper included, move these breakers. An LLM breaker opens after `circuitBreaker.failureThreshold` consecutive failures of that key's model; a `PUT /v1/config` swap of a key gets a fresh breaker, and the old one disappears from the list.
+**Cause.** The list is ordered, with no labels: first one breaker per `llm:` key (the `main`, `classifier` and `helper` entries and every key the role resolver builds), then the embedder breaker. Match `index` to that order. Requests of every pipeline, the controller and the stepper included, move these breakers. An LLM breaker opens after `circuitBreaker.failureThreshold` consecutive failed calls of that key's model — a call counts once, after its retries (retry runs inside the breaker), so a throttled request is one failure, not four; a `PUT /v1/config` swap of a key gets a fresh breaker, and the old one disappears from the list.
 
 **Fix.** Fix the failing model or embedder; the breaker goes half-open after `recoveryWindowMs` and the next call decides. A worker's own embedder (a `subagents:` entry with its own `rag:`) has no breaker.
 

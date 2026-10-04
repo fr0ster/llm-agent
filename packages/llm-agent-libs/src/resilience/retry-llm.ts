@@ -1,14 +1,16 @@
 /**
  * RetryLlm — ILlm decorator that retries transient failures with exponential backoff.
  *
- * Composition order: RetryLlm → CircuitBreakerLlm → LlmAdapter
- * Retry sits outside the circuit breaker so that retry attempts are not
- * counted as separate failures.
+ * Composition order: CircuitBreakerLlm → RetryLlm → LlmAdapter
+ * Retry sits INSIDE the circuit breaker, so the breaker records one result per
+ * logical call (after the retries), not one per attempt. A rate limiter, when
+ * used, sits outermost.
  */
 
 import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  CircuitBreakerLlm,
   findThrottled,
   isRetryableStatus,
   LlmError,
@@ -167,4 +169,23 @@ export class RetryLlm implements ILlm {
       );
     });
   }
+}
+
+/**
+ * Wraps `llm` in a RetryLlm placed UNDER any CircuitBreakerLlm layers it
+ * already has: each breaker wrapper is rebuilt on its own (possibly shared)
+ * breaker around the retry, so every breaker counts one result per logical
+ * call. Without a breaker this is plain `new RetryLlm(llm, options)`.
+ */
+export function retryInsideBreakers(
+  llm: ILlm,
+  options?: Partial<RetryOptions>,
+): ILlm {
+  if (llm instanceof CircuitBreakerLlm) {
+    return new CircuitBreakerLlm(
+      retryInsideBreakers(llm.inner, options),
+      llm.breaker,
+    );
+  }
+  return new RetryLlm(llm, options);
 }

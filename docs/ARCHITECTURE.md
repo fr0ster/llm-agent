@@ -744,7 +744,7 @@ vendored into the repo.
 
 | Interface | Role | Default implementation |
 |---|---|---|
-| `ILlm` | Chat/stream model abstraction used by `SmartAgent`; optional `getModels()` for model discovery | `RetryLlm(CircuitBreakerLlm(LlmAdapter(BaseAgent)))` via `providers.ts` + `builder.ts`; `NonStreamingLlm` decorator proxies `getModels()` and `healthCheck()` |
+| `ILlm` | Chat/stream model abstraction used by `SmartAgent`; optional `getModels()` for model discovery | `CircuitBreakerLlm(RetryLlm(LlmAdapter(BaseAgent)))` via `providers.ts` + `builder.ts`; `NonStreamingLlm` decorator proxies `getModels()` and `healthCheck()` |
 | `IRequestLogger` | Per-model, per-component usage tracking | `DefaultRequestLogger` (auto-created by builder) |
 | `IModelProvider` | Model discovery and per-request model selection; exposes `getEmbeddingModels()` served via `GET /v1/embedding-models` | `LlmAdapter` (auto-detected from `mainLlm`) |
 | `IEmbedder` | Text → vector embedding; `embed()` returns `IEmbedResult { vector: number[]; usage?: { promptTokens: number; totalTokens: number } }` | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
@@ -811,7 +811,7 @@ The `ILlm` chain supports two optional decorators, composed by the builder:
 
 Throttling is answered one layer lower, inside the provider. See **Server-governed throttling** below for why, and for why that layer decides nothing.
 
-Composition order: `RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry sits outside the circuit breaker so retry attempts are not counted as separate failures. Token usage is tracked by `IRequestLogger` (injected via builder) rather than a decorator wrapper.
+Composition order: `CircuitBreakerLlm → RetryLlm → LlmAdapter` (with a rate limiter, `RateLimiterLlm` outermost). Retry sits **inside** the circuit breaker, so a breaker records one result per logical call — after the retries — and never one per attempt. This holds for the builder's own breaker (`withCircuitBreaker`) and for a main LLM that already is a `CircuitBreakerLlm` (SmartServer's per-key breaker): the builder puts its retry under that wrapper, on the same breaker (`CircuitBreakerLlm.inner` is read-only for that). Role LLMs (controller/stepper) carry no `RetryLlm`, so for them a call is one attempt anyway. Token usage is tracked by `IRequestLogger` (injected via builder) rather than a decorator wrapper.
 
 The `IEmbedder` chain has its own pair, composed once by `resolveEmbedder` (`@mcp-abap-adt/llm-agent-rag`) so that **every** `embedBatch` caller inherits them — startup MCP tool vectorization, document ingest, and anything a consumer writes:
 
