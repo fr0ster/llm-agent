@@ -70,3 +70,29 @@ test('eager catalog-load failure is swallowed; lookup() returns undefined', asyn
   const h = await makeToolsRagHandle([throwing], undefined, undefined);
   assert.equal(h.lookup('anything'), undefined);
 });
+
+test('query(text, k, options) forwards options to toolsRag.query', async () => {
+  const seen: unknown[] = [];
+  const toolsRag = {
+    query: async (_e: unknown, _k: number, options?: unknown) => {
+      seen.push(options);
+      return ok([{ metadata: { id: 'tool:A' } }]);
+    },
+  } as never; // IRag
+  const h = await makeToolsRagHandle(
+    [fakeClient([{ name: 'A' }])],
+    toolsRag,
+    embedder,
+  );
+  const options = {
+    trace: { traceId: 'r1' },
+    signal: new AbortController().signal,
+  };
+  await h.query('find A', 5, options as never);
+  assert.equal(seen.length, 1);
+  assert.equal(
+    seen[0],
+    options,
+    'the strategy must see the request CallOptions',
+  );
+});

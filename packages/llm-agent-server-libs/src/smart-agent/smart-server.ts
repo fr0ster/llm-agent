@@ -26,11 +26,13 @@ import type {
   IRequestLogger,
   IReranker,
   IRetrievalEmbedder,
+  IRetrievalStrategy,
   ISkillManager,
   ISkillPluginHost,
   ISmartAgent,
   IThrottleStrategy,
   IToolNamespace,
+  IToolSelectionStrategy,
   IToolsRagHandle,
   LlmTool,
   LoadedPlugins,
@@ -65,6 +67,7 @@ import type {
   SmartAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  applyRetrievalStrategy,
   ClaudeSkillManager,
   CodexSkillManager,
   FileSystemPluginLoader,
@@ -127,6 +130,7 @@ import {
 } from './rag-config.js';
 import { resolveRetrievalEmbedder } from './resolve-agent-embedder.js';
 import { resolveReranker } from './resolve-reranker.js';
+import { resolveRetrievalStrategies } from './resolve-retrieval.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
@@ -363,7 +367,7 @@ export interface BuildAgentDeps {
   /**
    * Builds a decision model from the `decision:` section; the root resolves its
    * credentialRef. Optional: required only when the config asks for a decision
-   * model (today: `reranker: { type: decision }`).
+   * model (today: a `rag.retrieval` entry with `reranker: decision`).
    */
   makeDecisionModel?: (
     cfg: SmartServerDecisionConfig,
@@ -810,6 +814,15 @@ export class SmartServer {
   private _helperLlm?: ILlm;
   /** The one reranker of this server, resolved once in `_buildInfra()` (§7.4). */
   private _reranker?: IReranker;
+  /**
+   * `rag.retrieval` resolved once in `_buildInfra` — one strategy per listed
+   * store key, server-wide (§13.4). Applied at creation of the server-built
+   * stores (`tools` / `history`, workers' too) and, through
+   * `withRetrievalStrategy`, in every builder's `ragStores` projection.
+   */
+  private _retrievalStrategies: Map<string, IRetrievalStrategy> = new Map();
+  /** `agent.toolSelection`, resolved once; applied to every builder (§13.4). */
+  private _toolSelectionStrategy?: IToolSelectionStrategy;
   private _fileLogger?: ILogger;
   private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
   /**
@@ -1222,6 +1235,23 @@ export class SmartServer {
       pluginReranker: plugins.reranker,
     });
 
+    // ---- Per-store retrieval strategies (§13.4) ---------------------------
+    // Resolved ONCE, server-wide. An explicit per-store strategy (embedding
+    // included) wins over the plugin reranker above; an unlisted store keeps
+    // today's behaviour. Decision-backed rerankers share one decision model.
+    this._retrievalStrategies = await resolveRetrievalStrategies({
+      retrieval: this.cfg.rag?.retrieval,
+      decisionCfg: this.cfg.decision,
+      makeDecisionModel: this._deps.makeDecisionModel,
+      resolveLlm: (key) => this.roleLlm().resolveNamed(key),
+    });
+    const toolSelectionCfg = this.cfg.agent?.toolSelection;
+    this._toolSelectionStrategy = toolSelectionCfg?.strategy
+      ? resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
+          minScore: toolSelectionCfg.minScore,
+        })
+      : undefined;
+
     // ---- Pipeline-plugin registry: factories (§4.6.7) -------------------
     // Built-ins are server code — parse, validate, construct with typed settings.
     // A dynamic instance export is registered as a factory that ignores its
@@ -1439,8 +1469,11 @@ export class SmartServer {
       // through its own. Two calls, two stores — the history store never shared
       // the tools store's instance.
       const input = toMakeRagInput(this.cfg.rag.store, resolvedEmbedder, 'rag');
-      toolsRag = await this._deps.makeRag(input);
-      historyRag = await this._deps.makeRag(input);
+      toolsRag = this.withStrategy('tools', await this._deps.makeRag(input));
+      historyRag = this.withStrategy(
+        'history',
+        await this._deps.makeRag(input),
+      );
     }
     // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
     // (and white-box vectorization assertions). See field doc.
@@ -2047,25 +2080,33 @@ export class SmartServer {
       cache: this._workers.cache,
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
       // re-wired per-session by reference — never re-vectorized.
+      // rag.retrieval is server-wide: the worker's stores take the MAIN
+      // config's strategy for their key (§13.4).
       makeToolsRag: subCfg.rag
         ? async () =>
-            this._deps.makeRag(
-              await this._workerRagInput(
-                name,
-                subCfg.rag as SmartServerRagConfig,
-                subCfg.embedder,
-                embedderFactories,
+            this.withStrategy(
+              'tools',
+              await this._deps.makeRag(
+                await this._workerRagInput(
+                  name,
+                  subCfg.rag as SmartServerRagConfig,
+                  subCfg.embedder,
+                  embedderFactories,
+                ),
               ),
             )
         : undefined,
       makeHistoryRag: subCfg.rag
         ? async () =>
-            this._deps.makeRag(
-              await this._workerRagInput(
-                name,
-                subCfg.rag as SmartServerRagConfig,
-                subCfg.embedder,
-                embedderFactories,
+            this.withStrategy(
+              'history',
+              await this._deps.makeRag(
+                await this._workerRagInput(
+                  name,
+                  subCfg.rag as SmartServerRagConfig,
+                  subCfg.embedder,
+                  embedderFactories,
+                ),
               ),
             )
         : undefined,
@@ -2149,6 +2190,17 @@ export class SmartServer {
 
   // -- Pipeline-context dep sources (promoted from the inline coordinator-gate
   //    closures; consumed by buildServerCtx, which later tasks call) ----------
+
+  /**
+   * A server-built store (`tools` / `history`, main or worker) wrapped in the
+   * strategy `rag.retrieval` configures for its key; unlisted → unchanged.
+   * Idempotent (`applyRetrievalStrategy`), so the builder's projection of the
+   * same store never wraps it twice — one rerank per query.
+   */
+  private withStrategy(key: 'tools' | 'history', store: IRag): IRag {
+    const strategy = this._retrievalStrategies.get(key);
+    return strategy ? applyRetrievalStrategy(store, strategy) : store;
+  }
 
   /** A worker's own store input: its embedder through the seam, then paired. */
   private async _workerRagInput(
@@ -2696,10 +2748,12 @@ export class SmartServer {
    *
    * `applyServerExtras` gates the startup-only, config/plugin-derived wiring
    * (circuit breaker, queryExpander/outputValidator, skill manager,
-   * LLM-call & tool-selection strategies, client adapters, and the YAML `mcp:`
-   * connect path). The per-session re-wire omits these (it inherits a slimmer
-   * agent) so they stay gated to preserve behavior.
-   * The reranker is not gated (§7.4).
+   * LLM-call strategy, client adapters, and the YAML `mcp:` connect path). The
+   * per-session re-wire omits these (it inherits a slimmer agent) so they stay
+   * gated to preserve behavior.
+   * Not gated, because per-session agents serve the requests: the reranker
+   * (§7.4), the per-store retrieval strategies and `agent.toolSelection`
+   * (§13.4).
    */
   private async buildBaseBuilder(parts: {
     mainLlm: ILlm;
@@ -2769,6 +2823,19 @@ export class SmartServer {
     if (this._reranker) {
       builder = builder.withReranker(this._reranker);
     }
+    // Not gated, same reason: the per-store strategies reach every store the
+    // pipeline reads through the builder's `ragStores` projection (named
+    // collections included). Server-built stores are already wrapped; the
+    // projection sees the brand and leaves them as they are.
+    for (const [key, strategy] of this._retrievalStrategies) {
+      builder = builder.withRetrievalStrategy(key, strategy);
+    }
+    // Not gated, same reason: `agent.toolSelection` must reach the per-session
+    // agents that serve requests (§13.4). With a reranked `tools` store,
+    // `minScore` compares reranker probabilities in [0, 1], not cosine.
+    if (this._toolSelectionStrategy) {
+      builder = builder.withToolSelectionStrategy(this._toolSelectionStrategy);
+    }
 
     if (parts.applyServerExtras) {
       const plugins = parts.plugins;
@@ -2808,16 +2875,6 @@ export class SmartServer {
         if (factory) {
           builder = builder.withLlmCallStrategy(factory());
         }
-      }
-
-      // Tool-selection strategy (from agent.toolSelection config)
-      const toolSelectionCfg = this.cfg.agent?.toolSelection;
-      if (toolSelectionCfg?.strategy) {
-        builder = builder.withToolSelectionStrategy(
-          resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
-            minScore: toolSelectionCfg.minScore,
-          }),
-        );
       }
     }
 

@@ -57,9 +57,11 @@ export async function makeToolsRagHandle(
       const catalog = await ensureCatalog();
       if (toolsRag && resolvedEmbedder) {
         // Pass options (requestLogger + trace) so the wrapped embedder logs
-        // this query-embedding against the request.
+        // this query-embedding against the request — and to the store, so a
+        // retrieval strategy's reranker gets the request's signal,
+        // requestLogger and sessionLogger (§13.4).
         const embedding = new QueryEmbedding(text, resolvedEmbedder, options);
-        const ragResult = await toolsRag.query(embedding, limit);
+        const ragResult = await toolsRag.query(embedding, limit, options);
         if (ragResult.ok) {
           const hits: LlmTool[] = [];
           for (const r of ragResult.value) {
