@@ -46,7 +46,8 @@ English queries (see *Evidence* below):
 
    Already in 30.1.0: a per-store reranker, the candidate count and k (in
    records). New: indexing with several records per item, collapsing by item,
-   counting k in items, the optional clause split, and a per-store threshold.
+   counting both the candidate pool and k in items, the optional clause split,
+   and a per-store threshold.
 2. The pair is one **collection profile**, because the search must undo exactly
    what the filling produced.
 3. A consumer chooses a profile per collection kind in its builder. The library
@@ -88,16 +89,16 @@ English queries (see *Evidence* below):
 |---|---|
 | 2026-10-04 | This is a development of the framework that pipelines are built with: new building blocks, not a replacement and not a change to any one pipeline. Today's behaviour (one document per item, top-K) stays as the default profile, and nothing changes for current consumers. New profiles are opt-in. |
 | 2026-10-04 | Each collection kind gets a pair: an indexing strategy and a retrieval strategy, described together as one collection profile. |
-| 2026-10-04 | The default profiles in this work cover MCP tools and experience from sessions. Skills and user collections stay on today's behaviour for now. Experience means cases (inputs, symptoms, decision, outcome: what helped, what did not) extracted from finished sessions, so solved tasks are not lost. |
+| 2026-10-04 | *(Experience part replaced by the shared-experience decision below.)* The default profiles in this work cover MCP tools and experience from sessions. Skills and user collections stay on today's behaviour for now. Experience means cases (inputs, symptoms, decision, outcome: what helped, what did not) extracted from finished sessions, so solved tasks are not lost. |
 | 2026-10-04 | The framework is open-ended: any number of collection kinds and profiles. A profile belongs to a kind of store, and several stores can share it. Default profiles ship in llm-agent-rag or another package; consumers may write their own. The known kinds (tools, skills, session history, user collections) are what the defaults must cover, not a closed list. |
 | 2026-10-04 | Contracts and default implementations live in llm-agent (an existing package or a new one). The consumer picks the profiles and passes instances in through dependency injection. |
 | 2026-10-04 | Tool records come from what the tool provider exports (name, description, parameter names). Nothing is hand-written over them. A weak description is fixed at its source. |
-| 2026-10-04 | LLM-generated variants of a provider's text (for example intents generated from a tool description) are allowed, but only in a **separate collection** of their own, never mixed with the records taken from the provider. The profile searches both and collapses the hits by item id, so what came from the provider stays distinguishable and the generated part can be rebuilt or turned off on its own. |
+| 2026-10-04 | *(Placement refined by the intents decision below: own record kind by default, a separate collection when the consumer chooses.)* LLM-generated variants of a provider's text (for example intents generated from a tool description) are allowed, but only in a **separate collection** of their own, never mixed with the records taken from the provider. The profile searches both and collapses the hits by item id, so what came from the provider stays distinguishable and the generated part can be rebuilt or turned off on its own. |
 | 2026-10-04 | In this PR, besides the profiles: the bug where `vectorizeMcpTools` does not find the store's embedder behind `StrategyRag` and falls back to one tool at a time; de-duplication in `tools-rag-handle` (none today) and `skill-select` (fixed prefix); and a decision on the unused `IToolIndexingStrategy` and the docs that describe it as usable. |
 | 2026-10-04 | Experience is not a fixed case schema inside a profile. A case is written by a separate pipeline element (or several), whose implementation decides what goes into it. The framework provides the RAG base for it: findable, returned whole, with owner and visibility so agents share information and experience. This replaces the case schema in the decision above. |
 | 2026-10-04 | Intents are part of the MCP tools profile, not a framework-wide concept. Where they live is the consumer's choice. The default is a record kind of their own (`intent`) in the tool collection: measured equal to intents inside the tool's record, within noise. This refines the "separate collection" decision above: generated text stays apart from the provider's records, in its own record kind by default or in its own collection when the consumer chooses. |
 | 2026-10-04 | The reranker reads the provider's text of the item, without generated intents: measured equal or better for both Cohere and Jev. Intents serve only the candidate search. |
-| 2026-10-04 | The candidate pool is sized in items, not records: with several records per item, 30 records give only ~27–31 tools, and non-English recall drops. |
+| 2026-10-04 | The candidate pool is sized in items, not records: with several records per item, 30 records give only ~26–34 tools (reader and writer together, against 50 with one record per tool), and non-English recall drops. |
 | 2026-10-04 | Rerankers are alternatives: Cohere on SAP AI Core and TypeSafe Jev both get a profile configuration; the consumer picks at deploy. The Cohere (SAP AI Core) reranker provider is in this PR. |
 | 2026-10-04 | llm-agent ships the contracts of the pipeline elements and some default implementations. For MCP tools it ships several default variants, so a consumer has a real choice; skills stay on today's behaviour and get default variants of their own later. Everything is configured through strategies injected by the consumer, not through flags inside one implementation. |
 | 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
@@ -117,8 +118,9 @@ queries with production embeddings:
   or reciprocal rank is worse.
 - **Cohere Rerank** (SAP AI Core) over 30 candidates, with the query split into
   clauses: 0.977 at top-5 with about 9 tools.
-  - multi-step queries: 1.000 (0.714 without it);
-  - non-English queries: 0.962 (0.692 without it).
+  - multi-step queries: 1.000 (0.714 without the clause split, and without
+    the reranker);
+  - non-English queries: 0.962 (0.692 without the reranker).
 - **An LLM as the reranker:** no gain, and 6–10k prompt tokens per query. When
   the model returns the wrong number of scores, it falls back to the stage-1
   order. Since 30.1.0 that is a reranker error, but the strategy still falls back
