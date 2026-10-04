@@ -12,6 +12,12 @@ import type {
 /** Cap on a thrown error's text in the step: enough for a reason, never a dump. */
 const MAX_THROWN_MESSAGE = 500;
 
+function assertPositiveInteger(cls: string, field: string, v: number): void {
+  if (!Number.isInteger(v) || v < 1) {
+    throw new Error(`${cls}: ${field} must be a positive integer (got ${v})`);
+  }
+}
+
 async function rerankOrFallback(
   name: string,
   storeName: string | undefined,
@@ -51,6 +57,7 @@ export class RerankedRetrieval implements IRetrievalStrategy {
     private readonly opts: { overfetch?: number; storeName?: string } = {},
   ) {
     this.overfetch = opts.overfetch ?? 2;
+    assertPositiveInteger('RerankedRetrieval', 'overfetch', this.overfetch);
   }
 
   async retrieve(
@@ -73,14 +80,23 @@ export class RerankedRetrieval implements IRetrievalStrategy {
   }
 }
 
-/** The store's first `maxCandidates` (configured, never assumed) → rerank all → top-k. */
+/**
+ * The store's first `maxCandidates` (configured, never assumed) → rerank all → top-k.
+ * Fetches at least `k`, so a `maxCandidates` below `k` never shrinks the result.
+ */
 export class RerankAllRetrieval implements IRetrievalStrategy {
   readonly name = 'rerank-all';
 
   constructor(
     private readonly reranker: IReranker,
     private readonly opts: { maxCandidates: number; storeName?: string },
-  ) {}
+  ) {
+    assertPositiveInteger(
+      'RerankAllRetrieval',
+      'maxCandidates',
+      opts.maxCandidates,
+    );
+  }
 
   async retrieve(
     store: IRag,
@@ -88,7 +104,11 @@ export class RerankAllRetrieval implements IRetrievalStrategy {
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    const cand = await store.query(query, this.opts.maxCandidates, options);
+    const cand = await store.query(
+      query,
+      Math.max(k, this.opts.maxCandidates),
+      options,
+    );
     if (!cand.ok) return cand;
     return rerankOrFallback(
       this.name,

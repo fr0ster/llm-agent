@@ -266,7 +266,7 @@ Three strategies:
 - `embedding` (the default when `strategy` is omitted) — the store's own ranking. Listing a store with it is
   explicit: it takes the store out of the global (plugin / `withReranker`) reranker.
 - `rerank` — embedding top `k × overfetch` (`overfetch` default 2), reranked, top-k.
-- `rerank-all` — the first `maxCandidates` (required, never derived from a catalog size), reranked, top-k.
+- `rerank-all` — the first `maxCandidates` (required, never derived from a catalog size; at least k are fetched), reranked, top-k.
 
 Two rerankers (`reranker:` is required for `rerank` / `rerank-all`):
 

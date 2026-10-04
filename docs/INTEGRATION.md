@@ -1114,7 +1114,8 @@ interface IRetrievalStrategy {
 
 Built-ins (`@mcp-abap-adt/llm-agent-libs`): `EmbeddingRetrieval` (`store.query(query, k, options)`),
 `RerankedRetrieval(reranker, { overfetch, storeName })` (`overfetch` default 2) and
-`RerankAllRetrieval(reranker, { maxCandidates, storeName })`. The reranked ones fall back to the embedding
+`RerankAllRetrieval(reranker, { maxCandidates, storeName })` (it fetches `max(k, maxCandidates)`). Both
+constructors throw when `overfetch` / `maxCandidates` is not a positive integer. The reranked ones fall back to the embedding
 ranking's top-k when the reranker fails or throws, and log the session step `retrieval_rerank_error`
 (`{ store, strategy, code, message }`, `storeName` is what fills `store`; `message` is the reranker's
 error message, or the thrown error truncated to 500 characters) through `options.sessionLogger`.

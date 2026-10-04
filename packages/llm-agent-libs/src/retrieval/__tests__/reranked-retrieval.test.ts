@@ -180,4 +180,43 @@ describe('RerankAllRetrieval', () => {
       ['c'],
     );
   });
+
+  it('fetches at least k when maxCandidates < k, so k results come back', async () => {
+    const { store, calls } = fakeStore([
+      hit('a', 0.9),
+      hit('b', 0.8),
+      hit('c', 0.7),
+    ]);
+    const r = await new RerankAllRetrieval(
+      { rerank: async (_q, results) => ({ ok: true, value: results }) },
+      { maxCandidates: 1 },
+    ).retrieve(store, q, 3);
+    assert.equal(calls[0].k, 3);
+    assert.ok(r.ok);
+    assert.equal(r.value.length, 3);
+  });
+});
+
+describe('strategy option guards', () => {
+  const reranker: IReranker = {
+    rerank: async (_q, results) => ({ ok: true, value: results }),
+  };
+  for (const bad of [0, -1, 1.5, Number.NaN]) {
+    it(`RerankedRetrieval rejects overfetch ${bad}`, () => {
+      assert.throws(
+        () => new RerankedRetrieval(reranker, { overfetch: bad }),
+        /RerankedRetrieval: overfetch must be a positive integer/,
+      );
+    });
+    it(`RerankAllRetrieval rejects maxCandidates ${bad}`, () => {
+      assert.throws(
+        () => new RerankAllRetrieval(reranker, { maxCandidates: bad }),
+        /RerankAllRetrieval: maxCandidates must be a positive integer/,
+      );
+    });
+  }
+  it('accepts positive integers', () => {
+    new RerankedRetrieval(reranker, { overfetch: 1 });
+    new RerankAllRetrieval(reranker, { maxCandidates: 1 });
+  });
 });
