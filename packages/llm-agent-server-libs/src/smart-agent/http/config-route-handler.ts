@@ -11,9 +11,12 @@ export interface IConfigUpdateTarget {
   readonly modelResolver?: IModelResolver;
   /** The switch startup's model check obeys; a swapped-in model is checked the same way. */
   readonly skipModelValidation: boolean;
-  setMainLlm(llm: ILlm): void;
-  setClassifierLlm(llm: ILlm): void;
-  setHelperLlm(llm: ILlm): void;
+  /** Each setter holds `llm` for its role and returns the instance now held —
+   *  the server may guard it (its per-key circuit breaker), and that guarded
+   *  instance is what every agent must use. */
+  setMainLlm(llm: ILlm): ILlm;
+  setClassifierLlm(llm: ILlm): ILlm;
+  setHelperLlm(llm: ILlm): ILlm;
   /** Deep-merge `patch` into the mirrored `cfg.agent` (preserve untouched startup fields). */
   mirrorAgentCfg(patch: Record<string, unknown>): void;
   drainWorkers(): Promise<void>;
@@ -181,15 +184,21 @@ export async function handleConfigUpdate(
 
   // --- All validation passed — apply mutations ---
   if (resolvedModels) {
-    smartAgent.reconfigure(resolvedModels);
     // Mirror onto the hoisted globals consumed by `buildSessionAgent` so
     // freshly-built session graphs pick up the new LLMs by reference
     // (otherwise `this._mainLlm` etc. would keep pointing at the originals
-    // captured during `start()`).
-    if (resolvedModels.mainLlm) target.setMainLlm(resolvedModels.mainLlm);
+    // captured during `start()`). The setters return the instance now held
+    // (breaker-guarded when configured); the startup agent gets that same one.
+    const held: SmartAgentReconfigureOptions = {};
+    if (resolvedModels.mainLlm)
+      held.mainLlm = target.setMainLlm(resolvedModels.mainLlm);
     if (resolvedModels.classifierLlm)
-      target.setClassifierLlm(resolvedModels.classifierLlm);
-    if (resolvedModels.helperLlm) target.setHelperLlm(resolvedModels.helperLlm);
+      held.classifierLlm = target.setClassifierLlm(
+        resolvedModels.classifierLlm,
+      );
+    if (resolvedModels.helperLlm)
+      held.helperLlm = target.setHelperLlm(resolvedModels.helperLlm);
+    smartAgent.reconfigure(held);
   }
   if (body.agent) {
     const patch = body.agent as Record<string, unknown>;

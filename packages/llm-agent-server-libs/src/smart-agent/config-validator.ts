@@ -1,3 +1,9 @@
+import { parseIntegerField } from './decision-config.js';
+import {
+  type LlmConfigMap,
+  llmKeySet,
+  normalizeLlmConfig,
+} from './llm-config-map.js';
 import { isBuiltInEmbedderProvider } from './rag-config.js';
 import type { SmartServerConfig } from './smart-server.js';
 import type { YamlConfig } from './yaml-loader.js';
@@ -44,6 +50,207 @@ function checkCredentialRef(
   }
 }
 
+/** A secret arriving from the file is refused, not ignored (§4.6.3). */
+function checkNoSecret(
+  label: string,
+  section: Record<string, unknown> | undefined,
+  issues: string[],
+): void {
+  if (section?.apiKey !== undefined) {
+    issues.push(
+      `${label}.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with ${label}.credentialRef (your composition root resolves the name).`,
+    );
+  }
+}
+
+function checkDecision(yaml: YamlConfig, issues: string[]): void {
+  const d = get(yaml, 'decision') as Record<string, unknown> | undefined;
+  if (d !== undefined && d !== null) {
+    checkNoSecret('decision', d, issues);
+    checkCredentialRef('decision', d.credentialRef, issues);
+    if (d.provider !== 'typesafe') {
+      issues.push(
+        `decision.provider: must be 'typesafe' (got ${JSON.stringify(d.provider)})`,
+      );
+    }
+    for (const key of ['model', 'baseUrl'] as const) {
+      const v = d[key];
+      if (
+        v !== undefined &&
+        v !== null &&
+        (typeof v !== 'string' || !v.trim())
+      ) {
+        issues.push(`decision.${key}: must be a non-empty string`);
+      }
+    }
+    const timeoutMs = parseIntegerField(d.timeoutMs);
+    if (
+      timeoutMs === 'invalid' ||
+      (timeoutMs !== undefined && timeoutMs <= 0)
+    ) {
+      issues.push(
+        'decision.timeoutMs: must be a positive integer (milliseconds)',
+      );
+    }
+    const maxRetries = parseIntegerField(d.maxRetries);
+    if (
+      maxRetries === 'invalid' ||
+      (maxRetries !== undefined && maxRetries < 0)
+    ) {
+      issues.push('decision.maxRetries: must be a non-negative integer');
+    }
+  }
+}
+
+const RETRIEVAL_STRATEGIES = ['embedding', 'rerank', 'rerank-all'] as const;
+const RETRIEVAL_RERANKERS = ['decision', 'llm'] as const;
+const RETRIEVAL_FIELDS: readonly string[] = [
+  'strategy',
+  'reranker',
+  'llm',
+  'question',
+  'task',
+  'overfetch',
+  'maxCandidates',
+];
+const RERANK_ONLY_FIELDS = [
+  'reranker',
+  'llm',
+  'question',
+  'task',
+  'overfetch',
+  'maxCandidates',
+] as const;
+const RETRIEVAL_QUESTIONS = ['tool', 'passage'] as const;
+
+/**
+ * The keys `rag.retrieval.<store>.llm` may name, decided by the same helpers
+ * the runtime uses: a flat `llm:` block normalizes to `{ main }`. A map
+ * without `main` is reported by the llm: checks; here its keys stand as is.
+ */
+function retrievalLlmKeys(rawLlm: unknown): ReadonlySet<string> {
+  if (!rawLlm || typeof rawLlm !== 'object' || Array.isArray(rawLlm)) {
+    return new Set();
+  }
+  try {
+    return llmKeySet(normalizeLlmConfig(rawLlm as LlmConfigMap));
+  } catch {
+    return new Set(Object.keys(rawLlm));
+  }
+}
+
+/** `rag.retrieval` — per-store strategies (§13.4); validated on the raw YAML. */
+function checkRetrieval(
+  yaml: YamlConfig,
+  rag: Record<string, unknown>,
+  issues: string[],
+): void {
+  const raw = rag.retrieval;
+  if (raw === undefined || raw === null) return;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push('rag.retrieval: must be a mapping of store key → strategy');
+    return;
+  }
+  const llmKeys = retrievalLlmKeys(get(yaml, 'llm'));
+  for (const [key, entry] of Object.entries(raw as Record<string, unknown>)) {
+    const label = `rag.retrieval.${key}`;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      issues.push(`${label}: must be a mapping`);
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    const strategy = e.strategy ?? 'embedding';
+    if (
+      !(RETRIEVAL_STRATEGIES as readonly string[]).includes(strategy as string)
+    ) {
+      issues.push(
+        `${label}.strategy: must be one of ${RETRIEVAL_STRATEGIES.join(' | ')} (got ${JSON.stringify(strategy)})`,
+      );
+    }
+    for (const field of Object.keys(e)) {
+      if (!RETRIEVAL_FIELDS.includes(field)) {
+        issues.push(`${label}.${field}: unknown key`);
+      }
+    }
+    const isSet = (f: string) => e[f] != null;
+    const reranked = strategy === 'rerank' || strategy === 'rerank-all';
+    if (!reranked) {
+      for (const f of RERANK_ONLY_FIELDS) {
+        if (isSet(f)) {
+          issues.push(
+            `${label}.${f}: only applies to strategy rerank / rerank-all`,
+          );
+        }
+      }
+    } else {
+      if (strategy === 'rerank-all' && isSet('overfetch')) {
+        issues.push(`${label}.overfetch: only applies to strategy rerank`);
+      }
+      if (strategy === 'rerank' && isSet('maxCandidates')) {
+        issues.push(
+          `${label}.maxCandidates: only applies to strategy rerank-all`,
+        );
+      }
+      if (e.reranker === 'decision' && isSet('llm')) {
+        issues.push(`${label}.llm: only applies to reranker: llm`);
+      }
+    }
+    if (isSet('question') && isSet('task')) {
+      issues.push(`${label}: set question or task, not both`);
+    }
+    if (
+      e.question != null &&
+      !(RETRIEVAL_QUESTIONS as readonly string[]).includes(e.question as string)
+    ) {
+      issues.push(
+        `${label}.question: must be one of ${RETRIEVAL_QUESTIONS.join(' | ')} (got ${JSON.stringify(e.question)})`,
+      );
+    }
+    if (e.task != null && (typeof e.task !== 'string' || !e.task.trim())) {
+      issues.push(`${label}.task: must be a non-empty string`);
+    }
+    const overfetch = parseIntegerField(e.overfetch);
+    if (
+      overfetch === 'invalid' ||
+      (overfetch !== undefined && overfetch <= 0)
+    ) {
+      issues.push(`${label}.overfetch: must be a positive integer`);
+    }
+    const maxCandidates = parseIntegerField(e.maxCandidates);
+    if (
+      maxCandidates === 'invalid' ||
+      (maxCandidates !== undefined && maxCandidates <= 0)
+    ) {
+      issues.push(`${label}.maxCandidates: must be a positive integer`);
+    }
+    if (strategy !== 'rerank' && strategy !== 'rerank-all') continue;
+    if (strategy === 'rerank-all' && maxCandidates === undefined) {
+      issues.push(`${label}.maxCandidates: required for strategy: rerank-all`);
+    }
+    if (e.reranker == null) {
+      issues.push(
+        `${label}.reranker: required for strategy: ${strategy} (decision | llm)`,
+      );
+    } else if (
+      !(RETRIEVAL_RERANKERS as readonly string[]).includes(e.reranker as string)
+    ) {
+      issues.push(
+        `${label}.reranker: must be one of ${RETRIEVAL_RERANKERS.join(' | ')} (got ${JSON.stringify(e.reranker)})`,
+      );
+    } else if (e.reranker === 'decision') {
+      if (get(yaml, 'decision') == null) {
+        issues.push(`${label}.reranker: decision requires a decision: section`);
+      }
+    } else if (typeof e.llm !== 'string' || !e.llm) {
+      issues.push(
+        `${label}.llm: required for reranker: llm (a key of the llm: map)`,
+      );
+    } else if (!llmKeys.has(e.llm)) {
+      issues.push(`${label}.llm: "${e.llm}" is not a key of the llm: map`);
+    }
+  }
+}
+
 function checkLlmRole(
   label: string,
   role: Record<string, unknown> | undefined,
@@ -55,11 +262,7 @@ function checkLlmRole(
   // would leave an operator believing it was used. A loaded object is not a fresh
   // literal, so no excess-property check ever sees it — this boundary is the only
   // place it can be caught (§4.6.3).
-  if (role?.apiKey !== undefined) {
-    issues.push(
-      `${label}.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with ${label}.credentialRef (your composition root resolves the name).`,
-    );
-  }
+  checkNoSecret(label, role, issues);
   checkCredentialRef(label, role?.credentialRef, issues);
   const provider = role?.provider as string | undefined;
   if (!provider) {
@@ -97,8 +300,10 @@ function checkRag(
   skipRuntime = false,
 ): void {
   for (const key of Object.keys(rag)) {
-    if (key !== 'store' && key !== 'embedder') {
-      issues.push(`rag.${key}: unknown key — rag holds store: and embedder:`);
+    if (key !== 'store' && key !== 'embedder' && key !== 'retrieval') {
+      issues.push(
+        `rag.${key}: unknown key — rag holds store:, embedder: and retrieval:`,
+      );
     }
   }
   const store = rag.store;
@@ -462,11 +667,19 @@ export function validateResolvedConfig(
       );
     } else {
       checkRag(rawRag as Record<string, unknown>, issues, skip);
+      checkRetrieval(yaml, rawRag as Record<string, unknown>, issues);
     }
   }
   // NOTE: the legacy `pipeline.rag.{name}` multistore was removed with the
   // `pipeline: {name,config}` migration; the top-level `rag:` block is the sole
   // RAG source, validated above.
+
+  checkDecision(yaml, issues);
+  if (get(yaml, 'reranker') !== undefined) {
+    issues.push(
+      'reranker: removed — use rag.retrieval.<store>: { strategy: rerank, reranker: decision }',
+    );
+  }
 
   if (issues.length > 0) throw new ConfigValidationError([...new Set(issues)]);
 }

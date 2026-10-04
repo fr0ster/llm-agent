@@ -21,7 +21,7 @@ env vars and are not part of `npm test`.
 
 ## Architecture
 
-This monorepo publishes six npm packages forming the SmartAgent runtime:
+This monorepo publishes six core npm packages forming the SmartAgent runtime (plus provider packages):
 
 ```
 @mcp-abap-adt/llm-agent             contracts: interfaces, public types, lightweight helpers
@@ -32,6 +32,10 @@ This monorepo publishes six npm packages forming the SmartAgent runtime:
                                     coordinator handlers, config parsing, sessions, pipeline factories
 @mcp-abap-adt/llm-agent-server      binary only (CLI + HTTP server, no library exports)
 ```
+
+`@mcp-abap-adt/typesafe-decision` is a provider package (`TypeSafeDecisionModel`, an `IDecisionModel` over
+TypeSafe's Jev). It sits beside the LLM/embedder providers: peers on `llm-agent` and `interfaces-auth`,
+and a regular dependency of `llm-agent-server`.
 
 Dependency order: `llm-agent-server → llm-agent-server-libs → llm-agent-libs → {llm-agent-mcp, llm-agent-rag} → llm-agent`.
 
@@ -45,6 +49,7 @@ still install only what they need; `llm-agent-libs` has no LLM peers.)
 ### Key API notes
 
 - The CLI is the composition root: `buildCompositionDeps(env)` (in `llm-agent-server/src/composition`) builds the `makeLlm` / `resolveEmbedder` / `makeRag` / `buildSkillHost` seams `SmartServer` requires; credentials come from env by `credentialRef`
+- Retrieval is chosen per store: YAML `rag.retrieval.<store>` (server-wide) or `builder.withRetrievalStrategy(store, strategy)`; an explicit entry (`embedding` included) wins over the global reranker (plugin / `withReranker`)
 - `makeRag` (in `llm-agent-rag`) → **async** `Promise<IRag>`
 - `resolveEmbedder` (in `llm-agent-rag`) → sync (call `prefetchEmbedderFactories` once at startup)
 - `SmartAgentBuilder.build()` → async (unchanged externally)
@@ -53,10 +58,10 @@ still install only what they need; `llm-agent-libs` has no LLM peers.)
 
 | Layer | Package | Role |
 |-------|---------|------|
-| **Interfaces & types** | `@mcp-abap-adt/llm-agent` | All `I*` interfaces, shared types, lightweight helpers (CircuitBreaker, FallbackRag, LLM call strategies, ToolCache, adapters, normalizers) |
+| **Interfaces & types** | `@mcp-abap-adt/llm-agent` | All `I*` interfaces (incl. `IDecisionModel`, `IRetrievalStrategy`, `IRagDecorator`), shared types, lightweight helpers (CircuitBreaker, FallbackRag, LLM call strategies, ToolCache, adapters, normalizers) |
 | **MCP client** | `@mcp-abap-adt/llm-agent-mcp` | `MCPClientWrapper`, `McpClientAdapter`, connection strategies |
 | **RAG/embedder** | `@mcp-abap-adt/llm-agent-rag` | `makeRag`, `resolveEmbedder`, prefetch helpers, backend factories |
-| **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins |
+| **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins, per-store retrieval strategies (`EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`) |
 | **SmartServer library** | `@mcp-abap-adt/llm-agent-server-libs` | `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, config parsing, sessions, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory`) |
 | **Binary** | `@mcp-abap-adt/llm-agent-server` | CLI (`llm-agent`) + HTTP listen; thin wrapper over `llm-agent-server-libs`. Repo-only tools: `npm run models:check`, `npm run claude:via-agent` |
 
@@ -133,6 +138,7 @@ Copy `.env.template` to `.env`. Key variables:
 | `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` / `ollama` |
 | `LLM_API_KEY` / `LLM_SERVICE_KEY` | Credential of every `llm:` entry without `credentialRef` — an API key, or a SAP AI Core service-key JSON for `sap-ai-sdk` |
 | `<REF>_API_KEY` / `<REF>_SERVICE_KEY` / `<REF>_USER` + `<REF>_PASSWORD` | A section with `credentialRef: <REF>` reads these; `RAG_STORE` and `RAG_EMBEDDER` are the defaults for `rag.store` / `rag.embedder` (`AICORE_SERVICE_KEY` is no longer read) |
+| `DECISION_API_KEY` | Key of the `decision:` section without `credentialRef` (TypeSafe Jev); read only when a `rag.retrieval` entry with `reranker: decision` builds the model — a `decision:` section alone never reads it |
 | `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI Core model name and resource group — read only where `smart-server.yaml` references them (`model: ${SAP_AI_MODEL}`, `resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}`) |
 | `MCP_ENDPOINT` | MCP server URL (default: `http://localhost:4004/mcp/stream/http`) |
 | `DEBUG_LLM_REASON` | `true` to log LLM reasoning |

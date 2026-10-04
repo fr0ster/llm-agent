@@ -21,7 +21,8 @@ IQueryExpander        ──►  Expands query with synonyms (optional)
 IRag                  ──►  Retrieves relevant facts/tools/feedback/state
   │
   ▼
-IReranker             ──►  Re-scores RAG results (optional)
+IReranker             ──►  Re-scores RAG results (optional; per store, see IRetrievalStrategy)
+                           (a DecisionReranker asks an IDecisionModel)
   │
   ▼
 IContextAssembler     ──►  Packs context into LLM messages
@@ -1090,7 +1091,137 @@ class CrossEncoderReranker implements IReranker {
 }
 ```
 
-The library ships `LlmReranker` (uses the helper LLM for relevance scoring) and `NoopReranker` (pass-through).
+The library ships `LlmReranker` (uses the helper LLM for relevance scoring), `NoopReranker` (pass-through) and `DecisionReranker` (asks an `IDecisionModel`, see below).
+
+## IRetrievalStrategy
+
+**File:** `packages/llm-agent/src/interfaces/retrieval-strategy.ts`
+
+How one store turns a query into its top-k results — the consumer's choice, per store. `IRag` and
+`IReranker` are not changed; a strategy is a separate, small interface:
+
+```ts
+interface IRetrievalStrategy {
+  readonly name: string;
+  retrieve(
+    store: IRag,
+    query: IQueryEmbedding,        // `query.text` carries the query text
+    k: number,
+    options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>>;
+}
+```
+
+Built-ins (`@mcp-abap-adt/llm-agent-libs`): `EmbeddingRetrieval` (`store.query(query, k, options)`),
+`RerankedRetrieval(reranker, { overfetch, storeName })` (`overfetch` default 2) and
+`RerankAllRetrieval(reranker, { maxCandidates, storeName })` (it fetches `max(k, maxCandidates)`). Both
+constructors throw when `overfetch` / `maxCandidates` is not a positive integer. The reranked ones fall back to the embedding
+ranking's top-k when the reranker fails or throws, and log the session step `retrieval_rerank_error`
+(`{ store, strategy, code, message }`, `storeName` is what fills `store`; `message` is the reranker's
+error message, or the thrown error truncated to 500 characters) through `options.sessionLogger`.
+
+### Example: your own strategy
+
+```ts
+import type {
+  CallOptions, IQueryEmbedding, IRag, IRetrievalStrategy, RagError, RagResult, Result,
+} from '@mcp-abap-adt/llm-agent';
+
+/** Fetch twice as many as asked and drop the ones whose metadata says they are stale. */
+class FreshOnlyRetrieval implements IRetrievalStrategy {
+  readonly name = 'fresh-only';
+  async retrieve(
+    store: IRag, query: IQueryEmbedding, k: number, options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>> {
+    const res = await store.query(query, k * 2, options);   // pass `options` on: signal + loggers
+    if (!res.ok) return res;
+    return { ok: true, value: res.value.filter((r) => r.metadata.stale !== true).slice(0, k) };
+  }
+}
+```
+
+Wire it per store: `builder.withRetrievalStrategy('knowledge', new FreshOnlyRetrieval())`. The builder
+applies it when it projects registry entries into `ragStores`, so a registry that offers
+`setMutationListener` (`SimpleRagRegistry` does) also covers collections registered after build; a custom
+registry without it is never projected for such a collection, so no stage queries it. An explicit strategy
+takes the store out of the global reranker (`withReranker` / a plugin's `reranker`), whatever the strategy.
+`StrategyRag(inner, strategy)` is the decorator that applies one by hand; `applyRetrievalStrategy(store,
+strategy)` wraps a store once (a store that already carries a strategy is returned unchanged).
+
+### `IRagDecorator` — custom store decorators
+
+```ts
+interface IRagDecorator {
+  readonly inner: IRag;
+}
+```
+
+A decorator that wraps another `IRag` (a cache, a tracing wrapper, `FallbackRag`, `StrategyRag`) should
+implement `IRagDecorator` and expose the store it wraps as `inner`. `hasRetrievalStrategy(rag)` walks the
+`inner` chain, so a strategy underneath your decorator stays visible: the builder does not wrap the store
+a second time, and `RerankHandler` still skips it — one rerank per query. Without `inner` the chain stops at
+your decorator, and the store can be wrapped (and reranked) twice. `isRagDecorator(rag)` is the type guard.
+
+## IDecisionModel
+
+**File:** `packages/llm-agent/src/interfaces/decision-model.ts`
+
+A decision model is not an LLM: it answers typed questions about a **state** with numbers, never text. A
+question is `noul` (yes/no, answered with `probability`), `choice` (one of at least two labels) or `score`
+(an ordered rubric of at least two levels).
+
+```ts
+interface IDecisionModel {
+  /** Configured model identifier, for logs. */
+  readonly model?: string;
+  decide(
+    request: DecisionRequest,   // { state, questions }
+    options?: CallOptions,
+  ): Promise<Result<DecisionResult, DecisionError>>;
+}
+```
+
+Rules an implementation must keep:
+
+- **Return a `Result`; never throw** for provider failures. `DecisionError` carries a code from
+  `DecisionErrorCode`: `DECISION_UNSUPPORTED_QUESTION`, `DECISION_INVALID_REQUEST`, `DECISION_AUTH`,
+  `DECISION_RATE_LIMITED`, `DECISION_UNAVAILABLE`, `DECISION_ABORTED`, `DECISION_ERROR`.
+- **A question type you cannot answer fails the whole request** with `DECISION_UNSUPPORTED_QUESTION`.
+  Never drop or fake an answer.
+- **Cancellation** through `options.signal` yields `DECISION_ABORTED`.
+- **Numeric invariants** on `ok: true` (consumers rely on them without re-checking): `probability` and
+  `confidence` are finite and in [0, 1]; a `choice` answer's `probabilities` has exactly the question's
+  labels and `choice` is one of them; a `score` answer's `score` is in [0, levels - 1] and its
+  `probabilities` has exactly the keys 0 ... levels - 1; `answers` has the same keys as `questions`, each
+  with the matching `type`. A provider that receives a nonsensical number (`NaN`, `1.2`, a string) returns
+  `DECISION_ERROR` instead of passing it on.
+
+A minimal fake (as used in the `DecisionReranker` tests):
+
+```ts
+import type { DecisionRequest, IDecisionModel } from '@mcp-abap-adt/llm-agent';
+
+function fakeModel(probs: number[]) {
+  const seen: DecisionRequest[] = [];
+  const model: IDecisionModel = {
+    decide: async (req) => {
+      seen.push(req);
+      const answers: Record<string, { type: 'noul'; probability: number }> = {};
+      probs.forEach((p, i) => {
+        answers[`r${i}`] = { type: 'noul', probability: p };
+      });
+      return { ok: true, value: { model: 'fake', answers } };
+    },
+  };
+  return { model, seen };
+}
+```
+
+The package `@mcp-abap-adt/typesafe-decision` ships `TypeSafeDecisionModel` (TypeSafe Jev). Wrap any model
+in `wrapDecisionModel` (from `llm-agent-libs`) to account its calls to the request logger. For a
+SmartServer, supply the model through the optional `BuildAgentDeps.makeDecisionModel` seam: it receives the
+`decision:` section and returns an `IDecisionModel`; required only when the config asks for one
+(a `rag.retrieval` entry with `reranker: decision`).
 
 ## IOutputValidator
 
@@ -1592,6 +1723,8 @@ class CompactAssembler implements IContextAssembler {
 ```
 
 ## ISkillManager
+
+`builder.withSkillManager(manager, { vectorize })` — `vectorize` (default `true`) controls whether `build()` embeds the skills into the tools store. Pass `false` for builds that share a tools store already filled once; SmartServer does this for its per-session agents, so skills are vectorized at startup only.
 
 **File:** `packages/llm-agent/src/interfaces/skill.ts`
 
@@ -2384,7 +2517,7 @@ builder.withLlmCallStrategy(new NonStreamingLlmCallStrategy());
 
 For `sap-ai-sdk`, this is the recommended production strategy when SAP AI Core streaming is unstable after successful tool execution.
 
-**3. `FallbackLlmCallStrategy`** — starts with streaming. On error, logs the cause and automatically switches to `chat()` for the remaining iterations in the same request. Never loses the error cause.
+**3. `FallbackLlmCallStrategy`** — starts with streaming. On error, logs the cause and automatically switches to `chat()` for the remaining iterations in the same request. Never loses the error cause. A failure caused by the caller's cancellation (`isCallerCancellation`, e.g. a client disconnect) is passed through as-is: no non-streaming retry, and streaming stays enabled for later calls.
 
 ```ts
 import { FallbackLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
@@ -2475,6 +2608,12 @@ All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLi
 
 > **Verification:** Unit tests cover timeout configuration and signal merging, but they use fast in-memory stubs. After changing `healthTimeoutMs` in production, manually verify `/v1/health` against your actual provider to confirm the timeout is sufficient. For SAP AI Core, a cold-start health check (first call after deploy, when the OAuth token is not yet cached) is the slowest path — test that scenario specifically.
 
+### Shared embedder breaker, health breaker list, cancellation
+
+- `SmartAgentBuilder.withCircuitBreakers({ embedder })` takes an embedder `CircuitBreaker` you built and share. The builder guards the stores of its registry with it (a store already wrapped by a `FallbackRag` on the same breaker — `FallbackRag.breaker` — is not wrapped twice) and wraps no LLM. `withCircuitBreaker(config)` is unchanged and still builds its own LLM and embedder breakers. The breaker only sees embedding calls that go through it: wrap the embedder with `withCircuitBreaker(embedder, breaker)` below the document/query role.
+- `HealthCheckerDeps.circuitBreakers` accepts an array or a provider function (`() => readonly CircuitBreaker[]`), read on every `/health` call, so a list that changes at run time (a swapped LLM gets a new breaker) is reported live. Entries are listed by `index`, with no labels.
+- A call whose `options.signal` was aborted by the caller — with any reason whose `name` is not `TimeoutError` — is not the provider's failure. `isCallerCancellation(signal)` (exported from `@mcp-abap-adt/llm-agent`) tells the two apart; `CircuitBreakerLlm` and `CircuitBreakerEmbedder` use it and record neither failure nor success. A custom breaker or decorator that counts failures should do the same. The agent's `timeoutMs` signal aborts with a `TimeoutError` reason, which is still a failure.
+
 ### Runtime Reconfiguration
 
 Swap LLM instances at runtime without restarting the server:
@@ -2520,7 +2659,7 @@ builder.withRateLimiter(new TokenBucketRateLimiter({
 }));
 ```
 
-The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter`.
+The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → CircuitBreakerLlm → RetryLlm → LlmAdapter`. Retry sits inside the circuit breaker, so the breaker records one result per logical call, not one per retry attempt.
 
 **It takes one permit per outer call, not per HTTP attempt.** `RateLimiterLlm.chat` awaits `acquire()` once and then hands off to the chain, so anything that retries below it — `RetryLlm`, or a provider's own throttling loop — sends requests the window never counted. A consumer metering a shared quota needs the accounting above the retrying, which means its own wrapper taking a permit around each attempt; this seam admits a call and cannot see inside it.
 
@@ -2739,6 +2878,10 @@ The tool-loop passes **full tool results** between iterations without compaction
 - **If a tool result is too large** for the provider's payload limit — that's the MCP server's responsibility to fix (e.g. return TSV instead of XML, paginate results)
 
 History between user requests is managed separately via `HistoryMemory` (ring buffer) and RAG stores — not by the tool-loop.
+
+### History store contract
+
+A history store (`setHistoryRag`, SmartServer's shared `history` store) is read per session: the `rag-history` stage queries with `scope: 'session'`, which sets `ragFilter.sessionId`, and writes carry `sessionId` / `userId` metadata. A custom `IRag` used as the history store **must** honour the `sessionId` filter. Otherwise one session reads another's history. Every built-in store implements it. The tool loop records the final assistant text on `PipelineContext.assistantText`, and `HistoryUpsertHandler` writes it into the turn, so a summary includes the answer; a custom handler that builds a history turn should read the same field.
 
 ### History recency window
 

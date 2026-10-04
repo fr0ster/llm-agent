@@ -4,11 +4,35 @@
  * and RAG store weights).
  */
 
-import type { VectorRag } from '@mcp-abap-adt/llm-agent';
+import {
+  type IRag,
+  isRagDecorator,
+  type VectorRag,
+} from '@mcp-abap-adt/llm-agent';
 import {
   ConfigWatcher,
   type HotReloadableConfig,
 } from '@mcp-abap-adt/llm-agent-libs';
+
+/** Decorator chains are short; the cap only guards a cyclic `inner`. */
+const MAX_DECORATOR_DEPTH = 16;
+
+/**
+ * The store that takes weight updates: `store` itself, or the first one down
+ * its `IRagDecorator.inner` chain (a `StrategyRag` / `FallbackRag` wrapper
+ * hides the `VectorRag` underneath).
+ */
+export function findWeightedStore(store: unknown): VectorRag | undefined {
+  let cur: unknown = store;
+  for (let depth = 0; cur && depth < MAX_DECORATOR_DEPTH; depth++) {
+    if (typeof (cur as VectorRag).updateWeights === 'function') {
+      return cur as VectorRag;
+    }
+    const rag = cur as IRag;
+    cur = isRagDecorator(rag) ? rag.inner : undefined;
+  }
+  return undefined;
+}
 
 export interface IConfigReloadWatcher {
   start(): void;
@@ -120,12 +144,10 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
       update.keywordWeight !== undefined
     ) {
       for (const store of Object.values(this.deps.ragStores)) {
-        if (store && typeof (store as VectorRag).updateWeights === 'function') {
-          (store as VectorRag).updateWeights({
-            vectorWeight: update.vectorWeight,
-            keywordWeight: update.keywordWeight,
-          });
-        }
+        findWeightedStore(store)?.updateWeights({
+          vectorWeight: update.vectorWeight,
+          keywordWeight: update.keywordWeight,
+        });
       }
     }
   }

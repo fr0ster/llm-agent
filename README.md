@@ -143,6 +143,40 @@ that name into a credential ([how](packages/llm-agent-server/README.md#credentia
 | [`@mcp-abap-adt/hana-vector-rag`](packages/hana-vector-rag/README.md) | SAP HANA Cloud Vector Engine RAG (`HanaVectorRag`, `HanaVectorRagProvider`). Optional peer. |
 | [`@mcp-abap-adt/pg-vector-rag`](packages/pg-vector-rag/README.md) | PostgreSQL + pgvector RAG (`PgVectorRag`, `PgVectorRagProvider`). Optional peer. |
 | [`@mcp-abap-adt/sap-aicore-auth`](packages/sap-aicore-auth/README.md) | SAP AI Core service key → bearer credential + `apiBaseUrl` (`serviceKeyCredential`). |
+| [`@mcp-abap-adt/typesafe-decision`](packages/typesafe-decision/README.md) | Decision model provider — TypeSafe Jev (`TypeSafeDecisionModel`, an `IDecisionModel`). |
+
+### Decision models
+
+A decision model is not an LLM: it answers typed questions (`noul` yes/no, `choice`, `score`) about a
+state with numbers only (`IDecisionModel`). The first consumer is a retrieval strategy: how each store ranks
+its results is chosen per store under `rag.retrieval` (`embedding`, `rerank` or `rerank-all`), and the
+`decision` reranker turns each retrieved passage into one yes/no question whose `score` is P(relevant).
+It is opt-in and per store: only a store whose own entry is `rerank` / `rerank-all` sends its query and
+candidates to TypeSafe's API. The reranked probabilities replace the cosine scores that a `threshold`
+tool-selection `minScore` compares. The key comes from the environment by `credentialRef`
+(default ref `DECISION` -> `DECISION_API_KEY`).
+
+```yaml
+decision:
+  provider: typesafe
+  model: jev-latest        # optional
+  credentialRef: TYPESAFE  # optional; default ref DECISION -> DECISION_API_KEY
+  baseUrl: https://...     # optional
+  timeoutMs: 10000         # optional
+  maxRetries: 2            # optional
+rag:
+  retrieval:
+    tools:
+      strategy: rerank     # embedding | rerank | rerank-all
+      reranker: decision   # decision | llm; `decision` uses the `decision:` model
+```
+
+Measured on the 218-tool `mcp-abap-adt` 16.0.0 catalog (30 English queries, `text-embedding-ada-002`, K=5,
+recorded 2026-10-04 in [scripts/rag-eval/README.md](scripts/rag-eval/README.md)): recall@1 rose from 56.7%
+(embedding) to 90.0% (`rerank:decision` and `rerank-all:decision`), MRR from 0.691 to 0.928 / 0.933. One
+sample: a direction, not a benchmark.
+
+See [docs/EXAMPLES.md](docs/EXAMPLES.md#per-store-retrieval-strategies-ragretrieval) and [docs/INTEGRATION.md](docs/INTEGRATION.md#iretrievalstrategy).
 
 ## Quick install
 

@@ -255,6 +255,107 @@ process.on('SIGTERM', async () => {
 });
 ```
 
+### Per-store retrieval strategies (`rag.retrieval`)
+
+How a store ranks its results is chosen per store under `rag.retrieval`. A store that is not listed keeps
+today's behaviour (embedding ranking, plus the plugin reranker if one is loaded). Keys are the store keys the
+pipeline sees: `tools`, `history`, a global collection's bare name, `user/<name>`, `session/<name>`.
+
+Three strategies:
+
+- `embedding` (the default when `strategy` is omitted) — the store's own ranking. Listing a store with it is
+  explicit: it takes the store out of the global (plugin / `withReranker`) reranker.
+- `rerank` — embedding top `k × overfetch` (`overfetch` default 2), reranked, top-k.
+- `rerank-all` — the first `maxCandidates` (required, never derived from a catalog size; at least k are fetched), reranked, top-k.
+
+Two rerankers (`reranker:` is required for `rerank` / `rerank-all`):
+
+- `decision` — a decision model (TypeSafe Jev), needs the `decision:` section. Not an LLM: each candidate
+  becomes one yes/no question and its `score` becomes P(relevant).
+- `llm` — an LLM scoring the candidates; `llm:` names a key of the `llm:` map.
+
+```yaml
+decision:
+  provider: typesafe
+  model: jev-latest        # optional
+  credentialRef: TYPESAFE  # optional; default ref DECISION -> DECISION_API_KEY
+  baseUrl: https://...     # optional
+  timeoutMs: 10000         # optional
+  maxRetries: 2            # optional
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: gpt-5
+  scorer:                  # a key for `reranker: llm` to name; any key of the llm: map
+    provider: sap-ai-sdk
+    model: gpt-4.1-mini
+rag:
+  store:
+    type: in-memory
+  embedder:
+    provider: sap-ai-core
+    model: text-embedding-ada-002
+  retrieval:
+    tools:                 # embedding top 2 x k, reranked by the decision model
+      strategy: rerank
+      reranker: decision
+      overfetch: 2
+    knowledge:             # the first 200 candidates, scored by an LLM
+      strategy: rerank-all
+      reranker: llm
+      llm: scorer
+      maxCandidates: 200
+    history:               # explicit: never reranked, never sent to a reranker
+      strategy: embedding
+```
+
+Per entry: `question: tool | passage` words the yes/no question (default `tool` for the `tools` store,
+`passage` otherwise); `task:` (a string) replaces the wording outright, and `question` and `task` are
+exclusive. `overfetch` and `maxCandidates` are positive integers (`${VAR}` strings are accepted). A field
+that does nothing for the chosen strategy (for example `overfetch` on `rerank-all`) is refused at startup.
+
+The key for `reranker: decision` is read from the environment: `DECISION_API_KEY` by default, or
+`<REF>_API_KEY` when the section names `credentialRef: <REF>` (here `TYPESAFE_API_KEY`). `decision.apiKey` is
+refused. `maxRetries: 0` disables the SDK's retries. The decision model is built once and shared by every
+entry. A plugin's `reranker` export and `rag.retrieval` can be used together: the plugin reranks the stores
+without an entry. `rag.retrieval` is server-wide; a worker config must not declare it. A reranker failure never
+fails the request — the embedding order is kept (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#retrieval-reranking-has-no-effect)). `rag.retrieval.history` applies
+to per-session requests: session agents read the server's shared (strategy-wrapped) history store.
+
+Programmatic — the same strategies on the builder:
+
+```ts
+import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import {
+  DecisionReranker,
+  RerankedRetrieval,
+  SmartAgentBuilder,
+  TOOL_QUESTION,
+  wrapDecisionModel,
+} from '@mcp-abap-adt/llm-agent-libs';
+import { TypeSafeDecisionModel } from '@mcp-abap-adt/typesafe-decision';
+
+const model = wrapDecisionModel(
+  new TypeSafeDecisionModel({ credential: staticApiKey(process.env.DECISION_API_KEY ?? '') }),
+);
+const { agent } = await new SmartAgentBuilder({ /* ... */ })
+  .withMainLlm(myLlm)
+  .withRetrievalStrategy('tools', new RerankedRetrieval(new DecisionReranker(model, TOOL_QUESTION)))
+  .build();
+```
+
+`RerankAllRetrieval` takes `{ maxCandidates }`, `EmbeddingRetrieval` takes nothing. `DecisionReranker` takes
+`{ task, criteria, maxBatchTokens, concurrency }`; `TOOL_QUESTION` and `PASSAGE_QUESTION` are ready-made
+`{ task, criteria }` presets. `LlmReranker` takes `{ question: { task }, batchSize, concurrency }` (the numeric
+options of both rerankers must be positive integers — the constructor throws otherwise):
+`new RerankAllRetrieval(new LlmReranker(llm, { question: { task: PASSAGE_QUESTION.task } }), { maxCandidates: 200 })`.
+`wrapDecisionModel` accounts every successful call to the request's logger (`component: 'decision'`).
+
+To rerank every store with one reranker, wire it globally instead — `.withReranker(new DecisionReranker(model))`
+(or a plugin's `reranker` export). It reranks every store that has no `withRetrievalStrategy` entry, `history`
+included, and sends its candidates to the model; an explicit entry (even `EmbeddingRetrieval`) takes a store out.
+
 ### Custom embedder injection
 
 Construct the embedder and the provider yourself, and hand in the instances:

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/qdrant-rag",
-  "version": "30.0.0",
+  "version": "30.1.0",
   "description": "QdrantRag vector store and QdrantRagProvider for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -33,6 +33,6 @@
   },
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^30.0.0"
+    "@mcp-abap-adt/llm-agent": "^30.1.0"
   }
 }

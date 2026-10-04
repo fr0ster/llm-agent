@@ -15,21 +15,27 @@ import type {
   IKnowledgeRagHandle,
   ILlm,
   ILlmApiAdapter,
+  ILlmCallStrategy,
   ILogger,
   IMcpClient,
   IModelProvider,
   IModelResolver,
+  IOutputValidator,
   IPipelineInstance,
   IPipelinePlugin,
+  IQueryExpander,
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
+  IReranker,
   IRetrievalEmbedder,
+  IRetrievalStrategy,
   ISkillManager,
   ISkillPluginHost,
   ISmartAgent,
   IThrottleStrategy,
   IToolNamespace,
+  IToolSelectionStrategy,
   IToolsRagHandle,
   LlmTool,
   LoadedPlugins,
@@ -43,8 +49,10 @@ import type {
 import {
   asymmetricEmbedder,
   buildNamespacedTools,
+  CircuitBreaker,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
+  type IDecisionModel,
   type IMcpFailureClassifier,
   type IRag,
   type IRunExecutionControl,
@@ -54,6 +62,7 @@ import {
   SimpleRagProviderRegistry,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
+  withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
@@ -63,6 +72,7 @@ import type {
   SmartAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  applyRetrievalStrategy,
   ClaudeSkillManager,
   CodexSkillManager,
   FileSystemPluginLoader,
@@ -111,6 +121,7 @@ import {
   handleSessionsList,
 } from './http/sessions-route-handler.js';
 import { handleUsageRoute } from './http/usage-route-handler.js';
+import { LlmCircuitBreakers } from './llm/llm-circuit-breakers.js';
 import {
   type IRoleLlmResolver,
   RoleLlmResolver,
@@ -124,6 +135,11 @@ import {
   toMakeRagInput,
 } from './rag-config.js';
 import { resolveRetrievalEmbedder } from './resolve-agent-embedder.js';
+import { resolveReranker } from './resolve-reranker.js';
+import {
+  resolveRetrievalStrategies,
+  unknownRetrievalKeyWarnings,
+} from './resolve-retrieval.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
@@ -241,6 +257,8 @@ export interface SmartServerConfig {
   host?: string;
   llm?: SmartServerLlmConfig | Record<string, SmartServerLlmConfig>;
   rag?: SmartServerRagConfig;
+  /** Decision model (`decision:`); built only when a consumer (the reranker) asks. */
+  decision?: SmartServerDecisionConfig;
   mcp?: SmartServerMcpConfig | SmartServerMcpConfig[];
   agent?: SmartServerAgentConfig;
   prompts?: SmartServerPromptsConfig;
@@ -355,6 +373,14 @@ export interface BuildAgentDeps {
    * authenticated store from configuration any more than an authenticated LLM.
    */
   makeRag: (input: MakeRagInput) => Promise<IRag>;
+  /**
+   * Builds a decision model from the `decision:` section; the root resolves its
+   * credentialRef. Optional: required only when the config asks for a decision
+   * model (today: a `rag.retrieval` entry with `reranker: decision`).
+   */
+  makeDecisionModel?: (
+    cfg: SmartServerDecisionConfig,
+  ) => Promise<IDecisionModel>;
   prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
   buildSkillHost?: (
     cfg: SkillPluginsConfig,
@@ -506,6 +532,7 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
+import type { SmartServerDecisionConfig } from './decision-config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
 import { llmKeySet, optionalNumber } from './llm-config-map.js';
 import {
@@ -794,6 +821,39 @@ export class SmartServer {
   private _mainLlm?: ILlm;
   private _classifierLlm?: ILlm;
   private _helperLlm?: ILlm;
+  /**
+   * `circuitBreaker:` — one LLM breaker per `llm:` key, wrapped where each LLM
+   * is created (held main/classifier/helper and every resolver entry), so every
+   * session and role — controller and stepper included — shares it (§14.2).
+   */
+  private _llmBreakers?: LlmCircuitBreakers;
+  /** `circuitBreaker:` — the one embedder breaker, fed by the retrieval embedder. */
+  private _embedderBreaker?: CircuitBreaker;
+  /** The one reranker of this server, resolved once in `_buildInfra()` (§7.4). */
+  private _reranker?: IReranker;
+  /**
+   * `rag.retrieval` resolved once in `_buildInfra` — one strategy per listed
+   * store key, server-wide (§13.4). Applied at creation of the server-built
+   * stores (`tools` / `history`, workers' too) and, through
+   * `withRetrievalStrategy`, in every builder's `ragStores` projection.
+   */
+  private _retrievalStrategies: Map<string, IRetrievalStrategy> = new Map();
+  /** `agent.toolSelection`, resolved once; applied to every builder (§13.4). */
+  private _toolSelectionStrategy?: IToolSelectionStrategy;
+  /** Plugin output validator, resolved once; applied to every builder (§14.1). */
+  private _outputValidator?: IOutputValidator;
+  /** Plugin query expander, resolved once; applied to every builder (§14.1). */
+  private _queryExpander?: IQueryExpander;
+  /** DI > plugin > YAML `skills:`, resolved once; vectorized at startup only. */
+  private _skillManager?: ISkillManager;
+  /**
+   * `agent.llmCallStrategy`, resolved once as a FACTORY: a strategy may be
+   * stateful (`fallback` disables streaming stickily), so each builder gets its
+   * own instance (§14.1).
+   */
+  private _llmCallStrategyFactory?: () => ILlmCallStrategy;
+  /** DI > plugin > default `ClineClientAdapter`, resolved once (§14.1). */
+  private _clientAdapters: IClientAdapter[] = [];
   private _fileLogger?: ILogger;
   private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
   /**
@@ -834,6 +894,12 @@ export class SmartServer {
    * (the stepper catalog handle), which falls back to catalog order regardless.
    */
   private _toolsRag?: IRag;
+  /**
+   * The strategy-wrapped history store, shared by the startup agent and every
+   * session agent (one store; reads are scoped per session by metadata).
+   * Unset when `rag:` is not configured.
+   */
+  private _historyRag?: IRag;
   /**
    * The providers every build of this server creates through, and the catalogs
    * a session registry is hydrated from. One object, handed to every build:
@@ -988,7 +1054,11 @@ export class SmartServer {
   > &
     Pick<
       BuildAgentDeps,
-      'skillHost' | 'embedder' | 'mcpClients' | 'connectMcpWithDescriptors'
+      | 'skillHost'
+      | 'embedder'
+      | 'mcpClients'
+      | 'connectMcpWithDescriptors'
+      | 'makeDecisionModel'
     >;
 
   constructor(config: SmartServerConfig, deps: BuildAgentDeps) {
@@ -1032,6 +1102,9 @@ export class SmartServer {
       ...(deps.mcpClients ? { mcpClients: deps.mcpClients } : {}),
       ...(deps.connectMcpWithDescriptors
         ? { connectMcpWithDescriptors: deps.connectMcpWithDescriptors }
+        : {}),
+      ...(deps.makeDecisionModel
+        ? { makeDecisionModel: deps.makeDecisionModel }
         : {}),
     };
   }
@@ -1124,17 +1197,25 @@ export class SmartServer {
           temperature: optionalNumber(helperCfg.temperature),
         })
       : undefined;
-    this._mainLlm = mainLlm;
-    this._classifierLlm = classifierLlm;
-    this._helperLlm = helperLlm;
+    // `circuitBreaker:` → the shared breakers (§14.2): created once, before any
+    // LLM is held, and wrapped where each LLM is created — never in a builder.
+    if (this.cfg.circuitBreaker) {
+      this._llmBreakers = new LlmCircuitBreakers(this.cfg.circuitBreaker);
+      this._embedderBreaker = new CircuitBreaker(this.cfg.circuitBreaker);
+    }
+    this._mainLlm = this.guardLlm(mainLlm, 'main');
+    this._classifierLlm = this.guardLlm(classifierLlm, 'classifier');
+    this._helperLlm = helperLlm && this.guardLlm(helperLlm, 'helper');
     this._llmMap = llmMap;
     this._mainTemp = mainTemp;
+    const breakers = this._llmBreakers;
     this._roleLlm = new RoleLlmResolver({
       getMain: () => this._mainLlm,
       getHelper: () => this._helperLlm,
       getClassifier: () => this._classifierLlm,
       getLlmMap: () => this._llmMap,
       build: (entry) => this._deps.makeLlm(entry),
+      ...(breakers ? { wrap: (llm, key) => breakers.wrap(llm, key) } : {}),
     });
 
     // The programmatic subAgentConfigs path never passed the YAML check, so a
@@ -1190,6 +1271,61 @@ export class SmartServer {
       const registered = mergePluginExports(plugins, mod, spec);
       log({ event: 'plugin_specifier_loaded', spec, registered });
     }
+
+    // ---- Reranker (§7.4) -------------------------------------------------
+    // Resolved ONCE here — the infra build shared by start() and the embeddable
+    // buildAgent() — and applied by buildBaseBuilder outside the
+    // applyServerExtras gate, so per-session agents get it too.
+    this._reranker = await resolveReranker({
+      pluginReranker: plugins.reranker,
+    });
+
+    // ---- Validator, expander, skills, LLM-call strategy, adapters (§14.1) --
+    // Resolved ONCE here and applied by buildBaseBuilder to every builder
+    // (per-session agents serve the requests).
+    this._outputValidator = plugins.outputValidator;
+    this._queryExpander = plugins.queryExpander;
+    this._skillManager =
+      this.cfg.skillManager ??
+      plugins.skillManager ??
+      resolveSkillManager(this.cfg.skills);
+    const strategyName = this.cfg.agent?.llmCallStrategy;
+    if (strategyName) {
+      const {
+        StreamingLlmCallStrategy,
+        NonStreamingLlmCallStrategy,
+        FallbackLlmCallStrategy,
+      } = await import('@mcp-abap-adt/llm-agent');
+      const strategies = {
+        streaming: () => new StreamingLlmCallStrategy(),
+        'non-streaming': () => new NonStreamingLlmCallStrategy(),
+        fallback: () => new FallbackLlmCallStrategy(this._fileLogger),
+      };
+      this._llmCallStrategyFactory = strategies[strategyName];
+    }
+    const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
+    this._clientAdapters = [
+      ...(this.cfg.clientAdapters ?? []),
+      ...plugins.clientAdapters,
+      new ClineClientAdapter(),
+    ];
+
+    // ---- Per-store retrieval strategies (§13.4) ---------------------------
+    // Resolved ONCE, server-wide. An explicit per-store strategy (embedding
+    // included) wins over the plugin reranker above; an unlisted store keeps
+    // today's behaviour. Decision-backed rerankers share one decision model.
+    this._retrievalStrategies = await resolveRetrievalStrategies({
+      retrieval: this.cfg.rag?.retrieval,
+      decisionCfg: this.cfg.decision,
+      makeDecisionModel: this._deps.makeDecisionModel,
+      resolveLlm: (key) => this.roleLlm().resolveNamed(key),
+    });
+    const toolSelectionCfg = this.cfg.agent?.toolSelection;
+    this._toolSelectionStrategy = toolSelectionCfg?.strategy
+      ? resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
+          minScore: toolSelectionCfg.minScore,
+        })
+      : undefined;
 
     // ---- Pipeline-plugin registry: factories (§4.6.7) -------------------
     // Built-ins are server code — parse, validate, construct with typed settings.
@@ -1301,6 +1437,9 @@ export class SmartServer {
       this._deps.resolveEmbedder,
       mergedEmbedderFactories,
       this._fileLogger,
+      // The embedder breaker sees the real embedding calls (§14.2): each half
+      // is wrapped below the document/query role. Worker embedders keep none.
+      this.embedderBreakerWrap(),
     );
     // Hold the resolved embedder so buildServerCtx can thread it onto every
     // pipeline context (the controller pipeline needs it for target-state).
@@ -1408,12 +1547,16 @@ export class SmartServer {
       // through its own. Two calls, two stores — the history store never shared
       // the tools store's instance.
       const input = toMakeRagInput(this.cfg.rag.store, resolvedEmbedder, 'rag');
-      toolsRag = await this._deps.makeRag(input);
-      historyRag = await this._deps.makeRag(input);
+      toolsRag = this.withStrategy('tools', await this._deps.makeRag(input));
+      historyRag = this.withStrategy(
+        'history',
+        await this._deps.makeRag(input),
+      );
     }
     // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
     // (and white-box vectorization assertions). See field doc.
     this._toolsRag = toolsRag;
+    this._historyRag = historyRag;
 
     // NOTE: the legacy per-pipeline named-RAG multistore (`pipeline.rag.{name}`)
     // is GONE with the `pipeline: {name,config}` migration. The top-level `rag:`
@@ -1547,9 +1690,10 @@ export class SmartServer {
     // Assemble everything EXCEPT the coordinator via the shared base-builder
     // factory; the coordinator gate below wires the chosen variant.
     const builder = await this.buildBaseBuilder({
-      mainLlm,
-      classifierLlm,
-      helperLlm,
+      // The held (breaker-guarded) instances: the builder never wraps an LLM.
+      mainLlm: this._mainLlm as ILlm,
+      classifierLlm: this._classifierLlm as ILlm,
+      helperLlm: this._helperLlm,
       fileLogger,
       toolsRag,
       historyRag,
@@ -1587,6 +1731,12 @@ export class SmartServer {
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
     this._globalRagRegistry = globalRagRegistry;
+    for (const w of unknownRetrievalKeyWarnings(
+      this.cfg.rag?.retrieval,
+      globalRagRegistry.list().map((c) => c.name),
+    )) {
+      this.warn(w);
+    }
     // Two limits of this server, stated rather than fixed (§6.4): it registers
     // no RAG providers, so no session registry has a catalog to hydrate from —
     // each holds only the deployment's globals; and its sessions carry a
@@ -1739,7 +1889,8 @@ export class SmartServer {
       agent: smartAgent,
       startTime,
       version: this.cfg.version ?? PACKAGE_VERSION,
-      circuitBreakers,
+      // Re-read per check: a PUT /v1/config swap replaces a key's breaker.
+      circuitBreakers: this.breakerList() ?? circuitBreakers,
     });
 
     // Startup health check removed — use `npm run models:check` for diagnostics.
@@ -2016,25 +2167,33 @@ export class SmartServer {
       cache: this._workers.cache,
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
       // re-wired per-session by reference — never re-vectorized.
+      // rag.retrieval is server-wide: the worker's stores take the MAIN
+      // config's strategy for their key (§13.4).
       makeToolsRag: subCfg.rag
         ? async () =>
-            this._deps.makeRag(
-              await this._workerRagInput(
-                name,
-                subCfg.rag as SmartServerRagConfig,
-                subCfg.embedder,
-                embedderFactories,
+            this.withStrategy(
+              'tools',
+              await this._deps.makeRag(
+                await this._workerRagInput(
+                  name,
+                  subCfg.rag as SmartServerRagConfig,
+                  subCfg.embedder,
+                  embedderFactories,
+                ),
               ),
             )
         : undefined,
       makeHistoryRag: subCfg.rag
         ? async () =>
-            this._deps.makeRag(
-              await this._workerRagInput(
-                name,
-                subCfg.rag as SmartServerRagConfig,
-                subCfg.embedder,
-                embedderFactories,
+            this.withStrategy(
+              'history',
+              await this._deps.makeRag(
+                await this._workerRagInput(
+                  name,
+                  subCfg.rag as SmartServerRagConfig,
+                  subCfg.embedder,
+                  embedderFactories,
+                ),
               ),
             )
         : undefined,
@@ -2103,6 +2262,13 @@ export class SmartServer {
       subBuilder = subBuilder.withMcpClients(injected.mcpClients);
     }
 
+    // rag.retrieval is server-wide: a worker's projection (named collections
+    // of the shared registry included) gets the same per-store strategies.
+    // Its own tools/history are already wrapped; the brand keeps them as is.
+    for (const [key, strategy] of this._retrievalStrategies) {
+      subBuilder = subBuilder.withRetrievalStrategy(key, strategy);
+    }
+
     const handle = await subBuilder.build();
 
     // Backfill the per-worker cache from the BUILT handle (review HIGH #7).
@@ -2118,6 +2284,17 @@ export class SmartServer {
 
   // -- Pipeline-context dep sources (promoted from the inline coordinator-gate
   //    closures; consumed by buildServerCtx, which later tasks call) ----------
+
+  /**
+   * A server-built store (`tools` / `history`, main or worker) wrapped in the
+   * strategy `rag.retrieval` configures for its key; unlisted → unchanged.
+   * Idempotent (`applyRetrievalStrategy`), so the builder's projection of the
+   * same store never wraps it twice — one rerank per query.
+   */
+  private withStrategy(key: 'tools' | 'history', store: IRag): IRag {
+    const strategy = this._retrievalStrategies.get(key);
+    return strategy ? applyRetrievalStrategy(store, strategy) : store;
+  }
 
   /** A worker's own store input: its embedder through the seam, then paired. */
   private async _workerRagInput(
@@ -2155,6 +2332,27 @@ export class SmartServer {
     return key !== undefined
       ? this.roleLlm().resolveNamed(key)
       : this.roleLlm().resolve(role);
+  }
+
+  /** `llm` behind its key's circuit breaker when `circuitBreaker:` is set. */
+  private guardLlm(llm: ILlm, key: string): ILlm {
+    return this._llmBreakers ? this._llmBreakers.wrap(llm, key) : llm;
+  }
+
+  /** The `wrap` argument of the main `resolveRetrievalEmbedder` call, if any. */
+  private embedderBreakerWrap():
+    | ((embedder: IEmbedder) => IEmbedder)
+    | undefined {
+    const breaker = this._embedderBreaker;
+    return breaker ? (e) => withCircuitBreaker(e, breaker) : undefined;
+  }
+
+  /** `/health`'s breakers: every key's current LLM breaker, then the embedder's. */
+  private breakerList(): (() => readonly CircuitBreaker[]) | undefined {
+    const llm = this._llmBreakers;
+    const embedder = this._embedderBreaker;
+    if (!llm || !embedder) return undefined;
+    return () => [...llm.list(), embedder];
   }
 
   private roleLlm(): IRoleLlmResolver {
@@ -2465,6 +2663,7 @@ export class SmartServer {
   private async buildPipelineInstance(scope: {
     sessionId: string;
     parts: SessionAgentParts;
+    historyRag?: IRag;
   }): Promise<IPipelineInstance> {
     return this._pipelinePlugin.build(await this.buildServerCtx(scope));
   }
@@ -2663,11 +2862,14 @@ export class SmartServer {
    * supplies its own scope's values (startup = global; session = session-scoped);
    * every `.withXxx` is applied conditionally on its `parts` field so both work.
    *
-   * `applyServerExtras` gates the startup-only, config/plugin-derived wiring
-   * (circuit breaker, reranker/queryExpander/outputValidator, skill manager,
-   * LLM-call & tool-selection strategies, client adapters, and the YAML `mcp:`
-   * connect path). The per-session re-wire omits these (it inherits a slimmer
-   * agent) so they stay gated to preserve behavior.
+   * `applyServerExtras` now guards only the YAML `mcp:` auto-connect fallback,
+   * which stays startup-only (one connection). It also decides whether the skill
+   * manager vectorizes its skills into the tools store (startup build only).
+   * Not gated, because per-session agents serve the requests: the reranker
+   * (§7.4), the per-store retrieval strategies and `agent.toolSelection`
+   * (§13.4), the shared embedder circuit breaker (§14.2), and the output
+   * validator, query expander, skill manager, LLM-call strategy and client
+   * adapters (§14.1).
    */
   private async buildBaseBuilder(parts: {
     mainLlm: ILlm;
@@ -2732,75 +2934,57 @@ export class SmartServer {
       builder = builder.withRequestLogger(parts.requestLogger);
     }
 
-    if (parts.applyServerExtras) {
-      const plugins = parts.plugins;
-      if (this.cfg.circuitBreaker) {
-        builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
-      }
-      if (plugins?.reranker) {
-        builder = builder.withReranker(plugins.reranker);
-      }
-      if (plugins?.queryExpander) {
-        builder = builder.withQueryExpander(plugins.queryExpander);
-      }
-      if (plugins?.outputValidator) {
-        builder = builder.withOutputValidator(plugins.outputValidator);
-      }
+    // Not gated: requests are served by per-session agents, built with
+    // applyServerExtras=false; the startup agent is infrastructure only.
+    if (this._reranker) {
+      builder = builder.withReranker(this._reranker);
+    }
+    // Not gated, same reason: the per-store strategies reach every store the
+    // pipeline reads through the builder's `ragStores` projection (named
+    // collections included). Server-built stores are already wrapped; the
+    // projection sees the brand and leaves them as they are.
+    for (const [key, strategy] of this._retrievalStrategies) {
+      builder = builder.withRetrievalStrategy(key, strategy);
+    }
+    // Not gated, same reason: `agent.toolSelection` must reach the per-session
+    // agents that serve requests (§13.4). With a reranked `tools` store,
+    // `minScore` compares reranker probabilities in [0, 1], not cosine.
+    if (this._toolSelectionStrategy) {
+      builder = builder.withToolSelectionStrategy(this._toolSelectionStrategy);
+    }
 
-      // Skill manager (DI > YAML config > plugin)
-      const skillManager =
-        this.cfg.skillManager ??
-        plugins?.skillManager ??
-        resolveSkillManager(this.cfg.skills);
-      if (skillManager) {
-        builder = builder.withSkillManager(skillManager);
-      }
+    // Not gated, same reason: the ONE embedder breaker guards the stores of
+    // every agent (§14.2). The LLMs given above are already breaker-guarded.
+    if (this._embedderBreaker) {
+      builder = builder.withCircuitBreakers({
+        embedder: this._embedderBreaker,
+      });
+    }
 
-      // LLM call strategy (from agent config)
-      const strategyName = this.cfg.agent?.llmCallStrategy;
-      if (strategyName) {
-        const {
-          StreamingLlmCallStrategy,
-          NonStreamingLlmCallStrategy,
-          FallbackLlmCallStrategy,
-        } = await import('@mcp-abap-adt/llm-agent');
-        const strategies = {
-          streaming: () => new StreamingLlmCallStrategy(),
-          'non-streaming': () => new NonStreamingLlmCallStrategy(),
-          fallback: () => new FallbackLlmCallStrategy(parts.fileLogger),
-        };
-        const factory = strategies[strategyName];
-        if (factory) {
-          builder = builder.withLlmCallStrategy(factory());
-        }
-      }
-
-      // Tool-selection strategy (from agent.toolSelection config)
-      const toolSelectionCfg = this.cfg.agent?.toolSelection;
-      if (toolSelectionCfg?.strategy) {
-        builder = builder.withToolSelectionStrategy(
-          resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
-            minScore: toolSelectionCfg.minScore,
-          }),
-        );
-      }
+    // Not gated, same reason: the output validator, query expander, skill
+    // manager, LLM-call strategy and client adapters reach the per-session
+    // agents that serve requests (§14.1). Skills are vectorized into the tools
+    // store by the startup build only.
+    if (this._queryExpander) {
+      builder = builder.withQueryExpander(this._queryExpander);
+    }
+    if (this._outputValidator) {
+      builder = builder.withOutputValidator(this._outputValidator);
+    }
+    if (this._skillManager) {
+      builder = builder.withSkillManager(this._skillManager, {
+        vectorize: parts.applyServerExtras,
+      });
+    }
+    if (this._llmCallStrategyFactory) {
+      builder = builder.withLlmCallStrategy(this._llmCallStrategyFactory());
+    }
+    for (const adapter of this._clientAdapters) {
+      builder = builder.withClientAdapter(adapter);
     }
 
     if (parts.mcpClients) {
       builder = builder.withMcpClients(parts.mcpClients);
-    }
-
-    if (parts.applyServerExtras) {
-      // Client adapters (DI > plugin; ClineClientAdapter is the default).
-      const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
-      const adapterSources = [
-        ...(this.cfg.clientAdapters ?? []),
-        ...(parts.plugins?.clientAdapters ?? []),
-        new ClineClientAdapter(),
-      ];
-      for (const adapter of adapterSources) {
-        builder = builder.withClientAdapter(adapter);
-      }
     }
 
     if (parts.workerRegistry.size > 0) {
@@ -2873,6 +3057,7 @@ export class SmartServer {
     const inst = await this.buildPipelineInstance({
       sessionId: parts.sessionId,
       parts,
+      historyRag: this._historyRag,
     });
     // Register the pipeline's disposal hook keyed by sessionId. A prior
     // instance for the same sessionId (e.g. invalidateAll rebuild) is closed
@@ -3130,6 +3315,7 @@ export class SmartServer {
               anthropicAdapter,
               { sessionId, traceId, graph },
               this.cfg.agent?.heartbeatIntervalMs,
+              rc.log,
             );
           },
         );
@@ -3178,14 +3364,18 @@ export class SmartServer {
     return {
       modelResolver: this.cfg.modelResolver,
       skipModelValidation: this.cfg.skipModelValidation === true,
+      // A swapped-in LLM gets a fresh breaker for its key (§14.2).
       setMainLlm: (llm) => {
-        this._mainLlm = llm;
+        this._mainLlm = this.guardLlm(llm, 'main');
+        return this._mainLlm;
       },
       setClassifierLlm: (llm) => {
-        this._classifierLlm = llm;
+        this._classifierLlm = this.guardLlm(llm, 'classifier');
+        return this._classifierLlm;
       },
       setHelperLlm: (llm) => {
-        this._helperLlm = llm;
+        this._helperLlm = this.guardLlm(llm, 'helper');
+        return this._helperLlm;
       },
       mirrorAgentCfg: (patch) => {
         const merged: Record<string, unknown> = {

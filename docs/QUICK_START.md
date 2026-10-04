@@ -52,6 +52,9 @@ LLM_API_KEY=sk-your-deepseek-key
 
 # Optional — override Ollama URL (default: http://localhost:11434)
 # OLLAMA_URL=http://localhost:11434
+
+# Optional — read only when a `rag.retrieval` entry with `reranker: decision` builds the model (a `decision:` section alone never reads it); see "Optional: per-store reranking" below.
+# DECISION_API_KEY=your-typesafe-key
 ```
 
 **Secrets go in `.env`.** The YAML names accounts with `credentialRef:` and never holds a secret; the
@@ -102,6 +105,27 @@ log: smart-server.log     # omit for stdout
 > **`rag.model` is required when an embedder is used.** There is no default — `model` must be set explicitly. The shipped examples use `bge-m3` (multilingual, 1024 dimensions, covers English and non-English corpora). Run `ollama pull bge-m3` before first start. If you previously used `nomic-embed-text` (768 dimensions) with a persistent store (qdrant/hana-vector/pg-vector), you must **re-index** — dimensions changed.
 
 > **No Ollama?** Omit `rag.embedder` (or remove the `rag:` block) — tool selection uses BM25 keyword matching instead of neural embeddings. Everything else works identically.
+
+### Optional: per-store reranking
+
+To rerank the results of a store with a decision model (TypeSafe Jev), add a `decision:` section and a
+`rag.retrieval` entry for that store to `smart-server.yaml`:
+
+```yaml
+decision:
+  provider: typesafe
+rag:
+  retrieval:
+    tools:
+      strategy: rerank
+      reranker: decision
+```
+
+and set `DECISION_API_KEY` in `.env` (the default ref is `DECISION`). With `credentialRef: TYPESAFE` in the
+`decision:` section the key is read from `TYPESAFE_API_KEY` instead. Opt-in and per store: only the stores you
+list with `rerank` / `rerank-all` send their query and candidates to TypeSafe's API. Under `rag:` the entry
+sits beside `store:` and `embedder:` (see the full file above). More options:
+[EXAMPLES.md](EXAMPLES.md#per-store-retrieval-strategies-ragretrieval).
 
 ---
 

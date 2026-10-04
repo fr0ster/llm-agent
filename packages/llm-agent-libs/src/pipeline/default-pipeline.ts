@@ -28,6 +28,7 @@ import type {
   CallOptions,
   ICoordinatorConfig,
   ILlm,
+  IRag,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -57,6 +58,8 @@ import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import { NoopReranker } from '../reranker/noop-reranker.js';
+import { applyRetrievalStrategy } from '../retrieval/index.js';
+import { ownBuiltInStore } from '../retrieval/strategy-rag.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 import { NoopValidator } from '../validator/noop-validator.js';
@@ -150,6 +153,9 @@ export interface DefaultPipelineOptions {
 
 export class DefaultPipeline implements IPipeline {
   private deps!: PipelineDeps;
+  private ownStores: Partial<
+    Record<'tools' | 'history', { raw: IRag; queried: IRag }>
+  > = {};
   private executor!: PipelineExecutor;
   private stages!: StageDefinition[];
   private readonly subAgents?: SubAgentRegistry;
@@ -183,6 +189,21 @@ export class DefaultPipeline implements IPipeline {
 
   initialize(deps: PipelineDeps): void {
     this.deps = deps;
+
+    // The agent's own built-in stores, each with its explicit strategy applied
+    // once (idempotent when the store already carries one).
+    this.ownStores = {};
+    for (const [name, raw] of [
+      ['tools', deps.toolsRag],
+      ['history', deps.historyRag],
+    ] as const) {
+      if (!raw) continue;
+      const strategy = deps.retrievalStrategies?.[name];
+      this.ownStores[name] = {
+        raw,
+        queried: strategy ? applyRetrievalStrategy(raw, strategy) : raw,
+      };
+    }
 
     // Resolve all optional deps once
     this.resolvedTracer = deps.tracer ?? new NoopTracer();
@@ -438,12 +459,20 @@ export class DefaultPipeline implements IPipeline {
         ? input
         : (input.filter((m) => m.role === 'user').slice(-1)[0]?.content ?? '');
 
-    // Build ragStores record — custom stores first, built-ins override by name
-    const ragStores: SmartAgentRagStores = {
-      ...(this.deps.ragStores ?? {}),
-    };
-    if (this.deps.toolsRag) ragStores.tools = this.deps.toolsRag;
-    if (this.deps.historyRag) ragStores.history = this.deps.historyRag;
+    // Build ragStores record — custom stores first, built-ins override by name.
+    // Read the projection per request (the registry listener rebuilds it in
+    // place). The agent's OWN tools/history keep priority: the projected entry
+    // is used only when it is a strategy-wrapped decoration of the own store;
+    // otherwise the own store with its explicit strategy (wrapped once at
+    // initialize). A worker sharing its parent's registry never queries the
+    // parent's store.
+    const projected = this.deps.ragStores ?? {};
+    const ragStores: SmartAgentRagStores = { ...projected };
+    for (const name of ['tools', 'history'] as const) {
+      const own = this.ownStores[name];
+      if (!own) continue;
+      ragStores[name] = ownBuiltInStore(own.raw, own.queried, projected[name]);
+    }
 
     return {
       // Immutable input

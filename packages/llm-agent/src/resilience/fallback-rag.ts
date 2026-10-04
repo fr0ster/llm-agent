@@ -12,18 +12,29 @@ import type {
   IQueryEmbedding,
   IRag,
   IRagBackendWriter,
+  IRagDecorator,
   RagError,
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { CircuitBreaker } from './circuit-breaker.js';
 
-export class FallbackRag implements IRag {
+export class FallbackRag implements IRag, IRagDecorator {
   constructor(
     private readonly primary: IRag,
     private readonly fallback: IRag,
     private readonly embedderBreaker: CircuitBreaker,
   ) {}
+
+  /** The embedder breaker that routes this store to its fallback (read-only). */
+  get breaker(): CircuitBreaker {
+    return this.embedderBreaker;
+  }
+
+  /** The decorated (primary) store — IRagDecorator, so a strategy brand under it stays visible. */
+  get inner(): IRag {
+    return this.primary;
+  }
 
   async getById(
     id: string,

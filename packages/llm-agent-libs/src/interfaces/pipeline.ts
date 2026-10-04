@@ -26,6 +26,7 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
+  IRetrievalStrategy,
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
@@ -122,6 +123,14 @@ export interface PipelineDeps {
   historyRag?: IRag;
   /** Full record of RAG stores (tools, history, and any custom stores). */
   ragStores?: Record<string, IRag>;
+  /**
+   * Explicit per-store retrieval strategies, keyed like `ragStores`
+   * (`SmartAgentBuilder.withRetrievalStrategy`). The `tools`/`history` entries
+   * are applied to this agent's OWN `toolsRag`/`historyRag`, so a projected
+   * entry over another agent's store (a worker sharing its parent's registry)
+   * is never queried in their place.
+   */
+  retrievalStrategies?: Readonly<Record<string, IRetrievalStrategy>>;
   /** Registry of RAG collections (v9.1+). When present, ragStores is a live projection. */
   ragRegistry?: IRagRegistry;
   /** Registry of RAG providers for dynamic collection creation (v9.1+). */

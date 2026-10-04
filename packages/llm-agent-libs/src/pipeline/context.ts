@@ -136,6 +136,12 @@ export interface PipelineContext {
 
   /** Extracted user text from the last user message. */
   inputText: string;
+  /**
+   * The final assistant answer of the request, set by `tool-loop` once the last
+   * LLM round is complete. Read by `history-upsert` so a turn summary carries
+   * the answer, not only the question.
+   */
+  assistantText?: string;
   /** Conversation history (may be summarized). */
   history: Message[];
   /** Classified subprompts (set by classify stage). */

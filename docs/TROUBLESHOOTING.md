@@ -216,6 +216,87 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 ---
 
+## Reranking
+
+### Retrieval reranking has no effect
+
+**Symptom.** A `rag.retrieval` entry with `strategy: rerank` / `rerank-all` is configured, the server starts, but the order of a store's results never changes.
+
+**Cause.** A reranker failure never fails the request: the strategy returns the embedding ranking's top-k and records the failure instead of surfacing it.
+
+**Fix.** Look for the session step `retrieval_rerank_error` with the fields `store`, `strategy`, `code` and `message`:
+
+| `code` | Meaning | Fix |
+|---|---|---|
+| `RERANK_ERROR` | The reranker returned an error: the decision model failed (key, quota, connectivity, request too large, cancellation), the LLM failed, or the LLM's reply broke the output contract (not a bare JSON array of N numbers in `[0, 1]`, wrong length, a value outside `[0, 1]`, prose around the array) | See below |
+| `RERANK_THROWN` | The reranker threw instead of returning an error | A bug in a custom `IReranker`; fix it to return a `Result` |
+
+The reason is in `message`. For `reranker: decision` it reads `decision rerank failed: <DECISION_CODE>: <message>` — the `DECISION_*` codes are listed under [the global reranker entry](#reranking-has-no-effect--global-plugin--withreranker-reranker); the `message` never contains the key or the request body. For `reranker: llm` it is the LLM error, or `Reranking failed: <reason>` when the reply broke the output contract (e.g. `reply is not a bare JSON array`, `expected 20 scores, got 19`). For `RERANK_THROWN` it is the thrown error, truncated to 500 characters. Then: for `reranker: decision` check the key (`DECISION_API_KEY`, or `<REF>_API_KEY` for `decision.credentialRef`), connectivity to the provider and `decision.timeoutMs`; for `reranker: llm` check the `llm:` entry's credentials and model, and that the model can follow "answer with a JSON array only" (a failed batch fails the whole call). A reranker whose request is cancelled lands here too: the chat and adapter routes abort the request when the client disconnects before the response finished, and the reranker receives that `signal` (a client that gave up is logged as `request_cancelled`, see [A client disconnect is logged as `request_cancelled`](#a-client-disconnect-is-logged-as-request_cancelled)). Without a disconnect nothing cancels a slow reranker call except the provider's own timeout (`decision.timeoutMs`), because the SmartServer YAML `agent:` section has no `timeoutMs` key.
+
+Other reasons for "no effect":
+
+- **`history` is reranked only when you ask for it.** `rag.retrieval.history` applies to per-session requests: session agents read the server's shared history store, wrapped by the strategy. Without an entry the store keeps plain embedding retrieval.
+- **The store has no entry.** Keys are the store keys the pipeline sees: `tools`, `history`, a global collection's bare name, `user/<name>`, `session/<name>`. A store that is not listed keeps embedding ranking.
+- **A collection added after build is not reranked.** The builder applies a strategy when it projects registry entries into the pipeline's stores. A registry with `setMutationListener` (`SimpleRagRegistry` has it) re-projects on every change, so a collection registered later is wrapped like the rest. A custom `IRagRegistry` without `setMutationListener` is never re-projected: a collection registered after build is not visible to any pipeline stage, reranked or not. Add `setMutationListener` to the registry.
+- **The circuit breaker is open** (see the next entry).
+
+### With the circuit breaker open, a `tools` / `history` store is not reranked
+
+**Symptom.** Under an embedder outage (`circuitBreaker` configured, embedder breaker open) a store with `strategy: rerank` returns embedding-style results, with no `retrieval_rerank_error`; a named collection is still reranked.
+
+**Cause.** Exactly one rerank happens per query in either wrapper order, but with the breaker **open** the two orders differ. `FallbackRag` fans writes out to its fallback store, so the fallback is not empty (it holds what was written, e.g. the vectorized tool catalog):
+
+| Order | Used for | Circuit open |
+|---|---|---|
+| `FallbackRag(StrategyRag(store))` | `tools` / `history`, wrapped by the server before the builder sees them | `FallbackRag` queries its fallback directly: the reranker is bypassed, results are the fallback's own ranking |
+| `StrategyRag(FallbackRag(store))` | named collections, wrapped in the builder's projection | the strategy reranks the fallback's results |
+
+Both are accepted (the request never fails). The controller / stepper tool path (`IToolsRagHandle`) holds the server-wrapped `StrategyRag(tools)` with no `FallbackRag` around it, so the breaker does not change it.
+
+### Reranking has no effect — global (plugin / `withReranker`) reranker
+
+**Symptom.** A plugin's `reranker` export or `withReranker(...)` is configured, but a store's order does not change.
+
+**Cause.** A store with an explicit `rag.retrieval` entry (`embedding` included) is skipped by the global reranker: the strategy owns its ranking. For a store without an entry, a failing global reranker keeps the original order and records the failure.
+
+**Fix.** Remove the entry (or choose a reranked strategy for it). For the failure itself look at the span attribute `<store>.rerank_error` and the session step `rerank_error` (fields `store`, `code`, `message`). Both always carry `RERANK_ERROR` as the code; with a `DecisionReranker` the decision model's own code appears inside the step's `message`, which reads `decision rerank failed: <DECISION_CODE>: <message>`:
+
+| Code | Meaning | Fix |
+|---|---|---|
+| `DECISION_AUTH` | TypeSafe rejected the key | Check `DECISION_API_KEY` (or `<REF>_API_KEY` for `decision.credentialRef`) |
+| `DECISION_RATE_LIMITED` | Quota exceeded; TypeSafe's published limit is 1 200 requests/min (secondary source, not verified by this repo) | Lower request concurrency, or raise the quota with the provider; the SDK already retries per `decision.maxRetries` |
+| `DECISION_UNAVAILABLE` | 5xx or connection/timeout failure | Check connectivity to the provider; raise `decision.timeoutMs` |
+| `DECISION_INVALID_REQUEST` | The request was rejected (bad model name, request too large) | Check `decision.model` and the size of the request |
+| `DECISION_ERROR` | An unexpected or invalid answer shape from the provider (e.g. API drift) or another failure with no specific code | Check the `message`; verify the installed `@mcp-abap-adt/typesafe-decision` and the provider API version match; report it if it persists |
+| `DECISION_ABORTED` | The request was cancelled (client disconnected or the pipeline was aborted) | Usually benign; if it recurs without a cancelled request, check `decision.timeoutMs` and the request's abort signal |
+
+The `message` never contains the key or the request body.
+
+### Startup fails on `decision:` / `rag.retrieval`
+
+Config-validation issues are listed under `Configuration error in smart-server.yaml:` and each fails startup:
+
+- `decision.provider: must be 'typesafe' (got undefined)` — `decision.provider` is missing or not `typesafe`.
+- `decision.credentialRef: must be a non-empty string naming a credential (omit it for the default)`.
+- `decision.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with decision.credentialRef (your composition root resolves the name).`
+- `decision.timeoutMs: must be a positive integer (milliseconds)` / `decision.maxRetries: must be a non-negative integer` (`0` is valid for `maxRetries`).
+- `rag.retrieval: must be a mapping of store key → strategy` / `rag.retrieval.<store>: must be a mapping`.
+- `rag.retrieval.<store>.strategy: must be one of embedding | rerank | rerank-all (got …)`.
+- `rag.retrieval.<store>.reranker: required for strategy: rerank (decision | llm)` (also for `rerank-all`) / `….reranker: must be one of decision | llm (got …)`.
+- `rag.retrieval.<store>.reranker: decision requires a decision: section`.
+- `rag.retrieval.<store>.llm: required for reranker: llm (a key of the llm: map)` / `rag.retrieval.<store>.llm: "<key>" is not a key of the llm: map`.
+- `rag.retrieval.<store>.maxCandidates: required for strategy: rerank-all`; `….overfetch` / `….maxCandidates: must be a positive integer`.
+- A field that does nothing for the chosen strategy: `rag.retrieval.<store>.<field>: only applies to strategy rerank / rerank-all`, `….overfetch: only applies to strategy rerank`, `….maxCandidates: only applies to strategy rerank-all`, `….llm: only applies to reranker: llm`; and `rag.retrieval.<store>: set question or task, not both`; `….question: must be one of tool | passage (got …)`; `….task: must be a non-empty string`; `….<key>: unknown key`.
+- `reranker: removed — use rag.retrieval.<store>: { strategy: rerank, reranker: decision }` — the top-level `reranker:` section is not read; move it under `rag.retrieval`.
+- `subagent '<name>' rag.retrieval: strategies are server-wide — set them in the main config's rag.retrieval` — a worker config must not declare `rag.retrieval`.
+
+Errors raised while the server builds its strategies (they fire only for entries with `reranker: decision`; a `decision:` section alone builds nothing):
+
+- `BuildAgentDeps.makeDecisionModel is required: …` — a consumer of `SmartServer`/`buildAgent` asked for a decision model without supplying the seam (the `llm-agent` binary supplies it).
+- `credentialRef 'DECISION' must hold a api-key credential for decision typesafe, got none` — set `DECISION_API_KEY` (or the `<REF>_API_KEY` of the named ref; a named ref with no variable fails with `credentialRef '<REF>' for decision typesafe has no entry configured`).
+
+---
+
 ## Rate limiting
 
 ### `400 INVALID_ARGUMENT ... batchSize value of N but the supported range is from 1 (inclusive) to 251 (exclusive)`
@@ -299,6 +380,38 @@ across resource groups, or raise the model's limit.
 **Cause.** Some MCP tools failed to embed, or a client's `tools/list` failed. RAG-based tool selection cannot see the missing tools. The HTTP code stays `200` — the server can still serve, so a load balancer must not drop it.
 
 **Cause vs. fix, by field.** `clientFailures > 0` points at an unreachable MCP endpoint; those tools never reached `total`, which is why `complete` — not `vectorized === total` — is the signal to read. A non-empty failure list with `clientFailures: 0` means embedding errors, usually rate limiting. The full list of failed tool names is not in the health body (it is polled too often for that); read it from the agent's `getToolCatalogStatus()`.
+
+### `config_warning`: `rag.retrieval.<key> names no store`
+
+**Symptom.** At startup the log shows `config_warning` with `rag.retrieval.tool names no store; known stores: tools, history, …`, and the entry has no effect.
+
+**Cause.** A `rag.retrieval` key matches no store: a typo (`tool:` for `tools:`), or a collection that is not registered in the global RAG registry. Keys that name a collection appearing at run time (`user/<name>`, `session/<name>`) are not checked. It is a warning, not an error, because a collection can be registered after startup.
+
+**Fix.** Use one of the listed store names (`tools`, `history`, or a collection's bare name). For a collection that appears only after startup the entry is ignored until the store exists.
+
+### A client disconnect is logged as `request_cancelled`
+
+**Symptom.** The log shows `request_cancelled` (with `durationMs`) instead of `request_done`, and nothing more is written for that request.
+
+**Cause.** The chat route and the adapter route (`/v1/messages`) abort the request when the client closes the connection before the response finished. The abort reaches the LLM, reranker and MCP calls of that request, so they stop spending tokens. A connection that closes after the response finished neither aborts nor logs this event.
+
+**Fix.** None needed: it is not an error. A caller's cancellation also never counts against a circuit breaker (`isCallerCancellation`), so disconnecting clients cannot open the breaker in `/health`. A call cut off by the agent's own timeout (`SmartAgentConfig.timeoutMs`, aborts with a `TimeoutError` reason) is still a failure and does count. Known limitation: the SAP AI Core embedder ignores the signal, so an embed call already in flight finishes.
+
+### `/health` lists `circuitBreakers`, one of them `open`
+
+**Symptom.** `/health` returns `"status": "degraded"` and a `circuitBreakers` array of `{ index, state }` entries, one with `"state": "open"`.
+
+**Cause.** The list has no labels. Order: one LLM breaker per `llm:` key, in the order the keys are first resolved — `main`, `classifier` (always held; built from `main` when there is no `classifier` entry) and `helper` (only with an `llm.helper` entry) at startup, every other key lazily, when a role, a worker or a `reranker: llm` arm first resolves it (often the first request that needs it) — and the embedder breaker always last. An index is therefore not a stable name: a lazily resolved key joins the list when it is first used, which shifts the embedder breaker's index (and puts that key before it). A `PUT /v1/config` swap of a key replaces that key's breaker in place, at the same index; the old breaker leaves the list (the `reranker: llm` arm keeps the old wrapper, so that breaker still guards it without being listed). So read the last entry as the embedder; for an LLM entry, count from the start only over the keys resolved so far. Requests of every pipeline, the controller and the stepper included, move these breakers. An LLM breaker opens after `circuitBreaker.failureThreshold` consecutive failed calls of that key's model — a call counts once, after its retries (retry runs inside the breaker), so a throttled request is one failure, not four.
+
+**Fix.** Fix the failing model or embedder; the breaker goes half-open after `recoveryWindowMs` and the next call decides. A worker's own embedder (a `subagents:` entry with its own `rag:`) has no breaker.
+
+### Tool catalog stays partial after the embedder recovered (startup breaker)
+
+**Symptom.** `/health` shows `"toolCatalog": { "complete": false, ... }` (or fewer skills are selectable) after an embedder outage at startup, and it does not heal when the embedder is back.
+
+**Cause.** Startup vectorization runs through the embedder breaker. When consecutive embed failures reach `circuitBreaker.failureThreshold` mid-startup, the breaker opens and the remaining tool and skill upserts fail immediately instead of being tried. The catalog is vectorized once, at startup, so it stays partial even after the breaker recovers, until the server restarts.
+
+**Fix.** Fix the embedder (credentials, rate limit, connectivity), or raise `circuitBreaker.failureThreshold` so a burst of failures at startup does not open it, then restart the server.
 
 ---
 

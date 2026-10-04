@@ -16,6 +16,7 @@ export {
 } from './adapters/llm-adapter.js';
 export { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 export { NonStreamingLlm } from './adapters/non-streaming-llm.js';
+export { wrapDecisionModel } from './adapters/usage-logging-decision-model.js';
 export { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 export {
   OrchestratorError,
@@ -179,6 +180,14 @@ export {
 // ---------------------------------------------------------------------------
 // Reranker
 // ---------------------------------------------------------------------------
+export {
+  DECISION_RERANK_DEFAULT_CRITERIA,
+  DECISION_RERANK_DEFAULT_TASK,
+  DecisionReranker,
+  type DecisionRerankerOptions,
+  PASSAGE_QUESTION,
+  TOOL_QUESTION,
+} from './reranker/decision-reranker.js';
 export { LlmReranker } from './reranker/llm-reranker.js';
 export { NoopReranker } from './reranker/noop-reranker.js';
 // ---------------------------------------------------------------------------
@@ -190,6 +199,10 @@ export {
   type TokenBucketConfig,
   TokenBucketRateLimiter,
 } from './resilience/token-bucket-rate-limiter.js';
+// ---------------------------------------------------------------------------
+// Retrieval strategies
+// ---------------------------------------------------------------------------
+export * from './retrieval/index.js';
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
@@ -229,17 +242,14 @@ export {
 // SubAgent adapters
 // ---------------------------------------------------------------------------
 export { SmartAgentSubAgent } from './subagent/smart-agent-subagent.js';
-
 // ---------------------------------------------------------------------------
 // Tracer
 // ---------------------------------------------------------------------------
 export { NoopTracer } from './tracer/noop-tracer.js';
-
 // ---------------------------------------------------------------------------
 // Utils
 // ---------------------------------------------------------------------------
 export { LazyInitError, type LazyOptions, lazy } from './utils/lazy.js';
-
 // ---------------------------------------------------------------------------
 // Validator
 // ---------------------------------------------------------------------------

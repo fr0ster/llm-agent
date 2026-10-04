@@ -2,6 +2,7 @@ export {
   BatchChunkingEmbedder,
   DEFAULT_MAX_BATCH_SIZE,
 } from './batch-chunking-embedder.js';
+export { isCallerCancellation } from './caller-cancellation.js';
 export {
   CircuitBreaker,
   type CircuitBreakerConfig,

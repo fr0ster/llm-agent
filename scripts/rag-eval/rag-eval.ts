@@ -10,8 +10,19 @@
  *   - select:   QueryEmbedding → store.query(K) → DEFAULT_TOOL_SELECTION →
  *               toolNameFromRecord, as ToolSelectHandler does
  *
+ * Retrieval strategies (--retrieval): the store is wrapped with
+ * applyRetrievalStrategy and queried through it, as the server does. The
+ * `embedding` arm always runs and is the baseline the others are compared to.
+ *
+ * A reranker failure falls back to the embedding order and still answers ok;
+ * every fallback is counted per case and arm, and any fallback in a rerank arm
+ * fails the run (exit 3) unless --allow-fallback.
+ *
  * Usage: npx tsx scripts/rag-eval/rag-eval.ts [--matrix f] [--only name]
  *          [--k 5] [--queries f] [--tools f] [--json out.json]
+ *          [--retrieval embedding,rerank,rerank-all] [--reranker decision,llm]
+ *          [--overfetch 2] [--max-candidates 30] [--config f --llm-key KEY]
+ *          [--allow-fallback]
  * See scripts/rag-eval/README.md.
  */
 
@@ -21,21 +32,36 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import type {
+  ILlm,
   ILogger,
   IMcpClient,
   IRag,
+  IReranker,
   IRetrievalEmbedder,
+  IRetrievalStrategy,
   McpTool,
   RagResult,
 } from '../../packages/llm-agent/src/index.js';
 import {
   QueryEmbedding,
+  staticApiKey,
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '../../packages/llm-agent/src/index.js';
 import { NoopRequestLogger } from '../../packages/llm-agent-libs/src/logger/noop-request-logger.js';
 import { vectorizeMcpTools } from '../../packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.js';
 import { DEFAULT_TOOL_SELECTION } from '../../packages/llm-agent-libs/src/pipeline/tool-selection/index.js';
+import {
+  DecisionReranker,
+  LlmReranker,
+  TOOL_QUESTION,
+} from '../../packages/llm-agent-libs/src/reranker/index.js';
+import {
+  applyRetrievalStrategy,
+  EmbeddingRetrieval,
+  RerankAllRetrieval,
+  RerankedRetrieval,
+} from '../../packages/llm-agent-libs/src/retrieval/index.js';
 import { buildCompositionDeps } from '../../packages/llm-agent-server/src/composition/index.js';
 import {
   type SmartServerEmbedderConfig,
@@ -43,9 +69,20 @@ import {
   toMakeRagInput,
 } from '../../packages/llm-agent-server-libs/src/smart-agent/rag-config.js';
 import { resolveRetrievalEmbedder } from '../../packages/llm-agent-server-libs/src/smart-agent/resolve-agent-embedder.js';
+import type { SmartServerLlmConfig } from '../../packages/llm-agent-server-libs/src/smart-agent/smart-server.js';
+import {
+  get,
+  loadYamlConfig,
+} from '../../packages/llm-agent-server-libs/src/smart-agent/yaml-loader.js';
+import { TypeSafeDecisionModel } from '../../packages/typesafe-decision/src/index.js';
+import {
+  type ArmFallbacks,
+  fallbackVerdict,
+  RerankFallbackCounter,
+} from './rerank-fallbacks.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPORT_KS = [1, 5, 10, 15] as const;
+const REPORT_KS = [1, 3, 5, 10, 15] as const;
 
 interface MatrixEntry {
   name: string;
@@ -65,6 +102,32 @@ interface CaseResult {
   /** An expected tool is in the selection made at K = --k. */
   selected: boolean;
   top5: string[];
+  top3: string[];
+  /** Rerank fallbacks to the embedding order while answering this case. */
+  fallbacks: number;
+}
+/** One retrieval arm: a strategy (+ reranker) over the same written store. */
+interface ArmSpec {
+  label: string;
+  /** Strategy name as printed: embedding | rerank | rerank-all. */
+  retrieval: string;
+  reranker?: string;
+}
+interface ArmResult {
+  label: string;
+  skipped?: string;
+  recall?: Record<string, number>;
+  selectedAtK?: number;
+  mrr?: number;
+  avgStoreMs?: number;
+  /** Cases ranked strictly better / worse than the embedding baseline. */
+  better?: number;
+  worse?: number;
+  /** Cases where the reranker fell back to the embedding order (rerank arms). */
+  fallbackCases?: number;
+  /** First fallback reason (`code: message`). */
+  fallbackReason?: string;
+  cases?: CaseResult[];
 }
 interface ConfigResult {
   name: string;
@@ -81,10 +144,7 @@ interface ConfigResult {
   vectorizeMs?: number;
   avgEmbedMs?: number;
   avgStoreMs?: number;
-  recall?: Record<string, number>;
-  selectedAtK?: number;
-  mrr?: number;
-  cases?: CaseResult[];
+  arms?: ArmResult[];
 }
 
 function readJson<T>(path: string): T {
@@ -164,6 +224,8 @@ async function evalConfig(
   cases: Case[],
   k: number,
   runId: string,
+  arms: ArmSpec[],
+  buildStrategy: (arm: ArmSpec) => Promise<IRetrievalStrategy | string>,
 ): Promise<ConfigResult> {
   const deps = buildCompositionDeps(process.env);
   const store = withCollection(entry.store, collectionFor(entry.name, runId));
@@ -227,60 +289,110 @@ async function evalConfig(
         .filter((n): n is string => n !== undefined),
     );
 
+    // One embedding per case, shared by every arm (embed cost counted once).
     let embedMs = 0;
-    let storeMs = 0;
-    let unnamed = 0;
-    let orderViolations = 0;
-    const results: CaseResult[] = [];
+    const embeddings = [];
     for (const c of cases) {
       const embedding = embeddingFor(c.query);
       const e0 = performance.now();
       if (embedding instanceof QueryEmbedding) await embedding.toVector();
       embedMs += performance.now() - e0;
+      embeddings.push(embedding);
+    }
 
-      // Raw ranking at maxK, for recall@N and MRR.
-      const s0 = performance.now();
-      const raw = await toolsRag.query(embedding, maxK);
-      storeMs += performance.now() - s0;
-      if (!raw.ok) throw raw.error;
-      const names = raw.value.map((r: RagResult) =>
-        toolNameFromRecord(r.metadata),
-      );
-      unnamed += names.filter((n) => n === undefined).length;
-      for (let i = 1; i < raw.value.length; i++) {
-        if (raw.value[i].score > raw.value[i - 1].score + 1e-9)
-          orderViolations++;
+    let unnamed = 0;
+    let orderViolations = 0;
+    const armResults: ArmResult[] = [];
+    let baseline: CaseResult[] | undefined;
+    for (const arm of arms) {
+      const strategy = await buildStrategy(arm);
+      if (typeof strategy === 'string') {
+        armResults.push({ label: arm.label, skipped: strategy });
+        continue;
       }
-      const idx = names.findIndex(
-        (n) => n !== undefined && c.expect.includes(n),
-      );
+      const wrapped = applyRetrievalStrategy(toolsRag, strategy);
+      // Counts the strategy's rerank fallbacks (`retrieval_rerank_error`).
+      const fallbacks = new RerankFallbackCounter();
+      const opts = { sessionLogger: fallbacks.sessionLogger };
+      let storeMs = 0;
+      const results: CaseResult[] = [];
+      for (let ci = 0; ci < cases.length; ci++) {
+        const c = cases[ci];
+        const embedding = embeddings[ci];
 
-      // The selection path at K, exactly as ToolSelectHandler.
-      const atK = await toolsRag.query(embedding, k);
-      if (!atK.ok) throw atK.error;
-      const picked = new Set(
-        DEFAULT_TOOL_SELECTION.select(atK.value)
-          .map((r) => toolNameFromRecord(r.metadata))
-          .filter((n): n is string => n !== undefined && catalog.has(n)),
-      );
+        // Ranking at maxK through the strategy, for recall@N and MRR.
+        const s0 = performance.now();
+        const raw = await wrapped.query(embedding, maxK, opts);
+        storeMs += performance.now() - s0;
+        if (!raw.ok) throw raw.error;
+        const names = raw.value.map((r: RagResult) =>
+          toolNameFromRecord(r.metadata),
+        );
+        if (arm.retrieval === 'embedding')
+          unnamed += names.filter((n) => n === undefined).length;
+        // Score order is a store contract; a reranker re-scores by design.
+        if (arm.retrieval === 'embedding') {
+          for (let i = 1; i < raw.value.length; i++) {
+            if (raw.value[i].score > raw.value[i - 1].score + 1e-9)
+              orderViolations++;
+          }
+        }
+        const idx = names.findIndex(
+          (n) => n !== undefined && c.expect.includes(n),
+        );
 
-      results.push({
-        query: c.query,
-        expect: c.expect,
-        rank: idx === -1 ? null : idx + 1,
-        selected: c.expect.some((e) => picked.has(e)),
-        top5: names.slice(0, 5).map((n) => n ?? '<no-id>'),
+        // The selection path at K, exactly as ToolSelectHandler.
+        const atK = await wrapped.query(embedding, k, opts);
+        if (!atK.ok) throw atK.error;
+        const picked = new Set(
+          DEFAULT_TOOL_SELECTION.select(atK.value)
+            .map((r) => toolNameFromRecord(r.metadata))
+            .filter((n): n is string => n !== undefined && catalog.has(n)),
+        );
+
+        results.push({
+          query: c.query,
+          expect: c.expect,
+          rank: idx === -1 ? null : idx + 1,
+          selected: c.expect.some((e) => picked.has(e)),
+          top5: names.slice(0, 5).map((n) => n ?? '<no-id>'),
+          top3: names.slice(0, 3).map((n) => n ?? '<no-id>'),
+          fallbacks: fallbacks.take(),
+        });
+      }
+
+      const n = results.length;
+      const recall: Record<string, number> = {};
+      for (const at of REPORT_KS) {
+        recall[`@${at}`] =
+          results.filter((r) => r.rank !== null && r.rank <= at).length / n;
+      }
+      const mrr =
+        results.reduce((x, r) => x + (r.rank !== null ? 1 / r.rank : 0), 0) / n;
+      if (arm.retrieval === 'embedding') baseline = results;
+      const rankOf = (r: CaseResult | undefined) => r?.rank ?? 99;
+      armResults.push({
+        label: arm.label,
+        recall,
+        selectedAtK: results.filter((r) => r.selected).length / n,
+        mrr,
+        avgStoreMs: storeMs / n,
+        better: baseline
+          ? results.filter((r, i) => rankOf(r) < rankOf(baseline?.[i])).length
+          : undefined,
+        worse: baseline
+          ? results.filter((r, i) => rankOf(r) > rankOf(baseline?.[i])).length
+          : undefined,
+        ...(arm.retrieval === 'embedding'
+          ? {}
+          : {
+              fallbackCases: results.filter((r) => r.fallbacks > 0).length,
+              fallbackReason: fallbacks.firstReason,
+            }),
+        cases: results,
       });
     }
 
-    const n = results.length;
-    const recall: Record<string, number> = {};
-    for (const at of REPORT_KS) {
-      recall[`@${at}`] =
-        results.filter((r) => r.rank !== null && r.rank <= at).length / n;
-    }
-    const mrr =
-      results.reduce((s, r) => s + (r.rank !== null ? 1 / r.rank : 0), 0) / n;
     return {
       name: entry.name,
       ok: true,
@@ -290,12 +402,8 @@ async function evalConfig(
       unnamedResults: unnamed,
       scoreOrderViolations: orderViolations,
       vectorizeMs,
-      avgEmbedMs: embedMs / n,
-      avgStoreMs: storeMs / n,
-      recall,
-      selectedAtK: results.filter((r) => r.selected).length / n,
-      mrr,
-      cases: results,
+      avgEmbedMs: embedMs / cases.length,
+      arms: armResults,
     };
   } finally {
     try {
@@ -315,6 +423,23 @@ const pct = (x: number | undefined) =>
 const ms = (x: number | undefined) =>
   x === undefined ? '-' : `${Math.round(x)} ms`;
 
+const row = (a: ArmResult, k: number) => ({
+  'recall@1': pct(a.recall?.['@1']),
+  'recall@3': pct(a.recall?.['@3']),
+  'recall@5': pct(a.recall?.['@5']),
+  'recall@10': pct(a.recall?.['@10']),
+  'recall@15': pct(a.recall?.['@15']),
+  MRR: a.mrr?.toFixed(3),
+  [`selected@K=${k}`]: pct(a.selectedAtK),
+  'better/worse vs embedding':
+    a.better === undefined ? '-' : `${a.better}/${a.worse}`,
+  'store/query': ms(a.avgStoreMs),
+  'rerank fallbacks':
+    a.fallbackCases === undefined
+      ? '-'
+      : `${a.fallbackCases}/${a.cases?.length ?? 0}`,
+});
+
 function printConfig(r: ConfigResult, k: number, tools: number): void {
   console.log(`\n=== ${r.name} ===`);
   if (!r.ok) {
@@ -323,38 +448,112 @@ function printConfig(r: ConfigResult, k: number, tools: number): void {
   }
   console.log(
     `vectorized ${r.vectorized?.vectorized}/${tools} in ${ms(r.vectorizeMs)}; ` +
-      `store holds ${r.distinctRecords} distinct tool records`,
+      `store holds ${r.distinctRecords} distinct tool records; embed/query ${ms(r.avgEmbedMs)}`,
   );
   if (r.lostTools?.length)
     console.log(
       `WARNING: counted as vectorized but not retrievable: ${r.lostTools.join(', ')}`,
     );
-  console.table({
-    [r.name]: {
-      'recall@1': pct(r.recall?.['@1']),
-      'recall@5': pct(r.recall?.['@5']),
-      'recall@10': pct(r.recall?.['@10']),
-      'recall@15': pct(r.recall?.['@15']),
-      MRR: r.mrr?.toFixed(3),
-      [`selected@K=${k}`]: pct(r.selectedAtK),
-      vectorize: ms(r.vectorizeMs),
-      'embed/query': ms(r.avgEmbedMs),
-      'store/query': ms(r.avgStoreMs),
-    },
-  });
+  const ran = (r.arms ?? []).filter((a) => !a.skipped);
+  console.table(Object.fromEntries(ran.map((a) => [a.label, row(a, k)])));
+  for (const a of r.arms ?? [])
+    if (a.skipped) console.log(`SKIPPED ${a.label}: ${a.skipped}`);
   if (r.unnamedResults)
     console.log(`WARNING: ${r.unnamedResults} results carried no tool id`);
   if (r.scoreOrderViolations)
     console.log(
       `WARNING: ${r.scoreOrderViolations} score-order inversions in results`,
     );
-  const misses = (r.cases ?? []).filter((c) => !c.selected);
-  console.log(`missed at K=${k}: ${misses.length}`);
-  for (const m of misses) {
-    console.log(
-      `  - "${m.query}"\n    expect ${m.expect.join('|')}; rank ${m.rank ?? `>${Math.max(k, 15)}`}; top5: ${m.top5.join(', ')}`,
+  for (const a of ran) {
+    if (a.fallbackCases) {
+      console.log(
+        `WARNING: [${a.label}] reranker fell back to the embedding order in ${a.fallbackCases}/${a.cases?.length ?? 0} cases (first: ${a.fallbackReason}); those cases are marked [fallback]`,
+      );
+      for (const c of (a.cases ?? []).filter((x) => x.fallbacks > 0))
+        console.log(`  [fallback] "${c.query}"`);
+    }
+    const misses = (a.cases ?? []).filter((c) => !c.selected);
+    console.log(`[${a.label}] missed at K=${k}: ${misses.length}`);
+    for (const m of misses) {
+      console.log(
+        `  - ${m.fallbacks > 0 ? '[fallback] ' : ''}"${m.query}"\n    expect ${m.expect.join('|')}; rank ${m.rank ?? `>${Math.max(k, 15)}`}; top5: ${m.top5.join(', ')}`,
+      );
+    }
+  }
+}
+
+const RETRIEVALS = ['embedding', 'rerank', 'rerank-all'] as const;
+const RERANKERS = ['decision', 'llm'] as const;
+
+function csv(
+  value: string | undefined,
+  allowed: readonly string[],
+  flag: string,
+  dflt: string[],
+): string[] {
+  const list = value
+    ? value
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : dflt;
+  for (const v of list)
+    if (!allowed.includes(v))
+      throw new Error(`--${flag}: '${v}' is not one of ${allowed.join('|')}`);
+  return list;
+}
+
+function positiveInt(
+  value: string | undefined,
+  flag: string,
+  dflt: number,
+): number {
+  const n = value === undefined ? dflt : Number(value);
+  if (!Number.isInteger(n) || n < 1)
+    throw new Error(`--${flag} must be an integer >= 1`);
+  return n;
+}
+
+/** The embedding baseline first, then each requested rerank retrieval × reranker. */
+function planArms(retrievals: string[], rerankers: string[]): ArmSpec[] {
+  const arms: ArmSpec[] = [{ label: 'embedding', retrieval: 'embedding' }];
+  for (const retrieval of retrievals) {
+    if (retrieval === 'embedding') continue;
+    for (const reranker of rerankers)
+      arms.push({ label: `${retrieval}:${reranker}`, retrieval, reranker });
+  }
+  return arms;
+}
+
+/** A reranker, or the printed reason it cannot run (arm skipped, exit 0). */
+async function buildReranker(
+  kind: string,
+  llmKey: string | undefined,
+  configPath: string | undefined,
+): Promise<IReranker | string> {
+  if (kind === 'decision') {
+    const key = process.env.DECISION_API_KEY;
+    if (!key) return 'DECISION_API_KEY is not set';
+    return new DecisionReranker(
+      new TypeSafeDecisionModel({ credential: staticApiKey(key) }),
+      TOOL_QUESTION,
     );
   }
+  if (!configPath || !llmKey)
+    return '--config and --llm-key are required for the llm reranker';
+  const llmSection = get(loadYamlConfig(configPath), 'llm');
+  const cfg = get(llmSection, llmKey) as SmartServerLlmConfig | undefined;
+  if (!cfg) return `--config has no llm: entry '${llmKey}'`;
+  let llm: ILlm;
+  try {
+    llm = await buildCompositionDeps(process.env).makeLlm(cfg);
+  } catch (err) {
+    return `llm '${llmKey}' cannot be built: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  const task = TOOL_QUESTION.task;
+  if (typeof task !== 'string')
+    return 'TOOL_QUESTION.task is not plain text; the llm reranker needs a string';
+  return new LlmReranker(llm, { question: { task } });
 }
 
 async function main(): Promise<number> {
@@ -369,10 +568,50 @@ async function main(): Promise<number> {
         default: resolve(HERE, 'tools.mcp-abap-adt-readonly.json'),
       },
       json: { type: 'string' },
+      retrieval: { type: 'string' },
+      reranker: { type: 'string' },
+      overfetch: { type: 'string' },
+      'max-candidates': { type: 'string' },
+      config: { type: 'string' },
+      'llm-key': { type: 'string' },
+      'allow-fallback': { type: 'boolean', default: false },
     },
   });
   const k = Number.parseInt(values.k ?? '5', 10);
   if (!Number.isInteger(k) || k < 1) throw new Error(`--k must be >= 1`);
+  const retrievals = csv(values.retrieval, RETRIEVALS, 'retrieval', [
+    'embedding',
+  ]);
+  const rerankers = csv(values.reranker, RERANKERS, 'reranker', ['decision']);
+  const overfetch = positiveInt(values.overfetch, 'overfetch', 2);
+  const maxCandidates = positiveInt(
+    values['max-candidates'],
+    'max-candidates',
+    30,
+  );
+  const reportDepth = Math.max(k, ...REPORT_KS);
+  if (retrievals.includes('rerank-all') && maxCandidates < reportDepth)
+    throw new Error(
+      `--max-candidates (${maxCandidates}) must be >= max(--k, 15) = ${reportDepth} for a fair comparison`,
+    );
+  const arms = planArms(retrievals, rerankers);
+  const rerankerCache = new Map<string, Promise<IReranker | string>>();
+  const buildStrategy = async (
+    arm: ArmSpec,
+  ): Promise<IRetrievalStrategy | string> => {
+    if (arm.retrieval === 'embedding') return new EmbeddingRetrieval();
+    const kind = arm.reranker as string;
+    let pending = rerankerCache.get(kind);
+    if (!pending) {
+      pending = buildReranker(kind, values['llm-key'], values.config);
+      rerankerCache.set(kind, pending);
+    }
+    const reranker = await pending;
+    if (typeof reranker === 'string') return reranker;
+    return arm.retrieval === 'rerank'
+      ? new RerankedRetrieval(reranker, { overfetch })
+      : new RerankAllRetrieval(reranker, { maxCandidates });
+  };
   const tools = readJson<{ tools: McpTool[] }>(values.tools as string).tools;
   const cases = readJson<{ cases: Case[] }>(values.queries as string).cases;
   const matrix = readJson<{ configs: MatrixEntry[] }>(
@@ -385,14 +624,19 @@ async function main(): Promise<number> {
 
   const runId = randomBytes(4).toString('hex');
   console.log(
-    `rag-eval run ${runId}: ${tools.length} tools, ${cases.length} queries, K=${k}, configs: ${selected.map((s) => s.name).join(', ')}`,
+    `rag-eval run ${runId}: ${tools.length} tools, ${cases.length} queries, K=${k}, configs: ${selected.map((s) => s.name).join(', ')}; arms: ${arms.map((a) => a.label).join(', ')}` +
+      (arms.length > 1
+        ? `; overfetch ${overfetch}, max-candidates ${maxCandidates}`
+        : ''),
   );
 
   const results: ConfigResult[] = [];
   for (const entry of selected) {
     console.log(`\n--> ${entry.name}`);
     try {
-      results.push(await evalConfig(entry, tools, cases, k, runId));
+      results.push(
+        await evalConfig(entry, tools, cases, k, runId, arms, buildStrategy),
+      );
     } catch (err) {
       results.push({
         name: entry.name,
@@ -404,26 +648,19 @@ async function main(): Promise<number> {
   }
 
   console.log('\n=== summary ===');
-  console.table(
-    Object.fromEntries(
-      results.map((r) => [
-        r.name,
-        r.ok
-          ? {
-              'recall@1': pct(r.recall?.['@1']),
-              'recall@5': pct(r.recall?.['@5']),
-              'recall@10': pct(r.recall?.['@10']),
-              'recall@15': pct(r.recall?.['@15']),
-              MRR: r.mrr?.toFixed(3),
-              vectorize: ms(r.vectorizeMs),
-              'query (embed+store)': ms(
-                (r.avgEmbedMs ?? 0) + (r.avgStoreMs ?? 0),
-              ),
-            }
-          : { error: r.error },
-      ]),
-    ),
-  );
+  const summaryRows: Record<
+    string,
+    ReturnType<typeof row> | { error?: string }
+  > = {};
+  for (const r of results) {
+    if (!r.ok) {
+      summaryRows[r.name] = { error: r.error };
+      continue;
+    }
+    for (const a of r.arms ?? [])
+      if (!a.skipped) summaryRows[`${r.name} / ${a.label}`] = row(a, k);
+  }
+  console.table(summaryRows);
   if (values.json) {
     writeFileSync(
       values.json,
@@ -431,7 +668,24 @@ async function main(): Promise<number> {
       'utf8',
     );
   }
-  return results.every((r) => r.ok) ? 0 : 1;
+  const armFallbacks: ArmFallbacks[] = results.flatMap((r) =>
+    (r.arms ?? [])
+      .filter((a) => !a.skipped)
+      .map((a) => ({
+        label: `${r.name} / ${a.label}`,
+        reranks: a.fallbackCases !== undefined,
+        fallbackCases: a.fallbackCases ?? 0,
+        cases: a.cases?.length ?? 0,
+        firstReason: a.fallbackReason,
+      })),
+  );
+  const verdict = fallbackVerdict(
+    armFallbacks,
+    values['allow-fallback'] === true,
+  );
+  for (const line of verdict.lines) console.log(line);
+  if (!results.every((r) => r.ok)) return 1;
+  return verdict.failed ? 3 : 0;
 }
 
 main().then(

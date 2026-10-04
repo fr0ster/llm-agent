@@ -109,7 +109,47 @@ Design and migration: [MIGRATION-v27.md](MIGRATION-v27.md) items 6, 7, 10, 11; `
 server resources.
 
 **Mitigation:** `SmartAgentConfig.maxIterations` and `maxToolCalls` hard-cap the tool loop.
-`timeoutMs` aborts the entire pipeline via a merged `AbortSignal` after a wall-clock deadline.
+`timeoutMs` aborts the entire pipeline via a merged `AbortSignal` (`AbortSignal.any`) after a wall-clock deadline, with a `TimeoutError` reason. The HTTP routes also abort a request whose client disconnected before the response finished, so an abandoned request stops spending LLM, reranker and MCP calls; a caller's cancellation does not count against a circuit breaker (`isCallerCancellation`), so disconnecting clients cannot open it for every session.
+
+---
+
+### AS-7: Data sent to a third-party reranker
+
+**Threat:** A reranker that calls an external model (the `decision` reranker, i.e. TypeSafe AI's API, or an
+`llm` reranker over a hosted LLM) receives the user query and the candidate RAG passages. Sensitive text in
+either leaves the deployment's trust boundary, and a leaked or misused key exposes the account. Two
+independent mechanisms decide which stores' text is sent; they are stated separately.
+
+1. **Per store (`rag.retrieval`).** A store sends its query and candidates out only when **its own entry** is
+   `strategy: rerank` or `rerank-all` with an external reranker. A store listed with `strategy: embedding`,
+   or not listed, is never sent by this mechanism. The candidates are that store's records: for `tools` the
+   MCP tool-catalogue text (`Tool: <name> — <description>`, no input schema), for `history` session history
+   entries (which can contain earlier assistant answers built from back-end tool output), for a collection
+   its passages. Strategy applies on every path that reads the store, including the controller's per-step
+   tool selection, so a reranked `tools` store sends the step instruction once per step.
+2. **Legacy global reranker (a plugin's `reranker` export, or `withReranker`).** It reranks every store that
+   has **no** `rag.retrieval` entry, `history` and custom `ragStores` collections included, in the `rerank`
+   stage of the flat pipeline — and, if it calls an external model, sends those stores' records out. The
+   stores are those queried before the `rerank` stage; with `enrichedToolSearch: true` the `tools` store is
+   queried after it and is not sent. Any explicit entry — including `history: { strategy: embedding }` —
+   takes the store out of the global reranker, so `history` is then sent by neither mechanism.
+
+**Mitigation:** Both are opt-in: nothing is sent unless a `rag.retrieval` entry selects an external reranker
+(for `decision` that also needs the `decision:` section), or a plugin / `withReranker` reranker is loaded.
+To keep a store local, give it an explicit `strategy: embedding` entry. `TypeSafeDecisionModel` forces the
+SDK's logging off and passes every client option explicitly, so `TYPESAFE_*` environment variables on the host
+never redirect the key or URL or turn on body logging. Keys come from the environment by `credentialRef`
+(`decision.apiKey` in YAML is refused at startup). Error messages carry the error class, HTTP status and
+request id only — never the key or a request/response body.
+
+**Limitation:** Whatever the provider retains is governed by the provider's terms, not by this library.
+Do not enable it for data that may not leave the deployment. `rag.retrieval.history` applies to
+per-session requests, so an explicit `history: { strategy: embedding }` entry keeps session history out of a global
+(plugin / `withReranker`) reranker; without an entry the global reranker still sees it.
+
+**Session isolation of history.** All sessions share one history store; isolation rests on the `sessionId` filter
+of `IRag` (the `rag-history` stage queries with `scope: 'session'`). A custom `IRag` used as the history store
+**must** honour that filter, otherwise one session reads another's history. Every built-in store does.
 
 ---
 

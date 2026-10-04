@@ -315,6 +315,9 @@ curl http://localhost:4004/health
 - `components.mcp` is an array — one entry per configured MCP server — with `ok: boolean` and an optional `error` string.
 - `components.toolCatalog` reports startup tool vectorization and is **absent** when none ran (no tools store, or a read-only one). `complete: false` ⇒ `degraded`. Read `complete`, not `vectorized === total`: a client whose `tools/list` failed contributes to neither counter, so the counters alone would look like a full catalog — `clientFailures` is what exposes it. The full list of failed tool names is deliberately not in this payload (it is polled on a hot path); read it from the agent's `getToolCatalogStatus()`.
 
+- `circuitBreakers` (present when `circuitBreaker:` is configured) is an array of `{ index, state }`, one entry per breaker and no labels. Each LLM breaker is shared by every session and role that uses its key. Order: one LLM breaker per `llm:` key, in the order the keys are first resolved — `main`, `classifier` (always held; built from `main` when there is no `classifier` entry) and `helper` (only with an `llm.helper` entry) at startup, every other key lazily, when a role, a worker or a `reranker: llm` arm first resolves it (often the first request that needs it) — and the embedder breaker always last. An index is therefore not a stable name: a lazily resolved key joins the list when it is first used, which shifts the embedder breaker's index (and puts that key before it). A `PUT /v1/config` swap of a key replaces that key's breaker in place, at the same index; the old breaker leaves the list (the `reranker: llm` arm keeps the old wrapper, so that breaker still guards it without being listed). Any `open` breaker makes `status` `degraded`. A client disconnect is logged as `request_cancelled` and never counts as a breaker failure.
+- A `config_warning` at startup such as `rag.retrieval.<key> names no store; known stores: …` means a `rag.retrieval` key matches no store (usually a typo).
+
 Use the `200`/`503` split for Kubernetes readiness probes; use `status` for alerting dashboards.
 
 ### Prometheus metrics
@@ -353,6 +356,7 @@ const tracer = new OtelTracerAdapter();
 ```
 
 Spans are emitted for: classification, RAG query, context assembly, LLM chat, tool execution, and reranking.
+A failed rerank of a store with a `rag.retrieval` strategy logs the session step `retrieval_rerank_error` (`store`, `strategy`, `code`, `message` — for a decision reranker `decision rerank failed: <DECISION_CODE>: <message>`) and keeps the embedding order; a failed global (plugin / `withReranker`) rerank sets the span attribute `<store>.rerank_error` (always the code `RERANK_ERROR`) and logs a `rerank_error` session step whose `message` reads `decision rerank failed: <DECISION_CODE>: <message>` for a decision reranker.
 
 ### Session debug logs
 
@@ -397,11 +401,29 @@ agent:
   historyAutoSummarizeLimit: 10
 ```
 
+## Per-store reranking (`rag.retrieval`)
+
+A store with `strategy: rerank` / `rerank-all` and `reranker: decision` sends the user query and its retrieved
+candidates to TypeSafe's API: one request per query, split only when the candidates exceed the batch budget.
+Only stores with such an entry are sent: `tools` (MCP tool descriptions; queried once per request in the flat
+pipeline and once per step on the controller), a knowledge collection, or `history` (which may include earlier
+assistant answers derived from back-end tool output). A store with `strategy: embedding`, or no entry, is not
+sent by this mechanism; a plugin / `withReranker` reranker still reranks the stores without an entry (see
+[SECURITY_THREAT_MODEL.md](SECURITY_THREAT_MODEL.md), AS-7). Reranked scores replace the cosine scores, so a
+`threshold` tool-selection strategy (`agent.toolSelection.minScore`) compares against probabilities in
+`[0, 1]` when `tools` is reranked (see [PERFORMANCE.md](PERFORMANCE.md#tool-selection-semantic-distance)).
+Size the network egress and the provider quota (`decision.timeoutMs`, `decision.maxRetries`) accordingly. The
+key is `DECISION_API_KEY` (or `<REF>_API_KEY` with `decision.credentialRef`) in the server's environment.
+`rag.retrieval` is server-wide: a worker (subagent) config that declares it is rejected at startup. `decision:`
+and `rag.retrieval` are not hot-reloadable; a change takes a restart. A `reranker: llm` entry keeps the LLM instance resolved at startup: a `PUT /v1/config` swap of the model behind its key (`main`, `classifier` or `helper`) reaches the agents but not that reranker; restart to rerank with the new model. The chat and adapter routes abort the request when the client disconnects before the response finished, and the reranker receives that `signal`; otherwise a slow reranker call is cut off only by the provider's own
+timeout (`decision.timeoutMs`).
+
 ## Security Checklist
 
 - **API key management** — Use environment variables or secret managers (AWS Secrets Manager, Vault). Configs hold `credentialRef` names only; a secret never enters a loaded config, so there is no YAML literal to store in a committed file.
 - **Network binding** — Bind to `127.0.0.1` for local-only access. Use a reverse proxy (nginx, Caddy) for public exposure with TLS termination.
 - **MCP transport security** — Use TLS (`https://`) for remote MCP HTTP endpoints. For local MCP stdio servers, ensure the spawned process is trusted.
+- **Third-party data egress** — a `rag.retrieval` entry with `reranker: decision` (or a global plugin reranker) sends the user query and retrieved passages to an external model (see [SECURITY_THREAT_MODEL.md](SECURITY_THREAT_MODEL.md), AS-7). Enable it only where that is acceptable.
 - **Rate limiting** — Add rate limiting at the reverse proxy layer. SmartServer does not implement rate limiting internally.
 - **Input validation** — The `externalToolsValidationMode` config (`strict` vs `permissive`) controls how strictly tool arguments are validated against schemas.
 - **Prompt injection** — Wire an `IPromptInjectionDetector` via the builder for tool-result inspection. The library ships a `HeuristicInjectionDetector`.

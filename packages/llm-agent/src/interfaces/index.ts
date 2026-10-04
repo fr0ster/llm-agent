@@ -29,6 +29,22 @@ export type {
 } from './coordinator.js';
 export type { DagPlan, PlanNode } from './dag-plan.js';
 export type {
+  ChoiceAnswer,
+  ChoiceQuestion,
+  DecisionAnswer,
+  DecisionEntry,
+  DecisionErrorCode,
+  DecisionQuestion,
+  DecisionRequest,
+  DecisionResult,
+  IDecisionModel,
+  NoulAnswer,
+  NoulQuestion,
+  ScoreAnswer,
+  ScoreQuestion,
+} from './decision-model.js';
+export { DecisionError } from './decision-model.js';
+export type {
   ErrorContext,
   ErrorReaction,
   IErrorStrategy,
@@ -179,6 +195,11 @@ export type {
   ToolCallEntry,
 } from './request-logger.js';
 export type { IReranker } from './reranker.js';
+export type {
+  IRagDecorator,
+  IRetrievalStrategy,
+} from './retrieval-strategy.js';
+export { isRagDecorator } from './retrieval-strategy.js';
 export type {
   ExecutionFailureInput,
   ExecutionReviewDecision,

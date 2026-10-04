@@ -1,0 +1,126 @@
+{
+  "language": "en",
+  "note": "User-intent phrasing, not copied tool descriptions. A case hits when ANY expected tool is in the selection. Catalog 16.0.0 file: every expected name `Read<X>` absent from the catalog is renamed `Get<X>` where `Get<X>` is present; names present as-is and names with no such counterpart are left unchanged.",
+  "cases": [
+    {
+      "query": "Show me the source code of class ZCL_ORDER_API",
+      "expect": ["GetClass"]
+    },
+    {
+      "query": "What fields does database table MARA have?",
+      "expect": ["GetTable", "GetTypeInfo", "GetStructure"]
+    },
+    {
+      "query": "Show the first 20 rows of table T001",
+      "expect": ["GetTableContents", "GetSqlQuery"]
+    },
+    {
+      "query": "Run a SELECT on SFLIGHT for carrier LH",
+      "expect": ["GetSqlQuery", "GetTableContents"]
+    },
+    {
+      "query": "Which objects are in package ZSALES?",
+      "expect": ["GetPackageContents", "GetPackageTree", "GetObjectsList"]
+    },
+    {
+      "query": "Where is function module BAPI_USER_GET_DETAIL used?",
+      "expect": ["GetWhereUsed"]
+    },
+    {
+      "query": "Find all classes whose name starts with ZCL_INV",
+      "expect": ["SearchObject", "GetObjectsByType"]
+    },
+    {
+      "query": "Show the latest short dumps in the system",
+      "expect": ["RuntimeListFeeds"]
+    },
+    {
+      "query": "Open the short dump with a given ID and explain the error",
+      "expect": ["RuntimeGetDumpById"]
+    },
+    {
+      "query": "List my open transport requests",
+      "expect": ["ListTransports"]
+    },
+    {
+      "query": "What objects are in transport DEVK900123?",
+      "expect": ["GetTransport"]
+    },
+    {
+      "query": "Show the definition of interface IF_HTTP_CLIENT",
+      "expect": ["GetInterface"]
+    },
+    {
+      "query": "Read the CDS view ZI_SALESORDER",
+      "expect": ["GetDdl"]
+    },
+    {
+      "query": "Show the fixed values of domain XFELD",
+      "expect": ["GetDomain", "GetTypeInfo"]
+    },
+    {
+      "query": "Show the text of message 001 in message class ZMSG",
+      "expect": ["GetMessageClassMessage", "GetMessageClass"]
+    },
+    {
+      "query": "Show the source of function module RFC_READ_TABLE",
+      "expect": ["GetFunctionModule"]
+    },
+    {
+      "query": "Which function modules belong to function group SUSR?",
+      "expect": ["ListFunctionModules", "GetFunctionGroup"]
+    },
+    {
+      "query": "Show the version history of class ZCL_BILLING",
+      "expect": ["GetObjectVersions"]
+    },
+    {
+      "query": "Compare two versions of program ZREPORT",
+      "expect": ["GetObjectVersionDiff"]
+    },
+    {
+      "query": "Which objects are modified but not activated yet?",
+      "expect": ["GetInactiveObjects"]
+    },
+    {
+      "query": "Show the behavior definition of the RAP business object ZI_TRAVEL",
+      "expect": ["GetBehaviorDefinition"]
+    },
+    {
+      "query": "Show the service binding ZUI_TRAVEL_O4",
+      "expect": ["GetServiceBinding"]
+    },
+    {
+      "query": "What program and screen does transaction VA01 start?",
+      "expect": ["GetTransaction"]
+    },
+    {
+      "query": "Execute the console class ZCL_DEMO_RUN and show its output",
+      "expect": ["RuntimeRunClass"]
+    },
+    {
+      "query": "Show the current system messages from SM02",
+      "expect": ["RuntimeListSystemMessages"]
+    },
+    {
+      "query": "List the implementations of enhancement spot ES_SALES",
+      "expect": ["GetEnhancementSpot", "GetEnhancementImpl", "GetEnhancements"]
+    },
+    {
+      "query": "Parse this ABAP snippet into an abstract syntax tree",
+      "expect": ["GetAbapAST"]
+    },
+    {
+      "query": "Show the definition of data element MATNR",
+      "expect": ["GetDataElement", "GetTypeInfo"]
+    },
+    {
+      "query": "Describe MARA, VBAK and ZCL_X in one call",
+      "expect": ["DescribeByList"]
+    },
+    {
+      "query": "List all includes of program SAPMV45A",
+      "expect": ["GetIncludesList"]
+    }
+  ]
+}

@@ -30,6 +30,7 @@ export type CredentialFor = (ref: string) => CredentialEntry | undefined;
 export const DEFAULT_LLM_REF = 'LLM';
 export const DEFAULT_STORE_REF = 'RAG_STORE';
 export const DEFAULT_EMBEDDER_REF = 'RAG_EMBEDDER';
+export const DEFAULT_DECISION_REF = 'DECISION';
 
 /**
  * A function, not a map literal, so nothing is read or parsed until a ref asks —

@@ -102,6 +102,66 @@ agent:
 - **Higher values (15–20):** Better recall, larger context, higher latency and token cost.
 - Works best with a reranker — retrieve broadly (high k), then rerank to the top few.
 
+### Retrieval strategy per store (`rag.retrieval`)
+
+Each store ranks its results with the strategy you choose for it; a store you do not list keeps embedding
+ranking. Choose per store, by what the store holds:
+
+| Store | Suggested | Why |
+|---|---|---|
+| `tools` | `rerank` with `reranker: decision` | The question "will calling this tool carry out the request?" is where embedding ranking is weakest (recorded below); the pool is small |
+| a knowledge collection | `rerank` first; `rerank-all` only when recall is the problem | `rerank-all` sends `maxCandidates` records on every query |
+| `history` | `embedding` | Keeps session history out of any reranker |
+
+**Latency per query.** A reranked query costs one embedding query plus one reranker call. With
+`reranker: decision` that is one `decide()` request per batch; the batch is split only when the candidates
+exceed the token budget (`maxBatchTokens`, default 48000 estimated tokens at about 4 characters per token,
+`concurrency` default 4 in flight). With `reranker: llm` it is one LLM call per `batchSize` candidates (default
+20, `concurrency` default 2). A larger candidate set means bigger or more numerous batches, not a call per
+passage. The `tools` store is queried once per request in the flat pipeline, but **once per controller step**
+(`selectTools(step.instructions, 20)`, through `IToolsRagHandle.query`, which the stepper modes use as well), so a reranked `tools` store adds one
+reranker call per step. A failure is not an error for the request: the embedding order is kept (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#retrieval-reranking-has-no-effect)). Cancellation: the reranker
+receives the request's `signal`; the chat and adapter routes abort the request when the client disconnects before the response finished, so a
+reranker call (like every LLM and MCP call of that request) stops spending tokens. Otherwise a slow reranker call is
+bounded only by the provider's own timeout (`decision.timeoutMs`); the SmartServer YAML `agent:` section has no
+`timeoutMs` key.
+
+**Skills are vectorized once.** The skill manager's skills are embedded into the `tools` store at startup only; a
+per-session agent shares the same manager and never re-upserts them, so the embedding cost does not grow with the
+number of sessions (`withSkillManager(manager, { vectorize: false })` is how a builder skips it).
+
+**How many candidates.** `rerank` fetches `k × overfetch` (`overfetch`, default 2): a wider pool can lift a
+tool the embedder put just outside the top-k, at the cost of a larger reranker request. `rerank-all` fetches
+`maxCandidates`, a number you configure — it is never derived from the catalog size, so size it for your store
+(the eval README requires at least `max(--k, 15)`). Whatever you choose, a tool absent from the candidate pool
+cannot be rescued: in the recorded run below recall@15 is the same 96.7% for every arm, so the reranker only
+reorders what the embedder already found.
+
+**Recorded numbers.** Measured 2026-10-04 in `scripts/rag-eval` (see its README for the exact command): 218-tool
+`mcp-abap-adt` 16.0.0 catalog (`--exposition=readonly,high`), 30 English queries, embedder
+`text-embedding-ada-002` on SAP AI Core, K=5, `decision` reranker (TypeSafe Jev), `--max-candidates 30`,
+`--overfetch 2`:
+
+| arm | recall@1 | recall@5 | recall@10 | recall@15 | MRR | better/worse |
+|---|---|---|---|---|---|---|
+| embedding | 56.7% | 93.3% | 96.7% | 96.7% | 0.691 | - |
+| `rerank:decision` | 90.0% | 96.7% | 96.7% | 96.7% | 0.928 | 11/0 |
+| `rerank-all:decision` | 90.0% | 96.7% | 96.7% | 96.7% | 0.933 | 12/0 |
+
+One sample of 30 cases: a direction, not a benchmark. recall@3 was added to the harness after this run and is
+not recorded; the `llm` reranker has not been measured yet.
+
+**Scores on `[0, 1]`.** A reranker replaces `RagResult.score` with its own probability. With a reranked
+`tools` store a `threshold` tool-selection `minScore` therefore compares against those probabilities, not
+cosine similarity — recalibrate it. The `LlmReranker` contract: the reply must be a JSON array of N numbers
+in `[0, 1]`, one per candidate; anything else is an error (the embedding order is kept), never zero-filled
+scores.
+
+**Global reranker (plugin / `withReranker`).** It reranks every store without a `rag.retrieval` entry, in the
+`rerank` stage of the flat pipeline, once per store per request. An explicit entry (`embedding` included)
+takes a store out of it.
+
 ## Tool Selection (Semantic Distance)
 
 Tools are chosen by semantic distance over the `tools` RAG store. After retrieval, a pluggable **tool-selection strategy** filters the result set before the tools are exposed to the LLM. No domain classifier rules are needed — tool exposure is driven purely by RAG semantic distance.
@@ -111,7 +171,7 @@ Tools are chosen by semantic distance over the `tools` RAG store. After retrieva
 | Strategy | YAML | Behaviour |
 |----------|------|-----------|
 | `top-k` (default) | `strategy: top-k` | Expose the K nearest tools; K is controlled by `agent.ragQueryK`. Unchanged from prior behavior. |
-| `threshold` | `strategy: threshold` | Expose only tools whose cosine score is ≥ `minScore`. An off-topic query whose nearest tools all fall below the cutoff surfaces **no tools**, so the LLM answers as plain chat. |
+| `threshold` | `strategy: threshold` | Expose only tools whose score is ≥ `minScore` (`agent.toolSelection.minScore`). The score is the cosine score unless a reranker runs: a reranker replaces `RagResult.score`, so with a reranked `tools` store (`rag.retrieval.tools` with `rerank` / `rerank-all`) or a global plugin reranker that reaches `tools`, the threshold applies to reranked probabilities in `[0, 1]`, not to cosine similarity — recalibrate `minScore` (a global reranker acts only in the flat `rerank` stage; with `enrichedToolSearch: true` the `tools` store is queried after it and keeps cosine scores). An off-topic query whose nearest tools all fall below the cutoff surfaces **no tools**, so the LLM answers as plain chat. |
 
 ### YAML configuration
 

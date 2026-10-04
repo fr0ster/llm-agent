@@ -11,6 +11,7 @@ import {
 import { normalizeLlmConfig } from './llm-config-map.js';
 import {
   resolveAgentSection,
+  resolveDecisionSection,
   resolveLlmSection,
   resolveMcpSection,
   resolvePipelineSelection,
@@ -94,6 +95,12 @@ function resolveWorkerConfig(
   env: NodeJS.ProcessEnv,
   subConfigPath: string,
 ): SmartServerWorkerConfig {
+  // Strategies are server-wide (§13.4): never silently ignored in a worker.
+  if ((get(subYaml, 'rag', 'retrieval') ?? undefined) !== undefined) {
+    throw new Error(
+      `subagent '${name}' rag.retrieval: strategies are server-wide — set them in the main config's rag.retrieval`,
+    );
+  }
   const { llm: rawLlm, ...withoutLlm } = subYaml;
   const llm = parseWorkerLlm(name, rawLlm);
   const { llm: _none, ...rest } = resolveSmartServerConfig(
@@ -284,6 +291,10 @@ export function resolveSmartServerConfig(
     ...(yaml.skillPlugins
       ? { skillPlugins: parseSkillPluginsConfig(yaml.skillPlugins) }
       : {}),
+    ...(() => {
+      const decision = resolveDecisionSection(yaml);
+      return decision ? { decision } : {};
+    })(),
   };
   validateResolvedConfig(resolved, yaml, env, {
     skipProviderRuntimeChecks: options.skipProviderRuntimeChecks,

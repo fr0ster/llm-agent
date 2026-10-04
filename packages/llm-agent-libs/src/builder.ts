@@ -32,6 +32,7 @@ import type {
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
+  IRetrievalStrategy,
   ISkillManager,
   ISubAgent,
   ISubpromptClassifier,
@@ -61,6 +62,7 @@ import {
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
+  isRagDecorator,
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
@@ -114,7 +116,9 @@ import type { IPluginLoader } from './plugins/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
 import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
-import { RetryLlm } from './resilience/retry-llm.js';
+import { retryInsideBreakers } from './resilience/retry-llm.js';
+import { applyRetrievalStrategy } from './retrieval/index.js';
+import { ownBuiltInStore } from './retrieval/strategy-rag.js';
 import type { ISessionManager } from './session/types.js';
 import {
   DefaultSubAgentContextBuilder,
@@ -156,6 +160,16 @@ export function prepareMcpConfigs(
   return configs.map((c) => ({ ...c, requestHeadersStrategy }));
 }
 
+/** True when `store`, or a store it decorates, is a FallbackRag on `breaker` (bounded walk). */
+function isGuardedBy(store: IRag, breaker: CircuitBreaker): boolean {
+  let cur: IRag | undefined = store;
+  for (let depth = 0; cur && depth < 16; depth++) {
+    if (cur instanceof FallbackRag && cur.breaker === breaker) return true;
+    cur = isRagDecorator(cur) ? cur.inner : undefined;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // SmartAgentBuilder
 // ---------------------------------------------------------------------------
@@ -181,11 +195,14 @@ export class SmartAgentBuilder {
   private _tracer?: ITracer;
   private _metrics?: IMetrics;
   private _reranker?: IReranker;
+  private readonly _retrievalStrategies = new Map<string, IRetrievalStrategy>();
   private _queryExpander?: IQueryExpander;
   private _toolCache?: IToolCache;
   private _outputValidator?: IOutputValidator;
   private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
+  private _sharedBreakers?: { embedder: CircuitBreaker };
+  private _vectorizeSkills = true;
   private _requestLogger?: IRequestLogger;
   private _agentOverrides: Partial<SmartAgentConfig> = {};
   private _pluginLoader?: IPluginLoader;
@@ -411,6 +428,26 @@ export class SmartAgentBuilder {
     return this;
   }
 
+  /**
+   * Give one store an explicit retrieval strategy (spec §13.3). `store` is the
+   * key the `ragStores` projection uses: `tools`, `history`, a global
+   * collection's bare name, `user/<name>` or `session/<name>`.
+   *
+   * Applied in the projection only — the registry is never mutated, and a store
+   * already carrying a strategy (e.g. wrapped by the server) is left as is. An
+   * explicit strategy, `EmbeddingRetrieval` included, takes the store out of the
+   * `rerank` stage: the strategy owns its ranking.
+   *
+   * Coverage equals what the pipeline can see: with a registry that has
+   * `setMutationListener` (incl. `SimpleRagRegistry`), a collection registered
+   * after build is projected and wrapped like the rest; with a custom registry
+   * without it, such a collection is not projected at all (unchanged behaviour).
+   */
+  withRetrievalStrategy(store: string, strategy: IRetrievalStrategy): this {
+    this._retrievalStrategies.set(store, strategy);
+    return this;
+  }
+
   /** Set a query expander to broaden RAG queries with synonyms/related terms. */
   withQueryExpander(expander: IQueryExpander): this {
     this._queryExpander = expander;
@@ -435,9 +472,18 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set a skill manager for discovering and loading agent skills. */
-  withSkillManager(manager: ISkillManager): this {
+  /**
+   * Set a skill manager for discovering and loading agent skills.
+   * `options.vectorize` (default `true`): `false` skips vectorizing the skills
+   * into the tools store in `build()` — for builds that share a store the
+   * server already filled once at startup.
+   */
+  withSkillManager(
+    manager: ISkillManager,
+    options?: { vectorize?: boolean },
+  ): this {
     this._skillManager = manager;
+    this._vectorizeSkills = options?.vectorize ?? true;
     return this;
   }
 
@@ -453,7 +499,26 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Enable circuit breakers for LLM and embedder calls. */
+  /**
+   * Use breakers created and owned by the caller (shared across builders).
+   * Only the embedder breaker is taken: registry stores are wrapped in a
+   * `FallbackRag` on it unless a store already carries that same breaker. The
+   * main LLM gets no new breaker (the caller passes pre-wrapped LLMs); when it
+   * is a `CircuitBreakerLlm`, the builder's retry goes UNDER it, on the same
+   * breaker, so one call counts once. When both
+   * this and `withCircuitBreaker(config)` are set, this wins for stores and
+   * the LLM is not wrapped.
+   */
+  withCircuitBreakers(breakers: { embedder: CircuitBreaker }): this {
+    this._sharedBreakers = breakers;
+    return this;
+  }
+
+  /**
+   * Enable circuit breakers for LLM and embedder calls. Ignored in favour of
+   * `withCircuitBreakers(...)` when that is also set (nothing is wrapped
+   * twice, the LLM is left unwrapped).
+   */
   withCircuitBreaker(config: CircuitBreakerConfig = {}): this {
     this._circuitBreakerConfig = config;
     return this;
@@ -759,15 +824,18 @@ export class SmartAgentBuilder {
    * Wraps an `IRag` + `IEmbedder` pair into a thin retrieval callback that
    * `DefaultSubAgentContextBuilder` can consume. Returns `undefined` when
    * either piece is missing so the context builder simply skips that source.
+   * `resolve` is read per call, so a store re-projected by the registry
+   * listener (e.g. strategy-wrapped) is the one queried.
    */
   private buildRetrievalSource(
     rag: IRag | undefined,
     embedder: IQueryEmbedder | undefined,
+    resolve: () => IRag = () => rag as IRag,
   ): SubAgentRetrievalSource | undefined {
     if (!rag || !embedder) return undefined;
     return async (text, k, signal) => {
       const embedding = new QueryEmbedding(text, embedder, { signal });
-      const queryRes = await rag.query(embedding, k, { signal });
+      const queryRes = await resolve().query(embedding, k, { signal });
       return queryRes.ok ? queryRes.value : [];
     };
   }
@@ -933,7 +1001,12 @@ export class SmartAgentBuilder {
       for (const k of Object.keys(ragStores)) delete ragStores[k];
       for (const m of ragRegistry.list()) {
         const r = ragRegistry.get(m.name, m.scope ?? 'global');
-        if (r) ragStores[ragStoreKey(m)] = r;
+        if (!r) continue;
+        // An explicit per-store strategy wraps the projected store only — the
+        // registry entry stays as registered; idempotent through IRagDecorator.
+        const key = ragStoreKey(m);
+        const strategy = this._retrievalStrategies.get(key);
+        ragStores[key] = strategy ? applyRetrievalStrategy(r, strategy) : r;
       }
     };
     rebuildProjection();
@@ -950,33 +1023,41 @@ export class SmartAgentBuilder {
 
     // ---- Circuit breaker wrapping ----------------------------------------
     const circuitBreakers: CircuitBreaker[] = [];
-    if (this._circuitBreakerConfig) {
-      const cbCfg = this._circuitBreakerConfig;
+    if (this._circuitBreakerConfig || this._sharedBreakers) {
+      const cbCfg = this._circuitBreakerConfig ?? {};
       const metricsRef = this._metrics;
       const makeOnStateChange =
         (target: string) => (from: string, to: string) => {
           metricsRef?.circuitBreakerTransition.add(1, { from, to, target });
         };
 
-      // Wrap mainLlm
-      const llmBreaker = new CircuitBreaker({
-        ...cbCfg,
-        onStateChange: cbCfg.onStateChange ?? makeOnStateChange('llm'),
-      });
-      wrappedMainLlm = new CircuitBreakerLlm(wrappedMainLlm, llmBreaker);
-      circuitBreakers.push(llmBreaker);
+      // Wrap mainLlm — unless the caller owns the breakers (it passes
+      // pre-wrapped LLMs).
+      if (!this._sharedBreakers) {
+        const llmBreaker = new CircuitBreaker({
+          ...cbCfg,
+          onStateChange: cbCfg.onStateChange ?? makeOnStateChange('llm'),
+        });
+        wrappedMainLlm = new CircuitBreakerLlm(wrappedMainLlm, llmBreaker);
+        circuitBreakers.push(llmBreaker);
+      }
 
       // Wrap RAG stores with FallbackRag using InMemoryRag fallback
-      const embedderBreaker = new CircuitBreaker({
-        ...cbCfg,
-        onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
-      });
+      const embedderBreaker =
+        this._sharedBreakers?.embedder ??
+        new CircuitBreaker({
+          ...cbCfg,
+          onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
+        });
       circuitBreakers.push(embedderBreaker);
       // list() is a snapshot, so changing entries while iterating is safe.
       for (const meta of ragRegistry.list()) {
         const scope = meta.scope ?? 'global';
         const store = ragRegistry.get(meta.name, scope);
         if (!store) continue;
+        if (this._sharedBreakers && isGuardedBy(store, embedderBreaker)) {
+          continue;
+        }
         const wrapped = new FallbackRag(
           store,
           new InMemoryRag(),
@@ -1180,17 +1261,22 @@ export class SmartAgentBuilder {
         onBeforeStream: this._onBeforeStream,
       };
 
-      // ---- Retry wrapping (outside circuit breaker) ----------------------------
+      // ---- Retry wrapping (INSIDE the circuit breaker) -------------------------
       // Enable retry by default with sensible defaults; explicit config overrides.
+      // Composition: CircuitBreakerLlm → RetryLlm → LlmAdapter, so a breaker
+      // records ONE result per logical call, not one per retry attempt. This
+      // holds for the builder's own breaker and for a main LLM that already is
+      // a (shared) CircuitBreakerLlm: the retry goes under that wrapper, which
+      // is rebuilt on the same breaker.
       const retryOpts = agentCfg.retry ?? {
         maxAttempts: 3,
         backoffMs: 2000,
         retryOn: [429, 500, 502, 503],
         retryOnMidStream: [],
       };
-      wrappedMainLlm = new RetryLlm(wrappedMainLlm, retryOpts);
+      wrappedMainLlm = retryInsideBreakers(wrappedMainLlm, retryOpts);
 
-      // ---- Rate limiter wrapping (outermost — retry attempts also throttled) ----
+      // ---- Rate limiter wrapping (outermost — one permit per outer call) --------
       if (this._rateLimiter) {
         wrappedMainLlm = new RateLimiterLlm(wrappedMainLlm, this._rateLimiter);
       }
@@ -1267,7 +1353,7 @@ export class SmartAgentBuilder {
       }
 
       // ---- Skill vectorization (optional) ------------------------------------
-      if (this._skillManager && toolsRag) {
+      if (this._skillManager && toolsRag && this._vectorizeSkills) {
         await vectorizeSkills(this._skillManager, toolsRag, requestLogger, log);
       }
 
@@ -1284,7 +1370,24 @@ export class SmartAgentBuilder {
         // + embedder resources. `toolSource` comes from the toolsRag the parent
         // already uses for tool-loop retrieval. `projectSource` is left unset
         // until a dedicated project/domain RAG slot is exposed on the builder.
-        const toolSource = this.buildRetrievalSource(toolsRag, this._embedder);
+        // Like DefaultPipeline: this agent's OWN tools store keeps priority,
+        // with its explicit strategy applied; a projected `tools` entry is used
+        // only when it decorates that own store (never another agent's).
+        const toolsStrategy = this._retrievalStrategies.get('tools');
+        const ownTools =
+          toolsRag && toolsStrategy
+            ? applyRetrievalStrategy(toolsRag, toolsStrategy)
+            : toolsRag;
+        const toolSource = this.buildRetrievalSource(
+          toolsRag,
+          this._embedder,
+          () =>
+            ownBuiltInStore(
+              toolsRag as IRag,
+              ownTools as IRag,
+              ragStores.tools,
+            ),
+        );
         const defaultContextBuilder = new DefaultSubAgentContextBuilder({
           toolSource,
         });
@@ -1321,6 +1424,7 @@ export class SmartAgentBuilder {
         toolsRag,
         historyRag,
         ragStores,
+        retrievalStrategies: Object.fromEntries(this._retrievalStrategies),
         ragRegistry,
         ragProviderRegistry,
         embedder: this._embedder,

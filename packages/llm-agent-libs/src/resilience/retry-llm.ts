@@ -1,15 +1,19 @@
 /**
  * RetryLlm — ILlm decorator that retries transient failures with exponential backoff.
  *
- * Composition order: RetryLlm → CircuitBreakerLlm → LlmAdapter
- * Retry sits outside the circuit breaker so that retry attempts are not
- * counted as separate failures.
+ * Composition order: CircuitBreakerLlm → RetryLlm → LlmAdapter
+ * Retry sits INSIDE the circuit breaker, so the breaker records one result per
+ * logical call (after the retries), not one per attempt. A rate limiter, when
+ * used, sits outermost.
  */
 
 import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  CircuitBreakerLlm,
+  DefaultWaitStrategy,
   findThrottled,
+  isCallerCancellation,
   isRetryableStatus,
   LlmError,
   type LlmResponse,
@@ -37,6 +41,7 @@ const DEFAULT_OPTIONS: RetryOptions = {
 };
 
 export class RetryLlm implements ILlm {
+  private readonly wait = new DefaultWaitStrategy();
   private readonly opts: RetryOptions;
   healthCheck?: ILlm['healthCheck'];
 
@@ -92,16 +97,15 @@ export class RetryLlm implements ILlm {
       let chunksYielded = 0;
       let shouldRetry = false;
 
-      for await (const chunk of this.inner.streamChat(
-        messages,
-        tools,
-        options,
-      )) {
+      for await (const chunk of this.attemptStream(messages, tools, options)) {
         if (chunk.ok) {
           chunksYielded++;
           yield chunk;
         } else {
-          const canRetry = attempt < this.opts.maxAttempts;
+          // A caller's cancellation is never retried.
+          const canRetry =
+            attempt < this.opts.maxAttempts &&
+            !isCallerCancellation(options?.signal);
 
           // Pre-stream failure: retry on HTTP status codes (existing behavior)
           if (
@@ -135,6 +139,23 @@ export class RetryLlm implements ILlm {
     }
   }
 
+  /**
+   * One attempt's stream, with a thrown exception (before or during iteration)
+   * turned into an error chunk — the same shape CircuitBreakerLlm gives it — so
+   * a throwing provider goes through the same retry rules as an error chunk.
+   */
+  private async *attemptStream(
+    messages: Message[],
+    tools?: LlmTool[],
+    options?: CallOptions,
+  ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    try {
+      yield* this.inner.streamChat(messages, tools, options);
+    } catch (err) {
+      yield { ok: false, error: new LlmError(String(err), 'LLM_ERROR') };
+    }
+  }
+
   private isRetryable(error: LlmError): boolean {
     // A provider that runs its own rate-limit policy marks the error when that
     // policy is spent — it has already backed off, honoured Retry-After and
@@ -153,18 +174,26 @@ export class RetryLlm implements ILlm {
     return this.opts.retryOnMidStream.some((sub) => msg.includes(sub));
   }
 
-  private backoff(attempt: number, signal?: AbortSignal): Promise<void> {
-    const delay = this.opts.backoffMs * 2 ** attempt;
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, delay);
-      signal?.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
-    });
+  private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
+    await this.wait.wait(this.opts.backoffMs * 2 ** attempt, signal);
   }
+}
+
+/**
+ * Wraps `llm` in a RetryLlm placed UNDER any CircuitBreakerLlm layers it
+ * already has: each breaker wrapper is rebuilt on its own (possibly shared)
+ * breaker around the retry, so every breaker counts one result per logical
+ * call. Without a breaker this is plain `new RetryLlm(llm, options)`.
+ */
+export function retryInsideBreakers(
+  llm: ILlm,
+  options?: Partial<RetryOptions>,
+): ILlm {
+  if (llm instanceof CircuitBreakerLlm) {
+    return new CircuitBreakerLlm(
+      retryInsideBreakers(llm.inner, options),
+      llm.breaker,
+    );
+  }
+  return new RetryLlm(llm, options);
 }

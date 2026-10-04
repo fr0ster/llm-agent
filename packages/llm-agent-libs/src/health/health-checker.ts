@@ -8,7 +8,8 @@ export interface HealthCheckerDeps {
   agent: SmartAgent;
   startTime: number;
   version: string;
-  circuitBreakers?: CircuitBreaker[];
+  /** A fixed list, or a provider re-read on every check (breakers that come and go). */
+  circuitBreakers?: CircuitBreaker[] | (() => readonly CircuitBreaker[]);
   metrics?: InMemoryMetrics;
 }
 
@@ -16,14 +17,15 @@ export class HealthChecker {
   private readonly agent: SmartAgent;
   private readonly startTime: number;
   private readonly version: string;
-  private readonly circuitBreakers: CircuitBreaker[];
+  private readonly circuitBreakers: () => readonly CircuitBreaker[];
   private readonly metrics?: InMemoryMetrics;
 
   constructor(deps: HealthCheckerDeps) {
     this.agent = deps.agent;
     this.startTime = deps.startTime;
     this.version = deps.version;
-    this.circuitBreakers = deps.circuitBreakers ?? [];
+    const cbs = deps.circuitBreakers ?? [];
+    this.circuitBreakers = typeof cbs === 'function' ? cbs : () => cbs;
     this.metrics = deps.metrics;
   }
 
@@ -34,9 +36,10 @@ export class HealthChecker {
       ? healthResult.value
       : { llm: false, rag: false, mcp: [] };
 
+    const breakers = this.circuitBreakers();
     const cbStatuses =
-      this.circuitBreakers.length > 0
-        ? this.circuitBreakers.map((cb, i) => ({
+      breakers.length > 0
+        ? breakers.map((cb, i) => ({
             index: i,
             state: cb.state,
           }))
@@ -49,9 +52,7 @@ export class HealthChecker {
     const ragOk = components.rag;
     const mcpAllOk =
       components.mcp.length === 0 || components.mcp.every((m) => m.ok);
-    const anyCircuitOpen = this.circuitBreakers.some(
-      (cb) => cb.state === 'open',
-    );
+    const anyCircuitOpen = breakers.some((cb) => cb.state === 'open');
 
     // A partial tool catalog degrades service; it does not prevent it, so it
     // never touches readiness. Keyed on `complete`, NOT on

@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.1.0
+
+`IDecisionModel` and its request/answer/error types (`DecisionError`, `DecisionErrorCode`); `LlmComponent` gains `'decision'` and `'rerank'` — an exhaustive `switch` over it, or a `Record<LlmComponent, …>`, must add both. `IRetrievalStrategy` (how one store turns a query into its top-k) and the optional `IRagDecorator { inner }` capability with `isRagDecorator`; `FallbackRag` implements `IRagDecorator`.
+
+**Added:** `isCallerCancellation(signal)`; `CircuitBreakerLlm.inner` (read-only, the wrapped LLM — lets a composer put retry under the breaker on the same breaker). **Fixed:** `CircuitBreakerLlm` and `CircuitBreakerEmbedder` record neither failure nor success for a call whose signal the caller aborted with a non-`TimeoutError` reason (a timeout still counts); `FallbackRag.breaker` exposes its breaker read-only; `FallbackLlmCallStrategy` passes a caller's cancellation through instead of retrying non-streaming and disabling streaming for the instance.
+
 ## 30.0.0
 
 **BREAKING — see docs/MIGRATION-v30.md.** Embedders have two roles told apart by method name: `IDocumentEmbedder.embedDocument` (text written into a store) and `IQueryEmbedder.embedQuery` (text a store is searched with), `IRetrievalEmbedder` for both. Stores, collection providers and `makeRag` take an `IRetrievalEmbedder`; search paths (`QueryEmbedding`, `withEmbedder`, `SmartAgentDeps.embedder`) an `IQueryEmbedder` — give a provider's `IEmbedder` its roles with `symmetricEmbedder(e)` or `asymmetricEmbedder({ document, query })`. Asymmetric SAP AI Core models (`nvidia--llama-3.2-nv-embedqa-1b`) via `SapAiCoreEmbedder.inputType` and `rag.embedder.asymmetric` / `skillPlugins.embedder.asymmetric`. `llm.resourceGroup` now reaches SAP AI Core (refused on other providers). Examples move from the retired `anthropic--claude-3-haiku` to `anthropic--claude-4.5-haiku`.

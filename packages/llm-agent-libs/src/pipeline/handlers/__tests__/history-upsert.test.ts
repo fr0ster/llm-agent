@@ -261,3 +261,30 @@ describe('history-upsert: the record carries its owner (security)', () => {
     assert.equal(other.ok && other.value.length, 0);
   });
 });
+
+describe('history-upsert: HistoryUpsertHandler', () => {
+  it('summarizes the turn including the assistant answer', async () => {
+    const { HistoryUpsertHandler } = await import('../history-upsert.js');
+    const seen: HistoryTurn[] = [];
+    const summarizer: IHistorySummarizer = {
+      summarize: async (turn) => {
+        seen.push(turn);
+        return { ok: true, value: 'sum' } as Result<string, LlmError>;
+      },
+    };
+    const ctx = {
+      sessionId: 's1',
+      inputText: 'the question',
+      assistantText: 'the final answer',
+      historySummarizer: summarizer,
+      historyMemory: makeFakeMemory(),
+      config: { semanticHistoryEnabled: true },
+      ragStores: { history: makeFakeRag() },
+    };
+    const span = { setAttribute() {}, setStatus() {} };
+    await new HistoryUpsertHandler().execute(ctx as never, {}, span as never);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].userText, 'the question');
+    assert.equal(seen[0].assistantText, 'the final answer');
+  });
+});
