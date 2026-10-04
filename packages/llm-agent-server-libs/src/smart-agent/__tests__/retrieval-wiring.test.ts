@@ -17,10 +17,11 @@ import type {
   LlmTool,
   RagResult,
 } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
 import {
   emptyLoadedPlugins,
   hasRetrievalStrategy,
+  NoopRequestLogger,
   PASSAGE_QUESTION,
   TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -568,6 +569,82 @@ describe('retrieval strategy wiring (§13.4)', () => {
         `the worker's tools store must go through the main tools strategy; saw ${JSON.stringify(seen.map((s) => s.req.state))}`,
       );
       assert.ok(tasksOf(hit.req).every((t) => t === TOOL_QUESTION.task));
+    } finally {
+      await built.close();
+    }
+  });
+
+  it('a worker sharing the parent registry reranks a named collection by the main map', async () => {
+    const { model, seen } = recordingModel();
+    const { makeRag } = labelledStores();
+    const WORKER_QUERY = 'worker notes query';
+    const yaml = `${BASE_YAML}  retrieval:
+    notes:
+      strategy: rerank
+      reranker: decision
+${DECISION}`;
+    const cfg = {
+      ...configFrom(yaml),
+      pluginLoader: noPlugins,
+      subAgentConfigs: [
+        { name: 'worker', config: { skipModelValidation: true } },
+      ],
+    } as unknown as SmartServerConfig;
+    const server = new SmartServer(cfg, {
+      ...constructionSeams,
+      makeRag,
+      embedder: stubEmbedder,
+      makeDecisionModel: async () => model,
+    });
+    const built = await server._buildEmbeddedAgent();
+    try {
+      const notes = new InMemoryRag();
+      let notesQueried = 0;
+      notes.query = async () => {
+        notesQueried++;
+        return { ok: true, value: [...NOTES_HITS] };
+      };
+      const registry = new SimpleRagRegistry();
+      registry.register('notes', notes, undefined, {
+        displayName: 'notes',
+        scope: 'global',
+      });
+      // White-box: the per-session re-wire path (injected parent registry).
+      const worker = await (
+        server as unknown as {
+          buildSubAgent: (
+            name: string,
+            subCfg: unknown,
+            logger: unknown,
+            factories: Record<string, unknown>,
+            injected: unknown,
+          ) => Promise<{ process: (q: string) => Promise<unknown> }>;
+        }
+      ).buildSubAgent(
+        'worker',
+        cfg.subAgentConfigs?.[0]?.config,
+        { log: () => {} },
+        {},
+        {
+          ragRegistry: registry,
+          toolsRag: undefined,
+          mcpClients: [],
+          requestLogger: new NoopRequestLogger(),
+          embedder: stubEmbedder,
+        },
+      );
+      await worker.process(WORKER_QUERY);
+      assert.ok(notesQueried >= 1, 'the worker must query notes');
+      const hit = seen.find(
+        (s) =>
+          s.req.state === WORKER_QUERY &&
+          passagesOf(s.req).includes(NOTES_HITS[0].text),
+      );
+      assert.ok(
+        hit,
+        `the worker's notes store must go through the main notes strategy; saw ${JSON.stringify(seen.map((s) => s.req.state))}`,
+      );
+      assert.ok(tasksOf(hit.req).every((t) => t === PASSAGE_QUESTION.task));
     } finally {
       await built.close();
     }

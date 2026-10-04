@@ -2175,6 +2175,13 @@ export class SmartServer {
       subBuilder = subBuilder.withMcpClients(injected.mcpClients);
     }
 
+    // rag.retrieval is server-wide: a worker's projection (named collections
+    // of the shared registry included) gets the same per-store strategies.
+    // Its own tools/history are already wrapped; the brand keeps them as is.
+    for (const [key, strategy] of this._retrievalStrategies) {
+      subBuilder = subBuilder.withRetrievalStrategy(key, strategy);
+    }
+
     const handle = await subBuilder.build();
 
     // Backfill the per-worker cache from the BUILT handle (review HIGH #7).
