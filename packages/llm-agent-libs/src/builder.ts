@@ -116,10 +116,8 @@ import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
 import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { RetryLlm } from './resilience/retry-llm.js';
-import {
-  applyRetrievalStrategy,
-  hasRetrievalStrategy,
-} from './retrieval/index.js';
+import { applyRetrievalStrategy } from './retrieval/index.js';
+import { ownBuiltInStore } from './retrieval/strategy-rag.js';
 import type { ISessionManager } from './session/types.js';
 import {
   DefaultSubAgentContextBuilder,
@@ -1318,15 +1316,23 @@ export class SmartAgentBuilder {
         // + embedder resources. `toolSource` comes from the toolsRag the parent
         // already uses for tool-loop retrieval. `projectSource` is left unset
         // until a dedicated project/domain RAG slot is exposed on the builder.
-        // Like DefaultPipeline: the projected `tools` store when it carries an
-        // explicit retrieval strategy, otherwise the raw built-in.
+        // Like DefaultPipeline: this agent's OWN tools store keeps priority,
+        // with its explicit strategy applied; a projected `tools` entry is used
+        // only when it decorates that own store (never another agent's).
+        const toolsStrategy = this._retrievalStrategies.get('tools');
+        const ownTools =
+          toolsRag && toolsStrategy
+            ? applyRetrievalStrategy(toolsRag, toolsStrategy)
+            : toolsRag;
         const toolSource = this.buildRetrievalSource(
           toolsRag,
           this._embedder,
-          () => {
-            const p = ragStores.tools;
-            return p && hasRetrievalStrategy(p) ? p : (toolsRag as IRag);
-          },
+          () =>
+            ownBuiltInStore(
+              toolsRag as IRag,
+              ownTools as IRag,
+              ragStores.tools,
+            ),
         );
         const defaultContextBuilder = new DefaultSubAgentContextBuilder({
           toolSource,
@@ -1364,6 +1370,7 @@ export class SmartAgentBuilder {
         toolsRag,
         historyRag,
         ragStores,
+        retrievalStrategies: Object.fromEntries(this._retrievalStrategies),
         ragRegistry,
         ragProviderRegistry,
         embedder: this._embedder,

@@ -15,6 +15,7 @@ import {
   hasRetrievalStrategy,
   StrategyRag,
 } from '../index.js';
+import { ownBuiltInStore } from '../strategy-rag.js';
 
 const hit = (id: string, score: number): RagResult => ({
   text: id,
@@ -108,5 +109,32 @@ describe('applyRetrievalStrategy / hasRetrievalStrategy', () => {
       applyRetrievalStrategy(outer, new EmbeddingRetrieval()),
       outer,
     );
+  });
+});
+
+describe('ownBuiltInStore', () => {
+  const strategy = new EmbeddingRetrieval();
+  it('a strategy-wrapped projection over the own store wins (keeps its layers)', () => {
+    const own = fakeStore([]).store;
+    const projected = new StrategyRag(
+      new FallbackRag(own, new InMemoryRag(), new CircuitBreaker()),
+      strategy,
+    );
+    const ownWithStrategy = applyRetrievalStrategy(own, strategy);
+    assert.equal(ownBuiltInStore(own, ownWithStrategy, projected), projected);
+  });
+  it("a strategy-wrapped projection over another agent's store never wins", () => {
+    const own = fakeStore([]).store;
+    const parent = new StrategyRag(fakeStore([]).store, strategy);
+    const ownWithStrategy = applyRetrievalStrategy(own, strategy);
+    assert.equal(
+      ownBuiltInStore(own, ownWithStrategy, parent),
+      ownWithStrategy,
+    );
+  });
+  it('a projection without a strategy, or none, gives the own store', () => {
+    const own = fakeStore([]).store;
+    assert.equal(ownBuiltInStore(own, own, own), own);
+    assert.equal(ownBuiltInStore(own, own, undefined), own);
   });
 });

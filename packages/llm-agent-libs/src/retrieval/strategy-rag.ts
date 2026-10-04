@@ -58,3 +58,34 @@ export function applyRetrievalStrategy(
 ): IRag {
   return hasRetrievalStrategy(rag) ? rag : new StrategyRag(rag, strategy);
 }
+
+/** True when `rag` is `target` or decorates it (through `IRagDecorator.inner`). */
+function decorates(rag: IRag, target: IRag): boolean {
+  let cur: IRag | undefined = rag;
+  for (let depth = 0; cur && depth < 16; depth++) {
+    if (cur === target) return true;
+    cur = isRagDecorator(cur) ? cur.inner : undefined;
+  }
+  return false;
+}
+
+/**
+ * The store an agent queries for one of its built-in slots (`tools`, `history`).
+ * The agent's OWN store always has priority: the projected entry is used only
+ * when it carries a retrieval strategy and decorates `own` (so layers such as
+ * the circuit-breaker fallback are kept); otherwise `ownWithStrategy` — `own`
+ * with the explicit strategy applied once by the caller, or `own` itself. A
+ * projected entry over another agent's store (a worker sharing its parent's
+ * registry) never wins. Internal; not re-exported.
+ */
+export function ownBuiltInStore(
+  own: IRag,
+  ownWithStrategy: IRag,
+  projected: IRag | undefined,
+): IRag {
+  return projected &&
+    hasRetrievalStrategy(projected) &&
+    decorates(projected, own)
+    ? projected
+    : ownWithStrategy;
+}

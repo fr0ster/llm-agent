@@ -454,3 +454,120 @@ describe('withRetrievalStrategy reaches the legacy coordinator tool source', () 
     }
   });
 });
+
+describe("a worker's own store keeps priority under a retrieval strategy", () => {
+  /** A tools store that records each query under `label`. */
+  function labelledStore(label: string, seen: string[]): IRag {
+    const base = primaryStore([hit(`${label}-hit`, 0.9)]);
+    return {
+      ...base,
+      query: async (e, k, o) => {
+        seen.push(label);
+        return base.query(e, k, o);
+      },
+    };
+  }
+
+  async function workerOverParentRegistry(withCoordinator: boolean) {
+    const seen: string[] = [];
+    const registry = new SimpleRagRegistry();
+    // The parent's tools are already in the shared registry …
+    registry.register('tools', labelledStore('parent', seen), undefined, {
+      displayName: 'tools',
+      scope: 'global',
+    });
+    const { strategy, calls } = spyStrategy();
+    // … and the worker brings its own tools plus an explicit strategy.
+    let builder = new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withEmbedder(
+        symmetricEmbedder({
+          embed: async (_t: string, _o?: CallOptions) => ({
+            vector: [0.1, 0.2, 0.3],
+          }),
+        }),
+      )
+      .setRagRegistry(registry)
+      .setToolsRag(labelledStore('worker', seen))
+      .withRetrievalStrategy('tools', strategy);
+    if (withCoordinator) builder = builder.withCoordinator({});
+    const handle = await builder.build();
+    return { handle, seen, calls };
+  }
+
+  it('the pipeline queries the worker tools, through the strategy, never the parent', async () => {
+    const { handle, seen, calls } = await workerOverParentRegistry(false);
+    try {
+      await handle.agent.process('hello', { sessionId: 's1' });
+      assert.ok(seen.includes('worker'), 'the worker store was queried');
+      assert.ok(!seen.includes('parent'), 'the parent store was not queried');
+      assert.ok(calls.length >= 1, 'the strategy was applied');
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('the legacy coordinator tool source queries the worker tools, through the strategy', async () => {
+    const { handle, seen, calls } = await workerOverParentRegistry(true);
+    try {
+      const pipeline = (
+        handle.agent as unknown as { deps: { pipeline: unknown } }
+      ).deps.pipeline as {
+        coordinator?: {
+          dispatch?: {
+            primary?: {
+              contextBuilder?: {
+                config: {
+                  toolSource?: (t: string, k: number) => Promise<RagResult[]>;
+                };
+              };
+            };
+          };
+        };
+      };
+      const toolSource =
+        pipeline.coordinator?.dispatch?.primary?.contextBuilder?.config
+          .toolSource;
+      assert.ok(toolSource, 'expected a default toolSource');
+      seen.length = 0;
+      calls.length = 0;
+      const res = await toolSource('find a tool', 2);
+      assert.deepEqual(
+        res.map((r) => r.text),
+        ['worker-hit'],
+      );
+      assert.deepEqual(seen, ['worker']);
+      assert.deepEqual(calls, [2]);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('the main agent keeps the projected (circuit-breaker) layer over its own store', async () => {
+    const seen: string[] = [];
+    const { strategy, calls } = spyStrategy();
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withEmbedder(
+        symmetricEmbedder({
+          embed: async (_t: string, _o?: CallOptions) => ({
+            vector: [0.1, 0.2, 0.3],
+          }),
+        }),
+      )
+      .setToolsRag(labelledStore('own', seen))
+      .withRetrievalStrategy('tools', strategy)
+      .withCircuitBreaker({})
+      .build();
+    try {
+      const projected = handle.ragStores.tools;
+      assert.ok(projected instanceof StrategyRag);
+      assert.ok(projected.inner instanceof FallbackRag);
+      await handle.agent.process('hello', { sessionId: 's1' });
+      assert.ok(seen.includes('own'));
+      assert.ok(calls.length >= 1);
+    } finally {
+      await handle.close();
+    }
+  });
+});
