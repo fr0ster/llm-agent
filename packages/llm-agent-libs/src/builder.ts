@@ -32,6 +32,7 @@ import type {
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
+  IRetrievalStrategy,
   ISkillManager,
   ISubAgent,
   ISubpromptClassifier,
@@ -115,6 +116,7 @@ import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
 import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { RetryLlm } from './resilience/retry-llm.js';
+import { applyRetrievalStrategy } from './retrieval/index.js';
 import type { ISessionManager } from './session/types.js';
 import {
   DefaultSubAgentContextBuilder,
@@ -181,6 +183,7 @@ export class SmartAgentBuilder {
   private _tracer?: ITracer;
   private _metrics?: IMetrics;
   private _reranker?: IReranker;
+  private readonly _retrievalStrategies = new Map<string, IRetrievalStrategy>();
   private _queryExpander?: IQueryExpander;
   private _toolCache?: IToolCache;
   private _outputValidator?: IOutputValidator;
@@ -408,6 +411,26 @@ export class SmartAgentBuilder {
   /** Set a reranker to re-score RAG results before context assembly. */
   withReranker(reranker: IReranker): this {
     this._reranker = reranker;
+    return this;
+  }
+
+  /**
+   * Give one store an explicit retrieval strategy (spec §13.3). `store` is the
+   * key the `ragStores` projection uses: `tools`, `history`, a global
+   * collection's bare name, `user/<name>` or `session/<name>`.
+   *
+   * Applied in the projection only — the registry is never mutated, and a store
+   * already carrying a strategy (e.g. wrapped by the server) is left as is. An
+   * explicit strategy, `EmbeddingRetrieval` included, takes the store out of the
+   * `rerank` stage: the strategy owns its ranking.
+   *
+   * Coverage equals what the pipeline can see: with a registry that has
+   * `setMutationListener` (incl. `SimpleRagRegistry`), a collection registered
+   * after build is projected and wrapped like the rest; with a custom registry
+   * without it, such a collection is not projected at all (unchanged behaviour).
+   */
+  withRetrievalStrategy(store: string, strategy: IRetrievalStrategy): this {
+    this._retrievalStrategies.set(store, strategy);
     return this;
   }
 
@@ -933,7 +956,12 @@ export class SmartAgentBuilder {
       for (const k of Object.keys(ragStores)) delete ragStores[k];
       for (const m of ragRegistry.list()) {
         const r = ragRegistry.get(m.name, m.scope ?? 'global');
-        if (r) ragStores[ragStoreKey(m)] = r;
+        if (!r) continue;
+        // An explicit per-store strategy wraps the projected store only — the
+        // registry entry stays as registered; idempotent through IRagDecorator.
+        const key = ragStoreKey(m);
+        const strategy = this._retrievalStrategies.get(key);
+        ragStores[key] = strategy ? applyRetrievalStrategy(r, strategy) : r;
       }
     };
     rebuildProjection();

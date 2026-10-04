@@ -7,8 +7,13 @@
  * Runs reranking on all stores in parallel. Falls back to original results if
  * reranking fails for a store, recording `<store>.rerank_error` on the span and
  * a `rerank_error` session step.
+ *
+ * Stores with an explicit retrieval strategy (`hasRetrievalStrategy` on
+ * `ctx.ragStores[name]`, `embedding` included) are skipped — the strategy owns
+ * their ranking, so an explicit strategy wins over the global reranker.
  */
 
+import { hasRetrievalStrategy } from '../../retrieval/index.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -23,6 +28,8 @@ export class RerankHandler implements IStageHandler {
 
     const reranked = await Promise.all(
       entries.map(async ([name, results]) => {
+        const store = ctx.ragStores?.[name];
+        if (store && hasRetrievalStrategy(store)) return { name, results };
         if (results.length > 0) {
           const rr = await ctx.reranker.rerank(
             ctx.ragText,
