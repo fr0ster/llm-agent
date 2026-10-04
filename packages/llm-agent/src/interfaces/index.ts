@@ -196,6 +196,11 @@ export type {
 } from './request-logger.js';
 export type { IReranker } from './reranker.js';
 export type {
+  IRagDecorator,
+  IRetrievalStrategy,
+} from './retrieval-strategy.js';
+export { isRagDecorator } from './retrieval-strategy.js';
+export type {
   ExecutionFailureInput,
   ExecutionReviewDecision,
   ExecutionReviewResult,
