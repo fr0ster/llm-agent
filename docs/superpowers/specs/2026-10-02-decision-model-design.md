@@ -974,7 +974,9 @@ agent get the same instance:
     resolves that key. Wrappers are cached **by key**, not by instance: one
     object under two keys gets two breakers. An entry swapped by
     `PUT /v1/config` gets a fresh breaker, also when it swaps back to an
-    instance used before. The main, classifier and helper LLMs given to the builders are the
+    instance used before. An LLM that already is a `CircuitBreakerLlm` (the
+    consumer's own) is not wrapped again; its breaker takes the key's place, so
+    `/health` reports the breaker that actually guards the key. The main, classifier and helper LLMs given to the builders are the
     wrapped instances, so the builders never wrap an LLM again.
   - **Stores / embedder:** SmartServer creates one embedder breaker from
     `circuitBreaker:`. `FallbackRag` only reads a breaker's state, so the
