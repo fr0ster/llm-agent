@@ -743,9 +743,22 @@ reads). The circuit breaker's `FallbackRag` may sit in between, so the order is
 either `FallbackRag(StrategyRag(store))` (server-wrapped stores) or
 `StrategyRag(FallbackRag(store))` (projected collections). Both are fine:
 `hasRetrievalStrategy` walks `IRagDecorator.inner`, so the second application
-point sees the brand and returns the store unchanged — one rerank per query;
-and with the circuit open the fallback store is empty, and a reranker given no
-candidates makes no call.
+point sees the brand and returns the store unchanged — one rerank per query.
+
+With the circuit **open**, the two orders behave differently, and both are
+accepted (the request never fails). `FallbackRag.writer()` fans writes out to
+the fallback store too (`fallback-rag.ts:4, 52-54`), so the fallback is **not**
+empty — it holds what was written, e.g. the vectorized tool catalog:
+
+| Order | Circuit open |
+|---|---|
+| `FallbackRag(StrategyRag(store))` — `tools` / `history` wrapped by the server, as seen by the pipeline | `FallbackRag` queries its fallback directly: **the reranker is bypassed**, results are the fallback's own ranking |
+| `StrategyRag(FallbackRag(store))` — collections wrapped in the projection | the strategy reranks the **fallback's** results |
+
+(`makeToolsRagHandle` holds the server-wrapped `StrategyRag(tools)` with no
+`FallbackRag` around it, so the controller / stepper path is not affected by the
+breaker either way.) The difference is documented in TROUBLESHOOTING next to
+the circuit-breaker entry.
 
 ### 13.4 Configuration and server wiring
 
@@ -845,6 +858,10 @@ documented.
   one reranker call per query (`FallbackRag(StrategyRag)` is detected through
   `IRagDecorator.inner`); a projected collection under the breaker
   (`StrategyRag(FallbackRag)`) is also reranked once.
+- Circuit open with a **non-empty** fallback (records written through
+  `FallbackRag.writer()`): `FallbackRag(StrategyRag)` returns the fallback's
+  results without calling the reranker; `StrategyRag(FallbackRag)` reranks the
+  fallback's results — one call.
 - Custom registry: an `IRagRegistry` that is not `SimpleRagRegistry` but has
   `setMutationListener` → a collection registered after build is projected and
   goes through its strategy; one without it → the collection is not projected
