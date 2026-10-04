@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 
 - **`llm-agent-libs`: the tool-batch heartbeat timer no longer leaks.** `executeToolBatchWithHeartbeat` raced a `setTimeout` tick against the batch and never cleared it when the batch won, leaving a pending timer after every tool batch (it kept a consumer's jest worker from exiting). The timer is now cleared in a `finally` on every path (batch resolves, batch rejects, tick fires). Heartbeat behaviour is unchanged and no timeout was added. A rejecting tool batch also no longer leaves an unhandled rejection from the pending-tools bookkeeping branch.
+- **`withAbort` no longer leaks an `abort` listener.** The helper in `llm-agent-mcp` (`adapter.ts`) and `llm-agent-libs` (`classifier/llm-classifier.ts`, `adapters/llm-adapter.ts`, now one shared `utils/with-abort.ts`) added a listener to the caller's `AbortSignal` per call and never removed it, so a long-lived signal accumulated one per MCP/LLM call. The listener is now removed once the race settles (resolve, reject or abort). No behaviour change otherwise; no timeouts added.
 
 ## [30.0.0] — 2026-09-28
 
