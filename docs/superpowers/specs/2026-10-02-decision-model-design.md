@@ -688,7 +688,8 @@ Each in its own small module under `src/retrieval/`:
 | `RerankedRetrieval(reranker, { overfetch = 2 })` | `store.query(q, k × overfetch)` → `reranker.rerank(q.text, candidates)` → top-k |
 | `RerankAllRetrieval(reranker, { maxCandidates })` | `store.query(q, maxCandidates)` → rerank all → top-k. `maxCandidates` is configured, never derived from an assumed catalog size |
 | `StrategyRag(inner, strategy)` implements `IRag` | `query` → `strategy.retrieve(inner, …)`; `healthCheck`, `getById`, `writer()` delegate to `inner` unchanged (catalog vectorization keeps working) |
-| `applyRetrievalStrategy(rag, strategy)` | returns `rag` itself for `EmbeddingRetrieval` **or when `rag` is already strategy-ranked** (idempotent — `tools`/`history` are wrapped at creation by the server and appear again in the builder's projection); otherwise `new StrategyRag(rag, strategy)`, branded so `isStrategyRanked(rag)` is true |
+| `applyRetrievalStrategy(rag, strategy)` | wraps **every explicitly configured** store — `EmbeddingRetrieval` included — in `StrategyRag`, branded, so `hasRetrievalStrategy(rag)` is true (an explicit `embedding` must be distinguishable from "not configured", see *Precedence*). Returns `rag` unchanged when `hasRetrievalStrategy(rag)` is already true (idempotent) |
+| `IRagDecorator { readonly inner: IRag }` | new optional capability (ISP): a store that wraps another exposes it. `StrategyRag` and `FallbackRag` implement it. `hasRetrievalStrategy` walks the `inner` chain, so an outer decorator — e.g. the circuit breaker's `FallbackRag` (`builder.ts:975-990`) — never hides the brand |
 
 **Batching.** Both reranked strategies send candidates in batches:
 - `DecisionReranker` batches by an estimated token budget (≈ chars / 4) under
@@ -712,13 +713,30 @@ tool would help carry out the request given as the state.") and
 text `Tool: <name> — <description>` (no input schema).
 
 **Builder.** `SmartAgentBuilder.withRetrievalStrategy(store: string, strategy:
-IRetrievalStrategy)` records the strategy; the builder applies
-`applyRetrievalStrategy` in its `ragStores` projection of the RAG registry, so a
-store registered (or opened) after build is covered too.
+IRetrievalStrategy)` records the strategy. At build the builder applies it to the
+matching registry entries **before** its circuit-breaker loop
+(`builder.ts:975-990`), replacing each entry in place the way that loop does;
+an entry registered later (a collection opened mid-session) is wrapped by the
+registry mutation listener at registration, before anything else sees it. The
+`ragStores` projection only reads entries — it never wraps — so the strategy
+stays the innermost decorator.
 
-**`RerankHandler`** skips any store for which `isStrategyRanked` is true, so a
-store is never reranked twice; for other stores it behaves as today (the
-plugin / `withReranker` path).
+**Precedence.** An explicit per-store strategy wins over the global reranker
+(plugin / `withReranker`): `RerankHandler` skips every store for which
+`hasRetrievalStrategy` is true — including one configured as `embedding`, so
+`history: { strategy: embedding }` is never reranked or sent out, whatever else
+is wired. A store with no `rag.retrieval` entry keeps today's behaviour (the
+global reranker, if any, reranks it in the `rerank` stage).
+
+**Wrapper order.** The strategy is the innermost decorator, applied once where
+the store first enters the registry: the server at creation of `tools` /
+`history` (so `makeToolsRagHandle` gets the wrapped instance too), and the
+builder for registry entries — at build before its circuit-breaker loop, or at
+registration for a collection opened later. Later decorators wrap outside it
+(`FallbackRag(StrategyRag(store))`); with the circuit open, `FallbackRag`
+serves its own fallback store and the strategy is not consulted — reranking an
+empty fallback has no value. Idempotency (above) guarantees one rerank even if a
+second application point sees the store.
 
 ### 13.4 Configuration and server wiring
 
@@ -762,13 +780,21 @@ rag:
   at creation. The same wrapped `tools` instance is what the flat stages,
   `tool-loop`, and `makeToolsRagHandle` (`:2487`, controller and stepper)
   receive, so all three selection paths of §13.1 use it.
+- **`CallOptions` reach the strategy on every path.** `rag-query`
+  (`rag-query.ts:97`), `tool-loop` (`tool-loop.ts:350`) and `FallbackRag`
+  already pass `options`; `IToolsRagHandle.query(text, k, options)` does not —
+  it calls `toolsRag.query(embedding, limit)` (`tools-rag-handle.ts:62`). It is
+  changed to forward `options`, so a reranker on the controller / stepper path
+  gets `signal` (cancellation), `requestLogger` (usage) and `sessionLogger`
+  (`retrieval_rerank_error`). `StrategyRag` passes `options` to the strategy,
+  and the strategies pass them to the reranker.
 - **Named collections** are not built there: they enter the per-session registry
   from the deployment globals and the RAG providers (`buildSessionRagRegistry`,
   `session-rag-registry.ts`) and reach the pipeline through the builder's
-  `ragStores` projection of the registry (`builder.ts:926-936`). The builder
-  applies the strategies registered with `withRetrievalStrategy` in that
-  projection, by store key; the server registers one per configured name. A
-  collection opened later in the session goes through the same projection.
+  `ragStores` projection of the registry (`builder.ts:926-936`). The server
+  passes one `withRetrievalStrategy` per configured key; the builder applies it
+  to the registry entry (at build, or at registration for a collection opened
+  later) — never in the projection — so the strategy stays innermost.
 
 Rerankers are resolved once in `_buildInfra`; decision-backed ones are wrapped
 in `wrapDecisionModel`.
@@ -798,9 +824,16 @@ documented.
   `applyRetrievalStrategy` identity for embedding, `RerankHandler` skip,
   `LlmReranker` output contract, resolver + validator for every rule in §13.4.
 - Server (YAML through the real `resolveSmartServerConfig`): a controller run's
-  per-step `selectTools` goes through the `tools` strategy; the flat path too; a
-  store not listed stays on embedding; `agent.toolSelection` reaches a session
-  agent.
+  per-step `selectTools` goes through the `tools` strategy **and the reranker
+  receives the request's `signal`, `requestLogger` and `sessionLogger`**; the
+  flat path too; a store not listed stays on embedding; `agent.toolSelection`
+  reaches a session agent.
+- Precedence: `history: { strategy: embedding }` + a plugin / `withReranker`
+  reranker → the plugin reranker is never called for `history`; an unlisted
+  store is still reranked by it.
+- Wrapper order: circuit breaker on + `tools: { strategy: rerank }` → exactly
+  one reranker call per query (`FallbackRag(StrategyRag)` is detected through
+  `IRagDecorator.inner`).
 - **Quality eval, committed (env-gated, not `npm test`):** `scripts/rag-eval`
   gains `--retrieval embedding|rerank|rerank-all` and `--reranker decision|llm`,
   reporting R@1/3/5, MRR and better/worse per case. The `mcp-abap-adt` 15.0.0
@@ -820,8 +853,8 @@ documented.
    `LlmReranker`, the `makeRag` seam; no pipeline-specific glue.
 2. The app is the example: SmartServer chooses per store through YAML.
 3. Interfaces: consumers depend on `IRetrievalStrategy` / `IRag`.
-4. ISP: a new small interface; `IRag`, `IReranker`, `IToolSelectionStrategy` are
-   not grown.
+4. ISP: new small interfaces (`IRetrievalStrategy`, the optional `IRagDecorator`
+   capability); `IRag`, `IReranker`, `IToolSelectionStrategy` are not grown.
 5. Strategy: retrieval per store is the consumer's choice, built-ins or their own.
 6. File size: new logic in `src/retrieval/*` modules; `smart-server.ts` gets one
    helper call per store creation site plus the gate move.
