@@ -170,13 +170,13 @@ binary `llm-agent-server` bundles it as a regular dependency.
 
 ### Package responsibilities
 
-- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces (including `IDecisionModel`, next to `ILlm` and `IEmbedder`), shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, the embedder resilience decorators (`BatchChunkingEmbedder`, `RetryEmbedder`, `composeResilientEmbedder`), `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
+- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces (including `IDecisionModel`, next to `ILlm` and `IEmbedder`, and the retrieval pair `IRetrievalStrategy` / `IRagDecorator`), shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, the embedder resilience decorators (`BatchChunkingEmbedder`, `RetryEmbedder`, `composeResilientEmbedder`), `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
 
 - **`@mcp-abap-adt/llm-agent-mcp`** — `MCPClientWrapper`, `McpClientAdapter`, factory (`createDefaultMcpClient`), and connection strategies (`LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`). Depends on `llm-agent`.
 
 - **`@mcp-abap-adt/llm-agent-rag`** — RAG and embedder composition. `makeRag` is **async** (`Promise<IRag>`); it auto-prefetches backends so no manual warm-up is needed for one-shot use. `resolveEmbedder` stays **synchronous** (call `prefetchEmbedderFactories([...])` once at startup for hot-path sync resolves). Embedder/RAG backend packages are optional peers of this package — library-mode consumers install only what they use. (At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all backends as regular deps; config selects which to activate.) Depends on `llm-agent`.
 
-- **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills. `SmartAgentBuilder.build()` is async (unchanged externally). Constructs no provider: `BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag` are required seams. Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
+- **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills, and the retrieval strategies (`EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`). `SmartAgentBuilder.build()` is async (unchanged externally). Constructs no provider: `BuildAgentDeps.makeLlm`, `resolveEmbedder` and `makeRag` are required seams. Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
 
 - **`@mcp-abap-adt/llm-agent-server-libs`** — the SmartServer composition runtime as an importable library: `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, coordinator config parsing, session stores, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`, `ControllerFactory` — each builds one pipeline's `coordinator` stage handler from a typed config + role-resolving deps). Parses the selected pipeline section in `start()` and constructs that plugin with typed settings. Depends on `llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`.
 
@@ -200,19 +200,44 @@ Optional peer dependencies (not in the graph above):
 
 **Every edge above is a peer dependency (since 28.0.0).** A library declares each `@mcp-abap-adt/*` package it uses — ours, and the shared `@mcp-abap-adt/interfaces-auth` (`^2.1.0`) / `@mcp-abap-adt/interfaces-utils` (`^1.1.0`) — in `peerDependencies`, with the same range in every package, and imports from it directly. A consumer's install therefore holds exactly one copy of each: npm (≥ 7) installs a missing peer, and a version outside the range fails the install with `ERESOLVE` instead of nesting a second copy. One copy matters at runtime, not only for types: `llm-agent-mcp` and `llm-agent-libs` use `instanceof` on classes of `llm-agent` (`McpError`, `ClarifySignal`, `NeedInfoSignal`, `CatalogCasError`), and the LLM throttle keeps its gates in module state. The binary `llm-agent-server` is the root of its own tree and takes all of them as regular dependencies. `test/repo/scoped-dependencies.test.ts` enforces this; see [MIGRATION-v28.md](MIGRATION-v28.md).
 
-### Decision model and reranker seam
+### Decision model and retrieval strategies
 
 `IDecisionModel` (in `llm-agent`, next to `ILlm` and `IEmbedder`) answers typed questions about a state with
 numbers, not text; `decide()` returns a `Result` and never throws for provider failures. `DecisionReranker`
 and `wrapDecisionModel` (usage accounting, `component: 'decision'`) live in `llm-agent-libs`.
 
-The reranker of a SmartServer is chosen by exactly one of the `reranker:` YAML section or a plugin's
-`reranker` export; naming both is a startup error. `resolveReranker` runs once in `_buildInfra()` — shared
-by the HTTP `start()` and the embeddable `buildAgent()` — and `buildBaseBuilder` applies the result outside
-the `applyServerExtras` gate, so the per-session agents that serve requests get it too. `decision:` and
-`reranker:` are not hot-reloadable. The `makeDecisionModel` seam (`BuildAgentDeps.makeDecisionModel`) is
-optional and required only when the config asks for a decision model; the binary supplies it in its
-composition root.
+**How a store ranks its results is the consumer's choice, per store.** The contract is
+`IRetrievalStrategy` (`name`, `retrieve(store, query, k, options?)`, in `llm-agent`); `IRag`, `IReranker` and
+`IToolSelectionStrategy` are not changed. Three built-ins live in `llm-agent-libs` (`src/retrieval/`):
+`EmbeddingRetrieval` (the store's own ranking), `RerankedRetrieval` (embedding top `k × overfetch`, reranked,
+top-k) and `RerankAllRetrieval` (the first `maxCandidates`, reranked, top-k). `StrategyRag(inner, strategy)` is
+an `IRag` decorator: `query` goes through the strategy; `healthCheck`, `getById` and `writer()` delegate to
+`inner`, so catalog vectorization keeps working. A store that wraps another exposes it through the optional
+`IRagDecorator { inner }` capability (implemented by `StrategyRag` and `FallbackRag`);
+`hasRetrievalStrategy(rag)` walks `inner`, so an outer decorator never hides the strategy.
+
+**Two application points, one rerank per query.** The server wraps `tools` and `history` where it builds them
+(so the flat stages, `tool-loop` and `IToolsRagHandle` — the controller's per-step `selectTools` and every
+stepper mode — all receive the wrapped instance), and the builder applies `withRetrievalStrategy(store,
+strategy)` when it projects registry entries into `ragStores` (named collections: the bare name, `user/<name>`,
+`session/<name>`). `applyRetrievalStrategy` returns a store that already carries a strategy unchanged, so a
+store reached by both points is wrapped once. `CallOptions` (`signal`, `requestLogger`, `sessionLogger`) reach
+the reranker on every path; `IToolsRagHandle.query(text, k, options)` forwards them.
+
+**Precedence over the global reranker.** A plugin's `reranker` export (or `withReranker`) is still the
+server-wide reranker for stores **without** a `rag.retrieval` entry. A store with any explicit entry —
+`embedding` included — is skipped by `RerankHandler`: the strategy owns its ranking. A reranker failure never
+fails the request: the strategy returns the embedding ranking's top-k and logs the session step
+`retrieval_rerank_error { store, strategy, code }`.
+
+`resolveRetrievalStrategies` runs once in `_buildInfra()` — shared by the HTTP `start()` and the embeddable
+`buildAgent()` — and `buildBaseBuilder` applies the result (and the plugin reranker, and `agent.toolSelection`)
+outside the `applyServerExtras` gate, so the per-session agents that serve requests get them too.
+`rag.retrieval` is server-wide: a worker config that declares its own is rejected at startup. `decision:` and
+`rag.retrieval` are not hot-reloadable. The `makeDecisionModel` seam (`BuildAgentDeps.makeDecisionModel`) is
+optional and required only when a `rag.retrieval` entry asks for `reranker: decision`; the binary supplies it
+in its composition root. See [EXAMPLES.md](EXAMPLES.md#per-store-retrieval-strategies-ragretrieval) and
+[INTEGRATION.md](INTEGRATION.md#iretrievalstrategy).
 
 `llm-agent-libs` constructs no LLM provider — it takes `BuildAgentDeps.makeLlm` as a required seam.
 `llm-agent-server` depends on the five LLM provider packages directly — its composition root
@@ -521,6 +546,7 @@ Core contracts (in `@mcp-abap-adt/llm-agent`):
 - `ISearchStrategy` — pluggable scoring algorithms
 - `IQueryPreprocessor`, `IDocumentEnricher` — query/document transformation
 - `IToolIndexingStrategy` — tool description variants for indexing
+- `IRetrievalStrategy` — how one store turns a query into its top-k (embedding / rerank / rerank-all), chosen per store; `IRagDecorator` — optional `inner` capability of a wrapping store (see [Decision model and retrieval strategies](#decision-model-and-retrieval-strategies))
 
 RAG store implementations (in `@mcp-abap-adt/llm-agent`):
 - `VectorRag` — hybrid search (vector + BM25), accepts strategy/preprocessors
@@ -937,7 +963,7 @@ packages/
       interfaces/          # all I* interfaces (ILlm, IRag, IMcpClient, IPipeline, etc.)
       types/               # shared types (Message, ToolCall, AgentResponse, errors, etc.)
       rag/                 # RAG implementations (InMemoryRag, VectorRag, QdrantRag, etc.)
-      resilience/          # CircuitBreaker family, FallbackRag
+      resilience/          # CircuitBreaker family, FallbackRag (an IRagDecorator)
       strategies/          # LLM call strategies
       cache/               # ToolCache, NoopToolCache
       adapters/            # ClineClientAdapter, AnthropicApiAdapter, OpenAiApiAdapter
@@ -969,7 +995,8 @@ packages/
       plugins/             # FileSystemPluginLoader, plugin merge utilities
       metrics/             # InMemoryMetrics, NoopMetrics
       tracer/              # NoopTracer, OTel adapter
-      reranker/            # LlmReranker, NoopReranker, DecisionReranker
+      reranker/            # LlmReranker, NoopReranker, DecisionReranker (TOOL_QUESTION, PASSAGE_QUESTION)
+      retrieval/           # EmbeddingRetrieval, RerankedRetrieval, RerankAllRetrieval, StrategyRag
       validator/           # NoopValidator
       health/              # HealthChecker
       config/              # ConfigWatcher

@@ -148,12 +148,13 @@ that name into a credential ([how](packages/llm-agent-server/README.md#credentia
 ### Decision models
 
 A decision model is not an LLM: it answers typed questions (`noul` yes/no, `choice`, `score`) about a
-state with numbers only (`IDecisionModel`). The first consumer is the RAG reranker: with
-`reranker.type: decision`, each retrieved passage becomes one yes/no question and its `score` becomes
-P(relevant). It is opt-in: the user query and the retrieved passages of every store queried before the rerank
-stage (knowledge collections, the MCP tool catalogue, session history) are sent to TypeSafe's API, and the
-reranked probabilities replace the cosine scores that a `threshold` tool-selection `minScore` compares. The key
-comes from the environment by `credentialRef` (default ref `DECISION` -> `DECISION_API_KEY`).
+state with numbers only (`IDecisionModel`). The first consumer is a retrieval strategy: how each store ranks
+its results is chosen per store under `rag.retrieval` (`embedding`, `rerank` or `rerank-all`), and the
+`decision` reranker turns each retrieved passage into one yes/no question whose `score` is P(relevant).
+It is opt-in and per store: only a store whose own entry is `rerank` / `rerank-all` sends its query and
+candidates to TypeSafe's API. The reranked probabilities replace the cosine scores that a `threshold`
+tool-selection `minScore` compares. The key comes from the environment by `credentialRef`
+(default ref `DECISION` -> `DECISION_API_KEY`).
 
 ```yaml
 decision:
@@ -163,11 +164,19 @@ decision:
   baseUrl: https://...     # optional
   timeoutMs: 10000         # optional
   maxRetries: 2            # optional
-reranker:
-  type: decision           # uses the `decision:` model
+rag:
+  retrieval:
+    tools:
+      strategy: rerank     # embedding | rerank | rerank-all
+      reranker: decision   # decision | llm; `decision` uses the `decision:` model
 ```
 
-See [docs/EXAMPLES.md](docs/EXAMPLES.md#decision-reranker) and [docs/INTEGRATION.md](docs/INTEGRATION.md#idecisionmodel).
+Measured on the 218-tool `mcp-abap-adt` 16.0.0 catalog (30 English queries, `text-embedding-ada-002`, K=5,
+recorded 2026-10-04 in [scripts/rag-eval/README.md](scripts/rag-eval/README.md)): recall@1 rose from 56.7%
+(embedding) to 90.0% (`rerank:decision` and `rerank-all:decision`), MRR from 0.691 to 0.928 / 0.933. One
+sample: a direction, not a benchmark.
+
+See [docs/EXAMPLES.md](docs/EXAMPLES.md#per-store-retrieval-strategies-ragretrieval) and [docs/INTEGRATION.md](docs/INTEGRATION.md#iretrievalstrategy).
 
 ## Quick install
 

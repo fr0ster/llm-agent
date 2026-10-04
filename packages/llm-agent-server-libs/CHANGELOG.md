@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-`decision:` / `reranker:` config sections, optional `BuildAgentDeps.makeDecisionModel`, `resolveReranker`; the reranker (YAML or plugin) now reaches per-session and embedded agents.
+`decision:` config section, `rag.retrieval.<store>` per-store strategies (server-wide; a worker config declaring it is rejected), optional `BuildAgentDeps.makeDecisionModel`, `resolveRetrievalStrategies`; the plugin reranker and `agent.toolSelection` now reach per-session and embedded agents; `IToolsRagHandle` forwards `CallOptions`, so the controller / stepper tool selection goes through the `tools` strategy.
 
 ## 30.0.0
 

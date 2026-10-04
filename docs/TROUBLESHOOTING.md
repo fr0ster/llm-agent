@@ -218,26 +218,61 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 ## Reranking
 
-### Reranking has no effect
+### Retrieval reranking has no effect
 
-**Symptom.** `reranker.type: decision` is configured, the server starts, but the order of RAG results never changes.
+**Symptom.** A `rag.retrieval` entry with `strategy: rerank` / `rerank-all` is configured, the server starts, but the order of a store's results never changes.
 
-**Cause.** When a reranker fails for a store, the original order is kept (it is not an error for the request) and the failure is recorded instead of surfaced.
+**Cause.** A reranker failure never fails the request: the strategy returns the embedding ranking's top-k and records the failure instead of surfacing it.
 
-**Fix.** Look for the failure in two places: the span attribute `<store>.rerank_error` and the session step `rerank_error` (fields `store`, `code`, `message`). Both always carry `RERANK_ERROR` as the code: the decision model's own code appears only inside the step's `message`, which reads `decision rerank failed: <DECISION_CODE>: <message>`. Read that `<DECISION_CODE>` and act on it:
+**Fix.** Look for the session step `retrieval_rerank_error` with the fields `store`, `strategy` and `code`:
+
+| `code` | Meaning | Fix |
+|---|---|---|
+| `RERANK_ERROR` | The reranker returned an error: the decision model failed (key, quota, connectivity, request too large, cancellation), the LLM failed, or the LLM's reply broke the output contract (not a bare JSON array of N numbers in `[0, 1]`, wrong length, a value outside `[0, 1]`, prose around the array) | See below |
+| `RERANK_THROWN` | The reranker threw instead of returning an error | A bug in a custom `IReranker`; fix it to return a `Result` |
+
+The step carries the code only, not the reason. For `reranker: decision` check the key (`DECISION_API_KEY`, or `<REF>_API_KEY` for `decision.credentialRef`), connectivity to the provider and `decision.timeoutMs`; for `reranker: llm` check the `llm:` entry's credentials and model, and that the model can follow "answer with a JSON array only" (a failed batch fails the whole call). A reranker whose requests are cancelled also lands here: the HTTP chat path carries no `AbortSignal` unless the agent's request timeout (`SmartAgentConfig.timeoutMs`, builder `withTimeout(ms)`) is set, and the SmartServer YAML `agent:` section has no key for it — so nothing cancels a slow reranker call except the provider's own timeout (`decision.timeoutMs`).
+
+Other reasons for "no effect":
+
+- **`history` is never reranked.** `rag.retrieval.history` currently has no effect on per-session requests: session agents receive no `historyRag`. This is existing behaviour, not a failure of the strategy.
+- **The store has no entry.** Keys are the store keys the pipeline sees: `tools`, `history`, a global collection's bare name, `user/<name>`, `session/<name>`. A store that is not listed keeps embedding ranking.
+- **A collection added after build is not reranked.** The builder applies a strategy when it projects registry entries into the pipeline's stores. A registry with `setMutationListener` (`SimpleRagRegistry` has it) re-projects on every change, so a collection registered later is wrapped like the rest. A custom `IRagRegistry` without `setMutationListener` is never re-projected: a collection registered after build is not visible to any pipeline stage, reranked or not. Add `setMutationListener` to the registry.
+- **The circuit breaker is open** (see the next entry).
+
+### With the circuit breaker open, a `tools` / `history` store is not reranked
+
+**Symptom.** Under an embedder outage (`circuitBreaker` configured, embedder breaker open) a store with `strategy: rerank` returns embedding-style results, with no `retrieval_rerank_error`; a named collection is still reranked.
+
+**Cause.** Exactly one rerank happens per query in either wrapper order, but with the breaker **open** the two orders differ. `FallbackRag` fans writes out to its fallback store, so the fallback is not empty (it holds what was written, e.g. the vectorized tool catalog):
+
+| Order | Used for | Circuit open |
+|---|---|---|
+| `FallbackRag(StrategyRag(store))` | `tools` / `history`, wrapped by the server before the builder sees them | `FallbackRag` queries its fallback directly: the reranker is bypassed, results are the fallback's own ranking |
+| `StrategyRag(FallbackRag(store))` | named collections, wrapped in the builder's projection | the strategy reranks the fallback's results |
+
+Both are accepted (the request never fails). The controller / stepper tool path (`IToolsRagHandle`) holds the server-wrapped `StrategyRag(tools)` with no `FallbackRag` around it, so the breaker does not change it.
+
+### Reranking has no effect — global (plugin / `withReranker`) reranker
+
+**Symptom.** A plugin's `reranker` export or `withReranker(...)` is configured, but a store's order does not change.
+
+**Cause.** A store with an explicit `rag.retrieval` entry (`embedding` included) is skipped by the global reranker: the strategy owns its ranking. For a store without an entry, a failing global reranker keeps the original order and records the failure.
+
+**Fix.** Remove the entry (or choose a reranked strategy for it). For the failure itself look at the span attribute `<store>.rerank_error` and the session step `rerank_error` (fields `store`, `code`, `message`). Both always carry `RERANK_ERROR` as the code; with a `DecisionReranker` the decision model's own code appears inside the step's `message`, which reads `decision rerank failed: <DECISION_CODE>: <message>`:
 
 | Code | Meaning | Fix |
 |---|---|---|
 | `DECISION_AUTH` | TypeSafe rejected the key | Check `DECISION_API_KEY` (or `<REF>_API_KEY` for `decision.credentialRef`) |
 | `DECISION_RATE_LIMITED` | Quota exceeded; TypeSafe's published limit is 1 200 requests/min (secondary source, not verified by this repo) | Lower request concurrency, or raise the quota with the provider; the SDK already retries per `decision.maxRetries` |
 | `DECISION_UNAVAILABLE` | 5xx or connection/timeout failure | Check connectivity to the provider; raise `decision.timeoutMs` |
-| `DECISION_INVALID_REQUEST` | The request was rejected (bad model name, request too large) | Check `decision.model` and the size of the request (the query plus all passages of a store go in one request) |
+| `DECISION_INVALID_REQUEST` | The request was rejected (bad model name, request too large) | Check `decision.model` and the size of the request |
 | `DECISION_ERROR` | An unexpected or invalid answer shape from the provider (e.g. API drift) or another failure with no specific code | Check the `message`; verify the installed `@mcp-abap-adt/typesafe-decision` and the provider API version match; report it if it persists |
 | `DECISION_ABORTED` | The request was cancelled (client disconnected or the pipeline was aborted) | Usually benign; if it recurs without a cancelled request, check `decision.timeoutMs` and the request's abort signal |
 
-The `message` has the form `decision rerank failed: <DECISION_CODE>: <message>` and never contains the key or the request body.
+The `message` never contains the key or the request body.
 
-### Startup fails on `decision:` / `reranker:`
+### Startup fails on `decision:` / `rag.retrieval`
 
 Config-validation issues are listed under `Configuration error in smart-server.yaml:` and each fails startup:
 
@@ -245,12 +280,18 @@ Config-validation issues are listed under `Configuration error in smart-server.y
 - `decision.credentialRef: must be a non-empty string naming a credential (omit it for the default)`.
 - `decision.apiKey: secrets are no longer read from configuration — remove it and, if this role needs an account other than the default, name it with decision.credentialRef (your composition root resolves the name).`
 - `decision.timeoutMs: must be a positive integer (milliseconds)` / `decision.maxRetries: must be a non-negative integer` (`0` is valid for `maxRetries`).
-- `reranker.type: must be 'decision' (got …)`.
-- `reranker.type: decision requires a decision: section`.
+- `rag.retrieval: must be a mapping of store key → strategy` / `rag.retrieval.<store>: must be a mapping`.
+- `rag.retrieval.<store>.strategy: must be one of embedding | rerank | rerank-all (got …)`.
+- `rag.retrieval.<store>.reranker: required for strategy: rerank (decision | llm)` (also for `rerank-all`) / `….reranker: must be one of decision | llm (got …)`.
+- `rag.retrieval.<store>.reranker: decision requires a decision: section`.
+- `rag.retrieval.<store>.llm: required for reranker: llm (a key of the llm: map)` / `rag.retrieval.<store>.llm: "<key>" is not a key of the llm: map`.
+- `rag.retrieval.<store>.maxCandidates: required for strategy: rerank-all`; `….overfetch` / `….maxCandidates: must be a positive integer`.
+- A field that does nothing for the chosen strategy: `rag.retrieval.<store>.<field>: only applies to strategy rerank / rerank-all`, `….overfetch: only applies to strategy rerank`, `….maxCandidates: only applies to strategy rerank-all`, `….llm: only applies to reranker: llm`; and `rag.retrieval.<store>: set question or task, not both`; `….question: must be one of tool | passage (got …)`; `….task: must be a non-empty string`; `….<key>: unknown key`.
+- `reranker: removed — use rag.retrieval.<store>: { strategy: rerank, reranker: decision }` — the top-level `reranker:` section is not read; move it under `rag.retrieval`.
+- `subagent '<name>' rag.retrieval: strategies are server-wide — set them in the main config's rag.retrieval` — a worker config must not declare `rag.retrieval`.
 
-Errors raised while the server builds its reranker (they fire only when `reranker:` is set; a `decision:` section alone builds nothing):
+Errors raised while the server builds its strategies (they fire only for entries with `reranker: decision`; a `decision:` section alone builds nothing):
 
-- `reranker: decision is configured and a plugin reranker is loaded — choose one` — the YAML reranker and a plugin's `reranker` export are exclusive; remove one.
 - `BuildAgentDeps.makeDecisionModel is required: …` — a consumer of `SmartServer`/`buildAgent` asked for a decision model without supplying the seam (the `llm-agent` binary supplies it).
 - `credentialRef 'DECISION' must hold a api-key credential for decision typesafe, got none` — set `DECISION_API_KEY` (or the `<REF>_API_KEY` of the named ref; a named ref with no variable fails with `credentialRef '<REF>' for decision typesafe has no entry configured`).
 

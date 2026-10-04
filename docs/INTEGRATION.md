@@ -21,7 +21,7 @@ IQueryExpander        ──►  Expands query with synonyms (optional)
 IRag                  ──►  Retrieves relevant facts/tools/feedback/state
   │
   ▼
-IReranker             ──►  Re-scores RAG results (optional)
+IReranker             ──►  Re-scores RAG results (optional; per store, see IRetrievalStrategy)
                            (a DecisionReranker asks an IDecisionModel)
   │
   ▼
@@ -1093,6 +1093,73 @@ class CrossEncoderReranker implements IReranker {
 
 The library ships `LlmReranker` (uses the helper LLM for relevance scoring), `NoopReranker` (pass-through) and `DecisionReranker` (asks an `IDecisionModel`, see below).
 
+## IRetrievalStrategy
+
+**File:** `packages/llm-agent/src/interfaces/retrieval-strategy.ts`
+
+How one store turns a query into its top-k results — the consumer's choice, per store. `IRag` and
+`IReranker` are not changed; a strategy is a separate, small interface:
+
+```ts
+interface IRetrievalStrategy {
+  readonly name: string;
+  retrieve(
+    store: IRag,
+    query: IQueryEmbedding,        // `query.text` carries the query text
+    k: number,
+    options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>>;
+}
+```
+
+Built-ins (`@mcp-abap-adt/llm-agent-libs`): `EmbeddingRetrieval` (`store.query(query, k, options)`),
+`RerankedRetrieval(reranker, { overfetch, storeName })` (`overfetch` default 2) and
+`RerankAllRetrieval(reranker, { maxCandidates, storeName })`. The reranked ones fall back to the embedding
+ranking's top-k when the reranker fails or throws, and log the session step `retrieval_rerank_error`
+(`{ store, strategy, code }`, `storeName` is what fills `store`) through `options.sessionLogger`.
+
+### Example: your own strategy
+
+```ts
+import type {
+  CallOptions, IQueryEmbedding, IRag, IRetrievalStrategy, RagError, RagResult, Result,
+} from '@mcp-abap-adt/llm-agent';
+
+/** Fetch twice as many as asked and drop the ones whose metadata says they are stale. */
+class FreshOnlyRetrieval implements IRetrievalStrategy {
+  readonly name = 'fresh-only';
+  async retrieve(
+    store: IRag, query: IQueryEmbedding, k: number, options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>> {
+    const res = await store.query(query, k * 2, options);   // pass `options` on: signal + loggers
+    if (!res.ok) return res;
+    return { ok: true, value: res.value.filter((r) => r.metadata.stale !== true).slice(0, k) };
+  }
+}
+```
+
+Wire it per store: `builder.withRetrievalStrategy('knowledge', new FreshOnlyRetrieval())`. The builder
+applies it when it projects registry entries into `ragStores`, so a registry that offers
+`setMutationListener` (`SimpleRagRegistry` does) also covers collections registered after build; a custom
+registry without it is never projected for such a collection, so no stage queries it. An explicit strategy
+takes the store out of the global reranker (`withReranker` / a plugin's `reranker`), whatever the strategy.
+`StrategyRag(inner, strategy)` is the decorator that applies one by hand; `applyRetrievalStrategy(store,
+strategy)` wraps a store once (a store that already carries a strategy is returned unchanged).
+
+### `IRagDecorator` — custom store decorators
+
+```ts
+interface IRagDecorator {
+  readonly inner: IRag;
+}
+```
+
+A decorator that wraps another `IRag` (a cache, a tracing wrapper, `FallbackRag`, `StrategyRag`) should
+implement `IRagDecorator` and expose the store it wraps as `inner`. `hasRetrievalStrategy(rag)` walks the
+`inner` chain, so a strategy underneath your decorator stays visible: the builder does not wrap the store
+a second time, and `RerankHandler` still skips it — one rerank per query. Without `inner` the chain stops at
+your decorator, and the store can be wrapped (and reranked) twice. `isRagDecorator(rag)` is the type guard.
+
 ## IDecisionModel
 
 **File:** `packages/llm-agent/src/interfaces/decision-model.ts`
@@ -1152,7 +1219,7 @@ The package `@mcp-abap-adt/typesafe-decision` ships `TypeSafeDecisionModel` (Typ
 in `wrapDecisionModel` (from `llm-agent-libs`) to account its calls to the request logger. For a
 SmartServer, supply the model through the optional `BuildAgentDeps.makeDecisionModel` seam: it receives the
 `decision:` section and returns an `IDecisionModel`; required only when the config asks for one
-(`reranker: { type: decision }`).
+(a `rag.retrieval` entry with `reranker: decision`).
 
 ## IOutputValidator
 

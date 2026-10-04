@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-`DecisionReranker` and `wrapDecisionModel`; `RerankHandler` records reranker failures (`<store>.rerank_error`, `rerank_error` step).
+`DecisionReranker` (batched by `maxBatchTokens`, `concurrency`; presets `TOOL_QUESTION` / `PASSAGE_QUESTION`) and `wrapDecisionModel`. Per-store retrieval strategies: `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`, `SmartAgentBuilder.withRetrievalStrategy`. `RerankHandler` records global-reranker failures (`<store>.rerank_error`, `rerank_error` step) and skips stores with an explicit strategy. `LlmReranker` now asks for and requires a JSON array of N probabilities in `[0, 1]` (previously 0-10), batches by `batchSize`, and returns `RERANK_ERROR` for an out-of-contract reply.
 
 ## 30.0.0
 

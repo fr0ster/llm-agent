@@ -353,7 +353,7 @@ const tracer = new OtelTracerAdapter();
 ```
 
 Spans are emitted for: classification, RAG query, context assembly, LLM chat, tool execution, and reranking.
-A failed rerank sets the span attribute `<store>.rerank_error` (always the code `RERANK_ERROR`) and logs a `rerank_error` session step whose `message` reads `decision rerank failed: <DECISION_CODE>: <message>` for a decision reranker.
+A failed rerank of a store with a `rag.retrieval` strategy logs the session step `retrieval_rerank_error` (`store`, `strategy`, `code`) and keeps the embedding order; a failed global (plugin / `withReranker`) rerank sets the span attribute `<store>.rerank_error` (always the code `RERANK_ERROR`) and logs a `rerank_error` session step whose `message` reads `decision rerank failed: <DECISION_CODE>: <message>` for a decision reranker.
 
 ### Session debug logs
 
@@ -398,25 +398,31 @@ agent:
   historyAutoSummarizeLimit: 10
 ```
 
-## Reranking with a decision model
+## Per-store reranking (`rag.retrieval`)
 
-`reranker.type: decision` sends the user query and the retrieved passages to TypeSafe's API: one request per RAG
-store per chat request. The stores are every one queried before the rerank stage: the `tools` store (MCP tool
-descriptions), the `history` store (session history, which may include earlier assistant answers derived from
-back-end tool output) and custom stores; with `enrichedToolSearch: true` the `tools` store is queried after the
-rerank and is not sent. Reranked scores also replace the cosine scores, so a `threshold` tool-selection
-strategy (`agent.toolSelection.minScore`) compares against reranked probabilities (see
-[PERFORMANCE.md](PERFORMANCE.md#tool-selection-semantic-distance)). Size the network egress and the provider quota (`decision.timeoutMs`,
-`decision.maxRetries`) accordingly. The key is `DECISION_API_KEY` (or `<REF>_API_KEY` with
-`decision.credentialRef`) in the server's environment. The YAML reranker and a plugin reranker are exclusive:
-configuring both fails startup. `decision:` and `reranker:` are not hot-reloadable; a change takes a restart.
+A store with `strategy: rerank` / `rerank-all` and `reranker: decision` sends the user query and its retrieved
+candidates to TypeSafe's API: one request per query, split only when the candidates exceed the batch budget.
+Only stores with such an entry are sent: `tools` (MCP tool descriptions; queried once per request in the flat
+pipeline and once per step on the controller), a knowledge collection, or `history` (which may include earlier
+assistant answers derived from back-end tool output). A store with `strategy: embedding`, or no entry, is not
+sent by this mechanism; a plugin / `withReranker` reranker still reranks the stores without an entry (see
+[SECURITY_THREAT_MODEL.md](SECURITY_THREAT_MODEL.md), AS-7). Reranked scores replace the cosine scores, so a
+`threshold` tool-selection strategy (`agent.toolSelection.minScore`) compares against probabilities in
+`[0, 1]` when `tools` is reranked (see [PERFORMANCE.md](PERFORMANCE.md#tool-selection-semantic-distance)).
+Size the network egress and the provider quota (`decision.timeoutMs`, `decision.maxRetries`) accordingly. The
+key is `DECISION_API_KEY` (or `<REF>_API_KEY` with `decision.credentialRef`) in the server's environment.
+`rag.retrieval` is server-wide: a worker (subagent) config that declares it is rejected at startup. `decision:`
+and `rag.retrieval` are not hot-reloadable; a change takes a restart. The HTTP chat path carries no
+`AbortSignal` unless the agent's request timeout (`SmartAgentConfig.timeoutMs`, builder `withTimeout(ms)`) is set; the
+SmartServer YAML `agent:` section has no key for it, so a slow reranker call is cut off only by the provider's own
+timeout (`decision.timeoutMs`).
 
 ## Security Checklist
 
 - **API key management** — Use environment variables or secret managers (AWS Secrets Manager, Vault). Configs hold `credentialRef` names only; a secret never enters a loaded config, so there is no YAML literal to store in a committed file.
 - **Network binding** — Bind to `127.0.0.1` for local-only access. Use a reverse proxy (nginx, Caddy) for public exposure with TLS termination.
 - **MCP transport security** — Use TLS (`https://`) for remote MCP HTTP endpoints. For local MCP stdio servers, ensure the spawned process is trusted.
-- **Third-party data egress** — `reranker.type: decision` sends the user query and retrieved passages to TypeSafe's API (see [SECURITY_THREAT_MODEL.md](SECURITY_THREAT_MODEL.md), AS-7). Enable it only where that is acceptable.
+- **Third-party data egress** — a `rag.retrieval` entry with `reranker: decision` (or a global plugin reranker) sends the user query and retrieved passages to an external model (see [SECURITY_THREAT_MODEL.md](SECURITY_THREAT_MODEL.md), AS-7). Enable it only where that is acceptable.
 - **Rate limiting** — Add rate limiting at the reverse proxy layer. SmartServer does not implement rate limiting internally.
 - **Input validation** — The `externalToolsValidationMode` config (`strict` vs `permissive`) controls how strictly tool arguments are validated against schemas.
 - **Prompt injection** — Wire an `IPromptInjectionDetector` via the builder for tool-result inspection. The library ships a `HeuristicInjectionDetector`.
