@@ -530,10 +530,17 @@ describe('SmartServer embedder breaker — fed by the retrieval embedder', () =>
       const embedderBreaker = s._embedderBreaker;
       assert.ok(embedderBreaker, 'circuitBreaker: builds the embedder breaker');
       // Two requests; each queries two stores (tools and history, since the
-      // session agents read the shared history store), so each embeds twice
-      // through the server's retrieval embedder, and each embed fails.
+      // session agents read the shared history store). The request's query
+      // embedding is shared and memoized, but when it fails each store's
+      // VectorRag falls back to embedding the query itself through its own
+      // embedder (FallbackQueryEmbedding) — so a failing request makes one
+      // counted embed per store it reads, and each of them fails.
       await chat(handle.port, 's-1');
-      assert.equal(embeds, 2, 'a request embeds once per store it reads');
+      assert.equal(
+        embeds,
+        2,
+        'a failing request embeds once per store it reads (store fallback)',
+      );
       assert.equal(embedderBreaker.state, 'closed');
       await chat(handle.port, 's-2');
       assert.equal(embeds, 4);

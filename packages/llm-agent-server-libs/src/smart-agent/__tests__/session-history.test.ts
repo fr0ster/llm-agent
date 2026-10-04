@@ -77,6 +77,8 @@ function recordingLlm() {
  */
 function spiedStores(fixedHistoryHits?: RagResult[]) {
   let n = 0;
+  /** The sessionId of every record written to the history store. */
+  const upserts: unknown[] = [];
   const historyQueries: Array<{
     filter: unknown;
     sessionIds: unknown[];
@@ -84,6 +86,21 @@ function spiedStores(fixedHistoryHits?: RagResult[]) {
   const makeRag: BuildAgentDeps['makeRag'] = async (input) => {
     const rag = (await constructionSeams.makeRag(input)) as IRag;
     if (n++ === 1) {
+      const innerWriter = rag.writer?.bind(rag);
+      if (innerWriter) {
+        rag.writer = () => {
+          const w = innerWriter();
+          if (!w) return w;
+          return {
+            ...w,
+            upsertRaw: async (id, text, meta, options) => {
+              const res = await w.upsertRaw(id, text, meta, options);
+              upserts.push((meta as { sessionId?: unknown }).sessionId);
+              return res;
+            },
+          };
+        };
+      }
       const inner = rag.query.bind(rag);
       rag.query = async (embedding, k, options) => {
         const res = fixedHistoryHits
@@ -102,7 +119,7 @@ function spiedStores(fixedHistoryHits?: RagResult[]) {
     }
     return rag;
   };
-  return { makeRag, historyQueries };
+  return { makeRag, historyQueries, upserts };
 }
 
 function post(port: number, session: string, content: string): Promise<number> {
@@ -144,7 +161,7 @@ async function waitFor(cond: () => boolean): Promise<void> {
 describe('session agents read the shared history store (§14.3)', () => {
   it('two sessions share one store; each reads only its own turns; summaries carry the answer', async () => {
     const { llm, calls } = recordingLlm();
-    const { makeRag, historyQueries } = spiedStores();
+    const { makeRag, historyQueries, upserts } = spiedStores();
     const server = new SmartServer(
       configFrom(`${BASE_YAML}${AGENT}  historyAutoSummarizeLimit: 5\n`),
       {
@@ -165,26 +182,25 @@ describe('session agents read the shared history store (§14.3)', () => {
         ),
       );
       assert.equal(await post(handle.port, 'B', 'question from B'), 200);
-      // Let both turns reach the shared store before A asks again.
-      await new Promise((r) => setTimeout(r, 300));
-      const before = historyQueries.length;
-      assert.equal(await post(handle.port, 'A', 'second from A'), 200);
-      await waitFor(() => historyQueries.length > before);
-      assert.ok(
-        historyQueries.length > 0,
-        'rag-history ran on a session agent',
-      );
-      const last = historyQueries[historyQueries.length - 1];
-      assert.deepEqual(
-        (last.filter as { sessionId?: string }).sessionId,
-        'A',
-        'the read is scoped to the session',
-      );
-      assert.ok(last.sessionIds.length > 0, "A's own turn is read back");
-      assert.ok(
-        last.sessionIds.every((s) => s === 'A'),
-        `only session A's turns, got ${JSON.stringify(last.sessionIds)}`,
-      );
+      // Both turns reach the shared store (one store, two owners) before
+      // anyone reads: the filter alone must hide the other session's turn.
+      await waitFor(() => upserts.includes('A') && upserts.includes('B'));
+      for (const who of ['A', 'B']) {
+        const before = historyQueries.length;
+        assert.equal(await post(handle.port, who, `second from ${who}`), 200);
+        await waitFor(() => historyQueries.length > before);
+        const read = historyQueries[before];
+        assert.equal(
+          (read.filter as { sessionId?: string }).sessionId,
+          who,
+          'the read is scoped to the session',
+        );
+        assert.ok(read.sessionIds.length > 0, `${who}'s own turn is read back`);
+        assert.ok(
+          read.sessionIds.every((x) => x === who),
+          `only session ${who}'s turns, got ${JSON.stringify(read.sessionIds)}`,
+        );
+      }
     } finally {
       await handle.close();
     }
