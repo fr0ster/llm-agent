@@ -995,6 +995,18 @@ agent get the same instance:
     breaker. Request traffic of every pipeline, the controller and the stepper
     included, now moves them.
   - **A cancellation is not a failure** (§14.4).
+  - **Retries count once.** A breaker records one result per logical call:
+    `RetryLlm` sits **inside** the breaker (`CircuitBreakerLlm → RetryLlm →
+    adapter`), which is what `retry-llm.ts` and ARCHITECTURE already state as
+    the intent. The builder composed it the other way round (`RetryLlm` outside,
+    `builder.ts:1262-1270`), so every attempt counted; harmless while the
+    breaker lived only on the startup agent, but with a shared breaker two
+    throttled requests would open a key for every session. The builder puts its
+    retry inside the breaker in both modes: its own breaker
+    (`withCircuitBreaker(config)`), and a main LLM that already is a
+    `CircuitBreakerLlm` (the server's) — then the retry goes under that wrapper
+    with the same breaker (`CircuitBreakerLlm` exposes `inner` read-only,
+    additive). Role LLMs keep no retry, as today.
 - **YAML `mcp:` auto-connect stays gated** (one connection, made at startup).
   After this change `applyServerExtras` guards only this, and its doc says so.
 
