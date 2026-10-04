@@ -126,10 +126,10 @@ function spySkillManager() {
 
 describe('session agents carry the server wiring (§14.1)', () => {
   it('a plugin output validator is invoked on a session request', async () => {
-    let validated = 0;
+    const seen: string[] = [];
     const outputValidator: IOutputValidator = {
-      validate: async () => {
-        validated++;
+      validate: async (content) => {
+        seen.push(content);
         return { ok: true, value: { valid: true } };
       },
     };
@@ -141,7 +141,7 @@ describe('session agents carry the server wiring (§14.1)', () => {
       { ...constructionSeams },
     );
     await serve(server, ['s-1']);
-    assert.ok(validated > 0, 'the validator never ran on the session agent');
+    assert.equal(seen.length, 1, 'exactly one validation per request');
   });
 
   it('a skill manager reaches the skill-select stage of a session request', async () => {
@@ -274,6 +274,41 @@ describe('session agents carry the server wiring (§14.1)', () => {
     } finally {
       proto.withQueryExpander = origExpander;
       proto.withClientAdapter = origAdapter;
+    }
+  });
+
+  it('each session agent gets its own LLM-call strategy instance (fallback is stateful)', async () => {
+    const strategies: unknown[] = [];
+    const proto = SmartAgentBuilder.prototype;
+    const orig = proto.withLlmCallStrategy;
+    proto.withLlmCallStrategy = function (this: SmartAgentBuilder, s) {
+      strategies.push(s);
+      return orig.call(this, s);
+    };
+    try {
+      const server = new SmartServer(
+        {
+          ...configFrom(`${BASE_YAML}agent:\n  llmCallStrategy: fallback\n`),
+          pluginLoader: pluginsWith({}),
+        },
+        { ...constructionSeams },
+      );
+      const handle = await server.start();
+      try {
+        strategies.length = 0;
+        assert.equal(await post(handle.port, 's-a'), 200);
+        assert.equal(await post(handle.port, 's-b'), 200);
+        assert.ok(strategies.length >= 2);
+        assert.equal(
+          new Set(strategies).size,
+          strategies.length,
+          'a strategy instance was shared between builders',
+        );
+      } finally {
+        await handle.close();
+      }
+    } finally {
+      proto.withLlmCallStrategy = orig;
     }
   });
 });

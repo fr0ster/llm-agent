@@ -843,8 +843,12 @@ export class SmartServer {
   private _queryExpander?: IQueryExpander;
   /** DI > plugin > YAML `skills:`, resolved once; vectorized at startup only. */
   private _skillManager?: ISkillManager;
-  /** `agent.llmCallStrategy`, resolved once; applied to every builder (§14.1). */
-  private _llmCallStrategy?: ILlmCallStrategy;
+  /**
+   * `agent.llmCallStrategy`, resolved once as a FACTORY: a strategy may be
+   * stateful (`fallback` disables streaming stickily), so each builder gets its
+   * own instance (§14.1).
+   */
+  private _llmCallStrategyFactory?: () => ILlmCallStrategy;
   /** DI > plugin > default `ClineClientAdapter`, resolved once (§14.1). */
   private _clientAdapters: IClientAdapter[] = [];
   private _fileLogger?: ILogger;
@@ -1288,7 +1292,7 @@ export class SmartServer {
         'non-streaming': () => new NonStreamingLlmCallStrategy(),
         fallback: () => new FallbackLlmCallStrategy(this._fileLogger),
       };
-      this._llmCallStrategy = strategies[strategyName]?.();
+      this._llmCallStrategyFactory = strategies[strategyName];
     }
     const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
     this._clientAdapters = [
@@ -2955,8 +2959,8 @@ export class SmartServer {
         vectorize: parts.applyServerExtras,
       });
     }
-    if (this._llmCallStrategy) {
-      builder = builder.withLlmCallStrategy(this._llmCallStrategy);
+    if (this._llmCallStrategyFactory) {
+      builder = builder.withLlmCallStrategy(this._llmCallStrategyFactory());
     }
     for (const adapter of this._clientAdapters) {
       builder = builder.withClientAdapter(adapter);
