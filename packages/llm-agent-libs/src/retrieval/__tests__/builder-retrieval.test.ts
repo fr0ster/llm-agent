@@ -388,3 +388,69 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
     }
   });
 });
+
+describe('withRetrievalStrategy reaches the legacy coordinator tool source', () => {
+  async function toolSourceOf(withStrategy: boolean) {
+    const { strategy, calls } = spyStrategy();
+    let builder = new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withEmbedder(
+        symmetricEmbedder({
+          embed: async (_t: string, _o?: CallOptions) => ({
+            vector: [0.1, 0.2, 0.3],
+          }),
+        }),
+      )
+      .setToolsRag(primaryStore([hit('tool-hit', 0.9)]))
+      .withCoordinator({});
+    if (withStrategy)
+      builder = builder.withRetrievalStrategy('tools', strategy);
+    const handle = await builder.build();
+    const pipeline = (
+      handle.agent as unknown as { deps: { pipeline: unknown } }
+    ).deps.pipeline as { coordinator?: { dispatch?: unknown } };
+    assert.ok(pipeline.coordinator, 'expected a coordinator');
+    const primary = (
+      pipeline.coordinator.dispatch as {
+        primary?: {
+          contextBuilder?: {
+            config: {
+              toolSource?: (t: string, k: number) => Promise<RagResult[]>;
+            };
+          };
+        };
+      }
+    ).primary;
+    const toolSource = primary?.contextBuilder?.config.toolSource;
+    assert.ok(toolSource, 'expected a default toolSource');
+    return { handle, toolSource, calls };
+  }
+
+  it('queries the projected strategy-wrapped tools store', async () => {
+    const { handle, toolSource, calls } = await toolSourceOf(true);
+    try {
+      const res = await toolSource('find a tool', 2);
+      assert.deepEqual(
+        res.map((r) => r.text),
+        ['tool-hit'],
+      );
+      assert.deepEqual(calls, [2]);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('without a strategy, queries the raw tools store', async () => {
+    const { handle, toolSource, calls } = await toolSourceOf(false);
+    try {
+      const res = await toolSource('find a tool', 2);
+      assert.deepEqual(
+        res.map((r) => r.text),
+        ['tool-hit'],
+      );
+      assert.deepEqual(calls, []);
+    } finally {
+      await handle.close();
+    }
+  });
+});

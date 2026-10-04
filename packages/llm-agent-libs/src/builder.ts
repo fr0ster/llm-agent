@@ -116,7 +116,10 @@ import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
 import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { RetryLlm } from './resilience/retry-llm.js';
-import { applyRetrievalStrategy } from './retrieval/index.js';
+import {
+  applyRetrievalStrategy,
+  hasRetrievalStrategy,
+} from './retrieval/index.js';
 import type { ISessionManager } from './session/types.js';
 import {
   DefaultSubAgentContextBuilder,
@@ -783,14 +786,19 @@ export class SmartAgentBuilder {
    * `DefaultSubAgentContextBuilder` can consume. Returns `undefined` when
    * either piece is missing so the context builder simply skips that source.
    */
+  /**
+   * `resolve` is read per call, so a store re-projected by the registry
+   * listener (e.g. strategy-wrapped) is the one queried.
+   */
   private buildRetrievalSource(
     rag: IRag | undefined,
     embedder: IQueryEmbedder | undefined,
+    resolve: () => IRag = () => rag as IRag,
   ): SubAgentRetrievalSource | undefined {
     if (!rag || !embedder) return undefined;
     return async (text, k, signal) => {
       const embedding = new QueryEmbedding(text, embedder, { signal });
-      const queryRes = await rag.query(embedding, k, { signal });
+      const queryRes = await resolve().query(embedding, k, { signal });
       return queryRes.ok ? queryRes.value : [];
     };
   }
@@ -1312,7 +1320,16 @@ export class SmartAgentBuilder {
         // + embedder resources. `toolSource` comes from the toolsRag the parent
         // already uses for tool-loop retrieval. `projectSource` is left unset
         // until a dedicated project/domain RAG slot is exposed on the builder.
-        const toolSource = this.buildRetrievalSource(toolsRag, this._embedder);
+        // Like DefaultPipeline: the projected `tools` store when it carries an
+        // explicit retrieval strategy, otherwise the raw built-in.
+        const toolSource = this.buildRetrievalSource(
+          toolsRag,
+          this._embedder,
+          () => {
+            const p = ragStores.tools;
+            return p && hasRetrievalStrategy(p) ? p : (toolsRag as IRag);
+          },
+        );
         const defaultContextBuilder = new DefaultSubAgentContextBuilder({
           toolSource,
         });
