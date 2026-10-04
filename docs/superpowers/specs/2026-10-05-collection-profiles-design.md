@@ -27,22 +27,24 @@
   No canonical record → the hit is dropped and counted.
 - **Replacing an item is not atomic (§3.3).** It is several per-record writes. No generations, no
   locks: the writer or the store serializes concurrent writers of one item.
-- **With a clause splitter, `k` is per clause run (§4.5).** The result holds at most
-  `min(k × runs, maxItems)` items — measured: cutting the union back to k loses the gain.
+- **`k` is the overall limit of a retrieval, as in 30.1.0:** at most k items come back.
+- **Query decomposition is an injected strategy slot (§4.5).** `StagedRetrieval` calls the
+  consumer's `IQueryDecomposer` (query + budget k → sub-queries whose budgets sum to ≤ k). None
+  injected → the query runs as is. No shipped variant uses it; no implementation ships.
 - A profile is **bound** to each store of its kind (`profile.bind(...)`), so one profile serves
   several stores (e.g. reader and writer tool stores).
 - The retrieval half **is** a 30.1.0 `IRetrievalStrategy`, so every path that already honours
   per-store strategies gets it with no new wiring.
 - **Nothing changes by default.** No profile set → 30.1.0 behaviour, byte for byte (golden test).
 - **Everything is a strategy (DI).** A profile is a **composition** of injected strategy
-  instances: indexing, candidate pool, collapse, reranker, clause split, final cut. No booleans
-  where a strategy is the choice. YAML only maps names to instances, in the builder.
+  instances: indexing, candidate pool, collapse, query decomposition (optional), reranker,
+  final cut. No booleans where a strategy is the choice. YAML only maps names to instances, in the builder.
 - Default profiles ship:
   1. **MCP tools — several named variants**, so the consumer has a real choice (§7):
      - `baseline` = 30.1.0 (one record per tool, top-k) — the default;
      - `faceted` = `full` + `operation` + `object` records, item pool, collapse by max;
-     - `faceted-cohere` = faceted + Cohere on SAP AI Core + clause split;
-     - `faceted-jev` = faceted + TypeSafe Jev (`DecisionReranker`), no clause split.
+     - `faceted-cohere` = faceted + Cohere on SAP AI Core;
+     - `faceted-jev` = faceted + TypeSafe Jev (`DecisionReranker`).
      **Intents** are an indexing strategy any variant can add: an `intent` record per tool
      (default placement) or a companion collection.
   2. **`SharedItemsProfile`** — a generic shared base. Pipeline elements write items (record kinds
@@ -51,7 +53,7 @@
      `global`). What an item contains is the writing element's business, not this spec's.
 - **Rerankers are alternatives** (goal 9): a new **`SapAiCoreReranker`** (Cohere on SAP AI Core, own
   package) and the existing **`DecisionReranker`** (TypeSafe Jev). Each gets a default profile
-  configuration; the clause split is ON for Cohere, OFF for Jev.
+  configuration.
 - A reranker that returns a wrong or missing score count is a **reranker error**, counted and
   traced — never silent.
 - In-scope fixes: the store's embedder hidden behind `StrategyRag`; de-duplication in
@@ -94,10 +96,10 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 | `IRetrievalStrategy` | wrapper around a store: candidates → rerank → top-k | reused as the retrieval half |
 | `IToolSelectionStrategy` | post-filter of all stores' flattened results | untouched |
 | `IToolIndexingStrategy` | orphan, unexported | **deleted** (§10.3) |
-| `IQueryPreprocessor` / `IQueryExpander` | in-store / pipeline query rewrites | untouched; the clause split is `IQuerySplitter` |
+| `IQueryPreprocessor` / `IQueryExpander` | in-store / pipeline query rewrites, one text → one text | untouched; query decomposition (one query → budgeted sub-queries) is the new `IQueryDecomposer` (§4.5) |
 | `RagCollectionOwner` | owner of a whole **collection** (catalog record) | untouched; a **record's** owner is `RecordOwner` |
 | `IReranker` | `rerank(query, results, options)` | unchanged; both rerankers implement it |
-| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQuerySplitter`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `IToolFacet`, `IToolIntentSource`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `ConjunctionSplitter`, `SharedItemsProfile`, `SapAiCoreReranker` |
+| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `IToolFacet`, `IToolIntentSource`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `SharedItemsProfile`, `SapAiCoreReranker` |
 
 ---
 
@@ -119,54 +121,53 @@ points). Differences of 1–2 rows are noise.
 | Facets without `full` are clearly worse (0.885) | `full` is not a facet, so it cannot be dropped (§7.3) |
 | Deterministic facets = LLM facets on English (0.966 = 0.966) | default facets need no LLM |
 | Intent layouts, stage 1 only (hybrid, k=5): intents inside `full` 0.954; own `intent` record 0.954; no intents 0.943; both 0.954. Differences 1–2 rows | intents are an **indexing strategy** the consumer adds; default placement **own record** (§7.3) |
-| Intent layouts **with a reranker** (Cohere + split, hybrid, k=5): all four layouts **0.977** (9.2–9.4 tools) | the layout is chosen for stage-1 reasons only |
+| Intent layouts **with a reranker** (several records per tool): within noise of each other (goal *Evidence*) | the layout is chosen for stage-1 reasons only |
 
 ### 2.2 Retrieval
 
 | Measured | Design consequence |
 |---|---|
 | Cross-encoder rerank: non-English 0.692 → 0.962; cosine stage 1, English 0.885 → 0.943 | reranker on **items** |
-| Reranker text **without** intents is equal or better: Cohere + split, k=8: 0.977 → **1.000** (one record per tool); Jev + split, k=8: 0.977 → **1.000**; at k=5 equal (0.977 / 0.966) | the reranker reads the **provider text** only (§4.6) |
+| Reranker text **without** intents is equal or better, for Cohere and for Jev (goal decision 2026-10-04) | the reranker reads the **provider text** only (§4.6) |
 | Pool of **30 records** with several records per tool → only ~26–34 tools visible; non-English Cohere drops to **0.846–0.885** (one cell 0.808) | candidate pool sized in **items** (§4.4) |
 | Pool of **30 items** (same layouts) → non-English **0.962** (Cohere) / **1.000** (Jev) | same |
 | LLM as reranker: no gain, 6–10k tokens/query; a wrong score count fell back to stage 1, visible only as a session step | wrong/missing score count = reranker error, counted + traced (§9) |
 | Absolute thresholds are language-biased; "top-3 then up to 8 while score ≥ t" is safe | per-store cut: top-k items (default) or `ScoreFloorCut` |
-| Cohere + split ∪ faceted top-3 = 1.000, but chosen after seeing the data | optional knob, **off** by default (§4.7) |
+| Adding the stage-1 top-3 to the reranked items: measured only on top of the former built-in clause split, chosen after seeing the data — no number without the split | optional knob, **off** by default (§4.7) |
 
-### 2.3 Rerankers compared (k=5, hybrid, today's one record per tool, pool 30)
+### 2.3 Rerankers compared (k=5, hybrid, today's one record per tool, pool 30 items)
 
-| Queries | Cohere | Cohere + clause split | Jev | Jev + clause split |
-|---|---|---|---|---|
-| single-step (73) | 0.973 | 0.973 | **1.000** | 1.000 |
-| multi-step (14) | 0.714 | **1.000** | 0.857 | 0.786 |
-| non-English (26) | 0.962 | 0.962 | **1.000** | 1.000 |
+Figures as in the goal's *Evidence* table; the misses below are the goal's account after the
+2026-10-05 label correction.
 
-- The clause split helps Cohere (+4 rows of 14) and costs Jev 1 row of 14.
-- So the split is a **per-profile option** paired with the reranker, typed to need a reranker.
-- The Jev loss is a single row; the default "off for Jev" follows the measurement and the goal, but
-  it rests on thin data (14 rows).
+| Queries | Cohere | Jev |
+|---|---|---|
+| all English (87) | 0.931, 8.3 tools | **0.977**, 8.3 tools |
+| single-step (73) | 0.973 | **1.000** |
+| multi-step (14) | 0.714 | **0.857** |
+| non-English (26) | 0.962 | **1.000** |
 
-### 2.4 Where the clause split's gain comes from — the per-clause budget
+- **Five multi-step labels were wrong:** they listed a step the first tool already takes as a
+  parameter (`CreateClass` takes `transport_request`; `UpdateClass`, `CreateDomain`,
+  `CreateBehaviorDefinition` take `activate`).
+- **Remaining multi-step misses:**
+  - Jev: only "where-used of a table, then show the users' source". Its second step depends on the
+    first step's result — a separate step for the planner, not a retrieval problem.
+  - Cohere: the same query, plus `CreateClass` / `UpdateClass` in two queries — its ranking, not
+    multi-step.
 
-Measured (Cohere on AI Core, and Jev; EN-ext n=87, multi-step n=14; pool 30 items; k=5; hybrid):
+### 2.4 Query decomposition — a slot, not a shipped behaviour
 
-| Setup | EN-ext overall | tools returned | multi-step |
-|---|---|---|---|
-| Cohere, no split | 0.931 | 8.3 | 0.714 |
-| Cohere, no split, **k=8** | 0.943 | 13.3 | — |
-| **Cohere, split, k per clause run, union** (the shipped behaviour) | **0.977** | 9.4 | **1.000** |
-| Cohere, split, union **then cut to k by best score** | — | — | 0.500 |
-| Cohere, split, **round-robin** over clause rankings, then cut to k | 0.908 | — | 0.571–0.643 |
-| Jev, no split | 0.977 | 8.3 | 0.857 |
-| Jev, split, round-robin, then cut to k | — | — | 0.643–0.714 |
-
-- The split's gain **is** the per-clause budget. Cutting the union back to k destroys it — both
-  cut orders end **below no split**.
-- Per tool in the prompt it beats raising k: split 0.977 with 9.4 tools vs. no split at k=8 0.943
-  with 13.3 tools.
-- **Design consequence (§4.5, D12):** keep the measured behaviour and make the contract explicit —
-  with a splitter, k counts items **per clause run**, and the result holds at most
-  `min(k × runs, maxItems)` items. Consumers that size prompts by k must be told (§13).
+- With the corrected labels, **no shipped variant needs splitting.** The earlier measured gain came
+  mostly from the mislabelled queries above and from Cohere's ranking.
+- Cutting the split's union back to k was measured **worse than no split at all**.
+- A genuinely dependent second step is a separate step for the planner anyway.
+- **Design consequence (§4.5, goal decision 2026-10-05):**
+  - the framework provides the component: an injected `IQueryDecomposer` that `StagedRetrieval`
+    calls;
+  - no shipped variant uses it and no implementation ships;
+  - `k` stays the overall limit, as in 30.1.0;
+  - a consumer's strategy is measured by the consumer (§14.3).
 
 ---
 
@@ -399,19 +400,28 @@ export interface ICollapseRule {
   collapse(hits: readonly SourcedHit[]): CollapsedItem[];
 }
 
-/** Final cut over the ranked, hydrated items of ONE run. `requestedK` is the caller's k, in items.
- *  With a clause splitter it is applied per clause run (§4.5), never to the union. */
+/** Final cut over the ranked, hydrated items. `requestedK` is the caller's k, in items.
+ *  Applied once, to the final result. */
 export interface IItemCut {
   readonly name: string;
+  /** The most items `cut` returns for `requestedK` — the retrieval's budget (§4.5). */
+  limit(requestedK: number): number;
   cut(items: readonly RagResult[], requestedK: number): RagResult[];
 }
 
-/** Splits a multi-step query into clauses. One clause = no split. */
-export interface IQuerySplitter {
+/** One sub-query and its share of the budget, in items. */
+export interface SubQuery {
+  readonly text: string;
+  readonly k: number;                      // integer ≥ 1
+}
+
+/** Splits one query into budgeted sub-queries (§4.5). Injected; none → the query runs as is. */
+export interface IQueryDecomposer {
   readonly name: string;
-  /** Hard cap: `split` never returns more clauses. Bounds the result size (§4.5). */
-  readonly maxClauses: number;
-  split(text: string): readonly string[];
+  /** `budget` = the retrieval's limit in items. The sub-queries' `k` must sum to ≤ `budget`.
+   *  An empty array = run the query as is with the whole budget. */
+  decompose(text: string, budget: number, options?: CallOptions)
+    : Promise<Result<readonly SubQuery[], RagError>>;
 }
 
 /** One store a retrieval queries. */
@@ -519,7 +529,8 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | Change | Why it is needed | Why here |
 |---|---|---|
 | `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `IItemIndexer`, `ICollectionProfile`, `IBoundCollection`, `BindTarget`, `CollectionStore` | goals 1–2, 5–6: a profile contract consumers implement | used by libs (implementations, builder), server-libs (YAML) and consumers → the contracts package |
-| `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQuerySplitter`, `ISourceSelector`, `RetrievalSource` | goal 1's new steps, each a consumer-swappable strategy (principle 5) | same users as above |
+| `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISourceSelector`, `RetrievalSource` | goal 1's new steps, each a consumer-swappable strategy (principle 5) | same users as above |
+| `IQueryDecomposer`, `SubQuery` | goal decision 2026-10-05: query splitting is a strategy the consumer injects and the default retrieval uses | libs (`StagedRetrieval` calls it), server-libs (YAML name → instance), consumers (implementations) |
 | `ToolItem`, `IToolFacet`, `IToolIntentSource` | typed input of the tools indexers; facets and intents are indexing strategies a consumer may write | builder (libs) + indexers + consumers that bring their own facets or precomputed intents |
 | `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `SharedItemsStores` | goal 7: what writing elements get; owner + visibility | libs (profile) + consumers (writing elements, group partitions) |
 | `IRetrievalMetrics` | reranker errors must reach metrics and `/health` (goal *Evidence*) without growing `IMetrics` (principle 4) | metrics implementations live in libs; consumers plug their own backends |
@@ -558,12 +569,11 @@ interface StagedRetrievalOptions {
   rerank?: {
     reranker: IReranker;
     onFailure: 'stage1' | 'error';      // 'stage1' = 30.1.0 behaviour
-    split?: {
-      splitter: IQuerySplitter;         // carries the hard clause cap (maxClauses)
-      queryEmbedder: IQueryEmbedder;
-      maxItems?: number;                // optional total cap the consumer sets (§4.5)
-    };
-    keepStage1Top?: number;             // §4.7, default 0
+    keepStage1Top?: number;             // §4.7, default 0; counted inside k
+  };
+  decompose?: {                 // §4.5; absent → the query runs as is (one run)
+    decomposer: IQueryDecomposer;
+    queryEmbedder: IQueryEmbedder;      // embeds each sub-query
   };
   cut?: IItemCut;               // absent → TopItemsCut (caller's k)
   telemetry?: { tracer?: ITracer; metrics?: IRetrievalMetrics };
@@ -574,8 +584,6 @@ interface StagedRetrievalOptions {
   "configured, never derived from an assumed catalog size".
 - **Scoring inside the store** (hybrid vs cosine) is the store's existing `ISearchStrategy`, set on
   the store, not here. The measurements used hybrid (0.7·cos + 0.3·BM25).
-- `split` lives **inside** `rerank`: a split without a reranker does not compile (an embedding-only
-  clause split loses recall).
 
 ### 4.3 One query, step by step
 
@@ -589,7 +597,8 @@ merge hits
   → keep the first pool.items items per items source
   → rerank items on their item text (optional, §4.6); check the result (§4.8)
   → hydrate in rank order from the CANONICAL record (§4.6); drop + count orphans
-  → cut (IItemCut) over hydrated items, k = items (per clause run with a splitter, §4.5)
+  → cut (IItemCut) over hydrated items, once: at most cut.limit(k) items
+    (with a decomposer this runs per sub-query and the results are merged, §4.5)
 ```
 
 - **Owner invariant:** collapse only ever sees what the stores returned under each source's
@@ -623,47 +632,42 @@ merge hits
   - shared items: a required constructor option of the profile; `index()` refuses an item with
     more records (`failedItems`, reason `too-many-records`).
 
-### 4.5 Clause split
+### 4.5 Query decomposition — an injected strategy
 
-**How it runs.**
+**The slot.** The framework provides the component; the consumer provides the strategy.
 
-- With `rerank.split` set and `splitter.split(text)` returning ≥ 2 clauses: run §4.3 for the whole
-  query **and** for each clause (each clause embedded with the injected `IQueryEmbedder`, each
-  reranked against its own clause text), in parallel. Each of these is a **clause run**;
-  `runs = 1 + clauses` (the whole query is one run). Without a split, `runs = 1`.
-- **Each run is cut to k items on its own** (the `IItemCut`, applied per run).
-- Union in order: whole query, then clause 1, 2, …; de-duplicated by owner-qualified item, keeping
-  the best score.
+- `StagedRetrieval` calls the injected `IQueryDecomposer` (§3.4) when `decompose` is set.
+- **None injected → the query runs as is** (one run, today's behaviour). There is no shipped
+  implementation and no shipped variant uses one (§2.4).
 
-**The k contract — explicit (D12).**
+**The k contract.** `k` stays the overall limit of a retrieval, as in 30.1.0 — with or without a
+decomposer.
 
-| Setup | `k` means | Result size |
-|---|---|---|
-| no splitter (or one clause) | items | **at most k** |
-| with a splitter | items **per clause run** | **at most `min(k × runs, maxItems)`**, `runs ≤ 1 + splitter.maxClauses` |
+| Step | What |
+|---|---|
+| budget | `budget = cut.limit(requestedK)` (`TopItemsCut` → k; `FixedItemsCut(n)` → n; `ScoreFloorCut` → `maxItems`) |
+| decompose | `decomposer.decompose(text, budget)` → sub-queries; the strategy owns how the budget is shared |
+| check | each `k` an integer ≥ 1, each `text` non-empty, `Σ k ≤ budget`; else a `RagError('…', 'DECOMPOSE_ERROR')` |
+| `[]` | the query runs as is with the whole budget (same as no decomposer) |
+| run | each sub-query through §4.3 up to hydration, in parallel: embedded with `queryEmbedder`, reranked against its **own** text, its first `k` items kept |
+| merge | union in sub-query order, de-duplicated by owner-qualified item (best score kept) |
+| cut | the `IItemCut`, **once**, over the union → **at most `budget` items** |
 
-- `splitter.maxClauses` is a **hard cap**, required: `split` never returns more clauses. It bounds
-  the worst case at `k × (1 + maxClauses)`.
-- `split.maxItems` is an **optional total cap** the consumer sets. When the union is larger, it is
-  cut in union order (whole-query run first). Default: none.
-  - It is a prompt-size safety bound, **not** a tuning knob: §2.4 measured that cutting the union
-    back towards k (by best score: multi-step 0.500; round-robin: 0.571–0.643, overall 0.908) ends
-    below no split at all.
-- `keepStage1Top` (§4.7) adds at most its own n on top.
-- **Why not cut the union to k:** the split's gain **is** the per-clause budget (§2.4). Per tool it
-  also beats raising k (split 0.977 with 9.4 tools; no split at k=8 0.943 with 13.3 tools).
-- **Consumers that size prompts by k must be told.** Under a profile with a splitter, a caller's k
-  can return up to `k × runs` items. The bound is documented in `docs/INTEGRATION.md` and the
-  variant's docs (§13), and reported per query (span attribute `clauses`, `items.returned`).
+- A decomposer error or a failed check is **returned**, never swallowed: the retrieval fails with
+  the error, counted as `outcome=decompose_error` and on the span (§9). No silent fall-back to the
+  whole query.
+- Since the budgets sum to ≤ k and the final cut is enforced anyway, no contract here lets a
+  retrieval return more than k items.
 
-**Splitter and placement.**
+**How it relates to the existing query steps and #323.**
 
-- Built-in splitter: `ConjunctionSplitter({ maxClauses })` — English rules only (`and`, `then`,
-  `, then`, `;`, `after that`); `maxClauses` is required. Tool search text is English by the repo's
-  standing rule (CLAUDE.md, "MCP tool-RAG language constraint"); a consumer injects its own
-  splitter.
-- **Per profile, per reranker.** It helps Cohere and costs Jev (§2.3, §2.4), so it is never built
-  in.
+| Step | Shape | Where | This spec |
+|---|---|---|---|
+| `IQueryPreprocessor` | one text → one text | inside `IRag.query`, per store, before embedding | untouched; it still runs inside each store query, for every sub-query too |
+| `IQueryExpander` | one text → one text | pipeline, one rewrite per request (dead today, #323) | untouched; #323 stays its own pipeline fix (§12). When wired, its output is the query the decomposer receives |
+| `IQueryDecomposer` | one text → budgeted sub-queries | retrieval-time, inside `StagedRetrieval`, per store | new slot |
+
+**YAML.** Only a name mapped to an injected instance (§6.2); config holds no split knobs.
 
 ### 4.6 The canonical record — what the reranker reads and what is returned
 
@@ -697,8 +701,8 @@ the candidate search. For each collapsed item:
   surface its own text or data.
 - Hydration runs in rank order and the cut sees only hydrated items, so orphans never use up k.
 - **Cost:** at most one `getById` per returned item whose canonical record was not among the
-  candidates (≤ k per run; zero when the canonical record matched). `IRag` has no batch get; the
-  reads run in parallel.
+  candidates (≤ k per sub-query; zero when the canonical record matched). `IRag` has no batch
+  get; the reads run in parallel.
 
 **Why `itemText` stays, but only for ranking.** It lets the reranker score items whose canonical
 record was not among the candidates without a read per candidate (the pool is 30 items; the
@@ -713,9 +717,11 @@ only orders; the payload always comes from the canonical record.
 
 ### 4.7 Optional `keepStage1Top`
 
-`keepStage1Top: n` adds the stage-1 (collapsed, pre-rerank) top-n items to the reranked result
-(union, de-duplicated). This is the measured "Cohere + split ∪ faceted top-3" (1.000), chosen after
-seeing the data. Default 0. **Decision for the user** — D7.
+`keepStage1Top: n` keeps the stage-1 (collapsed, pre-rerank) top-n items in the result: they go
+first, the reranked items fill the rest, de-duplicated. **Counted inside k**, so k stays the
+overall limit (the previous draft added n on top). It was measured only on top of the former
+built-in clause split, and chosen after seeing the data: **no measured number backs it now**.
+Default 0. **Decision for the user** — D7.
 
 ### 4.8 Reranker output check
 
@@ -734,16 +740,16 @@ including a consumer's own.
 |---|---|---|
 | candidate pool | `ItemPool(n)` | `n` items per items source (§4.4) |
 | collapse | `MaxScoreCollapse` | item score = best record score (measured winner). Count / RRF are **not** shipped. |
-| cut | `TopItemsCut` | first `requestedK` items of a run (default) |
-| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | per run: first `minItems`, then more up to `maxItems` while `score ≥ minScore` |
-| cut | `FixedItemsCut(k)` | ignores the caller's k — for a store whose profile owns k. With a splitter its k is **per clause run**: the result holds at most `min(k × runs, maxItems)` items (§4.5) |
-| split | `ConjunctionSplitter({ maxClauses })` | §4.5 |
+| cut | `TopItemsCut` | first `requestedK` items (default); `limit` = `requestedK` |
+| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `minItems`, then more up to `maxItems` while `score ≥ minScore`; `limit` = `maxItems` |
+| cut | `FixedItemsCut(k)` | ignores the caller's k — for a store whose profile owns k; `limit` = its k |
+| query decomposition | — | **none shipped**; the consumer injects its own `IQueryDecomposer` (§4.5) |
 
 - **k in items.** The caller's k (`ragQueryK ?? 10` in `rag-query`, 20 in `IToolsRagHandle` and the
-  controller's `selectTools`) arrives unchanged; under a profile it counts items (per clause run
-  when the profile has a splitter, §4.5). A consumer that
-  wants its own number uses `FixedItemsCut`. The library chooses no k of its own; a named variant
-  carries its measured cut in its definition, and the consumer picks the variant explicitly.
+  controller's `selectTools`) arrives unchanged; under a profile it counts items and is the
+  overall limit of the retrieval, with or without a decomposer. A consumer that wants its own
+  number uses `FixedItemsCut`. The library chooses no k of its own; a named variant carries its
+  measured cut in its definition, and the consumer picks the variant explicitly.
 - **Score scales.** After a reranker, scores are the reranker's; the global
   `IToolSelectionStrategy` still runs on the flattened results of all stores, as in 30.1.0. A
   per-store threshold therefore belongs in the profile's cut.
@@ -824,9 +830,8 @@ order (as `DecisionReranker` does).
 
 ### 5.4 Rerankers in the shipped tools variants
 
-- Cohere: `faceted-cohere` (clause split ON). Jev: `faceted-jev` (clause split OFF). See §7.4.
-- Any reranker composes with any indexing and candidate strategy (§7.5); the split is set per
-  composition, typed to need a reranker.
+- Cohere: `faceted-cohere`. Jev: `faceted-jev`. See §7.4.
+- Any reranker composes with any indexing and candidate strategy (§7.5).
 
 ---
 
@@ -867,9 +872,9 @@ rag:
   profiles:               # new; absent → 30.1.0 behaviour (= variant baseline)
     tools:
       variant: faceted-cohere                    # baseline | faceted | faceted-cohere | faceted-jev | a registered name
-      split: { maxClauses: 3, maxItems: 15 }     # faceted-cohere only: maxClauses required, maxItems optional (§4.5)
       intents:                                   # optional indexing strategy; not with baseline
         record: { file: ./tool-intents.json }    # or: companion: { source: { llm: intents }, store: { … } }
+      decomposer: my-splitter                    # optional; a NAME the consumer registered (§4.5); not with baseline
 
     # …or the consumer's own composition, every value a NAME of a strategy:
     tools-writer:
@@ -879,7 +884,7 @@ rag:
         collapse: max                              # → MaxScoreCollapse
         reranker: decision                         # none | cross-encoder | decision | llm
         question: tool                             # decision / llm only
-        split: none                                # none | { conjunctions: { maxClauses: N, maxItems?: M } }
+        decomposer: none                           # none | a registered name (no built-in)
         cut: { fixed-items: 5 }                    # top-items | fixed-items | score-floor {minItems,maxItems,minScore}
         onFailure: stage1                          # stage1 | error
 ```
@@ -888,8 +893,10 @@ rag:
   `resolve-retrieval.ts`).
 - Names resolve through registries in the composition deps (like `embedderFactories`):
   `toolsVariantFactories` (built-ins: the four of §7.4) and `toolsStrategyFactories` (built-in
-  facets, pools, collapse, cuts, splitters). A consumer registers its own. Unknown name → startup
-  error.
+  facets, pools, collapse, cuts). A consumer registers its own, including its decomposers (none
+  is built in). Unknown name → startup error.
+- A decomposer factory gets the store's query embedder from the resolver (the same one `makeRag`
+  gives the store); YAML carries no decomposer parameters — they belong to the registered factory.
 - Rerankers resolve through the same code as `rag.retrieval`:
   - `decision`: one `DecisionReranker` per wording, `makeDecisionModel` seam (existing);
   - `cross-encoder`: new `BuildAgentDeps.makeCrossEncoder(cfg) => Promise<IReranker>` seam; the
@@ -902,11 +909,9 @@ rag:
 - Validation (raw YAML, as in #321 §13.4) → startup error, never a silent drop:
   - unknown variant or strategy name; `variant` and `compose` together; a key under both
     `retrieval` and `profiles`;
-  - `split` without a reranker; `question` with `cross-encoder`;
-  - a splitter without `maxClauses` (or non-positive); `faceted-cohere` without `split.maxClauses`;
-    `split.maxItems` below the cut's k;
+  - `question` with `cross-encoder`;
   - `cross-encoder` without a `crossEncoder:` section, or without the seam;
-  - `intents` with `baseline`; `companion` without `store`;
+  - `intents` or `decomposer` with `baseline`; `companion` without `store`;
   - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
   - a tools key whose variant is not a tools profile.
 - Server-wide like `rag.retrieval`: worker configs that declare `rag.profiles` are rejected;
@@ -938,7 +943,7 @@ rag:
 | candidate pool | `ICandidatePool` | `ItemPool(n)` |
 | collapse | `ICollapseRule` | `MaxScoreCollapse` |
 | reranker | `IReranker` (existing) | none; `SapAiCoreReranker`; `DecisionReranker` + `TOOL_QUESTION`; `LlmReranker` |
-| clause split | `IQuerySplitter` (inside `rerank`, typed; carries `maxClauses`) | none; `ConjunctionSplitter({ maxClauses })` |
+| query decomposition | `IQueryDecomposer` (optional, §4.5) | **none** — the consumer's own |
 | final cut | `IItemCut` | `TopItemsCut`, `FixedItemsCut(k)`, `ScoreFloorCut(...)` |
 
 The composing class is `ComposedToolsProfile` (an `ICollectionProfile<ToolItem>`):
@@ -950,6 +955,7 @@ new ComposedToolsProfile({
   pool: ICandidatePool,
   collapse: ICollapseRule,
   rerank?: StagedRetrievalOptions['rerank'],
+  decompose?: StagedRetrievalOptions['decompose'],
   cut?: IItemCut,
   telemetry?: { tracer?: ITracer; metrics?: IRetrievalMetrics },
 })
@@ -1006,47 +1012,48 @@ They help only the candidate search (§2.1) and never reach the reranker (§4.6)
 
 ### 7.4 Shipped variants (`mcpToolsVariants`)
 
-Each variant is a factory that takes only what cannot be shipped (a reranker's model or credential,
-a query embedder) and returns a `ComposedToolsProfile` — or, for `baseline`, nothing to bind.
+Each variant is a factory that takes only what cannot be shipped (a reranker's model or
+credential) and returns a `ComposedToolsProfile` — or, for `baseline`, nothing to bind.
 
 | Variant | Composition | Measured (required-recall, hybrid in-store scoring) |
 |---|---|---|
 | **`baseline`** — the default | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
 | **`faceted`** | `FacetedToolIndexer([OperationFacet, ObjectFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | 0.966 at k=5; **0.977 at k=8 with ~13 tools** (= baseline's k=15 with half the tools). |
-| **`faceted-cohere`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `SapAiCoreReranker` + `ConjunctionSplitter({ maxClauses })` + `FixedItemsCut(5)` **per clause run** | EN-ext **0.977** at k=5 per run (9.4 tools on average); single 0.973, multi **1.000**, non-English **0.962** (pool of 30 items, reranker text without intents). Returns up to `min(5 × runs, maxItems)` tools (§4.5). |
-| **`faceted-jev`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + no split + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest so far: one record per tool + Jev, no split: single **1.000**, multi 0.857, non-English **1.000** (EN-ext 0.977, 8.3 tools, §2.4); faceted + 30 items + Jev **with** split: 1.000 / 0.786 / 1.000. |
+| **`faceted-cohere`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `SapAiCoreReranker` + `FixedItemsCut(5)` | **Not measured as one composition.** Closest: one record per tool + Cohere, pool 30 items, k=5 (§2.3): EN-ext 0.931 with 8.3 tools; single 0.973, multi 0.714, non-English 0.962. At most 5 tools. |
+| **`faceted-jev`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest: one record per tool + Jev, pool 30 items, k=5 (§2.3): EN-ext 0.977 with 8.3 tools; single 1.000, multi 0.857, non-English 1.000. At most 5 tools. |
 
 ```ts
 mcpToolsVariants.faceted();
-mcpToolsVariants.facetedCohere({ reranker: new SapAiCoreReranker({ … }), queryEmbedder,
-  maxClauses: 3, maxItems: 15 });   // maxClauses required (not measured → not guessed); maxItems optional
+mcpToolsVariants.facetedCohere({ reranker: new SapAiCoreReranker({ … }) });
 mcpToolsVariants.facetedJev({ decisionModel });
 // intents on top of any variant except baseline:
 mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
+// the consumer's own decomposer on top of any variant except baseline (none shipped):
+mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryEmbedder } });
 ```
 
 - **Why these four:** each one is a measured step — baseline (no change), faceted (fewer tools for
   the same recall, no external service), and one per reranker the goal names (goal 9).
-- **`faceted-jev` caveat:** the split's effect on Jev is 1 row of 14 (round-robin split cut to k:
-  multi 0.643–0.714, §2.4), and faceted + Jev without split was not run on an item pool. It ships
-  marked **"to be measured as one composition on fresh consumer queries before promotion"**: no
-  numbers are quoted for it and it is not recommended over the others until the consumer check
-  (§14.3) runs it. **Decision for the user** — D11.
+- **`faceted-cohere` numbers are a proxy, honestly marked:** they are V0 + Cohere (one record per
+  tool), not the faceted composition. Faceted indexing and Cohere were not measured together as
+  this variant; the consumer check (§14.3) measures it.
+- **`faceted-jev` caveat:** faceted + Jev was never run as one composition on an item pool. It ships
+  marked **"to be measured as one composition on fresh consumer queries before promotion"**: the
+  numbers in its row are the closest measured setup, not its own, and it is not recommended over
+  the others until the consumer check (§14.3) runs it. **Decision for the user** — D11.
 - One record + Jev (the best measured Jev composition) is already 30.1.0's
   `rag.retrieval.tools: { strategy: rerank, reranker: decision }`; it is not repeated as a variant.
-- **Intents with a reranker:** all layouts give 0.977 at k=5 (Cohere + split), so intents are an
-  add-on for stage 1, not part of any default variant.
+- **Intents with a reranker:** the layouts are within noise of each other (goal *Evidence*), so
+  intents are an add-on for stage 1, not part of any default variant.
 
 ### 7.5 Composing your own
 
 - Any shipped strategy combines with any other; a consumer's own strategy implements the same
   contract (e.g. its own `IToolFacet`, `ICandidatePool` or `IReranker`).
-- Typed rules: a split needs a reranker (`split` lives inside `rerank`); `full` cannot be dropped
-  (it is not a facet).
+- Typed rule: `full` cannot be dropped (it is not a facet).
 - Measured guidance for one's own compositions:
   - with any reranker, size the pool in **items** (30 items: non-English 0.962 / 1.000; 30
     records: 0.846–0.885);
-  - with Cohere, turn the split on (multi-step 0.714 → 1.000); with Jev, leave it off;
   - without a reranker, `ItemPool(15)` gives the same recall as 30.
 
 ### 7.6 Filling — `vectorizeMcpTools`
@@ -1185,6 +1192,7 @@ new SharedItemsProfile({
   pool: ICandidatePool,           // required, e.g. new ItemPool(30)
   collapse: ICollapseRule,        // e.g. new MaxScoreCollapse()
   rerank?: StagedRetrievalOptions['rerank'],
+  decompose?: StagedRetrievalOptions['decompose'],
   cut?: IItemCut,
   telemetry?: { tracer?: ITracer; metrics?: IRetrievalMetrics },
 }).bind({ key: 'shared', user: userStore, global: globalStore, groups: myGroups });
@@ -1198,8 +1206,8 @@ new SharedItemsProfile({
 
 | Channel | Existing? | What |
 |---|---|---|
-| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `clauses`, `rerank.outcome` (`none\|ok\|fallback\|error`), `rerank.error` (message), `orphans`, `hydration.reads` (canonical records read by `getById`, §4.6) |
-| `IRetrievalMetrics.retrievalOutcome` counter | new small interface on the same metrics backend | attrs `store`, `strategy`, `outcome` ∈ `ok`, `rerank_fallback`, `rerank_error`, `orphan`, `empty` |
+| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `decomposer`, `subqueries`, `rerank.outcome` (`none\|ok\|fallback\|error`), `rerank.error` (message), `orphans`, `hydration.reads` (canonical records read by `getById`, §4.6) |
+| `IRetrievalMetrics.retrievalOutcome` counter | new small interface on the same metrics backend | attrs `store`, `strategy`, `outcome` ∈ `ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `empty` |
 | session step `retrieval_rerank_error` | yes (30.1.0 name kept) | unchanged; also emitted for a failed output check (§4.8) |
 | `/health` | yes | `metrics.retrievalOutcome` when the metrics implement `IRetrievalMetrics`; `components.toolCatalog.records` / `.profile` |
 | request logger | yes | reranker LLM / decision calls, as today (`component: 'rerank'`) |
@@ -1272,7 +1280,7 @@ new SharedItemsProfile({
 | What | Package | Why |
 |---|---|---|
 | All contracts of §3 | `@mcp-abap-adt/llm-agent` | shared by libs, server-libs, provider packages and consumers |
-| `StagedRetrieval`, `ItemPool`, cuts, `MaxScoreCollapse`, `ConjunctionSplitter`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `SharedItemsProfile` | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | the retrieval built-ins, rerankers and the builder that uses them already live here; `llm-agent-rag` is the backend/embedder factory layer **below** libs and has no rerankers or LLM steps |
+| `StagedRetrieval`, `ItemPool`, cuts, `MaxScoreCollapse`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `SharedItemsProfile` | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | the retrieval built-ins, rerankers and the builder that uses them already live here; `llm-agent-rag` is the backend/embedder factory layer **below** libs and has no rerankers or LLM steps |
 | `SapAiCoreReranker` | **new** `@mcp-abap-adt/sap-aicore-reranker` | §5.3 |
 | YAML resolver + validation, `makeCrossEncoder` seam type | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts` and `makeDecisionModel` |
 | `createMakeCrossEncoder` (builds `SapAiCoreReranker`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | beside `make-decision-model.ts` |
@@ -1290,7 +1298,8 @@ new SharedItemsProfile({
 - Decided: **query preparation is not part of a profile in this PR.**
   - The `translate` stage, the in-store `IQueryPreprocessor` and the (dead) `IQueryExpander` stay
     where they are.
-  - The profile owns only the clause split, which is retrieval-time and per store.
+  - Query decomposition is a retrieval-time slot of `StagedRetrieval`, filled only by the
+    consumer (§4.5); it is not query preparation and ships no implementation.
 - Reasons:
   - one rewrite per request is shared by all stores (a per-profile rewrite would multiply LLM calls
     by the number of stores);
@@ -1309,10 +1318,9 @@ new SharedItemsProfile({
   capability, telemetry options on the 30.1.0 rerank strategies, one new package.
 - Release: a **minor** version. The new package is published at the same version, before the app.
 - Opting in on a persistent tools store = a fresh collection (§7.8).
-- **k under a splitter is wider.** A consumer that sizes its prompt by k must know: with a clause
-  splitter, k is per clause run and a query can return up to `min(k × runs, maxItems)` items
-  (§4.5). Stated in `docs/INTEGRATION.md` (retrieval contract), `docs/PERFORMANCE.md` (prompt
-  size) and the `faceted-cohere` variant's docs.
+- **k is unchanged:** the overall limit of a retrieval, now counted in items under a profile, with
+  or without a decomposer. `docs/INTEGRATION.md` documents the `IQueryDecomposer` slot and its
+  budget contract (§4.5).
 - **Profile records are addressed by owner-scoped ids** (§3.1): `rag.getById(itemId)` on a profiled
   store finds nothing; use `bound.get(ref)`. Documented in `docs/INTEGRATION.md`.
 - Docs updated in the same PR: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`,
@@ -1337,7 +1345,8 @@ new SharedItemsProfile({
   the companion (`companion`); no intent text in any provider record; `generatedFrom` skips an
   unchanged tool; each indexer's `maxRecordsPerItem` bounds what it writes.
 - Variants: each `mcpToolsVariants` factory returns exactly the strategy instances of §7.4 (pool,
-  collapse, reranker, split, cut); `baseline` binds nothing; intents refused on `baseline`.
+  collapse, reranker, cut), with no decomposer unless the consumer passes one; `baseline` binds
+  nothing; intents and a decomposer refused on `baseline`.
 - Shared items: owner flattening for user / group / global; `reserved-kind`;
   `too-many-records`; `user` item with a foreign `userId` refused; missing partition refused;
   re-index writes the new records and deletes the unlisted old ones (`recordIds`); `remove`;
@@ -1350,7 +1359,7 @@ new SharedItemsProfile({
   canonical record (never its own text); a non-canonical record whose canonical is gone is dropped
   and counted `orphan`.
 - Type checks (`__typechecks__`): a record without `owner` fails; extras setting `itemId` /
-  `visibility` fail; `split` without `rerank` fails; `withToolsProfile(sharedItemsProfile)` fails;
+  `visibility` fail; `withToolsProfile(sharedItemsProfile)` fails;
   `SharedItemsStores` with neither `user` nor `global` fails; a shared item with `session`
   visibility fails.
 - `StagedRetrieval`: max collapse; k counts items; **candidate pool in items** (a store where every
@@ -1359,9 +1368,13 @@ new SharedItemsProfile({
   (canonical text + `data`) is returned**; a missing canonical record → dropped, counted, span
   `orphans`; orphans do not use up k; **the reranker never receives intent text**; `getById`
   result outside the identity filter dropped; user partition skipped without `userId`; both failure
-  policies; reranker output check (wrong count, duplicate, non-finite → `RERANK_ERROR`); clause
-  runs: each run cut to k on its own, union ≤ `min(k × runs, maxItems)`, `split` never returns
-  more than `maxClauses`, `maxItems` cuts in union order; collapse keys on the owner-qualified item; `keepStage1Top`; every cut; telemetry (span attributes, counter, session
+  policies; reranker output check (wrong count, duplicate, non-finite → `RERANK_ERROR`); the cut
+  applied once, at most `cut.limit(k)` items returned; **decomposer:** none → one run; `[]` →
+  one run with the whole budget; each sub-query reranked against its own text and kept to its
+  `k`; union de-duplicated by owner-qualified item; budgets summing to > k, `k < 1`, empty text or
+  a decomposer error → `DECOMPOSE_ERROR`, counted, never a silent fall-back; at most `budget`
+  items with any decomposer; `keepStage1Top` counted inside k; collapse keys on the owner-qualified item;
+  `keepStage1Top`; every cut; telemetry (span attributes, counter, session
   step).
 - `SapAiCoreReranker` (mock `fetch`): URL, `AI-Resource-Group` header, bearer asked per call, body
   `{model, query, documents, top_n}`; mapping by `index`; ties keep input order; missing /
@@ -1380,8 +1393,9 @@ new SharedItemsProfile({
 `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance` (beside
 `rag-filter-conformance`): for any `ICollectionProfile` — owner keys and visibility on every
 record; deterministic, owner-scoped ids (`recordId`; the same `itemId` under two owners → disjoint
-ids); every returned item hydrated from its canonical record; **without a splitter at most k
-distinct items returned; with one at most `min(k × runs, maxItems)`** (`runs ≤ 1 + maxClauses`);
+ids); every returned item hydrated from its canonical record; **at most k distinct items returned,
+with or without a decomposer** (the kit also runs an adversarial decomposer whose budgets overrun
+k and expects `DECOMPOSE_ERROR`);
 no record outside the caller's identity filter returned; generated records never canonical. A
 consumer runs it against its own profile.
 
@@ -1389,17 +1403,19 @@ consumer runs it against its own profile.
 
 - `scripts/rag-eval` gains `--variant baseline|faceted|faceted-cohere|faceted-jev`, or a
   composition by strategy name (`--indexer`, `--intents off|record|companion`, `--pool-items`,
-  `--reranker none|cross-encoder|decision`, `--split none|conjunctions`, `--cut`), and
+  `--reranker none|cross-encoder|decision`, `--cut`), and
   **required-recall** (AND of OR-groups; an optional `required` field in the queries file),
   average items returned and MRR — the hub's metrics.
 - The core is exported as `evaluateRetrieval({ store, strategy, cases, ks })` from
   `@mcp-abap-adt/llm-agent-libs/testing`, so a consumer runs its own catalog and labels against a
-  build of this branch (the PR's "consumer check" stage).
+  build of this branch (the PR's "consumer check" stage). A consumer measures its own
+  `IQueryDecomposer` the same way, as part of its strategy (§2.4).
 - Acceptance (env-gated, not part of `npm test`):
   - on the committed 16.0.0 snapshot, `faceted` is not worse than `baseline` at equal items;
-  - the hub's consumer check reproduces, within ±1 row, each variant's numbers in §7.4;
-  - `faceted-jev` is measured for the first time there, as one composition on fresh consumer
-    queries; its row in §7.4 is filled from that run, and only then is it promoted (D11).
+  - the hub's consumer check reproduces, within ±1 row, `baseline`'s and `faceted`'s numbers in
+    §7.4;
+  - `faceted-cohere` and `faceted-jev` are measured there for the first time as one composition;
+    their rows in §7.4 are replaced by that run, and only then is `faceted-jev` promoted (D11).
 
 ---
 
@@ -1414,6 +1430,7 @@ consumer runs it against its own profile.
 | #324, #314, #291, #290, #247 | own PRs (unrelated) |
 | Profiles for skills, user collections, session history | later, through the same contract (goal 8) |
 | Shared items in the server YAML | D6 |
+| A query-decomposition **implementation** (splitting multi-step queries) | the consumer: it injects its own `IQueryDecomposer` into the slot `StagedRetrieval` provides (§4.5); the framework ships none and no variant uses one (goal decision 2026-10-05) |
 | BM25 identifier tokenization (`ZDEMO_D_TEST` → `test`) | separate change to the in-store scoring (`ISearchStrategy` / tokenizer) |
 
 ---
@@ -1428,7 +1445,7 @@ consumer runs it against its own profile.
    same builder API.
 3. **Interfaces:** consumers depend on `ICollectionProfile` / `IRetrievalStrategy` / `IReranker`.
 4. **ISP:** new small interfaces; `IRag`, `IReranker`, `IMetrics`, `IRetrievalStrategy` not grown.
-5. **Strategies:** collapse, cut, splitter, reranker, intent source, source selector, group
+5. **Strategies:** collapse, cut, query decomposition, reranker, intent source, source selector, group
    partitions, indexing, facets, intent sources, candidate pool — all injected. A variant is a
    named set of instances, never flags; the library picks no k, no pool and no reranker by guessing.
 6. **File size:** new logic in `src/collections/*` and the new package; `builder.ts` and
@@ -1441,13 +1458,14 @@ consumer runs it against its own profile.
 
 Settled by the goal (no longer asked): experience as a schema in the framework (→ shared items,
 §8); intents' home (→ an indexing strategy of the tools profiles, default placement `record`, §7.3); one profile with flags (→ strategies and named variants, §7); the reranker text
-(→ provider text, §4.6); the pool unit (→ items, §4.4); the Cohere reranker in this PR (→ §5).
+(→ provider text, §4.6); the pool unit (→ items, §4.4); the Cohere reranker in this PR (→ §5);
+query splitting (→ an injected `IQueryDecomposer` slot, no shipped implementation, `k` stays the
+overall limit, §4.5; goal decision 2026-10-05 — the former D12, "k per clause run", is withdrawn).
 
 Settled by the adversarial review (user-approved 2026-10-05):
 
 | # | Decision | Reason |
 |---|---|---|
-| D12 | **k with a clause splitter is per clause run.** Result ≤ `min(k × runs, maxItems)`; `IQuerySplitter.maxClauses` is a required hard cap; `split.maxItems` an optional total cap. Documented for consumers that size prompts by k (§4.5, §13). | §2.4: the gain is the per-clause budget. Cutting the union to k: multi 0.500 (best score) / 0.571–0.643 (round-robin, overall 0.908) — below no split (0.931 / 0.714). Per tool it beats raising k (0.977 with 9.4 tools vs 0.943 with 13.3 at k=8). |
 | D13 | **Replacing an item is not atomic; no generations, commit markers, incarnations or locks.** Concurrent writers of one item are serialized by the writer or the store; interrupted replacements may leave stale records (§3.3). | The store owns concurrency (standing rule); collections are filled once, read-mostly. Readers stay safe through D15, not through write coordination. |
 | D14 | **Physical record ids are owner-scoped:** `recordId(owner, itemId, kind, n)`, one function for `index`, `get`, `remove`, hydration and collapse (§3.1). | Every backend keys records by id alone (`InMemoryRag.upsert`, `VectorRag`, pg/HANA primary key, Qdrant UUID of the id); with `id = itemId`, two users' `case-42` would overwrite each other. |
 | D15 | **Every returned item is hydrated from its canonical record**, owner-checked; `itemText` is a reranking shortcut only; a hit without a canonical record is dropped and counted (§4.6). | Makes D13 safe for readers and returns the item whole (incl. `data`) even when only a secondary record matched. |
@@ -1460,8 +1478,8 @@ Settled by the adversarial review (user-approved 2026-10-05):
 | D4 | Builder skills: coexist in the tools store or move to their own store now? | **Coexist** (pass-through) — moving changes their k and ranking, which goal 8 excludes. |
 | D5 | Shared-item visibility: `user` / `group` / `global` as partitions, group stores supplied by the consumer (`ISharedItemGroups`)? | **Yes** — works with today's `IRag` filter (no new filter contract) and leaves group/role isolation with the consumer, as #304 was narrowed. |
 | D6 | Shared items in the server YAML in this PR? | **No, library API only** — the writing elements are the consumer's; an empty shared store in SmartServer has no writer. YAML when the first shipped writer exists. |
-| D7 | Ship `keepStage1Top` (the post-hoc 1.000 union)? | **Ship, default 0**, documented as not yet validated on fresh queries. |
+| D7 | Ship `keepStage1Top`? Its only measurement (a post-hoc 1.000) was on top of the former built-in clause split. | **Ship, default 0, counted inside k** (§4.7), documented as unmeasured without the split and not validated on fresh queries. |
 | D8 | Replace the private embedder read with `IRetrievalEmbedderOwner` (3 provider packages) in this PR? | **Yes** — the cast is the root cause of F1 and batch indexing of records needs the same embedder. |
 | D9 | Query preparation outside profiles; #323 as a pipeline fix | **Yes** (§12). |
 | D10 | `SapAiCoreReranker`: `deploymentId` only, or also resolve by model name? | **`deploymentId` in this PR**; resolving by model needs `resolveDeploymentId`, today private to `sap-aicore-embedder`. Sharing it (e.g. moved into `sap-aicore-auth`) is a follow-up. |
-| D11 | Ship `faceted-jev` as a named variant before it is measured as one composition? | **Ship it, marked "to be measured as one composition on fresh consumer queries before promotion"** — no numbers quoted, not recommended over the others until the consumer check runs it (§7.4, §14.3); one record + Jev, the best measured Jev setup, stays available through 30.1.0's `rerank` strategy. |
+| D11 | Ship `faceted-jev` as a named variant before it is measured as one composition? | **Ship it, marked "to be measured as one composition on fresh consumer queries before promotion"** — only the closest measured setup's numbers quoted, not recommended over the others until the consumer check runs it (§7.4, §14.3); one record + Jev, the best measured Jev setup, stays available through 30.1.0's `rerank` strategy. |
