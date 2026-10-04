@@ -26,7 +26,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
-- A plugin reranker never ran on per-session agents (it was wired inside the `applyServerExtras` gate, which the per-session path skips). The reranker is now resolved once in `_buildInfra` and applied to every agent. `queryExpander` and `outputValidator` sit behind the same gate and are not changed by this.
+- A plugin reranker never ran on per-session agents (it was wired inside the `applyServerExtras` gate, which the per-session path skips). The reranker is now resolved once in `_buildInfra` and applied to every agent.
 - `agent.toolSelection` never reached per-session agents (same gate); it is now applied to every agent.
 - Tool selection on the controller's per-step path and every stepper mode, and the tool-loop's per-iteration re-select, had no retrieval strategy; the `tools` store the server builds is now wrapped once and all three selection paths use it.
 - `makeToolsRagHandle` (`@mcp-abap-adt/llm-agent-server-libs`) dropped the `CallOptions` that `IToolsRagHandle.query(text, k, options)` already accepted in 30.0.0; it now forwards them to the store, so a reranker on the controller / stepper path receives the request's `signal`, `requestLogger` and `sessionLogger`.
