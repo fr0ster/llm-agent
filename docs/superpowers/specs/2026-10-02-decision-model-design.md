@@ -713,13 +713,21 @@ tool would help carry out the request given as the state.") and
 text `Tool: <name> — <description>` (no input schema).
 
 **Builder.** `SmartAgentBuilder.withRetrievalStrategy(store: string, strategy:
-IRetrievalStrategy)` records the strategy. At build the builder applies it to the
-matching registry entries **before** its circuit-breaker loop
-(`builder.ts:975-990`), replacing each entry in place the way that loop does;
-an entry registered later (a collection opened mid-session) is wrapped by the
-registry mutation listener at registration, before anything else sees it. The
-`ragStores` projection only reads entries — it never wraps — so the strategy
-stays the innermost decorator.
+IRetrievalStrategy)` records the strategy. The builder applies it **when it
+projects registry entries into `ragStores`** (`builder.ts:926-946`): each
+projected store whose key has a strategy is passed through
+`applyRetrievalStrategy`. The registry itself is never mutated, so this works
+with any `IRagRegistry` — the public interface has no `replaceRag`, and the
+builder's own projection already treats `setMutationListener` as an optional,
+duck-typed capability (`builder.ts:940-946`):
+
+- a registry with `setMutationListener` (incl. `SimpleRagRegistry`): the
+  projection is rebuilt on every change, so a collection registered after build
+  is projected — and wrapped — like the rest;
+- a custom registry without it: a collection registered after build is not
+  projected at all (pre-existing behaviour, unchanged), so no pipeline stage can
+  query it — the strategy's coverage equals what the pipeline can see. This is
+  documented next to `withRetrievalStrategy`.
 
 **Precedence.** An explicit per-store strategy wins over the global reranker
 (plugin / `withReranker`): `RerankHandler` skips every store for which
@@ -728,15 +736,16 @@ stays the innermost decorator.
 is wired. A store with no `rag.retrieval` entry keeps today's behaviour (the
 global reranker, if any, reranks it in the `rerank` stage).
 
-**Wrapper order.** The strategy is the innermost decorator, applied once where
-the store first enters the registry: the server at creation of `tools` /
-`history` (so `makeToolsRagHandle` gets the wrapped instance too), and the
-builder for registry entries — at build before its circuit-breaker loop, or at
-registration for a collection opened later. Later decorators wrap outside it
-(`FallbackRag(StrategyRag(store))`); with the circuit open, `FallbackRag`
-serves its own fallback store and the strategy is not consulted — reranking an
-empty fallback has no value. Idempotency (above) guarantees one rerank even if a
-second application point sees the store.
+**Wrapper order and single application.** There are two application points:
+the server, at creation of `tools` / `history` (so `makeToolsRagHandle` gets the
+wrapped instance), and the builder's projection (everything the pipeline
+reads). The circuit breaker's `FallbackRag` may sit in between, so the order is
+either `FallbackRag(StrategyRag(store))` (server-wrapped stores) or
+`StrategyRag(FallbackRag(store))` (projected collections). Both are fine:
+`hasRetrievalStrategy` walks `IRagDecorator.inner`, so the second application
+point sees the brand and returns the store unchanged — one rerank per query;
+and with the circuit open the fallback store is empty, and a reranker given no
+candidates makes no call.
 
 ### 13.4 Configuration and server wiring
 
@@ -793,8 +802,7 @@ rag:
   `session-rag-registry.ts`) and reach the pipeline through the builder's
   `ragStores` projection of the registry (`builder.ts:926-936`). The server
   passes one `withRetrievalStrategy` per configured key; the builder applies it
-  to the registry entry (at build, or at registration for a collection opened
-  later) — never in the projection — so the strategy stays innermost.
+  in that projection (see *Builder* in §13.3).
 
 Rerankers are resolved once in `_buildInfra`; decision-backed ones are wrapped
 in `wrapDecisionModel`.
@@ -821,7 +829,9 @@ documented.
 - Unit: each strategy (ordering, top-k, overfetch, `maxCandidates`), batching
   (token budget boundary, merge order), failure → embedding order + session step,
   `StrategyRag` delegation of `healthCheck` / `getById` / `writer()`,
-  `applyRetrievalStrategy` identity for embedding, `RerankHandler` skip,
+  `applyRetrievalStrategy` — the first application wraps (an explicit `embedding`
+  included) and brands, a second application returns the same wrapper (also
+  through a `FallbackRag`), `RerankHandler` skip,
   `LlmReranker` output contract, resolver + validator for every rule in §13.4.
 - Server (YAML through the real `resolveSmartServerConfig`): a controller run's
   per-step `selectTools` goes through the `tools` strategy **and the reranker
@@ -833,7 +843,12 @@ documented.
   store is still reranked by it.
 - Wrapper order: circuit breaker on + `tools: { strategy: rerank }` → exactly
   one reranker call per query (`FallbackRag(StrategyRag)` is detected through
-  `IRagDecorator.inner`).
+  `IRagDecorator.inner`); a projected collection under the breaker
+  (`StrategyRag(FallbackRag)`) is also reranked once.
+- Custom registry: an `IRagRegistry` that is not `SimpleRagRegistry` but has
+  `setMutationListener` → a collection registered after build is projected and
+  goes through its strategy; one without it → the collection is not projected
+  (documented pre-existing behaviour), and nothing throws.
 - **Quality eval, committed (env-gated, not `npm test`):** `scripts/rag-eval`
   gains `--retrieval embedding|rerank|rerank-all` and `--reranker decision|llm`,
   reporting R@1/3/5, MRR and better/worse per case. The `mcp-abap-adt` 15.0.0
