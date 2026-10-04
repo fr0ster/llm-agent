@@ -353,7 +353,7 @@ const tracer = new OtelTracerAdapter();
 ```
 
 Spans are emitted for: classification, RAG query, context assembly, LLM chat, tool execution, and reranking.
-A failed rerank of a store with a `rag.retrieval` strategy logs the session step `retrieval_rerank_error` (`store`, `strategy`, `code`) and keeps the embedding order; a failed global (plugin / `withReranker`) rerank sets the span attribute `<store>.rerank_error` (always the code `RERANK_ERROR`) and logs a `rerank_error` session step whose `message` reads `decision rerank failed: <DECISION_CODE>: <message>` for a decision reranker.
+A failed rerank of a store with a `rag.retrieval` strategy logs the session step `retrieval_rerank_error` (`store`, `strategy`, `code`, `message` — for a decision reranker `decision rerank failed: <DECISION_CODE>: <message>`) and keeps the embedding order; a failed global (plugin / `withReranker`) rerank sets the span attribute `<store>.rerank_error` (always the code `RERANK_ERROR`) and logs a `rerank_error` session step whose `message` reads `decision rerank failed: <DECISION_CODE>: <message>` for a decision reranker.
 
 ### Session debug logs
 

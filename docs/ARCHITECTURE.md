@@ -228,7 +228,7 @@ the reranker on every path; `IToolsRagHandle.query(text, k, options)` forwards t
 server-wide reranker for stores **without** a `rag.retrieval` entry. A store with any explicit entry —
 `embedding` included — is skipped by `RerankHandler`: the strategy owns its ranking. A reranker failure never
 fails the request: the strategy returns the embedding ranking's top-k and logs the session step
-`retrieval_rerank_error { store, strategy, code }`.
+`retrieval_rerank_error { store, strategy, code, message }`.
 
 `resolveRetrievalStrategies` runs once in `_buildInfra()` — shared by the HTTP `start()` and the embeddable
 `buildAgent()` — and `buildBaseBuilder` applies the result (and the plugin reranker, and `agent.toolSelection`)

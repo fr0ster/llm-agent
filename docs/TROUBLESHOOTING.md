@@ -224,14 +224,14 @@ If translation chain is unreliable, use a multilingual embedder instead — `bge
 
 **Cause.** A reranker failure never fails the request: the strategy returns the embedding ranking's top-k and records the failure instead of surfacing it.
 
-**Fix.** Look for the session step `retrieval_rerank_error` with the fields `store`, `strategy` and `code`:
+**Fix.** Look for the session step `retrieval_rerank_error` with the fields `store`, `strategy`, `code` and `message`:
 
 | `code` | Meaning | Fix |
 |---|---|---|
 | `RERANK_ERROR` | The reranker returned an error: the decision model failed (key, quota, connectivity, request too large, cancellation), the LLM failed, or the LLM's reply broke the output contract (not a bare JSON array of N numbers in `[0, 1]`, wrong length, a value outside `[0, 1]`, prose around the array) | See below |
 | `RERANK_THROWN` | The reranker threw instead of returning an error | A bug in a custom `IReranker`; fix it to return a `Result` |
 
-The step carries the code only, not the reason. For `reranker: decision` check the key (`DECISION_API_KEY`, or `<REF>_API_KEY` for `decision.credentialRef`), connectivity to the provider and `decision.timeoutMs`; for `reranker: llm` check the `llm:` entry's credentials and model, and that the model can follow "answer with a JSON array only" (a failed batch fails the whole call). A reranker whose requests are cancelled also lands here: the HTTP chat path carries no `AbortSignal` unless the agent's request timeout (`SmartAgentConfig.timeoutMs`, builder `withTimeout(ms)`) is set, and the SmartServer YAML `agent:` section has no key for it — so nothing cancels a slow reranker call except the provider's own timeout (`decision.timeoutMs`).
+The reason is in `message`. For `reranker: decision` it reads `decision rerank failed: <DECISION_CODE>: <message>` — the `DECISION_*` codes are listed under [the global reranker entry](#reranking-has-no-effect--global-plugin--withreranker-reranker); the `message` never contains the key or the request body. For `reranker: llm` it is the LLM error, or `Reranking failed: <reason>` when the reply broke the output contract (e.g. `reply is not a bare JSON array`, `expected 20 scores, got 19`). For `RERANK_THROWN` it is the thrown error, truncated to 500 characters. Then: for `reranker: decision` check the key (`DECISION_API_KEY`, or `<REF>_API_KEY` for `decision.credentialRef`), connectivity to the provider and `decision.timeoutMs`; for `reranker: llm` check the `llm:` entry's credentials and model, and that the model can follow "answer with a JSON array only" (a failed batch fails the whole call). A reranker whose requests are cancelled also lands here: the HTTP chat path carries no `AbortSignal` unless the agent's request timeout (`SmartAgentConfig.timeoutMs`, builder `withTimeout(ms)`) is set, and the SmartServer YAML `agent:` section has no key for it — so nothing cancels a slow reranker call except the provider's own timeout (`decision.timeoutMs`).
 
 Other reasons for "no effect":
 

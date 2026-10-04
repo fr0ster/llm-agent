@@ -94,7 +94,12 @@ describe('RerankedRetrieval', () => {
     assert.deepEqual(steps, [
       [
         'retrieval_rerank_error',
-        { store: 'tools', strategy: 'rerank', code: 'RERANK_ERROR' },
+        {
+          store: 'tools',
+          strategy: 'rerank',
+          code: 'RERANK_ERROR',
+          message: 'down',
+        },
       ],
     ]);
   });
@@ -117,16 +122,38 @@ describe('RerankedRetrieval', () => {
 
   it('a throwing reranker is treated as a failure', async () => {
     const { store } = fakeStore([hit('a', 0.9)]);
+    const steps: Array<[string, Record<string, unknown>]> = [];
     const r = await new RerankedRetrieval({
       rerank: async () => {
         throw new Error('boom');
       },
-    }).retrieve(store, q, 1);
+    }).retrieve(store, q, 1, {
+      sessionLogger: {
+        logStep: (n: string, d: Record<string, unknown>) => steps.push([n, d]),
+      },
+    } as never);
     assert.ok(r.ok);
     assert.deepEqual(
       r.value.map((x) => x.text),
       ['a'],
     );
+    assert.equal(steps[0][1].code, 'RERANK_THROWN');
+    assert.equal(steps[0][1].message, 'Error: boom');
+  });
+
+  it('truncates a thrown error to 500 characters in the step', async () => {
+    const { store } = fakeStore([hit('a', 0.9)]);
+    const steps: Array<Record<string, unknown>> = [];
+    await new RerankedRetrieval({
+      rerank: async () => {
+        throw new Error('x'.repeat(2000));
+      },
+    }).retrieve(store, q, 1, {
+      sessionLogger: {
+        logStep: (_n: string, d: Record<string, unknown>) => steps.push(d),
+      },
+    } as never);
+    assert.equal((steps[0].message as string).length, 500);
   });
 });
 
