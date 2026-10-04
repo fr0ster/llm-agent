@@ -4222,3 +4222,171 @@ Verify every concrete claim against source (`grep` each symbol / key / message) 
 ### Task 25: Release gates for Part 2 (verification only)
 
 Same as Task 14 Steps 1–3 on the Part 2 HEAD: clean detached worktree (`npm ci && npm run build && npm run typecheck && npm test`), docker `node:22` and `node:24` with `set -euo pipefail`, and a baseline diff against `main` (every new failure is ours). Steps 4–5 (bump, publish) stay gated on PR review and the user's word.
+
+---
+
+# Part 3 — Session agents get the server's wiring (spec §14, Addendum B)
+
+**Goal:** The per-session agents that serve every request carry the configured server wiring (output validator, skills, LLM-call strategy, shared circuit breakers, the shared history store), requests are cancelled when the client disconnects, and a caller's cancellation never counts against a breaker.
+
+**Architecture:** Each item is resolved once in `_buildInfra` and applied in `buildBaseBuilder` outside the `applyServerExtras` gate, which keeps only the YAML `mcp:` fallback. LLM breakers wrap the held / built LLM instances (one breaker per `llm:` key), so every role — controller and stepper included — goes through them; the embedder breaker is shared through a new builder seam. The HTTP routes own one `AbortController` per request; the breakers ignore a non-timeout abort.
+
+**Spec:** `docs/superpowers/specs/2026-10-02-decision-model-design.md` — **§14**. Parts 1–2 (Tasks 1–25) are done; Part 3 continues at 26.
+
+## Global Constraints (Part 3)
+
+Everything in Parts 1–2 still applies, plus:
+- Additive only: `withCircuitBreaker(config)`, `withSkillManager(manager)`, `setHistoryRag`, `IRoleLlmResolver.resolve` / `resolveNamed` keep their signatures and behaviour. No interface grows (ISP); new capability = new method / option / module.
+- One breaker per `llm:` entry key, created once, shared by every session and role; a `PUT /v1/config` swap gets a fresh breaker. No LLM is wrapped twice; no store is guarded twice by the same embedder breaker.
+- A call whose received `signal` is aborted with a reason whose `name !== 'TimeoutError'` records neither failure nor success. A timeout is a failure.
+- YAML `mcp:` auto-connect stays startup-only (one connection).
+- Skill vectorization into the tools store happens once, at startup — never on a session build.
+- Never hand-roll `setTimeout` + `addEventListener('abort')` for waiting; combine signals with `AbortSignal.any`.
+- `#323` (query expander) and `#324` (client adapters) are out of scope: they are only moved out of the gate here.
+
+## Review Focus (Part 3)
+
+1. **A connection that closes AFTER the response finished** (normal end, keep-alive) must not abort or log `request_cancelled`. Pinned in Task 31.
+2. **A client disconnect mid-stream while an MCP tool call runs** — the tool call receives the aborted signal and nothing is written to the closed socket. Pinned in Task 31.
+3. **A half-open breaker whose probe is cancelled** stays half-open; the next real call decides. Pinned in Task 26.
+4. **`PUT /v1/config` swaps `main`** — the new instance gets a fresh breaker, `/health` lists the current breakers, the old breaker no longer appears. Pinned in Task 28.
+5. **Many sessions** — skills are vectorized once (the tools store's upsert count does not grow with sessions); two sessions on the shared history store each read only their own turns. Pinned in Tasks 29 and 30.
+
+---
+
+### Task 26: Breakers ignore a caller's cancellation; timeouts carry `TimeoutError`
+
+**Files:**
+- Create: `packages/llm-agent/src/resilience/caller-cancellation.ts`
+- Modify: `packages/llm-agent/src/resilience/circuit-breaker-llm.ts`, `circuit-breaker-embedder.ts`, `resilience/index.ts` (+ the package's public index if resilience helpers are re-exported there — check)
+- Modify: `packages/llm-agent-libs/src/agent.ts` (`mergeSignals` :235, `createTimeoutSignal` :250, call sites :521 and :642)
+- Test: `packages/llm-agent/src/resilience/__tests__/` (new `caller-cancellation.test.ts`; extend the breaker LLM / embedder tests), `packages/llm-agent-libs` agent timeout test (find the existing `timeoutMs` test and extend it)
+
+**Interfaces:**
+- Produces: `isCallerCancellation(signal: AbortSignal | undefined): boolean` — `true` iff `signal?.aborted` and `(signal.reason as { name?: unknown } | undefined)?.name !== 'TimeoutError'`.
+- Produces: the agent's `timeoutMs` signal aborts with `new DOMException('Request timed out', 'TimeoutError')`.
+
+- [ ] **Step 1: Failing tests.**
+  - `isCallerCancellation`: undefined → false; not aborted → false; `ctrl.abort()` → true; `ctrl.abort(new DOMException('x', 'TimeoutError'))` → false; `AbortSignal.any([caller, timeout])` keeps the reason of the one that fired.
+  - `CircuitBreakerLlm` with `failureThreshold: 2`: three `chat` calls whose `options.signal` is caller-aborted and whose inner returns `{ ok:false, error: LlmError('…','ABORTED') }` → `breaker.state === 'closed'`; two real failures → `'open'`; two failures with a `TimeoutError`-aborted signal → `'open'`.
+  - `streamChat`: an `ABORTED` error chunk after caller abort → closed; the inner iterator throwing after caller abort → closed; neither records success either (spy `recordSuccess` / `recordFailure`).
+  - Half-open: force `half-open` (open, then advance past `resetTimeoutMs` with the breaker's clock seam — check how existing breaker tests advance time), a caller-cancelled call → state stays `'half-open'`; the next real success → `'closed'`.
+  - `CircuitBreakerEmbedder`: caller-aborted embed failures → closed (both the single and the batch method).
+  - Agent: with `timeoutMs`, the signal the LLM receives is aborted with `reason.name === 'TimeoutError'`; after many `process()` calls with one long-lived caller signal, that signal has no leftover listeners (wrap `addEventListener` / `removeEventListener` in a spy, or count via `getEventListeners` from `node:events`).
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement.** The helper; in each breaker, before `recordFailure()` (and before `recordSuccess()` on paths that can follow an abort), `if (isCallerCancellation(options?.signal)) return/yield …` without recording. In `agent.ts`: `createTimeoutSignal` aborts with the `TimeoutError` DOMException; replace `mergeSignals(...)` by `AbortSignal.any(signals.filter(Boolean))` (return shape adapted at both call sites) and delete `mergeSignals`.
+- [ ] **Step 4: Tests** — `npm test -w @mcp-abap-adt/llm-agent -w @mcp-abap-adt/llm-agent-libs` → `# fail 0`. **Step 5: Commit** — `fix: a caller's cancellation never counts against a circuit breaker`.
+
+---
+
+### Task 27: Library seams — shared embedder breaker, live breaker list for health, skills without vectorization
+
+**Files:**
+- Modify: `packages/llm-agent/src/resilience/fallback-rag.ts` (read-only `breaker` getter)
+- Modify: `packages/llm-agent-libs/src/builder.ts` (`withCircuitBreakers`, breaker wrapping ~985-1040, `withSkillManager` :465, vectorization :1304-1306)
+- Modify: `packages/llm-agent-libs/src/health/health-checker.ts` (`circuitBreakers` accepts a provider)
+- Test: builder circuit-breaker tests (find the existing ones, `grep -rln withCircuitBreaker packages/llm-agent-libs/src`), health-checker test, a skill-vectorization builder test
+
+**Interfaces:**
+- Produces: `FallbackRag.breaker: CircuitBreaker` (getter over the existing private `embedderBreaker`).
+- Produces: `SmartAgentBuilder.withCircuitBreakers(breakers: { embedder: CircuitBreaker }): this` — the builder wraps the registry stores in `FallbackRag(store, new InMemoryRag(), breakers.embedder)` **unless** the store already is a `FallbackRag` whose `breaker === breakers.embedder` (walk `IRagDecorator.inner`, bounded like `hasRetrievalStrategy`); it does **not** wrap the main LLM. `circuitBreakers` in the build result contains `breakers.embedder`. If both `withCircuitBreaker(config)` and `withCircuitBreakers(...)` are set, `withCircuitBreakers` wins for stores and the LLM is not wrapped (document on both methods).
+- Produces: `HealthCheckerDeps.circuitBreakers?: CircuitBreaker[] | (() => readonly CircuitBreaker[])` — read on every check.
+- Produces: `SmartAgentBuilder.withSkillManager(manager: ISkillManager, options?: { vectorize?: boolean }): this` — `vectorize` defaults to `true`; `false` skips `vectorizeSkills` in `build()`.
+
+- [ ] **Step 1: Failing tests.** `withCircuitBreakers` wraps an unwrapped registry store once; a second builder sharing the registry (the session path copies wrapped globals) does not wrap it again (assert `store.inner` is not a `FallbackRag`); the main LLM the agent uses is not a `CircuitBreakerLlm`; `withCircuitBreaker(config)` alone behaves as before (existing tests stay green). Health: a provider returning a growing array is re-read (open a breaker added after construction → status degraded). Skills: `withSkillManager(m, { vectorize: false })` → the tools store sees no skill upsert; default → it does.
+- [ ] **Step 2: FAIL. Step 3: Implement** as in *Interfaces*. **Step 4:** `npm test -w @mcp-abap-adt/llm-agent -w @mcp-abap-adt/llm-agent-libs` → `# fail 0`. **Step 5: Commit** — `feat(libs): shared embedder breaker, live health breaker list, skills without vectorization`.
+
+---
+
+### Task 28: SmartServer — one LLM breaker per `llm:` key, every role behind it
+
+**Files:**
+- Create: `packages/llm-agent-server-libs/src/smart-agent/llm/llm-circuit-breakers.ts`
+- Modify: `smart-server.ts` (held LLMs set at ~1163 and swapped at ~3281; `RoleLlmResolver` built at ~1168; the `circuitBreaker` block ~2849-2851; `HealthChecker` at ~1802), `smart-agent/llm/role-llm-resolver.ts` (wrap the per-key `entry` builds)
+- Test: `__tests__/llm-circuit-breakers.test.ts`, a server wiring test (new `__tests__/session-breakers.test.ts`)
+
+**Interfaces:**
+- Consumes: Task 26 (cancellation-aware breakers), Task 27 (`withCircuitBreakers`, health provider).
+- Produces: `class LlmCircuitBreakers { constructor(config: CircuitBreakerConfig, onStateChange?: (key: string, from: string, to: string) => void); wrap(llm: ILlm, key: string): ILlm; list(): readonly CircuitBreaker[] }` — `wrap` returns the input unchanged if it already is a `CircuitBreakerLlm`; otherwise one `CircuitBreakerLlm` per inner instance (cached in a `WeakMap`), with the breaker of `key`; a **different** inner instance for an existing `key` (a swap) replaces that key's breaker with a fresh one. `list()` = the current breaker of every key.
+- Produces (server): when `circuitBreaker:` is configured, `this._llmBreakers` wraps the held main / classifier / helper at both assignment sites, and `RoleLlmResolver` wraps each `entry(key)` build (an optional `wrap?: (llm: ILlm, key: string) => ILlm` in `RoleLlmResolverDeps`, additive); one embedder `CircuitBreaker` is created from the same config and passed to **every** builder with `withCircuitBreakers({ embedder })` **outside** the gate (replacing `withCircuitBreaker(this.cfg.circuitBreaker)` at ~2850); `HealthChecker` gets `circuitBreakers: () => [...this._llmBreakers.list(), embedderBreaker]`.
+
+- [ ] **Step 1: Failing tests.**
+  - `LlmCircuitBreakers`: same inner twice → same wrapper; two keys → two breakers; a new inner for `main` → a fresh breaker and `list()` no longer contains the old one; wrapping a wrapper → unchanged.
+  - Server (`circuitBreaker: { failureThreshold: 2 }`, fake `makeLlm` whose LLM fails): two failing HTTP chats on a session → `/health` reports the `main` breaker open; a **controller** pipeline whose planner role LLM (`ctx.resolveLlm`) fails twice → that key's breaker opens and `main`'s stays closed; the same for a **stepper** role through `ctx.resolveNamedLlm`; two sessions resolving one key share one breaker; no LLM reaching a builder is a `CircuitBreakerLlm` wrapping a `CircuitBreakerLlm`; `PUT /v1/config` swapping `main` → `/health` shows a fresh closed breaker for it. Copy the controller/stepper minimal configs from the existing server tests that build those pipelines.
+  - Cancellation end to end: with threshold 2, three requests whose client disconnects mid-call (Task 31 lands later — here use `CallOptions.signal` through `smartAgent.process` directly) → breaker closed.
+- [ ] **Step 2: FAIL. Step 3: Implement** as in *Interfaces*. **Step 4:** server-libs suite + `npm run build` → `# fail 0`. **Step 5: Commit** — `feat(server-libs): one LLM breaker per llm: key behind every role; shared embedder breaker`.
+
+---
+
+### Task 29: SmartServer — validator, skills, LLM-call strategy, expander and adapters reach session agents
+
+**Files:**
+- Modify: `smart-server.ts` (`buildBaseBuilder` ~2765-2905 and its doc ~2750-2764; `_buildInfra` for the once-resolved fields)
+- Test: new `__tests__/session-wiring.test.ts`
+
+**Interfaces:**
+- Consumes: Task 27 (`withSkillManager(manager, { vectorize })`).
+- Produces: private fields resolved once in `_buildInfra` — `_outputValidator?: IOutputValidator`, `_queryExpander?: IQueryExpander`, `_skillManager?: ISkillManager` (DI > plugin > YAML `skills:`), `_llmCallStrategy?: ILlmCallStrategy` (from `agent.llmCallStrategy`), `_clientAdapters: IClientAdapter[]` (DI > plugin > default `ClineClientAdapter`). `buildBaseBuilder` applies all of them to every builder outside the gate; the skill manager with `{ vectorize: parts.applyServerExtras }`. The `applyServerExtras` doc now says it guards only the YAML `mcp:` fallback.
+
+- [ ] **Step 1: Failing tests** (built like `retrieval-wiring.test.ts`): on a **session** request — a plugin `outputValidator` is invoked; a skill manager's skill is selected/injected (skill-select stage sees it); `agent.llmCallStrategy: non-streaming` → the session's LLM receives `chat` not `streamChat`; with N=3 sessions the tools store's skill upserts happen once (spy store counts upserts with skill ids); the session agent's builder received the query expander and the adapters (assert on the builder spy or on `deps` — they have no runtime effect until #323/#324, so do not assert behaviour). The YAML `mcp:` path still connects once (existing test stays green).
+- [ ] **Step 2: FAIL. Step 3: Implement.** **Step 4:** server-libs suite → `# fail 0`. **Step 5: Commit** — `fix(server-libs): session agents get the output validator, skills and LLM-call strategy`.
+
+---
+
+### Task 30: History — one shared store read per session; summaries include the answer
+
+**Files:**
+- Modify: `smart-server.ts` (keep the strategy-wrapped history store from ~1461-1476 in `this._historyRag`; pass it in `buildSessionAgent` → `buildPipelineInstance({ sessionId, parts, historyRag })` — the scope already accepts `historyRag`, ~2632)
+- Modify: `packages/llm-agent-libs/src/pipeline/context.ts` (optional `assistantText?: string`), the tool-loop handler where the final assistant text is complete (`pipeline/handlers/tool-loop.ts` — set `ctx.assistantText` once the final answer is known, streaming and non-streaming), `pipeline/handlers/history-upsert.ts:98` (use `ctx.assistantText ?? ''`)
+- Test: `llm-agent-libs` history-upsert test; server `__tests__/session-history.test.ts`
+
+**Interfaces:**
+- Produces: `PipelineContext.assistantText?: string` (additive).
+
+- [ ] **Step 1: Failing tests.** History-upsert writes a turn whose summarized text includes the assistant answer (fake summarizer records its input). Server, `agent: { semanticHistoryEnabled: true }` + in-memory `rag`: session A and session B each make a request; a second request in A queries history and gets only A's turn (the `rag-history` stage runs on session agents now); `historyAutoSummarizeLimit` set → no `InMemoryRag` is created for the session (the session's `history` store is the server's store — identity check through the pipeline deps or a spy on `makeRag` call count); `rag.retrieval.history: { strategy: rerank, reranker: decision }` → the fake decision model is called on a session request.
+- [ ] **Step 2: FAIL. Step 3: Implement.** **Step 4:** libs + server-libs suites → `# fail 0`. **Step 5: Commit** — `fix: session agents read the shared history store; summaries include the answer`.
+
+---
+
+### Task 31: HTTP routes cancel the request when the client disconnects
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/http/chat-route-handler.ts` (opts ~162; `streamProcess` ~273; `process` ~412), `http/adapter-route-handler.ts` (~79, ~94)
+- Test: `__tests__/chat-endpoint.test.ts` (or a new `__tests__/request-cancellation.test.ts`)
+
+**Interfaces:**
+- Produces: per request `const abort = new AbortController(); res.on('close', () => { if (!res.writableFinished) abort.abort(); })`; `signal: abort.signal` added to the options of `process` / `streamProcess` in both routes; when the signal is aborted, the handler logs `{ event: 'request_cancelled', durationMs }` instead of `request_done` and writes nothing more to the response.
+
+- [ ] **Step 1: Failing tests** against a real `http` server on an ephemeral port: a fake agent whose `process` awaits until its `options.signal` aborts → the client destroys the socket mid-request → the agent saw `signal.aborted === true` (non-streaming and streaming, both routes); a fake MCP tool call in flight receives the aborted signal; a normally completed response → the signal was never aborted and no `request_cancelled` is logged; after the disconnect no `res.write` happens (spy).
+- [ ] **Step 2: FAIL. Step 3: Implement.** **Step 4:** server-libs suite → `# fail 0`. **Step 5: Commit** — `fix(server-libs): cancel the request when the client disconnects`.
+
+---
+
+### Task 32: Startup warning for an unknown `rag.retrieval` store key
+
+**Files:**
+- Modify: `smart-server.ts` (`_buildInfra`, after `builder.build()` and the registry is captured — near ~1652)
+- Test: `__tests__/retrieval-key-warning.test.ts`
+
+**Interfaces:**
+- Produces: for each key of `this.cfg.rag?.retrieval` that is not `tools`, `history`, a name in `this._globalRagRegistry.list()`, and does not start with `user/` or `session/` → one `this.warn(...)` naming the key and the known stores (`config_warning` channel, as other config warnings).
+
+- [ ] **Step 1: Failing test:** `rag.retrieval: { tool: {…}, tools: {…}, history: {…}, session/x: {…} }` + a registered collection key → exactly one warning, for `tool`. **Step 2: FAIL. Step 3: Implement. Step 4:** server-libs suite → `# fail 0`. **Step 5: Commit** — `feat(server-libs): warn on a rag.retrieval key that names no store`.
+
+---
+
+### Task 33: Documentation — the whole set for Part 3
+
+Update and verify against source (`grep` every key / symbol / message):
+- `docs/ARCHITECTURE.md`: session agents now carry validator, skills, LLM-call strategy, breakers, history; `applyServerExtras` guards only the YAML `mcp:` fallback; breakers per `llm:` key behind every role + the shared embedder breaker; cancellation path.
+- `docs/DEPLOYMENT.md` / `docs/TROUBLESHOOTING.md`: `/health` lists the per-key LLM breakers + embedder breaker; a client disconnect logs `request_cancelled` and is not a breaker failure; the unknown-key warning; remove the Part 2 caveats "`rag.retrieval.history` has no effect on per-session requests" and "the HTTP chat path carries no AbortSignal unless `timeoutMs` is set" (grep both).
+- `docs/INTEGRATION.md` + `docs/SECURITY_THREAT_MODEL.md`: a custom `IRag` used as the history store **must** honour the `sessionId` filter; `withCircuitBreakers`, `withSkillManager(…, { vectorize })`, `HealthChecker` breaker provider, `isCallerCancellation`.
+- `docs/PERFORMANCE.md`: skills vectorized once; cancelled requests stop spending tokens.
+- Root + package `CHANGELOG.md` `## Unreleased`: *Fixed* — session agents get the output validator, skills, LLM-call strategy, circuit breakers and history; requests are cancelled on client disconnect; a caller's cancellation no longer opens a breaker; `mergeSignals` listener leak; history summaries include the answer. *Added* — `withCircuitBreakers`, `withSkillManager` `vectorize` option, health breaker provider, `isCallerCancellation`, `FallbackRag.breaker`, `PipelineContext.assistantText`, the unknown-key warning. *Changed* — the agent's timeout aborts with a `TimeoutError` reason. Mention #323 / #324 as known.
+Run `node scripts/check-example-configs.mjs` (exit 0). Commit — `docs: session agents carry the server's wiring; request cancellation`.
+
+---
+
+### Task 34: Release gates for Part 3 (verification only)
+
+Same as Task 25 on the Part 3 HEAD: clean detached worktree (`npm ci && npm run build && npm run typecheck && npm test`), docker `node:22` and `node:24` (`set -euo pipefail`, full logs, totals summed from the `ℹ tests|pass|fail|skipped` lines), and a baseline diff against `main` (every new failure is ours). Bump / publish stay gated on PR review and the user's word.
