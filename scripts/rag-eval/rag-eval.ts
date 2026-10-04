@@ -513,7 +513,10 @@ async function buildReranker(
   } catch (err) {
     return `llm '${llmKey}' cannot be built: ${err instanceof Error ? err.message : String(err)}`;
   }
-  return new LlmReranker(llm, { question: { task: TOOL_QUESTION.task } });
+  const task = TOOL_QUESTION.task;
+  if (typeof task !== 'string')
+    return 'TOOL_QUESTION.task is not plain text; the llm reranker needs a string';
+  return new LlmReranker(llm, { question: { task } });
 }
 
 async function main(): Promise<number> {
@@ -560,12 +563,12 @@ async function main(): Promise<number> {
   ): Promise<IRetrievalStrategy | string> => {
     if (arm.retrieval === 'embedding') return new EmbeddingRetrieval();
     const kind = arm.reranker as string;
-    if (!rerankerCache.has(kind))
-      rerankerCache.set(
-        kind,
-        buildReranker(kind, values['llm-key'], values.config),
-      );
-    const reranker = await rerankerCache.get(kind);
+    let pending = rerankerCache.get(kind);
+    if (!pending) {
+      pending = buildReranker(kind, values['llm-key'], values.config);
+      rerankerCache.set(kind, pending);
+    }
+    const reranker = await pending;
     if (typeof reranker === 'string') return reranker;
     return arm.retrieval === 'rerank'
       ? new RerankedRetrieval(reranker, { overfetch })
@@ -607,17 +610,19 @@ async function main(): Promise<number> {
   }
 
   console.log('\n=== summary ===');
-  console.table(
-    Object.fromEntries(
-      results.flatMap((r) =>
-        r.ok
-          ? (r.arms ?? [])
-              .filter((a) => !a.skipped)
-              .map((a) => [`${r.name} / ${a.label}`, row(a, k)])
-          : [[r.name, { error: r.error }]],
-      ),
-    ),
-  );
+  const summaryRows: Record<
+    string,
+    ReturnType<typeof row> | { error?: string }
+  > = {};
+  for (const r of results) {
+    if (!r.ok) {
+      summaryRows[r.name] = { error: r.error };
+      continue;
+    }
+    for (const a of r.arms ?? [])
+      if (!a.skipped) summaryRows[`${r.name} / ${a.label}`] = row(a, k);
+  }
+  console.table(summaryRows);
   if (values.json) {
     writeFileSync(
       values.json,
