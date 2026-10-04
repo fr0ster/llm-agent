@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-`DecisionReranker` (batched by `maxBatchTokens`, `concurrency`; presets `TOOL_QUESTION` / `PASSAGE_QUESTION`) and `wrapDecisionModel`. Per-store retrieval strategies: `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`, `SmartAgentBuilder.withRetrievalStrategy`. `RerankHandler` records global-reranker failures (`<store>.rerank_error`, `rerank_error` step) and skips stores with an explicit strategy. `LlmReranker` now asks for and requires a JSON array of N probabilities in `[0, 1]` (previously 0-10), batches by `batchSize`, and returns `RERANK_ERROR` for an out-of-contract reply.
+`DecisionReranker` (batched by `maxBatchTokens`, `concurrency`; presets `TOOL_QUESTION` / `PASSAGE_QUESTION`) and `wrapDecisionModel`. Per-store retrieval strategies: `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`, `SmartAgentBuilder.withRetrievalStrategy` (it also reaches the default coordinator's sub-agent tool source); a reranker failure logs `retrieval_rerank_error { store, strategy, code, message }`. `RerankHandler` records global-reranker failures (`<store>.rerank_error`, `rerank_error` step) and skips stores with an explicit strategy.
+
+**Changed:** `LlmReranker` requires a strict reply: the whole reply must be a JSON array of N scores in `[0, 1]` (one surrounding code fence is allowed), and the prompt scale moved from 0-10 to `[0, 1]`. A reply with prose around the array — which 30.0.0 salvaged with a regex — now yields `RERANK_ERROR` and the original order (the `rerank_error` / `retrieval_rerank_error` session step). It batches by `batchSize` and meters every call, an out-of-contract reply included, as `component: 'rerank'`.
 
 ## 30.0.0
 

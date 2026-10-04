@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-`decision:` config section, `rag.retrieval.<store>` per-store strategies (server-wide; a worker config declaring it is rejected), optional `BuildAgentDeps.makeDecisionModel`, `resolveRetrievalStrategies`; the plugin reranker and `agent.toolSelection` now reach per-session and embedded agents; `IToolsRagHandle` forwards `CallOptions`, so the controller / stepper tool selection goes through the `tools` strategy.
+`decision:` config section, `rag.retrieval.<store>` per-store strategies (server-wide, worker agents included; a worker config declaring it is rejected; `reranker: llm, llm: main` is accepted with a flat `llm:` block), optional `BuildAgentDeps.makeDecisionModel`, `resolveRetrievalStrategies`; the plugin reranker and `agent.toolSelection` now reach per-session and embedded agents; the controller / stepper tool selection goes through the `tools` strategy.
+
+**Fixed:** `makeToolsRagHandle` now forwards the `CallOptions` that `IToolsRagHandle.query` already accepted, so a reranker on the controller / stepper path receives the request's `signal`, `requestLogger` and `sessionLogger`. Hot-reload of `vectorWeight` / `keywordWeight` reaches a store under a decorator (`FallbackRag`, a retrieval strategy).
 
 ## 30.0.0
 

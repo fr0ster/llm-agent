@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-`IDecisionModel` and its request/answer/error types (`DecisionError`, `DecisionErrorCode`); `LlmComponent` gains `'decision'`. `IRetrievalStrategy` (how one store turns a query into its top-k) and the optional `IRagDecorator { inner }` capability with `isRagDecorator`; `FallbackRag` implements `IRagDecorator`. `IToolsRagHandle.query(text, k, options)` takes `CallOptions`.
+`IDecisionModel` and its request/answer/error types (`DecisionError`, `DecisionErrorCode`); `LlmComponent` gains `'decision'` and `'rerank'` — an exhaustive `switch` over it, or a `Record<LlmComponent, …>`, must add both. `IRetrievalStrategy` (how one store turns a query into its top-k) and the optional `IRagDecorator { inner }` capability with `isRagDecorator`; `FallbackRag` implements `IRagDecorator`.
 
 ## 30.0.0
 
