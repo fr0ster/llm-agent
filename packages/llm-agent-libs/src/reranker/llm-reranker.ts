@@ -5,17 +5,58 @@ import {
   type RagResult,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { PASSAGE_QUESTION } from './decision-reranker.js';
 import type { IReranker } from './types.js';
 
-const RERANK_SYSTEM_PROMPT = `You are a relevance scoring engine. Given a query and a list of text passages, rate the relevance of each passage to the query on a scale of 0 to 10.
+const DEFAULT_BATCH_SIZE = 20;
+const DEFAULT_CONCURRENCY = 2;
 
-Respond with ONLY a JSON array of numbers representing the scores, one per passage, in the same order.
-Example: [8, 3, 10, 1]
+export interface LlmRerankerOptions {
+  /** What "relevant" means for this store. Default: the passage question. */
+  question?: { task: string };
+  /** Candidates per LLM call. Default 20. */
+  batchSize?: number;
+  /** Max LLM calls in flight. Default 2. */
+  concurrency?: number;
+}
 
-Do not include any other text.`;
+function systemPrompt(task: string): string {
+  return `You are a relevance scoring engine. Given a query and a numbered list of candidates, score each candidate with the probability (0 to 1) that it satisfies this question: ${task}
+
+Respond with ONLY a JSON array of N numbers between 0 and 1, one per candidate, in the same order, where N is the number of candidates. No other text.
+Example for 3 candidates: [0.8, 0.1, 0.95]`;
+}
+
+const FENCE = /^```(?:json)?\s*\n([\s\S]*?)\n?```$/;
+
+/** Parse the WHOLE reply as a JSON array of `n` numbers in [0, 1]. */
+function parseScores(content: string, n: number): number[] | string {
+  let text = content.trim();
+  const fenced = FENCE.exec(text);
+  if (fenced && !fenced[1].includes('```')) text = fenced[1].trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return 'reply is not a bare JSON array';
+  }
+  if (!Array.isArray(parsed)) return 'reply is not a JSON array';
+  if (parsed.length !== n) {
+    return `expected ${n} scores, got ${parsed.length}`;
+  }
+  for (const x of parsed) {
+    if (typeof x !== 'number' || !Number.isFinite(x) || x < 0 || x > 1) {
+      return 'every score must be a number in [0, 1]';
+    }
+  }
+  return parsed as number[];
+}
 
 export class LlmReranker implements IReranker {
-  constructor(private readonly llm: ILlm) {}
+  constructor(
+    private readonly llm: ILlm,
+    private readonly opts: LlmRerankerOptions = {},
+  ) {}
 
   async rerank(
     query: string,
@@ -26,51 +67,97 @@ export class LlmReranker implements IReranker {
       return { ok: true, value: results };
     }
 
-    const passages = results.map((r, i) => `[${i}] ${r.text}`).join('\n\n');
+    const batchSize = Math.max(
+      1,
+      Math.floor(this.opts.batchSize ?? DEFAULT_BATCH_SIZE),
+    );
+    const concurrency = Math.max(
+      1,
+      Math.floor(this.opts.concurrency ?? DEFAULT_CONCURRENCY),
+    );
+    const batches: Array<{ offset: number; items: RagResult[] }> = [];
+    for (let i = 0; i < results.length; i += batchSize) {
+      batches.push({ offset: i, items: results.slice(i, i + batchSize) });
+    }
 
-    const userPrompt = `Query: ${query}\n\nPassages:\n${passages}`;
-
-    try {
-      const res = await this.llm.chat(
-        [
-          { role: 'system' as const, content: RERANK_SYSTEM_PROMPT },
-          { role: 'user' as const, content: userPrompt },
-        ],
-        [],
-        options,
+    const scores: number[] = new Array(results.length);
+    for (let s = 0; s < batches.length; s += concurrency) {
+      const slice = batches.slice(s, s + concurrency);
+      const outcomes = await Promise.all(
+        slice.map((b) => this._scoreBatch(query, b.items, options)),
       );
+      for (let k = 0; k < slice.length; k++) {
+        const o = outcomes[k];
+        if (!o.ok) return o;
+        o.value.forEach((v, j) => {
+          scores[slice[k].offset + j] = v;
+        });
+      }
+    }
 
+    const reranked = results
+      .map((r, i) => ({ r: { ...r, score: scores[i] }, i }))
+      .sort((a, b) => b.r.score - a.r.score || a.i - b.i)
+      .map((x) => x.r);
+    return { ok: true, value: reranked };
+  }
+
+  private async _scoreBatch(
+    query: string,
+    items: RagResult[],
+    options?: CallOptions,
+  ): Promise<Result<number[], RagError>> {
+    const task = this.opts.question?.task ?? PASSAGE_QUESTION.task;
+    const passages = items.map((r, i) => `[${i}] ${r.text}`).join('\n\n');
+    const messages = [
+      { role: 'system' as const, content: systemPrompt(task) },
+      {
+        role: 'user' as const,
+        content: `Query: ${query}\n\nCandidates (${items.length}):\n${passages}`,
+      },
+    ];
+    const started = Date.now();
+    try {
+      const res = await this.llm.chat(messages, [], options);
       if (!res.ok) {
         return {
           ok: false,
           error: new RagError(res.error.message, 'RERANK_ERROR'),
         };
       }
-
-      const scores = this._parseScores(res.value.content, results.length);
-
-      const reranked = results
-        .map((r, i) => ({ ...r, score: scores[i] / 10 }))
-        .sort((a, b) => b.score - a.score);
-
-      return { ok: true, value: reranked };
+      const scores = parseScores(res.value.content, items.length);
+      if (typeof scores === 'string') {
+        return {
+          ok: false,
+          error: new RagError(`Reranking failed: ${scores}`, 'RERANK_ERROR'),
+        };
+      }
+      const logger = options?.requestLogger;
+      if (logger) {
+        const usage = res.value.usage;
+        const promptTokens =
+          usage?.promptTokens ??
+          Math.ceil(messages.map((m) => m.content).join('').length / 4);
+        const completionTokens =
+          usage?.completionTokens ?? Math.ceil(res.value.content.length / 4);
+        logger.logLlmCall({
+          component: 'rerank',
+          model: this.llm.model ?? 'unknown',
+          promptTokens,
+          completionTokens,
+          totalTokens: usage?.totalTokens ?? promptTokens + completionTokens,
+          durationMs: Date.now() - started,
+          scope: 'request',
+          requestId: options?.trace?.traceId,
+          ...(usage === undefined ? { estimated: true } : {}),
+        });
+      }
+      return { ok: true, value: scores };
     } catch (err) {
       return {
         ok: false,
         error: new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
       };
     }
-  }
-
-  private _parseScores(content: string, expectedCount: number): number[] {
-    const match = content.match(/\[[\d\s,.-]+\]/);
-    if (match) {
-      const parsed = JSON.parse(match[0]) as number[];
-      if (parsed.length === expectedCount) {
-        return parsed.map((s) => Math.max(0, Math.min(10, Number(s) || 0)));
-      }
-    }
-    // Fallback: preserve original ordering
-    return Array.from({ length: expectedCount }, (_, i) => expectedCount - i);
   }
 }

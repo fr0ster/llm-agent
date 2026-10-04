@@ -29,6 +29,7 @@ export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   finalizer: 'auxiliary',
   oracle: 'auxiliary',
   decision: 'auxiliary',
+  rerank: 'auxiliary',
 };
 
 function emptyBucket(): TokenBucket {
