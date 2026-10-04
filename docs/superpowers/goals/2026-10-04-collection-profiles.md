@@ -29,9 +29,10 @@ English queries (see *Evidence* below):
 - A cross-encoder reranker (Cohere on SAP AI Core) helps on its own:
   - non-English queries: 0.692 → 0.962;
   - cosine-only stage 1, English: 0.885 → 0.943.
-- Splitting the query into its clauses and joining the results is needed only for
-  multi-step queries on top of hybrid scoring (0.714 → 1.000). It is a separate
-  option, not a requirement of every reranker.
+- Splitting the query into clauses looked necessary for multi-step queries, but
+  most of that gain came from mislabelled queries (a step the tool already takes
+  as a parameter, such as `transport_request` or `activate`) and from Cohere's
+  ranking. It is the consumer's concern, not the framework's (see Decisions).
 - An LLM used as a reranker gives no gain.
 
 ## Goals
@@ -46,8 +47,7 @@ English queries (see *Evidence* below):
 
    Already in 30.1.0: a per-store reranker, the candidate count and k (in
    records). New: indexing with several records per item, collapsing by item,
-   counting both the candidate pool and k in items, the optional clause split,
-   and a per-store threshold.
+   counting both the candidate pool and k in items, and a per-store threshold.
 2. The pair is one **collection profile**, because the search must undo exactly
    what the filling produced.
 3. A consumer chooses a profile per collection kind in its builder. The library
@@ -80,8 +80,7 @@ English queries (see *Evidence* below):
    - the **decision model** (TypeSafe Jev), already in 30.1.0, a separate
      provider.
 
-   A profile can be configured for either. Options that depend on the reranker,
-   such as the clause split, are set per profile, not built in.
+   A profile can be configured for either.
 
 ## Decisions
 
@@ -101,6 +100,7 @@ English queries (see *Evidence* below):
 | 2026-10-04 | The candidate pool is sized in items, not records: with several records per item, 30 records give only ~26–34 tools (reader and writer together, against 50 with one record per tool), and non-English recall drops. |
 | 2026-10-04 | Rerankers are alternatives: Cohere on SAP AI Core and TypeSafe Jev both get a profile configuration; the consumer picks at deploy. The Cohere (SAP AI Core) reranker provider is in this PR. |
 | 2026-10-04 | llm-agent ships the contracts of the pipeline elements and some default implementations. For MCP tools it ships several default variants, so a consumer has a real choice; skills stay on today's behaviour and get default variants of their own later. Everything is configured through strategies injected by the consumer, not through flags inside one implementation. |
+| 2026-10-05 | Query splitting is not part of the framework. A consumer that needs it implements it on its side, for example by wrapping the `IRetrievalStrategy` it injects. `k` stays the overall limit of a retrieval, as in 30.1.0. The measured gain of the split came mostly from mislabelled multi-step queries and Cohere's ranking; a genuinely dependent second step is a separate step for the planner. This replaces the clause split as a profile option. |
 | 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
 
 ## Evidence (measured in cloud-llm-hub, 2026-09-30 … 2026-10-04)
@@ -116,11 +116,8 @@ queries with production embeddings:
 - **Several records per tool** (full + operation + object), collapsed by the best
   hit: 0.966 at top-5, and 0.977 at top-8 with about 13 tools. Collapsing by count
   or reciprocal rank is worse.
-- **Cohere Rerank** (SAP AI Core) over 30 candidates, with the query split into
-  clauses: 0.977 at top-5 with about 9 tools.
-  - multi-step queries: 1.000 (0.714 without the clause split, and without
-    the reranker);
-  - non-English queries: 0.962 (0.692 without the reranker).
+- **Cohere Rerank** (SAP AI Core) over 30 candidates: non-English queries
+  0.962 (0.692 without the reranker).
 - **An LLM as the reranker:** no gain, and 6–10k prompt tokens per query. When
   the model returns the wrong number of scores, it falls back to the stage-1
   order. Since 30.1.0 that is a reranker error, but the strategy still falls back
@@ -129,19 +126,23 @@ queries with production embeddings:
 - **Rerankers compared** (k5, hybrid, today's one record per tool, so the pool is
   the same):
 
-  | queries | Cohere | Cohere + clause split | Jev | Jev + clause split |
-  |---|---|---|---|---|
-  | single-step (73) | 0.973 | 0.973 | 1.000 | 1.000 |
-  | multi-step (14) | 0.714 | 1.000 | 0.857 | 0.786 |
-  | non-English (26) | 0.962 | 0.962 | 1.000 | 1.000 |
+  | queries | Cohere | Jev |
+  |---|---|---|
+  | all English (87) | 0.931, 8.3 tools | 0.977, 8.3 tools |
+  | single-step (73) | 0.973 | 1.000 |
+  | multi-step (14) | 0.714 | 0.857 |
+  | non-English (26) | 0.962 | 1.000 |
 
-  The clause split helps Cohere and hurts Jev, so it belongs to the pair of
-  reranker and profile. With several records per tool and a reranker, the
+  Multi-step labels corrected on 2026-10-05: five queries listed a step the
+  first tool already takes as a parameter (`CreateClass` takes
+  `transport_request`; `UpdateClass`, `CreateDomain`, `CreateBehaviorDefinition`
+  take `activate`). After the correction, Jev's only miss is "where-used of a
+  table, then show the users' source", whose second step depends on the first
+  step's result and is a separate step for the planner anyway. Cohere also
+  misses `CreateClass` and `UpdateClass` in two queries: its ranking, not
+  multi-step. With several records per tool and a reranker, the
   record layout (intents inside the record, in their own record, or absent) is
   within noise; intents in the reranker's text do not help either reranker.
-- **Best combination measured:** Cohere with clause split, joined with the top-3
-  tools found through the multiple records. It reaches 1.000 at top-5, but it was
-  picked after seeing the results and still needs fresh queries.
 
 ## Open questions
 
@@ -162,7 +163,6 @@ queries with production embeddings:
 - The boundary with the per-store retrieval strategies of #321
   (`IRetrievalStrategy`, `StrategyRag`, `DecisionReranker`). The retrieval half
   of a profile should build on them, not beside them. The profile adds the
-  indexing half and what joins the two halves: collapsing a unit's records and
-  the optional clause split.
+  indexing half and what joins the two halves: collapsing a unit's records.
 - The search knobs per profile: candidate count, collapse rule, final cut
-  (per-collection k or a threshold), and clause splitting.
+  (per-collection k or a threshold).
