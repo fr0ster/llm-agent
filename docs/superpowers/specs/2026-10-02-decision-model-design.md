@@ -956,16 +956,33 @@ agent get the same instance:
   `true`, unchanged behaviour).
 - **`agent.llmCallStrategy`**: resolved once to one `ILlmCallStrategy`
   instance and applied to every agent.
-- **Circuit breaker**: **shared, not rebuilt per session.** A per-session
-  breaker would split the failure count and double-wrap the copied stores.
-  SmartServer creates one LLM breaker and one embedder breaker from
-  `circuitBreaker:`. An additive builder seam takes those instances
-  (`withCircuitBreakers({ llm, embedder })`; `withCircuitBreaker(config)`
-  is unchanged and still builds its own). The builder then wraps the main LLM
-  with the given LLM breaker. It wraps no store already guarded by a
-  `FallbackRag` on the same embedder breaker; this needs `FallbackRag` to expose
-  its breaker read-only, which is additive. `/health` reports the shared
-  breakers, so request traffic now moves them.
+- **Circuit breaker**: **shared, not rebuilt per session**, and placed where
+  **every** LLM is resolved, not only in the builder. A per-session breaker
+  would split the failure count and double-wrap the copied stores. A
+  builder-only LLM breaker would miss the role LLMs: the controller and the
+  stepper take theirs from `ctx.resolveLlm` / `ctx.resolveNamedLlm`
+  (`resolveRoleLlm` / `resolveNamedRoleLlm`), and the controller builds its
+  handler before any builder runs. So:
+  - **LLMs:** the role resolver (`IRoleLlmResolver`,
+    `smart-agent/llm/role-llm-resolver.ts`) returns every resolved LLM wrapped
+    in `CircuitBreakerLlm`, through an additive decorator over the resolver;
+    `resolve` / `resolveNamed` keep their signatures. There is **one breaker
+    per `llm:` entry key**, so a failing model does not block a healthy one.
+    The breaker is created once and reused by every session and every role that
+    resolves that key. An entry swapped by `PUT /v1/config` gets a fresh
+    breaker. The main, classifier and helper LLMs given to the builders are the
+    wrapped instances, so the builders never wrap an LLM again.
+  - **Stores / embedder:** SmartServer creates one embedder breaker from
+    `circuitBreaker:`. An additive builder seam takes it
+    (`withCircuitBreakers({ embedder })`; `withCircuitBreaker(config)` is
+    unchanged and still builds its own LLM and embedder breakers for library
+    consumers). The builder wraps no store already guarded by a `FallbackRag`
+    on the same breaker; this needs `FallbackRag` to expose its breaker
+    read-only, which is additive.
+  - `/health` reports all of them: the per-key LLM breakers and the embedder
+    breaker. Request traffic of every pipeline, the controller and the stepper
+    included, now moves them.
+  - **A cancellation is not a failure** (§14.4).
 - **YAML `mcp:` auto-connect stays gated** (one connection, made at startup).
   After this change `applyServerExtras` guards only this, and its doc says so.
 
@@ -1001,6 +1018,22 @@ One shared store, read per session. `buildSessionAgent` passes the server's
   `mergeSignals` is replaced by it, which removes the listener leak.
 - An aborted request is logged as cancelled (`request_cancelled`), not as an
   error, and writes nothing to a closed socket.
+- **A caller's cancellation never counts against a circuit breaker.** With a
+  shared breaker, client disconnects would otherwise open the circuit for every
+  session: today `CircuitBreakerLlm` and `CircuitBreakerEmbedder` call
+  `recordFailure()` on any error, `ABORTED` included. A call is a
+  cancellation when the `options.signal` it received is aborted with a reason
+  that is not a timeout (`reason.name !== 'TimeoutError'`). Such a call records
+  neither a failure nor a success; this applies to `chat`, `streamChat` (an
+  error chunk and a throw) and the embedder. A timeout is a failure of the
+  call, and the breaker sees it as before. To make the two distinguishable, the
+  agent's `timeoutMs` signal (`createTimeoutSignal`, `agent.ts:250`, which today
+  aborts with `new Error('Timeout')`) aborts with a `TimeoutError` reason
+  (`AbortSignal.timeout`); `AbortSignal.any` keeps the reason of the signal
+  that fired. The error code alone is not used: an `ABORTED` error is also what
+  a timeout produces. The half-open state
+  permits calls while it lasts (`isCallPermitted`), so a cancelled probe leaves
+  the breaker half-open and the next call decides.
 - Out of scope: the SAP AI Core embedder ignores the signal; an embed call in
   flight finishes. This is recorded as a known limitation.
 
@@ -1017,9 +1050,12 @@ be registered after startup.
 
 - Wiring: a session agent built through SmartServer applies the plugin output
   validator, the skill manager (skill-select injects; no second vectorization of
-  the tools store), the configured LLM-call strategy, and the shared LLM breaker.
+  the tools store), the configured LLM-call strategy, and the shared breakers.
   A failing LLM call on a session request moves the breaker that `/health`
-  reports.
+  reports, and so does a failing call of a controller role LLM and of a stepper
+  role LLM resolved through `ctx.resolveLlm` / `ctx.resolveNamedLlm`. Two
+  `llm:` entries have separate breakers; one key resolved by two sessions shares
+  one breaker; no LLM is wrapped twice.
 - History: two sessions on one shared store; each reads only its own
   summaries; the summary includes the answer; `historyAutoSummarizeLimit` with a
   given store creates no `InMemoryRag`; `rag.retrieval.history` applies on a
@@ -1028,6 +1064,10 @@ be registered after startup.
   received (streaming and non-streaming, both routes); a completed response does
   not abort; `AbortSignal.any` composition with `timeoutMs`; no listener left on
   a long-lived signal.
+- Cancellation vs breaker: with `failureThreshold` N, N+1 cancelled calls leave
+  the breaker closed, for `chat` and for `streamChat` (an `ABORTED` error chunk
+  and a throw after abort) and for the embedder; N real failures still open it;
+  an `agent.timeoutMs` expiry still counts as a failure.
 - Store keys: a typo key warns once; `tools`, `history`, a registered collection
   and a `session/x` key do not warn.
 
