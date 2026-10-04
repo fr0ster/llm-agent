@@ -3399,3 +3399,815 @@ Move the root and package `## Unreleased` CHANGELOG headings to `## 30.1.0`. Com
 - [ ] **Step 5: Hand over**
 
 Publishing is the user's (`npm run release:publish`, yubikey). After it: a clean install of `@mcp-abap-adt/llm-agent-server@30.1.0` from the registry in a temp dir (`npm i @mcp-abap-adt/llm-agent-server@30.1.0` in an empty `mktemp -d`), and `npm view @mcp-abap-adt/typesafe-decision@30.1.0 version`.
+
+---
+
+# Part 2 — Per-store retrieval strategies (spec §13, Addendum A)
+
+**Goal:** Per store, the consumer chooses how a query becomes its top-k — plain embedding, embedding + rerank, or rerank of the whole store — through a new `IRetrievalStrategy`, reaching every tool-selection path (flat stages, `tool-loop`, controller per step, stepper).
+
+**Architecture:** `IRetrievalStrategy` + optional `IRagDecorator` in the contracts; `StrategyRag` and three strategies in `llm-agent-libs/src/retrieval/`; the builder applies strategies in its `ragStores` projection, the server wraps `tools`/`history` at creation so `makeToolsRagHandle` gets them too; `rag.retrieval` YAML replaces the unreleased `reranker:` section. `DecisionReranker` gains batching and question presets; `LlmReranker` is reworked to a strict `[0,1]` contract.
+
+**Spec:** `docs/superpowers/specs/2026-10-02-decision-model-design.md` — **§13** (and the "Superseded" notes in §2, §7.1, §7.3). Part 1 tasks (1–14) are done; Part 2 continues numbering at 15.
+
+## Global Constraints (Part 2)
+
+Everything in Part 1's Global Constraints still applies, plus:
+- `IRag`, `IReranker`, `IToolSelectionStrategy` are NOT changed (ISP). New capability interfaces only.
+- An explicit per-store strategy (including `embedding`) wins over the global reranker (plugin / `withReranker`); a store with no `rag.retrieval` entry keeps today's behaviour.
+- A reranker failure never fails the request: the strategy returns the embedding ranking's top-k and logs session step `retrieval_rerank_error { store, strategy, code }`.
+- `CallOptions` reach the reranker on every path (signal, requestLogger, sessionLogger).
+- Exactly one rerank per query, whatever the decorator order (`hasRetrievalStrategy` walks `IRagDecorator.inner`).
+- No assumption about catalog size: `maxCandidates` is configuration, never derived.
+- Jev request limit: 64k tokens total, 32k for state + longest question (spec §3).
+- Commit trailers exactly:
+  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and
+  `Claude-Session: https://claude.ai/code/session_018UxsbrykWK8vJp7rtApkzg`.
+- All Part 2 work lands in PR #321 (one PR per task).
+
+## Review Focus (Part 2)
+
+1. **`history: { strategy: embedding }` with a plugin reranker** — history must never be reranked or sent out. Pinned in Task 20.
+2. **Circuit breaker on** — one rerank per query in both wrapper orders, and the documented open-circuit difference with a non-empty fallback. Pinned in Task 20.
+3. **Controller per-step tool selection** — the reranker receives the request's `signal` / `requestLogger` / `sessionLogger`. Pinned in Task 22.
+4. **A batch exceeding Jev's budget, or one batch failing** — batching splits by the token budget; one failed batch → embedding order, never a partial merge. Pinned in Task 18.
+5. **An LLM reranker answering out of contract** (wrong length, `1.2`, `"0.5"`, prose) → error → embedding order, never zero-filled scores. Pinned in Task 19.
+
+---
+
+### Task 15: Contracts — `IRetrievalStrategy`, `IRagDecorator`; `FallbackRag` exposes `inner`
+
+**Files:**
+- Create: `packages/llm-agent/src/interfaces/retrieval-strategy.ts`
+- Modify: `packages/llm-agent/src/interfaces/index.ts` (export both types)
+- Modify: `packages/llm-agent/src/resilience/fallback-rag.ts` (implement `IRagDecorator`)
+- Test: `packages/llm-agent/src/interfaces/__tests__/retrieval-strategy.test.ts`
+
+**Interfaces:**
+- Produces: `IRetrievalStrategy { readonly name: string; retrieve(store: IRag, query: IQueryEmbedding, k: number, options?: CallOptions): Promise<Result<RagResult[], RagError>> }`; `IRagDecorator { readonly inner: IRag }`; `isRagDecorator(rag: IRag): rag is IRag & IRagDecorator`; `FallbackRag.inner` (= its primary store).
+
+- [ ] **Step 1: Failing test**
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  CircuitBreaker,
+  FallbackRag,
+  InMemoryRag,
+  type IRetrievalStrategy,
+  isRagDecorator,
+} from '../../index.js';
+
+describe('IRagDecorator', () => {
+  it('FallbackRag exposes its primary store as inner', () => {
+    const primary = new InMemoryRag();
+    const fb = new FallbackRag(primary, new InMemoryRag(), new CircuitBreaker({}));
+    assert.ok(isRagDecorator(fb));
+    assert.equal(fb.inner, primary);
+  });
+
+  it('a plain store is not a decorator', () => {
+    assert.equal(isRagDecorator(new InMemoryRag()), false);
+  });
+
+  it('IRetrievalStrategy is implementable', async () => {
+    const s: IRetrievalStrategy = {
+      name: 'x',
+      retrieve: (store, q, k, o) => store.query(q, k, o),
+    };
+    assert.equal(s.name, 'x');
+  });
+});
+```
+
+`CircuitBreaker(config: CircuitBreakerConfig = {})` (`circuit-breaker.ts:34`), `FallbackRag(primary, fallback, embedderBreaker)` (`fallback-rag.ts`); confirm `InMemoryRag` is exported from the package index (`grep -n "InMemoryRag" packages/llm-agent/src/index.ts`) and import it from its module path if not.
+
+- [ ] **Step 2: Run, expect FAIL** (`isRagDecorator` not exported): `set -o pipefail; npm test --workspace @mcp-abap-adt/llm-agent 2>&1 | grep -E "^ℹ (pass|fail)"`.
+
+- [ ] **Step 3: Implement**
+
+`packages/llm-agent/src/interfaces/retrieval-strategy.ts`:
+
+```ts
+import type { IRag, IQueryEmbedding } from './rag.js';
+import type { CallOptions, RagError, RagResult, Result } from './types.js';
+
+/**
+ * How a store turns a query into its top-k results — the consumer's choice,
+ * per store (spec §13.2). Built-ins: embedding / rerank / rerank-all.
+ */
+export interface IRetrievalStrategy {
+  readonly name: string;
+  retrieve(
+    store: IRag,
+    query: IQueryEmbedding,
+    k: number,
+    options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>>;
+}
+
+/** Optional capability: a store that wraps another exposes it (spec §13.3). */
+export interface IRagDecorator {
+  readonly inner: IRag;
+}
+
+export function isRagDecorator(rag: IRag): rag is IRag & IRagDecorator {
+  const inner = (rag as Partial<IRagDecorator>).inner;
+  return typeof inner === 'object' && inner !== null && typeof inner.query === 'function';
+}
+```
+
+Verify the import locations of `IQueryEmbedding` / `IRag` (`grep -n "export interface IQueryEmbedding\|export interface IRag\b" packages/llm-agent/src/interfaces/*.ts`) and fix the import paths to the real files. Export from `interfaces/index.ts`:
+
+```ts
+export type { IRagDecorator, IRetrievalStrategy } from './retrieval-strategy.js';
+export { isRagDecorator } from './retrieval-strategy.js';
+```
+
+In `fallback-rag.ts`: `export class FallbackRag implements IRag, IRagDecorator` and add
+
+```ts
+  /** The decorated (primary) store — IRagDecorator, so a strategy brand under it stays visible. */
+  get inner(): IRag {
+    return this.primary;
+  }
+```
+
+- [ ] **Step 4: Build + tests** — `npx tsc -b packages/llm-agent packages/llm-agent-libs && npm test --workspace @mcp-abap-adt/llm-agent` → `# fail 0`.
+
+- [ ] **Step 5: Commit** — `feat(llm-agent): IRetrievalStrategy and IRagDecorator contracts` (+ both trailers).
+
+---
+
+### Task 16: `StrategyRag`, `EmbeddingRetrieval`, `applyRetrievalStrategy`, `hasRetrievalStrategy`
+
+**Files:**
+- Create: `packages/llm-agent-libs/src/retrieval/embedding-retrieval.ts`, `strategy-rag.ts`, `index.ts`
+- Modify: `packages/llm-agent-libs/src/index.ts` (export the retrieval module)
+- Test: `packages/llm-agent-libs/src/retrieval/__tests__/strategy-rag.test.ts`
+
+**Interfaces:**
+- Consumes: Task 15 types.
+- Produces: `EmbeddingRetrieval implements IRetrievalStrategy` (`name: 'embedding'`); `StrategyRag implements IRag, IRagDecorator` (`constructor(inner: IRag, strategy: IRetrievalStrategy)`, `readonly strategy`); `applyRetrievalStrategy(rag: IRag, strategy: IRetrievalStrategy): IRag`; `hasRetrievalStrategy(rag: IRag): boolean`.
+
+- [ ] **Step 1: Failing tests**
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  CircuitBreaker,
+  FallbackRag,
+  InMemoryRag,
+  type IQueryEmbedding,
+  type IRag,
+  type IRetrievalStrategy,
+  type RagResult,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  applyRetrievalStrategy,
+  EmbeddingRetrieval,
+  hasRetrievalStrategy,
+  StrategyRag,
+} from '../index.js';
+
+const hit = (id: string, score: number): RagResult => ({ text: id, metadata: { id }, score });
+
+function fakeStore(results: RagResult[]) {
+  const calls: Array<{ k: number; options: unknown }> = [];
+  const writer = { upsertRaw: async () => ({ ok: true as const, value: undefined }) };
+  const store: IRag = {
+    query: async (_q, k, options) => {
+      calls.push({ k, options });
+      return { ok: true, value: results.slice(0, k) };
+    },
+    healthCheck: async () => ({ ok: true, value: undefined }),
+    getById: async (id) => ({ ok: true, value: results.find((r) => r.metadata.id === id) ?? null }),
+    writer: () => writer as never,
+  };
+  return { store, calls, writer };
+}
+const q = { text: 'q', toVector: async () => [1] } as IQueryEmbedding;
+
+describe('EmbeddingRetrieval', () => {
+  it('is store.query(q, k, options)', async () => {
+    const { store, calls } = fakeStore([hit('a', 0.9), hit('b', 0.8)]);
+    const opts = { sessionId: 's' };
+    const r = await new EmbeddingRetrieval().retrieve(store, q, 1, opts);
+    assert.ok(r.ok);
+    assert.deepEqual(r.value.map((x) => x.text), ['a']);
+    assert.deepEqual(calls, [{ k: 1, options: opts }]);
+  });
+});
+
+describe('StrategyRag', () => {
+  it('routes query through the strategy and delegates the rest', async () => {
+    const { store, writer } = fakeStore([hit('a', 0.9)]);
+    const seen: unknown[] = [];
+    const strategy: IRetrievalStrategy = {
+      name: 'spy',
+      retrieve: async (s, qq, k, o) => { seen.push(o); return s.query(qq, k, o); },
+    };
+    const rag = new StrategyRag(store, strategy);
+    const opts = { sessionId: 's' };
+    await rag.query(q, 3, opts);
+    assert.deepEqual(seen, [opts]);
+    assert.deepEqual(await rag.healthCheck(), { ok: true, value: undefined });
+    const byId = await rag.getById('a');
+    assert.ok(byId.ok && byId.value?.text === 'a');
+    assert.equal(rag.writer?.(), writer);
+    assert.equal(rag.inner, store);
+  });
+});
+
+describe('applyRetrievalStrategy / hasRetrievalStrategy', () => {
+  it('wraps an explicit embedding strategy too (distinguishable from "not configured")', () => {
+    const { store } = fakeStore([]);
+    assert.equal(hasRetrievalStrategy(store), false);
+    const wrapped = applyRetrievalStrategy(store, new EmbeddingRetrieval());
+    assert.notEqual(wrapped, store);
+    assert.equal(hasRetrievalStrategy(wrapped), true);
+  });
+
+  it('a second application returns the same wrapper', () => {
+    const { store } = fakeStore([]);
+    const once = applyRetrievalStrategy(store, new EmbeddingRetrieval());
+    assert.equal(applyRetrievalStrategy(once, new EmbeddingRetrieval()), once);
+  });
+
+  it('sees the brand through a FallbackRag (either order)', () => {
+    const { store } = fakeStore([]);
+    const inner = applyRetrievalStrategy(store, new EmbeddingRetrieval());
+    const outer = new FallbackRag(inner, new InMemoryRag(), new CircuitBreaker({}));
+    assert.equal(hasRetrievalStrategy(outer), true);
+    assert.equal(applyRetrievalStrategy(outer, new EmbeddingRetrieval()), outer);
+  });
+});
+```
+
+(`new CircuitBreaker({})` — config is optional.)
+
+- [ ] **Step 2: Run, expect FAIL** (module not found).
+
+- [ ] **Step 3: Implement**
+
+`embedding-retrieval.ts`:
+
+```ts
+import type { CallOptions, IQueryEmbedding, IRag, IRetrievalStrategy, RagError, RagResult, Result } from '@mcp-abap-adt/llm-agent';
+
+/** Today's behaviour: the store's own (embedding) ranking. */
+export class EmbeddingRetrieval implements IRetrievalStrategy {
+  readonly name = 'embedding';
+  retrieve(store: IRag, query: IQueryEmbedding, k: number, options?: CallOptions): Promise<Result<RagResult[], RagError>> {
+    return store.query(query, k, options);
+  }
+}
+```
+
+`strategy-rag.ts`:
+
+```ts
+import {
+  type CallOptions,
+  type IQueryEmbedding,
+  type IRag,
+  type IRagBackendWriter,
+  type IRagDecorator,
+  type IRetrievalStrategy,
+  isRagDecorator,
+  type RagError,
+  type RagResult,
+  type Result,
+} from '@mcp-abap-adt/llm-agent';
+
+const BRAND = Symbol.for('@mcp-abap-adt/strategy-rag');
+
+/** IRag decorator: `query` goes through the strategy, everything else to `inner` (spec §13.3). */
+export class StrategyRag implements IRag, IRagDecorator {
+  readonly [BRAND] = true;
+  constructor(
+    readonly inner: IRag,
+    readonly strategy: IRetrievalStrategy,
+  ) {}
+  query(embedding: IQueryEmbedding, k: number, options?: CallOptions): Promise<Result<RagResult[], RagError>> {
+    return this.strategy.retrieve(this.inner, embedding, k, options);
+  }
+  healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
+    return this.inner.healthCheck(options);
+  }
+  getById(id: string, options?: CallOptions): Promise<Result<RagResult | null, RagError>> {
+    return this.inner.getById(id, options);
+  }
+  writer(): IRagBackendWriter | undefined {
+    return this.inner.writer?.();
+  }
+}
+
+/** True when `rag`, or any store it decorates, carries a retrieval strategy. */
+export function hasRetrievalStrategy(rag: IRag): boolean {
+  let cur: IRag | undefined = rag;
+  for (let depth = 0; cur && depth < 16; depth++) {
+    if ((cur as { [BRAND]?: boolean })[BRAND]) return true;
+    cur = isRagDecorator(cur) ? cur.inner : undefined;
+  }
+  return false;
+}
+
+/** Wrap an explicitly configured store (embedding included); idempotent through decorators. */
+export function applyRetrievalStrategy(rag: IRag, strategy: IRetrievalStrategy): IRag {
+  return hasRetrievalStrategy(rag) ? rag : new StrategyRag(rag, strategy);
+}
+```
+
+Check that `IRagBackendWriter` is exported from `@mcp-abap-adt/llm-agent` (`grep -n "IRagBackendWriter" packages/llm-agent/src/interfaces/index.ts`). `retrieval/index.ts` re-exports `EmbeddingRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`; add `export * from './retrieval/index.js';` to `packages/llm-agent-libs/src/index.ts` (match the file's existing export style).
+
+- [ ] **Step 4: Build + test** — `npx tsc -b packages/llm-agent-libs && npm test --workspace @mcp-abap-adt/llm-agent-libs` → `# fail 0`.
+
+- [ ] **Step 5: Commit** — `feat(libs): StrategyRag and the embedding retrieval strategy`.
+
+---
+
+### Task 17: `RerankedRetrieval` and `RerankAllRetrieval` (failure → embedding order)
+
+**Files:**
+- Create: `packages/llm-agent-libs/src/retrieval/reranked-retrieval.ts`
+- Modify: `packages/llm-agent-libs/src/retrieval/index.ts`
+- Test: `packages/llm-agent-libs/src/retrieval/__tests__/reranked-retrieval.test.ts`
+
+**Interfaces:**
+- Consumes: `IReranker`, Task 16.
+- Produces: `RerankedRetrieval(reranker: IReranker, opts?: { overfetch?: number; storeName?: string })` (`name: 'rerank'`, default overfetch 2); `RerankAllRetrieval(reranker: IReranker, opts: { maxCandidates: number; storeName?: string })` (`name: 'rerank-all'`). `storeName` only labels the session step.
+
+- [ ] **Step 1: Failing tests** (reuse `fakeStore`/`hit`/`q` from Task 16 — copy them into this file)
+
+```ts
+describe('RerankedRetrieval', () => {
+  it('fetches k × overfetch, reranks with the query text, returns top-k', async () => {
+    const { store, calls } = fakeStore([hit('a', 0.9), hit('b', 0.8), hit('c', 0.7), hit('d', 0.6)]);
+    const seen: Array<{ query: string; n: number; options: unknown }> = [];
+    const reranker: IReranker = {
+      rerank: async (query, results, options) => {
+        seen.push({ query, n: results.length, options });
+        return { ok: true, value: [...results].reverse().map((r, i) => ({ ...r, score: 1 - i / 10 })) };
+      },
+    };
+    const opts = { sessionId: 's' };
+    const r = await new RerankedRetrieval(reranker, { overfetch: 2 }).retrieve(store, q, 2, opts);
+    assert.ok(r.ok);
+    assert.deepEqual(calls[0].k, 4);
+    assert.deepEqual(seen, [{ query: 'q', n: 4, options: opts }]);
+    assert.deepEqual(r.value.map((x) => x.text), ['d', 'c']);
+  });
+
+  it('a reranker failure returns the embedding top-k and logs retrieval_rerank_error', async () => {
+    const { store } = fakeStore([hit('a', 0.9), hit('b', 0.8), hit('c', 0.7)]);
+    const steps: Array<[string, unknown]> = [];
+    const reranker: IReranker = { rerank: async () => ({ ok: false, error: new RagError('down', 'RERANK_ERROR') }) };
+    const r = await new RerankedRetrieval(reranker, { storeName: 'tools' }).retrieve(store, q, 2, {
+      sessionLogger: { logStep: (n: string, d: unknown) => steps.push([n, d]) },
+    } as never);
+    assert.ok(r.ok);
+    assert.deepEqual(r.value.map((x) => x.text), ['a', 'b']);
+    assert.deepEqual(steps, [['retrieval_rerank_error', { store: 'tools', strategy: 'rerank', code: 'RERANK_ERROR' }]]);
+  });
+
+  it('a store error is returned as is (nothing to fall back to)', async () => {
+    const store = { ...fakeStore([]).store, query: async () => ({ ok: false as const, error: new RagError('x', 'RAG_ERROR') }) };
+    const r = await new RerankedRetrieval({ rerank: async () => { throw new Error('unused'); } }).retrieve(store, q, 2);
+    assert.ok(!r.ok);
+  });
+
+  it('a throwing reranker is treated as a failure', async () => {
+    const { store } = fakeStore([hit('a', 0.9)]);
+    const r = await new RerankedRetrieval({ rerank: async () => { throw new Error('boom'); } }).retrieve(store, q, 1);
+    assert.ok(r.ok);
+    assert.deepEqual(r.value.map((x) => x.text), ['a']);
+  });
+});
+
+describe('RerankAllRetrieval', () => {
+  it('fetches maxCandidates (not k), reranks all, returns top-k', async () => {
+    const { store, calls } = fakeStore([hit('a', 0.9), hit('b', 0.8), hit('c', 0.7)]);
+    const reranker: IReranker = {
+      rerank: async (_q, results) => ({ ok: true, value: [...results].reverse() }),
+    };
+    const r = await new RerankAllRetrieval(reranker, { maxCandidates: 50 }).retrieve(store, q, 1);
+    assert.equal(calls[0].k, 50);
+    assert.ok(r.ok);
+    assert.deepEqual(r.value.map((x) => x.text), ['c']);
+  });
+});
+```
+
+- [ ] **Step 2: Run, expect FAIL.**
+
+- [ ] **Step 3: Implement** `reranked-retrieval.ts`:
+
+```ts
+import {
+  type CallOptions,
+  type IQueryEmbedding,
+  type IRag,
+  type IReranker,
+  type IRetrievalStrategy,
+  type RagError,
+  type RagResult,
+  type Result,
+} from '@mcp-abap-adt/llm-agent';
+
+async function rerankOrFallback(
+  name: string,
+  storeName: string | undefined,
+  reranker: IReranker,
+  query: IQueryEmbedding,
+  candidates: RagResult[],
+  k: number,
+  options?: CallOptions,
+): Promise<Result<RagResult[], RagError>> {
+  let code: string;
+  try {
+    const r = await reranker.rerank(query.text, candidates, options);
+    if (r.ok) return { ok: true, value: r.value.slice(0, k) };
+    code = r.error.code;
+  } catch {
+    code = 'RERANK_THROWN';
+  }
+  options?.sessionLogger?.logStep('retrieval_rerank_error', { store: storeName, strategy: name, code });
+  return { ok: true, value: candidates.slice(0, k) };
+}
+
+/** Embedding top (k × overfetch) → rerank → top-k. */
+export class RerankedRetrieval implements IRetrievalStrategy {
+  readonly name = 'rerank';
+  private readonly overfetch: number;
+  constructor(private readonly reranker: IReranker, private readonly opts: { overfetch?: number; storeName?: string } = {}) {
+    this.overfetch = opts.overfetch ?? 2;
+  }
+  async retrieve(store: IRag, query: IQueryEmbedding, k: number, options?: CallOptions) {
+    const cand = await store.query(query, k * this.overfetch, options);
+    if (!cand.ok) return cand;
+    return rerankOrFallback(this.name, this.opts.storeName, this.reranker, query, cand.value, k, options);
+  }
+}
+
+/** The store's first `maxCandidates` (configured, never assumed) → rerank all → top-k. */
+export class RerankAllRetrieval implements IRetrievalStrategy {
+  readonly name = 'rerank-all';
+  constructor(private readonly reranker: IReranker, private readonly opts: { maxCandidates: number; storeName?: string }) {}
+  async retrieve(store: IRag, query: IQueryEmbedding, k: number, options?: CallOptions) {
+    const cand = await store.query(query, this.opts.maxCandidates, options);
+    if (!cand.ok) return cand;
+    return rerankOrFallback(this.name, this.opts.storeName, this.reranker, query, cand.value, k, options);
+  }
+}
+```
+
+Note `{ store: undefined }` when no `storeName` — the test passes `storeName` where it asserts the payload. Export both from `retrieval/index.ts`.
+
+- [ ] **Step 4: Tests** → `# fail 0`. **Step 5: Commit** — `feat(libs): rerank and rerank-all retrieval strategies`.
+
+---
+
+### Task 18: `DecisionReranker` — question presets and token-budget batching
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/reranker/decision-reranker.ts`, `packages/llm-agent-libs/src/reranker/index.ts`, `packages/llm-agent-libs/src/index.ts`
+- Test: `packages/llm-agent-libs/src/reranker/__tests__/decision-reranker-batching.test.ts`
+
+**Interfaces:**
+- Produces: `TOOL_QUESTION: { task: DecisionEntry; criteria: { true: DecisionEntry; false: DecisionEntry } }` and `PASSAGE_QUESTION` (= today's `DECISION_RERANK_DEFAULT_TASK` / `DECISION_RERANK_DEFAULT_CRITERIA`, both frozen); `DecisionRerankerOptions` gains `maxBatchTokens?: number` (default `48_000`) and `concurrency?: number` (default `4`). Existing exports and behaviour for small inputs unchanged.
+
+- [ ] **Step 1: Failing tests**
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { DecisionError, type DecisionRequest, type IDecisionModel, type RagResult } from '@mcp-abap-adt/llm-agent';
+import { DecisionReranker, PASSAGE_QUESTION, TOOL_QUESTION } from '../decision-reranker.js';
+
+const mk = (n: number, len = 10): RagResult[] =>
+  Array.from({ length: n }, (_, i) => ({ text: `p${i}`.padEnd(len, 'x'), metadata: { id: `p${i}` }, score: 0.5 }));
+
+function model(prob: (passage: string) => number, failOn?: number) {
+  const calls: DecisionRequest[] = [];
+  const m: IDecisionModel = {
+    decide: async (req) => {
+      calls.push(req);
+      if (failOn !== undefined && calls.length === failOn) return { ok: false, error: new DecisionError('x', 'DECISION_UNAVAILABLE') };
+      const answers = Object.fromEntries(
+        Object.entries(req.questions).map(([k, qq]) => [k, { type: 'noul' as const, probability: prob(String((qq as { instructions: { passage: string } }).instructions.passage)) }]),
+      );
+      return { ok: true, value: { model: 'f', answers } };
+    },
+  };
+  return { m, calls };
+}
+
+describe('DecisionReranker presets', () => {
+  it('TOOL_QUESTION and PASSAGE_QUESTION are frozen and distinct', () => {
+    assert.ok(Object.isFrozen(TOOL_QUESTION) && Object.isFrozen(PASSAGE_QUESTION));
+    assert.notEqual(TOOL_QUESTION.task, PASSAGE_QUESTION.task);
+  });
+});
+
+describe('DecisionReranker batching', () => {
+  it('splits by the token budget and merges by score', async () => {
+    const { m, calls } = model((p) => Number(p.slice(1).replace(/x+$/, '')) / 100);
+    const results = mk(30, 400); // ≈100 tokens each → several batches under a small budget
+    const r = await new DecisionReranker(m, { maxBatchTokens: 1_000 }).rerank('q', results);
+    assert.ok(r.ok);
+    assert.ok(calls.length > 1, `expected several batches, got ${calls.length}`);
+    for (const c of calls) {
+      const text = JSON.stringify(c);
+      assert.ok(text.length / 4 <= 1_000 + 200, 'batch stays near the budget');
+    }
+    assert.equal(r.value[0].metadata.id, 'p29');
+    assert.equal(r.value.length, 30);
+  });
+
+  it('one failed batch fails the call (no partial merge)', async () => {
+    const { m } = model(() => 0.5, 2);
+    const r = await new DecisionReranker(m, { maxBatchTokens: 1_000 }).rerank('q', mk(30, 400));
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'RERANK_ERROR');
+  });
+
+  it('small inputs are still one call', async () => {
+    const { m, calls } = model(() => 0.5);
+    await new DecisionReranker(m).rerank('q', mk(5));
+    assert.equal(calls.length, 1);
+  });
+});
+```
+
+- [ ] **Step 2: Run, expect FAIL.**
+
+- [ ] **Step 3: Implement** in `decision-reranker.ts`:
+  - `export const PASSAGE_QUESTION = Object.freeze({ task: DECISION_RERANK_DEFAULT_TASK, criteria: DECISION_RERANK_DEFAULT_CRITERIA });`
+  - `export const TOOL_QUESTION = Object.freeze({ task: 'Judge whether calling this tool would help carry out the request given as the state.', criteria: Object.freeze({ true: 'Calling this tool is a direct step toward carrying out the request.', false: 'This tool does not help carry out the request.' }) });`
+  - Batching: estimate a candidate's tokens as `Math.ceil((task + passage + criteria JSON).length / 4)` plus the state's once per batch; greedily fill batches up to `maxBatchTokens`; a single candidate above the budget goes alone (the provider then returns `DECISION_INVALID_REQUEST` if Jev refuses it — that fails the call, spec: one failed batch fails the call).
+  - Run batches with at most `concurrency` in flight (a small loop over `Promise.all` of slices — no new dependency).
+  - Question keys stay `r<i>` with the **global** index `i`, so merging is a plain collect; any batch error or any missing/mistyped answer → `RagError('RERANK_ERROR')` with the decision code in the message (as today).
+  - Sort by probability descending, stable on the original index (as today).
+  Export `TOOL_QUESTION`, `PASSAGE_QUESTION` from `reranker/index.ts` and `src/index.ts` next to the existing decision exports.
+
+- [ ] **Step 4: Tests** (this file + the existing `decision-reranker.test.ts`) → `# fail 0`. **Step 5: Commit** — `feat(libs): DecisionReranker question presets and token-budget batching`.
+
+---
+
+### Task 19: `LlmReranker` rework — per-store question, strict `[0,1]` output, batching
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/reranker/llm-reranker.ts`
+- Modify: `packages/llm-agent-libs/src/reranker/__tests__/reranker.test.ts` (the `LlmReranker` block)
+- Modify: `packages/llm-agent/src/interfaces/request-logger.ts` (`LlmComponent` gains `'rerank'`) and `packages/llm-agent-libs/src/logger/default-request-logger.ts` (`CATEGORY_MAP.rerank = 'auxiliary'` — the map is an exhaustive `Record<LlmComponent, …>`, Part 1 Task 1 hit the same)
+
+**Interfaces:**
+- Produces: `new LlmReranker(llm: ILlm, opts?: { question?: { task: string } ; batchSize?: number; concurrency?: number })` — `question` defaults to the passage question; `batchSize` default 20; `concurrency` default 2. Returns scores in `[0, 1]` straight from the model. `withReranker(new LlmReranker(llm))` keeps working.
+
+- [ ] **Step 1: Replace the `LlmReranker` tests**
+
+```ts
+describe('LlmReranker', () => {
+  it('uses the model\'s [0,1] scores and sorts by them', async () => {
+    const llm = makeLlm([{ content: '[0.3, 0.1, 0.9]' }]);
+    const r = await new LlmReranker(llm).rerank('ABAP internal tables', sampleResults);
+    assert.ok(r.ok);
+    assert.deepEqual(r.value.map((x) => x.score), [0.9, 0.3, 0.1]);
+    assert.equal(r.value[0].text, 'ABAP internal tables LOOP');
+  });
+
+  it('handles empty results without calling LLM', async () => {
+    const llm = makeLlm([]);
+    const r = await new LlmReranker(llm).rerank('test', []);
+    assert.ok(r.ok);
+    assert.equal(llm.callCount, 0);
+  });
+
+  for (const [content, why] of [
+    ['I cannot score these passages.', 'prose'],
+    ['[0.3, 0.1]', 'wrong length'],
+    ['[0.3, 1.2, 0.1]', 'out of range'],
+    ['[0.3, "0.5", 0.1]', 'string value'],
+    ['[0.3, null, 0.1]', 'null value'],
+  ] as const) {
+    it(`out-of-contract output (${why}) is RERANK_ERROR, never zero-filled`, async () => {
+      const r = await new LlmReranker(makeLlm([{ content }])).rerank('q', sampleResults);
+      assert.ok(!r.ok);
+      assert.equal(r.error.code, 'RERANK_ERROR');
+    });
+  }
+
+  it('the custom question reaches the prompt', async () => {
+    // makeLlm only counts calls, so spy on the messages with a minimal ILlm.
+    const seen: unknown[] = [];
+    const llm = {
+      chat: async (messages: unknown) => {
+        seen.push(messages);
+        return { ok: true, value: { content: '[0.5, 0.5, 0.5]', toolCalls: [] } };
+      },
+      streamChat: async function* () {},
+    } as unknown as ILlm;
+    await new LlmReranker(llm, { question: { task: 'Will this tool help?' } }).rerank('q', sampleResults);
+    assert.match(JSON.stringify(seen[0]), /Will this tool help\?/);
+  });
+
+  it('logs usage per batch under component "rerank" when a requestLogger is present', async () => {
+    const entries: Array<{ component: string }> = [];
+    const llm = makeLlm([{ content: '[0.3, 0.1, 0.9]' }]);
+    await new LlmReranker(llm).rerank('q', sampleResults, {
+      requestLogger: { logLlmCall: (e: { component: string }) => entries.push(e) },
+    } as never);
+    assert.deepEqual(entries.map((e) => e.component), ['rerank']);
+  });
+
+  it('batches by batchSize and merges', async () => {
+    const llm = makeLlm([{ content: '[0.1, 0.9]' }, { content: '[0.5]' }]);
+    const r = await new LlmReranker(llm, { batchSize: 2, concurrency: 1 }).rerank('q', sampleResults);
+    assert.ok(r.ok);
+    assert.equal(llm.callCount, 2);
+    assert.deepEqual(r.value.map((x) => x.score), [0.9, 0.5, 0.1]);
+  });
+});
+```
+
+`makeLlm` (`packages/llm-agent-libs/src/testing/index.ts:79`) exposes only `callCount`, hence the inline spy LLM above; import `type ILlm` from `@mcp-abap-adt/llm-agent` in the test.
+
+- [ ] **Step 2: Run, expect FAIL.**
+
+- [ ] **Step 3: Implement.** System prompt: score each passage with the probability (0..1) that it satisfies the question; reply with ONLY a JSON array of N numbers in order. Parse: extract the first `[...]`, `JSON.parse`, require `Array.isArray`, length N, every element `typeof === 'number' && Number.isFinite && 0 <= x <= 1`; otherwise `RagError('RERANK_ERROR', …)`. Batches of `batchSize` with ≤ `concurrency` in flight; any batch error fails the call; merge, sort descending (stable on original index). Remove `_parseScores`' zero/order fallback — the strategy (Task 17) owns the fallback. After each successful batch, when `options?.requestLogger` is set, call `logLlmCall({ component: 'rerank', model: llm.model ?? 'unknown', promptTokens, completionTokens, totalTokens, durationMs, scope: 'request', requestId: options.trace?.traceId })` with the usage the `ILlm` result reports (`res.value.usage` — check its field names in `LlmResponse`), estimated (`chars / 4`, `estimated: true`) when absent — the same shape `wrapDecisionModel` logs.
+
+- [ ] **Step 4: Tests** → `# fail 0`. **Step 5: Commit** — `feat(libs)!: LlmReranker strict [0,1] contract, question, batching` — the message body notes: output-contract failures are now errors (callers' `rerank` stage / retrieval strategy fall back to the original order).
+
+---
+
+### Task 20: Builder `withRetrievalStrategy` (projection) and `RerankHandler` precedence
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/builder.ts` (field + method near `withReranker` ~line 409; `rebuildProjection` ~lines 931-937)
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/rerank.ts`
+- Test: `packages/llm-agent-libs/src/retrieval/__tests__/builder-retrieval.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/rerank-precedence.test.ts`
+
+**Interfaces:**
+- Consumes: Task 16 (`applyRetrievalStrategy`, `hasRetrievalStrategy`), Task 17.
+- Produces: `SmartAgentBuilder.withRetrievalStrategy(store: string, strategy: IRetrievalStrategy): this`.
+
+- [ ] **Step 1: Failing tests**
+
+`rerank-precedence.test.ts`:
+
+```ts
+it('skips a store with an explicit strategy (embedding included); reranks an unlisted one', async () => {
+  const calls: string[] = [];
+  const reranker = { rerank: async (_q: string, r: RagResult[]) => { calls.push(String(r[0]?.text)); return { ok: true as const, value: r }; } };
+  const historyStore = applyRetrievalStrategy(fakeStore([]).store, new EmbeddingRetrieval());
+  const ctx = {
+    ragText: 'q',
+    ragResults: { history: [hit('h', 0.5)], docs: [hit('d', 0.5)] },
+    ragStores: { history: historyStore, docs: fakeStore([]).store },
+    reranker,
+    options: undefined,
+  } as unknown as PipelineContext;
+  await new RerankHandler().execute(ctx, {}, span().s);
+  assert.deepEqual(calls, ['d']);
+});
+```
+
+`builder-retrieval.test.ts` — build real agents with `SmartAgentBuilder` (copy the minimal builder setup from an existing builder test: `grep -rln "new SmartAgentBuilder" packages/llm-agent-libs/src/__tests__ | head -3`), and assert through `agent`'s `ragStores` (or the pipeline context — find how existing tests read `ragStores`):
+1. `withRetrievalStrategy('tools', s)` + a tools store → projected `tools` has `hasRetrievalStrategy === true`, and a query calls `s.retrieve` once.
+2. Circuit breaker on (`withCircuitBreaker(...)`) + `withRetrievalStrategy('docs', rerankStrategy)` on a registered collection → one reranker call per query (`StrategyRag(FallbackRag)`).
+3. A store wrapped before build (`applyRetrievalStrategy(tools, …)` passed in) + circuit breaker → projected `FallbackRag(StrategyRag)` is detected; one reranker call per query (no double wrap).
+4. Circuit **open** with a non-empty fallback (records written via the store's `writer()` before opening the breaker — drive the breaker to `open` the way `fallback-rag` tests do): `FallbackRag(StrategyRag)` returns fallback results with **0** reranker calls; `StrategyRag(FallbackRag)` reranks fallback results with **1** call.
+5. Custom `IRagRegistry` (a minimal class implementing the interface, not `SimpleRagRegistry`) **with** `setMutationListener`: a collection registered after build is projected and wrapped; **without** it: not projected, nothing throws.
+
+- [ ] **Step 2: Run, expect FAIL.**
+
+- [ ] **Step 3: Implement**
+  - Builder: `private readonly _retrievalStrategies = new Map<string, IRetrievalStrategy>();`, `withRetrievalStrategy(store, strategy) { this._retrievalStrategies.set(store, strategy); return this; }`.
+  - In `rebuildProjection`:
+    ```ts
+    const key = ragStoreKey(m);
+    const s = this._retrievalStrategies.get(key);
+    ragStores[key] = s ? applyRetrievalStrategy(r, s) : r;
+    ```
+    (Projection only — the registry is never mutated; idempotent through `IRagDecorator`.)
+  - `RerankHandler`: at the top of the per-store map, `if (ctx.ragStores?.[name] && hasRetrievalStrategy(ctx.ragStores[name])) return { name, results };` and update the header comment ("stores with an explicit retrieval strategy are skipped — the strategy owns their ranking").
+
+- [ ] **Step 4: Tests** (libs suite) → `# fail 0`. **Step 5: Commit** — `feat(libs): withRetrievalStrategy in the ragStores projection; explicit strategy wins over the rerank stage`.
+
+---
+
+### Task 21: SmartServer config — `rag.retrieval` replaces `reranker:`
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/decision-config.ts` (remove `SmartServerRerankerConfig`; add `SmartServerRetrievalConfig`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/rag-config.ts` (`SmartServerRagConfig.retrieval?`)
+- Modify: `resolve-config-sections.ts` (`resolveRagSection` copies `retrieval`; delete `resolveRerankerSection`), `config.ts` (drop the `reranker` spread), `config-validator.ts` (`checkRag` allows `retrieval`; new `checkRetrieval`; remove the `reranker:` checks), `smart-server.ts` (drop `reranker?` from `SmartServerConfig` and its import), `src/index.ts` (export the new type, drop the old)
+- Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/decision-config.test.ts` (remove the `reranker:` cases), new `__tests__/retrieval-config.test.ts`
+
+**Interfaces:**
+- Produces:
+```ts
+export interface SmartServerRetrievalConfig {
+  strategy: 'embedding' | 'rerank' | 'rerank-all';
+  reranker?: 'decision' | 'llm';
+  /** Key of the llm: map entry; required for reranker: llm. */
+  llm?: string;
+  question?: 'tool' | 'passage';
+  task?: string;
+  overfetch?: number;
+  maxCandidates?: number;
+}
+// SmartServerRagConfig gains: retrieval?: Record<string, SmartServerRetrievalConfig>;
+```
+
+- [ ] **Step 1: Failing tests** (`retrieval-config.test.ts`, via `resolveSmartServerConfig({}, parse(text), {}, { skipProviderRuntimeChecks: true })` exactly as `decision-config.test.ts` does; base YAML has `llm:` and `rag: { store: { type: in-memory } }`):
+  - resolves `rag.retrieval.tools: { strategy: rerank, reranker: decision, overfetch: 3 }` with `decision:` present → exactly those fields; absent optionals absent; `overfetch: "${N}"` via `loadYamlConfig` → number.
+  - `rag.retrieval.history: { strategy: embedding }` → `{ strategy: 'embedding' }`.
+  - rejects (one test each, matching the message): unknown `strategy`; unknown `reranker`; `rerank` without `reranker`; `reranker: decision` without `decision:`; `reranker: llm` without `llm:`; `reranker: llm, llm: nope` where `llm` map has no `nope` (use a map-shaped `llm:` with `main` and `reranker` keys); `rerank-all` without `maxCandidates`; `overfetch: 0`; `question: other`; `retrieval: 5` (not a mapping); `retrieval.tools: true` (entry not a mapping).
+  - `reranker:` top-level section is now an **unknown/removed** key — find how the validator reports unknown top-level keys (`grep -n "unknown" packages/llm-agent-server-libs/src/smart-agent/config-validator.ts`); if top-level keys are not policed, add a targeted check: `reranker: removed — use rag.retrieval.<store>: { strategy: rerank, reranker: decision }` (unreleased, but a clear message beats silent ignore).
+
+- [ ] **Step 2: Run, expect FAIL.**
+
+- [ ] **Step 3: Implement** — `resolveRagSection` copies `retrieval` entry by entry with named fields only (`parseIntegerField` for `overfetch` / `maxCandidates`; null → absent like Part 1's fix); `checkRag` loop allows `'retrieval'` (message becomes "rag holds store:, embedder: and retrieval:"); `checkRetrieval(yaml, issues)` implements every rule above and is called from `checkRag`'s caller path for the top-level `rag:` (not for worker files unless they have `rag.retrieval`). Remove `resolveRerankerSection`, its import in `config.ts`, the `reranker` spread, the `reranker:` block in `checkDecision`, `SmartServerRerankerConfig` everywhere (`grep -rn SmartServerRerankerConfig packages/` must print nothing).
+
+- [ ] **Step 4: Tests** — full server-libs suite (the `resolve-reranker` and wiring tests will fail until Task 22 — run only the two config test files here and record that). **Step 5: Commit** — `feat(server-libs)!: rag.retrieval per-store strategies replace the unreleased reranker: section`.
+
+---
+
+### Task 22: SmartServer wiring — strategies on every path; `toolSelection` gate; handle forwards options
+
+**Files:**
+- Create: `packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts`
+- Modify: `resolve-reranker.ts` (plugin-only: `resolveReranker({ pluginReranker })` → `pluginReranker`), `smart-server.ts` (~1226 reranker block; ~1449-1451 store creation; ~2060/2071 worker stores; ~2777-2830 builder wiring + gate), `tools-rag-handle.ts:62`
+- Test: rewrite `__tests__/decision-reranker-wiring.test.ts` → `__tests__/retrieval-wiring.test.ts`; update `__tests__/resolve-reranker.test.ts`; `__tests__/tools-rag-handle.test.ts` (options forwarding)
+
+**Interfaces:**
+- Consumes: Tasks 16–21; `this.roleLlm().resolveNamed(key)` (`smart-server.ts:2190-2206`, built at ~1160 before ~1226); `wrapDecisionModel`; `TOOL_QUESTION` / `PASSAGE_QUESTION`.
+- Produces: `resolveRetrievalStrategies(input: { retrieval?: Record<string, SmartServerRetrievalConfig>; decisionCfg?: SmartServerDecisionConfig; makeDecisionModel?: BuildAgentDeps['makeDecisionModel']; resolveLlm: (key: string) => Promise<ILlm> }): Promise<Map<string, IRetrievalStrategy>>` — builds one `DecisionReranker` per (reranker, question/task) with `wrapDecisionModel(await makeDecisionModel(decisionCfg))` built **once**, `LlmReranker(await resolveLlm(key), { question })` per entry; question default `tool` for key `tools`, else `passage`; `task` overrides. Missing seam → the Part 1 error text `BuildAgentDeps.makeDecisionModel is required: …`.
+
+- [ ] **Step 1: Failing tests** (`retrieval-wiring.test.ts`, built like Part 1's wiring test — YAML text → real `resolveSmartServerConfig`, `constructionSeams`, `makeRag` returning HITS, `embedder: stubEmbedder`, `pluginLoader: noPlugins`):
+  1. `rag.retrieval.tools: { strategy: rerank, reranker: decision }` → an HTTP chat on a session calls the fake decision model with `state === QUERY` and HITS passages, **TOOL_QUESTION** task.
+  2. Embedded `buildAgent()` — same.
+  3. **Controller per-step:** `pipeline: { name: controller, … }` (copy the minimal controller config from `build-agent-deps.test.ts`) → the fake decision model is called from `selectTools`, and the `CallOptions` it receives carry `signal`, `requestLogger` and `sessionLogger` (assert presence).
+  4. Precedence: `rag.retrieval.history: { strategy: embedding }` + a plugin reranker (temp-file plugin, as Part 1) → the plugin reranker is never called with history results; a store not listed is still reranked by it.
+  5. `agent.toolSelection: { strategy: threshold, minScore: 0.5 }` reaches a **session** agent: with a reranked `tools` store whose fake model returns 0.9 for one tool and 0.1 for the rest, the session's selected tools contain only the 0.9 one.
+  6. A store with no entry stays on embedding (the fake model is never called for it).
+
+  `tools-rag-handle.test.ts`: `query(text, k, options)` passes `options` to `toolsRag.query` (spy store asserts the third argument).
+
+- [ ] **Step 2: Run, expect FAIL.**
+
+- [ ] **Step 3: Implement**
+  - `tools-rag-handle.ts:62`: `await toolsRag.query(embedding, limit, options)`.
+  - `resolve-retrieval.ts` as in *Interfaces*; each strategy gets `storeName: key`.
+  - `smart-server.ts`:
+    - ~1226: `this._reranker = plugins.reranker` (or `resolveReranker({ pluginReranker: plugins.reranker })` kept as the plugin-only function) and `this._retrievalStrategies = await resolveRetrievalStrategies({ retrieval: this.cfg.rag?.retrieval, decisionCfg: this.cfg.decision, makeDecisionModel: this._deps.makeDecisionModel, resolveLlm: (k) => this.roleLlm().resolveNamed(k) });` (new private field `Map<string, IRetrievalStrategy>`).
+    - ~1450-1451 and the worker stores ~2060/2071: pass each created store through `withStrategy(key, store)` = `s ? applyRetrievalStrategy(store, s) : store` with key `tools` / `history`.
+    - `buildBaseBuilder`: for each `[key, s]` of `this._retrievalStrategies`, `builder = builder.withRetrievalStrategy(key, s)` — **outside** the `applyServerExtras` gate, next to `withReranker`.
+    - Move the `agent.toolSelection` block (~2821-2829) **out of** `if (parts.applyServerExtras)` (resolve once, apply to every builder), with a comment mirroring the reranker's.
+  - `resolve-reranker.test.ts`: drop the YAML cases; keep plugin passthrough.
+
+- [ ] **Step 4: Tests** — full server-libs suite + `npm run build` → `# fail 0` (2 pre-existing skips). **Step 5: Commit** — `feat(server-libs): per-store retrieval strategies on every selection path; toolSelection reaches session agents`.
+
+---
+
+### Task 23: Quality eval — strategies in `scripts/rag-eval`, committed catalog snapshot
+
+**Files:**
+- Create: `scripts/rag-eval/tools.mcp-abap-adt-15.0.0-readonly-high.json` (the 218-tool `tools/list` snapshot — names, descriptions, input schemas only; regenerate with the documented command, do not copy from a session scratchpad)
+- Create: `scripts/rag-eval/queries.en.15.json` (the 30 queries with `Read*` → `Get*` renamed; the mapping rule in its `note`)
+- Modify: `scripts/rag-eval/rag-eval.ts`, `scripts/rag-eval/README.md`
+
+**Interfaces:**
+- Consumes: Tasks 16–19 (`EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `DecisionReranker` + `TOOL_QUESTION`, `LlmReranker`).
+
+- [ ] **Step 1: Snapshot.** Document in the README and run once: `mcp-abap-adt --exposition=readonly,high` over stdio, `tools/list` only (no tool call, no system data in the output), written in the existing snapshot format `{source, capturedAt, tools:[{name, description, inputSchema}]}`. The connection used to start the server is **not** recorded anywhere in the repo.
+- [ ] **Step 2: Flags.** `--retrieval embedding|rerank|rerank-all` (default `embedding`), `--reranker decision|llm`, `--overfetch N` (2), `--max-candidates N`, `--llm-key KEY` (an `llm:` entry from `--config`, for `llm`). Each config is run per requested retrieval; the store is wrapped with `applyRetrievalStrategy` and queried through it exactly as the server does.
+- [ ] **Step 3: Report.** Per config × retrieval: R@1/3/5/15, MRR, and per-case better/worse against `embedding` (the `embedding` arm always runs as the baseline). `--json` includes per-case top-3.
+- [ ] **Step 4: Gate.** Decision arms require `DECISION_API_KEY`, LLM arms the `--config` credentials; without them the arm is skipped with a printed reason, exit 0.
+- [ ] **Step 5: Run once** (user's go-ahead for live calls): `node --env-file=.env --import tsx/esm scripts/rag-eval/rag-eval.ts --tools …15.0.0… --queries queries.en.15.json --retrieval embedding,rerank,rerank-all --reranker decision --only in-memory-aicore` — record the table in the README's "Reading the output" with the date and model ids.
+- [ ] **Step 6: Commit** — `test(rag-eval): retrieval strategies and the mcp-abap-adt 15.0.0 catalog`.
+
+---
+
+### Task 24: Documentation — the whole set for Part 2
+
+Replace every `reranker: { type: decision }` example and description (files found with `grep -rln "type: decision\|reranker:" README.md CLAUDE.md docs/*.md .env.template CHANGELOG.md packages/*/CHANGELOG.md packages/*/README.md`) by `rag.retrieval`, and add:
+- `docs/ARCHITECTURE.md`: `IRetrievalStrategy` / `IRagDecorator` / `StrategyRag` in the contracts and libs rows; the two application points (server for `tools`/`history`, builder projection), precedence over the global reranker, the three selection paths now covered.
+- `docs/EXAMPLES.md`: YAML for all three strategies and both rerankers; programmatic `builder.withRetrievalStrategy('tools', new RerankedRetrieval(new DecisionReranker(model, TOOL_QUESTION)))`.
+- `docs/INTEGRATION.md`: implementing your own `IRetrievalStrategy`; `IRagDecorator` for custom store decorators (so strategy detection sees through them).
+- `docs/PERFORMANCE.md`: per-store choice; latency per query (one reranker call; per controller step for `tools`); overfetch / `maxCandidates`; batching; the eval numbers from Task 23; `minScore` on `[0,1]` when `tools` is reranked.
+- `docs/TROUBLESHOOTING.md`: `retrieval_rerank_error` session step (codes); circuit-open difference of the two wrapper orders (spec §13.3 table); "a collection added after build is not reranked" → custom registry without `setMutationListener`.
+- `docs/SECURITY_THREAT_MODEL.md` AS-7: only stores with a reranked strategy send data; `history` only if explicitly configured.
+- `docs/DEPLOYMENT.md`, `README.md`, `CLAUDE.md` (env/architecture), `.env.template`, root + package `CHANGELOG.md` `## Unreleased`: *Added* strategies, `IRagDecorator`, `rag.retrieval`; *Changed* `LlmReranker` contract (`[0,1]`, out-of-contract → error); `IToolsRagHandle` forwards options; *Fixed* `agent.toolSelection` now reaches session agents; *Removed* (unreleased) `reranker:` section.
+
+Verify every concrete claim against source (`grep` each symbol / key / message) and run `node scripts/check-example-configs.mjs` (exit 0). Commit — `docs: per-store retrieval strategies`.
+
+---
+
+### Task 25: Release gates for Part 2 (verification only)
+
+Same as Task 14 Steps 1–3 on the Part 2 HEAD: clean detached worktree (`npm ci && npm run build && npm run typecheck && npm test`), docker `node:22` and `node:24` with `set -euo pipefail`, and a baseline diff against `main` (every new failure is ours). Steps 4–5 (bump, publish) stay gated on PR review and the user's word.
