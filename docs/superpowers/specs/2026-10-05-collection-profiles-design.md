@@ -19,7 +19,16 @@
   - **retrieval**: candidates **counted in items** → **collapse records back to items** → optional
     reranker on the item's **provider text** → final cut **counted in items** (`StagedRetrieval`,
     an `IRetrievalStrategy`).
-  - What joins them: the record schema (`itemId`, `recordKind`, canonical record id = item id).
+  - What joins them: the record schema (`itemId`, `recordKind`, owner) and one id function,
+    `recordId(owner, itemId, kind, n)`, used by `index`, `get`, `remove` and retrieval alike.
+- **Physical ids are owner-scoped (§3.1).** The logical `itemId` is not the store id. Two users
+  writing the same `itemId` into one store never touch each other's records.
+- **Every returned item is hydrated from its canonical record (§4.6)**, whichever record matched.
+  No canonical record → the hit is dropped and counted.
+- **Replacing an item is not atomic (§3.3).** It is several per-record writes. No generations, no
+  locks: the writer or the store serializes concurrent writers of one item.
+- **With a clause splitter, `k` is per clause run (§4.5).** The result holds at most
+  `min(k × runs, maxItems)` items — measured: cutting the union back to k loses the gain.
 - A profile is **bound** to each store of its kind (`profile.bind(...)`), so one profile serves
   several stores (e.g. reader and writer tool stores).
 - The retrieval half **is** a 30.1.0 `IRetrievalStrategy`, so every path that already honours
@@ -55,9 +64,12 @@
 | Term | Meaning | Example |
 |---|---|---|
 | **Item** | One source thing a consumer wants back | one MCP tool; one shared item |
-| **Record** | One row in a store: id + embedded text + metadata | `tool:GetWhereUsed#operation` |
+| **Record** | One row in a store: physical id + embedded text + metadata | the `operation` record of `tool:GetWhereUsed` |
+| **Item id** | The **logical** id a writer or provider chooses (`metadata.itemId`). Not unique in a store | `tool:GetWhereUsed` |
+| **Record id** | The **physical** store id: owner scope + owner key + item id + kind + index (§3.1) | `g:/tool%3AGetWhereUsed#operation:0` |
 | **Record kind** | Which view of the item a record is | tools: `full`, `operation`, `object`, `intent`; shared items: `item` + the writer's own kinds |
-| **Canonical record** | The record whose id **equals** the item id; its text is the item text | `full` (tools), `item` (shared items) |
+| **Canonical record** | The item's record of the indexer's `canonicalKind`, index 0. Its text is the item text; its metadata is the item's payload | `full` (tools), `item` (shared items) |
+| **Owner-qualified item** | (owner scope, owner key, item id) — what collapse, `get` and `remove` key on | (`user`, `alice`, `case-42`) |
 | **Provider text** | What the tool provider exports: name, description, parameter names | the `full` record's text |
 | **Generated record** | A record whose text an LLM (or another generator) produced | an `intent` record |
 | **Store** | One `IRag` instance, addressed by its `ragStores` key | `tools`, `tools-writer`, `shared` |
@@ -85,7 +97,7 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 | `IQueryPreprocessor` / `IQueryExpander` | in-store / pipeline query rewrites | untouched; the clause split is `IQuerySplitter` |
 | `RagCollectionOwner` | owner of a whole **collection** (catalog record) | untouched; a **record's** owner is `RecordOwner` |
 | `IReranker` | `rerank(query, results, options)` | unchanged; both rerankers implement it |
-| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexedRecord`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQuerySplitter`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `IToolFacet`, `IToolIntentSource`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `ConjunctionSplitter`, `SharedItemsProfile`, `SapAiCoreReranker` |
+| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQuerySplitter`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `IToolFacet`, `IToolIntentSource`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `ConjunctionSplitter`, `SharedItemsProfile`, `SapAiCoreReranker` |
 
 ---
 
@@ -134,6 +146,28 @@ points). Differences of 1–2 rows are noise.
 - The Jev loss is a single row; the default "off for Jev" follows the measurement and the goal, but
   it rests on thin data (14 rows).
 
+### 2.4 Where the clause split's gain comes from — the per-clause budget
+
+Measured (Cohere on AI Core, and Jev; EN-ext n=87, multi-step n=14; pool 30 items; k=5; hybrid):
+
+| Setup | EN-ext overall | tools returned | multi-step |
+|---|---|---|---|
+| Cohere, no split | 0.931 | 8.3 | 0.714 |
+| Cohere, no split, **k=8** | 0.943 | 13.3 | — |
+| **Cohere, split, k per clause run, union** (the shipped behaviour) | **0.977** | 9.4 | **1.000** |
+| Cohere, split, union **then cut to k by best score** | — | — | 0.500 |
+| Cohere, split, **round-robin** over clause rankings, then cut to k | 0.908 | — | 0.571–0.643 |
+| Jev, no split | 0.977 | 8.3 | 0.857 |
+| Jev, split, round-robin, then cut to k | — | — | 0.643–0.714 |
+
+- The split's gain **is** the per-clause budget. Cutting the union back to k destroys it — both
+  cut orders end **below no split**.
+- Per tool in the prompt it beats raising k: split 0.977 with 9.4 tools vs. no split at k=8 0.943
+  with 13.3 tools.
+- **Design consequence (§4.5, D12):** keep the measured behaviour and make the contract explicit —
+  with a splitter, k counts items **per clause run**, and the result holds at most
+  `min(k × runs, maxItems)` items. Consumers that size prompts by k must be told (§13).
+
 ---
 
 ## 3. Contracts — `@mcp-abap-adt/llm-agent`
@@ -159,11 +193,18 @@ export type ReservedRecordKey =
   | 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'generated' | 'recordIds'
   | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl';
 
+/** What an indexer produces. The physical id is not the indexer's to choose. */
+export type RecordDraft = Omit<IndexedRecord, 'id'>;
+
 export interface IndexedRecord {
-  /** Deterministic. The canonical record's id equals itemId; others are `${itemId}#${kind}[:n]`. */
+  /**
+   * The PHYSICAL store id, assigned by the binding — never by the indexer:
+   * `recordId(owner, itemId, recordKind, n)`, n = the record's position within its kind.
+   */
   readonly id: string;
   /** The text that is embedded. */
   readonly text: string;
+  /** The LOGICAL item id. Not unique in a store: two owners may use the same one. */
   readonly itemId: string;
   readonly recordKind: string;
   /** Required: no record without an owner (goal decision on #304). */
@@ -176,12 +217,57 @@ export interface IndexedRecord {
   readonly metadata?: Readonly<Record<string, RagJsonValue>> & { readonly [K in ReservedRecordKey]?: never };
 }
 
-/** Addresses one item for get / remove. The owner selects the partition. */
+/** Addresses one item for get / remove. The owner selects the partition AND the record ids. */
 export interface ItemRef {
   readonly itemId: string;
   readonly owner: RecordOwner;
 }
+
+/** The one id function. Pure and deterministic; exported so a consumer's own profile uses it too. */
+export function recordId(owner: RecordOwner, itemId: string, kind: string, n: number): string;
 ```
+
+**Physical record ids (owner-scoped).**
+
+- **Why:** the logical `itemId` is the writer's choice, so two users can pick the same one. Every
+  backend addresses records by id alone, with no owner in the key (verified in the repo):
+  - `InMemoryRag.upsert` replaces in place when `metadata.id` matches
+    (`in-memory-rag.ts:113-123`); `getById` and `writer().deleteByIdRaw` match on `metadata.id`
+    only;
+  - `VectorRag` replaces the slot with the same `metadata.id` (`vector-rag.ts:126`);
+  - pg-vector: `id VARCHAR(255) PRIMARY KEY` with `ON CONFLICT`; HANA: `id NVARCHAR(255) PRIMARY
+    KEY` with `UPSERT … WITH PRIMARY KEY`; Qdrant: the id is hashed to a point UUID
+    (`deterministicUUID`).
+  - So with `id = itemId`, user B's write of `case-42` would overwrite user A's `case-42`, and
+    B's `remove` would delete it. The owner must be **in the id**.
+- **Format:**
+
+  ```
+  readable = `${scope}:${enc(ownerKey)}/${enc(itemId)}#${enc(kind)}:${n}`
+  recordId = readable.length <= 200 ? readable : `h:${sha256hex(readable)}`
+  ```
+
+  | Owner | `scope` | `ownerKey` |
+  |---|---|---|
+  | `global` | `g` | empty |
+  | `group` | `grp` | `groupId` |
+  | `user` | `u` | `userId` |
+  | `session` | `s` | `sessionId` (the optional `userId` is not part of the key) |
+
+  - `enc` = `encodeURIComponent`, so `:`, `/` and `#` inside a key or item id can never shift a
+    field boundary (`u:a%2Fb/c…` ≠ `u:a/b%2Fc…`).
+  - `n` = the record's 0-based position within its kind; the canonical record is
+    (`canonicalKind`, 0).
+  - **Length:** pg-vector and HANA cap the id at 255 characters. Ids longer than 200 become
+    `h:` + 64 hex characters (66 total) — still deterministic, so `get` and `remove` recompute the
+    same id. Readability is not needed: `itemId`, `recordKind` and the owner keys are in metadata.
+- **Applied everywhere, one function:** `index` assigns ids with it; `get` and `remove` compute the
+  canonical id from `ItemRef`; retrieval computes the canonical id from a hit's owner metadata +
+  `itemId` (§4.6); collapse keys on the owner-qualified item (§3.4). No code path addresses a
+  record by the bare `itemId`.
+- **Consequence:** under a profile, `rag.getById(itemId)` on the raw store finds nothing; use
+  `bound.get(ref)`. Returned items still carry `metadata.id = itemId` (§4.3), so name-based
+  consumers see what they saw before.
 
 - **Why `owner` is a typed field, not metadata:** a record without owner keys does not compile.
 - **Flattening:** `user` → `metadata.userId`; `session` → `sessionId` [+ `userId`]; `group` →
@@ -203,9 +289,13 @@ export interface IItemIndexer<TItem> {
   readonly name: string;
   /** Upper bound on the records it makes per item (canonical included). Sizes the item pool (§4.4). */
   readonly maxRecordsPerItem: number;
-  /** Pure mapping item → records. The owner comes from the profile or the item, never the indexer. */
+  /** The kind of the item's canonical record (`full` for tools, `item` for shared items). */
+  readonly canonicalKind: string;
+  /** Pure mapping item → record drafts. An items-store indexer makes exactly one draft of
+   *  `canonicalKind`; a companion (`variants`) indexer makes none — its records hydrate from the
+   *  items source's canonical record (§4.6). The binding assigns ids. */
   toRecords(item: TItem, options?: CallOptions)
-    : Promise<Result<readonly IndexedRecord[], RagError>>;
+    : Promise<Result<readonly RecordDraft[], RagError>>;
 }
 
 export interface IndexReport {
@@ -233,11 +323,13 @@ export interface IBoundCollection<TItem> {
   readonly profileName: string;
   /** The store to register under `key` (the retrieval below is applied to it). */
   readonly rag: IRag;
-  /** Filling half. Re-indexing an item replaces ALL its records (`recordIds` on the canonical). */
+  /** Filling half. Re-indexing an item writes its new records and deletes the old ones that are
+   *  not among them (`recordIds` on the canonical). Several writes — NOT atomic (below). */
   index(items: readonly TItem[], options?: CallOptions): Promise<Result<IndexReport, RagError>>;
-  /** Delete every record of these items. */
+  /** Delete the records the item's canonical record lists, then the canonical record. */
   remove(refs: readonly ItemRef[], options?: CallOptions): Promise<Result<number, RagError>>;
-  /** The item whole (canonical record), or null. Identity-checked against `options`. */
+  /** The item whole (its canonical record, by `recordId(ref.owner, ref.itemId, canonicalKind, 0)`),
+   *  or null. Identity-checked against `options`. */
   get(ref: ItemRef, options?: CallOptions): Promise<Result<RagResult | null, RagError>>;
   /** Searching half. `k` counts ITEMS. */
   readonly retrieval: IRetrievalStrategy;
@@ -256,14 +348,36 @@ export interface ICollectionProfile<TItem, TTarget extends BindTarget = Collecti
   shared-items profile binds partitions (§3.6). One contract, each profile's own target shape,
   checked by the compiler.
 - **Why `recordIds` on the canonical record:** a writer may change an item's record kinds and
-  counts. Replacement and removal read the canonical record and delete exactly what was written —
-  no guessing ids.
+  counts. Replacement and removal read the canonical record and delete what it lists — no guessing
+  ids.
+
+**Replacing an item is not atomic — and the framework does not try to make it so.**
+
+- `index` of an existing item = several per-record writes: new non-canonical records, then the
+  canonical record (with the new `recordIds`), then deletes of the old ids it no longer lists. A
+  store's bulk write (`upsertManyPrecomputedRaw`) is all-or-nothing per batch, but the deletes are
+  separate calls; nothing spans them.
+- **Concurrent writers of the same item** must be serialized by the writing element or by the
+  store. Two concurrent `index` calls for one item may interleave; there is **no** item-level
+  last-write-wins guarantee.
+- **An interrupted replacement can leave stale records** — non-canonical records the current
+  canonical record does not list. `remove` deletes only what the canonical lists, so such records
+  can outlive the item.
+- **Why no generations, commit markers or locks:** the store owns concurrency (the project's
+  standing rule). Collections are filled once and read-mostly; tool catalogs are written by one
+  process at build. A generation protocol would add writer coordination the library must not own.
+  (Decision D13.)
+- **What keeps it safe for readers** is retrieval, not writing: a hit is never returned from its own
+  record; it is hydrated from the item's canonical record, and a hit whose canonical record is
+  missing is dropped and counted (§4.6). A stale record of a live item can at most lift that item's
+  rank; it can never return stale text or data.
 
 ### 3.4 Retrieval parts
 
 ```ts
 export interface CollapsedItem {
   readonly source: string;                 // the items source it belongs to
+  readonly owner: RecordOwner;             // read back from the hits' metadata (visibility + keys)
   readonly itemId: string;
   readonly score: number;                  // per the rule
   readonly hits: readonly RagResult[];     // the item's records among the candidates, best first
@@ -278,13 +392,15 @@ export interface ICandidatePool {
   recordsToFetch(maxRecordsPerItem: number): number;
 }
 
-/** Records → items. Key = (items source, itemId). Output sorted by score, descending. */
+/** Records → items. Key = (items source, owner scope, owner key, itemId) — the owner-qualified
+ *  item, never the bare itemId. Output sorted by score, descending. */
 export interface ICollapseRule {
   readonly name: string;
   collapse(hits: readonly SourcedHit[]): CollapsedItem[];
 }
 
-/** Final cut over ranked items. `requestedK` is the caller's k, in items. */
+/** Final cut over the ranked, hydrated items of ONE run. `requestedK` is the caller's k, in items.
+ *  With a clause splitter it is applied per clause run (§4.5), never to the union. */
 export interface IItemCut {
   readonly name: string;
   cut(items: readonly RagResult[], requestedK: number): RagResult[];
@@ -293,6 +409,8 @@ export interface IItemCut {
 /** Splits a multi-step query into clauses. One clause = no split. */
 export interface IQuerySplitter {
   readonly name: string;
+  /** Hard cap: `split` never returns more clauses. Bounds the result size (§4.5). */
+  readonly maxClauses: number;
   split(text: string): readonly string[];
 }
 
@@ -400,7 +518,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 
 | Change | Why it is needed | Why here |
 |---|---|---|
-| `IndexedRecord`, `RecordOwner`, `ItemRef`, `IItemIndexer`, `ICollectionProfile`, `IBoundCollection`, `BindTarget`, `CollectionStore` | goals 1–2, 5–6: a profile contract consumers implement | used by libs (implementations, builder), server-libs (YAML) and consumers → the contracts package |
+| `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `IItemIndexer`, `ICollectionProfile`, `IBoundCollection`, `BindTarget`, `CollectionStore` | goals 1–2, 5–6: a profile contract consumers implement | used by libs (implementations, builder), server-libs (YAML) and consumers → the contracts package |
 | `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQuerySplitter`, `ISourceSelector`, `RetrievalSource` | goal 1's new steps, each a consumer-swappable strategy (principle 5) | same users as above |
 | `ToolItem`, `IToolFacet`, `IToolIntentSource` | typed input of the tools indexers; facets and intents are indexing strategies a consumer may write | builder (libs) + indexers + consumers that bring their own facets or precomputed intents |
 | `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `SharedItemsStores` | goal 7: what writing elements get; owner + visibility | libs (profile) + consumers (writing elements, group partitions) |
@@ -434,12 +552,17 @@ interface StagedRetrievalOptions {
   storeKey: string;             // reported as `store`
   pool: ICandidatePool;         // candidate strategy, counted in ITEMS — required, never derived
   maxRecordsPerItem: number;    // from the indexing strategy (§4.4), not set by the consumer
+  canonicalKind: string;        // from the indexing strategy; locates the canonical record (§4.6)
   sources: ISourceSelector;     // from the profile's bind()
   collapse: ICollapseRule;
   rerank?: {
     reranker: IReranker;
     onFailure: 'stage1' | 'error';      // 'stage1' = 30.1.0 behaviour
-    split?: { splitter: IQuerySplitter; queryEmbedder: IQueryEmbedder };
+    split?: {
+      splitter: IQuerySplitter;         // carries the hard clause cap (maxClauses)
+      queryEmbedder: IQueryEmbedder;
+      maxItems?: number;                // optional total cap the consumer sets (§4.5)
+    };
     keepStage1Top?: number;             // §4.7, default 0
   };
   cut?: IItemCut;               // absent → TopItemsCut (caller's k)
@@ -462,23 +585,25 @@ for each source, in parallel:
   source.rag.query(query, pool.recordsToFetch(maxRecordsPerItem), source.options)
                                                ← identity filter applied IN the store, before top-N
 merge hits
-  → collapse (ICollapseRule)                   ← records → items; runs only on filtered hits
+  → collapse (ICollapseRule)                   ← records → owner-qualified items; filtered hits only
   → keep the first pool.items items per items source
-  → resolve item text (§4.6); drop orphans
-  → rerank items on their item text (optional); check the result (§4.8)
-  → cut (IItemCut), k = items
+  → rerank items on their item text (optional, §4.6); check the result (§4.8)
+  → hydrate in rank order from the CANONICAL record (§4.6); drop + count orphans
+  → cut (IItemCut) over hydrated items, k = items (per clause run with a splitter, §4.5)
 ```
 
 - **Owner invariant:** collapse only ever sees what the stores returned under each source's
-  identity filter, so it is always *after* the owner filter. The only extra read, `getById` for
-  item text, is checked with `matchesRagIdentity` against the same filter; a record that fails it
-  is dropped.
+  identity filter, so it is always *after* the owner filter. The only extra read, `getById` of the
+  canonical record, is checked with `matchesRagIdentity` against the same filter; a record that
+  fails it is dropped as an orphan.
 - **Records without `itemId`** (e.g. today's `skill:*` records in the tools store) pass through as
-  their own item, keyed by `metadata.id`. That is how skills keep 30.1.0 behaviour inside a store
-  that has a profile (§7.7).
-- **Result shape.** Each returned `RagResult` is an **item**: `text` = item text, `score` = the
-  rule's (or the reranker's), `metadata` = the canonical (else best) hit's metadata with
-  `id = itemId`, `matchedKinds: string[]` and `source`. `toolNameFromRecord`, `ToolSelectHandler`,
+  their own item, keyed by `metadata.id`, and are returned as the record itself (they are not
+  profile records, so there is no canonical record to hydrate from). That is how skills keep 30.1.0
+  behaviour inside a store that has a profile (§7.7).
+- **Result shape.** Each returned `RagResult` is an **item**, built from its **canonical record
+  only**: `text` = the canonical text, `metadata` = the canonical record's metadata (full, incl.
+  `data`) with `id = itemId` (the logical id), plus `matchedKinds: string[]` and `source`;
+  `score` = the rule's (or the reranker's). `toolNameFromRecord`, `ToolSelectHandler`,
   `tool-loop` and `IToolsRagHandle` therefore work unchanged.
 
 ### 4.4 Candidate pool counted in items
@@ -500,38 +625,91 @@ merge hits
 
 ### 4.5 Clause split
 
+**How it runs.**
+
 - With `rerank.split` set and `splitter.split(text)` returning ≥ 2 clauses: run §4.3 for the whole
   query **and** for each clause (each clause embedded with the injected `IQueryEmbedder`, each
-  reranked against its own clause text), in parallel.
-- Union in order: whole query, then clause 1, 2, …; de-duplicated by item, keeping the best score.
-  Each run is cut to k items, so the union holds at most `k × (1 + clauses)` items (measured: 9.4
-  tools on average at k=5, two collections).
-- Built-in splitter: `ConjunctionSplitter` — English rules only (`and`, `then`, `, then`, `;`,
-  `after that`). Tool search text is English by the repo's standing rule (CLAUDE.md, "MCP tool-RAG
-  language constraint"); a consumer injects its own splitter.
-- **Per profile, per reranker.** It helps Cohere and costs Jev (§2.3), so it is never built in.
+  reranked against its own clause text), in parallel. Each of these is a **clause run**;
+  `runs = 1 + clauses` (the whole query is one run). Without a split, `runs = 1`.
+- **Each run is cut to k items on its own** (the `IItemCut`, applied per run).
+- Union in order: whole query, then clause 1, 2, …; de-duplicated by owner-qualified item, keeping
+  the best score.
 
-### 4.6 What the reranker reads — the item text
+**The k contract — explicit (D12).**
 
-The reranker reads the **item text** = the canonical record's text. For tools that is the
-**provider text** (name, description, parameter names) — **never intents** (measured equal or
-better for Cohere and Jev, §2.2). Intents serve only the candidate search.
+| Setup | `k` means | Result size |
+|---|---|---|
+| no splitter (or one clause) | items | **at most k** |
+| with a splitter | items **per clause run** | **at most `min(k × runs, maxItems)`**, `runs ≤ 1 + splitter.maxClauses` |
 
-Resolution order for each collapsed item:
+- `splitter.maxClauses` is a **hard cap**, required: `split` never returns more clauses. It bounds
+  the worst case at `k × (1 + maxClauses)`.
+- `split.maxItems` is an **optional total cap** the consumer sets. When the union is larger, it is
+  cut in union order (whole-query run first). Default: none.
+  - It is a prompt-size safety bound, **not** a tuning knob: §2.4 measured that cutting the union
+    back towards k (by best score: multi-step 0.500; round-robin: 0.571–0.643, overall 0.908) ends
+    below no split at all.
+- `keepStage1Top` (§4.7) adds at most its own n on top.
+- **Why not cut the union to k:** the split's gain **is** the per-clause budget (§2.4). Per tool it
+  also beats raising k (split 0.977 with 9.4 tools; no split at k=8 0.943 with 13.3 tools).
+- **Consumers that size prompts by k must be told.** Under a profile with a splitter, a caller's k
+  can return up to `k × runs` items. The bound is documented in `docs/INTEGRATION.md` and the
+  variant's docs (§13), and reported per query (span attribute `clauses`, `items.returned`).
+
+**Splitter and placement.**
+
+- Built-in splitter: `ConjunctionSplitter({ maxClauses })` — English rules only (`and`, `then`,
+  `, then`, `;`, `after that`); `maxClauses` is required. Tool search text is English by the repo's
+  standing rule (CLAUDE.md, "MCP tool-RAG language constraint"); a consumer injects its own
+  splitter.
+- **Per profile, per reranker.** It helps Cohere and costs Jev (§2.3, §2.4), so it is never built
+  in.
+
+### 4.6 The canonical record — what the reranker reads and what is returned
+
+Two separate questions, two rules:
+
+| Question | Answer |
+|---|---|
+| What does the **reranker** read? | the **item text** — the canonical record's text, or a shortcut to it (below) |
+| What is **returned**? | **always the canonical record itself** — text and full metadata (incl. `data`), owner-checked — no matter which record matched |
+
+**Reranker text.** For tools the item text is the **provider text** (name, description, parameter
+names) — **never intents** (measured equal or better for Cohere and Jev, §2.2). Intents serve only
+the candidate search. For each collapsed item:
 
 1. a canonical hit of the item → its `text`;
-2. a non-canonical hit in an items source → its `metadata.itemText`;
-3. only `variants` hits → `getById(itemId)` on the items source they belong to (identity-checked);
-4. nothing found → **orphan**: dropped and counted (`outcome=orphan`). A stale generated record for
-   an item that no longer exists can never surface.
+2. a non-canonical hit in an items source → its `metadata.itemText` (a **reranking shortcut only**:
+   zero round trips; never returned);
+3. only `variants` hits → the canonical record is fetched now (step *Hydration*), and its text is
+   used.
 
-- `itemText` on non-canonical records costs zero round trips per query; the index-size cost is
-  small (measured: 711 records, 4.4 MB vectors for 237 tools; 948 records with one intent record
-  per tool).
+**Hydration (every returned item).**
+
+- The canonical record is located by id: `recordId(owner, itemId, canonicalKind, 0)` on the item's
+  items source, where `owner` is read back from the hit's metadata (§3.1). A canonical hit among
+  the candidates **is** that record; otherwise `getById` reads it.
+- Every hydrated record is checked with `matchesRagIdentity` against the source's filter (the
+  owner check).
+- **Missing canonical record** (deleted item, interrupted replacement, a record outside the filter)
+  → the hit is an **orphan**: dropped, never returned, and **reported** — `outcome=orphan` on the
+  counter and the `orphans` span attribute (§9). A stale secondary record can therefore never
+  surface its own text or data.
+- Hydration runs in rank order and the cut sees only hydrated items, so orphans never use up k.
+- **Cost:** at most one `getById` per returned item whose canonical record was not among the
+  candidates (≤ k per run; zero when the canonical record matched). `IRag` has no batch get; the
+  reads run in parallel.
+
+**Why `itemText` stays, but only for ranking.** It lets the reranker score items whose canonical
+record was not among the candidates without a read per candidate (the pool is 30 items; the
+returned set is k). It can be stale after an interrupted replacement (§3.3) — harmless, because it
+only orders; the payload always comes from the canonical record.
+
+- Index-size cost of `itemText` is small (measured: 711 records, 4.4 MB vectors for 237 tools; 948
+  records with one intent record per tool).
 - `itemText` on an `intent` record is the **provider** text, so generated text never reaches the
   reranker.
-- `variants` records (companion placement) carry no `itemText`, so they never go stale against the
-  provider text.
+- `variants` records (companion placement) carry no `itemText`.
 
 ### 4.7 Optional `keepStage1Top`
 
@@ -556,13 +734,14 @@ including a consumer's own.
 |---|---|---|
 | candidate pool | `ItemPool(n)` | `n` items per items source (§4.4) |
 | collapse | `MaxScoreCollapse` | item score = best record score (measured winner). Count / RRF are **not** shipped. |
-| cut | `TopItemsCut` | first `requestedK` items (default) |
-| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `minItems`, then more up to `maxItems` while `score ≥ minScore` |
-| cut | `FixedItemsCut(k)` | ignores the caller's k — for a store whose profile owns k |
-| split | `ConjunctionSplitter` | §4.5 |
+| cut | `TopItemsCut` | first `requestedK` items of a run (default) |
+| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | per run: first `minItems`, then more up to `maxItems` while `score ≥ minScore` |
+| cut | `FixedItemsCut(k)` | ignores the caller's k — for a store whose profile owns k. With a splitter its k is **per clause run**: the result holds at most `min(k × runs, maxItems)` items (§4.5) |
+| split | `ConjunctionSplitter({ maxClauses })` | §4.5 |
 
 - **k in items.** The caller's k (`ragQueryK ?? 10` in `rag-query`, 20 in `IToolsRagHandle` and the
-  controller's `selectTools`) arrives unchanged; under a profile it counts items. A consumer that
+  controller's `selectTools`) arrives unchanged; under a profile it counts items (per clause run
+  when the profile has a splitter, §4.5). A consumer that
   wants its own number uses `FixedItemsCut`. The library chooses no k of its own; a named variant
   carries its measured cut in its definition, and the consumer picks the variant explicitly.
 - **Score scales.** After a reranker, scores are the reranker's; the global
@@ -688,6 +867,7 @@ rag:
   profiles:               # new; absent → 30.1.0 behaviour (= variant baseline)
     tools:
       variant: faceted-cohere                    # baseline | faceted | faceted-cohere | faceted-jev | a registered name
+      split: { maxClauses: 3, maxItems: 15 }     # faceted-cohere only: maxClauses required, maxItems optional (§4.5)
       intents:                                   # optional indexing strategy; not with baseline
         record: { file: ./tool-intents.json }    # or: companion: { source: { llm: intents }, store: { … } }
 
@@ -699,7 +879,7 @@ rag:
         collapse: max                              # → MaxScoreCollapse
         reranker: decision                         # none | cross-encoder | decision | llm
         question: tool                             # decision / llm only
-        split: none                                # none | conjunctions
+        split: none                                # none | { conjunctions: { maxClauses: N, maxItems?: M } }
         cut: { fixed-items: 5 }                    # top-items | fixed-items | score-floor {minItems,maxItems,minScore}
         onFailure: stage1                          # stage1 | error
 ```
@@ -723,6 +903,8 @@ rag:
   - unknown variant or strategy name; `variant` and `compose` together; a key under both
     `retrieval` and `profiles`;
   - `split` without a reranker; `question` with `cross-encoder`;
+  - a splitter without `maxClauses` (or non-positive); `faceted-cohere` without `split.maxClauses`;
+    `split.maxItems` below the cut's k;
   - `cross-encoder` without a `crossEncoder:` section, or without the seam;
   - `intents` with `baseline`; `companion` without `store`;
   - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
@@ -756,7 +938,7 @@ rag:
 | candidate pool | `ICandidatePool` | `ItemPool(n)` |
 | collapse | `ICollapseRule` | `MaxScoreCollapse` |
 | reranker | `IReranker` (existing) | none; `SapAiCoreReranker`; `DecisionReranker` + `TOOL_QUESTION`; `LlmReranker` |
-| clause split | `IQuerySplitter` (inside `rerank`, typed) | none; `ConjunctionSplitter` |
+| clause split | `IQuerySplitter` (inside `rerank`, typed; carries `maxClauses`) | none; `ConjunctionSplitter({ maxClauses })` |
 | final cut | `IItemCut` | `TopItemsCut`, `FixedItemsCut(k)`, `ScoreFloorCut(...)` |
 
 The composing class is `ComposedToolsProfile` (an `ICollectionProfile<ToolItem>`):
@@ -782,9 +964,9 @@ new ComposedToolsProfile({
 
 | Kind | Id | Text | Written when |
 |---|---|---|---|
-| `full` (canonical) | `itemId` (= the 30.1.0 id) | `Tool: <name> — <description>` + `\nParameters: <p1>, <p2>, …` when there are any | always — not a facet, so it cannot be left out |
-| `operation` (`OperationFacet`) | `${itemId}#operation` | `<name words> — <first clause of description>` | the first clause is non-empty |
-| `object` (`ObjectFacet`) | `${itemId}#object` | `<name words after the first word>` | the name has ≥ 2 words |
+| `full` (canonical) | `recordId(global, itemId, 'full', 0)` — `itemId` is the 30.1.0 id | `Tool: <name> — <description>` + `\nParameters: <p1>, <p2>, …` when there are any | always — not a facet, so it cannot be left out |
+| `operation` (`OperationFacet`) | `recordId(global, itemId, 'operation', 0)` | `<name words> — <first clause of description>` | the first clause is non-empty |
+| `object` (`ObjectFacet`) | `recordId(global, itemId, 'object', 0)` | `<name words after the first word>` | the name has ≥ 2 words |
 
 - Metadata on every record: `name` (exposed), `itemId`, `recordKind`, `profile`, owner `global`
   (tool catalogs are global; no identity keys, as today). Non-canonical records carry `itemText` =
@@ -804,7 +986,7 @@ They help only the candidate search (§2.1) and never reach the reranker (§4.6)
 
 | Placement | Strategy | Record |
 |---|---|---|
-| **in the tool collection** (default placement) | `IntentRecordIndexer(inner, source)` — decorates the provider indexer | ONE record per tool: kind `intent`, id `${itemId}#intent`, text = the tool's intents, one per line; `generated: true`; `itemText` = the `full` text |
+| **in the tool collection** (default placement) | `IntentRecordIndexer(inner, source)` — decorates the provider indexer | ONE record per tool: kind `intent`, id `recordId(global, itemId, 'intent', 0)`, text = the tool's intents, one per line; `generated: true`; `itemText` = the `full` text |
 | **companion collection** | `IntentCompanionIndexer(source)` under `companions.intents` (a `variants` source) | the same ONE record per tool, `generated: true`, **no** `itemText` (§4.6) |
 
 - **Generated text never mixes into provider records**: its own record kind, and for the companion
@@ -831,12 +1013,13 @@ a query embedder) and returns a `ComposedToolsProfile` — or, for `baseline`, n
 |---|---|---|
 | **`baseline`** — the default | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
 | **`faceted`** | `FacetedToolIndexer([OperationFacet, ObjectFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | 0.966 at k=5; **0.977 at k=8 with ~13 tools** (= baseline's k=15 with half the tools). |
-| **`faceted-cohere`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `SapAiCoreReranker` + `ConjunctionSplitter` + `FixedItemsCut(5)` | EN-ext **0.977** at k=5 (9.4 tools); single 0.973, multi **1.000**, non-English **0.962** (pool of 30 items, reranker text without intents). |
-| **`faceted-jev`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + no split + `FixedItemsCut(5)` | Not measured as one composition (see below). Closest: one record per tool + Jev, no split: single **1.000**, multi 0.857, non-English **1.000**; faceted + 30 items + Jev **with** split: 1.000 / 0.786 / 1.000. |
+| **`faceted-cohere`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `SapAiCoreReranker` + `ConjunctionSplitter({ maxClauses })` + `FixedItemsCut(5)` **per clause run** | EN-ext **0.977** at k=5 per run (9.4 tools on average); single 0.973, multi **1.000**, non-English **0.962** (pool of 30 items, reranker text without intents). Returns up to `min(5 × runs, maxItems)` tools (§4.5). |
+| **`faceted-jev`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + no split + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest so far: one record per tool + Jev, no split: single **1.000**, multi 0.857, non-English **1.000** (EN-ext 0.977, 8.3 tools, §2.4); faceted + 30 items + Jev **with** split: 1.000 / 0.786 / 1.000. |
 
 ```ts
 mcpToolsVariants.faceted();
-mcpToolsVariants.facetedCohere({ reranker: new SapAiCoreReranker({ … }), queryEmbedder });
+mcpToolsVariants.facetedCohere({ reranker: new SapAiCoreReranker({ … }), queryEmbedder,
+  maxClauses: 3, maxItems: 15 });   // maxClauses required (not measured → not guessed); maxItems optional
 mcpToolsVariants.facetedJev({ decisionModel });
 // intents on top of any variant except baseline:
 mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
@@ -844,9 +1027,11 @@ mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 
 - **Why these four:** each one is a measured step — baseline (no change), faceted (fewer tools for
   the same recall, no external service), and one per reranker the goal names (goal 9).
-- **`faceted-jev` caveat:** the split's effect on Jev is 1 row of 14, and faceted + Jev without
-  split was not run on an item pool. The consumer check (§14.3) must measure it before its numbers
-  are quoted. **Decision for the user** — D11.
+- **`faceted-jev` caveat:** the split's effect on Jev is 1 row of 14 (round-robin split cut to k:
+  multi 0.643–0.714, §2.4), and faceted + Jev without split was not run on an item pool. It ships
+  marked **"to be measured as one composition on fresh consumer queries before promotion"**: no
+  numbers are quoted for it and it is not recommended over the others until the consumer check
+  (§14.3) runs it. **Decision for the user** — D11.
 - One record + Jev (the best measured Jev composition) is already 30.1.0's
   `rag.retrieval.tools: { strategy: rerank, reranker: decision }`; it is not repeated as a variant.
 - **Intents with a reranker:** all layouts give 0.977 at k=5 (Cohere + split), so intents are an
@@ -894,8 +1079,9 @@ mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 ### 7.8 Store migration
 
 - A store is filled by one composition.
-- Turning a variant on adds records next to the 30.1.0 ones (the canonical id is the 30.1.0 id);
-  turning it off leaves facet records behind that the 30.1.0 path would rank as records.
+- Turning a variant on adds records next to the 30.1.0 ones (profile ids are owner-scoped, §3.1,
+  so they never overwrite the 30.1.0 records); turning it off leaves profile records behind that
+  the 30.1.0 path would rank as records.
 - So switching variants (or the intent placement) on a persistent store = a fresh collection
   (redeploy), like an embedder change. Every record carries `profile` in metadata for diagnosis.
 - In-memory tool stores (rebuilt every boot) need nothing.
@@ -921,14 +1107,17 @@ mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 
 | Kind | Id | Text | Metadata |
 |---|---|---|---|
-| `item` (canonical) | `itemId` | `SharedItem.text` | `data`, `recordIds`, `ttl`, owner keys, `visibility` |
-| the writer's kinds | `${itemId}#${kind}:${n}` (n = position within that kind) | the writer's text | `itemText`, `ttl`, owner keys, `visibility` |
+| `item` (canonical) | `recordId(owner, itemId, 'item', 0)` | `SharedItem.text` | `data`, `recordIds`, `ttl`, owner keys, `visibility` |
+| the writer's kinds | `recordId(owner, itemId, kind, n)` (n = position within that kind) | the writer's text | `itemText`, `ttl`, owner keys, `visibility` |
 
 - Every record: `itemId`, `recordKind`, `profile: 'shared-items'`.
 - `kind` is any non-empty string except `item`; anything else is refused (`failedItems`, reason
   `reserved-kind`).
 - Records per item (canonical included) ≤ `maxRecordsPerItem` (§4.4).
-- Re-indexing an item replaces all its records (`recordIds`, §3.3).
+- `owner` = the item's visibility (a `user` item's `userId`, a `group` item's `groupId`), so two
+  users who both write `case-42` into the `user` store get two separate items (§3.1).
+- Re-indexing an item writes its new records and deletes the old ones its canonical no longer
+  lists (`recordIds`, §3.3) — several writes, **not atomic**.
 
 ### 8.3 Owner and visibility → partitions
 
@@ -962,7 +1151,12 @@ mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 | read one back | `bound.get({ itemId, owner }, options)` → the canonical record (text + `data`), identity-checked |
 | search | `bound.retrieval` (an `IRetrievalStrategy`), or the store registered under `key` |
 
-- Concurrency: last write wins; the store owns concurrency (no locks in the framework).
+- Concurrency: the store owns it; the framework adds no locks, generations or writer election
+  (D13). Replacing an item is several writes, **not atomic** and with **no** item-level
+  last-write-wins guarantee: concurrent writers of the same item must be serialized by the writing
+  element (or the store). An interrupted replacement can leave stale records; readers never see
+  them as payload, because every result is hydrated from the canonical record and a hit without one
+  is dropped (§3.3, §4.6).
 - Expiry: `SharedItem.ttl` → `metadata.ttl`, honoured by `VectorRag`, `InMemoryRag`, qdrant,
   pg-vector and hana. When to expire is the writer's policy.
 - Sensitive data: whatever the writer puts in `text` / `data` is stored as given. Redaction is the
@@ -972,13 +1166,14 @@ mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 
 - `StagedRetrieval` with the profile's `ISourceSelector`: `user` (filtered, or skipped), `global`,
   and every readable group store — all `items` sources.
-- Collapse by (source, `itemId`) with `MaxScoreCollapse`; the same `itemId` in two partitions is two
-  items.
+- Collapse by the owner-qualified item (source, scope, owner key, `itemId`) with
+  `MaxScoreCollapse`; the same `itemId` in two partitions, or from two owners, is two items.
 - Optional reranker, e.g. `DecisionReranker` with `PASSAGE_QUESTION` or `SapAiCoreReranker`; it
   reads the item's `text`.
 - Cut: the consumer's `IItemCut`; `FixedItemsCut(3)` recommended.
-- Each returned `RagResult` is the item **whole**: `text`, `metadata.data`, `metadata.visibility`,
-  owner keys, `matchedKinds`, `source`.
+- Each returned `RagResult` is the item **whole**, hydrated from its canonical record whichever
+  record matched (§4.6): `text`, `metadata.data`, `metadata.visibility`, owner keys,
+  `matchedKinds`, `source`. A hit whose canonical record is missing is dropped and counted.
 - Paths: registered under its key, it is projected and queried as `rag-<key>` each request,
   through its strategy; a writing or reading element may also call `bound.retrieval` directly.
 
@@ -1003,7 +1198,7 @@ new SharedItemsProfile({
 
 | Channel | Existing? | What |
 |---|---|---|
-| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `clauses`, `rerank.outcome` (`none\|ok\|fallback\|error`), `rerank.error` (message), `orphans` |
+| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `clauses`, `rerank.outcome` (`none\|ok\|fallback\|error`), `rerank.error` (message), `orphans`, `hydration.reads` (canonical records read by `getById`, §4.6) |
 | `IRetrievalMetrics.retrievalOutcome` counter | new small interface on the same metrics backend | attrs `store`, `strategy`, `outcome` ∈ `ok`, `rerank_fallback`, `rerank_error`, `orphan`, `empty` |
 | session step `retrieval_rerank_error` | yes (30.1.0 name kept) | unchanged; also emitted for a failed output check (§4.8) |
 | `/health` | yes | `metrics.retrievalOutcome` when the metrics implement `IRetrievalMetrics`; `components.toolCatalog.records` / `.profile` |
@@ -1114,6 +1309,12 @@ new SharedItemsProfile({
   capability, telemetry options on the 30.1.0 rerank strategies, one new package.
 - Release: a **minor** version. The new package is published at the same version, before the app.
 - Opting in on a persistent tools store = a fresh collection (§7.8).
+- **k under a splitter is wider.** A consumer that sizes its prompt by k must know: with a clause
+  splitter, k is per clause run and a query can return up to `min(k × runs, maxItems)` items
+  (§4.5). Stated in `docs/INTEGRATION.md` (retrieval contract), `docs/PERFORMANCE.md` (prompt
+  size) and the `faceted-cohere` variant's docs.
+- **Profile records are addressed by owner-scoped ids** (§3.1): `rag.getById(itemId)` on a profiled
+  store finds nothing; use `bound.get(ref)`. Documented in `docs/INTEGRATION.md`.
 - Docs updated in the same PR: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`,
   `docs/PERFORMANCE.md`, `docs/EXAMPLES.md` (YAML, both reranker configurations),
   `docs/TROUBLESHOOTING.md` (rerank error metric; switching profiles needs a fresh collection),
@@ -1127,7 +1328,11 @@ new SharedItemsProfile({
 
 - `deriveToolFacets`: table — `GetWhereUsed`, `GetATCFindings`, `RuntimeListFeeds`,
   `server__ReadClass`, `snake_case_tool`, single-word name, empty / tag-only description.
-- Tools indexing: deterministic ids; canonical id = item id; `itemText` only on non-canonical
+- `recordId`: table — every scope; `:` `/` `#` inside owner key / item id do not collide
+  (`u` + `a/b` + `c` ≠ `u` + `a` + `b/c`); ids over 200 characters become `h:` + 64 hex, stable
+  across calls; every id ≤ 255 characters.
+- Tools indexing: deterministic ids; canonical id = `recordId(global, itemId, 'full', 0)`;
+  `itemText` only on non-canonical
   records; one `intent` record per tool, `generated: true`, in the tool store (`record`) or only in
   the companion (`companion`); no intent text in any provider record; `generatedFrom` skips an
   unchanged tool; each indexer's `maxRecordsPerItem` bounds what it writes.
@@ -1135,17 +1340,28 @@ new SharedItemsProfile({
   collapse, reranker, split, cut); `baseline` binds nothing; intents refused on `baseline`.
 - Shared items: owner flattening for user / group / global; `reserved-kind`;
   `too-many-records`; `user` item with a foreign `userId` refused; missing partition refused;
-  re-index replaces all records (`recordIds`); `remove`; `get` identity-checked; `ttl` written.
+  re-index writes the new records and deletes the unlisted old ones (`recordIds`); `remove`;
+  `get` identity-checked; `ttl` written.
+- **Identical item ids across users stay separate:** users A and B index `itemId: 'case-42'` into
+  the same `user` store (an `InMemoryRag`) → two canonical records with different ids; A's `get`
+  returns A's text and `data`; B's re-index leaves A's records untouched; B's `remove` leaves A's
+  item; A's retrieval returns only A's item.
+- **Interrupted replacement:** a stale non-canonical record of a live item hydrates to the current
+  canonical record (never its own text); a non-canonical record whose canonical is gone is dropped
+  and counted `orphan`.
 - Type checks (`__typechecks__`): a record without `owner` fails; extras setting `itemId` /
   `visibility` fail; `split` without `rerank` fails; `withToolsProfile(sharedItemsProfile)` fails;
   `SharedItemsStores` with neither `user` nor `global` fails; a shared item with `session`
   visibility fails.
 - `StagedRetrieval`: max collapse; k counts items; **candidate pool in items** (a store where every
   item has `maxRecordsPerItem` records still yields `ItemPool(n)`'s `n` items); skill records pass
-  through; item-text order and orphan drop; **the reranker never receives intent text**; `getById`
+  through; reranker-text order; **hydration: only a secondary record matches → the full payload
+  (canonical text + `data`) is returned**; a missing canonical record → dropped, counted, span
+  `orphans`; orphans do not use up k; **the reranker never receives intent text**; `getById`
   result outside the identity filter dropped; user partition skipped without `userId`; both failure
   policies; reranker output check (wrong count, duplicate, non-finite → `RERANK_ERROR`); clause
-  union and its bound; `keepStage1Top`; every cut; telemetry (span attributes, counter, session
+  runs: each run cut to k on its own, union ≤ `min(k × runs, maxItems)`, `split` never returns
+  more than `maxClauses`, `maxItems` cuts in union order; collapse keys on the owner-qualified item; `keepStage1Top`; every cut; telemetry (span attributes, counter, session
   step).
 - `SapAiCoreReranker` (mock `fetch`): URL, `AI-Resource-Group` header, bearer asked per call, body
   `{model, query, documents, top_n}`; mapping by `index`; ties keep input order; missing /
@@ -1163,9 +1379,11 @@ new SharedItemsProfile({
 
 `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance` (beside
 `rag-filter-conformance`): for any `ICollectionProfile` — owner keys and visibility on every
-record, deterministic ids, canonical id = item id, at most k distinct items returned, no record
-outside the caller's identity filter returned, generated records never canonical. A consumer runs
-it against its own profile.
+record; deterministic, owner-scoped ids (`recordId`; the same `itemId` under two owners → disjoint
+ids); every returned item hydrated from its canonical record; **without a splitter at most k
+distinct items returned; with one at most `min(k × runs, maxItems)`** (`runs ≤ 1 + maxClauses`);
+no record outside the caller's identity filter returned; generated records never canonical. A
+consumer runs it against its own profile.
 
 ### 14.3 Measurement harness
 
@@ -1180,7 +1398,8 @@ it against its own profile.
 - Acceptance (env-gated, not part of `npm test`):
   - on the committed 16.0.0 snapshot, `faceted` is not worse than `baseline` at equal items;
   - the hub's consumer check reproduces, within ±1 row, each variant's numbers in §7.4;
-  - `faceted-jev` is measured for the first time there; its row in §7.4 is filled from that run.
+  - `faceted-jev` is measured for the first time there, as one composition on fresh consumer
+    queries; its row in §7.4 is filled from that run, and only then is it promoted (D11).
 
 ---
 
@@ -1224,6 +1443,15 @@ Settled by the goal (no longer asked): experience as a schema in the framework (
 §8); intents' home (→ an indexing strategy of the tools profiles, default placement `record`, §7.3); one profile with flags (→ strategies and named variants, §7); the reranker text
 (→ provider text, §4.6); the pool unit (→ items, §4.4); the Cohere reranker in this PR (→ §5).
 
+Settled by the adversarial review (user-approved 2026-10-05):
+
+| # | Decision | Reason |
+|---|---|---|
+| D12 | **k with a clause splitter is per clause run.** Result ≤ `min(k × runs, maxItems)`; `IQuerySplitter.maxClauses` is a required hard cap; `split.maxItems` an optional total cap. Documented for consumers that size prompts by k (§4.5, §13). | §2.4: the gain is the per-clause budget. Cutting the union to k: multi 0.500 (best score) / 0.571–0.643 (round-robin, overall 0.908) — below no split (0.931 / 0.714). Per tool it beats raising k (0.977 with 9.4 tools vs 0.943 with 13.3 at k=8). |
+| D13 | **Replacing an item is not atomic; no generations, commit markers, incarnations or locks.** Concurrent writers of one item are serialized by the writer or the store; interrupted replacements may leave stale records (§3.3). | The store owns concurrency (standing rule); collections are filled once, read-mostly. Readers stay safe through D15, not through write coordination. |
+| D14 | **Physical record ids are owner-scoped:** `recordId(owner, itemId, kind, n)`, one function for `index`, `get`, `remove`, hydration and collapse (§3.1). | Every backend keys records by id alone (`InMemoryRag.upsert`, `VectorRag`, pg/HANA primary key, Qdrant UUID of the id); with `id = itemId`, two users' `case-42` would overwrite each other. |
+| D15 | **Every returned item is hydrated from its canonical record**, owner-checked; `itemText` is a reranking shortcut only; a hit without a canonical record is dropped and counted (§4.6). | Makes D13 safe for readers and returns the item whole (incl. `data`) even when only a secondary record matched. |
+
 | # | Question | Recommendation |
 |---|---|---|
 | D1 | Default implementations: `llm-agent-libs` or a new `llm-agent-collections` package? | **libs** — the retrieval built-ins and the builder are there; a new package would depend on libs and add a release step for no isolation gain. |
@@ -1236,4 +1464,4 @@ Settled by the goal (no longer asked): experience as a schema in the framework (
 | D8 | Replace the private embedder read with `IRetrievalEmbedderOwner` (3 provider packages) in this PR? | **Yes** — the cast is the root cause of F1 and batch indexing of records needs the same embedder. |
 | D9 | Query preparation outside profiles; #323 as a pipeline fix | **Yes** (§12). |
 | D10 | `SapAiCoreReranker`: `deploymentId` only, or also resolve by model name? | **`deploymentId` in this PR**; resolving by model needs `resolveDeploymentId`, today private to `sap-aicore-embedder`. Sharing it (e.g. moved into `sap-aicore-auth`) is a follow-up. |
-| D11 | Ship `faceted-jev` as a named variant before it is measured as one composition? | **Ship it, its numbers marked "to be measured"** until the consumer check runs it (§7.4); one record + Jev, the best measured Jev setup, stays available through 30.1.0's `rerank` strategy. |
+| D11 | Ship `faceted-jev` as a named variant before it is measured as one composition? | **Ship it, marked "to be measured as one composition on fresh consumer queries before promotion"** — no numbers quoted, not recommended over the others until the consumer check runs it (§7.4, §14.3); one record + Jev, the best measured Jev setup, stays available through 30.1.0's `rerank` strategy. |
