@@ -55,11 +55,13 @@ English queries (see *Evidence* below):
    default profile: per-store retrieval strategies, and a store with an explicit
    strategy is skipped by the global rerank stage. A consumer that does nothing
    keeps exactly what it has.
-5. Profiles exist at least for:
-   - tools;
-   - predefined skills;
-   - the user's information (persistent collections);
-   - the session history.
+5. The framework fixes neither the number of collection kinds nor the number of
+   profiles. It defines the profile contract and ships default profiles. A
+   consumer may write its own profile for any kind of collection.
+6. A profile belongs to a **kind of store**, not to one store. Several stores of
+   the same kind share one profile; the tool stores per role are an example.
+   A consumer's example: five stores (two for tools, one for skills, one for
+   session history, one for user collections) served by three profiles.
 
 ## Decisions
 
@@ -67,7 +69,7 @@ English queries (see *Evidence* below):
 |---|---|
 | 2026-10-04 | This is a development of the framework that pipelines are built with: new building blocks, not a replacement and not a change to any one pipeline. Today's behaviour (one document per item, top-K) stays as the default profile, and nothing changes for current consumers. New profiles are opt-in. |
 | 2026-10-04 | Each collection kind gets a pair: an indexing strategy and a retrieval strategy, described together as one collection profile. |
-| 2026-10-04 | At least four profiles: tools, predefined skills, user information, session history. |
+| 2026-10-04 | The framework is open-ended: any number of collection kinds and profiles. A profile belongs to a kind of store, and several stores can share it. Default profiles ship in llm-agent-rag or another package; consumers may write their own. The known kinds (tools, skills, session history, user collections) are what the defaults must cover, not a closed list. |
 | 2026-10-04 | Contracts and default implementations live in llm-agent (an existing package or a new one). The consumer picks the profiles and passes instances in through dependency injection. |
 | 2026-10-04 | Tool records come from what the tool provider exports (name, description, parameter names). Nothing is hand-written over them. A weak description is fixed at its source. |
 | 2026-10-04 | In this PR, besides the profiles: the bug where `vectorizeMcpTools` does not find the store's embedder behind `StrategyRag` and falls back to one tool at a time; de-duplication in `tools-rag-handle` (none today) and `skill-select` (fixed prefix); and a decision on the unused `IToolIndexingStrategy` and the docs that describe it as usable. |
@@ -101,8 +103,13 @@ queries with production embeddings:
 
 ## Open questions
 
-- Is a profile per collection (store) or per record kind? Tools and the builder's
-  skills share one store today.
+- Which default profiles ship, and how they group the known kinds. For example:
+  - a catalog profile for tools and skills, a session profile and a documents
+    profile;
+  - or one profile each for tools, skills and documents (history plus user).
+
+  Tools and the builder's skills share one store today, so a separate skills
+  store comes with this.
 - Which skills are "predefined skills": the builder's `skill:<name>` records, the
   plug-in skills that are already chunked into several records, or both?
 - Do LLM-generated variants (intent enrichment, `IntentToolIndexing`) count as
