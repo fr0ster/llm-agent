@@ -1,5 +1,6 @@
 import {
   type CallOptions,
+  type DecisionAnswer,
   type DecisionEntry,
   type IDecisionModel,
   type NoulQuestion,
@@ -92,7 +93,7 @@ export class DecisionReranker implements IReranker {
     });
     if (cur.length > 0) batches.push(cur);
 
-    const answers: Record<string, { type: string; probability?: number }> = {};
+    const answers: Record<string, DecisionAnswer> = {};
     for (let s = 0; s < batches.length; s += concurrency) {
       const slice = batches.slice(s, s + concurrency);
       const settled = await Promise.all(
@@ -131,9 +132,7 @@ export class DecisionReranker implements IReranker {
     task: DecisionEntry,
     criteria: { true?: DecisionEntry; false?: DecisionEntry },
     options?: CallOptions,
-  ): Promise<
-    Result<Record<string, { type: string; probability?: number }>, RagError>
-  > {
+  ): Promise<Result<Record<string, DecisionAnswer>, RagError>> {
     const questions: Record<string, NoulQuestion> = {};
     for (const i of idxs) {
       questions[`r${i}`] = {
@@ -152,6 +151,6 @@ export class DecisionReranker implements IReranker {
         ),
       };
     }
-    return { ok: true, value: res.value.answers as never };
+    return { ok: true, value: res.value.answers };
   }
 }
