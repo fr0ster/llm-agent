@@ -21,9 +21,14 @@ One pass per config in the matrix:
 1. **Vectorize.** The tool snapshot (`--tools`) goes through `vectorizeMcpTools`,
    the same function the server calls at startup. The run fails unless it
    reports every tool vectorized.
-2. **Query.** Each case in `queries.en.json` is embedded (`QueryEmbedding`)
-   and sent to `store.query(embedding, K)`.
-3. **Select.** Results go through `DEFAULT_TOOL_SELECTION` and
+2. **Query.** Each case in the queries file (`queries.en.json`, or
+   `queries.en.16.json` for the 16.0.0 catalog) is embedded
+   (`QueryEmbedding`) once, then every arm sends it through
+   `applyRetrievalStrategy(store, strategy).query(embedding, N)`. An arm
+   queries twice per case: at the report depth `max(--k, 15)` (recall and
+   MRR) and at `--k` (the selection path), so a reranked arm costs two
+   reranker calls per case.
+3. **Select.** The `--k` results go through `DEFAULT_TOOL_SELECTION` and
    `toolNameFromRecord`, exactly as `ToolSelectHandler` does.
 
 A case **hits** when any of its `expect` tools is selected.
@@ -53,14 +58,14 @@ to get the keyword-only store.
 |---|---|---|
 | `--matrix` | `matrix.example.json` | configs to run |
 | `--only a,b` | all | run only these config names |
-| `--k` | `5` | K for the selection path (recall@10/@15 are always shown) |
+| `--k` | `5` | K for the selection path (recall@1/3/5/10/15 are always shown) |
 | `--queries` | `queries.en.json` | cases |
 | `--tools` | the snapshot | tool catalog |
 | `--json out.json` | none | also write raw results, per-case top-3 included |
 | `--retrieval a,b` | `embedding` | `embedding` \| `rerank` \| `rerank-all`; `embedding` always runs as the baseline |
 | `--reranker a,b` | `decision` | `decision` \| `llm`; every rerank retrieval runs once per reranker |
 | `--overfetch N` | `2` | `rerank`: the store returns K x N candidates for the reranker |
-| `--max-candidates N` | `30` | `rerank-all`: the store's first N candidates go to the reranker |
+| `--max-candidates N` | `30` | `rerank-all`: the store's first N candidates go to the reranker; must be >= max(`--k`, 15), else the run is refused |
 | `--config f` + `--llm-key KEY` | none | an `llm:` entry of a `smart-server.yaml` (and its credentials) for the `llm` reranker |
 
 Exit code: `0` all configs ran; `1` a config failed (e.g. not all
@@ -168,13 +173,13 @@ Measured 2026-10-04, `in-memory-aicore-ada` (`text-embedding-ada-002` on SAP
 AI Core), 218-tool 16.0.0 catalog, `queries.en.16.json` (30 cases), K=5,
 `decision` reranker (TypeSafe Jev), `--max-candidates 30`, `--overfetch 2`:
 
-| arm | recall@1 | recall@5 | recall@10 | recall@15 | MRR | better/worse |
-|---|---|---|---|---|---|---|
-| embedding | 56.7% | 93.3% | 96.7% | 96.7% | 0.691 | - |
-| rerank:decision | 90.0% | 96.7% | 96.7% | 96.7% | 0.928 | 11/0 |
-| rerank-all:decision | 90.0% | 96.7% | 96.7% | 96.7% | 0.933 | 12/0 |
+| arm | recall@1 | recall@3 | recall@5 | recall@10 | recall@15 | MRR | better/worse |
+|---|---|---|---|---|---|---|---|
+| embedding | 56.7% | — | 93.3% | 96.7% | 96.7% | 0.691 | - |
+| rerank:decision | 90.0% | — | 96.7% | 96.7% | 96.7% | 0.928 | 11/0 |
+| rerank-all:decision | 90.0% | — | 96.7% | 96.7% | 96.7% | 0.933 | 12/0 |
 
-The `llm` reranker arms have not been run yet. One sample, 30 cases: read it
+recall@3 was added after this run (— = not recorded). The `llm` reranker arms have not been run yet. One sample, 30 cases: read it
 as a direction, not a benchmark.
 
 Then the missed cases, each with the expected tools, the rank and the top 5

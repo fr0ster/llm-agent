@@ -72,7 +72,7 @@ import {
 import { TypeSafeDecisionModel } from '../../packages/typesafe-decision/src/index.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPORT_KS = [1, 5, 10, 15] as const;
+const REPORT_KS = [1, 3, 5, 10, 15] as const;
 
 interface MatrixEntry {
   name: string;
@@ -309,7 +309,8 @@ async function evalConfig(
         const names = raw.value.map((r: RagResult) =>
           toolNameFromRecord(r.metadata),
         );
-        unnamed += names.filter((n) => n === undefined).length;
+        if (arm.retrieval === 'embedding')
+          unnamed += names.filter((n) => n === undefined).length;
         // Score order is a store contract; a reranker re-scores by design.
         if (arm.retrieval === 'embedding') {
           for (let i = 1; i < raw.value.length; i++) {
@@ -398,6 +399,7 @@ const ms = (x: number | undefined) =>
 
 const row = (a: ArmResult, k: number) => ({
   'recall@1': pct(a.recall?.['@1']),
+  'recall@3': pct(a.recall?.['@3']),
   'recall@5': pct(a.recall?.['@5']),
   'recall@10': pct(a.recall?.['@10']),
   'recall@15': pct(a.recall?.['@15']),
@@ -546,6 +548,11 @@ async function main(): Promise<number> {
     'max-candidates',
     30,
   );
+  const reportDepth = Math.max(k, ...REPORT_KS);
+  if (retrievals.includes('rerank-all') && maxCandidates < reportDepth)
+    throw new Error(
+      `--max-candidates (${maxCandidates}) must be >= max(--k, 15) = ${reportDepth} for a fair comparison`,
+    );
   const arms = planArms(retrievals, rerankers);
   const rerankerCache = new Map<string, Promise<IReranker | string>>();
   const buildStrategy = async (
