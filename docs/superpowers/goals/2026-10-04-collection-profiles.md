@@ -4,7 +4,7 @@
 > says so or agrees to a proposed change. The spec, the plan and the code follow
 > it; they never edit it.
 >
-> **Status: draft for the user's review.**
+> **Status: draft for the user's review.** Decisions recorded on the user's word.
 
 ## The task
 
@@ -87,6 +87,7 @@ English queries (see *Evidence* below):
 | 2026-10-04 | The framework is open-ended: any number of collection kinds and profiles. A profile belongs to a kind of store, and several stores can share it. Default profiles ship in llm-agent-rag or another package; consumers may write their own. The known kinds (tools, skills, session history, user collections) are what the defaults must cover, not a closed list. |
 | 2026-10-04 | Contracts and default implementations live in llm-agent (an existing package or a new one). The consumer picks the profiles and passes instances in through dependency injection. |
 | 2026-10-04 | Tool records come from what the tool provider exports (name, description, parameter names). Nothing is hand-written over them. A weak description is fixed at its source. |
+| 2026-10-04 | LLM-generated variants of a provider's text (for example intents generated from a tool description) are allowed, but only in a **separate collection** of their own, never mixed with the records taken from the provider. The profile searches both and collapses the hits by item id, so what came from the provider stays distinguishable and the generated part can be rebuilt or turned off on its own. |
 | 2026-10-04 | In this PR, besides the profiles: the bug where `vectorizeMcpTools` does not find the store's embedder behind `StrategyRag` and falls back to one tool at a time; de-duplication in `tools-rag-handle` (none today) and `skill-select` (fixed prefix); and a decision on the unused `IToolIndexingStrategy` and the docs that describe it as usable. |
 | 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
 
@@ -127,9 +128,6 @@ queries with production embeddings:
   - duplicates and merging of similar cases;
   - retention.
 
-- Do LLM-generated variants (intent enrichment, `IntentToolIndexing`) count as
-  "written over" the provider's text? The best measured tool document included
-  LLM-generated intents.
 - A Cohere / cross-encoder reranker provider is new work: 30.1.0 ships
   `decision` and `llm` rerankers only.
 - Names: several are taken (`ISearchStrategy`, `IRetrievalStrategy`,
