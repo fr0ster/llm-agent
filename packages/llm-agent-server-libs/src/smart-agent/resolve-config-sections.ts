@@ -347,7 +347,8 @@ function resolveRetrieval(raw: unknown): {
     const overfetch = parseIntegerField(r.overfetch);
     const maxCandidates = parseIntegerField(r.maxCandidates);
     retrieval[key] = {
-      strategy: r.strategy as SmartServerRetrievalConfig['strategy'],
+      strategy: (r.strategy ??
+        'embedding') as SmartServerRetrievalConfig['strategy'],
       ...(r.reranker != null
         ? { reranker: r.reranker as 'decision' | 'llm' }
         : {}),

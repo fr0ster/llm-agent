@@ -54,7 +54,7 @@ describe('rag.retrieval resolution', () => {
 
   it('keeps every field', () => {
     const cfg = resolve(
-      'knowledge: { strategy: rerank-all, reranker: llm, llm: reranker, question: passage, task: pick, maxCandidates: 200 }',
+      'knowledge: { strategy: rerank-all, reranker: llm, llm: reranker, question: passage, maxCandidates: 200 }',
       { llm: LLM_MAP },
     );
     assert.deepEqual(cfg.rag?.retrieval, {
@@ -63,7 +63,6 @@ describe('rag.retrieval resolution', () => {
         reranker: 'llm',
         llm: 'reranker',
         question: 'passage',
-        task: 'pick',
         maxCandidates: 200,
       },
     });
@@ -93,6 +92,113 @@ describe('rag.retrieval resolution', () => {
       { skipProviderRuntimeChecks: true },
     );
     assert.equal(cfg.rag?.retrieval?.tools?.overfetch, 4);
+  });
+});
+
+describe('rag.retrieval defaults and no-op fields', () => {
+  it('an entry without strategy resolves to embedding', () => {
+    assert.deepEqual(resolve('history: {}').rag?.retrieval, {
+      history: { strategy: 'embedding' },
+    });
+    assert.deepEqual(resolve('history: { strategy: null }').rag?.retrieval, {
+      history: { strategy: 'embedding' },
+    });
+  });
+
+  const bad: Array<
+    [string, string, RegExp, { llm?: string; extra?: string }?]
+  > = [
+    [
+      'reranker with embedding',
+      'tools: { strategy: embedding, reranker: decision }',
+      /tools\.reranker: only applies to strategy rerank \/ rerank-all/,
+      { extra: DECISION },
+    ],
+    [
+      'reranker with no strategy',
+      'tools: { reranker: decision }',
+      /tools\.reranker: only applies to strategy rerank \/ rerank-all/,
+      { extra: DECISION },
+    ],
+    [
+      'llm with embedding',
+      'tools: { llm: reranker }',
+      /tools\.llm: only applies to strategy rerank \/ rerank-all/,
+      { llm: LLM_MAP },
+    ],
+    [
+      'question with embedding',
+      'tools: { question: tool }',
+      /tools\.question: only applies to strategy rerank \/ rerank-all/,
+    ],
+    [
+      'task with embedding',
+      'tools: { task: x }',
+      /tools\.task: only applies to strategy rerank \/ rerank-all/,
+    ],
+    [
+      'overfetch with embedding',
+      'tools: { overfetch: 2 }',
+      /tools\.overfetch: only applies to strategy rerank \/ rerank-all/,
+    ],
+    [
+      'maxCandidates with embedding',
+      'tools: { maxCandidates: 2 }',
+      /tools\.maxCandidates: only applies to strategy rerank \/ rerank-all/,
+    ],
+    [
+      'overfetch with rerank-all',
+      'tools: { strategy: rerank-all, reranker: decision, maxCandidates: 5, overfetch: 2 }',
+      /tools\.overfetch: only applies to strategy rerank$/m,
+      { extra: DECISION },
+    ],
+    [
+      'maxCandidates with rerank',
+      'tools: { strategy: rerank, reranker: decision, maxCandidates: 5 }',
+      /tools\.maxCandidates: only applies to strategy rerank-all/,
+      { extra: DECISION },
+    ],
+    [
+      'llm with decision',
+      'tools: { strategy: rerank, reranker: decision, llm: reranker }',
+      /tools\.llm: only applies to reranker: llm/,
+      { llm: LLM_MAP, extra: DECISION },
+    ],
+    [
+      'question and task',
+      'tools: { strategy: rerank, reranker: decision, question: tool, task: x }',
+      /rag\.retrieval\.tools: set question or task, not both/,
+      { extra: DECISION },
+    ],
+    [
+      'unknown field',
+      'tools: { strategy: rerank, reranker: decision, ovefetch: 2 }',
+      /tools\.ovefetch: unknown key/,
+      { extra: DECISION },
+    ],
+  ];
+  for (const [name, retrieval, re, o] of bad) {
+    it(`rejects ${name}`, () => {
+      assert.throws(() => resolve(retrieval, o), re);
+    });
+  }
+
+  it('a worker with rag.retrieval: null is not refused', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'retrieval-worker-null-'));
+    writeFileSync(path.join(dir, 'w.yaml'), `${RAG}  retrieval:\n`);
+    const main = path.join(dir, 'main.yaml');
+    writeFileSync(
+      main,
+      `${LLM}subagents:\n  - name: w\n    config: ./w.yaml\n`,
+    );
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        loadYamlConfig(main, {}),
+        {},
+        { configPath: main, skipProviderRuntimeChecks: true },
+      ),
+    );
   });
 });
 

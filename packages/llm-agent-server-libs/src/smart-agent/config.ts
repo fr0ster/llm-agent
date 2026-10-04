@@ -96,7 +96,7 @@ function resolveWorkerConfig(
   subConfigPath: string,
 ): SmartServerWorkerConfig {
   // Strategies are server-wide (§13.4): never silently ignored in a worker.
-  if (get(subYaml, 'rag', 'retrieval') !== undefined) {
+  if ((get(subYaml, 'rag', 'retrieval') ?? undefined) !== undefined) {
     throw new Error(
       `subagent '${name}' rag.retrieval: strategies are server-wide — set them in the main config's rag.retrieval`,
     );

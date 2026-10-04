@@ -99,6 +99,23 @@ function checkDecision(yaml: YamlConfig, issues: string[]): void {
 
 const RETRIEVAL_STRATEGIES = ['embedding', 'rerank', 'rerank-all'] as const;
 const RETRIEVAL_RERANKERS = ['decision', 'llm'] as const;
+const RETRIEVAL_FIELDS: readonly string[] = [
+  'strategy',
+  'reranker',
+  'llm',
+  'question',
+  'task',
+  'overfetch',
+  'maxCandidates',
+];
+const RERANK_ONLY_FIELDS = [
+  'reranker',
+  'llm',
+  'question',
+  'task',
+  'overfetch',
+  'maxCandidates',
+] as const;
 const RETRIEVAL_QUESTIONS = ['tool', 'passage'] as const;
 
 /** `rag.retrieval` — per-store strategies (§13.4); validated on the raw YAML. */
@@ -132,6 +149,37 @@ function checkRetrieval(
       issues.push(
         `${label}.strategy: must be one of ${RETRIEVAL_STRATEGIES.join(' | ')} (got ${JSON.stringify(strategy)})`,
       );
+    }
+    for (const field of Object.keys(e)) {
+      if (!RETRIEVAL_FIELDS.includes(field)) {
+        issues.push(`${label}.${field}: unknown key`);
+      }
+    }
+    const isSet = (f: string) => e[f] != null;
+    const reranked = strategy === 'rerank' || strategy === 'rerank-all';
+    if (!reranked) {
+      for (const f of RERANK_ONLY_FIELDS) {
+        if (isSet(f)) {
+          issues.push(
+            `${label}.${f}: only applies to strategy rerank / rerank-all`,
+          );
+        }
+      }
+    } else {
+      if (strategy === 'rerank-all' && isSet('overfetch')) {
+        issues.push(`${label}.overfetch: only applies to strategy rerank`);
+      }
+      if (strategy === 'rerank' && isSet('maxCandidates')) {
+        issues.push(
+          `${label}.maxCandidates: only applies to strategy rerank-all`,
+        );
+      }
+      if (e.reranker === 'decision' && isSet('llm')) {
+        issues.push(`${label}.llm: only applies to reranker: llm`);
+      }
+    }
+    if (isSet('question') && isSet('task')) {
+      issues.push(`${label}: set question or task, not both`);
     }
     if (
       e.question != null &&
