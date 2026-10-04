@@ -963,10 +963,12 @@ agent get the same instance:
   stepper take theirs from `ctx.resolveLlm` / `ctx.resolveNamedLlm`
   (`resolveRoleLlm` / `resolveNamedRoleLlm`), and the controller builds its
   handler before any builder runs. So:
-  - **LLMs:** the role resolver (`IRoleLlmResolver`,
-    `smart-agent/llm/role-llm-resolver.ts`) returns every resolved LLM wrapped
-    in `CircuitBreakerLlm`, through an additive decorator over the resolver;
-    `resolve` / `resolveNamed` keep their signatures. There is **one breaker
+  - **LLMs:** every LLM the role resolver (`IRoleLlmResolver`,
+    `smart-agent/llm/role-llm-resolver.ts`) can return is wrapped in
+    `CircuitBreakerLlm` where it is created: the held main / classifier /
+    helper at their assignment (startup and `PUT /v1/config`), and each per-key
+    `entry` build through an additive optional `wrap` hook in the resolver's
+    deps. `resolve` / `resolveNamed` keep their signatures. There is **one breaker
     per `llm:` entry key**, so a failing model does not block a healthy one.
     The breaker is created once and reused by every session and every role that
     resolves that key. An entry swapped by `PUT /v1/config` gets a fresh
