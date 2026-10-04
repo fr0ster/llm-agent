@@ -971,11 +971,19 @@ agent get the same instance:
     deps. `resolve` / `resolveNamed` keep their signatures. There is **one breaker
     per `llm:` entry key**, so a failing model does not block a healthy one.
     The breaker is created once and reused by every session and every role that
-    resolves that key. An entry swapped by `PUT /v1/config` gets a fresh
-    breaker. The main, classifier and helper LLMs given to the builders are the
+    resolves that key. Wrappers are cached **by key**, not by instance: one
+    object under two keys gets two breakers. An entry swapped by
+    `PUT /v1/config` gets a fresh breaker, also when it swaps back to an
+    instance used before. The main, classifier and helper LLMs given to the builders are the
     wrapped instances, so the builders never wrap an LLM again.
   - **Stores / embedder:** SmartServer creates one embedder breaker from
-    `circuitBreaker:`. An additive builder seam takes it
+    `circuitBreaker:`. `FallbackRag` only reads a breaker's state, so the
+    breaker must also **see the embedding calls**: the server's retrieval
+    embedder is wrapped with `withCircuitBreaker(embedder, breaker)` below the
+    document/query role (each half before `symmetricEmbedder` /
+    `asymmetricEmbedder` joins them), which keeps both halves and the batch
+    capability. Until now no server path fed that breaker. Worker embedders
+    keep no breaker, as today. An additive builder seam takes it
     (`withCircuitBreakers({ embedder })`; `withCircuitBreaker(config)` is
     unchanged and still builds its own LLM and embedder breakers for library
     consumers). The builder wraps no store already guarded by a `FallbackRag`
