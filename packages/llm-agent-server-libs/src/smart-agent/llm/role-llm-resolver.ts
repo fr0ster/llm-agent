@@ -21,6 +21,9 @@ export interface RoleLlmResolverDeps {
   getLlmMap(): NormalizedLlmMap | undefined;
   /** Builds one `llm:` entry. Called at most once per key while builds succeed. */
   build(entry: SmartServerLlmConfig): Promise<ILlm>;
+  /** Optional decorator applied to each built entry with its `llm:` key (the
+   *  server's per-key circuit breaker); the wrapped instance is what is held. */
+  wrap?(llm: ILlm, key: string): ILlm;
 }
 
 /**
@@ -88,7 +91,10 @@ export class RoleLlmResolver implements IRoleLlmResolver {
   private entry(key: string, cfg: SmartServerLlmConfig): Promise<ILlm> {
     const held = this.built.get(key);
     if (held) return held;
-    const building = this.deps.build(cfg);
+    const wrap = this.deps.wrap?.bind(this.deps);
+    const building = wrap
+      ? this.deps.build(cfg).then((llm) => wrap(llm, key))
+      : this.deps.build(cfg);
     this.built.set(key, building);
     building.catch(() => {
       if (this.built.get(key) === building) this.built.delete(key);

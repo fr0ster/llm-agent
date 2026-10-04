@@ -79,6 +79,11 @@ export async function resolveAgentEmbedder(
  * `rag.embedder.asymmetric` the model is resolved twice — `inputType:
  * 'document'` and `'query'` — each half composed and usage-logged on its own,
  * and joined by `asymmetricEmbedder`. A DI-injected embedder is symmetric.
+ *
+ * `wrap` decorates each `IEmbedder` BELOW the document/query role — every half
+ * before `symmetricEmbedder` / `asymmetricEmbedder` joins them — so a decorator
+ * (the server's embedder circuit breaker) sees both jobs' calls while each half
+ * keeps its own inner and its batch capability.
  */
 export async function resolveRetrievalEmbedder(
   rag: SmartServerRagConfig | undefined,
@@ -86,6 +91,7 @@ export async function resolveRetrievalEmbedder(
   resolve: BuildAgentDeps['resolveEmbedder'],
   extraFactories: Record<string, EmbedderFactory>,
   logger?: AnyLogger,
+  wrap: (embedder: IEmbedder) => IEmbedder = (embedder) => embedder,
 ): Promise<IRetrievalEmbedder | undefined> {
   const section = rag?.embedder;
   if (
@@ -112,7 +118,7 @@ export async function resolveRetrievalEmbedder(
         'rag.embedder: an asymmetric embedder resolved to nothing',
       );
     }
-    return asymmetricEmbedder({ document, query });
+    return asymmetricEmbedder({ document: wrap(document), query: wrap(query) });
   }
   const embedder = await resolveAgentEmbedder(
     rag,
@@ -121,7 +127,7 @@ export async function resolveRetrievalEmbedder(
     extraFactories,
     logger,
   );
-  return embedder ? symmetricEmbedder(embedder) : undefined;
+  return embedder ? symmetricEmbedder(wrap(embedder)) : undefined;
 }
 
 /**

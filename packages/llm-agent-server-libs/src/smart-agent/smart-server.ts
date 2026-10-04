@@ -46,6 +46,7 @@ import type {
 import {
   asymmetricEmbedder,
   buildNamespacedTools,
+  CircuitBreaker,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
   type IDecisionModel,
@@ -58,6 +59,7 @@ import {
   SimpleRagProviderRegistry,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
+  withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   IPluginLoader,
@@ -116,6 +118,7 @@ import {
   handleSessionsList,
 } from './http/sessions-route-handler.js';
 import { handleUsageRoute } from './http/usage-route-handler.js';
+import { LlmCircuitBreakers } from './llm/llm-circuit-breakers.js';
 import {
   type IRoleLlmResolver,
   RoleLlmResolver,
@@ -812,6 +815,14 @@ export class SmartServer {
   private _mainLlm?: ILlm;
   private _classifierLlm?: ILlm;
   private _helperLlm?: ILlm;
+  /**
+   * `circuitBreaker:` — one LLM breaker per `llm:` key, wrapped where each LLM
+   * is created (held main/classifier/helper and every resolver entry), so every
+   * session and role — controller and stepper included — shares it (§14.2).
+   */
+  private _llmBreakers?: LlmCircuitBreakers;
+  /** `circuitBreaker:` — the one embedder breaker, fed by the retrieval embedder. */
+  private _embedderBreaker?: CircuitBreaker;
   /** The one reranker of this server, resolved once in `_buildInfra()` (§7.4). */
   private _reranker?: IReranker;
   /**
@@ -1160,17 +1171,25 @@ export class SmartServer {
           temperature: optionalNumber(helperCfg.temperature),
         })
       : undefined;
-    this._mainLlm = mainLlm;
-    this._classifierLlm = classifierLlm;
-    this._helperLlm = helperLlm;
+    // `circuitBreaker:` → the shared breakers (§14.2): created once, before any
+    // LLM is held, and wrapped where each LLM is created — never in a builder.
+    if (this.cfg.circuitBreaker) {
+      this._llmBreakers = new LlmCircuitBreakers(this.cfg.circuitBreaker);
+      this._embedderBreaker = new CircuitBreaker(this.cfg.circuitBreaker);
+    }
+    this._mainLlm = this.guardLlm(mainLlm, 'main');
+    this._classifierLlm = this.guardLlm(classifierLlm, 'classifier');
+    this._helperLlm = helperLlm && this.guardLlm(helperLlm, 'helper');
     this._llmMap = llmMap;
     this._mainTemp = mainTemp;
+    const breakers = this._llmBreakers;
     this._roleLlm = new RoleLlmResolver({
       getMain: () => this._mainLlm,
       getHelper: () => this._helperLlm,
       getClassifier: () => this._classifierLlm,
       getLlmMap: () => this._llmMap,
       build: (entry) => this._deps.makeLlm(entry),
+      ...(breakers ? { wrap: (llm, key) => breakers.wrap(llm, key) } : {}),
     });
 
     // The programmatic subAgentConfigs path never passed the YAML check, so a
@@ -1362,6 +1381,9 @@ export class SmartServer {
       this._deps.resolveEmbedder,
       mergedEmbedderFactories,
       this._fileLogger,
+      // The embedder breaker sees the real embedding calls (§14.2): each half
+      // is wrapped below the document/query role. Worker embedders keep none.
+      this.embedderBreakerWrap(),
     );
     // Hold the resolved embedder so buildServerCtx can thread it onto every
     // pipeline context (the controller pipeline needs it for target-state).
@@ -1611,9 +1633,10 @@ export class SmartServer {
     // Assemble everything EXCEPT the coordinator via the shared base-builder
     // factory; the coordinator gate below wires the chosen variant.
     const builder = await this.buildBaseBuilder({
-      mainLlm,
-      classifierLlm,
-      helperLlm,
+      // The held (breaker-guarded) instances: the builder never wraps an LLM.
+      mainLlm: this._mainLlm as ILlm,
+      classifierLlm: this._classifierLlm as ILlm,
+      helperLlm: this._helperLlm,
       fileLogger,
       toolsRag,
       historyRag,
@@ -1803,7 +1826,8 @@ export class SmartServer {
       agent: smartAgent,
       startTime,
       version: this.cfg.version ?? PACKAGE_VERSION,
-      circuitBreakers,
+      // Re-read per check: a PUT /v1/config swap replaces a key's breaker.
+      circuitBreakers: this.breakerList() ?? circuitBreakers,
     });
 
     // Startup health check removed — use `npm run models:check` for diagnostics.
@@ -2245,6 +2269,27 @@ export class SmartServer {
     return key !== undefined
       ? this.roleLlm().resolveNamed(key)
       : this.roleLlm().resolve(role);
+  }
+
+  /** `llm` behind its key's circuit breaker when `circuitBreaker:` is set. */
+  private guardLlm(llm: ILlm, key: string): ILlm {
+    return this._llmBreakers ? this._llmBreakers.wrap(llm, key) : llm;
+  }
+
+  /** The `wrap` argument of the main `resolveRetrievalEmbedder` call, if any. */
+  private embedderBreakerWrap():
+    | ((embedder: IEmbedder) => IEmbedder)
+    | undefined {
+    const breaker = this._embedderBreaker;
+    return breaker ? (e) => withCircuitBreaker(e, breaker) : undefined;
+  }
+
+  /** `/health`'s breakers: every key's current LLM breaker, then the embedder's. */
+  private breakerList(): (() => readonly CircuitBreaker[]) | undefined {
+    const llm = this._llmBreakers;
+    const embedder = this._embedderBreaker;
+    if (!llm || !embedder) return undefined;
+    return () => [...llm.list(), embedder];
   }
 
   private roleLlm(): IRoleLlmResolver {
@@ -2754,13 +2799,13 @@ export class SmartServer {
    * every `.withXxx` is applied conditionally on its `parts` field so both work.
    *
    * `applyServerExtras` gates the startup-only, config/plugin-derived wiring
-   * (circuit breaker, queryExpander/outputValidator, skill manager,
+   * (queryExpander/outputValidator, skill manager,
    * LLM-call strategy, client adapters, and the YAML `mcp:` connect path). The
    * per-session re-wire omits these (it inherits a slimmer agent) so they stay
    * gated to preserve behavior.
    * Not gated, because per-session agents serve the requests: the reranker
    * (§7.4), the per-store retrieval strategies and `agent.toolSelection`
-   * (§13.4).
+   * (§13.4), and the shared embedder circuit breaker (§14.2).
    */
   private async buildBaseBuilder(parts: {
     mainLlm: ILlm;
@@ -2844,11 +2889,16 @@ export class SmartServer {
       builder = builder.withToolSelectionStrategy(this._toolSelectionStrategy);
     }
 
+    // Not gated, same reason: the ONE embedder breaker guards the stores of
+    // every agent (§14.2). The LLMs given above are already breaker-guarded.
+    if (this._embedderBreaker) {
+      builder = builder.withCircuitBreakers({
+        embedder: this._embedderBreaker,
+      });
+    }
+
     if (parts.applyServerExtras) {
       const plugins = parts.plugins;
-      if (this.cfg.circuitBreaker) {
-        builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
-      }
       if (plugins?.queryExpander) {
         builder = builder.withQueryExpander(plugins.queryExpander);
       }
@@ -3277,14 +3327,18 @@ export class SmartServer {
     return {
       modelResolver: this.cfg.modelResolver,
       skipModelValidation: this.cfg.skipModelValidation === true,
+      // A swapped-in LLM gets a fresh breaker for its key (§14.2).
       setMainLlm: (llm) => {
-        this._mainLlm = llm;
+        this._mainLlm = this.guardLlm(llm, 'main');
+        return this._mainLlm;
       },
       setClassifierLlm: (llm) => {
-        this._classifierLlm = llm;
+        this._classifierLlm = this.guardLlm(llm, 'classifier');
+        return this._classifierLlm;
       },
       setHelperLlm: (llm) => {
-        this._helperLlm = llm;
+        this._helperLlm = this.guardLlm(llm, 'helper');
+        return this._helperLlm;
       },
       mirrorAgentCfg: (patch) => {
         const merged: Record<string, unknown> = {
