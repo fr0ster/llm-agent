@@ -38,6 +38,11 @@ English queries (see *Evidence* below):
 
 ## Goals
 
+**Purpose:** let a consumer build any pipeline, and support any MCP server in
+it. The MCP tools profiles assume nothing about one server; the measurements
+below come from one consumer and one server (`mcp-abap-adt`) and are evidence,
+not the target platform.
+
 1. The framework offers, for every kind of collection, **a pair** a consumer can
    build its pipeline with:
    - how the collection is **filled**: which records are made from one source
@@ -74,7 +79,14 @@ English queries (see *Evidence* below):
      owner and visibility so they can be shared across agents.
 8. **Skills** and **user collections** stay on today's behaviour (30.1.0) for
    now. They can get profiles later through the same contract.
-9. **Rerankers are alternatives the consumer chooses at deploy.** The framework
+9. **MCP tools profiles are server-agnostic.** They are built only from what any
+   MCP server exports (name, description, input schema including enum values),
+   never from one server's naming conventions. They work both for fine-grained
+   tool sets (one tool per operation and object, short schemas, hundreds of
+   tools) and coarse ones (one tool per operation with the object in a
+   parameter, large schemas, tens of tools). Since tools differ greatly in size,
+   the final cut can be a token budget, not only a count.
+10. **Rerankers are alternatives the consumer chooses at deploy.** The framework
    ships at least two:
    - a cross-encoder on **SAP AI Core** (Cohere Rerank) — new work, since on a
      deployment SAP AI Core is usually the only provider available;
@@ -102,6 +114,7 @@ English queries (see *Evidence* below):
 | 2026-10-04 | Rerankers are alternatives: Cohere on SAP AI Core and TypeSafe Jev both get a profile configuration; the consumer picks at deploy. The Cohere (SAP AI Core) reranker provider is in this PR. |
 | 2026-10-04 | llm-agent ships the contracts of the pipeline elements and some default implementations. For MCP tools it ships several default variants, so a consumer has a real choice; skills stay on today's behaviour and get default variants of their own later. Everything is configured through strategies injected by the consumer, not through flags inside one implementation. |
 | 2026-10-05 | Query splitting is a strategy the consumer injects, not a behaviour the framework ships. The framework provides the component: the default retrieval calls the injected splitting strategy; with none injected it runs the query as is. `k` stays the overall limit of a retrieval, as in 30.1.0: the strategy distributes the budget among its sub-queries and the default retrieval never returns more than k items. No shipped variant uses splitting: its measured gain came mostly from mislabelled multi-step queries and Cohere's ranking, and a genuinely dependent second step is a separate step for the planner. This replaces the clause split as a built-in profile option. |
+| 2026-10-05 | The purpose is to let a consumer build any pipeline and support any MCP server in it. MCP tools profiles are server-agnostic (goal 9); `mcp-abap-adt` is one server among many. Its two tool sets — fine-grained object-oriented tools and the coarse `compact` set (22 tools, one per operation, object in `object_type`, ~10k tokens in all) — are both measured as examples of the two shapes. |
 | 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
 
 ## Evidence (measured in cloud-llm-hub, 2026-09-30 … 2026-10-04)
