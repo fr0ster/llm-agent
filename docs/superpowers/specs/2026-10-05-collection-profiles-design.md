@@ -2025,7 +2025,7 @@ Recommendations approved by the user on 2026-10-05:
 
 ### 17.3 Raised by the server-agnostic amendment
 
-The `compact` measurement (§2.5.1) settles four of them; three stay open for the user.
+The `compact` measurement (§2.5.1) settles four of them; the user decided the other four (D16, D18, D22, D23) on 2026-10-05.
 
 **Settled by the `compact` measurement** (the user reviews them with the spec):
 
@@ -2036,16 +2036,11 @@ The `compact` measurement (§2.5.1) settles four of them; three stay open for th
 | D20 | `coarse` ships with no numbers until the `compact` measurement lands? | **Superseded.** The `coarse` variant (per-value records + token budget) is **withdrawn**; the coarse default is `small-set-jev` with measured numbers: one record per tool + rerank-all + `FixedItemsCut(3)` (§7.4). | Per-value records measured worse (§7.3.2); the token budget measured worse than k (§4.10); one record + Jev over the whole set: 0.970 at ~1.6k tokens. The only required argument left, `poolItems`, is the consumer's tool count, not a tuned number. |
 | D21 | Return which enum values matched with a coarse tool (`metadata.matchedValues`)? | **No** — not in this PR. | No default writes per-value records any more, so no default has values to report. A consumer that injects `EnumValueToolIndexer` and wants the hint justifies a new output contract with its own measurement. |
 
-**Still open:**
+**Decided by the user on 2026-10-05** (each with the recommended option):
 
-| # | Question | Recommendation |
+| # | Question | Decision |
 |---|---|---|
 | D16 | The `faceted*` defaults use schema-derived records (`summary` + `parameters`); `ParametersFacet` is **not yet measured** on the fine-grained set. Accept shipping them on the closest measured layouts' figures (LLM-generated `operation` / `object` facets and name-derived facets, both 0.966 at k=5 hybrid, hub spike `spike-facets`) until the consumer check runs? | **Yes** — the name-derived `object` record depends on one server's naming; a default may not. The measured layout stays one line away for a verb-first server (`NameTailFacet`, §7.5). If the check shows `parameters` worse, the fix is a better schema-derived facet, not the convention. Not settled by `compact`: that set has no fine-grained facets. |
 | D18 | `RequiredEnumDiscriminator` with several qualifying parameters: no fan-out + `IndexReport.notes`, or fan out over all of them? | **No fan-out + note** — goal 3, never guess; `NamedDiscriminator` or the consumer's selector resolves it. Lower stakes now: it only serves `EnumValueToolIndexer`, which is in no default. |
 | D22 | `ToolItem` carries the raw `inputSchema` (for consumer strategies) and `parameters` replaces `parameterNames`. | **Yes** — without the raw schema a consumer cannot build a profile for a server whose signal sits elsewhere in the schema (goal 9); `ToolItem` is new in this spec, so nothing breaks. |
-
-**New, raised by `small-set-jev`:**
-
-| # | Question | Recommendation |
-|---|---|---|
 | D23 | `small-set-jev` takes `poolItems` (≥ the tool count) as a required argument and the composition root checks it at startup. Alternative: a new `ICandidatePool` that always takes the whole store (no number at all). | **Required `poolItems` + startup check** — no new strategy class, same shape as 30.1.0's `RerankAllRetrieval.maxCandidates` ("configured, never derived"). A whole-store pool can be added later if consumers ask. |
