@@ -15,12 +15,15 @@ import type {
   IKnowledgeRagHandle,
   ILlm,
   ILlmApiAdapter,
+  ILlmCallStrategy,
   ILogger,
   IMcpClient,
   IModelProvider,
   IModelResolver,
+  IOutputValidator,
   IPipelineInstance,
   IPipelinePlugin,
+  IQueryExpander,
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
@@ -834,6 +837,16 @@ export class SmartServer {
   private _retrievalStrategies: Map<string, IRetrievalStrategy> = new Map();
   /** `agent.toolSelection`, resolved once; applied to every builder (§13.4). */
   private _toolSelectionStrategy?: IToolSelectionStrategy;
+  /** Plugin output validator, resolved once; applied to every builder (§14.1). */
+  private _outputValidator?: IOutputValidator;
+  /** Plugin query expander, resolved once; applied to every builder (§14.1). */
+  private _queryExpander?: IQueryExpander;
+  /** DI > plugin > YAML `skills:`, resolved once; vectorized at startup only. */
+  private _skillManager?: ISkillManager;
+  /** `agent.llmCallStrategy`, resolved once; applied to every builder (§14.1). */
+  private _llmCallStrategy?: ILlmCallStrategy;
+  /** DI > plugin > default `ClineClientAdapter`, resolved once (§14.1). */
+  private _clientAdapters: IClientAdapter[] = [];
   private _fileLogger?: ILogger;
   private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
   /**
@@ -1253,6 +1266,36 @@ export class SmartServer {
     this._reranker = await resolveReranker({
       pluginReranker: plugins.reranker,
     });
+
+    // ---- Validator, expander, skills, LLM-call strategy, adapters (§14.1) --
+    // Resolved ONCE here and applied by buildBaseBuilder to every builder
+    // (per-session agents serve the requests).
+    this._outputValidator = plugins.outputValidator;
+    this._queryExpander = plugins.queryExpander;
+    this._skillManager =
+      this.cfg.skillManager ??
+      plugins.skillManager ??
+      resolveSkillManager(this.cfg.skills);
+    const strategyName = this.cfg.agent?.llmCallStrategy;
+    if (strategyName) {
+      const {
+        StreamingLlmCallStrategy,
+        NonStreamingLlmCallStrategy,
+        FallbackLlmCallStrategy,
+      } = await import('@mcp-abap-adt/llm-agent');
+      const strategies = {
+        streaming: () => new StreamingLlmCallStrategy(),
+        'non-streaming': () => new NonStreamingLlmCallStrategy(),
+        fallback: () => new FallbackLlmCallStrategy(this._fileLogger),
+      };
+      this._llmCallStrategy = strategies[strategyName]?.();
+    }
+    const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
+    this._clientAdapters = [
+      ...(this.cfg.clientAdapters ?? []),
+      ...plugins.clientAdapters,
+      new ClineClientAdapter(),
+    ];
 
     // ---- Per-store retrieval strategies (§13.4) ---------------------------
     // Resolved ONCE, server-wide. An explicit per-store strategy (embedding
@@ -2798,14 +2841,14 @@ export class SmartServer {
    * supplies its own scope's values (startup = global; session = session-scoped);
    * every `.withXxx` is applied conditionally on its `parts` field so both work.
    *
-   * `applyServerExtras` gates the startup-only, config/plugin-derived wiring
-   * (queryExpander/outputValidator, skill manager,
-   * LLM-call strategy, client adapters, and the YAML `mcp:` connect path). The
-   * per-session re-wire omits these (it inherits a slimmer agent) so they stay
-   * gated to preserve behavior.
+   * `applyServerExtras` now guards only the YAML `mcp:` auto-connect fallback,
+   * which stays startup-only (one connection). It also decides whether the skill
+   * manager vectorizes its skills into the tools store (startup build only).
    * Not gated, because per-session agents serve the requests: the reranker
    * (§7.4), the per-store retrieval strategies and `agent.toolSelection`
-   * (§13.4), and the shared embedder circuit breaker (§14.2).
+   * (§13.4), the shared embedder circuit breaker (§14.2), and the output
+   * validator, query expander, skill manager, LLM-call strategy and client
+   * adapters (§14.1).
    */
   private async buildBaseBuilder(parts: {
     mainLlm: ILlm;
@@ -2897,59 +2940,30 @@ export class SmartServer {
       });
     }
 
-    if (parts.applyServerExtras) {
-      const plugins = parts.plugins;
-      if (plugins?.queryExpander) {
-        builder = builder.withQueryExpander(plugins.queryExpander);
-      }
-      if (plugins?.outputValidator) {
-        builder = builder.withOutputValidator(plugins.outputValidator);
-      }
-
-      // Skill manager (DI > YAML config > plugin)
-      const skillManager =
-        this.cfg.skillManager ??
-        plugins?.skillManager ??
-        resolveSkillManager(this.cfg.skills);
-      if (skillManager) {
-        builder = builder.withSkillManager(skillManager);
-      }
-
-      // LLM call strategy (from agent config)
-      const strategyName = this.cfg.agent?.llmCallStrategy;
-      if (strategyName) {
-        const {
-          StreamingLlmCallStrategy,
-          NonStreamingLlmCallStrategy,
-          FallbackLlmCallStrategy,
-        } = await import('@mcp-abap-adt/llm-agent');
-        const strategies = {
-          streaming: () => new StreamingLlmCallStrategy(),
-          'non-streaming': () => new NonStreamingLlmCallStrategy(),
-          fallback: () => new FallbackLlmCallStrategy(parts.fileLogger),
-        };
-        const factory = strategies[strategyName];
-        if (factory) {
-          builder = builder.withLlmCallStrategy(factory());
-        }
-      }
+    // Not gated, same reason: the output validator, query expander, skill
+    // manager, LLM-call strategy and client adapters reach the per-session
+    // agents that serve requests (§14.1). Skills are vectorized into the tools
+    // store by the startup build only.
+    if (this._queryExpander) {
+      builder = builder.withQueryExpander(this._queryExpander);
+    }
+    if (this._outputValidator) {
+      builder = builder.withOutputValidator(this._outputValidator);
+    }
+    if (this._skillManager) {
+      builder = builder.withSkillManager(this._skillManager, {
+        vectorize: parts.applyServerExtras,
+      });
+    }
+    if (this._llmCallStrategy) {
+      builder = builder.withLlmCallStrategy(this._llmCallStrategy);
+    }
+    for (const adapter of this._clientAdapters) {
+      builder = builder.withClientAdapter(adapter);
     }
 
     if (parts.mcpClients) {
       builder = builder.withMcpClients(parts.mcpClients);
-    }
-
-    if (parts.applyServerExtras) {
-      // Client adapters (DI > plugin; ClineClientAdapter is the default).
-      const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
-      const adapterSources = [
-        ...(this.cfg.clientAdapters ?? []),
-        ...(parts.plugins?.clientAdapters ?? []),
-        new ClineClientAdapter(),
-      ];
-      for (const adapter of adapterSources) {
-        builder = builder.withClientAdapter(adapter);
-      }
     }
 
     if (parts.workerRegistry.size > 0) {
