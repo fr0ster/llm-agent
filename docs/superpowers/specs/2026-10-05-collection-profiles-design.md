@@ -8,8 +8,13 @@
 > (`IRetrievalStrategy`, `StrategyRag`, the rerank strategies; its spec §13 is in git
 > history at `74922e28^:docs/superpowers/specs/2026-10-02-decision-model-design.md`).
 >
-> **Status:** draft for the user's review. Items marked **Decision for the user** carry a
+> **Status:** draft for the user's review. D1–D11 and `IItemCut.limit()` were approved by the user
+> on 2026-10-05 (§17.2). The amendment below raises new open decisions D16–D22 (§17.3), each with a
 > recommendation; everything else is decided here, with the reason.
+>
+> **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
+> with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
+> labelled examples and as the evidence they were measured on (§2.0, §7.0).
 
 ## TL;DR
 
@@ -39,19 +44,30 @@
 - **Everything is a strategy (DI).** A profile is a **composition** of injected strategy
   instances: indexing, candidate pool, collapse, query decomposition (optional), reranker,
   final cut. No booleans where a strategy is the choice. YAML only maps names to instances, in the builder.
+- **Profiles for different MCP servers (goal 9).**
+  - The **shipped** tools strategies read only what any MCP server exports: name, description,
+    input schema (property names, descriptions, enum values). None parses one server's naming
+    convention (§7.0).
+  - Where no shipped profile fits a server, the **consumer builds its own** from the contracts and
+    uses it in the pipeline; the contracts are sufficient for that (§7.9).
 - Default profiles ship:
   1. **MCP tools — several named variants**, so the consumer has a real choice (§7):
      - `baseline` = 30.1.0 (one record per tool, top-k) — the default;
-     - `faceted` = `full` + `operation` + `object` records, item pool, collapse by max;
+     - `faceted` = `full` + `summary` + `parameters` records (all schema-derived), item pool,
+       collapse by max — for **fine-grained** tool sets;
      - `faceted-cohere` = faceted + Cohere on SAP AI Core;
-     - `faceted-jev` = faceted + TypeSafe Jev (`DecisionReranker`).
+     - `faceted-jev` = faceted + TypeSafe Jev (`DecisionReranker`);
+     - `coarse` = `full` + one `value` record per enum value of the tool's discriminating
+       parameter + **token-budget cut** — for **coarse** tool sets (object in a parameter).
      **Intents** are an indexing strategy any variant can add: an `intent` record per tool
      (default placement) or a companion collection.
+  - **Token-budget cut (`TokenBudgetCut`, §4.10):** keeps whole items in rank order while their
+    definitions fit a token budget; never truncates a tool. Usable with any variant.
   2. **`SharedItemsProfile`** — a generic shared base. Pipeline elements write items (record kinds
      of their choosing) through `index()` / `remove()`; the profile finds them and returns each
      item **whole**; every record carries owner keys and a visibility (`user` / `group` /
      `global`). What an item contains is the writing element's business, not this spec's.
-- **Rerankers are alternatives** (goal 9): a new **`SapAiCoreReranker`** (Cohere on SAP AI Core, own
+- **Rerankers are alternatives** (goal 10): a new **`SapAiCoreReranker`** (Cohere on SAP AI Core, own
   package) and the existing **`DecisionReranker`** (TypeSafe Jev). Each gets a default profile
   configuration.
 - A reranker that returns a wrong or missing score count is a **reranker error**, counted and
@@ -66,21 +82,25 @@
 | Term | Meaning | Example |
 |---|---|---|
 | **Item** | One source thing a consumer wants back | one MCP tool; one shared item |
-| **Record** | One row in a store: physical id + embedded text + metadata | the `operation` record of `tool:GetWhereUsed` |
-| **Item id** | The **logical** id a writer or provider chooses (`metadata.itemId`). Not unique in a store | `tool:GetWhereUsed` |
-| **Record id** | The **physical** store id: owner scope + owner key + item id + kind + index (§3.1) | `g:/tool%3AGetWhereUsed#operation:0` |
-| **Record kind** | Which view of the item a record is | tools: `full`, `operation`, `object`, `intent`; shared items: `item` + the writer's own kinds |
+| **Record** | One row in a store: physical id + embedded text + metadata | the `summary` record of `tool:read_file` |
+| **Item id** | The **logical** id a writer or provider chooses (`metadata.itemId`). Not unique in a store | `tool:read_file` |
+| **Record id** | The **physical** store id: owner scope + owner key + item id + kind + index (§3.1) | `g:/tool%3Aread_file#summary:0` |
+| **Record kind** | Which view of the item a record is | tools: `full`, `summary`, `parameters`, `value`, `intent` (+ a consumer's own); shared items: `item` + the writer's own kinds |
+| **Fine-grained tool set** | Many tools, one per operation **and** object, short schemas | example: mcp-abap-adt's object-oriented set — 345 tools, median ~840 chars (`GetClass`, `UpdateDomain`) |
+| **Coarse tool set** | Few tools, one per operation, the object passed in a parameter, large schemas | example: mcp-abap-adt `compact` — 22 tools, `object_type` enum, ~39.5k chars ≈ 10k tokens in all |
+| **Discriminating parameter** | The input-schema property whose enum values name the different things a coarse tool acts on (§7.3.2) | example: `object_type` in mcp-abap-adt `compact` |
+| **Definition size** | Size of the tool definition the LLM receives: name + description + input schema, as exported (§4.10) | `HandlerCreate` ≈ 5k chars (mcp-abap-adt `compact`) |
 | **Canonical record** | The item's record of the indexer's `canonicalKind`, index 0. Its text is the item text; its metadata is the item's payload | `full` (tools), `item` (shared items) |
 | **Owner-qualified item** | (owner scope, owner key, item id) — what collapse, `get` and `remove` key on | (`user`, `alice`, `case-42`) |
-| **Provider text** | What the tool provider exports: name, description, parameter names | the `full` record's text |
+| **Provider text** | What the tool provider exports: name, description, input schema (property names, descriptions, enum values) | the `full` record's text |
 | **Generated record** | A record whose text an LLM (or another generator) produced | an `intent` record |
-| **Store** | One `IRag` instance, addressed by its `ragStores` key | `tools`, `tools-writer`, `shared` |
+| **Store** | One `IRag` instance, addressed by its `ragStores` key | `tools`, `shared`; a consumer's per-role tool stores (e.g. `tools-reader`, `tools-writer`) |
 | **Source** | One store a retrieval queries, with its own identity filter | primary, intents companion, user partition |
 | **Partition** | A store that holds the shared items of one visibility | the `user` store, the `global` store, one group's store |
 | **Collection kind** | The kind of items a store holds | MCP tools, shared items, skills, user collections, history |
 | **Profile** | The indexing + retrieval pair for one collection kind (`ICollectionProfile`) — a composition of strategies | `ComposedToolsProfile` |
 | **Variant** | A named, shipped composition of strategy instances for one kind | `faceted-cohere` |
-| **Binding** | A profile applied to one concrete store set (`IBoundCollection`) | `mcpTools.bind({ key: 'tools-reader', rag })` |
+| **Binding** | A profile applied to one concrete store set (`IBoundCollection`) | `mcpTools.bind({ key: 'tools', rag })` |
 
 **One profile, several stores (goal 6).** A profile instance holds what the kind shares (records,
 reranker, cut, candidate count). `bind()` is called once per store and returns that store's
@@ -99,11 +119,23 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 | `IQueryPreprocessor` / `IQueryExpander` | in-store / pipeline query rewrites, one text → one text | untouched; query decomposition (one query → budgeted sub-queries) is the new `IQueryDecomposer` (§4.5) |
 | `RagCollectionOwner` | owner of a whole **collection** (catalog record) | untouched; a **record's** owner is `RecordOwner` |
 | `IReranker` | `rerank(query, results, options)` | unchanged; both rerankers implement it |
-| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `IToolFacet`, `IToolIntentSource`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `SharedItemsProfile`, `SapAiCoreReranker` |
+| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `CharsPerTokenEstimator`, `ToolDefinitionSizeEstimator`, `SharedItemsProfile`, `SapAiCoreReranker` |
 
 ---
 
 ## 2. Why this shape (evidence → design)
+
+### 2.0 Scope of the evidence
+
+- **One consumer, one server.** Every figure below comes from cloud-llm-hub over **one** MCP server
+  (`mcp-abap-adt`, its fine-grained read-only set). It is evidence for the design, **not** the
+  target platform (goal *Purpose*).
+- **What carries over to any server:** the retrieval mechanics — items vs records, collapse by max,
+  the pool in items, rerankers on provider text. They do not depend on what the tools are called.
+- **What does not carry over:** any record whose text came from parsing **this** server's tool
+  names. The measured `object` record did (§2.1, last row); it is not in any shipped default.
+- **Coarse tool sets have no measurement yet.** A `compact` measurement is being prepared; every
+  figure for the `coarse` variant is **to be measured** (§7.4).
 
 Source: cloud-llm-hub, 237 tools, labelled queries, **required-recall** (every needed tool
 returned). EN-ext = 87 rows (73 single-step + 14 multi-step); non-English = 26 rows.
@@ -116,12 +148,14 @@ points). Differences of 1–2 rows are noise.
 | Measured | Design consequence |
 |---|---|
 | Today (one record per tool, hybrid): 0.943 at k=5; 0.977 at k=15 with ~25 tools | baseline stays the default profile |
-| `full` + `operation` + `object`, collapse by **best hit**: 0.966 at k=5; 0.977 at k=8 with ~13 tools | multi-record indexing + collapse step, k in items |
+| `full` + `operation` + `object` (the measured layout; `object` parses names, see the last rows), collapse by **best hit**: 0.966 at k=5; 0.977 at k=8 with ~13 tools | multi-record indexing + collapse step, k in items |
 | Collapse by count or RRF is worse than max | ship **`MaxScoreCollapse` only**; the rule is an injected `ICollapseRule` |
 | Facets without `full` are clearly worse (0.885) | `full` is not a facet, so it cannot be dropped (§7.3) |
 | Deterministic facets = LLM facets on English (0.966 = 0.966) | default facets need no LLM |
 | Intent layouts, stage 1 only (hybrid, k=5): intents inside `full` 0.954; own `intent` record 0.954; no intents 0.943; both 0.954. Differences 1–2 rows | intents are an **indexing strategy** the consumer adds; default placement **own record** (§7.3) |
 | Intent layouts **with a reranker** (several records per tool): within noise of each other (goal *Evidence*) | the layout is chosen for stage-1 reasons only |
+| The measured third record, `object`, was "the name words after the first word" — it assumes names are verb-first (`GetWhereUsed` → `where used`), a convention of one server | **not** in any default: kept only as the opt-in, convention-dependent `NameTailFacet` (§7.3). The default third record is schema-derived (`parameters`), **to be measured** |
+| The measured `operation` record ("name words — first description clause") only tokenizes the name; it assumes no order or vocabulary | kept, renamed **`summary`** (same text): nothing in it is server-specific |
 
 ### 2.2 Retrieval
 
@@ -168,6 +202,27 @@ Figures as in the goal's *Evidence* table; the misses below are the goal's accou
   - no shipped variant uses it and no implementation ships;
   - `k` stays the overall limit, as in 30.1.0;
   - a consumer's strategy is measured by the consumer (§14.3).
+
+### 2.5 Two shapes of tool sets (goal 9)
+
+Sizes of one server's two sets (mcp-abap-adt, exported definitions — **examples**, not targets):
+
+| Shape | Example | Tools | Definition size |
+|---|---|---|---|
+| fine-grained | object-oriented set | 345 | median ~840 chars per tool |
+| coarse | `compact` | 22 (one per operation, object in `object_type`) | ~39.5k chars ≈ 10k tokens in all; `HandlerCreate` / `HandlerUpdate` ~5k chars each |
+
+**Design consequences:**
+
+- **One record per tool fails coarse sets.** A `HandlerCreate` record has to mean "create a class",
+  "create a domain" and dozens more at once; its one vector is the average of all of them. →
+  one record per **(tool, enum value)** of the discriminating parameter, collapsed back to the
+  tool (§7.3.2).
+- **A count is the wrong cut when sizes differ this much.** Two coarse tools (`HandlerCreate` +
+  `HandlerUpdate`) are ~10k chars; five median fine-grained tools are ~4.2k. The same k means very
+  different prompts. → the final cut can be a **token budget** (`TokenBudgetCut`, §4.10).
+- **The parameter must be found without a naming convention.** → it comes from the input schema
+  (a required, enum-valued property) or is named by the consumer (§7.3.2).
 
 ---
 
@@ -304,6 +359,8 @@ export interface IndexReport {
   readonly indexedItems: number;   // items with every record written
   readonly records: number;        // records written
   readonly failedItems: readonly { readonly itemId: string; readonly reason: string }[];
+  /** Not failures, but they changed what was written (e.g. `ambiguous-discriminator`, §7.3.2). */
+  readonly notes?: readonly { readonly itemId: string; readonly note: string; readonly detail?: string }[];
 }
 ```
 
@@ -401,12 +458,21 @@ export interface ICollapseRule {
 }
 
 /** Final cut over the ranked, hydrated items. `requestedK` is the caller's k, in items.
- *  Applied once, to the final result. */
+ *  Applied once, to the final result. Returns a rank-order PREFIX of whole items. */
 export interface IItemCut {
   readonly name: string;
-  /** The most items `cut` returns for `requestedK` — the retrieval's budget (§4.5). */
+  /** An UPPER BOUND, in items, on what `cut` returns for `requestedK` — the retrieval's budget
+   *  (§4.5). Not a promise to return that many: a cut may stop earlier (score floor, token
+   *  budget, §4.10). `cut(...)` never returns more items than this. */
   limit(requestedK: number): number;
   cut(items: readonly RagResult[], requestedK: number): RagResult[];
+}
+
+/** How big an item is for the prompt, in (estimated) tokens. Injected into a size-bounded cut. */
+export interface IItemSizeEstimator {
+  readonly name: string;
+  /** A non-negative integer. Pure: the same item always gets the same size. */
+  estimate(item: RagResult): number;
 }
 
 /** One sub-query and its share of the budget, in items. */
@@ -454,19 +520,50 @@ export function isRetrievalMetrics(m: unknown): m is IRetrievalMetrics;
 ### 3.5 Tool items and intents
 
 ```ts
+/** Everything here is read from what ANY MCP server exports (`tools/list`): name, description,
+ *  inputSchema. Nothing depends on one server's naming convention (goal 9). */
 export interface ToolItem {
-  readonly itemId: string;            // the IToolRecordKey output, e.g. `tool:GetWhereUsed`
+  readonly itemId: string;            // the IToolRecordKey output, e.g. `tool:read_file`
   readonly name: string;              // exposed (namespaced) name → metadata.name
-  readonly originalName: string;      // provider's name; facets derive from it
+  readonly originalName: string;      // provider's name (pre-namespace); facets derive from it
   readonly description: string;
-  readonly parameterNames: readonly string[]; // top-level inputSchema.properties keys, in order
+  /** Top-level `inputSchema.properties`, in schema order — what the shipped strategies read. */
+  readonly parameters: readonly ToolParameter[];
+  /** The input schema exactly as exported. Shipped strategies do not read it beyond
+   *  `parameters`; it is here so a consumer's own strategy can read anything a server puts in its
+   *  schema (annotations, nested objects) — §7.9. */
+  readonly inputSchema: Readonly<Record<string, unknown>>;
+  /** Characters of the definition the LLM receives: JSON of { name, description, inputSchema }
+   *  as exported. → canonical `metadata.definitionChars`; read by `ToolDefinitionSizeEstimator`. */
+  readonly definitionChars: number;
 }
 
-/** One extra record view of a tool, derived from provider text only (e.g. operation, object). */
+export interface ToolParameter {
+  readonly name: string;
+  readonly description?: string;
+  /** Listed in `inputSchema.required`. */
+  readonly required: boolean;
+  /** String values from `enum`, or from `oneOf` / `anyOf` entries with a string `const`
+   *  (each with that entry's `description` / `title`). Empty when the property has none. */
+  readonly values: readonly ToolParameterValue[];
+}
+
+export interface ToolParameterValue {
+  readonly value: string;
+  readonly description?: string;
+}
+
+/** One extra record view of a tool, derived from provider text only (e.g. summary, parameters). */
 export interface IToolFacet {
-  readonly kind: string;               // the record kind, e.g. 'operation'
+  readonly kind: string;               // the record kind, e.g. 'summary'
   /** The record text, or undefined when the provider text yields nothing (no record then). */
   derive(tool: ToolItem): string | undefined;
+}
+
+/** Picks a coarse tool's discriminating parameter (§7.3.2). Undefined → no per-value records. */
+export interface IDiscriminatorSelector {
+  readonly name: string;
+  select(tool: ToolItem): ToolParameter | undefined;
 }
 
 /** Where a tool's intents come from: an LLM, a file generated at deploy, a consumer's own. */
@@ -531,8 +628,12 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `IItemIndexer`, `ICollectionProfile`, `IBoundCollection`, `BindTarget`, `CollectionStore` | goals 1–2, 5–6: a profile contract consumers implement | used by libs (implementations, builder), server-libs (YAML) and consumers → the contracts package |
 | `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISourceSelector`, `RetrievalSource` | goal 1's new steps, each a consumer-swappable strategy (principle 5) | same users as above |
 | `IQueryDecomposer`, `SubQuery` | goal decision 2026-10-05: query splitting is a strategy the consumer injects and the default retrieval uses | libs (`StagedRetrieval` calls it), server-libs (YAML name → instance), consumers (implementations) |
-| `ToolItem`, `IToolFacet`, `IToolIntentSource` | typed input of the tools indexers; facets and intents are indexing strategies a consumer may write | builder (libs) + indexers + consumers that bring their own facets or precomputed intents |
+| `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource` | typed input of the tools indexers; facets and intents are indexing strategies a consumer may write. `parameters` replaces the earlier `parameterNames`: goal 9 requires records from the whole input schema (descriptions, enum values), and names alone cannot carry them. The raw `inputSchema` is there so a consumer can build a profile for **any** server from the contracts (goal 9, §7.9). `definitionChars` is what a token budget measures (§4.10) | builder (libs) + indexers + consumers that bring their own facets or precomputed intents |
+| `IDiscriminatorSelector` | goal 9, coarse tool sets: which parameter's values become records is a choice the consumer may inject, not a rule fixed inside the indexer (§7.3.2) | libs (`EnumValueToolIndexer`), server-libs (YAML), consumers |
+| `IItemSizeEstimator` | goal 9, token-budget cut: how an item's size is counted is injected, so a consumer can bring its model's tokenizer (§4.10) | libs (`TokenBudgetCut`), consumers |
+| `IItemCut.limit()` — doc only: an **upper bound** in items | already the meaning ("the most items `cut` returns"); stated explicitly so a cut that stops earlier (score floor, token budget) is honest under the same signature. No signature change | — |
 | `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `SharedItemsStores` | goal 7: what writing elements get; owner + visibility | libs (profile) + consumers (writing elements, group partitions) |
+| `IndexReport.notes?` | goal 9 + "never silent": an indexer that declines to guess (ambiguous discriminator) must say so without failing the item | libs (indexers), consumers reading the report |
 | `IRetrievalMetrics` | reranker errors must reach metrics and `/health` (goal *Evidence*) without growing `IMetrics` (principle 4) | metrics implementations live in libs; consumers plug their own backends |
 | `IRetrievalEmbedderOwner` | replaces the `(toolsRag as any).embedder` read — a cast that erased a type and is the cause of F1 | implemented by `VectorRag` (llm-agent) and the qdrant / pg-vector / hana provider packages |
 | `HealthComponentStatus.toolCatalog.records?`, `.profile?`, `MetricsSnapshot.retrievalOutcome?` | additive optional fields for §9 | where the health types already live |
@@ -628,7 +729,7 @@ merge hits
 - **`maxRecordsPerItem` comes from the indexing strategy** (`IItemIndexer.maxRecordsPerItem`),
   never the consumer's guess:
   - the 30.1.0 single record → 1; `FacetedToolIndexer` → 1 + its facets; `IntentRecordIndexer`
-    adds 1;
+    adds 1; `EnumValueToolIndexer` adds its required `maxValues` (§7.3.2);
   - shared items: a required constructor option of the profile; `index()` refuses an item with
     more records (`failedItems`, reason `too-many-records`).
 
@@ -645,7 +746,7 @@ decomposer.
 
 | Step | What |
 |---|---|
-| budget | `budget = cut.limit(requestedK)` (`TopItemsCut` → k; `FixedItemsCut(n)` → n; `ScoreFloorCut` → `maxItems`) |
+| budget | `budget = cut.limit(requestedK)` (`TopItemsCut` → k; `FixedItemsCut(n)` → n; `ScoreFloorCut` → `maxItems`; `TokenBudgetCut` → `maxItems ?? k`, §4.10) |
 | decompose | `decomposer.decompose(text, budget)` → sub-queries; the strategy owns how the budget is shared |
 | check | each `k` an integer ≥ 1, each `text` non-empty, `Σ k ≤ budget`; else a `RagError('…', 'DECOMPOSE_ERROR')` |
 | `[]` | the query runs as is with the whole budget (same as no decomposer) |
@@ -721,7 +822,7 @@ only orders; the payload always comes from the canonical record.
 first, the reranked items fill the rest, de-duplicated. **Counted inside k**, so k stays the
 overall limit (the previous draft added n on top). It was measured only on top of the former
 built-in clause split, and chosen after seeing the data: **no measured number backs it now**.
-Default 0. **Decision for the user** — D7.
+Default 0. Decided — D7 (§17).
 
 ### 4.8 Reranker output check
 
@@ -743,6 +844,7 @@ including a consumer's own.
 | cut | `TopItemsCut` | first `requestedK` items (default); `limit` = `requestedK` |
 | cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `minItems`, then more up to `maxItems` while `score ≥ minScore`; `limit` = `maxItems` |
 | cut | `FixedItemsCut(k)` | ignores the caller's k — for a store whose profile owns k; `limit` = its k |
+| cut | `TokenBudgetCut({ budgetTokens, maxItems?, estimator? })` | rank-order prefix of whole items while their summed size ≤ `budgetTokens`, at most `maxItems ?? requestedK` items; `limit` = `maxItems ?? requestedK` (§4.10) |
 | query decomposition | — | **none shipped**; the consumer injects its own `IQueryDecomposer` (§4.5) |
 
 - **k in items.** The caller's k (`ragQueryK ?? 10` in `rag-query`, 20 in `IToolsRagHandle` and the
@@ -754,9 +856,65 @@ including a consumer's own.
   `IToolSelectionStrategy` still runs on the flattened results of all stores, as in 30.1.0. A
   per-store threshold therefore belongs in the profile's cut.
 
+### 4.10 Token-budget cut — `TokenBudgetCut`
+
+**Why:** tools differ in size by an order of magnitude (§2.5). A count bounds the prompt only
+when tools are alike; a budget bounds it always (goal 9).
+
+```ts
+new TokenBudgetCut({
+  budgetTokens: number,            // required, a positive integer — the library picks no number
+  maxItems?: number,               // optional count ceiling; absent → the caller's k
+  estimator?: IItemSizeEstimator,  // absent → ToolDefinitionSizeEstimator (below)
+})
+```
+
+**Behaviour.**
+
+1. Walk the ranked, hydrated items in rank order.
+2. Keep an item while `Σ estimate(kept) + estimate(item) ≤ budgetTokens` **and** fewer than
+   `maxItems ?? requestedK` are kept.
+3. **Stop at the first item that does not fit.** No skipping ahead to smaller items: a lower-ranked
+   small tool must never displace a higher-ranked large one.
+4. **Never truncates an item.** A tool is returned whole or not at all.
+
+**`limit()` — honest under the existing contract.**
+
+| Question | Answer |
+|---|---|
+| What does `limit(requestedK)` return? | `maxItems ?? requestedK` — a count, as for every cut |
+| Is it the number returned? | No. It is an **upper bound** in items (the contract's meaning, §3.4). The budget may stop the cut earlier |
+| Where is the token bound? | In the cut itself, enforced once over the final result (§4.3) |
+| With a decomposer? | Sub-query `k`s share `limit(k)` items (§4.5); the token budget applies once, to the merged union |
+
+- **Why no contract change:** `limit()` already promised only "the most items `cut` returns";
+  `ScoreFloorCut` also returns fewer. Adding a token figure to `IItemCut` would make every count
+  cut carry a meaningless member (ISP). The budget lives in the one cut that has it.
+- **`k` stays the overall limit** (goal decision 2026-10-05): a token cut never returns more than
+  k items unless the consumer set `maxItems` explicitly (like `FixedItemsCut`).
+
+**Top item alone over budget.** The result is **empty**; counted as `outcome=over_budget` and on
+the span (§9). Never silent, never truncated. The consumer sizes the budget at least as large as
+its largest tool (every tool's `definitionChars` is known at index time, so the consumer's
+composition root can check it at startup). **Decision for the user** — D17.
+
+**Size estimators (injected; shipped defaults documented).**
+
+| Estimator | Size of an item | When |
+|---|---|---|
+| `ToolDefinitionSizeEstimator` (default) | `ceil(metadata.definitionChars / 4)`; no `definitionChars` → `ceil(text.length / 4)` | tools: measures the definition the LLM receives (name + description + input schema), not the RAG text |
+| `CharsPerTokenEstimator(charsPerToken)` | `ceil(text.length / charsPerToken)` | shared items and other kinds: the returned text is what reaches the prompt |
+| a consumer's own | e.g. the model's real tokenizer | when ~4 chars/token is not close enough |
+
+- **Why 4 chars per token:** the convention `DecisionReranker` already uses for its batch budget
+  (`decision-reranker.ts`: `Math.ceil(s.length / 4)`), and consistent with the one figure on hand
+  (mcp-abap-adt `compact`: ~39.5k chars ≈ 10k tokens). A documented estimate, not a tokenizer.
+- **Why `definitionChars` is written at index time:** the canonical record's text is the RAG text,
+  shorter than the definition; the cut must count what the prompt will carry.
+
 ---
 
-## 5. Rerankers are alternatives (goal 9)
+## 5. Rerankers are alternatives (goal 10)
 
 ### 5.1 What ships
 
@@ -826,7 +984,7 @@ order (as `DecisionReranker` does).
 - `llm-agent-server` (the app) adds it as a dependency, like `typesafe-decision`.
 - **Deployment id vs model name:** this PR takes `deploymentId`. Resolving a deployment by model
   name needs the deployment listing that lives privately in `sap-aicore-embedder`
-  (`resolveDeploymentId`). **Decision for the user** — D10.
+  (`resolveDeploymentId`). Decided — D10 (§17).
 
 ### 5.4 Rerankers in the shipped tools variants
 
@@ -871,29 +1029,36 @@ rag:
     history: { strategy: embedding }
   profiles:               # new; absent → 30.1.0 behaviour (= variant baseline)
     tools:
-      variant: faceted-cohere                    # baseline | faceted | faceted-cohere | faceted-jev | a registered name
+      variant: faceted-cohere                    # baseline | faceted | faceted-cohere | faceted-jev | coarse | a registered name
       intents:                                   # optional indexing strategy; not with baseline
         record: { file: ./tool-intents.json }    # or: companion: { source: { llm: intents }, store: { … } }
       decomposer: my-splitter                    # optional; a NAME the consumer registered (§4.5); not with baseline
 
+    # a coarse tool set (e.g. a second MCP server's store):
+    tools-coarse:
+      variant: coarse
+      coarse: { maxValues: <n>, poolItems: <n>, budgetTokens: <n> }   # required until measured (§7.4)
+      discriminator: required-enum               # required-enum | { named: <parameter> } | a registered name
+
     # …or the consumer's own composition, every value a NAME of a strategy:
-    tools-writer:
+    tools-writer:                                # example key: a consumer's per-role store
       compose:
-        indexer: { faceted: [operation, object] }  # facet names → IToolFacet instances
+        indexer: { faceted: [summary, parameters] }  # facet names → IToolFacet instances; name-tail is opt-in
+        # or: indexer: { enum-values: { inner: { faceted: [] }, discriminator: required-enum, maxValues: <n> } }
         pool: { items: 30 }                        # → ItemPool(30)
         collapse: max                              # → MaxScoreCollapse
         reranker: decision                         # none | cross-encoder | decision | llm
         question: tool                             # decision / llm only
         decomposer: none                           # none | a registered name (no built-in)
-        cut: { fixed-items: 5 }                    # top-items | fixed-items | score-floor {minItems,maxItems,minScore}
+        cut: { fixed-items: 5 }                    # top-items | fixed-items | score-floor {minItems,maxItems,minScore} | token-budget {budgetTokens,maxItems?}
         onFailure: stage1                          # stage1 | error
 ```
 
 - Parsed **only** by the server (`resolve-collection-profiles.ts` in server-libs, beside
   `resolve-retrieval.ts`).
 - Names resolve through registries in the composition deps (like `embedderFactories`):
-  `toolsVariantFactories` (built-ins: the four of §7.4) and `toolsStrategyFactories` (built-in
-  facets, pools, collapse, cuts). A consumer registers its own, including its decomposers (none
+  `toolsVariantFactories` (built-ins: the five of §7.4) and `toolsStrategyFactories` (built-in
+  facets, discriminators, pools, collapse, cuts, size estimators). A consumer registers its own, including its decomposers (none
   is built in). Unknown name → startup error.
 - A decomposer factory gets the store's query embedder from the resolver (the same one `makeRag`
   gives the store); YAML carries no decomposer parameters — they belong to the registered factory.
@@ -913,14 +1078,48 @@ rag:
   - `cross-encoder` without a `crossEncoder:` section, or without the seam;
   - `intents` or `decomposer` with `baseline`; `companion` without `store`;
   - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
+  - `coarse` without all of `maxValues`, `poolItems`, `budgetTokens`, or any of them non-positive;
+    `discriminator` on a variant without per-value indexing; non-positive `budgetTokens`;
   - a tools key whose variant is not a tools profile.
 - Server-wide like `rag.retrieval`: worker configs that declare `rag.profiles` are rejected;
   workers get the main config's bindings by key.
-- Shared items have **no YAML** in this PR (library API only). **Decision for the user** — D6.
+- Shared items have **no YAML** in this PR (library API only). Decided — D6 (§17).
 
 ---
 
 ## 7. Default profiles for MCP tools — strategies and named variants
+
+### 7.0 Shipped strategies carry no one server's conventions (goal 9)
+
+**Rule.** A shipped tools strategy reads only what **every** MCP server exports in `tools/list`:
+
+| Source | Used by |
+|---|---|
+| `name` (tokenized, no assumed order or vocabulary) | `full`, `summary`, `value` records |
+| `description` (whole, or its first clause) | `full`, `summary`, `value` records |
+| `inputSchema` — property names, descriptions, `required`, string `enum` / `const` values | `full`, `parameters`, `value` records; the discriminator (§7.3.2) |
+| size of the exported definition | `definitionChars` → `TokenBudgetCut` (§4.10) |
+
+- **Never in a shipped default:** parsing a name by verbs (`Get` / `Read` / `Create` …), a list of
+  one domain's object words, a server's exposition groups (e.g. mcp-abap-adt's `readonly` / `high`
+  sets) or role names. Those belong to a consumer's own strategy.
+- **Convention-dependent strategies may ship only as opt-ins**, documented as such, and in **no**
+  named variant: `NameTailFacet` (§7.3.1) is the one.
+- **mcp-abap-adt names in this section are examples**, marked as such.
+- **Not a promise that a shipped variant fits every server.** It is a promise that the shipped
+  ones assume nothing server-specific, and that the contracts let a consumer build the rest (§7.9).
+
+**Server-specific assumptions found in the previous draft, and their fix:**
+
+| Previous draft | Assumption | Now |
+|---|---|---|
+| `ObjectFacet` = "name words after the first word", in every `faceted*` variant | names are verb-first and the rest names the object (`GetWhereUsed`) | renamed **`NameTailFacet`**, opt-in, convention-dependent, in no variant; the default third record is the schema-derived **`parameters`** |
+| `OperationFacet` / record kind `operation` | the name encodes an operation | same text, renamed **`SummaryFacet`** / kind **`summary`**: it only tokenizes the name and takes the description's first clause |
+| `ToolItem.parameterNames` only | — (too little, not wrong) | `ToolItem.parameters`: names, descriptions, `required`, enum values (goal 9: input schema incl. enum values) |
+| first-clause rule drops "tags such as `[read-only]`" | one server's description tags | generic: any leading `[...]` tag; `[read-only]` is the labelled example |
+| name rule "drop a namespace prefix (`server__`)" | — | removed: facets read `originalName`, which is already pre-namespace |
+| examples `GetWhereUsed`, `GetATCFindings` as the design | ABAP tools as the reference | generic examples first; ABAP ones labelled (§14.1) |
+| only fine-grained tool sets considered | one tool per operation **and** object | coarse sets get `EnumValueToolIndexer` + `TokenBudgetCut` and the `coarse` variant |
 
 ### 7.1 Principle
 
@@ -929,22 +1128,28 @@ rag:
 - For MCP tools it ships **several** variants, so the consumer has a real choice.
 - A variant is a **named composition of injected strategy instances** — not one class with flags.
   The consumer may take a variant as is or compose its own from the same strategies (or its own).
+- No variant relies on one server's conventions (§7.0). The consumer picks the variant that
+  matches the **shape** of its tool set (fine-grained or coarse, §2.5). Where none fits its server,
+  it composes its own profile from the contracts (§7.9).
 - The numbers inside a variant (pool size, cut) are part of its definition and listed with the
-  measurement behind them. The consumer picks the variant explicitly; nothing is guessed (goal 3).
+  measurement behind them — or marked **to be measured**. The consumer picks the variant
+  explicitly; nothing is guessed (goal 3).
 
 ### 7.2 The strategies
 
 | Step | Contract | Shipped instances |
 |---|---|---|
-| indexing | `IItemIndexer<ToolItem>` | 30.1.0 single record (no profile); `FacetedToolIndexer(facets)`; `IntentRecordIndexer(inner, source)`; `IntentCompanionIndexer(source)` |
-| facet (inside faceted indexing) | `IToolFacet` | `OperationFacet`, `ObjectFacet` |
+| indexing | `IItemIndexer<ToolItem>` | 30.1.0 single record (no profile); `FacetedToolIndexer(facets)`; `EnumValueToolIndexer(inner, { discriminator, maxValues })`; `IntentRecordIndexer(inner, source)`; `IntentCompanionIndexer(source)` |
+| facet (inside faceted indexing) | `IToolFacet` | `SummaryFacet`, `ParametersFacet`; opt-in, convention-dependent: `NameTailFacet` |
+| discriminator (inside per-value indexing) | `IDiscriminatorSelector` | `RequiredEnumDiscriminator`, `NamedDiscriminator(parameter)` |
 | intent source | `IToolIntentSource` | `StaticIntentSource(map)`, `LlmIntentSource(llm, { prompt? })` |
 | in-store scoring | `ISearchStrategy` (existing, on the store) | the store's own (hybrid or cosine) |
 | candidate pool | `ICandidatePool` | `ItemPool(n)` |
 | collapse | `ICollapseRule` | `MaxScoreCollapse` |
 | reranker | `IReranker` (existing) | none; `SapAiCoreReranker`; `DecisionReranker` + `TOOL_QUESTION`; `LlmReranker` |
 | query decomposition | `IQueryDecomposer` (optional, §4.5) | **none** — the consumer's own |
-| final cut | `IItemCut` | `TopItemsCut`, `FixedItemsCut(k)`, `ScoreFloorCut(...)` |
+| final cut | `IItemCut` | `TopItemsCut`, `FixedItemsCut(k)`, `ScoreFloorCut(...)`, `TokenBudgetCut(...)` |
+| size estimate (inside a token cut) | `IItemSizeEstimator` | `ToolDefinitionSizeEstimator` (default), `CharsPerTokenEstimator(n)` |
 
 The composing class is `ComposedToolsProfile` (an `ICollectionProfile<ToolItem>`):
 
@@ -966,29 +1171,92 @@ new ComposedToolsProfile({
 
 ### 7.3 Indexing strategies — records
 
-**Provider records** (`FacetedToolIndexer([new OperationFacet(), new ObjectFacet()])`):
+#### 7.3.1 Provider records — fine-grained sets (`FacetedToolIndexer`)
+
+`FacetedToolIndexer([new SummaryFacet(), new ParametersFacet()])`:
 
 | Kind | Id | Text | Written when |
 |---|---|---|---|
 | `full` (canonical) | `recordId(global, itemId, 'full', 0)` — `itemId` is the 30.1.0 id | `Tool: <name> — <description>` + `\nParameters: <p1>, <p2>, …` when there are any | always — not a facet, so it cannot be left out |
-| `operation` (`OperationFacet`) | `recordId(global, itemId, 'operation', 0)` | `<name words> — <first clause of description>` | the first clause is non-empty |
-| `object` (`ObjectFacet`) | `recordId(global, itemId, 'object', 0)` | `<name words after the first word>` | the name has ≥ 2 words |
+| `summary` (`SummaryFacet`) | `recordId(global, itemId, 'summary', 0)` | `<name words> — <first clause of description>` | the first clause is non-empty |
+| `parameters` (`ParametersFacet`) | `recordId(global, itemId, 'parameters', 0)` | `<name words> — ` + per parameter, in schema order, `; `-joined: `<parameter words>` + ` (<first clause of its description>)` when it has one + `: <value words>, …` when it has string values | the tool has ≥ 1 parameter |
+| `name-tail` (`NameTailFacet`, **opt-in only**) | `recordId(global, itemId, 'name-tail', 0)` | `<name words after the first word>` | the name has ≥ 2 words |
 
 - Metadata on every record: `name` (exposed), `itemId`, `recordKind`, `profile`, owner `global`
-  (tool catalogs are global; no identity keys, as today). Non-canonical records carry `itemText` =
-  the `full` text.
+  (tool catalogs are global; no identity keys, as today). The canonical `full` record also carries
+  `definitionChars` (§4.10). Non-canonical records carry `itemText` = the `full` text.
 - **Deterministic derivation** (`deriveToolFacets` helpers, pure, unit-tested on a table):
-  - name words: split `originalName` on camelCase, acronym, `_`, `-` and digit boundaries;
-    lowercase; drop a namespace prefix (`server__`). `GetATCFindings` → `get atc findings`.
-  - first clause: description up to the first `.`, `;`, `:` or newline; leading bracket tags such
-    as `[read-only]` removed; at most 200 characters.
+  - **name words:** split `originalName` on camelCase, acronym, `_`, `-`, `.` and digit
+    boundaries; lowercase. `read_file` → `read file`; `listPullRequests` → `list pull requests`;
+    (mcp-abap-adt example) `GetATCFindings` → `get atc findings`. No word is assumed to be a verb
+    or an object.
+  - **value words:** the same split applied to an enum value: `BEHAVIOR_DEFINITION` →
+    `behavior definition`.
+  - **first clause:** description up to the first `.`, `;`, `:` or newline; a leading bracketed
+    tag (`[...]`) removed (example: mcp-abap-adt's `[read-only]`); at most 200 characters.
   - No lexicon, no synonyms, no LLM: every word comes from the provider. A rule that would produce
     nothing produces no record — never a made-up word.
+- **Why `parameters` replaces the measured `object` record in the default:** it carries the same
+  kind of signal — what the tool acts on — from the **schema** (e.g. a `path` or `class_name`
+  parameter) instead of from a naming convention. **Not measured yet**; the faceted variants' rows
+  in §7.4 say so.
+- **`NameTailFacet` — convention-dependent, documented as such.** It assumes verb-first names
+  (`GetClass`, `create_issue`): the tail is then the object. On object-first names (`class_get`)
+  it yields the operation; on single-word names, nothing. It reproduces the measured `object`
+  record exactly, so a consumer on a verb-first server may add it (§7.5). It is in no variant.
 - The goal's rule holds: nothing is written over provider text. A weak description is fixed at its
   source.
 
-**Intent records** — generated text; an indexing strategy any variant except `baseline` can add.
-They help only the candidate search (§2.1) and never reach the reranker (§4.6).
+#### 7.3.2 Per-value records — coarse sets (`EnumValueToolIndexer`)
+
+**Problem.** A coarse tool takes the object in a parameter (§2.5). Its one record must stand for
+every object at once, so no query about one object matches it well.
+
+**Strategy.** `EnumValueToolIndexer(inner, { discriminator, maxValues })` decorates a provider
+indexer (usually `FacetedToolIndexer([])`, i.e. `full` only) and adds **one `value` record per
+string value** of the tool's discriminating parameter:
+
+| Kind | Id | Text |
+|---|---|---|
+| `value` | `recordId(global, itemId, 'value', n)`, `n` = the value's position in the schema | `<name words> — <first clause of description> — <parameter words>: <value words>` + ` — <value description>` when the schema gives one (`oneOf` / `anyOf` entry with `const` + `description` / `title`) |
+
+- Example (mcp-abap-adt `compact`, `HandlerCreate`, `object_type: CLASS`):
+  `handler create — Create operation — object type: class`.
+- Metadata: as §7.3.1, plus `parameter` and `value` (the raw enum value); `itemText` = the `full`
+  text. Not `generated`: every word is the provider's.
+- **Records collapse back to the tool:** every `value` record carries the tool's `itemId`, so
+  `MaxScoreCollapse` returns the tool once, scored by its best-matching value; hydration returns
+  the canonical `full` record (§4.6). Nothing new in retrieval.
+- **`maxRecordsPerItem` = inner's + `maxValues`.** `maxValues` is a required constructor option (the
+  library picks no number). A tool with more values → `failedItems`, reason `too-many-records`;
+  values are **never** silently dropped. The consumer sets it ≥ its largest enum.
+- A tool where the selector picks nothing gets no `value` records — it is indexed by `inner` alone.
+  So the strategy is safe on a mixed set.
+
+**Which parameter — server-agnostic selection.**
+
+| Selector | Picks | When |
+|---|---|---|
+| `RequiredEnumDiscriminator` (default) | the **one** top-level property that is `required` **and** has ≥ 2 string values | no property qualifies → none. **Several** qualify → none, reported as `IndexReport.notes` (`ambiguous-discriminator`, with the candidates) — never a guess |
+| `NamedDiscriminator(parameter)` | the property with that name, if it has ≥ 2 string values | the consumer knows its server (e.g. `NamedDiscriminator('object_type')` for mcp-abap-adt `compact`) |
+
+- **Why "required + enum":** an optional enum is usually a modifier (a format, a version), not
+  what the tool acts on. A required one must be chosen on every call, so it splits the tool's uses.
+  It is read from the schema, with no naming convention.
+- **Why refuse on ambiguity:** goal 3 — the library never picks by guessing. The consumer
+  resolves it with `NamedDiscriminator` or its own selector.
+- **Why an injected selector, not a parameter-name option:** a consumer may need a rule (e.g. by
+  `x-` schema annotation, or per tool); the selector covers the name case and the rule case.
+- Whether `object_type` is a required enum in every `compact` tool is **checked by the compact
+  measurement**; if not, that consumer uses `NamedDiscriminator('object_type')`.
+
+**`IndexReport.notes`** (additive, optional): `readonly { itemId; note; detail? }[]` — things that
+were not failures but changed what was written (here: an ambiguous discriminator). Never silent.
+
+#### 7.3.3 Intent records
+
+Generated text; an indexing strategy any variant except `baseline` can add. They help only the
+candidate search (§2.1) and never reach the reranker (§4.6).
 
 | Placement | Strategy | Record |
 |---|---|---|
@@ -998,11 +1266,11 @@ They help only the candidate search (§2.1) and never reach the reranker (§4.6)
 - **Generated text never mixes into provider records**: its own record kind, and for the companion
   its own store.
 - **One record per tool in both placements** — the layout measured (own record 0.954 at k=5, equal
-  to intents inside `full`). Switching placement moves records, it does not reshape them.
-  **Decision for the user** — D3 (the previous draft had one companion record per intent).
-- **Sources:** `StaticIntentSource(map)` — intents generated at deploy (e.g. the hub's intents
+  to intents inside `full`). Switching placement moves records, it does not reshape them (D3,
+  decided).
+- **Sources:** `StaticIntentSource(map)` — intents generated at deploy (e.g. a consumer's intents
   file), keyed by `originalName`; `LlmIntentSource(llm, { prompt? })` — English, domain-neutral
-  prompt, overridable.
+  prompt (no server or domain words), overridable.
 - **Fill once, refresh on change.** The intent record stores `generatedFrom` = a hash of the tool's
   provider text. At index time the source is asked only when the record is missing or the hash
   differs. (An in-memory store is rebuilt every boot; prefer `StaticIntentSource` there.)
@@ -1013,34 +1281,45 @@ They help only the candidate search (§2.1) and never reach the reranker (§4.6)
 ### 7.4 Shipped variants (`mcpToolsVariants`)
 
 Each variant is a factory that takes only what cannot be shipped (a reranker's model or
-credential) and returns a `ComposedToolsProfile` — or, for `baseline`, nothing to bind.
+credential; for `coarse`, the numbers not yet measured) and returns a `ComposedToolsProfile` — or,
+for `baseline`, nothing to bind. None relies on one server's conventions (§7.0).
 
-| Variant | Composition | Measured (required-recall, hybrid in-store scoring) |
-|---|---|---|
-| **`baseline`** — the default | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
-| **`faceted`** | `FacetedToolIndexer([OperationFacet, ObjectFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | 0.966 at k=5; **0.977 at k=8 with ~13 tools** (= baseline's k=15 with half the tools). |
-| **`faceted-cohere`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `SapAiCoreReranker` + `FixedItemsCut(5)` | **Not measured as one composition.** Closest: one record per tool + Cohere, pool 30 items, k=5 (§2.3): EN-ext 0.931 with 8.3 tools; single 0.973, multi 0.714, non-English 0.962. At most 5 tools. |
-| **`faceted-jev`** | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest: one record per tool + Jev, pool 30 items, k=5 (§2.3): EN-ext 0.977 with 8.3 tools; single 1.000, multi 0.857, non-English 1.000. At most 5 tools. |
+| Variant | Tool-set shape | Composition | Measured (required-recall, hybrid in-store scoring, mcp-abap-adt fine-grained read-only set) |
+|---|---|---|---|
+| **`baseline`** — the default | any | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
+| **`faceted`** | fine-grained | `FacetedToolIndexer([SummaryFacet, ParametersFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | **To be measured** with `parameters` as the third record. Closest measured layout (`full` + `operation`=`summary` + `object`=`NameTailFacet`): 0.966 at k=5; 0.977 at k=8 with ~13 tools. Pool and cut are that layout's. |
+| **`faceted-cohere`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `SapAiCoreReranker` + `FixedItemsCut(5)` | **Not measured as one composition.** Closest: one record per tool + Cohere, pool 30 items, k=5 (§2.3): EN-ext 0.931 with 8.3 tools; single 0.973, multi 0.714, non-English 0.962. At most 5 tools. |
+| **`faceted-jev`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest: one record per tool + Jev, pool 30 items, k=5 (§2.3): EN-ext 0.977 with 8.3 tools; single 1.000, multi 0.857, non-English 1.000. At most 5 tools. |
+| **`coarse`** | coarse | `EnumValueToolIndexer(FacetedToolIndexer([]), { discriminator: RequiredEnumDiscriminator, maxValues })` + `ItemPool(poolItems)` + `MaxScoreCollapse` + no reranker + `TokenBudgetCut({ budgetTokens })` | **To be measured** (the mcp-abap-adt `compact` measurement is being prepared). `maxValues`, `poolItems` and `budgetTokens` are **required factory arguments** until then — no number is shipped without a measurement. |
 
 ```ts
 mcpToolsVariants.faceted();
 mcpToolsVariants.facetedCohere({ reranker: new SapAiCoreReranker({ … }) });
 mcpToolsVariants.facetedJev({ decisionModel });
+mcpToolsVariants.coarse({ maxValues, poolItems, budgetTokens }); // the consumer's numbers until measured
+// a consumer that knows its server's parameter:
+mcpToolsVariants.coarse({ …, discriminator: new NamedDiscriminator('object_type') });
 // intents on top of any variant except baseline:
 mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 // the consumer's own decomposer on top of any variant except baseline (none shipped):
 mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryEmbedder } });
 ```
 
-- **Why these four:** each one is a measured step — baseline (no change), faceted (fewer tools for
-  the same recall, no external service), and one per reranker the goal names (goal 9).
-- **`faceted-cohere` numbers are a proxy, honestly marked:** they are V0 + Cohere (one record per
-  tool), not the faceted composition. Faceted indexing and Cohere were not measured together as
-  this variant; the consumer check (§14.3) measures it.
+- **Why these five:** baseline (no change); faceted (fewer tools for the same recall, no external
+  service); one per reranker the goal names (goal 10); coarse (the second tool-set shape of
+  goal 9).
+- **`faceted*` numbers are a proxy, honestly marked:** the measured layout used `NameTailFacet`'s
+  record, which no default may use (§7.0). The consumer check (§14.3) measures the schema-derived
+  layout; a consumer on a verb-first server may compose the measured layout itself (§7.5).
+- **`faceted-cohere`:** V0 + Cohere (one record per tool), not the faceted composition.
 - **`faceted-jev` caveat:** faceted + Jev was never run as one composition on an item pool. It ships
-  marked **"to be measured as one composition on fresh consumer queries before promotion"**: the
-  numbers in its row are the closest measured setup, not its own, and it is not recommended over
-  the others until the consumer check (§14.3) runs it. **Decision for the user** — D11.
+  marked **"to be measured as one composition on fresh consumer queries before promotion"** and is
+  not recommended over the others until the consumer check (§14.3) runs it (D11, decided).
+- **`coarse` — no reranker in the variant:** a coarse tool's provider text can be ~5k chars (§2.5),
+  so a reranker reads large passages; whether it pays off is for the measurement. A consumer may
+  add one (§7.5).
+- **`coarse` on a fine-grained set** degrades safely: tools without a qualifying enum get only
+  `full` — baseline records with an item pool and a token cut.
 - One record + Jev (the best measured Jev composition) is already 30.1.0's
   `rag.retrieval.tools: { strategy: rerank, reranker: decision }`; it is not repeated as a variant.
 - **Intents with a reranker:** the layouts are within noise of each other (goal *Evidence*), so
@@ -1049,9 +1328,17 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
 ### 7.5 Composing your own
 
 - Any shipped strategy combines with any other; a consumer's own strategy implements the same
-  contract (e.g. its own `IToolFacet`, `ICandidatePool` or `IReranker`).
+  contract (e.g. its own `IToolFacet`, `IDiscriminatorSelector`, `ICandidatePool`,
+  `IItemSizeEstimator` or `IReranker`).
 - Typed rule: `full` cannot be dropped (it is not a facet).
-- Measured guidance for one's own compositions:
+- Examples:
+  - the **measured** fine-grained layout, for a verb-first server:
+    `FacetedToolIndexer([new SummaryFacet(), new NameTailFacet()])` — convention-dependent, the
+    consumer's choice;
+  - a fine-grained set with a prompt budget: any `faceted*` composition with
+    `TokenBudgetCut({ budgetTokens })` instead of `FixedItemsCut`;
+  - a coarse set with a reranker: `coarse` + `rerank: { reranker, onFailure }`.
+- Measured guidance for one's own compositions (fine-grained set):
   - with any reranker, size the pool in **items** (30 items: non-English 0.962 / 1.000; 30
     records: 0.846–0.885);
   - without a reranker, `ItemPool(15)` gives the same recall as 30.
@@ -1062,7 +1349,10 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
   (`Tool: ${name} — ${description}`, id from `IToolRecordKey`, metadata `{ name }`). A golden test
   pins id, text and metadata byte for byte on the committed snapshot.
 - **With a profile:** `vectorizeMcpTools` builds `ToolItem`s (exposed name, provenance's original
-  name, record key, description, parameter names) and calls `bound.index(items)`.
+  name, record key, description, `parameters` read from the tool's `inputSchema`, and
+  `definitionChars` of the exported definition) and calls `bound.index(items)`. It reads the
+  schema generically (top-level `properties`, `required`, string `enum` / `const`); no server is
+  special-cased.
 - Accounting counts **items** (`vectorized` = items with every record written; `failed` = item
   names). The `toolCatalog` health counters keep their meaning (tools), plus `records`.
 - All records of all items are embedded in **one** batch pass (`embedDocuments`, respecting
@@ -1081,7 +1371,7 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
     store scores them with the tools question, as `rerank` on `tools` already does in 30.1.0.
   - `skill-select` finds them by id as today (with fix F3).
 - Moving skills to their own store would change their k, ranking and stage layout — a behaviour
-  change goal 8 excludes. **Decision for the user** — D4.
+  change goal 8 excludes. Decided — D4 (§17).
 
 ### 7.8 Store migration
 
@@ -1092,6 +1382,57 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
 - So switching variants (or the intent placement) on a persistent store = a fresh collection
   (redeploy), like an embedder change. Every record carries `profile` in metadata for diagnosis.
 - In-memory tool stores (rebuilt every boot) need nothing.
+
+### 7.9 A profile for any other MCP server — built by the consumer (goal 9)
+
+The shipped strategies cover the two common shapes (§2.5) with no server's conventions. Where none
+fits a server, the consumer **builds its own profile from the contracts** and uses it in the
+pipeline. The contracts are enough for that; nothing in the library has to change.
+
+**What a consumer may replace, piece by piece:**
+
+| To change | Implement | Example reason |
+|---|---|---|
+| a record view | `IToolFacet` | the server puts the object in a URI template, a tag or an `x-` schema annotation |
+| which parameter splits a coarse tool | `IDiscriminatorSelector` | the split is by two parameters, or per tool |
+| the whole record layout | `IItemIndexer<ToolItem>` | records from a server-side catalog document |
+| candidate depth, collapse, cut, size | `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator` | the model's own tokenizer for the budget |
+| the whole profile | `ICollectionProfile<ToolItem>` | its own retrieval, still an `IRetrievalStrategy` |
+
+**Example — a server whose tools name the target in an `x-resource` schema annotation**
+(hypothetical server; the convention is the consumer's knowledge, so it lives in the consumer's
+code):
+
+```ts
+import type { IToolFacet, ToolItem } from '@mcp-abap-adt/llm-agent';
+import {
+  ComposedToolsProfile, FacetedToolIndexer, SummaryFacet,
+  ItemPool, MaxScoreCollapse, TokenBudgetCut,
+} from '@mcp-abap-adt/llm-agent-libs';
+
+/** The consumer's facet: reads its server's annotation from the schema it kept. */
+class ResourceFacet implements IToolFacet {
+  readonly kind = 'resource';
+  derive(tool: ToolItem): string | undefined {
+    const r = tool.inputSchema['x-resource'];               // this server's convention
+    return typeof r === 'string' ? `${tool.originalName} — ${r}` : undefined;  // nothing → no record
+  }
+}
+
+const myServerTools = new ComposedToolsProfile({
+  indexer: new FacetedToolIndexer([new SummaryFacet(), new ResourceFacet()]),
+  pool: new ItemPool(20),                                  // the consumer's numbers, its measurement
+  collapse: new MaxScoreCollapse(),
+  cut: new TokenBudgetCut({ budgetTokens: myPromptBudget }),
+});
+
+builder.withToolsProfile(myServerTools);                   // or register a name for YAML (§6.2)
+```
+
+- `ToolItem.inputSchema` carries the schema as exported, so a consumer's strategy reaches whatever
+  its server puts there. The library's own strategies never read `x-` annotations.
+- The consumer's profile is checked by the same conformance kit (§14.2) and measured with the same
+  harness (§14.3) as the shipped ones.
 
 ---
 
@@ -1146,8 +1487,7 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
     cannot write into another user's partition);
   - a visibility with no store (no `global`, or `groups.writable` → `undefined`) → refused.
   - Refusals land in `IndexReport.failedItems`; nothing is written for that item.
-- **Visibility model** (user / group / global, groups consumer-supplied): **Decision for the
-  user** — D5.
+- **Visibility model** (user / group / global, groups consumer-supplied): decided — D5 (§17).
 
 ### 8.4 What writing elements get
 
@@ -1206,8 +1546,8 @@ new SharedItemsProfile({
 
 | Channel | Existing? | What |
 |---|---|---|
-| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `decomposer`, `subqueries`, `rerank.outcome` (`none\|ok\|fallback\|error`), `rerank.error` (message), `orphans`, `hydration.reads` (canonical records read by `getById`, §4.6) |
-| `IRetrievalMetrics.retrievalOutcome` counter | new small interface on the same metrics backend | attrs `store`, `strategy`, `outcome` ∈ `ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `empty` |
+| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `decomposer`, `subqueries`, `rerank.outcome` (`none\|ok\|fallback\|error`), `rerank.error` (message), `orphans`, `hydration.reads` (canonical records read by `getById`, §4.6), `cut.name`, `cut.tokens` / `cut.budgetTokens` (size-bounded cuts, §4.10) |
+| `IRetrievalMetrics.retrievalOutcome` counter | new small interface on the same metrics backend | attrs `store`, `strategy`, `outcome` ∈ `ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `over_budget` (§4.10), `empty` |
 | session step `retrieval_rerank_error` | yes (30.1.0 name kept) | unchanged; also emitted for a failed output check (§4.8) |
 | `/health` | yes | `metrics.retrievalOutcome` when the metrics implement `IRetrievalMetrics`; `components.toolCatalog.records` / `.profile` |
 | request logger | yes | reranker LLM / decision calls, as today (`component: 'rerank'`) |
@@ -1243,7 +1583,7 @@ new SharedItemsProfile({
 - **Fix:** `retrievalEmbedderOf(rag)` walks `IRagDecorator.inner`; stores declare
   `IRetrievalEmbedderOwner` (`VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag`; their
   existing private field becomes the capability). `InMemoryRag` has none → sequential path, as
-  today. The `any` cast is removed. **Decision for the user** — D8 (touches three provider
+  today. The `any` cast is removed. Decided — D8 (§17) (touches three provider
   packages).
 - **Test:** SmartServer with `rag.retrieval.tools: { strategy: rerank }` → `embedDocuments` is
   called in batches; no per-tool writes.
@@ -1280,14 +1620,14 @@ new SharedItemsProfile({
 | What | Package | Why |
 |---|---|---|
 | All contracts of §3 | `@mcp-abap-adt/llm-agent` | shared by libs, server-libs, provider packages and consumers |
-| `StagedRetrieval`, `ItemPool`, cuts, `MaxScoreCollapse`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `OperationFacet`, `ObjectFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `SharedItemsProfile` | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | the retrieval built-ins, rerankers and the builder that uses them already live here; `llm-agent-rag` is the backend/embedder factory layer **below** libs and has no rerankers or LLM steps |
+| `StagedRetrieval`, `ItemPool`, cuts (incl. `TokenBudgetCut`), size estimators, `MaxScoreCollapse`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `SharedItemsProfile` | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | the retrieval built-ins, rerankers and the builder that uses them already live here; `llm-agent-rag` is the backend/embedder factory layer **below** libs and has no rerankers or LLM steps |
 | `SapAiCoreReranker` | **new** `@mcp-abap-adt/sap-aicore-reranker` | §5.3 |
 | YAML resolver + validation, `makeCrossEncoder` seam type | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts` and `makeDecisionModel` |
 | `createMakeCrossEncoder` (builds `SapAiCoreReranker`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | beside `make-decision-model.ts` |
 | `IRetrievalEmbedderOwner` implementations | `llm-agent` (`VectorRag`), `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | where the stores are |
 
-- **Decision for the user** — D1 (libs vs a new `llm-agent-collections` package), D2 (the reranker
-  package).
+- Decided — D1 (libs, not a new `llm-agent-collections` package) and D2 (own reranker
+  package) (§17).
 - New files carry no per-file licence header (the repo has none); every package, the new one
   included, is `LGPL-3.0-only` in `package.json`.
 
@@ -1304,7 +1644,7 @@ new SharedItemsProfile({
   - one rewrite per request is shared by all stores (a per-profile rewrite would multiply LLM calls
     by the number of stores);
   - rerankers already see the text the stores see.
-- So #323 stays a pipeline fix (emit `expand`) in its own PR. **Decision for the user** — D9.
+- So #323 stays a pipeline fix (emit `expand`) in its own PR. Decided — D9 (§17).
 
 ---
 
@@ -1321,6 +1661,8 @@ new SharedItemsProfile({
 - **k is unchanged:** the overall limit of a retrieval, now counted in items under a profile, with
   or without a decomposer. `docs/INTEGRATION.md` documents the `IQueryDecomposer` slot and its
   budget contract (§4.5).
+- **Tool-set shapes:** `coarse` and `TokenBudgetCut` are opt-in like every profile; nothing about
+  the default changes.
 - **Profile records are addressed by owner-scoped ids** (§3.1): `rag.getById(itemId)` on a profiled
   store finds nothing; use `bound.get(ref)`. Documented in `docs/INTEGRATION.md`.
 - Docs updated in the same PR: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`,
@@ -1334,8 +1676,26 @@ new SharedItemsProfile({
 
 ### 14.1 Unit (`npm test`)
 
-- `deriveToolFacets`: table — `GetWhereUsed`, `GetATCFindings`, `RuntimeListFeeds`,
-  `server__ReadClass`, `snake_case_tool`, single-word name, empty / tag-only description.
+- `deriveToolFacets`: table over **several naming styles**, none privileged — generic:
+  `read_file`, `listPullRequests`, `search-issues`, `db.query`, `v2Fetch`, single-word `fetch`;
+  labelled mcp-abap-adt examples: `GetWhereUsed`, `GetATCFindings`, `RuntimeListFeeds`; empty /
+  tag-only description; value words (`BEHAVIOR_DEFINITION`).
+- `ParametersFacet`: no parameters → no record; descriptions reduced to their first clause; enum
+  and `oneOf` / `anyOf` `const` values listed; schema order kept.
+- `NameTailFacet`: verb-first, object-first and single-word names (documents the convention it
+  depends on); not part of any variant's composition.
+- `EnumValueToolIndexer`: one `value` record per string value; ids `recordId(global, itemId,
+  'value', n)`; all collapse to one item; value descriptions from `oneOf` / `anyOf`; more values
+  than `maxValues` → `too-many-records`, nothing silently dropped; no qualifying parameter → `inner`
+  records only. Fixtures: a synthetic coarse server (generic) and an mcp-abap-adt `compact`-shaped
+  tool (labelled example).
+- Discriminators: `RequiredEnumDiscriminator` — none / exactly one / several qualifying
+  (several → none + `IndexReport.notes` `ambiguous-discriminator`); optional enums ignored;
+  `NamedDiscriminator` — present, absent, fewer than 2 values.
+- `TokenBudgetCut`: rank-order prefix; stops at the first item that does not fit (no skip-ahead);
+  `maxItems ?? requestedK` ceiling; `limit()` = that ceiling; top item over budget → empty,
+  `over_budget` counted; items never truncated; `ToolDefinitionSizeEstimator` uses
+  `definitionChars`, falls back to text length.
 - `recordId`: table — every scope; `:` `/` `#` inside owner key / item id do not collide
   (`u` + `a/b` + `c` ≠ `u` + `a` + `b/c`); ids over 200 characters become `h:` + 64 hex, stable
   across calls; every id ≤ 255 characters.
@@ -1346,7 +1706,10 @@ new SharedItemsProfile({
   unchanged tool; each indexer's `maxRecordsPerItem` bounds what it writes.
 - Variants: each `mcpToolsVariants` factory returns exactly the strategy instances of §7.4 (pool,
   collapse, reranker, cut), with no decomposer unless the consumer passes one; `baseline` binds
-  nothing; intents and a decomposer refused on `baseline`.
+  nothing; intents and a decomposer refused on `baseline`; **no variant contains `NameTailFacet`**;
+  `coarse` refuses a missing `maxValues` / `poolItems` / `budgetTokens` (type-level).
+- Consumer-built profile: the §7.9 example compiles against the public exports only and passes the
+  conformance kit.
 - Shared items: owner flattening for user / group / global; `reserved-kind`;
   `too-many-records`; `user` item with a foreign `userId` refused; missing partition refused;
   re-index writes the new records and deletes the unlisted old ones (`recordIds`); `remove`;
@@ -1396,14 +1759,17 @@ record; deterministic, owner-scoped ids (`recordId`; the same `itemId` under two
 ids); every returned item hydrated from its canonical record; **at most k distinct items returned,
 with or without a decomposer** (the kit also runs an adversarial decomposer whose budgets overrun
 k and expects `DECOMPOSE_ERROR`);
-no record outside the caller's identity filter returned; generated records never canonical. A
-consumer runs it against its own profile.
+no record outside the caller's identity filter returned; generated records never canonical;
+**with a size-bounded cut, the summed size of the returned items ≤ the budget** (by the cut's own
+estimator) and no item is truncated. A consumer runs it against its own profile.
 
 ### 14.3 Measurement harness
 
-- `scripts/rag-eval` gains `--variant baseline|faceted|faceted-cohere|faceted-jev`, or a
-  composition by strategy name (`--indexer`, `--intents off|record|companion`, `--pool-items`,
-  `--reranker none|cross-encoder|decision`, `--cut`), and
+- `scripts/rag-eval` gains `--variant baseline|faceted|faceted-cohere|faceted-jev|coarse`, or a
+  composition by strategy name (`--indexer`, `--facets`, `--discriminator`, `--intents
+  off|record|companion`, `--pool-items`, `--reranker none|cross-encoder|decision`, `--cut`,
+  `--budget-tokens`), any tools snapshot file (not tied to one server), and
+  **prompt size** (summed definition tokens of the returned tools) next to the item count, and
   **required-recall** (AND of OR-groups; an optional `required` field in the queries file),
   average items returned and MRR — the hub's metrics.
 - The core is exported as `evaluateRetrieval({ store, strategy, cases, ks })` from
@@ -1411,7 +1777,12 @@ consumer runs it against its own profile.
   build of this branch (the PR's "consumer check" stage). A consumer measures its own
   `IQueryDecomposer` the same way, as part of its strategy (§2.4).
 - Acceptance (env-gated, not part of `npm test`):
-  - on the committed 16.0.0 snapshot, `faceted` is not worse than `baseline` at equal items;
+  - on the committed mcp-abap-adt 16.0.0 snapshot (an example server's fine-grained set),
+    `faceted` (schema-derived) is not worse than `baseline` at equal items — its §7.4 row is
+    replaced by that run, and compared with the measured `NameTailFacet` layout;
+  - on a `compact` snapshot (the measurement being prepared), `coarse` is measured against
+    `baseline` at equal prompt size; its §7.4 row and the factory's required numbers come from that
+    run;
   - the hub's consumer check reproduces, within ±1 row, `baseline`'s and `faceted`'s numbers in
     §7.4;
   - `faceted-cohere` and `faceted-jev` are measured there for the first time as one composition;
@@ -1451,18 +1822,32 @@ consumer runs it against its own profile.
 6. **File size:** new logic in `src/collections/*` and the new package; `builder.ts` and
    `smart-server.ts` get one call site each per binding.
 7. **Additive:** the only removal is an unexported, unwired file.
+8. **Any MCP server (goal 9):** shipped strategies read only what every server exports; the one
+   convention-dependent facet is opt-in and in no variant; a consumer builds a profile for any
+   other server from the contracts (§7.9), with the raw `inputSchema` available to its strategies.
 
 ---
 
-## 17. Decisions for the user
+## 17. Decisions
 
-Settled by the goal (no longer asked): experience as a schema in the framework (→ shared items,
-§8); intents' home (→ an indexing strategy of the tools profiles, default placement `record`, §7.3); one profile with flags (→ strategies and named variants, §7); the reranker text
-(→ provider text, §4.6); the pool unit (→ items, §4.4); the Cohere reranker in this PR (→ §5);
-query splitting (→ an injected `IQueryDecomposer` slot, no shipped implementation, `k` stays the
-overall limit, §4.5; goal decision 2026-10-05 — the former D12, "k per clause run", is withdrawn).
+### 17.1 Settled by the goal
 
-Settled by the adversarial review (user-approved 2026-10-05):
+No longer asked:
+
+- experience as a schema in the framework → shared items (§8);
+- intents' home → an indexing strategy of the tools profiles, default placement `record` (§7.3.3);
+- one profile with flags → strategies and named variants (§7);
+- the reranker text → provider text (§4.6); the pool unit → items (§4.4);
+- the Cohere reranker in this PR (§5);
+- query splitting → an injected `IQueryDecomposer` slot, no shipped implementation, `k` stays the
+  overall limit (§4.5; goal decision 2026-10-05 — the former D12, "k per clause run", is withdrawn);
+- profiles for different MCP servers (goal 9, goal decision 2026-10-05): shipped strategies read
+  only what any server exports; coarse tool sets and a token-budget cut are in scope; a consumer
+  builds its own profile for any other server from the contracts (§7.0, §7.9).
+
+### 17.2 Decided by the user
+
+Adversarial review (user-approved 2026-10-05):
 
 | # | Decision | Reason |
 |---|---|---|
@@ -1470,16 +1855,31 @@ Settled by the adversarial review (user-approved 2026-10-05):
 | D14 | **Physical record ids are owner-scoped:** `recordId(owner, itemId, kind, n)`, one function for `index`, `get`, `remove`, hydration and collapse (§3.1). | Every backend keys records by id alone (`InMemoryRag.upsert`, `VectorRag`, pg/HANA primary key, Qdrant UUID of the id); with `id = itemId`, two users' `case-42` would overwrite each other. |
 | D15 | **Every returned item is hydrated from its canonical record**, owner-checked; `itemText` is a reranking shortcut only; a hit without a canonical record is dropped and counted (§4.6). | Makes D13 safe for readers and returns the item whole (incl. `data`) even when only a secondary record matched. |
 
+Recommendations approved by the user on 2026-10-05:
+
+| # | Decision | Where |
+|---|---|---|
+| D1 | Default implementations live in **`llm-agent-libs`** (`src/collections/`), not a new `llm-agent-collections` package. | §11 |
+| D2 | `SapAiCoreReranker` in its **own package** `@mcp-abap-adt/sap-aicore-reranker`. | §5.3 |
+| D3 | Companion intents: **one record per tool**, as in `record` placement. | §7.3.3 |
+| D4 | Builder skills **coexist** in the tools store (pass-through). | §7.7 |
+| D5 | Shared-item visibility: `user` / `group` / `global` as **partitions**; group stores supplied by the consumer (`ISharedItemGroups`). | §8.3 |
+| D6 | Shared items: **library API only** in this PR, no server YAML. | §6.2 |
+| D7 | Ship `keepStage1Top`, **default 0, counted inside k**, documented as unmeasured without the former split. | §4.7 |
+| D8 | Replace the private embedder read with **`IRetrievalEmbedderOwner`** (3 provider packages) in this PR. | §10.1 |
+| D9 | Query preparation stays **outside** profiles; #323 is a pipeline fix. | §12 |
+| D10 | `SapAiCoreReranker` takes **`deploymentId`** in this PR; resolving by model name is a follow-up. | §5.3 |
+| D11 | Ship `faceted-jev`, marked **"to be measured as one composition on fresh consumer queries before promotion"**. | §7.4 |
+| `limit()` | `IItemCut.limit(requestedK)` — the most items a cut returns; the retrieval's budget for a decomposer. Stated as an **upper bound** in items, so `ScoreFloorCut` and `TokenBudgetCut` fit with no signature change (§4.10). | §3.4, §4.5 |
+
+### 17.3 Open — raised by the server-agnostic amendment
+
 | # | Question | Recommendation |
 |---|---|---|
-| D1 | Default implementations: `llm-agent-libs` or a new `llm-agent-collections` package? | **libs** — the retrieval built-ins and the builder are there; a new package would depend on libs and add a release step for no isolation gain. |
-| D2 | `SapAiCoreReranker` in its own package `@mcp-abap-adt/sap-aicore-reranker`? | **Yes** — one provider, one role, like `typesafe-decision` and the `*-embedder` packages; no vendor client in libs, no embedder dependency for rerank-only consumers (§5.3). |
-| D3 | Companion intents: one record per tool (as in `record` placement) or one per intent? | **One per tool** — the measured layout; switching placement then moves records without reshaping them. |
-| D4 | Builder skills: coexist in the tools store or move to their own store now? | **Coexist** (pass-through) — moving changes their k and ranking, which goal 8 excludes. |
-| D5 | Shared-item visibility: `user` / `group` / `global` as partitions, group stores supplied by the consumer (`ISharedItemGroups`)? | **Yes** — works with today's `IRag` filter (no new filter contract) and leaves group/role isolation with the consumer, as #304 was narrowed. |
-| D6 | Shared items in the server YAML in this PR? | **No, library API only** — the writing elements are the consumer's; an empty shared store in SmartServer has no writer. YAML when the first shipped writer exists. |
-| D7 | Ship `keepStage1Top`? Its only measurement (a post-hoc 1.000) was on top of the former built-in clause split. | **Ship, default 0, counted inside k** (§4.7), documented as unmeasured without the split and not validated on fresh queries. |
-| D8 | Replace the private embedder read with `IRetrievalEmbedderOwner` (3 provider packages) in this PR? | **Yes** — the cast is the root cause of F1 and batch indexing of records needs the same embedder. |
-| D9 | Query preparation outside profiles; #323 as a pipeline fix | **Yes** (§12). |
-| D10 | `SapAiCoreReranker`: `deploymentId` only, or also resolve by model name? | **`deploymentId` in this PR**; resolving by model needs `resolveDeploymentId`, today private to `sap-aicore-embedder`. Sharing it (e.g. moved into `sap-aicore-auth`) is a follow-up. |
-| D11 | Ship `faceted-jev` as a named variant before it is measured as one composition? | **Ship it, marked "to be measured as one composition on fresh consumer queries before promotion"** — only the closest measured setup's numbers quoted, not recommended over the others until the consumer check runs it (§7.4, §14.3); one record + Jev, the best measured Jev setup, stays available through 30.1.0's `rerank` strategy. |
+| D16 | The `faceted*` variants now use schema-derived records (`summary` + `parameters`) instead of the measured `operation` + `object` layout, so their numbers become **to be measured**. Accept shipping them on the closest measured layout's figures until the consumer check runs? | **Yes** — the measured `object` record depends on one server's naming; a default may not. The measured layout stays one line away for a verb-first server (`NameTailFacet`, §7.5). If the check shows `parameters` worse, the fix is a better schema-derived facet, not the convention. |
+| D17 | `TokenBudgetCut` when the top item alone exceeds the budget: return **empty** (counted `over_budget`), or always keep the first item (breaking "size ≤ budget")? | **Empty + counted** — the budget is a hard bound and the conformance kit checks it; the consumer sizes the budget ≥ its largest tool (§4.10). |
+| D18 | `RequiredEnumDiscriminator` with several qualifying parameters: **no fan-out + `IndexReport.notes`**, or fan out over all of them? | **No fan-out + note** — goal 3, never guess; `NamedDiscriminator` or the consumer's selector resolves it. |
+| D19 | `TokenBudgetCut` stops at the first item that does not fit (strict rank prefix), rather than skipping to smaller items. | **Stop** — skipping lets a lower-ranked small tool displace a higher-ranked large one. A consumer wanting skip-ahead injects its own `IItemCut`. |
+| D20 | `coarse` ships with **no numbers** (`maxValues`, `poolItems`, `budgetTokens` required factory arguments) until the `compact` measurement lands. | **Yes** — no number without a measurement; the run then fills the variant's definition (§14.3). |
+| D21 | Return which enum values matched (e.g. `metadata.matchedValues`) with a coarse tool, as a hint to the LLM? | **Not in this PR** — the returned item is the canonical record (D15); a hint is a new output contract to justify with a measurement. |
+| D22 | `ToolItem` carries the raw `inputSchema` (for consumer strategies) and `parameters` replaces `parameterNames`. | **Yes** — without the raw schema a consumer cannot build a profile for a server whose signal sits elsewhere in the schema (goal 9); `ToolItem` is new in this spec, so nothing breaks. |
