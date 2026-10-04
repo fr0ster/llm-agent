@@ -10,10 +10,14 @@
 
 llm-agent is the framework consumers build their pipelines from. Those
 pipelines search several kinds of collections: tools, predefined skills, the
-user's own information, and the session history. Today the framework offers one
-way to fill and search them all: one document per item, one vector, top-K by a
-fixed score. A consumer that needs something else has to work around the
-framework.
+user's own information, and the session history.
+
+Since 30.1.0, **searching** is configurable per store (`IRetrievalStrategy`:
+`embedding`, `rerank`, `rerank-all`, through `StrategyRag`). **Filling** is
+not: every store gets one record per item (a tool is `Tool: name — description`).
+Nothing joins the two halves either. Duplicates are dropped by name only after
+the k cut, so k counts records, not items. A consumer that needs something else
+has to work around the framework.
 
 Measurements in a consumer showed that this one-size approach is the main source
 of retrieval errors. Its tool search was measured on 237 tools with labelled
@@ -39,12 +43,18 @@ English queries (see *Evidence* below):
    - how it is **searched**: query preparation, candidate search, collapsing a
      unit's repeated hits back into one item, an optional reranker, and the
      final cut.
+
+   Already in 30.1.0: a per-store reranker, the candidate count and k (in
+   records). New: indexing with several records per item, collapsing by item,
+   counting k in items, the optional clause split, and a per-store threshold.
 2. The pair is one **collection profile**, because the search must undo exactly
    what the filling produced.
 3. A consumer chooses a profile per collection kind in its builder. The library
    never picks one by guessing.
-4. Today's behaviour stays available, unchanged, as the default profile. A
-   consumer that does nothing keeps exactly what it has.
+4. Today's behaviour, meaning 30.1.0's, stays available unchanged as the
+   default profile: per-store retrieval strategies, and a store with an explicit
+   strategy is skipped by the global rerank stage. A consumer that does nothing
+   keeps exactly what it has.
 5. Profiles exist at least for:
    - tools;
    - predefined skills;
@@ -60,6 +70,8 @@ English queries (see *Evidence* below):
 | 2026-10-04 | At least four profiles: tools, predefined skills, user information, session history. |
 | 2026-10-04 | Contracts and default implementations live in llm-agent (an existing package or a new one). The consumer picks the profiles and passes instances in through dependency injection. |
 | 2026-10-04 | Tool records come from what the tool provider exports (name, description, parameter names). Nothing is hand-written over them. A weak description is fixed at its source. |
+| 2026-10-04 | In this PR, besides the profiles: the bug where `vectorizeMcpTools` does not find the store's embedder behind `StrategyRag` and falls back to one tool at a time; de-duplication in `tools-rag-handle` (none today) and `skill-select` (fixed prefix); and a decision on the unused `IToolIndexingStrategy` and the docs that describe it as usable. |
+| 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
 
 ## Evidence (measured in cloud-llm-hub, 2026-09-30 … 2026-10-04)
 
@@ -78,14 +90,29 @@ queries with production embeddings:
   clauses: 0.977 at top-5 with about 9 tools.
   - multi-step queries: 1.000 (0.714 without it);
   - non-English queries: 0.962 (0.692 without it).
-- **An LLM as the reranker:** no gain, 6–10k prompt tokens per query, and it
-  silently falls back to the stage-1 order when the model returns the wrong
-  number of scores.
+- **An LLM as the reranker:** no gain, and 6–10k prompt tokens per query. When
+  the model returns the wrong number of scores, it falls back to the stage-1
+  order. Since 30.1.0 that is a reranker error, but the strategy still falls back
+  and records it only as a session step: no span, no metric, nothing in
+  /health.
 - **Best combination measured:** Cohere with clause split, joined with the top-3
   tools found through the multiple records. It reaches 1.000 at top-5, but it was
   picked after seeing the results and still needs fresh queries.
 
 ## Open questions
+
+- Is a profile per collection (store) or per record kind? Tools and the builder's
+  skills share one store today.
+- Which skills are "predefined skills": the builder's `skill:<name>` records, the
+  plug-in skills that are already chunked into several records, or both?
+- Do LLM-generated variants (intent enrichment, `IntentToolIndexing`) count as
+  "written over" the provider's text? The best measured tool document included
+  LLM-generated intents.
+- A Cohere / cross-encoder reranker provider is new work: 30.1.0 ships
+  `decision` and `llm` rerankers only.
+- Names: several are taken (`ISearchStrategy`, `IRetrievalStrategy`,
+  `IToolSelectionStrategy`, the unused `IToolIndexingStrategy`,
+  `IQueryPreprocessor`, `IQueryExpander`).
 
 - Package placement: which contracts go in `@mcp-abap-adt/llm-agent` and which
   default implementations in `@mcp-abap-adt/llm-agent-rag`; whether reranker
