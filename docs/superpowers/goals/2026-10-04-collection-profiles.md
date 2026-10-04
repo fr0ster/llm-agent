@@ -62,9 +62,8 @@ English queries (see *Evidence* below):
    the same kind share one profile; the tool stores per role are an example.
    A consumer's example: five stores (two for tools, one for skills, one for
    session history, one for user collections) served by three profiles.
-7. The default profiles cover at least:
+7. The default profiles in this work:
    - **MCP tools**;
-   - **skills**;
    - **experience from sessions**: what a solved task teaches, so it is not lost.
      A record is a case with:
      - the inputs (task, context, system);
@@ -75,6 +74,8 @@ English queries (see *Evidence* below):
      The case is extracted from a finished session, or on demand. It is found
      again by a new situation's symptoms and inputs, and returned whole,
      including what failed.
+8. **Skills** and **user collections** stay on today's behaviour (30.1.0) for
+   now. They can get profiles later through the same contract.
 
 ## Decisions
 
@@ -82,7 +83,7 @@ English queries (see *Evidence* below):
 |---|---|
 | 2026-10-04 | This is a development of the framework that pipelines are built with: new building blocks, not a replacement and not a change to any one pipeline. Today's behaviour (one document per item, top-K) stays as the default profile, and nothing changes for current consumers. New profiles are opt-in. |
 | 2026-10-04 | Each collection kind gets a pair: an indexing strategy and a retrieval strategy, described together as one collection profile. |
-| 2026-10-04 | The default profiles cover MCP tools, skills and experience from sessions. Experience means cases (inputs, symptoms, decision, outcome: what helped, what did not) extracted from finished sessions, so solved tasks are not lost. |
+| 2026-10-04 | The default profiles in this work cover MCP tools and experience from sessions. Skills and user collections stay on today's behaviour for now. Experience means cases (inputs, symptoms, decision, outcome: what helped, what did not) extracted from finished sessions, so solved tasks are not lost. |
 | 2026-10-04 | The framework is open-ended: any number of collection kinds and profiles. A profile belongs to a kind of store, and several stores can share it. Default profiles ship in llm-agent-rag or another package; consumers may write their own. The known kinds (tools, skills, session history, user collections) are what the defaults must cover, not a closed list. |
 | 2026-10-04 | Contracts and default implementations live in llm-agent (an existing package or a new one). The consumer picks the profiles and passes instances in through dependency injection. |
 | 2026-10-04 | Tool records come from what the tool provider exports (name, description, parameter names). Nothing is hand-written over them. A weak description is fixed at its source. |
@@ -125,8 +126,6 @@ queries with production embeddings:
   - the owner and visibility of cases (user, team, global — see #304);
   - duplicates and merging of similar cases;
   - retention.
-- Whether raw session history and user collections get default profiles too, or
-  stay on today's behaviour.
 
 - Which default profiles ship, and how they group the known kinds. For example:
   - a catalog profile for tools and skills, a session profile and a documents
@@ -135,8 +134,6 @@ queries with production embeddings:
 
   Tools and the builder's skills share one store today, so a separate skills
   store comes with this.
-- Which skills are "predefined skills": the builder's `skill:<name>` records, the
-  plug-in skills that are already chunked into several records, or both?
 - Do LLM-generated variants (intent enrichment, `IntentToolIndexing`) count as
   "written over" the provider's text? The best measured tool document included
   LLM-generated intents.
