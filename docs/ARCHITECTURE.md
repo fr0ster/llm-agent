@@ -234,7 +234,7 @@ fails the request: the strategy returns the embedding ranking's top-k and logs t
 `buildAgent()` — and `buildBaseBuilder` applies the result (and the plugin reranker, and `agent.toolSelection`)
 outside the `applyServerExtras` gate, so the per-session agents that serve requests get them too.
 `rag.retrieval` is server-wide: a worker config that declares its own is rejected at startup. `decision:` and
-`rag.retrieval` are not hot-reloadable. The `makeDecisionModel` seam (`BuildAgentDeps.makeDecisionModel`) is
+`rag.retrieval` are not hot-reloadable. A `reranker: llm` entry keeps the LLM instance resolved at startup: a `PUT /v1/config` swap of the model behind its key (`main`, `classifier` or `helper`) reaches the agents but not that reranker; restart to rerank with the new model. The `makeDecisionModel` seam (`BuildAgentDeps.makeDecisionModel`) is
 optional and required only when a `rag.retrieval` entry asks for `reranker: decision`; the binary supplies it
 in its composition root. See [EXAMPLES.md](EXAMPLES.md#per-store-retrieval-strategies-ragretrieval) and
 [INTEGRATION.md](INTEGRATION.md#iretrievalstrategy).

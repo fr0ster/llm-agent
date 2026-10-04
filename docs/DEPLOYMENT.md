@@ -412,7 +412,7 @@ sent by this mechanism; a plugin / `withReranker` reranker still reranks the sto
 Size the network egress and the provider quota (`decision.timeoutMs`, `decision.maxRetries`) accordingly. The
 key is `DECISION_API_KEY` (or `<REF>_API_KEY` with `decision.credentialRef`) in the server's environment.
 `rag.retrieval` is server-wide: a worker (subagent) config that declares it is rejected at startup. `decision:`
-and `rag.retrieval` are not hot-reloadable; a change takes a restart. The HTTP chat path carries no
+and `rag.retrieval` are not hot-reloadable; a change takes a restart. A `reranker: llm` entry keeps the LLM instance resolved at startup: a `PUT /v1/config` swap of the model behind its key (`main`, `classifier` or `helper`) reaches the agents but not that reranker; restart to rerank with the new model. The HTTP chat path carries no
 `AbortSignal` unless the agent's request timeout (`SmartAgentConfig.timeoutMs`, builder `withTimeout(ms)`) is set; the
 SmartServer YAML `agent:` section has no key for it, so a slow reranker call is cut off only by the provider's own
 timeout (`decision.timeoutMs`).
