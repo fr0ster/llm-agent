@@ -35,9 +35,13 @@ export function mapAnswers(
   questions: Record<string, DecisionQuestion>,
   raw: Record<string, unknown> | undefined,
 ): Result<Record<string, DecisionAnswer>, DecisionError> {
-  const out: Record<string, DecisionAnswer> = {};
+  // Built as entries and read as own properties, so a key such as `__proto__`
+  // is an answer like any other, never the object's prototype.
+  const out: Array<[string, DecisionAnswer]> = [];
   for (const [key, q] of Object.entries(questions)) {
-    const a = raw?.[key] as Raw | undefined;
+    const a = (raw && Object.hasOwn(raw, key) ? raw[key] : undefined) as
+      | Raw
+      | undefined;
     if (!a || typeof a !== 'object') return fail(key, 'missing');
     if (a.type !== q.type) {
       return fail(key, `type '${String(a.type)}' does not match '${q.type}'`);
@@ -46,7 +50,7 @@ export function mapAnswers(
       case 'noul': {
         if (!unit(a.noul))
           return fail(key, 'probability must be finite in [0, 1]');
-        out[key] = { type: 'noul', probability: a.noul };
+        out.push([key, { type: 'noul', probability: a.noul }]);
         break;
       }
       case 'choice': {
@@ -69,12 +73,15 @@ export function mapAnswers(
         if (!Object.values(probs).every(unit)) {
           return fail(key, 'every probability must be finite in [0, 1]');
         }
-        out[key] = {
-          type: 'choice',
-          choice: a.choice,
-          confidence: a.confidence,
-          probabilities: { ...(probs as Record<string, number>) },
-        };
+        out.push([
+          key,
+          {
+            type: 'choice',
+            choice: a.choice,
+            confidence: a.confidence,
+            probabilities: { ...(probs as Record<string, number>) },
+          },
+        ]);
         break;
       }
       case 'score': {
@@ -100,15 +107,18 @@ export function mapAnswers(
         if (!Object.values(probs).every(unit)) {
           return fail(key, 'every probability must be finite in [0, 1]');
         }
-        out[key] = {
-          type: 'score',
-          score: a.score,
-          confidence: a.confidence,
-          probabilities: numericKeys(probs),
-        };
+        out.push([
+          key,
+          {
+            type: 'score',
+            score: a.score,
+            confidence: a.confidence,
+            probabilities: numericKeys(probs),
+          },
+        ]);
         break;
       }
     }
   }
-  return { ok: true, value: out };
+  return { ok: true, value: Object.fromEntries(out) };
 }

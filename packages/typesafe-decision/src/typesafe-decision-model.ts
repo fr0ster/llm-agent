@@ -40,13 +40,16 @@ export interface TypeSafeDecisionConfig {
 function toSdkQuestions(
   questions: Record<string, DecisionQuestion>,
 ): Questions {
-  const out: Questions = {};
-  for (const [key, q] of Object.entries(questions)) {
-    // Shapes match the SDK's field for field; the score rubric's "at least two"
-    // tuple type is enforced by the SDK at run time (TypeSafeError → invalid).
-    out[key] = q as unknown as Question;
-  }
-  return out;
+  // Shapes match the SDK's field for field; the score rubric's "at least two"
+  // tuple type is enforced by the SDK at run time (TypeSafeError → invalid).
+  // Object.fromEntries defines own properties, so a key such as `__proto__`
+  // stays a question instead of replacing the object's prototype.
+  return Object.fromEntries(
+    Object.entries(questions).map(([key, q]) => [
+      key,
+      q as unknown as Question,
+    ]),
+  ) as Questions;
 }
 
 /**

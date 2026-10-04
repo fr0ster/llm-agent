@@ -168,3 +168,38 @@ describe('TypeSafeDecisionModel — unset is not sent', () => {
     assert.equal(f.calls.length, 1);
   });
 });
+
+describe('TypeSafeDecisionModel — question keys are data, not prototype slots', () => {
+  it('a question named __proto__ reaches the request and its answer is mapped', async () => {
+    const f = fakeFetch(() =>
+      okBody(
+        JSON.parse(
+          '{"__proto__":{"type":"noul","noul":0.4},"normal":{"type":"noul","noul":0.6}}',
+        ),
+      ),
+    );
+    const m = new TypeSafeDecisionModel({
+      credential: staticApiKey('k'),
+      fetch: f.fetch,
+    });
+    const questions = Object.fromEntries([
+      ['__proto__', { type: 'noul' as const }],
+      ['normal', { type: 'noul' as const }],
+    ]);
+    const r = await m.decide({ state: 's', questions });
+    assert.deepEqual(Object.keys(f.calls[0].body.questions as object).sort(), [
+      '__proto__',
+      'normal',
+    ]);
+    assert.ok(r.ok, r.ok ? '' : r.error.message);
+    assert.deepEqual(Object.keys(r.value.answers).sort(), [
+      '__proto__',
+      'normal',
+    ]);
+    assert.equal(
+      Object.getOwnPropertyDescriptor(r.value.answers, '__proto__')?.value
+        .probability,
+      0.4,
+    );
+  });
+});
