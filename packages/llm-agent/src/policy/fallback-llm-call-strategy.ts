@@ -1,22 +1,26 @@
-import type {
-  CallOptions,
-  ILlm,
-  ILlmCallStrategy,
+import {
+  type CallOptions,
+  type ILlm,
+  type ILlmCallStrategy,
   LlmError,
-  LlmStreamChunk,
-  LlmTool,
-  Message,
-  Result,
+  type LlmStreamChunk,
+  type LlmTool,
+  type Message,
+  type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { AnyLogger } from '../logger/normalise-logger.js';
 import { normaliseLogger } from '../logger/normalise-logger.js';
 import type { ILogger } from '../logger/types.js';
+import { isCallerCancellation } from '../resilience/caller-cancellation.js';
 import { NonStreamingLlmCallStrategy } from './non-streaming-llm-call-strategy.js';
 import { StreamingLlmCallStrategy } from './streaming-llm-call-strategy.js';
 
 /**
  * Starts with streaming. On error, logs the cause and retries the same call
  * via non-streaming. All subsequent calls use non-streaming for this instance.
+ * A failure caused by the caller's cancellation (`isCallerCancellation`) is
+ * passed through as-is: it says nothing about streaming, so streaming stays
+ * enabled and nothing is retried.
  */
 export class FallbackLlmCallStrategy implements ILlmCallStrategy {
   private streamingDisabled = false;
@@ -50,6 +54,10 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         options,
       )) {
         if (!chunk.ok) {
+          if (isCallerCancellation(options?.signal)) {
+            yield chunk; // the caller left — not a streaming failure
+            return;
+          }
           // Streaming returned a Result error — treat as streaming failure
           hadError = true;
           this.logFallback(chunk.error.message, chunk.error);
@@ -70,6 +78,11 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
     } catch (err: unknown) {
       // Streaming threw an exception (e.g. SSE disconnect, network error)
       const errMsg = err instanceof Error ? err.message : String(err);
+      if (isCallerCancellation(options?.signal)) {
+        // The caller left — not a streaming failure.
+        yield { ok: false, error: new LlmError(errMsg, 'ABORTED') };
+        return;
+      }
       this.logFallback(errMsg, err);
       this.streamingDisabled = true;
       yield { ok: true, value: { content: '', reset: true } };

@@ -4,7 +4,7 @@
 
 `IDecisionModel` and its request/answer/error types (`DecisionError`, `DecisionErrorCode`); `LlmComponent` gains `'decision'` and `'rerank'` — an exhaustive `switch` over it, or a `Record<LlmComponent, …>`, must add both. `IRetrievalStrategy` (how one store turns a query into its top-k) and the optional `IRagDecorator { inner }` capability with `isRagDecorator`; `FallbackRag` implements `IRagDecorator`.
 
-**Added:** `isCallerCancellation(signal)`; `CircuitBreakerLlm.inner` (read-only, the wrapped LLM — lets a composer put retry under the breaker on the same breaker). **Fixed:** `CircuitBreakerLlm` and `CircuitBreakerEmbedder` record neither failure nor success for a call whose signal the caller aborted with a non-`TimeoutError` reason (a timeout still counts); `FallbackRag.breaker` exposes its breaker read-only.
+**Added:** `isCallerCancellation(signal)`; `CircuitBreakerLlm.inner` (read-only, the wrapped LLM — lets a composer put retry under the breaker on the same breaker). **Fixed:** `CircuitBreakerLlm` and `CircuitBreakerEmbedder` record neither failure nor success for a call whose signal the caller aborted with a non-`TimeoutError` reason (a timeout still counts); `FallbackRag.breaker` exposes its breaker read-only; `FallbackLlmCallStrategy` passes a caller's cancellation through instead of retrying non-streaming and disabling streaming for the instance.
 
 ## 30.0.0
 
