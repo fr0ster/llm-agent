@@ -320,8 +320,8 @@ refused. `maxRetries: 0` disables the SDK's retries. The decision model is built
 entry. A plugin's `reranker` export and `rag.retrieval` can be used together: the plugin reranks the stores
 without an entry. `rag.retrieval` is server-wide; a worker config must not declare it. A reranker failure never
 fails the request — the embedding order is kept (see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#retrieval-reranking-has-no-effect)). Note that `rag.retrieval.history`
-currently has no effect on per-session requests: session agents receive no `historyRag`.
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#retrieval-reranking-has-no-effect)). `rag.retrieval.history` applies
+to per-session requests: session agents read the server's shared (strategy-wrapped) history store.
 
 Programmatic — the same strategies on the builder:
 

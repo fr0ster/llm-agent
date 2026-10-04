@@ -233,6 +233,42 @@ fails the request: the strategy returns the embedding ranking's top-k and logs t
 `resolveRetrievalStrategies` runs once in `_buildInfra()` — shared by the HTTP `start()` and the embeddable
 `buildAgent()` — and `buildBaseBuilder` applies the result (and the plugin reranker, and `agent.toolSelection`)
 outside the `applyServerExtras` gate, so the per-session agents that serve requests get them too.
+
+**Session agents carry the server's wiring.** Every request is served by a per-session agent
+(`buildSessionAgent` → `buildBaseBuilder`). `_buildInfra()` resolves each of these once and `buildBaseBuilder`
+applies it to every agent, startup and session alike: the plugin `outputValidator`, the skill manager (its skills are
+vectorized into the `tools` store at startup only — `withSkillManager(manager, { vectorize: false })` on a session
+build), the `agent.llmCallStrategy` (one `ILlmCallStrategy` instance per agent), the circuit breakers (below) and the
+server's shared, strategy-wrapped history store (`setHistoryRag`). `applyServerExtras` now guards only the YAML `mcp:`
+auto-connect fallback — one connection, made at startup. The plugin `queryExpander` and the client adapters are moved
+out of the gate the same way but have no runtime effect yet (#323, #324).
+
+**History.** All sessions share one history store; the `rag-history` stage queries it with `scope: 'session'`, which
+sets `ragFilter.sessionId`, and writes carry `sessionId` / `userId`. `historyAutoSummarizeLimit` no longer creates a
+per-session `InMemoryRag` when a store exists, so history survives session eviction and works with qdrant / hana / pg.
+`HistoryUpsertHandler` writes the final assistant text (`PipelineContext.assistantText`, set by the tool loop), so a
+summary describes the answer as well as the question. `rag.retrieval.history` applies to session requests.
+
+**Circuit breakers.** `LlmCircuitBreakers` keeps one `CircuitBreakerLlm` per `llm:` key, cached by key and shared by every
+session and role. It wraps each LLM where it is created — the held main / classifier / helper (startup and
+`PUT /v1/config`, which gets a fresh breaker) and every per-key build of the role resolver — so the controller and the
+stepper go through it too; a consumer's own `CircuitBreakerLlm` takes the key's place and is not wrapped again. One
+embedder breaker wraps the server's retrieval embedder below the document/query role (`resolveRetrievalEmbedder`)
+and guards every agent's stores through `SmartAgentBuilder.withCircuitBreakers({ embedder })` (stores already guarded
+by a `FallbackRag` on that breaker, readable as `FallbackRag.breaker`, are not wrapped again). Worker embedders have no
+breaker. `/health` lists the LLM breakers first, then the embedder breaker, by `index`.
+
+**Cancellation.** The chat route and the adapter route (`/v1/messages`) create one `AbortController` per request
+(`createRequestAbort`) and pass its `signal` to `process` / `streamProcess`. It aborts when the client disconnects
+before the response finished; a finished response never aborts. A cancelled request is logged `request_cancelled`
+and writes nothing to the closed socket. Signals are combined with `AbortSignal.any`; the agent's `timeoutMs` signal
+aborts with a `TimeoutError` reason. `CircuitBreakerLlm` and `CircuitBreakerEmbedder` record neither failure nor
+success for a call whose signal was aborted with any other reason (`isCallerCancellation`), so disconnecting clients
+cannot open a shared breaker; a timeout still counts as a failure. A half-open breaker whose probe is cancelled stays
+half-open. The SAP AI Core embedder ignores the signal: an embed call in flight finishes.
+
+**Startup note.** An unknown `rag.retrieval` key (a store that is neither `tools`, `history`, a registered collection,
+nor a `user/…` / `session/…` name) is reported as a startup `config_warning`.
 `rag.retrieval` is server-wide: a worker config that declares its own is rejected at startup. `decision:` and
 `rag.retrieval` are not hot-reloadable. A `reranker: llm` entry keeps the LLM instance resolved at startup: a `PUT /v1/config` swap of the model behind its key (`main`, `classifier` or `helper`) reaches the agents but not that reranker; restart to rerank with the new model. The `makeDecisionModel` seam (`BuildAgentDeps.makeDecisionModel`) is
 optional and required only when a `rag.retrieval` entry asks for `reranker: decision`; the binary supplies it
@@ -771,7 +807,7 @@ pipeline-agnostic; the flat pipeline additionally emits richer per-tool
 The `ILlm` chain supports two optional decorators, composed by the builder:
 
 - **`RetryLlm`** — retries transient failures (5xx, and a 429 from a provider that runs no throttle strategy of its own) with exponential backoff. Configured via `SmartAgentConfig.retry`. For streaming, retries pre-stream failures (zero chunks yielded) on HTTP status codes, and mid-stream failures on configurable error substrings (`retryOnMidStream`). Mid-stream retry replays the entire stream and emits a `reset` chunk so consumers discard accumulated state.
-- **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`.
+- **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`. A call whose `signal` the caller aborted (`isCallerCancellation`) records neither a failure nor a success. SmartServer keeps one breaker per `llm:` key instead (see *Session agents carry the server's wiring*).
 
 Throttling is answered one layer lower, inside the provider. See **Server-governed throttling** below for why, and for why that layer decides nothing.
 

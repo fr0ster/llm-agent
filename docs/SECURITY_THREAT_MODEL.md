@@ -109,7 +109,7 @@ Design and migration: [MIGRATION-v27.md](MIGRATION-v27.md) items 6, 7, 10, 11; `
 server resources.
 
 **Mitigation:** `SmartAgentConfig.maxIterations` and `maxToolCalls` hard-cap the tool loop.
-`timeoutMs` aborts the entire pipeline via a merged `AbortSignal` after a wall-clock deadline.
+`timeoutMs` aborts the entire pipeline via a merged `AbortSignal` (`AbortSignal.any`) after a wall-clock deadline, with a `TimeoutError` reason. The HTTP routes also abort a request whose client disconnected before the response finished, so an abandoned request stops spending LLM, reranker and MCP calls; a caller's cancellation does not count against a circuit breaker (`isCallerCancellation`), so disconnecting clients cannot open it for every session.
 
 ---
 
@@ -143,9 +143,13 @@ never redirect the key or URL or turn on body logging. Keys come from the enviro
 request id only — never the key or a request/response body.
 
 **Limitation:** Whatever the provider retains is governed by the provider's terms, not by this library.
-Do not enable it for data that may not leave the deployment. `rag.retrieval.history` currently has no
-effect on per-session requests (session agents receive no `historyRag`), so do not rely on it to keep
-history out of a global reranker there.
+Do not enable it for data that may not leave the deployment. `rag.retrieval.history` applies to
+per-session requests, so an explicit `history: { strategy: embedding }` entry keeps session history out of a global
+(plugin / `withReranker`) reranker; without an entry the global reranker still sees it.
+
+**Session isolation of history.** All sessions share one history store; isolation rests on the `sessionId` filter
+of `IRag` (the `rag-history` stage queries with `scope: 'session'`). A custom `IRag` used as the history store
+**must** honour that filter, otherwise one session reads another's history. Every built-in store does.
 
 ---
 

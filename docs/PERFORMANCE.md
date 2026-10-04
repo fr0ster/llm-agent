@@ -111,7 +111,7 @@ ranking. Choose per store, by what the store holds:
 |---|---|---|
 | `tools` | `rerank` with `reranker: decision` | The question "will calling this tool carry out the request?" is where embedding ranking is weakest (recorded below); the pool is small |
 | a knowledge collection | `rerank` first; `rerank-all` only when recall is the problem | `rerank-all` sends `maxCandidates` records on every query |
-| `history` | `embedding` | Keeps session history out of any reranker (and note: `rag.retrieval.history` currently has no effect on per-session requests, which receive no `historyRag`) |
+| `history` | `embedding` | Keeps session history out of any reranker |
 
 **Latency per query.** A reranked query costs one embedding query plus one reranker call. With
 `reranker: decision` that is one `decide()` request per batch; the batch is split only when the candidates
@@ -122,9 +122,14 @@ passage. The `tools` store is queried once per request in the flat pipeline, but
 (`selectTools(step.instructions, 20)`, through `IToolsRagHandle.query`, which the stepper modes use as well), so a reranked `tools` store adds one
 reranker call per step. A failure is not an error for the request: the embedding order is kept (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#retrieval-reranking-has-no-effect)). Cancellation: the reranker
-receives the request's `signal`; the HTTP chat path carries no `AbortSignal` unless the agent's request timeout
-(`SmartAgentConfig.timeoutMs`, builder `withTimeout(ms)`) is set — the SmartServer YAML `agent:` section has no key
-for it — so a slow reranker call is bounded only by the provider's own timeout (`decision.timeoutMs`).
+receives the request's `signal`; the chat and adapter routes abort the request when the client disconnects before the response finished, so a
+reranker call (like every LLM and MCP call of that request) stops spending tokens. Otherwise a slow reranker call is
+bounded only by the provider's own timeout (`decision.timeoutMs`); the SmartServer YAML `agent:` section has no
+`timeoutMs` key.
+
+**Skills are vectorized once.** The skill manager's skills are embedded into the `tools` store at startup only; a
+per-session agent shares the same manager and never re-upserts them, so the embedding cost does not grow with the
+number of sessions (`withSkillManager(manager, { vectorize: false })` is how a builder skips it).
 
 **How many candidates.** `rerank` fetches `k × overfetch` (`overfetch`, default 2): a wider pool can lift a
 tool the embedder put just outside the top-k, at the cost of a larger reranker request. `rerank-all` fetches

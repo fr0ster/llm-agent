@@ -1724,6 +1724,8 @@ class CompactAssembler implements IContextAssembler {
 
 ## ISkillManager
 
+`builder.withSkillManager(manager, { vectorize })` — `vectorize` (default `true`) controls whether `build()` embeds the skills into the tools store. Pass `false` for builds that share a tools store already filled once; SmartServer does this for its per-session agents, so skills are vectorized at startup only.
+
 **File:** `packages/llm-agent/src/interfaces/skill.ts`
 
 Discovers and provides access to agent skills (SKILL.md files):
@@ -2606,6 +2608,12 @@ All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLi
 
 > **Verification:** Unit tests cover timeout configuration and signal merging, but they use fast in-memory stubs. After changing `healthTimeoutMs` in production, manually verify `/v1/health` against your actual provider to confirm the timeout is sufficient. For SAP AI Core, a cold-start health check (first call after deploy, when the OAuth token is not yet cached) is the slowest path — test that scenario specifically.
 
+### Shared embedder breaker, health breaker list, cancellation
+
+- `SmartAgentBuilder.withCircuitBreakers({ embedder })` takes an embedder `CircuitBreaker` you built and share. The builder guards the stores of its registry with it (a store already wrapped by a `FallbackRag` on the same breaker — `FallbackRag.breaker` — is not wrapped twice) and wraps no LLM. `withCircuitBreaker(config)` is unchanged and still builds its own LLM and embedder breakers. The breaker only sees embedding calls that go through it: wrap the embedder with `withCircuitBreaker(embedder, breaker)` below the document/query role.
+- `HealthCheckerDeps.circuitBreakers` accepts an array or a provider function (`() => readonly CircuitBreaker[]`), read on every `/health` call, so a list that changes at run time (a swapped LLM gets a new breaker) is reported live. Entries are listed by `index`, with no labels.
+- A call whose `options.signal` was aborted by the caller — with any reason whose `name` is not `TimeoutError` — is not the provider's failure. `isCallerCancellation(signal)` (exported from `@mcp-abap-adt/llm-agent`) tells the two apart; `CircuitBreakerLlm` and `CircuitBreakerEmbedder` use it and record neither failure nor success. A custom breaker or decorator that counts failures should do the same. The agent's `timeoutMs` signal aborts with a `TimeoutError` reason, which is still a failure.
+
 ### Runtime Reconfiguration
 
 Swap LLM instances at runtime without restarting the server:
@@ -2870,6 +2878,10 @@ The tool-loop passes **full tool results** between iterations without compaction
 - **If a tool result is too large** for the provider's payload limit — that's the MCP server's responsibility to fix (e.g. return TSV instead of XML, paginate results)
 
 History between user requests is managed separately via `HistoryMemory` (ring buffer) and RAG stores — not by the tool-loop.
+
+### History store contract
+
+A history store (`setHistoryRag`, SmartServer's shared `history` store) is read per session: the `rag-history` stage queries with `scope: 'session'`, which sets `ragFilter.sessionId`, and writes carry `sessionId` / `userId` metadata. A custom `IRag` used as the history store **must** honour the `sessionId` filter. Otherwise one session reads another's history. Every built-in store implements it. The tool loop records the final assistant text on `PipelineContext.assistantText`, and `HistoryUpsertHandler` writes it into the turn, so a summary includes the answer; a custom handler that builds a history turn should read the same field.
 
 ### History recency window
 

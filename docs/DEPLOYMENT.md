@@ -315,6 +315,9 @@ curl http://localhost:4004/health
 - `components.mcp` is an array — one entry per configured MCP server — with `ok: boolean` and an optional `error` string.
 - `components.toolCatalog` reports startup tool vectorization and is **absent** when none ran (no tools store, or a read-only one). `complete: false` ⇒ `degraded`. Read `complete`, not `vectorized === total`: a client whose `tools/list` failed contributes to neither counter, so the counters alone would look like a full catalog — `clientFailures` is what exposes it. The full list of failed tool names is deliberately not in this payload (it is polled on a hot path); read it from the agent's `getToolCatalogStatus()`.
 
+- `circuitBreakers` (present when `circuitBreaker:` is configured) is an array of `{ index, state }`, one entry per breaker and no labels: first one breaker per `llm:` key (shared by every session and role; a `PUT /v1/config` swap of a key gets a fresh one), then the embedder breaker. Any `open` breaker makes `status` `degraded`. A client disconnect is logged as `request_cancelled` and never counts as a breaker failure.
+- A `config_warning` at startup such as `rag.retrieval.<key> names no store; known stores: …` means a `rag.retrieval` key matches no store (usually a typo).
+
 Use the `200`/`503` split for Kubernetes readiness probes; use `status` for alerting dashboards.
 
 ### Prometheus metrics
@@ -412,9 +415,7 @@ sent by this mechanism; a plugin / `withReranker` reranker still reranks the sto
 Size the network egress and the provider quota (`decision.timeoutMs`, `decision.maxRetries`) accordingly. The
 key is `DECISION_API_KEY` (or `<REF>_API_KEY` with `decision.credentialRef`) in the server's environment.
 `rag.retrieval` is server-wide: a worker (subagent) config that declares it is rejected at startup. `decision:`
-and `rag.retrieval` are not hot-reloadable; a change takes a restart. A `reranker: llm` entry keeps the LLM instance resolved at startup: a `PUT /v1/config` swap of the model behind its key (`main`, `classifier` or `helper`) reaches the agents but not that reranker; restart to rerank with the new model. The HTTP chat path carries no
-`AbortSignal` unless the agent's request timeout (`SmartAgentConfig.timeoutMs`, builder `withTimeout(ms)`) is set; the
-SmartServer YAML `agent:` section has no key for it, so a slow reranker call is cut off only by the provider's own
+and `rag.retrieval` are not hot-reloadable; a change takes a restart. A `reranker: llm` entry keeps the LLM instance resolved at startup: a `PUT /v1/config` swap of the model behind its key (`main`, `classifier` or `helper`) reaches the agents but not that reranker; restart to rerank with the new model. The chat and adapter routes abort the request when the client disconnects before the response finished, and the reranker receives that `signal`; otherwise a slow reranker call is cut off only by the provider's own
 timeout (`decision.timeoutMs`).
 
 ## Security Checklist
