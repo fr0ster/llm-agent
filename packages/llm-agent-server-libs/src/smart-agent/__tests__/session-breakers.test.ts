@@ -501,7 +501,7 @@ describe('SmartServer LLM breakers — one per llm: key behind every role', () =
 // ---------------------------------------------------------------------------
 
 describe('SmartServer embedder breaker — fed by the retrieval embedder', () => {
-  it('two failing embeds open the embedder breaker; LLM breakers stay closed; the store falls back', async () => {
+  it('failing embeds open the embedder breaker; LLM breakers stay closed; the store falls back', async () => {
     let embeds = 0;
     const failing = {
       embed: async () => {
@@ -517,7 +517,7 @@ describe('SmartServer embedder breaker — fed by the retrieval embedder', () =>
       {
         port: 0,
         skipModelValidation: true,
-        circuitBreaker: { failureThreshold: 2, recoveryWindowMs: 60_000 },
+        circuitBreaker: { failureThreshold: 4, recoveryWindowMs: 60_000 },
         llm: { main: { provider: 'openai', model: 'm-main' } },
         rag: { store: { type: 'in-memory' } },
         agent: { classificationEnabled: false },
@@ -529,13 +529,14 @@ describe('SmartServer embedder breaker — fed by the retrieval embedder', () =>
       const s = internals(server);
       const embedderBreaker = s._embedderBreaker;
       assert.ok(embedderBreaker, 'circuitBreaker: builds the embedder breaker');
-      // Two requests that query a store: each embeds its query through the
-      // server's retrieval embedder, and each embed fails.
+      // Two requests; each queries two stores (tools and history, since the
+      // session agents read the shared history store), so each embeds twice
+      // through the server's retrieval embedder, and each embed fails.
       await chat(handle.port, 's-1');
-      assert.equal(embeds, 1, 'a request embeds through the store');
+      assert.equal(embeds, 2, 'a request embeds once per store it reads');
       assert.equal(embedderBreaker.state, 'closed');
       await chat(handle.port, 's-2');
-      assert.equal(embeds, 2);
+      assert.equal(embeds, 4);
       const states = await healthStates(handle.port);
       assert.equal(states.at(-1), 'open', 'the embedder breaker is last');
       assert.deepEqual(

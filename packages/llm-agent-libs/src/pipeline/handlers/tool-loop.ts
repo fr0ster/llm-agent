@@ -636,6 +636,7 @@ export class ToolLoopHandler implements IStageHandler {
           ).concat(controlTail);
           continue;
         }
+        ctx.assistantText = content;
         const summary = ctx.requestLogger.getSummary();
         ctx.options?.sessionLogger?.logStep('final_response', {
           content,

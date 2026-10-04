@@ -96,7 +96,7 @@ export class HistoryUpsertHandler implements IStageHandler {
         sessionId: ctx.sessionId,
         turnIndex: Date.now(),
         userText: ctx.inputText,
-        assistantText: '',
+        assistantText: ctx.assistantText ?? '',
         toolCalls: [],
         toolResults: [],
         timestamp: Date.now(),

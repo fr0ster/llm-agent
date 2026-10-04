@@ -892,6 +892,12 @@ export class SmartServer {
    */
   private _toolsRag?: IRag;
   /**
+   * The strategy-wrapped history store, shared by the startup agent and every
+   * session agent (one store; reads are scoped per session by metadata).
+   * Unset when `rag:` is not configured.
+   */
+  private _historyRag?: IRag;
+  /**
    * The providers every build of this server creates through, and the catalogs
    * a session registry is hydrated from. One object, handed to every build:
    * without it each session build replaced the registry's provider registry
@@ -1547,6 +1553,7 @@ export class SmartServer {
     // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
     // (and white-box vectorization assertions). See field doc.
     this._toolsRag = toolsRag;
+    this._historyRag = historyRag;
 
     // NOTE: the legacy per-pipeline named-RAG multistore (`pipeline.rag.{name}`)
     // is GONE with the `pipeline: {name,config}` migration. The top-level `rag:`
@@ -2647,6 +2654,7 @@ export class SmartServer {
   private async buildPipelineInstance(scope: {
     sessionId: string;
     parts: SessionAgentParts;
+    historyRag?: IRag;
   }): Promise<IPipelineInstance> {
     return this._pipelinePlugin.build(await this.buildServerCtx(scope));
   }
@@ -3040,6 +3048,7 @@ export class SmartServer {
     const inst = await this.buildPipelineInstance({
       sessionId: parts.sessionId,
       parts,
+      historyRag: this._historyRag,
     });
     // Register the pipeline's disposal hook keyed by sessionId. A prior
     // instance for the same sessionId (e.g. invalidateAll rebuild) is closed
