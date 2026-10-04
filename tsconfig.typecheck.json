@@ -37,6 +37,8 @@
     "packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts",
     "packages/llm-agent-server/scripts/check-models/*.ts",
     "packages/llm-agent/src/rag/__tests__/embedder-roles.typecheck.ts",
-    "scripts/rag-eval/rag-eval.ts"
+    "scripts/rag-eval/rag-eval.ts",
+    "scripts/rag-eval/rerank-fallbacks.ts",
+    "test/repo/rag-eval-fallbacks.test.ts"
   ]
 }
