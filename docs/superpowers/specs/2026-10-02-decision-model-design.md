@@ -798,8 +798,13 @@ rag:
 
 - **Built by the server through the `makeRag` seam** — `tools` and `history` in
   `_buildInfra` (`smart-server.ts:1450-1451`) and the worker stores (`:2060`,
-  `:2071`). Each passes through one helper that applies its configured strategy
-  at creation. The same wrapped `tools` instance is what the flat stages,
+  `:2071`). Each passes through one helper that applies the strategy configured
+  for its key (`tools` / `history`) at creation. `rag.retrieval` is
+  **server-wide**: worker stores use the main config's map by key, and a worker
+  config that declares its own `rag.retrieval` is rejected at startup
+  ("strategies are server-wide — set them in the main config's
+  rag.retrieval"), never silently ignored. Per-worker overrides can be added
+  later without breaking this. The same wrapped `tools` instance is what the flat stages,
   `tool-loop`, and `makeToolsRagHandle` (`:2487`, controller and stepper)
   receive, so all three selection paths of §13.1 use it.
 - **`CallOptions` reach the strategy on every path.** `rag-query`
@@ -830,8 +835,10 @@ documented.
 ### 13.5 `LlmReranker` rework
 
 - Per-store question (`TOOL_QUESTION` / `PASSAGE_QUESTION` / custom `task`).
-- Output contract: a JSON array of N numbers in `[0, 1]`, one per candidate, in
-  order. Wrong length, a non-finite value or a value outside `[0, 1]` →
+- Output contract: the whole reply (trimmed; one surrounding ```` ```json ```` /
+  ```` ``` ```` fence is unwrapped) must parse with `JSON.parse` as an array of N
+  numbers in `[0, 1]`, one per candidate, in order. Prose around the array, two
+  arrays, wrong length, a non-finite value or a value outside `[0, 1]` →
   `RagError('RERANK_ERROR')` (→ embedding order via §13.3), never zero-filled.
 - Batches by candidate count; usage logged through the request logger under its
   own component.

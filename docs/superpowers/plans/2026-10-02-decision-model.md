@@ -3979,6 +3979,12 @@ describe('LlmReranker', () => {
     assert.equal(r.value[0].text, 'ABAP internal tables LOOP');
   });
 
+  it('accepts the array inside one ```json fence', async () => {
+    const r = await new LlmReranker(makeLlm([{ content: '```json\n[0.3, 0.1, 0.9]\n```' }])).rerank('q', sampleResults);
+    assert.ok(r.ok);
+    assert.equal(r.value[0].score, 0.9);
+  });
+
   it('handles empty results without calling LLM', async () => {
     const llm = makeLlm([]);
     const r = await new LlmReranker(llm).rerank('test', []);
@@ -3992,6 +3998,9 @@ describe('LlmReranker', () => {
     ['[0.3, 1.2, 0.1]', 'out of range'],
     ['[0.3, "0.5", 0.1]', 'string value'],
     ['[0.3, null, 0.1]', 'null value'],
+    ['Example: [0.1, 0.2, 0.3]. Actual scores: [0.3, 0.1, 0.9]', 'prose around arrays'],
+    ['[0.3, 0.1, 0.9] [0.1, 0.2, 0.3]', 'two arrays'],
+    ['Scores: [0.3, 0.1, 0.9]', 'prose before the array'],
   ] as const) {
     it(`out-of-contract output (${why}) is RERANK_ERROR, never zero-filled`, async () => {
       const r = await new LlmReranker(makeLlm([{ content }])).rerank('q', sampleResults);
@@ -4037,7 +4046,7 @@ describe('LlmReranker', () => {
 
 - [ ] **Step 2: Run, expect FAIL.**
 
-- [ ] **Step 3: Implement.** System prompt: score each passage with the probability (0..1) that it satisfies the question; reply with ONLY a JSON array of N numbers in order. Parse: extract the first `[...]`, `JSON.parse`, require `Array.isArray`, length N, every element `typeof === 'number' && Number.isFinite && 0 <= x <= 1`; otherwise `RagError('RERANK_ERROR', …)`. Batches of `batchSize` with ≤ `concurrency` in flight; any batch error fails the call; merge, sort descending (stable on original index). Remove `_parseScores`' zero/order fallback — the strategy (Task 17) owns the fallback. After each successful batch, when `options?.requestLogger` is set, call `logLlmCall({ component: 'rerank', model: llm.model ?? 'unknown', promptTokens, completionTokens, totalTokens, durationMs, scope: 'request', requestId: options.trace?.traceId })` with the usage the `ILlm` result reports (`res.value.usage` — check its field names in `LlmResponse`), estimated (`chars / 4`, `estimated: true`) when absent — the same shape `wrapDecisionModel` logs.
+- [ ] **Step 3: Implement.** System prompt: score each passage with the probability (0..1) that it satisfies the question; reply with ONLY a JSON array of N numbers in order. Parse the **whole** reply: `trim()`; if it is wrapped in exactly one code fence (```` ```json\n…\n``` ```` or ```` ```\n…\n``` ````), unwrap it; then `JSON.parse` the entire remaining text (no substring extraction), require `Array.isArray`, length N, every element `typeof === 'number' && Number.isFinite && 0 <= x <= 1`; otherwise `RagError('RERANK_ERROR', …)`. Batches of `batchSize` with ≤ `concurrency` in flight; any batch error fails the call; merge, sort descending (stable on original index). Remove `_parseScores`' zero/order fallback — the strategy (Task 17) owns the fallback. After each successful batch, when `options?.requestLogger` is set, call `logLlmCall({ component: 'rerank', model: llm.model ?? 'unknown', promptTokens, completionTokens, totalTokens, durationMs, scope: 'request', requestId: options.trace?.traceId })` with the usage the `ILlm` result reports (`res.value.usage` — check its field names in `LlmResponse`), estimated (`chars / 4`, `estimated: true`) when absent — the same shape `wrapDecisionModel` logs.
 
 - [ ] **Step 4: Tests** → `# fail 0`. **Step 5: Commit** — `feat(libs)!: LlmReranker strict [0,1] contract, question, batching` — the message body notes: output-contract failures are now errors (callers' `rerank` stage / retrieval strategy fall back to the original order).
 
@@ -4127,6 +4136,7 @@ export interface SmartServerRetrievalConfig {
   - resolves `rag.retrieval.tools: { strategy: rerank, reranker: decision, overfetch: 3 }` with `decision:` present → exactly those fields; absent optionals absent; `overfetch: "${N}"` via `loadYamlConfig` → number.
   - `rag.retrieval.history: { strategy: embedding }` → `{ strategy: 'embedding' }`.
   - rejects (one test each, matching the message): unknown `strategy`; unknown `reranker`; `rerank` without `reranker`; `reranker: decision` without `decision:`; `reranker: llm` without `llm:`; `reranker: llm, llm: nope` where `llm` map has no `nope` (use a map-shaped `llm:` with `main` and `reranker` keys); `rerank-all` without `maxCandidates`; `overfetch: 0`; `question: other`; `retrieval: 5` (not a mapping); `retrieval.tools: true` (entry not a mapping).
+  - a **worker** config (a `subagents[].config` file, resolved through `parseSubAgents` — find where worker files are validated: `grep -n "parseSubAgents\|requireLlmSection" packages/llm-agent-server-libs/src/smart-agent/config.ts`) that declares `rag.retrieval` → startup error `subagent '<name>' rag.retrieval: strategies are server-wide — set them in the main config's rag.retrieval` (test with a temp worker file, as the existing worker-config tests do).
   - `reranker:` top-level section is now an **unknown/removed** key — find how the validator reports unknown top-level keys (`grep -n "unknown" packages/llm-agent-server-libs/src/smart-agent/config-validator.ts`); if top-level keys are not policed, add a targeted check: `reranker: removed — use rag.retrieval.<store>: { strategy: rerank, reranker: decision }` (unreleased, but a clear message beats silent ignore).
 
 - [ ] **Step 2: Run, expect FAIL.**
@@ -4155,6 +4165,7 @@ export interface SmartServerRetrievalConfig {
   4. Precedence: `rag.retrieval.history: { strategy: embedding }` + a plugin reranker (temp-file plugin, as Part 1) → the plugin reranker is never called with history results; a store not listed is still reranked by it.
   5. `agent.toolSelection: { strategy: threshold, minScore: 0.5 }` reaches a **session** agent: with a reranked `tools` store whose fake model returns 0.9 for one tool and 0.1 for the rest, the session's selected tools contain only the 0.9 one.
   6. A store with no entry stays on embedding (the fake model is never called for it).
+  7. Worker stores follow the main map: a subagent worker (`subAgentConfigs`, as in `make-llm-seam.test.ts`) whose `tools` store is created at ~2060 goes through the main config's `tools` strategy (fake model called with the worker's query).
 
   `tools-rag-handle.test.ts`: `query(text, k, options)` passes `options` to `toolsRag.query` (spy store asserts the third argument).
 
@@ -4165,7 +4176,7 @@ export interface SmartServerRetrievalConfig {
   - `resolve-retrieval.ts` as in *Interfaces*; each strategy gets `storeName: key`.
   - `smart-server.ts`:
     - ~1226: `this._reranker = plugins.reranker` (or `resolveReranker({ pluginReranker: plugins.reranker })` kept as the plugin-only function) and `this._retrievalStrategies = await resolveRetrievalStrategies({ retrieval: this.cfg.rag?.retrieval, decisionCfg: this.cfg.decision, makeDecisionModel: this._deps.makeDecisionModel, resolveLlm: (k) => this.roleLlm().resolveNamed(k) });` (new private field `Map<string, IRetrievalStrategy>`).
-    - ~1450-1451 and the worker stores ~2060/2071: pass each created store through `withStrategy(key, store)` = `s ? applyRetrievalStrategy(store, s) : store` with key `tools` / `history`.
+    - ~1450-1451 and the worker stores ~2060/2071: pass each created store through `withStrategy(key, store)` = `s ? applyRetrievalStrategy(store, s) : store` with key `tools` / `history`, using the **main config's** map (`rag.retrieval` is server-wide, spec §13.4).
     - `buildBaseBuilder`: for each `[key, s]` of `this._retrievalStrategies`, `builder = builder.withRetrievalStrategy(key, s)` — **outside** the `applyServerExtras` gate, next to `withReranker`.
     - Move the `agent.toolSelection` block (~2821-2829) **out of** `if (parts.applyServerExtras)` (resolve once, apply to every builder), with a comment mirroring the reranker's.
   - `resolve-reranker.test.ts`: drop the YAML cases; keep plugin passthrough.
@@ -4201,7 +4212,7 @@ Replace every `reranker: { type: decision }` example and description (files foun
 - `docs/INTEGRATION.md`: implementing your own `IRetrievalStrategy`; `IRagDecorator` for custom store decorators (so strategy detection sees through them).
 - `docs/PERFORMANCE.md`: per-store choice; latency per query (one reranker call; per controller step for `tools`); overfetch / `maxCandidates`; batching; the eval numbers from Task 23; `minScore` on `[0,1]` when `tools` is reranked.
 - `docs/TROUBLESHOOTING.md`: `retrieval_rerank_error` session step (codes); circuit-open difference of the two wrapper orders (spec §13.3 table); "a collection added after build is not reranked" → custom registry without `setMutationListener`.
-- `docs/SECURITY_THREAT_MODEL.md` AS-7: only stores with a reranked strategy send data; `history` only if explicitly configured.
+- `docs/SECURITY_THREAT_MODEL.md` AS-7 — two mechanisms, stated separately: (1) **per-store** (`rag.retrieval`): a store sends its query + candidates out only when its own entry is `rerank` / `rerank-all`; (2) **legacy global** reranker (plugin / `withReranker`): it reranks — and, if it calls an external model, sends out — every store **without** a `rag.retrieval` entry, `history` included. An explicit `history: { strategy: embedding }` (any explicit entry) takes the store out of the global reranker, so history is never sent by either mechanism.
 - `docs/DEPLOYMENT.md`, `README.md`, `CLAUDE.md` (env/architecture), `.env.template`, root + package `CHANGELOG.md` `## Unreleased`: *Added* strategies, `IRagDecorator`, `rag.retrieval`; *Changed* `LlmReranker` contract (`[0,1]`, out-of-contract → error); `IToolsRagHandle` forwards options; *Fixed* `agent.toolSelection` now reaches session agents; *Removed* (unreleased) `reranker:` section.
 
 Verify every concrete claim against source (`grep` each symbol / key / message) and run `node scripts/check-example-configs.mjs` (exit 0). Commit — `docs: per-store retrieval strategies`.
