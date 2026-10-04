@@ -3,7 +3,9 @@
 Status: design approved in brainstorming 2026-10-02; implemented on
 `feat/decision-model` (Tasks 1–14). **Addendum A (§13, 2026-10-04)** adds per-store
 retrieval strategies and supersedes the `reranker:` YAML section of §7.1/§7.3 —
-addendum awaiting review.
+addendum approved. **Addendum B (§14, 2026-10-04)** wires the server's
+configuration into the per-session agents that serve requests and adds request
+cancellation — awaiting review.
 Follow-up (separate spec, after this ships): a decision-model gate in front of
 `LlmEvaluator` (cascade).
 
@@ -899,3 +901,156 @@ documented.
    helper call per store creation site plus the gate move.
 7. Additive for released contracts; the only removals are the unreleased
    `reranker:` YAML and `SmartServerRerankerConfig`.
+
+## 14. Addendum B — session agents get the server's wiring (2026-10-04)
+
+### 14.1 Why
+
+Every request is served by a **per-session agent** (`buildSessionAgent` →
+`buildPipelineInstance` → `buildBaseBuilder` with `applyServerExtras: false`).
+Part 2 found that this gate had already dropped the reranker and
+`agent.toolSelection` from session agents (§13.4). An investigation of the
+whole gate (2026-10-04) found more silent losses. Git history shows the gate was
+incidental: `084ccbb1` built the session agent minimal, and `62531b0c` "preserve
+behavior" only kept that minimal shape. No test pins the gated behaviour.
+
+| Wiring | Session agents today | Effect |
+|---|---|---|
+| plugin `outputValidator` | not applied | plugin validator ignored on every request |
+| skill manager (DI > plugin > YAML `skills:`) | not applied | `skill-select` is a no-op; skills never injected |
+| `agent.llmCallStrategy` | not applied | requests always stream, whatever the YAML says |
+| circuit breaker | partly | stores are wrapped (the registry copies the wrapped globals); the LLM breaker never sees request traffic, so `/health` cannot report an LLM outage |
+| `historyRag` | `undefined` | session summaries are written to the global `history` store and never read; with `historyAutoSummarizeLimit` the builder silently creates a per-session `InMemoryRag` instead |
+| plugin `queryExpander`, client adapters | not applied | dead on **every** agent, startup included: #323, #324 |
+| YAML `mcp:` auto-connect fallback | not applied | deliberate: one connection, made at startup |
+
+Four neighbouring defects are fixed with them:
+- **No cancellation.** The chat route (`http/chat-route-handler.ts`) and the
+  adapter route (`http/adapter-route-handler.ts`) pass no `AbortSignal` to
+  `process` / `streamProcess`. A client disconnect is never detected, so the
+  request runs to the end and spends LLM, reranker and MCP calls. The stack below
+  honours `CallOptions.signal` when it gets one.
+- **`mergeSignals` leaks listeners** (`llm-agent-libs/src/agent.ts:235`). It
+  never removes the `abort` listeners it adds to long-lived signals.
+- **History summaries lack the answer.** `HistoryUpsertHandler` builds the turn
+  with `assistantText: ''` (`pipeline/handlers/history-upsert.ts:98`), so a
+  summary describes the question only.
+- **A typo in a `rag.retrieval` store key is silent** (e.g. `tool:` for
+  `tools:`).
+
+### 14.2 Session-agent wiring
+
+`_buildInfra` resolves each item **once** and `buildBaseBuilder` applies it
+**outside** the `applyServerExtras` gate, so the startup agent and every session
+agent get the same instance:
+
+- **`outputValidator`** (plugin): the one instance, which is stateless.
+- **`queryExpander`** (plugin) and **client adapters** (DI > plugin > default
+  `ClineClientAdapter`): the same move. It is wiring only and changes nothing
+  until #323 / #324 make the features work. After that, they work on the agents
+  that serve requests.
+- **Skill manager**: the one instance. Skill **vectorization** into the tools
+  store stays startup-only. A session build must not re-upsert every skill into
+  the shared tools store. The builder gets an additive way to skip
+  vectorization (`withSkillManager(manager, { vectorize: false })`; default
+  `true`, unchanged behaviour).
+- **`agent.llmCallStrategy`**: resolved once to one `ILlmCallStrategy`
+  instance and applied to every agent.
+- **Circuit breaker**: **shared, not rebuilt per session.** A per-session
+  breaker would split the failure count and double-wrap the copied stores.
+  SmartServer creates one LLM breaker and one embedder breaker from
+  `circuitBreaker:`. An additive builder seam takes those instances
+  (`withCircuitBreakers({ llm, embedder })`; `withCircuitBreaker(config)`
+  is unchanged and still builds its own). The builder then wraps the main LLM
+  with the given LLM breaker. It wraps no store already guarded by a
+  `FallbackRag` on the same embedder breaker; this needs `FallbackRag` to expose
+  its breaker read-only, which is additive. `/health` reports the shared
+  breakers, so request traffic now moves them.
+- **YAML `mcp:` auto-connect stays gated** (one connection, made at startup).
+  After this change `applyServerExtras` guards only this, and its doc says so.
+
+### 14.3 History
+
+One shared store, read per session. `buildSessionAgent` passes the server's
+`historyRag` (the strategy-wrapped global store) to every session agent:
+
+- Reads already filter by session. The `rag-history` stage queries with
+  `scope: 'session'`, which sets `ragFilter.sessionId`
+  (`pipeline/handlers/rag-query.ts:73-93`), and every built-in store implements
+  that filter under conformance tests.
+- Writes already carry `sessionId` / `userId` metadata.
+- With `historyAutoSummarizeLimit`, the builder no longer creates a per-session
+  `InMemoryRag`, because a `historyRag` is now given. History then survives
+  session eviction and works with qdrant / hana / pg.
+- `rag.retrieval.history` now applies to session requests. The doc caveat added
+  in Task 24 ("no effect on per-session requests") is removed.
+- **Contract note (docs):** a custom `IRag` used as the history store **must**
+  honour the `sessionId` filter. Otherwise one session sees another's history.
+  INTEGRATION.md and the threat model state this.
+- **Answer in the summary:** the tool loop records the final assistant text on
+  the pipeline context (a new optional field, additive), and
+  `HistoryUpsertHandler` uses it instead of `''`.
+
+### 14.4 Cancellation
+
+- Both HTTP routes create one `AbortController` per request. They abort it when
+  the client disconnects before the response finished
+  (`res.on('close')` with `!res.writableFinished`), and pass its `signal` in the
+  options of `process` / `streamProcess`. A finished response never aborts.
+- Signals are combined with `AbortSignal.any` (Node ≥ 22 is required);
+  `mergeSignals` is replaced by it, which removes the listener leak.
+- An aborted request is logged as cancelled (`request_cancelled`), not as an
+  error, and writes nothing to a closed socket.
+- Out of scope: the SAP AI Core embedder ignores the signal; an embed call in
+  flight finishes. This is recorded as a known limitation.
+
+### 14.5 Unknown `rag.retrieval` store keys
+
+After `builder.build()` in `_buildInfra`, every `rag.retrieval` key is checked.
+A key that is not `tools`, `history`, a collection in the global RAG registry,
+or a `user/…` / `session/…` name (those appear at run time) produces a startup
+warning through `this.warn` (`config_warning`). The warning names the key and
+lists the known stores. It is a warning, not an error, because a collection can
+be registered after startup.
+
+### 14.6 Testing
+
+- Wiring: a session agent built through SmartServer applies the plugin output
+  validator, the skill manager (skill-select injects; no second vectorization of
+  the tools store), the configured LLM-call strategy, and the shared LLM breaker.
+  A failing LLM call on a session request moves the breaker that `/health`
+  reports.
+- History: two sessions on one shared store; each reads only its own
+  summaries; the summary includes the answer; `historyAutoSummarizeLimit` with a
+  given store creates no `InMemoryRag`; `rag.retrieval.history` applies on a
+  session request.
+- Cancellation: a client disconnect mid-request aborts the signal the agent
+  received (streaming and non-streaming, both routes); a completed response does
+  not abort; `AbortSignal.any` composition with `timeoutMs`; no listener left on
+  a long-lived signal.
+- Store keys: a typo key warns once; `tools`, `history`, a registered collection
+  and a `session/x` key do not warn.
+
+### 14.7 Out of scope
+
+- Making the query expander work (#323) and client adapters work (#324).
+- The SAP AI Core embedder honouring `AbortSignal`.
+- The always-empty `ragCollections` plumbing in `_buildInfra` (dead code, no
+  behaviour).
+
+### 14.8 Architecture-principle check
+
+1. Built on existing components: the session-scope filter of `IRag`,
+   `CircuitBreaker` / `CircuitBreakerLlm` / `FallbackRag`, `AbortSignal.any`. No
+   app-local glue; the fixes land in the builder seams that the server consumes.
+2. The app is the example: SmartServer's request-serving agents now carry the
+   configured wiring.
+3. Interfaces: consumers keep depending on `IOutputValidator`, `ISkillManager`,
+   `ILlmCallStrategy`, `IRag`.
+4. ISP: no interface grows; the new builder seams are separate methods/options.
+5. Strategy: no new variation point; existing ones now reach the serving agents.
+6. File size: wiring moves inside `buildBaseBuilder`; no new god-method.
+7. Additive: `withCircuitBreaker(config)`, `withSkillManager(manager)` and
+   `setHistoryRag` keep their behaviour. The change consumers see is that
+   configured server features now act on requests, which is the documented
+   intent.
