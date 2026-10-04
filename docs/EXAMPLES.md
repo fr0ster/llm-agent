@@ -347,7 +347,8 @@ const { agent } = await new SmartAgentBuilder({ /* ... */ })
 
 `RerankAllRetrieval` takes `{ maxCandidates }`, `EmbeddingRetrieval` takes nothing. `DecisionReranker` takes
 `{ task, criteria, maxBatchTokens, concurrency }`; `TOOL_QUESTION` and `PASSAGE_QUESTION` are ready-made
-`{ task, criteria }` presets. `LlmReranker` takes `{ question: { task }, batchSize, concurrency }`:
+`{ task, criteria }` presets. `LlmReranker` takes `{ question: { task }, batchSize, concurrency }` (the numeric
+options of both rerankers must be positive integers — the constructor throws otherwise):
 `new RerankAllRetrieval(new LlmReranker(llm, { question: { task: PASSAGE_QUESTION.task } }), { maxCandidates: 200 })`.
 `wrapDecisionModel` accounts every successful call to the request's logger (`component: 'decision'`).
 

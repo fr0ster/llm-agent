@@ -98,3 +98,30 @@ describe('DecisionReranker batching', () => {
     assert.equal(calls.length, 1);
   });
 });
+
+describe('DecisionReranker option validation', () => {
+  for (const [field, v] of [
+    ['maxBatchTokens', Number.NaN],
+    ['maxBatchTokens', 0],
+    ['maxBatchTokens', Number.POSITIVE_INFINITY],
+    ['concurrency', Number.NaN],
+    ['concurrency', 0.5],
+    ['concurrency', -2],
+  ] as const) {
+    it(`refuses ${field}: ${v} at construction`, () => {
+      assert.throws(
+        () => new DecisionReranker(model(() => 0.5).m, { [field]: v }),
+        new RegExp(`DecisionReranker: ${field} must be a positive integer`),
+      );
+    });
+  }
+
+  it('a non-finite probability is an error, never an ok with a bad score', async () => {
+    const r = await new DecisionReranker(model(() => Number.NaN).m).rerank(
+      'q',
+      mk(2),
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.error.code, 'RERANK_ERROR');
+  });
+});

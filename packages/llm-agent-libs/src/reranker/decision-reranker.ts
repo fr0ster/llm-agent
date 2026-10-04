@@ -8,6 +8,7 @@ import {
   type RagResult,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import type { IReranker } from './types.js';
 
 export const DECISION_RERANK_DEFAULT_TASK =
@@ -42,9 +43,9 @@ export interface DecisionRerankerOptions {
    *  it — this never replaces the passage. */
   task?: DecisionEntry;
   criteria?: { true?: DecisionEntry; false?: DecisionEntry };
-  /** Estimated-token budget per decide() call (~4 chars/token). Default 48000. */
+  /** Estimated-token budget per decide() call (~4 chars/token); a positive integer. Default 48000. */
   maxBatchTokens?: number;
-  /** Max decide() calls in flight. Default 4. */
+  /** Max decide() calls in flight; a positive integer. Default 4. */
   concurrency?: number;
 }
 
@@ -56,10 +57,23 @@ const estimateTokens = (s: string): number => Math.ceil(s.length / 4);
  * P(relevant). Any failed batch fails the whole call.
  */
 export class DecisionReranker implements IReranker {
+  private readonly maxBatchTokens: number;
+  private readonly concurrency: number;
+
+  /** @throws Error when `maxBatchTokens` or `concurrency` is not a positive integer. */
   constructor(
     private readonly model: IDecisionModel,
     private readonly options: DecisionRerankerOptions = {},
-  ) {}
+  ) {
+    this.maxBatchTokens = options.maxBatchTokens ?? DEFAULT_MAX_BATCH_TOKENS;
+    this.concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+    assertPositiveInteger(
+      'DecisionReranker',
+      'maxBatchTokens',
+      this.maxBatchTokens,
+    );
+    assertPositiveInteger('DecisionReranker', 'concurrency', this.concurrency);
+  }
 
   async rerank(
     query: string,
@@ -70,11 +84,8 @@ export class DecisionReranker implements IReranker {
 
     const task = this.options.task ?? DECISION_RERANK_DEFAULT_TASK;
     const criteria = this.options.criteria ?? DECISION_RERANK_DEFAULT_CRITERIA;
-    const budget = this.options.maxBatchTokens ?? DEFAULT_MAX_BATCH_TOKENS;
-    const concurrency = Math.max(
-      1,
-      this.options.concurrency ?? DEFAULT_CONCURRENCY,
-    );
+    const budget = this.maxBatchTokens;
+    const concurrency = this.concurrency;
 
     const fixed = estimateTokens(JSON.stringify({ task, criteria }));
     const stateCost = estimateTokens(query);
@@ -110,7 +121,11 @@ export class DecisionReranker implements IReranker {
     const scored: Array<{ r: RagResult; i: number }> = [];
     for (let i = 0; i < results.length; i++) {
       const a = answers[`r${i}`];
-      if (a?.type !== 'noul' || typeof a.probability !== 'number') {
+      if (
+        a?.type !== 'noul' ||
+        typeof a.probability !== 'number' ||
+        !Number.isFinite(a.probability)
+      ) {
         return {
           ok: false,
           error: new RagError(

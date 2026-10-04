@@ -5,6 +5,7 @@ import {
   type RagResult,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import { PASSAGE_QUESTION } from './decision-reranker.js';
 import type { IReranker } from './types.js';
 
@@ -14,9 +15,9 @@ const DEFAULT_CONCURRENCY = 2;
 export interface LlmRerankerOptions {
   /** What "relevant" means for this store. Default: the passage question. */
   question?: { task: string };
-  /** Candidates per LLM call. Default 20. */
+  /** Candidates per LLM call; a positive integer. Default 20. */
   batchSize?: number;
-  /** Max LLM calls in flight. Default 2. */
+  /** Max LLM calls in flight; a positive integer. Default 2. */
   concurrency?: number;
 }
 
@@ -53,10 +54,19 @@ function parseScores(content: string, n: number): number[] | string {
 }
 
 export class LlmReranker implements IReranker {
+  private readonly batchSize: number;
+  private readonly concurrency: number;
+
+  /** @throws Error when `batchSize` or `concurrency` is not a positive integer. */
   constructor(
     private readonly llm: ILlm,
     private readonly opts: LlmRerankerOptions = {},
-  ) {}
+  ) {
+    this.batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
+    this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
+    assertPositiveInteger('LlmReranker', 'batchSize', this.batchSize);
+    assertPositiveInteger('LlmReranker', 'concurrency', this.concurrency);
+  }
 
   async rerank(
     query: string,
@@ -67,14 +77,7 @@ export class LlmReranker implements IReranker {
       return { ok: true, value: results };
     }
 
-    const batchSize = Math.max(
-      1,
-      Math.floor(this.opts.batchSize ?? DEFAULT_BATCH_SIZE),
-    );
-    const concurrency = Math.max(
-      1,
-      Math.floor(this.opts.concurrency ?? DEFAULT_CONCURRENCY),
-    );
+    const { batchSize, concurrency } = this;
     const batches: Array<{ offset: number; items: RagResult[] }> = [];
     for (let i = 0; i < results.length; i += batchSize) {
       batches.push({ offset: i, items: results.slice(i, i + batchSize) });
@@ -92,6 +95,20 @@ export class LlmReranker implements IReranker {
         o.value.forEach((v, j) => {
           scores[slice[k].offset + j] = v;
         });
+      }
+    }
+
+    // Never ok with a missing score: every candidate must have been scored.
+    for (let i = 0; i < results.length; i++) {
+      const v = scores[i];
+      if (typeof v !== 'number' || !Number.isFinite(v)) {
+        return {
+          ok: false,
+          error: new RagError(
+            `Reranking failed: no score for candidate ${i}`,
+            'RERANK_ERROR',
+          ),
+        };
       }
     }
 

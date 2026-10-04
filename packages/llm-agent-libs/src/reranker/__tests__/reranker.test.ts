@@ -163,3 +163,37 @@ describe('LlmReranker', () => {
     );
   });
 });
+
+describe('LlmReranker option validation', () => {
+  for (const [field, v] of [
+    ['batchSize', Number.NaN],
+    ['batchSize', 0],
+    ['batchSize', 1.5],
+    ['concurrency', Number.NaN],
+    ['concurrency', Number.POSITIVE_INFINITY],
+    ['concurrency', -1],
+  ] as const) {
+    it(`refuses ${field}: ${v} at construction`, () => {
+      assert.throws(
+        () => new LlmReranker(makeLlm([]), { [field]: v }),
+        new RegExp(`LlmReranker: ${field} must be a positive integer`),
+      );
+    });
+  }
+
+  it('is never ok with a missing score', async () => {
+    const r = new LlmReranker(makeLlm([]));
+    // A batch that answers fewer scores than candidates (contract breach).
+    (
+      r as unknown as {
+        _scoreBatch: () => Promise<{ ok: true; value: number[] }>;
+      }
+    )._scoreBatch = async () => ({ ok: true, value: [0.5] });
+    const res = await r.rerank('q', sampleResults);
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.error.code, 'RERANK_ERROR');
+      assert.match(res.error.message, /no score for candidate 1/);
+    }
+  });
+});

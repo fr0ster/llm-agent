@@ -8,15 +8,10 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 
 /** Cap on a thrown error's text in the step: enough for a reason, never a dump. */
 const MAX_THROWN_MESSAGE = 500;
-
-function assertPositiveInteger(cls: string, field: string, v: number): void {
-  if (!Number.isInteger(v) || v < 1) {
-    throw new Error(`${cls}: ${field} must be a positive integer (got ${v})`);
-  }
-}
 
 async function rerankOrFallback(
   name: string,
