@@ -127,13 +127,6 @@ queries with production embeddings:
   - duplicates and merging of similar cases;
   - retention.
 
-- Which default profiles ship, and how they group the known kinds. For example:
-  - a catalog profile for tools and skills, a session profile and a documents
-    profile;
-  - or one profile each for tools, skills and documents (history plus user).
-
-  Tools and the builder's skills share one store today, so a separate skills
-  store comes with this.
 - Do LLM-generated variants (intent enrichment, `IntentToolIndexing`) count as
   "written over" the provider's text? The best measured tool document included
   LLM-generated intents.
