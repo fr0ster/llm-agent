@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent-server
 
-## Unreleased
+## 30.1.0
 
 Supplies the `makeDecisionModel` seam (TypeSafe; default credential ref `DECISION`) and bundles `@mcp-abap-adt/typesafe-decision`.
 

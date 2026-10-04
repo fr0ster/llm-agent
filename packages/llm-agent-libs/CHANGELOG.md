@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent-libs
 
-## Unreleased
+## 30.1.0
 
 `DecisionReranker` (batched by `maxBatchTokens`, `concurrency`; presets `TOOL_QUESTION` / `PASSAGE_QUESTION`) and `wrapDecisionModel`. Per-store retrieval strategies: `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`, `SmartAgentBuilder.withRetrievalStrategy` (it also reaches the default coordinator's sub-agent tool source); a reranker failure logs `retrieval_rerank_error { store, strategy, code, message }`. `RerankHandler` records global-reranker failures (`<store>.rerank_error`, `rerank_error` step) and skips stores with an explicit strategy.
 

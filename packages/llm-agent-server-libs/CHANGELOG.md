@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
-## Unreleased
+## 30.1.0
 
 `decision:` config section, `rag.retrieval.<store>` per-store strategies (server-wide, worker agents included; a worker config declaring it is rejected; `reranker: llm, llm: main` is accepted with a flat `llm:` block), optional `BuildAgentDeps.makeDecisionModel`, `resolveRetrievalStrategies`; the plugin reranker and `agent.toolSelection` now reach per-session and embedded agents; the controller / stepper tool selection goes through the `tools` strategy.
 

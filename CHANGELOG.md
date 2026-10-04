@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.1.0] — 2026-10-04
+
 ### Added
 
 - **Decision models.** `IDecisionModel` (`@mcp-abap-adt/llm-agent`) answers typed questions (`noul`, `choice`, `score`) about a state with numbers, not text; `decide()` returns a `Result` with a `DecisionError`. New package `@mcp-abap-adt/typesafe-decision` (`TypeSafeDecisionModel`, TypeSafe Jev). `DecisionReranker` and `wrapDecisionModel` (usage accounting as `component: 'decision'`) in `@mcp-abap-adt/llm-agent-libs`. SmartServer: a `decision:` YAML section and the optional `BuildAgentDeps.makeDecisionModel` seam; the binary supplies it (default credential ref `DECISION` -> `DECISION_API_KEY`, read only when a `rag.retrieval` entry with `reranker: decision` builds the model). See README "Decision models", `docs/EXAMPLES.md`, `docs/INTEGRATION.md`.

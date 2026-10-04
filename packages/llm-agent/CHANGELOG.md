@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent
 
-## Unreleased
+## 30.1.0
 
 `IDecisionModel` and its request/answer/error types (`DecisionError`, `DecisionErrorCode`); `LlmComponent` gains `'decision'` and `'rerank'` — an exhaustive `switch` over it, or a `Record<LlmComponent, …>`, must add both. `IRetrievalStrategy` (how one store turns a query into its top-k) and the optional `IRagDecorator { inner }` capability with `isRagDecorator`; `FallbackRag` implements `IRagDecorator`.
 
