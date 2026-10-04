@@ -121,6 +121,34 @@ describe('LlmReranker', () => {
     );
   });
 
+  it('meters an out-of-contract reply before failing the rerank', async () => {
+    const entries: Array<{ component: string }> = [];
+    const llm = makeLlm([{ content: 'Sure! Here are the scores: [0.3]' }]);
+    const r = await new LlmReranker(llm).rerank('q', sampleResults, {
+      requestLogger: {
+        logLlmCall: (e: { component: string }) => entries.push(e),
+      },
+    } as never);
+    assert.equal(r.ok, false);
+    assert.deepEqual(
+      entries.map((e) => e.component),
+      ['rerank'],
+    );
+  });
+
+  it('a throwing requestLogger does not fail a good rerank', async () => {
+    const llm = makeLlm([{ content: '[0.3, 0.1, 0.9]' }]);
+    const r = await new LlmReranker(llm).rerank('q', sampleResults, {
+      requestLogger: {
+        logLlmCall: () => {
+          throw new Error('logger down');
+        },
+      },
+    } as never);
+    assert.ok(r.ok);
+    if (r.ok) assert.equal(r.value[0].text, 'ABAP internal tables LOOP');
+  });
+
   it('batches by batchSize and merges', async () => {
     const llm = makeLlm([{ content: '[0.1, 0.9]' }, { content: '[0.5]' }]);
     const r = await new LlmReranker(llm, {

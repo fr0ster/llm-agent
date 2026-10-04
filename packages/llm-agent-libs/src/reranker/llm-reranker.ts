@@ -1,4 +1,4 @@
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, LlmResponse } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   RagError,
@@ -125,6 +125,8 @@ export class LlmReranker implements IReranker {
           error: new RagError(res.error.message, 'RERANK_ERROR'),
         };
       }
+      // Meter the call before parsing: an out-of-contract reply is billed too.
+      this._logUsage(messages, res.value, started, options);
       const scores = parseScores(res.value.content, items.length);
       if (typeof scores === 'string') {
         return {
@@ -132,32 +134,44 @@ export class LlmReranker implements IReranker {
           error: new RagError(`Reranking failed: ${scores}`, 'RERANK_ERROR'),
         };
       }
-      const logger = options?.requestLogger;
-      if (logger) {
-        const usage = res.value.usage;
-        const promptTokens =
-          usage?.promptTokens ??
-          Math.ceil(messages.map((m) => m.content).join('').length / 4);
-        const completionTokens =
-          usage?.completionTokens ?? Math.ceil(res.value.content.length / 4);
-        logger.logLlmCall({
-          component: 'rerank',
-          model: this.llm.model ?? 'unknown',
-          promptTokens,
-          completionTokens,
-          totalTokens: usage?.totalTokens ?? promptTokens + completionTokens,
-          durationMs: Date.now() - started,
-          scope: 'request',
-          requestId: options?.trace?.traceId,
-          ...(usage === undefined ? { estimated: true } : {}),
-        });
-      }
       return { ok: true, value: scores };
     } catch (err) {
       return {
         ok: false,
         error: new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
       };
+    }
+  }
+
+  /** Never throws: a failing logger must not turn a good rerank into an error. */
+  private _logUsage(
+    messages: Array<{ content: string }>,
+    reply: LlmResponse,
+    started: number,
+    options?: CallOptions,
+  ): void {
+    const logger = options?.requestLogger;
+    if (!logger) return;
+    try {
+      const usage = reply.usage;
+      const promptTokens =
+        usage?.promptTokens ??
+        Math.ceil(messages.map((m) => m.content).join('').length / 4);
+      const completionTokens =
+        usage?.completionTokens ?? Math.ceil(reply.content.length / 4);
+      logger.logLlmCall({
+        component: 'rerank',
+        model: this.llm.model ?? 'unknown',
+        promptTokens,
+        completionTokens,
+        totalTokens: usage?.totalTokens ?? promptTokens + completionTokens,
+        durationMs: Date.now() - started,
+        scope: 'request',
+        requestId: options?.trace?.traceId,
+        ...(usage === undefined ? { estimated: true } : {}),
+      });
+    } catch {
+      // metering is best-effort
     }
   }
 }
