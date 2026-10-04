@@ -32,7 +32,8 @@ English queries (see *Evidence* below):
 - Splitting the query into clauses looked necessary for multi-step queries, but
   most of that gain came from mislabelled queries (a step the tool already takes
   as a parameter, such as `transport_request` or `activate`) and from Cohere's
-  ranking. It is the consumer's concern, not the framework's (see Decisions).
+  ranking. Splitting is a strategy the consumer injects, not a built-in option
+  (see Decisions).
 - An LLM used as a reranker gives no gain.
 
 ## Goals
@@ -100,7 +101,7 @@ English queries (see *Evidence* below):
 | 2026-10-04 | The candidate pool is sized in items, not records: with several records per item, 30 records give only ~26–34 tools (reader and writer together, against 50 with one record per tool), and non-English recall drops. |
 | 2026-10-04 | Rerankers are alternatives: Cohere on SAP AI Core and TypeSafe Jev both get a profile configuration; the consumer picks at deploy. The Cohere (SAP AI Core) reranker provider is in this PR. |
 | 2026-10-04 | llm-agent ships the contracts of the pipeline elements and some default implementations. For MCP tools it ships several default variants, so a consumer has a real choice; skills stay on today's behaviour and get default variants of their own later. Everything is configured through strategies injected by the consumer, not through flags inside one implementation. |
-| 2026-10-05 | Query splitting is not part of the framework. A consumer that needs it implements it on its side, for example by wrapping the `IRetrievalStrategy` it injects. `k` stays the overall limit of a retrieval, as in 30.1.0. The measured gain of the split came mostly from mislabelled multi-step queries and Cohere's ranking; a genuinely dependent second step is a separate step for the planner. This replaces the clause split as a profile option. |
+| 2026-10-05 | Query splitting is a strategy the consumer injects, not a behaviour the framework ships. The framework provides the component: the default retrieval calls the injected splitting strategy; with none injected it runs the query as is. `k` stays the overall limit of a retrieval, as in 30.1.0: the strategy distributes the budget among its sub-queries and the default retrieval never returns more than k items. No shipped variant uses splitting: its measured gain came mostly from mislabelled multi-step queries and Cohere's ranking, and a genuinely dependent second step is a separate step for the planner. This replaces the clause split as a built-in profile option. |
 | 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
 
 ## Evidence (measured in cloud-llm-hub, 2026-09-30 … 2026-10-04)
