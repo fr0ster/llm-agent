@@ -246,7 +246,7 @@ Sizes of one server's two sets (mcp-abap-adt, exported definitions — **example
   equivalent and are used. EN-ext = 67 (query, role) rows; hybrid in-store scoring,
   **required-recall**; tokens = mean summed definition tokens of the returned tools per query.
   C0 record text = name + description + parameter names (the provider text, no intents, i.e. the
-  `full` record). The budget cuts in the table are applied after the Jev rerank.
+  `full` record). A budget cut applies to the ranking named in its row (stage 1, or after Jev).
 - **Noise:** one row ≈ 1.5 points on 67 rows; differences of 1–2 rows are noise.
 
 | Layout | Retrieval | Required-recall (tokens) |
