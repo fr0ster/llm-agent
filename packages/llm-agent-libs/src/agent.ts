@@ -232,27 +232,15 @@ export interface SmartAgentConfig {
     ctx: StreamHookContext,
   ) => AsyncIterable<string>;
 }
-function mergeSignals(
-  ...signals: (AbortSignal | undefined)[]
-): AbortController {
-  const ctrl = new AbortController();
-  for (const s of signals) {
-    if (!s) continue;
-    if (s.aborted) {
-      ctrl.abort(s.reason);
-      return ctrl;
-    }
-    s.addEventListener('abort', () => ctrl.abort(s.reason), { once: true });
-  }
-  return ctrl;
-}
-
 function createTimeoutSignal(ms: number): {
   signal: AbortSignal;
   clear: () => void;
 } {
   const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(new Error('Timeout')), ms);
+  const id = setTimeout(
+    () => ctrl.abort(new DOMException('Request timed out', 'TimeoutError')),
+    ms,
+  );
   return { signal: ctrl.signal, clear: () => clearTimeout(id) };
 }
 
@@ -518,10 +506,11 @@ export class SmartAgent {
     const HEALTH_TIMEOUT_MS = this.config.healthTimeoutMs ?? 5_000;
     const { signal: timeoutSignal, clear: clearTimeout_ } =
       createTimeoutSignal(HEALTH_TIMEOUT_MS);
-    const merged = mergeSignals(timeoutSignal, options?.signal);
     const healthOptions: CallOptions = {
       ...options,
-      signal: merged.signal,
+      signal: AbortSignal.any(
+        options?.signal ? [timeoutSignal, options.signal] : [timeoutSignal],
+      ),
       maxTokens: 1,
     };
 
@@ -639,8 +628,12 @@ export class SmartAgent {
     if (this.config.timeoutMs) {
       const { signal, clear } = createTimeoutSignal(this.config.timeoutMs);
       timeoutCleanup = clear;
-      const merged = mergeSignals(options?.signal, signal);
-      opts = { ...options, signal: merged.signal };
+      opts = {
+        ...options,
+        signal: AbortSignal.any(
+          options?.signal ? [options.signal, signal] : [signal],
+        ),
+      };
     }
     // Normalize AFTER the timeout-merge (which rebuilds opts from the original
     // options): write the generated traceId into opts.trace and attach the

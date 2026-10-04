@@ -14,6 +14,7 @@ import {
   type LlmTool,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { isCallerCancellation } from './caller-cancellation.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 
 export class CircuitBreakerLlm implements ILlm {
@@ -44,6 +45,9 @@ export class CircuitBreakerLlm implements ILlm {
       };
     }
     const result = await this.inner.chat(messages, tools, options);
+    if (isCallerCancellation(options?.signal)) {
+      return result; // the caller's cancellation says nothing about the LLM
+    }
     if (result.ok) {
       this.breaker.recordSuccess();
     } else {
@@ -73,7 +77,9 @@ export class CircuitBreakerLlm implements ILlm {
       )) {
         if (!chunk.ok) {
           hadError = true;
-          this.breaker.recordFailure();
+          if (!isCallerCancellation(options?.signal)) {
+            this.breaker.recordFailure();
+          }
           yield chunk;
           return;
         }
@@ -81,14 +87,16 @@ export class CircuitBreakerLlm implements ILlm {
       }
     } catch (err) {
       hadError = true;
-      this.breaker.recordFailure();
+      if (!isCallerCancellation(options?.signal)) {
+        this.breaker.recordFailure();
+      }
       yield {
         ok: false,
         error: new LlmError(String(err), 'LLM_ERROR'),
       };
       return;
     }
-    if (!hadError) {
+    if (!hadError && !isCallerCancellation(options?.signal)) {
       this.breaker.recordSuccess();
     }
   }

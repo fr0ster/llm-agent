@@ -87,6 +87,7 @@ export {
   BatchChunkingEmbedder,
   DEFAULT_MAX_BATCH_SIZE,
 } from './resilience/batch-chunking-embedder.js';
+export { isCallerCancellation } from './resilience/caller-cancellation.js';
 // Resilience
 export {
   CircuitBreaker,

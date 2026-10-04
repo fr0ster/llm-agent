@@ -17,6 +17,7 @@ import type {
   IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
 import { isBatchEmbedder, RagError } from '@mcp-abap-adt/llm-agent';
+import { isCallerCancellation } from './caller-cancellation.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 
 /** Non-batch breaker decorator — exposes only `embed()`. */
@@ -32,10 +33,14 @@ export class CircuitBreakerEmbedderBase implements IEmbedder {
     }
     try {
       const result = await this.inner.embed(text, options);
-      this.breaker.recordSuccess();
+      if (!isCallerCancellation(options?.signal)) {
+        this.breaker.recordSuccess();
+      }
       return result;
     } catch (err) {
-      this.breaker.recordFailure();
+      if (!isCallerCancellation(options?.signal)) {
+        this.breaker.recordFailure();
+      }
       throw err;
     }
   }
@@ -66,10 +71,14 @@ export class CircuitBreakerEmbedder
     }
     try {
       const result = await this.inner.embedBatch(texts, options);
-      this.breaker.recordSuccess();
+      if (!isCallerCancellation(options?.signal)) {
+        this.breaker.recordSuccess();
+      }
       return result;
     } catch (err) {
-      this.breaker.recordFailure();
+      if (!isCallerCancellation(options?.signal)) {
+        this.breaker.recordFailure();
+      }
       throw err;
     }
   }

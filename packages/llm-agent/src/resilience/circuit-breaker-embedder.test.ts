@@ -61,3 +61,34 @@ describe('withCircuitBreaker', () => {
     );
   });
 });
+
+describe('CircuitBreakerEmbedder — caller cancellation', () => {
+  class Failing extends BatchEmbedder {
+    async embed(): Promise<IEmbedResult> {
+      throw new Error('aborted');
+    }
+    async embedBatch(): Promise<IEmbedResult[]> {
+      throw new Error('aborted');
+    }
+  }
+  const aborted = () => {
+    const c = new AbortController();
+    c.abort();
+    return { signal: c.signal };
+  };
+
+  it('embed and embedBatch failures after a caller abort leave it closed', async () => {
+    const b = breaker();
+    const e = new CircuitBreakerEmbedder(new Failing(), b);
+    await assert.rejects(e.embed('x', aborted()));
+    await assert.rejects(e.embedBatch(['x'], aborted()));
+    assert.equal(b.state, 'closed');
+  });
+
+  it('real failures still open it', async () => {
+    const b = breaker();
+    const e = new CircuitBreakerEmbedder(new Failing(), b);
+    await assert.rejects(e.embed('x'));
+    assert.equal(b.state, 'open');
+  });
+});
