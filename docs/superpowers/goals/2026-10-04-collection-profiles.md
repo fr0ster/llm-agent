@@ -62,6 +62,19 @@ English queries (see *Evidence* below):
    the same kind share one profile; the tool stores per role are an example.
    A consumer's example: five stores (two for tools, one for skills, one for
    session history, one for user collections) served by three profiles.
+7. The default profiles cover at least:
+   - **MCP tools**;
+   - **skills**;
+   - **experience from sessions**: what a solved task teaches, so it is not lost.
+     A record is a case with:
+     - the inputs (task, context, system);
+     - the symptoms seen (messages, error texts, codes);
+     - the decision taken and what was done;
+     - the outcome: what helped and what did not.
+
+     The case is extracted from a finished session, or on demand. It is found
+     again by a new situation's symptoms and inputs, and returned whole,
+     including what failed.
 
 ## Decisions
 
@@ -69,6 +82,7 @@ English queries (see *Evidence* below):
 |---|---|
 | 2026-10-04 | This is a development of the framework that pipelines are built with: new building blocks, not a replacement and not a change to any one pipeline. Today's behaviour (one document per item, top-K) stays as the default profile, and nothing changes for current consumers. New profiles are opt-in. |
 | 2026-10-04 | Each collection kind gets a pair: an indexing strategy and a retrieval strategy, described together as one collection profile. |
+| 2026-10-04 | The default profiles cover MCP tools, skills and experience from sessions. Experience means cases (inputs, symptoms, decision, outcome: what helped, what did not) extracted from finished sessions, so solved tasks are not lost. |
 | 2026-10-04 | The framework is open-ended: any number of collection kinds and profiles. A profile belongs to a kind of store, and several stores can share it. Default profiles ship in llm-agent-rag or another package; consumers may write their own. The known kinds (tools, skills, session history, user collections) are what the defaults must cover, not a closed list. |
 | 2026-10-04 | Contracts and default implementations live in llm-agent (an existing package or a new one). The consumer picks the profiles and passes instances in through dependency injection. |
 | 2026-10-04 | Tool records come from what the tool provider exports (name, description, parameter names). Nothing is hand-written over them. A weak description is fixed at its source. |
@@ -102,6 +116,17 @@ queries with production embeddings:
   picked after seeing the results and still needs fresh queries.
 
 ## Open questions
+
+- Experience profile:
+  - when a case is extracted (end of session, an explicit call, a background
+    pass);
+  - who extracts it (an LLM step, with what prompt and schema);
+  - how outcomes are confirmed, so a case does not record a guess as a fix;
+  - the owner and visibility of cases (user, team, global — see #304);
+  - duplicates and merging of similar cases;
+  - retention.
+- Whether raw session history and user collections get default profiles too, or
+  stay on today's behaviour.
 
 - Which default profiles ship, and how they group the known kinds. For example:
   - a catalog profile for tools and skills, a session profile and a documents
