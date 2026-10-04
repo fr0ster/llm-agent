@@ -22,8 +22,12 @@ English queries (see *Evidence* below):
 - One document per tool loses tools whose distinguishing signal is the
   **operation**, such as where-used, remove from transport, or run versus
   update. The **object** words dominate the document instead.
-- A reranker stage helps only when the query is split into its clauses and the
-  results are joined.
+- A cross-encoder reranker (Cohere on SAP AI Core) helps on its own:
+  - non-English queries: 0.692 → 0.962;
+  - cosine-only stage 1, English: 0.885 → 0.943.
+- Splitting the query into its clauses and joining the results is needed only for
+  multi-step queries on top of hybrid scoring (0.714 → 1.000). It is a separate
+  option, not a requirement of every reranker.
 - An LLM used as a reranker gives no gain.
 
 ## Goals
@@ -88,5 +92,10 @@ queries with production embeddings:
   providers become packages of their own (like the `*-embedder` packages).
 - How a profile relates to the existing `IRag`, `IReranker`, query
   preprocessors and the builder.
+- The boundary with the per-store retrieval strategies of #321
+  (`IRetrievalStrategy`, `StrategyRag`, `DecisionReranker`). The retrieval half
+  of a profile should build on them, not beside them. The profile adds the
+  indexing half and what joins the two halves: collapsing a unit's records and
+  the optional clause split.
 - The search knobs per profile: candidate count, collapse rule, final cut
   (per-collection k or a threshold), and clause splitting.
