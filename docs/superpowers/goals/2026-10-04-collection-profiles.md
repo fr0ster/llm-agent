@@ -99,6 +99,7 @@ English queries (see *Evidence* below):
 | 2026-10-04 | The reranker reads the provider's text of the item, without generated intents: measured equal or better for both Cohere and Jev. Intents serve only the candidate search. |
 | 2026-10-04 | The candidate pool is sized in items, not records: with several records per item, 30 records give only ~27–31 tools, and non-English recall drops. |
 | 2026-10-04 | Rerankers are alternatives: Cohere on SAP AI Core and TypeSafe Jev both get a profile configuration; the consumer picks at deploy. The Cohere (SAP AI Core) reranker provider is in this PR. |
+| 2026-10-04 | llm-agent ships the contracts of the pipeline elements and some default implementations. For MCP tools it ships several default variants, so a consumer has a real choice; skills stay on today's behaviour and get default variants of their own later. Everything is configured through strategies injected by the consumer, not through flags inside one implementation. |
 | 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
 
 ## Evidence (measured in cloud-llm-hub, 2026-09-30 … 2026-10-04)
