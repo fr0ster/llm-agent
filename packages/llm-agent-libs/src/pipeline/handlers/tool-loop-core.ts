@@ -303,7 +303,12 @@ export async function* executeToolBatchWithHeartbeat(
   let settled = false;
 
   for (const [i, p] of toolExecPromises.entries()) {
-    p.then(() => pendingTools.delete(batch[i].name));
+    // Bookkeeping branch only: a rejection is surfaced through `allDone`, so
+    // swallow it here instead of leaving an unhandled rejection behind.
+    p.then(
+      () => pendingTools.delete(batch[i].name),
+      () => undefined,
+    );
   }
 
   if (heartbeatMs === null) {
@@ -312,12 +317,21 @@ export async function* executeToolBatchWithHeartbeat(
     results = await allDone;
   } else {
     while (!settled) {
-      const winner = await Promise.race([
-        allDone.then((r) => ({ tag: 'done' as const, results: r })),
-        new Promise<{ tag: 'tick' }>((resolve) =>
-          setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
-        ),
-      ]);
+      // The tick timer must not outlive the race: clear it whether the batch
+      // resolves, rejects, or the tick fires (a pending timer keeps the
+      // process alive after every tool batch).
+      let tickTimer: ReturnType<typeof setTimeout> | undefined;
+      let winner: { tag: 'done'; results: ToolExecResult[] } | { tag: 'tick' };
+      try {
+        winner = await Promise.race([
+          allDone.then((r) => ({ tag: 'done' as const, results: r })),
+          new Promise<{ tag: 'tick' }>((resolve) => {
+            tickTimer = setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(tickTimer);
+      }
       if (winner.tag === 'done') {
         results = winner.results;
         settled = true;

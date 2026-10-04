@@ -8,9 +8,9 @@ import {
   type CallOptions,
   ClassifierError,
   type Result,
-  type SmartAgentError,
   type Subprompt,
 } from '@mcp-abap-adt/llm-agent';
+import { withAbort } from '../utils/with-abort.js';
 
 export const DEFAULT_CLASSIFIER_PROMPT = `You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.
 For each task, identify:
@@ -70,23 +70,6 @@ function parseSubprompts(raw: string): Subprompt[] {
     }
   }
   return parsed as Subprompt[];
-}
-
-function withAbort<T>(
-  promise: Promise<T>,
-  signal: AbortSignal | undefined,
-  makeError: () => SmartAgentError,
-): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(makeError());
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      signal.addEventListener('abort', () => reject(makeError()), {
-        once: true,
-      });
-    }),
-  ]);
 }
 
 // ---------------------------------------------------------------------------

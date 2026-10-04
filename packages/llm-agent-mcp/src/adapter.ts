@@ -10,31 +10,14 @@ import {
   type McpTool,
   type McpToolResult,
   type Result,
-  type SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import type { MCPClientWrapper } from './client.js';
 import { toMcpError } from './error-mapping.js';
+import { withAbort } from './with-abort.js';
 
 // ---------------------------------------------------------------------------
 // Module-private helper
 // ---------------------------------------------------------------------------
-
-function withAbort<T>(
-  promise: Promise<T>,
-  signal: AbortSignal | undefined,
-  makeError: () => SmartAgentError,
-): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(makeError());
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      signal.addEventListener('abort', () => reject(makeError()), {
-        once: true,
-      });
-    }),
-  ]);
-}
 
 // ---------------------------------------------------------------------------
 // McpClientAdapter

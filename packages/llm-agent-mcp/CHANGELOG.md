@@ -2,7 +2,7 @@
 
 ## 30.1.0
 
-Lockstep release with the 30.1.0 line: decision models (`IDecisionModel`, TypeSafe Jev), per-store retrieval strategies (`rag.retrieval`), session agents that carry the server's wiring, circuit breakers per `llm:` key, request cancellation on client disconnect. No change in this package — see the root CHANGELOG.
+`withAbort` (`adapter.ts`) no longer leaks an `abort` listener: the listener added to the caller's `AbortSignal` per MCP call is removed once the race settles (resolve, reject or abort). No other change.
 
 ## 30.0.0
 
