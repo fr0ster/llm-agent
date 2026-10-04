@@ -28,6 +28,7 @@ import type {
   CallOptions,
   ICoordinatorConfig,
   ILlm,
+  IRag,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -57,6 +58,7 @@ import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import { NoopReranker } from '../reranker/noop-reranker.js';
+import { hasRetrievalStrategy } from '../retrieval/index.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 import { NoopValidator } from '../validator/noop-validator.js';
@@ -438,12 +440,20 @@ export class DefaultPipeline implements IPipeline {
         ? input
         : (input.filter((m) => m.role === 'user').slice(-1)[0]?.content ?? '');
 
-    // Build ragStores record — custom stores first, built-ins override by name
-    const ragStores: SmartAgentRagStores = {
-      ...(this.deps.ragStores ?? {}),
+    // Build ragStores record — custom stores first, built-ins override by name.
+    // Read the projection per request (the registry listener rebuilds it in
+    // place). A built-in whose projected entry carries an explicit retrieval
+    // strategy keeps the projected (strategy-wrapped) store; otherwise the raw
+    // built-in overrides it, as before.
+    const projected = this.deps.ragStores ?? {};
+    const ragStores: SmartAgentRagStores = { ...projected };
+    const builtIn = (name: 'tools' | 'history', raw: IRag | undefined) => {
+      if (!raw) return;
+      const p = projected[name];
+      ragStores[name] = p && hasRetrievalStrategy(p) ? p : raw;
     };
-    if (this.deps.toolsRag) ragStores.tools = this.deps.toolsRag;
-    if (this.deps.historyRag) ragStores.history = this.deps.historyRag;
+    builtIn('tools', this.deps.toolsRag);
+    builtIn('history', this.deps.historyRag);
 
     return {
       // Immutable input

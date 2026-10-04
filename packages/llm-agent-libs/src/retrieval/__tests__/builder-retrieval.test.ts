@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  type CallOptions,
   FallbackRag,
+  type ILlm,
   InMemoryRag,
   type IRag,
   type IRagEditor,
@@ -13,6 +15,7 @@ import {
   RagError,
   type RagResult,
   SimpleRagRegistry,
+  symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../builder.js';
@@ -247,7 +250,9 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       await pTools.writer?.()?.upsertRaw('t1', 'fallback tool', { id: 't1' });
       await pDocs.writer?.()?.upsertRaw('d1', 'fallback doc', { id: 'd1' });
       await tick();
-      // The embedder breaker is the one guarding the RAG stores.
+      // builder.ts pushes exactly two breakers, in order: the main-LLM breaker,
+      // then the embedder breaker that guards every FallbackRag.
+      assert.equal(handle.circuitBreakers.length, 2);
       const embedderBreaker = handle.circuitBreakers[1];
       embedderBreaker.recordFailure();
       assert.equal(embedderBreaker.state, 'open');
@@ -308,6 +313,76 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
         scope: 'global',
       });
       assert.equal(handle.ragStores.kb, undefined);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+function stubLlm(): ILlm {
+  return {
+    async chat() {
+      return {
+        ok: true as const,
+        value: { content: 'ok', finishReason: 'stop' as const },
+      };
+    },
+    async *streamChat() {
+      yield {
+        ok: true as const,
+        value: { content: 'ok', finishReason: 'stop' as const },
+      };
+    },
+  };
+}
+
+describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () => {
+  it('an explicit history strategy keeps history out of the reranker; tools without one are still reranked', async () => {
+    const { reranker, calls } = countingReranker();
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withEmbedder(
+        symmetricEmbedder({
+          embed: async (_t: string, _o?: CallOptions) => ({
+            vector: [0.1, 0.2, 0.3],
+          }),
+        }),
+      )
+      .setToolsRag(primaryStore([hit('tool-hit', 0.9)]))
+      .setHistoryRag(primaryStore([hit('history-hit', 0.9)]))
+      .withRetrievalStrategy('history', new EmbeddingRetrieval())
+      .withReranker(reranker)
+      .build();
+    try {
+      await handle.agent.process('hello', { sessionId: 's1' });
+      const seen = calls.flat();
+      assert.ok(seen.includes('tool-hit'), 'tools is still reranked');
+      assert.ok(
+        !seen.includes('history-hit'),
+        'history never reaches the reranker',
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it("an explicit tools strategy is what the pipeline's tools query goes through", async () => {
+    const { strategy, calls } = spyStrategy();
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withEmbedder(
+        symmetricEmbedder({
+          embed: async (_t: string, _o?: CallOptions) => ({
+            vector: [0.1, 0.2, 0.3],
+          }),
+        }),
+      )
+      .setToolsRag(primaryStore([hit('tool-hit', 0.9)]))
+      .withRetrievalStrategy('tools', strategy)
+      .build();
+    try {
+      await handle.agent.process('hello', { sessionId: 's1' });
+      assert.ok(calls.length >= 1, 'the tools query went through the strategy');
     } finally {
       await handle.close();
     }
