@@ -785,8 +785,6 @@ export class SmartAgentBuilder {
    * Wraps an `IRag` + `IEmbedder` pair into a thin retrieval callback that
    * `DefaultSubAgentContextBuilder` can consume. Returns `undefined` when
    * either piece is missing so the context builder simply skips that source.
-   */
-  /**
    * `resolve` is read per call, so a store re-projected by the registry
    * listener (e.g. strategy-wrapped) is the one queried.
    */
