@@ -9,15 +9,31 @@
 > history at `74922e28^:docs/superpowers/specs/2026-10-02-decision-model-design.md`).
 >
 > **Status:** draft for the user's review. D1–D11 and `IItemCut.limit()` were approved by the user
-> on 2026-10-05 (§17.2). The amendment below raises new open decisions D16–D22 (§17.3), each with a
-> recommendation; everything else is decided here, with the reason.
+> on 2026-10-05 (§17.2). The server-agnostic amendment raised D16–D22; the `compact` measurement
+> settles D17, D19, D20 and D21 (§17.3); D16, D18, D22 and the new D23 stay open, each with a
+> recommendation.
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
 > labelled examples and as the evidence they were measured on (§2.0, §7.0).
+>
+> **Amended 2026-10-05 (2)** for the goal's decisions on tuning and strategy choice: the
+> **consumer** makes the main behaviour choices by choosing the strategies it injects; components
+> are generic; tuned numbers live only in default compositions, each citing its measurement
+> (§7.1). The coarse-set (`compact`) measurement is in (§2.5.1): the coarse default is now one record
+> per tool + rerank-all + 3 tools.
 
 ## TL;DR
 
+- **The consumer decides the behaviour.** A profile is a **composition of strategies the consumer
+  injects**: indexing, candidate pool, collapse, reranker, final cut, query decomposition. The
+  consumer makes the main behaviour choices by choosing those strategies (goal decision
+  2026-10-05).
+- **Shipped "variants" are default compositions, not the centre of the design.** A default only
+  fills in what the consumer did not choose. Taking one whole is one choice among many.
+- **Components are generic.** A strategy class carries no number tuned to a server or a consumer.
+  Tuned numbers (pool size, k) appear **only inside default compositions**, each with the
+  measurement that justifies it (§7.1).
 - A **collection profile** is one object with two halves for one **kind** of store:
   - **indexing**: one source item → several **records**, each carrying `itemId`, `recordKind`,
     **owner keys** and a **visibility**;
@@ -51,18 +67,23 @@
   - Where no shipped profile fits a server, the **consumer builds its own** from the contracts and
     uses it in the pipeline; the contracts are sufficient for that (§7.9).
 - Default profiles ship:
-  1. **MCP tools — several named variants**, so the consumer has a real choice (§7):
-     - `baseline` = 30.1.0 (one record per tool, top-k) — the default;
+  1. **MCP tools — several default compositions ("variants")** to start from (§7):
+     - `baseline` = 30.1.0 (one record per tool, top-k) — what a consumer gets by choosing nothing;
      - `faceted` = `full` + `summary` + `parameters` records (all schema-derived), item pool,
        collapse by max — for **fine-grained** tool sets;
      - `faceted-cohere` = faceted + Cohere on SAP AI Core;
      - `faceted-jev` = faceted + TypeSafe Jev (`DecisionReranker`);
-     - `coarse` = `full` + one `value` record per enum value of the tool's discriminating
-       parameter + **token-budget cut** — for **coarse** tool sets (object in a parameter).
-     **Intents** are an indexing strategy any variant can add: an `intent` record per tool
-     (default placement) or a companion collection.
-  - **Token-budget cut (`TokenBudgetCut`, §4.10):** keeps whole items in rank order while their
-    definitions fit a token budget; never truncates a tool. Usable with any variant.
+     - `small-set-jev` = one record per tool + Jev over the **whole** set (rerank-all) + **3
+       tools** — for **coarse / small** tool sets. Measured on mcp-abap-adt `compact`: 0.970
+       required-recall at ~1.6k tokens, against ~7.9k for the whole set (§2.5).
+     **Intents** are an indexing strategy the consumer can add to any of them: an `intent` record
+     per tool (default placement) or a companion collection.
+  - **Generic strategies in no default, the consumer's to inject** — each documented with what was
+    measured:
+    - `EnumValueToolIndexer` (one record per enum value): measured **worse** on `compact`
+      (§7.3.2);
+    - `TokenBudgetCut` (whole items while they fit a token budget): a **prompt-size guard**;
+      measured worse than a count as the main cut (§4.10).
   2. **`SharedItemsProfile`** — a generic shared base. Pipeline elements write items (record kinds
      of their choosing) through `index()` / `remove()`; the profile finds them and returns each
      item **whole**; every record carries owner keys and a visibility (`user` / `group` /
@@ -87,7 +108,7 @@
 | **Record id** | The **physical** store id: owner scope + owner key + item id + kind + index (§3.1) | `g:/tool%3Aread_file#summary:0` |
 | **Record kind** | Which view of the item a record is | tools: `full`, `summary`, `parameters`, `value`, `intent` (+ a consumer's own); shared items: `item` + the writer's own kinds |
 | **Fine-grained tool set** | Many tools, one per operation **and** object, short schemas | example: mcp-abap-adt's object-oriented set — 345 tools, median ~840 chars (`GetClass`, `UpdateDomain`) |
-| **Coarse tool set** | Few tools, one per operation, the object passed in a parameter, large schemas | example: mcp-abap-adt `compact` — 22 tools, `object_type` enum, ~39.5k chars ≈ 10k tokens in all |
+| **Coarse tool set** | Few tools, one per operation, the object passed in a parameter, large schemas | example: mcp-abap-adt `compact` — 25 tools for the writer role (16 for the reader), `object_type` enum; the whole writer set ≈ 7.9k tokens mean / 9.9k p90 per query |
 | **Discriminating parameter** | The input-schema property whose enum values name the different things a coarse tool acts on (§7.3.2) | example: `object_type` in mcp-abap-adt `compact` |
 | **Definition size** | Size of the tool definition the LLM receives: name + description + input schema, as exported (§4.10) | `HandlerCreate` ≈ 5k chars (mcp-abap-adt `compact`) |
 | **Canonical record** | The item's record of the indexer's `canonicalKind`, index 0. Its text is the item text; its metadata is the item's payload | `full` (tools), `item` (shared items) |
@@ -99,7 +120,7 @@
 | **Partition** | A store that holds the shared items of one visibility | the `user` store, the `global` store, one group's store |
 | **Collection kind** | The kind of items a store holds | MCP tools, shared items, skills, user collections, history |
 | **Profile** | The indexing + retrieval pair for one collection kind (`ICollectionProfile`) — a composition of strategies | `ComposedToolsProfile` |
-| **Variant** | A named, shipped composition of strategy instances for one kind | `faceted-cohere` |
+| **Variant** | A **default composition**: a named, shipped set of strategy instances for one kind. It fills in what the consumer did not choose; its tuned numbers cite a measurement (§7.1) | `faceted-cohere`, `small-set-jev` |
 | **Binding** | A profile applied to one concrete store set (`IBoundCollection`) | `mcpTools.bind({ key: 'tools', rag })` |
 
 **One profile, several stores (goal 6).** A profile instance holds what the kind shares (records,
@@ -127,15 +148,19 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 
 ### 2.0 Scope of the evidence
 
-- **One consumer, one server.** Every figure below comes from cloud-llm-hub over **one** MCP server
-  (`mcp-abap-adt`, its fine-grained read-only set). It is evidence for the design, **not** the
-  target platform (goal *Purpose*).
+- **One consumer, one server, two tool sets.** Every figure below comes from cloud-llm-hub over
+  **one** MCP server (`mcp-abap-adt`): its fine-grained set (§2.1–§2.3) and its coarse `compact`
+  set (§2.5). It is evidence for the design, **not** the target platform (goal *Purpose*).
 - **What carries over to any server:** the retrieval mechanics — items vs records, collapse by max,
   the pool in items, rerankers on provider text. They do not depend on what the tools are called.
 - **What does not carry over:** any record whose text came from parsing **this** server's tool
   names. The measured `object` record did (§2.1, last row); it is not in any shipped default.
-- **Coarse tool sets have no measurement yet.** A `compact` measurement is being prepared; every
-  figure for the `coarse` variant is **to be measured** (§7.4).
+- **Coarse tool sets are measured on one example** (`compact`, §2.5). Its results set the coarse
+  default composition (`small-set-jev`, §7.4) and document the two strategies it rejected
+  (`EnumValueToolIndexer`, `TokenBudgetCut` as the main cut).
+- **The schema-derived `ParametersFacet` is not measured yet** on the fine-grained set. The
+  `faceted*` defaults cite the closest measured layouts (§2.1); the consumer check measures the
+  schema-derived one (§14.3).
 
 Source: cloud-llm-hub, 237 tools, labelled queries, **required-recall** (every needed tool
 returned). EN-ext = 87 rows (73 single-step + 14 multi-step); non-English = 26 rows.
@@ -151,10 +176,10 @@ points). Differences of 1–2 rows are noise.
 | `full` + `operation` + `object` (the measured layout; `object` parses names, see the last rows), collapse by **best hit**: 0.966 at k=5; 0.977 at k=8 with ~13 tools | multi-record indexing + collapse step, k in items |
 | Collapse by count or RRF is worse than max | ship **`MaxScoreCollapse` only**; the rule is an injected `ICollapseRule` |
 | Facets without `full` are clearly worse (0.885) | `full` is not a facet, so it cannot be dropped (§7.3) |
-| Deterministic facets = LLM facets on English (0.966 = 0.966) | default facets need no LLM |
+| Deterministic facets = LLM facets on English: LLM-generated `operation` / `object` facets and name-derived facets both 0.966 at k=5, hybrid (hub spike `spike-facets`) | default facets need no LLM |
 | Intent layouts, stage 1 only (hybrid, k=5): intents inside `full` 0.954; own `intent` record 0.954; no intents 0.943; both 0.954. Differences 1–2 rows | intents are an **indexing strategy** the consumer adds; default placement **own record** (§7.3) |
 | Intent layouts **with a reranker** (several records per tool): within noise of each other (goal *Evidence*) | the layout is chosen for stage-1 reasons only |
-| The measured third record, `object`, was "the name words after the first word" — it assumes names are verb-first (`GetWhereUsed` → `where used`), a convention of one server | **not** in any default: kept only as the opt-in, convention-dependent `NameTailFacet` (§7.3). The default third record is schema-derived (`parameters`), **to be measured** |
+| The measured third record, `object`, was "the name words after the first word" — it assumes names are verb-first (`GetWhereUsed` → `where used`), a convention of one server | **not** in any default: kept only as the opt-in, convention-dependent `NameTailFacet` (§7.3). The default third record is schema-derived (`parameters`), **not yet measured**: the `faceted*` defaults cite the two closest measured layouts above (both 0.966 at k=5); the consumer check measures the schema-derived one (§14.3) |
 | The measured `operation` record ("name words — first description clause") only tokenizes the name; it assumes no order or vocabulary | kept, renamed **`summary`** (same text): nothing in it is server-specific |
 
 ### 2.2 Retrieval
@@ -210,19 +235,50 @@ Sizes of one server's two sets (mcp-abap-adt, exported definitions — **example
 | Shape | Example | Tools | Definition size |
 |---|---|---|---|
 | fine-grained | object-oriented set | 345 | median ~840 chars per tool |
-| coarse | `compact` | 22 (one per operation, object in `object_type`) | ~39.5k chars ≈ 10k tokens in all; `HandlerCreate` / `HandlerUpdate` ~5k chars each |
+| coarse | `compact` | 25 for the writer role, 16 for the reader role (one per operation, object in `object_type`) | whole writer set ≈ **7.9k tokens mean / 9.9k p90 per query**; `HandlerCreate` / `HandlerUpdate` ~5k chars each |
+
+- **Role sizes:** 25 / 16 are what the code and its tests say. The goal's "22" (and "13") come from
+  outdated code comments.
+
+#### 2.5.1 The `compact` measurement
+
+- **Set-up:** the coarse example `compact`; **61 of the 85 labelled queries** have a `compact`
+  equivalent and are used. EN-ext, hybrid in-store scoring, **required-recall**; tokens = mean
+  summed definition tokens of the returned tools per query.
+- **Noise:** as in §2.0, differences of 1–2 rows are noise.
+
+| Layout | Retrieval | Required-recall (tokens) |
+|---|---|---|
+| **C0** one record per tool | stage 1 only, k=3 | 0.896 (1.6k) |
+| C0 | stage 1 only, k=5 | 0.955 (2.5k) |
+| C0 | stage 1 only, token budget 2k | 0.896 |
+| C0 | stage 1 only, token budget 4k | 0.985 (3.7k) |
+| **C1** = C0 + one record per enum value (`EnumValueToolIndexer`) | stage 1 only, k=3 / k=5 / budget 2k | 0.776 / 0.896 / 0.761 — **worse than C0** |
+| C1 | + Jev | English: equal to C0 + Jev. Non-English: **0.857** vs **1.000** for C0 + Jev |
+| C0 | + Jev (stage-1 pool, then rerank), k=1 / 2 / 3 / 5 | 0.776 / 0.925 / **0.970 (1.6k)** / 0.970 |
+| C0 | **Jev over the whole role set, no stage-1 cut** (30.1.0 `RerankAllRetrieval`, `rerank-all`), k=3 | **0.970 (1.6k)**; multi-step 1.000; non-English 1.000 |
+| C0 | + Jev, token budget 2k (at the same ~1.6k tokens as k=3) | 0.910 — vs **0.970** for k=3 |
+| *for comparison:* fine-grained set, one record per tool (V0) | + Jev, k=5 per collection | 0.969 (2.1k) |
 
 **Design consequences:**
 
-- **One record per tool fails coarse sets.** A `HandlerCreate` record has to mean "create a class",
-  "create a domain" and dozens more at once; its one vector is the average of all of them. →
-  one record per **(tool, enum value)** of the discriminating parameter, collapsed back to the
-  tool (§7.3.2).
-- **A count is the wrong cut when sizes differ this much.** Two coarse tools (`HandlerCreate` +
-  `HandlerUpdate`) are ~10k chars; five median fine-grained tools are ~4.2k. The same k means very
-  different prompts. → the final cut can be a **token budget** (`TokenBudgetCut`, §4.10).
-- **The parameter must be found without a naming convention.** → it comes from the input schema
-  (a required, enum-valued property) or is named by the consumer (§7.3.2).
+- **One record per tool is enough for a small coarse set — when a reranker reads it.** Stage 1
+  alone needs k=5 (0.955) or a 4k budget (0.985). Jev with k=3 reaches 0.970 at **1.6k tokens**,
+  about a fifth of sending the whole set.
+- **Stage 1 adds nothing for a set this small.** Jev over the whole role set equals Jev over a
+  stage-1 pool (both 0.970 at k=3). The default reranks the whole set: no pool depth to tune
+  below the set size.
+- **Per-value records hurt here.** C1 is worse on stage 1 alone, and with Jev it loses non-English
+  queries (0.857 vs 1.000). → `EnumValueToolIndexer` stays a generic strategy a consumer may inject
+  (another server's coarse set may differ), documented with this result, and is in **no** default
+  (§7.3.2).
+- **A token budget is worse than a count as the main cut.** At equal tokens (~1.6k) the 2k budget
+  gives 0.910 and k=3 gives 0.970: the cut stops at the first tool that does not fit (§4.10). →
+  `TokenBudgetCut` stays a generic **prompt-size guard** a consumer may inject, in **no** default.
+- **The coarse default ships with measured numbers** (`small-set-jev`, §7.4): k=3 from the table;
+  the pool = the whole set, as measured.
+- **The coarse set reaches the fine-grained set's recall** (0.970 vs 0.969) at fewer tokens
+  (1.6k vs 2.1k) — on one server's example; another server measures its own (§14.3).
 
 ---
 
@@ -629,8 +685,8 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISourceSelector`, `RetrievalSource` | goal 1's new steps, each a consumer-swappable strategy (principle 5) | same users as above |
 | `IQueryDecomposer`, `SubQuery` | goal decision 2026-10-05: query splitting is a strategy the consumer injects and the default retrieval uses | libs (`StagedRetrieval` calls it), server-libs (YAML name → instance), consumers (implementations) |
 | `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource` | typed input of the tools indexers; facets and intents are indexing strategies a consumer may write. `parameters` replaces the earlier `parameterNames`: goal 9 requires records from the whole input schema (descriptions, enum values), and names alone cannot carry them. The raw `inputSchema` is there so a consumer can build a profile for **any** server from the contracts (goal 9, §7.9). `definitionChars` is what a token budget measures (§4.10) | builder (libs) + indexers + consumers that bring their own facets or precomputed intents |
-| `IDiscriminatorSelector` | goal 9, coarse tool sets: which parameter's values become records is a choice the consumer may inject, not a rule fixed inside the indexer (§7.3.2) | libs (`EnumValueToolIndexer`), server-libs (YAML), consumers |
-| `IItemSizeEstimator` | goal 9, token-budget cut: how an item's size is counted is injected, so a consumer can bring its model's tokenizer (§4.10) | libs (`TokenBudgetCut`), consumers |
+| `IDiscriminatorSelector` | goal 9, coarse tool sets: which parameter's values become records is a choice the consumer may inject, not a rule fixed inside the indexer (§7.3.2). Serves `EnumValueToolIndexer`, a generic strategy in no default | libs (`EnumValueToolIndexer`), server-libs (YAML), consumers |
+| `IItemSizeEstimator` | goal 9, token-budget cut (a prompt-size guard in no default): how an item's size is counted is injected, so a consumer can bring its model's tokenizer (§4.10) | libs (`TokenBudgetCut`), consumers |
 | `IItemCut.limit()` — doc only: an **upper bound** in items | already the meaning ("the most items `cut` returns"); stated explicitly so a cut that stops earlier (score floor, token budget) is honest under the same signature. No signature change | — |
 | `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `SharedItemsStores` | goal 7: what writing elements get; owner + visibility | libs (profile) + consumers (writing elements, group partitions) |
 | `IndexReport.notes?` | goal 9 + "never silent": an indexer that declines to guess (ambiguous discriminator) must say so without failing the item | libs (indexers), consumers reading the report |
@@ -850,16 +906,32 @@ including a consumer's own.
 - **k in items.** The caller's k (`ragQueryK ?? 10` in `rag-query`, 20 in `IToolsRagHandle` and the
   controller's `selectTools`) arrives unchanged; under a profile it counts items and is the
   overall limit of the retrieval, with or without a decomposer. A consumer that wants its own
-  number uses `FixedItemsCut`. The library chooses no k of its own; a named variant carries its
-  measured cut in its definition, and the consumer picks the variant explicitly.
+  number uses `FixedItemsCut`. The cut classes carry no number of their own; a default
+  composition carries its measured cut in its definition (§7.1), and the consumer chooses it or
+  another cut.
 - **Score scales.** After a reranker, scores are the reranker's; the global
   `IToolSelectionStrategy` still runs on the flattened results of all stores, as in 30.1.0. A
   per-store threshold therefore belongs in the profile's cut.
 
 ### 4.10 Token-budget cut — `TokenBudgetCut`
 
-**Why:** tools differ in size by an order of magnitude (§2.5). A count bounds the prompt only
-when tools are alike; a budget bounds it always (goal 9).
+**What it is:** a generic **prompt-size guard** the consumer may inject. It is in **no** default
+composition.
+
+**Why it exists:** tools differ in size by an order of magnitude (§2.5). A count bounds the prompt
+only when tools are alike; a budget bounds it always (goal 9).
+
+**Measured as the main cut — worse than a count** (mcp-abap-adt `compact`, §2.5.1):
+
+| Cut | Required-recall | Tokens |
+|---|---|---|
+| one record per tool + Jev, **k=3** | **0.970** | ~1.6k |
+| one record per tool + Jev, **budget 2k** | 0.910 | ~1.6k |
+
+- **Why it loses:** it stops at the first tool that does not fit (rule 3 below), so one large tool
+  in the ranking ends the result early. A count does not.
+- **Use it** as a ceiling on top of the consumer's main choice — e.g. a guard against a server
+  whose tools grow — not as the way to pick how many tools come back.
 
 ```ts
 new TokenBudgetCut({
@@ -894,9 +966,13 @@ new TokenBudgetCut({
   k items unless the consumer set `maxItems` explicitly (like `FixedItemsCut`).
 
 **Top item alone over budget.** The result is **empty**; counted as `outcome=over_budget` and on
-the span (§9). Never silent, never truncated. The consumer sizes the budget at least as large as
-its largest tool (every tool's `definitionChars` is known at index time, so the consumer's
-composition root can check it at startup). **Decision for the user** — D17.
+the span (§9). Never silent, never truncated. The consumer that injects the guard sizes the budget
+at least as large as its largest tool (every tool's `definitionChars` is known at index time, so
+its composition root can check it at startup). Settled — D17 (§17.3).
+
+**Stop, not skip-ahead.** Rule 3 keeps the result a rank-order prefix: a guard must not reorder
+what the consumer's ranking chose. The measured cost of stopping (above) is why it is not a main
+cut. A consumer wanting skip-ahead injects its own `IItemCut`. Settled — D19 (§17.3).
 
 **Size estimators (injected; shipped defaults documented).**
 
@@ -906,9 +982,10 @@ composition root can check it at startup). **Decision for the user** — D17.
 | `CharsPerTokenEstimator(charsPerToken)` | `ceil(text.length / charsPerToken)` | shared items and other kinds: the returned text is what reaches the prompt |
 | a consumer's own | e.g. the model's real tokenizer | when ~4 chars/token is not close enough |
 
-- **Why 4 chars per token:** the convention `DecisionReranker` already uses for its batch budget
-  (`decision-reranker.ts`: `Math.ceil(s.length / 4)`), and consistent with the one figure on hand
-  (mcp-abap-adt `compact`: ~39.5k chars ≈ 10k tokens). A documented estimate, not a tokenizer.
+- **Why 4 chars per token:** the unit convention `DecisionReranker` already uses for its batch
+  budget (`decision-reranker.ts`: `Math.ceil(s.length / 4)`). It is a generic chars-to-tokens
+  estimate, not tuned to any server; a consumer that needs precision injects its own estimator
+  (e.g. its model's tokenizer).
 - **Why `definitionChars` is written at index time:** the canonical record's text is the RAG text,
   shorter than the definition; the cut must count what the prompt will carry.
 
@@ -986,10 +1063,11 @@ order (as `DecisionReranker` does).
   name needs the deployment listing that lives privately in `sap-aicore-embedder`
   (`resolveDeploymentId`). Decided — D10 (§17).
 
-### 5.4 Rerankers in the shipped tools variants
+### 5.4 Rerankers in the default tools compositions
 
-- Cohere: `faceted-cohere`. Jev: `faceted-jev`. See §7.4.
-- Any reranker composes with any indexing and candidate strategy (§7.5).
+- Cohere: `faceted-cohere`. Jev: `faceted-jev`, `small-set-jev`. See §7.4.
+- Which reranker runs is the consumer's choice: any reranker composes with any indexing and
+  candidate strategy (§7.5). A default only names the reranker it was measured with.
 
 ---
 
@@ -1029,22 +1107,23 @@ rag:
     history: { strategy: embedding }
   profiles:               # new; absent → 30.1.0 behaviour (= variant baseline)
     tools:
-      variant: faceted-cohere                    # baseline | faceted | faceted-cohere | faceted-jev | coarse | a registered name
+      variant: faceted-cohere                    # baseline | faceted | faceted-cohere | faceted-jev | small-set-jev | a registered name
       intents:                                   # optional indexing strategy; not with baseline
         record: { file: ./tool-intents.json }    # or: companion: { source: { llm: intents }, store: { … } }
       decomposer: my-splitter                    # optional; a NAME the consumer registered (§4.5); not with baseline
 
-    # a coarse tool set (e.g. a second MCP server's store):
+    # a coarse / small tool set (e.g. a second MCP server's store):
     tools-coarse:
-      variant: coarse
-      coarse: { maxValues: <n>, poolItems: <n>, budgetTokens: <n> }   # required until measured (§7.4)
-      discriminator: required-enum               # required-enum | { named: <parameter> } | a registered name
+      variant: small-set-jev
+      smallSet: { poolItems: <n> }               # required: ≥ the store's tool count (§7.4)
 
     # …or the consumer's own composition, every value a NAME of a strategy:
     tools-writer:                                # example key: a consumer's per-role store
       compose:
         indexer: { faceted: [summary, parameters] }  # facet names → IToolFacet instances; name-tail is opt-in
-        # or: indexer: { enum-values: { inner: { faceted: [] }, discriminator: required-enum, maxValues: <n> } }
+        # or (generic, in no default; measured worse on `compact`, §7.3.2):
+        #   indexer: { enum-values: { inner: { faceted: [] }, discriminator: required-enum, maxValues: <n> } }
+        # discriminator: required-enum | { named: <parameter> } | a registered name
         pool: { items: 30 }                        # → ItemPool(30)
         collapse: max                              # → MaxScoreCollapse
         reranker: decision                         # none | cross-encoder | decision | llm
@@ -1057,7 +1136,7 @@ rag:
 - Parsed **only** by the server (`resolve-collection-profiles.ts` in server-libs, beside
   `resolve-retrieval.ts`).
 - Names resolve through registries in the composition deps (like `embedderFactories`):
-  `toolsVariantFactories` (built-ins: the five of §7.4) and `toolsStrategyFactories` (built-in
+  `toolsVariantFactories` (built-ins: the five default compositions of §7.4) and `toolsStrategyFactories` (built-in
   facets, discriminators, pools, collapse, cuts, size estimators). A consumer registers its own, including its decomposers (none
   is built in). Unknown name → startup error.
 - A decomposer factory gets the store's query embedder from the resolver (the same one `makeRag`
@@ -1078,8 +1157,8 @@ rag:
   - `cross-encoder` without a `crossEncoder:` section, or without the seam;
   - `intents` or `decomposer` with `baseline`; `companion` without `store`;
   - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
-  - `coarse` without all of `maxValues`, `poolItems`, `budgetTokens`, or any of them non-positive;
-    `discriminator` on a variant without per-value indexing; non-positive `budgetTokens`;
+  - `small-set-jev` without `smallSet.poolItems`, or a non-positive one; `small-set-jev` without a
+    `decision:` model; an `enum-values` indexer without `maxValues`; non-positive `budgetTokens`;
   - a tools key whose variant is not a tools profile.
 - Server-wide like `rag.retrieval`: worker configs that declare `rag.profiles` are rejected;
   workers get the main config's bindings by key.
@@ -1087,7 +1166,7 @@ rag:
 
 ---
 
-## 7. Default profiles for MCP tools — strategies and named variants
+## 7. MCP tools — strategies the consumer chooses, and default compositions
 
 ### 7.0 Shipped strategies carry no one server's conventions (goal 9)
 
@@ -1119,21 +1198,39 @@ rag:
 | first-clause rule drops "tags such as `[read-only]`" | one server's description tags | generic: any leading `[...]` tag; `[read-only]` is the labelled example |
 | name rule "drop a namespace prefix (`server__`)" | — | removed: facets read `originalName`, which is already pre-namespace |
 | examples `GetWhereUsed`, `GetATCFindings` as the design | ABAP tools as the reference | generic examples first; ABAP ones labelled (§14.1) |
-| only fine-grained tool sets considered | one tool per operation **and** object | coarse sets get `EnumValueToolIndexer` + `TokenBudgetCut` and the `coarse` variant |
+| only fine-grained tool sets considered | one tool per operation **and** object | coarse sets are measured (§2.5.1) and get the `small-set-jev` default; `EnumValueToolIndexer` and `TokenBudgetCut` stay generic strategies in no default |
 
-### 7.1 Principle
+### 7.1 Principle — the consumer chooses the strategies
 
-- llm-agent ships the **contracts** of the pipeline elements and **some default
-  implementations**.
-- For MCP tools it ships **several** variants, so the consumer has a real choice.
-- A variant is a **named composition of injected strategy instances** — not one class with flags.
-  The consumer may take a variant as is or compose its own from the same strategies (or its own).
-- No variant relies on one server's conventions (§7.0). The consumer picks the variant that
-  matches the **shape** of its tool set (fine-grained or coarse, §2.5). Where none fits its server,
-  it composes its own profile from the contracts (§7.9).
-- The numbers inside a variant (pool size, cut) are part of its definition and listed with the
-  measurement behind them — or marked **to be measured**. The consumer picks the variant
-  explicitly; nothing is guessed (goal 3).
+(Goal decisions 2026-10-05: where tuning lives; the main behaviour choices are the consumer's.)
+
+**1. The consumer decides the behaviour.**
+
+- A profile is a **composition of strategies the consumer injects** (§7.2): indexing, candidate
+  pool, collapse, reranker, final cut, query decomposition.
+- The main behaviour choices — which records, which reranker, how many tools come back, whether
+  to guard the prompt size — are made by **choosing those strategies**. No flag inside a component
+  makes them.
+
+**2. A default composition only fills in what the consumer did not choose.**
+
+- llm-agent ships the **contracts** and **generic strategies**, plus a few **default
+  compositions** ("variants", §7.4) to start from.
+- A default is not the centre of the design: it is a ready-made answer for the choices the
+  consumer leaves open. Taking it whole is one choice; replacing any part of it is another (§7.5).
+- No default relies on one server's conventions (§7.0). Each names the **shape** of tool set it
+  was measured on (fine-grained or coarse / small, §2.5). Where none fits a server, the consumer
+  composes its own from the contracts (§7.9).
+
+**3. Components are generic; tuning lives only in default compositions.**
+
+- A strategy class (`ItemPool`, `FixedItemsCut`, `TokenBudgetCut`, `EnumValueToolIndexer`, …)
+  carries **no number tuned to a server or a consumer**. Every such number is a required
+  constructor argument.
+- Tuned numbers (pool size, k) appear **only inside a default composition**, each next to the
+  measurement that justifies it (the table in §7.4). A number without a measurement is not
+  shipped.
+- Nothing is guessed (goal 3): the consumer picks a default explicitly, or its own strategies.
 
 ### 7.2 The strategies
 
@@ -1199,7 +1296,7 @@ new ComposedToolsProfile({
 - **Why `parameters` replaces the measured `object` record in the default:** it carries the same
   kind of signal — what the tool acts on — from the **schema** (e.g. a `path` or `class_name`
   parameter) instead of from a naming convention. **Not measured yet**; the faceted variants' rows
-  in §7.4 say so.
+  in §7.4 say so and cite the closest measured layouts.
 - **`NameTailFacet` — convention-dependent, documented as such.** It assumes verb-first names
   (`GetClass`, `create_issue`): the tail is then the object. On object-first names (`class_get`)
   it yields the operation; on single-word names, nothing. It reproduces the measured `object`
@@ -1207,10 +1304,24 @@ new ComposedToolsProfile({
 - The goal's rule holds: nothing is written over provider text. A weak description is fixed at its
   source.
 
-#### 7.3.2 Per-value records — coarse sets (`EnumValueToolIndexer`)
+#### 7.3.2 Per-value records — a generic strategy in no default (`EnumValueToolIndexer`)
 
-**Problem.** A coarse tool takes the object in a parameter (§2.5). Its one record must stand for
-every object at once, so no query about one object matches it well.
+**Status: a strategy the consumer may inject; in no default composition.** Measured **worse** on
+the one coarse example (mcp-abap-adt `compact`, §2.5.1):
+
+| Layout | Stage 1 only, k=3 / k=5 / budget 2k | With Jev |
+|---|---|---|
+| one record per tool (C0) | 0.896 / 0.955 / 0.896 | English 0.970 (k=3); non-English 1.000 |
+| C0 + one `value` record per enum value (C1) | 0.776 / 0.896 / 0.761 | English equal to C0; non-English **0.857** |
+
+- **Why it stays:** the hypothesis below is generic and may hold for another server's coarse set
+  (more tools, no reranker, values with descriptions). A consumer that wants it injects it and
+  measures it on its own set (§14.3).
+- **Why no default uses it:** on the only measured set it lowered recall with and without a
+  reranker.
+
+**The hypothesis it serves.** A coarse tool takes the object in a parameter (§2.5). Its one record
+must stand for every object at once, so a query about one object might not match it well.
 
 **Strategy.** `EnumValueToolIndexer(inner, { discriminator, maxValues })` decorates a provider
 indexer (usually `FacetedToolIndexer([])`, i.e. `full` only) and adds **one `value` record per
@@ -1247,8 +1358,9 @@ string value** of the tool's discriminating parameter:
   resolves it with `NamedDiscriminator` or its own selector.
 - **Why an injected selector, not a parameter-name option:** a consumer may need a rule (e.g. by
   `x-` schema annotation, or per tool); the selector covers the name case and the rule case.
-- Whether `object_type` is a required enum in every `compact` tool is **checked by the compact
-  measurement**; if not, that consumer uses `NamedDiscriminator('object_type')`.
+- For mcp-abap-adt `compact`, a consumer that still injects this strategy can name the parameter
+  with `NamedDiscriminator('object_type')` rather than rely on it being a required enum in every
+  tool.
 
 **`IndexReport.notes`** (additive, optional): `readonly { itemId; note; detail? }[]` — things that
 were not failures but changed what was written (here: an ambiguous discriminator). Never silent.
@@ -1278,27 +1390,27 @@ candidate search (§2.1) and never reach the reranker (§4.6).
   the provider records are untouched). Rebuild = clear the companion (or the `intent` records) and
   re-index.
 
-### 7.4 Shipped variants (`mcpToolsVariants`)
+### 7.4 Default compositions (`mcpToolsVariants`)
 
-Each variant is a factory that takes only what cannot be shipped (a reranker's model or
-credential; for `coarse`, the numbers not yet measured) and returns a `ComposedToolsProfile` — or,
-for `baseline`, nothing to bind. None relies on one server's conventions (§7.0).
+**What they are:** ready-made compositions that fill in what the consumer did not choose (§7.1).
+Each is a factory that takes only what cannot be shipped (a reranker's model or credential; the
+pool size of a whole-set rerank) and returns a `ComposedToolsProfile` — or, for `baseline`,
+nothing to bind. None relies on one server's conventions (§7.0). Every tuned number in a row cites
+its measurement.
 
-| Variant | Tool-set shape | Composition | Measured (required-recall, hybrid in-store scoring, mcp-abap-adt fine-grained read-only set) |
+| Variant | Tool-set shape | Composition | Measured (required-recall, hybrid in-store scoring, mcp-abap-adt examples) |
 |---|---|---|---|
-| **`baseline`** — the default | any | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
-| **`faceted`** | fine-grained | `FacetedToolIndexer([SummaryFacet, ParametersFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | **To be measured** with `parameters` as the third record. Closest measured layout (`full` + `operation`=`summary` + `object`=`NameTailFacet`): 0.966 at k=5; 0.977 at k=8 with ~13 tools. Pool and cut are that layout's. |
+| **`baseline`** — no choice made | any | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | Fine-grained read-only set: EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
+| **`faceted`** | fine-grained | `FacetedToolIndexer([SummaryFacet, ParametersFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | **Schema-derived layout not yet measured.** Closest measured layouts, both 0.966 at k=5 (hub spike `spike-facets`): LLM-generated `operation` / `object` facets, and name-derived facets (`full` + `operation`=`summary` + `object`=`NameTailFacet`); the latter 0.977 at k=8 with ~13 tools. Pool 15 and cut 8 are that layout's (without a reranker `ItemPool(15)` = 30, §7.5). |
 | **`faceted-cohere`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `SapAiCoreReranker` + `FixedItemsCut(5)` | **Not measured as one composition.** Closest: one record per tool + Cohere, pool 30 items, k=5 (§2.3): EN-ext 0.931 with 8.3 tools; single 0.973, multi 0.714, non-English 0.962. At most 5 tools. |
 | **`faceted-jev`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest: one record per tool + Jev, pool 30 items, k=5 (§2.3): EN-ext 0.977 with 8.3 tools; single 1.000, multi 0.857, non-English 1.000. At most 5 tools. |
-| **`coarse`** | coarse | `EnumValueToolIndexer(FacetedToolIndexer([]), { discriminator: RequiredEnumDiscriminator, maxValues })` + `ItemPool(poolItems)` + `MaxScoreCollapse` + no reranker + `TokenBudgetCut({ budgetTokens })` | **To be measured** (the mcp-abap-adt `compact` measurement is being prepared). `maxValues`, `poolItems` and `budgetTokens` are **required factory arguments** until then — no number is shipped without a measurement. |
+| **`small-set-jev`** | coarse / small (the whole set fits one rerank) | `FacetedToolIndexer([])` (one `full` record per tool) + `ItemPool(poolItems)` with `poolItems` ≥ the tool count (= rerank-all) + `MaxScoreCollapse` + `DecisionReranker(model, TOOL_QUESTION)` + `FixedItemsCut(3)` | `compact`, writer set (25 tools), §2.5.1: **0.970 at ~1.6k tokens** (whole set ≈ 7.9k); multi-step 1.000, non-English 1.000. k=3 is the measured knee (C0 + Jev: k=2 0.925, k=3 0.970, k=5 0.970). Rerank-all = Jev over a stage-1 pool (0.970 both): stage 1 adds nothing at this size. |
 
 ```ts
 mcpToolsVariants.faceted();
 mcpToolsVariants.facetedCohere({ reranker: new SapAiCoreReranker({ … }) });
 mcpToolsVariants.facetedJev({ decisionModel });
-mcpToolsVariants.coarse({ maxValues, poolItems, budgetTokens }); // the consumer's numbers until measured
-// a consumer that knows its server's parameter:
-mcpToolsVariants.coarse({ …, discriminator: new NamedDiscriminator('object_type') });
+mcpToolsVariants.smallSetJev({ decisionModel, poolItems });   // poolItems ≥ the store's tool count
 // intents on top of any variant except baseline:
 mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 // the consumer's own decomposer on top of any variant except baseline (none shipped):
@@ -1306,42 +1418,67 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
 ```
 
 - **Why these five:** baseline (no change); faceted (fewer tools for the same recall, no external
-  service); one per reranker the goal names (goal 10); coarse (the second tool-set shape of
-  goal 9).
-- **`faceted*` numbers are a proxy, honestly marked:** the measured layout used `NameTailFacet`'s
-  record, which no default may use (§7.0). The consumer check (§14.3) measures the schema-derived
-  layout; a consumer on a verb-first server may compose the measured layout itself (§7.5).
+  service); one per reranker the goal names (goal 10); `small-set-jev` (the second tool-set shape
+  of goal 9, with measured numbers).
+- **`faceted*` numbers are a proxy, honestly marked:** the schema-derived `ParametersFacet` is not
+  yet measured on the fine-grained set. The rows cite the closest measured layouts; the
+  name-derived one used `NameTailFacet`'s record, which no default may use (§7.0). The consumer
+  check (§14.3) measures the schema-derived layout; a consumer on a verb-first server may compose
+  the measured name-derived layout itself (§7.5).
 - **`faceted-cohere`:** V0 + Cohere (one record per tool), not the faceted composition.
 - **`faceted-jev` caveat:** faceted + Jev was never run as one composition on an item pool. It ships
   marked **"to be measured as one composition on fresh consumer queries before promotion"** and is
   not recommended over the others until the consumer check (§14.3) runs it (D11, decided).
-- **`coarse` — no reranker in the variant:** a coarse tool's provider text can be ~5k chars (§2.5),
-  so a reranker reads large passages; whether it pays off is for the measurement. A consumer may
-  add one (§7.5).
-- **`coarse` on a fine-grained set** degrades safely: tools without a qualifying enum get only
-  `full` — baseline records with an item pool and a token cut.
-- One record + Jev (the best measured Jev composition) is already 30.1.0's
-  `rag.retrieval.tools: { strategy: rerank, reranker: decision }`; it is not repeated as a variant.
+- **`small-set-jev` — what is tuned and what is not:**
+  - **tuned, measured:** `FixedItemsCut(3)` (the table above);
+  - **not a tuned number:** `poolItems` is the consumer's tool count (rerank-all means the pool
+    holds the whole set). It is a required argument because only the composition root knows the
+    count (after `tools/list`). A pool below the count makes it stage-1 + rerank, which is not
+    the composition this row names, so the composition root checks `poolItems` ≥ the count at
+    startup;
+  - **record text:** the measured C0 was one record per tool; the default uses the `full` record
+    (§7.3.1). The consumer check confirms the figure on it (§14.3);
+  - **when it fits:** the reranker reads every tool on every query, so its cost grows with the
+    set. It is the default for **small** sets; a large coarse set is the consumer's own
+    composition (e.g. `ItemPool(n)` below the count, or no reranker).
+  - Equivalent in 30.1.0 terms: `rag.retrieval.tools: { strategy: rerank-all, reranker: decision,
+    maxCandidates: <tool count> }` with the caller's k = 3. The variant fixes k=3 inside the
+    profile, so the caller's k (20 in `IToolsRagHandle`) does not undo the measured cut.
+- **On a fine-grained set** `small-set-jev` is the wrong default: hundreds of tools in every rerank.
+  Use `faceted-jev` or the 30.1.0 `rerank` strategy there.
+- One record + Jev on a stage-1 pool (the best measured fine-grained Jev composition) is already
+  30.1.0's `rag.retrieval.tools: { strategy: rerank, reranker: decision }`; it is not repeated as a
+  variant.
 - **Intents with a reranker:** the layouts are within noise of each other (goal *Evidence*), so
-  intents are an add-on for stage 1, not part of any default variant.
+  intents are an add-on for stage 1, not part of any default.
+- **Not in any default, by measurement:** `EnumValueToolIndexer` (§7.3.2) and `TokenBudgetCut`
+  (§4.10). Both remain generic strategies the consumer may inject.
 
 ### 7.5 Composing your own
+
+This is the main path (§7.1): the consumer chooses each strategy; a default fills only the rest.
 
 - Any shipped strategy combines with any other; a consumer's own strategy implements the same
   contract (e.g. its own `IToolFacet`, `IDiscriminatorSelector`, `ICandidatePool`,
   `IItemSizeEstimator` or `IReranker`).
 - Typed rule: `full` cannot be dropped (it is not a facet).
 - Examples:
-  - the **measured** fine-grained layout, for a verb-first server:
+  - the **measured** name-derived fine-grained layout, for a verb-first server:
     `FacetedToolIndexer([new SummaryFacet(), new NameTailFacet()])` — convention-dependent, the
     consumer's choice;
-  - a fine-grained set with a prompt budget: any `faceted*` composition with
-    `TokenBudgetCut({ budgetTokens })` instead of `FixedItemsCut`;
-  - a coarse set with a reranker: `coarse` + `rerank: { reranker, onFailure }`.
-- Measured guidance for one's own compositions (fine-grained set):
-  - with any reranker, size the pool in **items** (30 items: non-English 0.962 / 1.000; 30
-    records: 0.846–0.885);
-  - without a reranker, `ItemPool(15)` gives the same recall as 30.
+  - a prompt-size guard on top of a count: `TokenBudgetCut({ budgetTokens, maxItems: 5 })` in
+    place of `FixedItemsCut(5)` — the count stays the main cut, the budget only caps it (§4.10);
+  - `small-set-jev` with Cohere instead of Jev: the same composition with `SapAiCoreReranker`
+    (not measured on `compact`; the consumer measures it, §14.3);
+  - per-value records for a coarse set where the consumer expects them to help:
+    `EnumValueToolIndexer(new FacetedToolIndexer([]), { discriminator, maxValues })` (measured
+    worse on `compact`, §7.3.2).
+- Measured guidance for one's own compositions:
+  - fine-grained, with any reranker: size the pool in **items** (30 items: non-English 0.962 /
+    1.000; 30 records: 0.846–0.885);
+  - fine-grained, without a reranker: `ItemPool(15)` gives the same recall as 30;
+  - small coarse set (`compact`): a reranker over the whole set beats stage-1 tuning; k is the
+    main cut, a token budget only a guard (§2.5.1).
 
 ### 7.6 Filling — `vectorizeMcpTools`
 
@@ -1423,7 +1560,7 @@ const myServerTools = new ComposedToolsProfile({
   indexer: new FacetedToolIndexer([new SummaryFacet(), new ResourceFacet()]),
   pool: new ItemPool(20),                                  // the consumer's numbers, its measurement
   collapse: new MaxScoreCollapse(),
-  cut: new TokenBudgetCut({ budgetTokens: myPromptBudget }),
+  cut: new TokenBudgetCut({ budgetTokens: myPromptBudget, maxItems: 5 }),  // count 5, budget as a guard
 });
 
 builder.withToolsProfile(myServerTools);                   // or register a name for YAML (§6.2)
@@ -1661,8 +1798,8 @@ new SharedItemsProfile({
 - **k is unchanged:** the overall limit of a retrieval, now counted in items under a profile, with
   or without a decomposer. `docs/INTEGRATION.md` documents the `IQueryDecomposer` slot and its
   budget contract (§4.5).
-- **Tool-set shapes:** `coarse` and `TokenBudgetCut` are opt-in like every profile; nothing about
-  the default changes.
+- **Tool-set shapes:** `small-set-jev`, `EnumValueToolIndexer` and `TokenBudgetCut` are opt-in
+  like every profile and strategy; nothing about the default changes.
 - **Profile records are addressed by owner-scoped ids** (§3.1): `rag.getById(itemId)` on a profiled
   store finds nothing; use `bound.get(ref)`. Documented in `docs/INTEGRATION.md`.
 - Docs updated in the same PR: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`,
@@ -1707,7 +1844,14 @@ new SharedItemsProfile({
 - Variants: each `mcpToolsVariants` factory returns exactly the strategy instances of §7.4 (pool,
   collapse, reranker, cut), with no decomposer unless the consumer passes one; `baseline` binds
   nothing; intents and a decomposer refused on `baseline`; **no variant contains `NameTailFacet`**;
-  `coarse` refuses a missing `maxValues` / `poolItems` / `budgetTokens` (type-level).
+  `small-set-jev` = `FacetedToolIndexer([])` + `ItemPool(poolItems)` + `MaxScoreCollapse` +
+  `DecisionReranker` + `FixedItemsCut(3)`, and refuses a missing `poolItems` / `decisionModel`
+  (type-level); **no variant contains `EnumValueToolIndexer` or `TokenBudgetCut`**.
+- Generic strategies carry no tuned number: the counts and sizes of `ItemPool`, `FixedItemsCut`,
+  `ScoreFloorCut`, `TokenBudgetCut` (`budgetTokens`) and `EnumValueToolIndexer` (`maxValues`) are
+  required constructor arguments (type-level); an optional one (`TokenBudgetCut.maxItems`) falls
+  back to the caller's k, never to a library number. Tuned numbers appear only in
+  `mcpToolsVariants` (§7.1).
 - Consumer-built profile: the §7.9 example compiles against the public exports only and passes the
   conformance kit.
 - Shared items: owner flattening for user / group / global; `reserved-kind`;
@@ -1765,7 +1909,7 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 
 ### 14.3 Measurement harness
 
-- `scripts/rag-eval` gains `--variant baseline|faceted|faceted-cohere|faceted-jev|coarse`, or a
+- `scripts/rag-eval` gains `--variant baseline|faceted|faceted-cohere|faceted-jev|small-set-jev`, or a
   composition by strategy name (`--indexer`, `--facets`, `--discriminator`, `--intents
   off|record|companion`, `--pool-items`, `--reranker none|cross-encoder|decision`, `--cut`,
   `--budget-tokens`), any tools snapshot file (not tied to one server), and
@@ -1778,13 +1922,12 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
   `IQueryDecomposer` the same way, as part of its strategy (§2.4).
 - Acceptance (env-gated, not part of `npm test`):
   - on the committed mcp-abap-adt 16.0.0 snapshot (an example server's fine-grained set),
-    `faceted` (schema-derived) is not worse than `baseline` at equal items — its §7.4 row is
-    replaced by that run, and compared with the measured `NameTailFacet` layout;
-  - on a `compact` snapshot (the measurement being prepared), `coarse` is measured against
-    `baseline` at equal prompt size; its §7.4 row and the factory's required numbers come from that
-    run;
-  - the hub's consumer check reproduces, within ±1 row, `baseline`'s and `faceted`'s numbers in
-    §7.4;
+    `faceted` with the **schema-derived** `ParametersFacet` (not yet measured, §2.0) is not worse
+    than `baseline` at equal items — its §7.4 row is replaced by that run, and compared with the
+    two closest measured layouts (LLM-generated facets and name-derived facets, both 0.966 at k=5);
+  - on a `compact` snapshot, `small-set-jev` (with the `full` record) reproduces, within ±1 row,
+    the measured 0.970 at k=3 and ~1.6k tokens (§2.5.1);
+  - the hub's consumer check reproduces, within ±1 row, `baseline`'s numbers in §7.4;
   - `faceted-cohere` and `faceted-jev` are measured there for the first time as one composition;
     their rows in §7.4 are replaced by that run, and only then is `faceted-jev` promoted (D11).
 
@@ -1819,6 +1962,9 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 5. **Strategies:** collapse, cut, query decomposition, reranker, intent source, source selector, group
    partitions, indexing, facets, intent sources, candidate pool — all injected. A variant is a
    named set of instances, never flags; the library picks no k, no pool and no reranker by guessing.
+   The consumer makes the main behaviour choices by choosing strategies; a default composition
+   fills only what it left open, and is the only place a tuned number lives, next to its
+   measurement (§7.1).
 6. **File size:** new logic in `src/collections/*` and the new package; `builder.ts` and
    `smart-server.ts` get one call site each per binding.
 7. **Additive:** the only removal is an unexported, unwired file.
@@ -1836,14 +1982,17 @@ No longer asked:
 
 - experience as a schema in the framework → shared items (§8);
 - intents' home → an indexing strategy of the tools profiles, default placement `record` (§7.3.3);
-- one profile with flags → strategies and named variants (§7);
+- one profile with flags → strategies the consumer injects, plus default compositions (§7);
 - the reranker text → provider text (§4.6); the pool unit → items (§4.4);
 - the Cohere reranker in this PR (§5);
 - query splitting → an injected `IQueryDecomposer` slot, no shipped implementation, `k` stays the
   overall limit (§4.5; goal decision 2026-10-05 — the former D12, "k per clause run", is withdrawn);
 - profiles for different MCP servers (goal 9, goal decision 2026-10-05): shipped strategies read
   only what any server exports; coarse tool sets and a token-budget cut are in scope; a consumer
-  builds its own profile for any other server from the contracts (§7.0, §7.9).
+  builds its own profile for any other server from the contracts (§7.0, §7.9);
+- where tuning lives and who chooses (goal decisions 2026-10-05): the consumer makes the main
+  behaviour choices by choosing the strategies it injects; components are generic; tuned numbers
+  live only in default compositions, each citing its measurement (§7.1).
 
 ### 17.2 Decided by the user
 
@@ -1872,14 +2021,29 @@ Recommendations approved by the user on 2026-10-05:
 | D11 | Ship `faceted-jev`, marked **"to be measured as one composition on fresh consumer queries before promotion"**. | §7.4 |
 | `limit()` | `IItemCut.limit(requestedK)` — the most items a cut returns; the retrieval's budget for a decomposer. Stated as an **upper bound** in items, so `ScoreFloorCut` and `TokenBudgetCut` fit with no signature change (§4.10). | §3.4, §4.5 |
 
-### 17.3 Open — raised by the server-agnostic amendment
+### 17.3 Raised by the server-agnostic amendment
+
+The `compact` measurement (§2.5.1) settles four of them; three stay open for the user.
+
+**Settled by the `compact` measurement** (the user reviews them with the spec):
+
+| # | Question | Resolution | Why |
+|---|---|---|---|
+| D17 | `TokenBudgetCut` when the top item alone exceeds the budget: empty, or keep the first item? | **Empty + counted** (`over_budget`), as recommended (§4.10). | `TokenBudgetCut` is in no default: it is a guard the consumer injects and sizes (≥ its largest tool). A guard that breaks its own bound is no guard; the conformance kit checks the bound. |
+| D19 | `TokenBudgetCut`: stop at the first item that does not fit, or skip ahead to smaller ones? | **Stop**, as recommended; documented as the reason it is not a main cut (§4.10). | Measured: as the main cut a 2k budget gives 0.910 vs 0.970 for k=3 at the same ~1.6k tokens, because it stops early. As a guard it must not reorder the consumer's ranking. Skip-ahead = the consumer's own `IItemCut`. |
+| D20 | `coarse` ships with no numbers until the `compact` measurement lands? | **Superseded.** The `coarse` variant (per-value records + token budget) is **withdrawn**; the coarse default is `small-set-jev` with measured numbers: one record per tool + rerank-all + `FixedItemsCut(3)` (§7.4). | Per-value records measured worse (§7.3.2); the token budget measured worse than k (§4.10); one record + Jev over the whole set: 0.970 at ~1.6k tokens. The only required argument left, `poolItems`, is the consumer's tool count, not a tuned number. |
+| D21 | Return which enum values matched with a coarse tool (`metadata.matchedValues`)? | **No** — not in this PR. | No default writes per-value records any more, so no default has values to report. A consumer that injects `EnumValueToolIndexer` and wants the hint justifies a new output contract with its own measurement. |
+
+**Still open:**
 
 | # | Question | Recommendation |
 |---|---|---|
-| D16 | The `faceted*` variants now use schema-derived records (`summary` + `parameters`) instead of the measured `operation` + `object` layout, so their numbers become **to be measured**. Accept shipping them on the closest measured layout's figures until the consumer check runs? | **Yes** — the measured `object` record depends on one server's naming; a default may not. The measured layout stays one line away for a verb-first server (`NameTailFacet`, §7.5). If the check shows `parameters` worse, the fix is a better schema-derived facet, not the convention. |
-| D17 | `TokenBudgetCut` when the top item alone exceeds the budget: return **empty** (counted `over_budget`), or always keep the first item (breaking "size ≤ budget")? | **Empty + counted** — the budget is a hard bound and the conformance kit checks it; the consumer sizes the budget ≥ its largest tool (§4.10). |
-| D18 | `RequiredEnumDiscriminator` with several qualifying parameters: **no fan-out + `IndexReport.notes`**, or fan out over all of them? | **No fan-out + note** — goal 3, never guess; `NamedDiscriminator` or the consumer's selector resolves it. |
-| D19 | `TokenBudgetCut` stops at the first item that does not fit (strict rank prefix), rather than skipping to smaller items. | **Stop** — skipping lets a lower-ranked small tool displace a higher-ranked large one. A consumer wanting skip-ahead injects its own `IItemCut`. |
-| D20 | `coarse` ships with **no numbers** (`maxValues`, `poolItems`, `budgetTokens` required factory arguments) until the `compact` measurement lands. | **Yes** — no number without a measurement; the run then fills the variant's definition (§14.3). |
-| D21 | Return which enum values matched (e.g. `metadata.matchedValues`) with a coarse tool, as a hint to the LLM? | **Not in this PR** — the returned item is the canonical record (D15); a hint is a new output contract to justify with a measurement. |
+| D16 | The `faceted*` defaults use schema-derived records (`summary` + `parameters`); `ParametersFacet` is **not yet measured** on the fine-grained set. Accept shipping them on the closest measured layouts' figures (LLM-generated `operation` / `object` facets and name-derived facets, both 0.966 at k=5 hybrid, hub spike `spike-facets`) until the consumer check runs? | **Yes** — the name-derived `object` record depends on one server's naming; a default may not. The measured layout stays one line away for a verb-first server (`NameTailFacet`, §7.5). If the check shows `parameters` worse, the fix is a better schema-derived facet, not the convention. Not settled by `compact`: that set has no fine-grained facets. |
+| D18 | `RequiredEnumDiscriminator` with several qualifying parameters: no fan-out + `IndexReport.notes`, or fan out over all of them? | **No fan-out + note** — goal 3, never guess; `NamedDiscriminator` or the consumer's selector resolves it. Lower stakes now: it only serves `EnumValueToolIndexer`, which is in no default. |
 | D22 | `ToolItem` carries the raw `inputSchema` (for consumer strategies) and `parameters` replaces `parameterNames`. | **Yes** — without the raw schema a consumer cannot build a profile for a server whose signal sits elsewhere in the schema (goal 9); `ToolItem` is new in this spec, so nothing breaks. |
+
+**New, raised by `small-set-jev`:**
+
+| # | Question | Recommendation |
+|---|---|---|
+| D23 | `small-set-jev` takes `poolItems` (≥ the tool count) as a required argument and the composition root checks it at startup. Alternative: a new `ICandidatePool` that always takes the whole store (no number at all). | **Required `poolItems` + startup check** — no new strategy class, same shape as 30.1.0's `RerankAllRetrieval.maxCandidates` ("configured, never derived"). A whole-store pool can be added later if consumers ask. |
