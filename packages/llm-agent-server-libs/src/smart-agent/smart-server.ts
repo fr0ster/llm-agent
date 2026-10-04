@@ -136,7 +136,10 @@ import {
 } from './rag-config.js';
 import { resolveRetrievalEmbedder } from './resolve-agent-embedder.js';
 import { resolveReranker } from './resolve-reranker.js';
-import { resolveRetrievalStrategies } from './resolve-retrieval.js';
+import {
+  resolveRetrievalStrategies,
+  unknownRetrievalKeyWarnings,
+} from './resolve-retrieval.js';
 import { makeToolsRagHandle } from './tools-rag-handle.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from './worker-llm.js';
 
@@ -1728,6 +1731,12 @@ export class SmartServer {
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
     this._globalRagRegistry = globalRagRegistry;
+    for (const w of unknownRetrievalKeyWarnings(
+      this.cfg.rag?.retrieval,
+      globalRagRegistry.list().map((c) => c.name),
+    )) {
+      this.warn(w);
+    }
     // Two limits of this server, stated rather than fixed (§6.4): it registers
     // no RAG providers, so no session registry has a catalog to hydrate from —
     // each holds only the deployment's globals; and its sessions carry a

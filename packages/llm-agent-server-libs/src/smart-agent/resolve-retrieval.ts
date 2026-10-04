@@ -125,3 +125,31 @@ export async function resolveRetrievalStrategies(
   }
   return out;
 }
+
+/** Stores a `rag.retrieval` key may always name; others come from the registry. */
+const BUILT_IN_STORES = ['tools', 'history'];
+
+/**
+ * Warnings for `rag.retrieval` keys that name no store (§14.5). The validator
+ * cannot check keys (collections can appear at run time), so a typo such as
+ * `tool:` for `tools:` would otherwise be a silent no-op. `user/…` and
+ * `session/…` collections appear per session and are never flagged.
+ */
+export function unknownRetrievalKeyWarnings(
+  retrieval: Record<string, unknown> | undefined,
+  registeredNames: readonly string[],
+): string[] {
+  if (!retrieval) return [];
+  const known = [...new Set([...BUILT_IN_STORES, ...registeredNames])].sort();
+  return Object.keys(retrieval)
+    .filter(
+      (key) =>
+        !known.includes(key) &&
+        !key.startsWith('user/') &&
+        !key.startsWith('session/'),
+    )
+    .map(
+      (key) =>
+        `rag.retrieval.${key} names no store; known stores: ${known.join(', ')}. Entries for collections that appear at run time are ignored until they exist.`,
+    );
+}
