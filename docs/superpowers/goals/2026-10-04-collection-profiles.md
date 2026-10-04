@@ -64,18 +64,23 @@ English queries (see *Evidence* below):
    session history, one for user collections) served by three profiles.
 7. The default profiles in this work:
    - **MCP tools**;
-   - **experience from sessions**: what a solved task teaches, so it is not lost.
-     A record is a case with:
-     - the inputs (task, context, system);
-     - the symptoms seen (messages, error texts, codes);
-     - the decision taken and what was done;
-     - the outcome: what helped and what did not.
-
-     The case is extracted from a finished session, or on demand. It is found
-     again by a new situation's symptoms and inputs, and returned whole,
-     including what failed.
+   - **shared experience**: a RAG base that pipeline elements write into and
+     search, so different agents can share information and experience. What a
+     case holds, when it is written and by whom is decided by the pipeline
+     element (or elements) that write it, not by the framework. The framework
+     makes the written items findable, returns them whole, and carries their
+     owner and visibility so they can be shared across agents.
 8. **Skills** and **user collections** stay on today's behaviour (30.1.0) for
    now. They can get profiles later through the same contract.
+9. **Rerankers are alternatives the consumer chooses at deploy.** The framework
+   ships at least two:
+   - a cross-encoder on **SAP AI Core** (Cohere Rerank) — new work, since on a
+     deployment SAP AI Core is usually the only provider available;
+   - the **decision model** (TypeSafe Jev), already in 30.1.0, a separate
+     provider.
+
+   A profile can be configured for either. Options that depend on the reranker,
+   such as the clause split, are set per profile, not built in.
 
 ## Decisions
 
@@ -89,6 +94,11 @@ English queries (see *Evidence* below):
 | 2026-10-04 | Tool records come from what the tool provider exports (name, description, parameter names). Nothing is hand-written over them. A weak description is fixed at its source. |
 | 2026-10-04 | LLM-generated variants of a provider's text (for example intents generated from a tool description) are allowed, but only in a **separate collection** of their own, never mixed with the records taken from the provider. The profile searches both and collapses the hits by item id, so what came from the provider stays distinguishable and the generated part can be rebuilt or turned off on its own. |
 | 2026-10-04 | In this PR, besides the profiles: the bug where `vectorizeMcpTools` does not find the store's embedder behind `StrategyRag` and falls back to one tool at a time; de-duplication in `tools-rag-handle` (none today) and `skill-select` (fixed prefix); and a decision on the unused `IToolIndexingStrategy` and the docs that describe it as usable. |
+| 2026-10-04 | Experience is not a fixed case schema inside a profile. A case is written by a separate pipeline element (or several), whose implementation decides what goes into it. The framework provides the RAG base for it: findable, returned whole, with owner and visibility so agents share information and experience. This replaces the case schema in the decision above. |
+| 2026-10-04 | Intents are part of the MCP tools profile, not a framework-wide concept. Where they live is the consumer's choice. The default is a record kind of their own (`intent`) in the tool collection: measured equal to intents inside the tool's record, within noise. This refines the "separate collection" decision above: generated text stays apart from the provider's records, in its own record kind by default or in its own collection when the consumer chooses. |
+| 2026-10-04 | The reranker reads the provider's text of the item, without generated intents: measured equal or better for both Cohere and Jev. Intents serve only the candidate search. |
+| 2026-10-04 | The candidate pool is sized in items, not records: with several records per item, 30 records give only ~27–31 tools, and non-English recall drops. |
+| 2026-10-04 | Rerankers are alternatives: Cohere on SAP AI Core and TypeSafe Jev both get a profile configuration; the consumer picks at deploy. The Cohere (SAP AI Core) reranker provider is in this PR. |
 | 2026-10-04 | Other open issues go in separate PRs: #323 (query expander never applied) after this spec decides whether query preparation belongs to a profile; #304 (isolation); #326, #327 (embedders); #324, #314, #291, #290, #247. This spec requires owner keys on every record and collapsing after the store's owner filter. |
 
 ## Evidence (measured in cloud-llm-hub, 2026-09-30 … 2026-10-04)
@@ -113,23 +123,30 @@ queries with production embeddings:
   order. Since 30.1.0 that is a reranker error, but the strategy still falls back
   and records it only as a session step: no span, no metric, nothing in
   /health.
+- **Rerankers compared** (k5, hybrid, today's one record per tool, so the pool is
+  the same):
+
+  | queries | Cohere | Cohere + clause split | Jev | Jev + clause split |
+  |---|---|---|---|---|
+  | single-step (73) | 0.973 | 0.973 | 1.000 | 1.000 |
+  | multi-step (14) | 0.714 | 1.000 | 0.857 | 0.786 |
+  | non-English (26) | 0.962 | 0.962 | 1.000 | 1.000 |
+
+  The clause split helps Cohere and hurts Jev, so it belongs to the pair of
+  reranker and profile. With several records per tool and a reranker, the
+  record layout (intents inside the record, in their own record, or absent) is
+  within noise; intents in the reranker's text do not help either reranker.
 - **Best combination measured:** Cohere with clause split, joined with the top-3
   tools found through the multiple records. It reaches 1.000 at top-5, but it was
   picked after seeing the results and still needs fresh queries.
 
 ## Open questions
 
-- Experience profile:
-  - when a case is extracted (end of session, an explicit call, a background
-    pass);
-  - who extracts it (an LLM step, with what prompt and schema);
-  - how outcomes are confirmed, so a case does not record a guess as a fix;
-  - the owner and visibility of cases (user, team, global — see #304);
-  - duplicates and merging of similar cases;
-  - retention.
-
-- A Cohere / cross-encoder reranker provider is new work: 30.1.0 ships
-  `decision` and `llm` rerankers only.
+- Shared experience base: the owner and visibility of items (user, team,
+  global — see #304), and what the framework must offer the writing elements
+  (record kinds, owner keys, removal). What a case holds, when it is extracted
+  and how its outcome is confirmed belong to the writing element, not to this
+  work.
 - Names: several are taken (`ISearchStrategy`, `IRetrievalStrategy`,
   `IToolSelectionStrategy`, the unused `IToolIndexingStrategy`,
   `IQueryPreprocessor`, `IQueryExpander`).
