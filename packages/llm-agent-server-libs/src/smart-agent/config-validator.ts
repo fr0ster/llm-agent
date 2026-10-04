@@ -1,4 +1,9 @@
 import { parseIntegerField } from './decision-config.js';
+import {
+  type LlmConfigMap,
+  llmKeySet,
+  normalizeLlmConfig,
+} from './llm-config-map.js';
 import { isBuiltInEmbedderProvider } from './rag-config.js';
 import type { SmartServerConfig } from './smart-server.js';
 import type { YamlConfig } from './yaml-loader.js';
@@ -118,6 +123,22 @@ const RERANK_ONLY_FIELDS = [
 ] as const;
 const RETRIEVAL_QUESTIONS = ['tool', 'passage'] as const;
 
+/**
+ * The keys `rag.retrieval.<store>.llm` may name, decided by the same helpers
+ * the runtime uses: a flat `llm:` block normalizes to `{ main }`. A map
+ * without `main` is reported by the llm: checks; here its keys stand as is.
+ */
+function retrievalLlmKeys(rawLlm: unknown): ReadonlySet<string> {
+  if (!rawLlm || typeof rawLlm !== 'object' || Array.isArray(rawLlm)) {
+    return new Set();
+  }
+  try {
+    return llmKeySet(normalizeLlmConfig(rawLlm as LlmConfigMap));
+  } catch {
+    return new Set(Object.keys(rawLlm));
+  }
+}
+
 /** `rag.retrieval` — per-store strategies (§13.4); validated on the raw YAML. */
 function checkRetrieval(
   yaml: YamlConfig,
@@ -130,11 +151,7 @@ function checkRetrieval(
     issues.push('rag.retrieval: must be a mapping of store key → strategy');
     return;
   }
-  const rawLlm = get(yaml, 'llm') as Record<string, unknown> | undefined;
-  const llmKeys =
-    rawLlm && typeof rawLlm === 'object' && typeof rawLlm.provider !== 'string'
-      ? Object.keys(rawLlm).filter((k) => k !== 'apiKey')
-      : [];
+  const llmKeys = retrievalLlmKeys(get(yaml, 'llm'));
   for (const [key, entry] of Object.entries(raw as Record<string, unknown>)) {
     const label = `rag.retrieval.${key}`;
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -228,7 +245,7 @@ function checkRetrieval(
       issues.push(
         `${label}.llm: required for reranker: llm (a key of the llm: map)`,
       );
-    } else if (!llmKeys.includes(e.llm)) {
+    } else if (!llmKeys.has(e.llm)) {
       issues.push(`${label}.llm: "${e.llm}" is not a key of the llm: map`);
     }
   }

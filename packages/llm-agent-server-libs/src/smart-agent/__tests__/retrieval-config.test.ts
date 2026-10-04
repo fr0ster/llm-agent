@@ -52,6 +52,23 @@ describe('rag.retrieval resolution', () => {
     });
   });
 
+  it('a flat llm: block is the main key: reranker: llm, llm: main validates', () => {
+    const cfg = resolve(
+      'tools: { strategy: rerank, reranker: llm, llm: main }',
+    );
+    assert.deepEqual(cfg.rag?.retrieval, {
+      tools: { strategy: 'rerank', reranker: 'llm', llm: 'main' },
+    });
+  });
+
+  it('a flat llm: block has no other key', () => {
+    assert.throws(
+      () =>
+        resolve('tools: { strategy: rerank, reranker: llm, llm: reranker }'),
+      /rag\.retrieval\.tools\.llm: "reranker" is not a key of the llm: map/,
+    );
+  });
+
   it('keeps every field', () => {
     const cfg = resolve(
       'knowledge: { strategy: rerank-all, reranker: llm, llm: reranker, question: passage, maxCandidates: 200 }',
