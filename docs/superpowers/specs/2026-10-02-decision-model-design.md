@@ -1,6 +1,9 @@
 # Decision models (`IDecisionModel`) + TypeSafe Jev provider + `DecisionReranker`
 
-Status: design approved in brainstorming 2026-10-02; spec awaiting review.
+Status: design approved in brainstorming 2026-10-02; implemented on
+`feat/decision-model` (Tasks 1–14). **Addendum A (§13, 2026-10-04)** adds per-store
+retrieval strategies and supersedes the `reranker:` YAML section of §7.1/§7.3 —
+addendum awaiting review.
 Follow-up (separate spec, after this ships): a decision-model gate in front of
 `LlmEvaluator` (cascade).
 
@@ -37,16 +40,19 @@ Goals:
    `@mcp-abap-adt/llm-agent-libs`, plus usage accounting for decision calls.
 4. YAML wiring in SmartServer (`decision:` + `reranker:` sections) and the
    binary's composition root, so the app demonstrates the capability.
+   *Superseded by §13:* the `reranker:` section is replaced by per-store
+   `rag.retrieval` strategies.
 5. Additive only — minor release **30.1.0**.
 
 Non-goals:
 
 - The evaluator cascade (next spec).
-- `reranker.type: llm` (the existing `LlmReranker` stays plugin/builder-only).
+- ~~`reranker.type: llm`~~ — now in scope, see §13.5.
 - Health check / model listing on decision models (a separate small interface
   later, if needed).
-- Rerank in the controller pipeline (the reranker exists only on the flat
-  `SmartAgent` path; unchanged).
+- ~~Rerank in the controller pipeline~~ — now in scope: a store-level strategy
+  reaches every pipeline, including the controller's per-step tool selection
+  (§13.3).
 
 ## 3. Source of truth for the Jev API
 
@@ -349,6 +355,10 @@ runs, and today nothing records that.
 
 ### 7.1 Configuration
 
+> **Superseded in part by §13.** The `reranker:` section below and
+> `SmartServerRerankerConfig` are removed before release (nothing was published);
+> `decision:` stays as written.
+
 ```yaml
 decision:
   provider: typesafe
@@ -426,6 +436,10 @@ section with no `makeDecisionModel` seam is a startup error naming the seam.
 The server wraps whatever the seam returns in `wrapDecisionModel`.
 
 ### 7.3 Reranker resolution — a small module
+
+> **Superseded in part by §13.** `resolveReranker` keeps only the plugin branch
+> (a plugin / `withReranker` reranker for the `rerank` stage); the YAML
+> `reranker.type: decision` branch is replaced by `rag.retrieval` (§13.4).
 
 `smart-server.ts` is already several thousand lines (principle 6), so the logic
 goes into a new `packages/llm-agent-server-libs/src/smart-agent/resolve-reranker.ts`,
@@ -621,3 +635,195 @@ No migration guide: nothing breaks.
 7. **Don't break** — all additions are optional. Visible changes: the new
    `LlmComponent` literal, failure telemetry in `RerankHandler`, and a plugin
    reranker now running on session requests (a fix of a silent no-op, §7.4).
+
+## 13. Addendum A — per-store retrieval strategies (2026-10-04)
+
+### 13.1 Why
+
+1. **The reranker reached only one of three tool-selection paths.** Tool
+   candidates are chosen by (a) the flat stages `rag-tools → rerank → tool-select`
+   (flat, linear, dag workers), (b) `IToolsRagHandle.query(text, k)` — the
+   controller per step (`selectTools(step.instructions, 20)`) and every stepper
+   mode, with no strategy and no reranker, and (c) the `tool-loop` per-iteration
+   re-select, also with neither. The `rerank` stage covers (a) only.
+2. **One question does not fit every store.** Knowledge asks "does this passage
+   help answer the request?"; tools ask "will calling this tool help carry out
+   the request?"; history should not leave the deployment at all by default.
+3. **The consumer — and our own apps — must choose** per store between plain
+   embedding retrieval and reranking, and be able to add their own way.
+4. **Measured value.** Live spike on the `mcp-abap-adt` 15.0.0 catalog (218
+   tools, `readonly,high`), 30 English queries, embedder `text-embedding-ada-002`:
+   embedding R@1 0.53 / R@3 0.80 / MRR 0.678 → Jev rerank of the top 15–30
+   R@1 0.90 / R@3 0.97 / MRR 0.933, 13 better, 0 worse. Pool 15 vs 30 and the
+   tool vs passage wording gave the same numbers on this set. One miss was
+   embedding recall (`GetDdl` absent from the top 30 — a tool-description defect,
+   fr0ster/mcp-abap-adt#270).
+
+### 13.2 Contract — `@mcp-abap-adt/llm-agent` (additive)
+
+```ts
+/** How a store turns a query into its top-k results. The consumer's choice, per store. */
+export interface IRetrievalStrategy {
+  readonly name: string;
+  retrieve(
+    store: IRag,
+    query: IQueryEmbedding,
+    k: number,
+    options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>>;
+}
+```
+
+`IQueryEmbedding.text` carries the query text, so a strategy can rerank without
+any pipeline knowing about it. `IRag` (`query`, `healthCheck`, `getById`,
+optional `writer()`) is not changed.
+
+### 13.3 Library — `@mcp-abap-adt/llm-agent-libs`
+
+Each in its own small module under `src/retrieval/`:
+
+| Unit | Behaviour |
+|---|---|
+| `EmbeddingRetrieval` | `store.query(q, k, options)` — today's behaviour; the default |
+| `RerankedRetrieval(reranker, { overfetch = 2 })` | `store.query(q, k × overfetch)` → `reranker.rerank(q.text, candidates)` → top-k |
+| `RerankAllRetrieval(reranker, { maxCandidates })` | `store.query(q, maxCandidates)` → rerank all → top-k. `maxCandidates` is configured, never derived from an assumed catalog size |
+| `StrategyRag(inner, strategy)` implements `IRag` | `query` → `strategy.retrieve(inner, …)`; `healthCheck`, `getById`, `writer()` delegate to `inner` unchanged (catalog vectorization keeps working) |
+| `applyRetrievalStrategy(rag, strategy)` | returns `rag` itself for `EmbeddingRetrieval` **or when `rag` is already strategy-ranked** (idempotent — `tools`/`history` are wrapped at creation by the server and appear again in the builder's projection); otherwise `new StrategyRag(rag, strategy)`, branded so `isStrategyRanked(rag)` is true |
+
+**Batching.** Both reranked strategies send candidates in batches:
+- `DecisionReranker` batches by an estimated token budget (≈ chars / 4) under
+  Jev's request limit (64k total; 32k for state + longest question), with
+  headroom; Jev answers per question independently, so batch results merge by a
+  plain sort;
+- `LlmReranker` batches by candidate count.
+Batches run with bounded concurrency (rate limits). A failed batch fails the
+call.
+
+**Failure → embedding order.** Any reranker failure (decision error, 429,
+invalid LLM output, timeout) makes the strategy return the embedding ranking's
+top-k — the request never fails because of reranking — and records a session
+step `retrieval_rerank_error { store, strategy, code }` via
+`options.sessionLogger`.
+
+**Questions per store.** `DecisionReranker` already takes `task` / `criteria`
+(§6.1). Two presets are exported: `TOOL_QUESTION` ("Judge whether calling this
+tool would help carry out the request given as the state.") and
+`PASSAGE_QUESTION` (today's default). The tool records' passage is the indexed
+text `Tool: <name> — <description>` (no input schema).
+
+**Builder.** `SmartAgentBuilder.withRetrievalStrategy(store: string, strategy:
+IRetrievalStrategy)` records the strategy; the builder applies
+`applyRetrievalStrategy` in its `ragStores` projection of the RAG registry, so a
+store registered (or opened) after build is covered too.
+
+**`RerankHandler`** skips any store for which `isStrategyRanked` is true, so a
+store is never reranked twice; for other stores it behaves as today (the
+plugin / `withReranker` path).
+
+### 13.4 Configuration and server wiring
+
+```yaml
+decision: { provider: typesafe }        # unchanged (§7.1)
+llm:
+  main:     { provider: sap-ai-sdk, model: gpt-5 }
+  reranker: { provider: sap-ai-sdk, model: gpt-4.1-mini }   # only for reranker: llm
+rag:
+  store: { … }
+  embedder: { … }
+  retrieval:                             # per store; a store not listed → embedding
+    tools:     { strategy: rerank, reranker: decision, overfetch: 2 }
+    knowledge: { strategy: rerank-all, reranker: llm, llm: reranker, maxCandidates: 200 }
+```
+
+- Keys are store keys as the pipeline's `ragStores` projection names them
+  (`builder.ts:926-936`): `tools`, `history`, a global collection's bare name,
+  `user/<name>` and `session/<name>` for user- and session-scoped collections.
+- `strategy: embedding | rerank | rerank-all` (default `embedding`).
+- `reranker: decision | llm` — required for `rerank` / `rerank-all`. `decision`
+  needs the `decision:` section (and the `makeDecisionModel` seam); `llm` needs
+  `llm: <key>` naming an entry of the `llm:` map.
+- `question: tool | passage` — default `tool` for the `tools` store, `passage`
+  otherwise; `task` (string) overrides the wording outright.
+- `overfetch` (positive integer, default 2) for `rerank`; `maxCandidates`
+  (positive integer, required) for `rerank-all`. `${VAR}` strings are accepted
+  through `parseIntegerField` (§7.1).
+- Validation on the raw YAML, as in §7.1: unknown strategy / reranker / question;
+  `reranker` missing for a reranked strategy; `decision` reranker without
+  `decision:`; `llm` reranker without `llm:` or naming an absent key;
+  `maxCandidates` missing for `rerank-all`; `retrieval` key that is not a mapping.
+- **Removed (unreleased):** the `reranker:` section, `SmartServerRerankerConfig`,
+  and the YAML branch of `resolveReranker`.
+
+**Server.** Stores reach the pipeline two ways, and both get the strategy:
+
+- **Built by the server through the `makeRag` seam** — `tools` and `history` in
+  `_buildInfra` (`smart-server.ts:1450-1451`) and the worker stores (`:2060`,
+  `:2071`). Each passes through one helper that applies its configured strategy
+  at creation. The same wrapped `tools` instance is what the flat stages,
+  `tool-loop`, and `makeToolsRagHandle` (`:2487`, controller and stepper)
+  receive, so all three selection paths of §13.1 use it.
+- **Named collections** are not built there: they enter the per-session registry
+  from the deployment globals and the RAG providers (`buildSessionRagRegistry`,
+  `session-rag-registry.ts`) and reach the pipeline through the builder's
+  `ragStores` projection of the registry (`builder.ts:926-936`). The builder
+  applies the strategies registered with `withRetrievalStrategy` in that
+  projection, by store key; the server registers one per configured name. A
+  collection opened later in the session goes through the same projection.
+
+Rerankers are resolved once in `_buildInfra`; decision-backed ones are wrapped
+in `wrapDecisionModel`.
+
+**`agent.toolSelection` gate.** Like the reranker before §7.4, the
+`withToolSelectionStrategy` call sits inside `if (parts.applyServerExtras)`
+(`smart-server.ts:2781` → `:2821`), so per-session agents never get it. It is
+resolved once and applied outside the gate. With a reranked `tools` store,
+`minScore` compares against reranker probabilities in `[0, 1]`, not cosine —
+documented.
+
+### 13.5 `LlmReranker` rework
+
+- Per-store question (`TOOL_QUESTION` / `PASSAGE_QUESTION` / custom `task`).
+- Output contract: a JSON array of N numbers in `[0, 1]`, one per candidate, in
+  order. Wrong length, a non-finite value or a value outside `[0, 1]` →
+  `RagError('RERANK_ERROR')` (→ embedding order via §13.3), never zero-filled.
+- Batches by candidate count; usage logged through the request logger under its
+  own component.
+- `withReranker(new LlmReranker(llm))` keeps working (same `IReranker`).
+
+### 13.6 Testing
+
+- Unit: each strategy (ordering, top-k, overfetch, `maxCandidates`), batching
+  (token budget boundary, merge order), failure → embedding order + session step,
+  `StrategyRag` delegation of `healthCheck` / `getById` / `writer()`,
+  `applyRetrievalStrategy` identity for embedding, `RerankHandler` skip,
+  `LlmReranker` output contract, resolver + validator for every rule in §13.4.
+- Server (YAML through the real `resolveSmartServerConfig`): a controller run's
+  per-step `selectTools` goes through the `tools` strategy; the flat path too; a
+  store not listed stays on embedding; `agent.toolSelection` reaches a session
+  agent.
+- **Quality eval, committed (env-gated, not `npm test`):** `scripts/rag-eval`
+  gains `--retrieval embedding|rerank|rerank-all` and `--reranker decision|llm`,
+  reporting R@1/3/5, MRR and better/worse per case. The `mcp-abap-adt` 15.0.0
+  catalog snapshot (218 tools — public names and descriptions only, no system
+  data) and the 30 queries with `Read*`→`Get*` corrected are committed beside the
+  existing 63-tool snapshot.
+
+### 13.7 Out of scope
+
+- Cohere Rerank on SAP AI Core: listed in the tenant's catalog
+  (`cohere-reranker`, `cohere-rerank-pro`) but not deployed, so its API cannot be
+  verified; `reranker:` leaves room for it.
+
+### 13.8 Architecture-principle check
+
+1. Built on existing components: `IRag`, `IReranker`, `DecisionReranker`,
+   `LlmReranker`, the `makeRag` seam; no pipeline-specific glue.
+2. The app is the example: SmartServer chooses per store through YAML.
+3. Interfaces: consumers depend on `IRetrievalStrategy` / `IRag`.
+4. ISP: a new small interface; `IRag`, `IReranker`, `IToolSelectionStrategy` are
+   not grown.
+5. Strategy: retrieval per store is the consumer's choice, built-ins or their own.
+6. File size: new logic in `src/retrieval/*` modules; `smart-server.ts` gets one
+   helper call per store creation site plus the gate move.
+7. Additive for released contracts; the only removals are the unreleased
+   `reranker:` YAML and `SmartServerRerankerConfig`.
