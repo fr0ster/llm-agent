@@ -9,6 +9,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **`llm-agent-libs`: the tool-batch heartbeat timer no longer leaks.** `executeToolBatchWithHeartbeat` raced a `setTimeout` tick against the batch and never cleared it when the batch won, leaving a pending timer after every tool batch (it kept a consumer's jest worker from exiting). The timer is now cleared in a `finally` on every path (batch resolves, batch rejects, tick fires). Heartbeat behaviour is unchanged and no timeout was added. A rejecting tool batch also no longer leaves an unhandled rejection from the pending-tools bookkeeping branch.
+
 ## [30.0.0] — 2026-09-28
 
 **BREAKING — see [docs/MIGRATION-v30.md](docs/MIGRATION-v30.md).**
