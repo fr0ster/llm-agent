@@ -138,6 +138,7 @@ async function startHarness(route: Route, agent: SmartAgent): Promise<Harness> {
             new AnthropicApiAdapter(),
             undefined,
             undefined,
+            (e) => logs.push(e),
           );
     run.then(markDone, (e) => {
       logs.push({ event: 'handler_threw', message: String(e) });
@@ -213,12 +214,10 @@ for (const route of ['chat', 'adapter'] as const) {
           assert.equal(probe.signal?.reason?.name, 'AbortError');
           assert.deepEqual(h.writesAfterClose, []);
           const events = h.logs.map((l) => l.event);
-          if (route === 'chat') {
-            assert.ok(events.includes('request_cancelled'), String(events));
-            assert.ok(!events.includes('request_done'), String(events));
-            const c = h.logs.find((l) => l.event === 'request_cancelled');
-            assert.equal(typeof c?.durationMs, 'number');
-          }
+          assert.ok(events.includes('request_cancelled'), String(events));
+          assert.ok(!events.includes('request_done'), String(events));
+          const c = h.logs.find((l) => l.event === 'request_cancelled');
+          assert.equal(typeof c?.durationMs, 'number');
           assert.ok(!events.includes('handler_threw'), String(events));
         } finally {
           await stop(h);

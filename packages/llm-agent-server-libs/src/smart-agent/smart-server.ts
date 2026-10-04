@@ -3306,6 +3306,7 @@ export class SmartServer {
               anthropicAdapter,
               { sessionId, traceId, graph },
               this.cfg.agent?.heartbeatIntervalMs,
+              rc.log,
             );
           },
         );

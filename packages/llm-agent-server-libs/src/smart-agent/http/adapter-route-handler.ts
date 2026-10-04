@@ -23,7 +23,9 @@ export async function handleAdapterRequest(
     | { sessionId: string; traceId: string; graph: SessionGraph }
     | undefined,
   heartbeatIntervalMs: number | undefined,
+  log?: (e: Record<string, unknown>) => void,
 ): Promise<void> {
+  const t0 = Date.now();
   const raw = await readBody(req);
   let body: unknown;
   try {
@@ -58,6 +60,8 @@ export async function handleAdapterRequest(
 
   // Client disconnect before the response finished cancels the whole request.
   const abort = createRequestAbort(res);
+  const logCancelled = (): void =>
+    log?.({ event: 'request_cancelled', durationMs: Date.now() - t0 });
 
   const augmentedOptions = session
     ? {
@@ -91,11 +95,16 @@ export async function handleAdapterRequest(
       }
     } catch (err) {
       if (!abort.signal.aborted) throw err;
+      logCancelled();
       return;
     } finally {
       keepAlive.stop();
     }
-    if (canWrite(res, abort.signal)) res.end();
+    if (!canWrite(res, abort.signal)) {
+      logCancelled();
+      return;
+    }
+    res.end();
     return;
   }
 
@@ -105,9 +114,13 @@ export async function handleAdapterRequest(
     result = await agent.process(sanitizedMessages, augmentedOptions);
   } catch (err) {
     if (!abort.signal.aborted) throw err;
+    logCancelled();
     return;
   }
-  if (!canWrite(res, abort.signal)) return;
+  if (!canWrite(res, abort.signal)) {
+    logCancelled();
+    return;
+  }
   res.setHeader('Content-Type', 'application/json');
   if (!result.ok) {
     res.writeHead(500);
