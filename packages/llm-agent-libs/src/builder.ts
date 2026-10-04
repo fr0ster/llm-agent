@@ -62,6 +62,7 @@ import {
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
+  isRagDecorator,
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
@@ -159,6 +160,16 @@ export function prepareMcpConfigs(
   return configs.map((c) => ({ ...c, requestHeadersStrategy }));
 }
 
+/** True when `store`, or a store it decorates, is a FallbackRag on `breaker` (bounded walk). */
+function isGuardedBy(store: IRag, breaker: CircuitBreaker): boolean {
+  let cur: IRag | undefined = store;
+  for (let depth = 0; cur && depth < 16; depth++) {
+    if (cur instanceof FallbackRag && cur.breaker === breaker) return true;
+    cur = isRagDecorator(cur) ? cur.inner : undefined;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // SmartAgentBuilder
 // ---------------------------------------------------------------------------
@@ -190,6 +201,8 @@ export class SmartAgentBuilder {
   private _outputValidator?: IOutputValidator;
   private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
+  private _sharedBreakers?: { embedder: CircuitBreaker };
+  private _vectorizeSkills = true;
   private _requestLogger?: IRequestLogger;
   private _agentOverrides: Partial<SmartAgentConfig> = {};
   private _pluginLoader?: IPluginLoader;
@@ -459,9 +472,18 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set a skill manager for discovering and loading agent skills. */
-  withSkillManager(manager: ISkillManager): this {
+  /**
+   * Set a skill manager for discovering and loading agent skills.
+   * `options.vectorize` (default `true`): `false` skips vectorizing the skills
+   * into the tools store in `build()` — for builds that share a store the
+   * server already filled once at startup.
+   */
+  withSkillManager(
+    manager: ISkillManager,
+    options?: { vectorize?: boolean },
+  ): this {
     this._skillManager = manager;
+    this._vectorizeSkills = options?.vectorize ?? true;
     return this;
   }
 
@@ -477,7 +499,24 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Enable circuit breakers for LLM and embedder calls. */
+  /**
+   * Use breakers created and owned by the caller (shared across builders).
+   * Only the embedder breaker is taken: registry stores are wrapped in a
+   * `FallbackRag` on it unless a store already carries that same breaker. The
+   * main LLM is NOT wrapped (the caller passes pre-wrapped LLMs). When both
+   * this and `withCircuitBreaker(config)` are set, this wins for stores and
+   * the LLM is not wrapped.
+   */
+  withCircuitBreakers(breakers: { embedder: CircuitBreaker }): this {
+    this._sharedBreakers = breakers;
+    return this;
+  }
+
+  /**
+   * Enable circuit breakers for LLM and embedder calls. Ignored in favour of
+   * `withCircuitBreakers(...)` when that is also set (nothing is wrapped
+   * twice, the LLM is left unwrapped).
+   */
   withCircuitBreaker(config: CircuitBreakerConfig = {}): this {
     this._circuitBreakerConfig = config;
     return this;
@@ -982,33 +1021,41 @@ export class SmartAgentBuilder {
 
     // ---- Circuit breaker wrapping ----------------------------------------
     const circuitBreakers: CircuitBreaker[] = [];
-    if (this._circuitBreakerConfig) {
-      const cbCfg = this._circuitBreakerConfig;
+    if (this._circuitBreakerConfig || this._sharedBreakers) {
+      const cbCfg = this._circuitBreakerConfig ?? {};
       const metricsRef = this._metrics;
       const makeOnStateChange =
         (target: string) => (from: string, to: string) => {
           metricsRef?.circuitBreakerTransition.add(1, { from, to, target });
         };
 
-      // Wrap mainLlm
-      const llmBreaker = new CircuitBreaker({
-        ...cbCfg,
-        onStateChange: cbCfg.onStateChange ?? makeOnStateChange('llm'),
-      });
-      wrappedMainLlm = new CircuitBreakerLlm(wrappedMainLlm, llmBreaker);
-      circuitBreakers.push(llmBreaker);
+      // Wrap mainLlm — unless the caller owns the breakers (it passes
+      // pre-wrapped LLMs).
+      if (!this._sharedBreakers) {
+        const llmBreaker = new CircuitBreaker({
+          ...cbCfg,
+          onStateChange: cbCfg.onStateChange ?? makeOnStateChange('llm'),
+        });
+        wrappedMainLlm = new CircuitBreakerLlm(wrappedMainLlm, llmBreaker);
+        circuitBreakers.push(llmBreaker);
+      }
 
       // Wrap RAG stores with FallbackRag using InMemoryRag fallback
-      const embedderBreaker = new CircuitBreaker({
-        ...cbCfg,
-        onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
-      });
+      const embedderBreaker =
+        this._sharedBreakers?.embedder ??
+        new CircuitBreaker({
+          ...cbCfg,
+          onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
+        });
       circuitBreakers.push(embedderBreaker);
       // list() is a snapshot, so changing entries while iterating is safe.
       for (const meta of ragRegistry.list()) {
         const scope = meta.scope ?? 'global';
         const store = ragRegistry.get(meta.name, scope);
         if (!store) continue;
+        if (this._sharedBreakers && isGuardedBy(store, embedderBreaker)) {
+          continue;
+        }
         const wrapped = new FallbackRag(
           store,
           new InMemoryRag(),
@@ -1299,7 +1346,7 @@ export class SmartAgentBuilder {
       }
 
       // ---- Skill vectorization (optional) ------------------------------------
-      if (this._skillManager && toolsRag) {
+      if (this._skillManager && toolsRag && this._vectorizeSkills) {
         await vectorizeSkills(this._skillManager, toolsRag, requestLogger, log);
       }
 

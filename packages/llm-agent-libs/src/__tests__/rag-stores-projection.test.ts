@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  CircuitBreaker,
+  CircuitBreakerLlm,
   FallbackRag,
   InMemoryRag,
   type IRagEditor,
@@ -190,4 +192,62 @@ test('addRagStore / removeRagStore address the global and leave a user collectio
   agent.removeRagStore('kb');
   assert.equal(reg.get('kb', 'global'), undefined);
   assert.equal(reg.get('kb', 'user'), mine);
+});
+
+test('withCircuitBreakers wraps a store once, never twice across builders, and leaves the LLM alone', async () => {
+  const breaker = new CircuitBreaker();
+  const reg = new SimpleRagRegistry();
+  const raw = new InMemoryRag();
+  reg.register('docs', raw, undefined, {
+    displayName: 'docs',
+    scope: 'global',
+  });
+  const llm = makeLlm([{ content: 'ok' }]);
+  const h1 = await new SmartAgentBuilder({})
+    .withMainLlm(llm)
+    .setRagRegistry(reg)
+    .withCircuitBreakers({ embedder: breaker })
+    .build();
+  const wrapped = h1.ragStores.docs;
+  assert.ok(wrapped instanceof FallbackRag);
+  assert.equal(wrapped.breaker, breaker);
+  assert.equal(wrapped.inner, raw);
+  assert.deepEqual(h1.circuitBreakers, [breaker]);
+  await h1.close();
+
+  const h2 = await new SmartAgentBuilder({})
+    .withMainLlm(llm)
+    .setRagRegistry(reg)
+    .withCircuitBreakers({ embedder: breaker })
+    .build();
+  try {
+    assert.equal(h2.ragStores.docs, wrapped, 'not wrapped again');
+    assert.ok(
+      !((h2.ragStores.docs as FallbackRag).inner instanceof FallbackRag),
+    );
+    assert.ok(!(h2.agent.currentMainLlm instanceof CircuitBreakerLlm));
+  } finally {
+    await h2.close();
+  }
+});
+
+test('withCircuitBreakers wins over withCircuitBreaker(config): no LLM breaker', async () => {
+  const breaker = new CircuitBreaker();
+  const reg = new SimpleRagRegistry();
+  reg.register('docs', new InMemoryRag(), undefined, {
+    displayName: 'docs',
+    scope: 'global',
+  });
+  const h = await new SmartAgentBuilder({})
+    .withMainLlm(makeLlm([{ content: 'ok' }]))
+    .setRagRegistry(reg)
+    .withCircuitBreaker()
+    .withCircuitBreakers({ embedder: breaker })
+    .build();
+  try {
+    assert.deepEqual(h.circuitBreakers, [breaker]);
+    assert.ok(!(h.agent.currentMainLlm instanceof CircuitBreakerLlm));
+  } finally {
+    await h.close();
+  }
 });

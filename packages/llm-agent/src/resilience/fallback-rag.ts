@@ -26,6 +26,11 @@ export class FallbackRag implements IRag, IRagDecorator {
     private readonly embedderBreaker: CircuitBreaker,
   ) {}
 
+  /** The embedder breaker that routes this store to its fallback (read-only). */
+  get breaker(): CircuitBreaker {
+    return this.embedderBreaker;
+  }
+
   /** The decorated (primary) store — IRagDecorator, so a strategy brand under it stays visible. */
   get inner(): IRag {
     return this.primary;

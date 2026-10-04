@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ToolCatalogStatus } from '@mcp-abap-adt/llm-agent';
+import {
+  CircuitBreaker,
+  type ToolCatalogStatus,
+} from '@mcp-abap-adt/llm-agent';
 import type { HealthCheckerDeps } from './health-checker.js';
 import { HealthChecker } from './health-checker.js';
 
@@ -84,5 +87,22 @@ describe('HealthChecker tool catalog', () => {
     ).check();
     assert.equal(noReporter.status, 'healthy');
     assert.equal(noReporter.components.toolCatalog, undefined);
+  });
+});
+
+describe('HealthChecker circuit breakers', () => {
+  it('re-reads a breaker provider on every check', async () => {
+    const list: CircuitBreaker[] = [];
+    const checker = new HealthChecker({
+      ...deps(makeAgent(undefined)),
+      circuitBreakers: () => list,
+    });
+    assert.equal((await checker.check()).status, 'healthy');
+    const cb = new CircuitBreaker({ failureThreshold: 1 });
+    cb.recordFailure();
+    list.push(cb);
+    const s = await checker.check();
+    assert.equal(s.status, 'degraded');
+    assert.equal(s.circuitBreakers?.length, 1);
   });
 });
