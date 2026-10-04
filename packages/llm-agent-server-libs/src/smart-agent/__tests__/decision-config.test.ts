@@ -20,11 +20,10 @@ function resolve(text: string) {
   );
 }
 
-describe('decision: / reranker: resolution', () => {
+describe('decision: resolution', () => {
   it('absent sections stay absent', () => {
     const cfg = resolve('');
     assert.equal('decision' in cfg, false);
-    assert.equal('reranker' in cfg, false);
   });
 
   it('copies named fields only; absent optionals stay absent', () => {
@@ -43,8 +42,6 @@ describe('decision: / reranker: resolution', () => {
         '  baseUrl: https://proxy.example',
         '  timeoutMs: 5000',
         '  maxRetries: 0',
-        'reranker:',
-        '  type: decision',
         '',
       ].join('\n'),
     );
@@ -56,10 +53,9 @@ describe('decision: / reranker: resolution', () => {
       timeoutMs: 5000,
       maxRetries: 0,
     });
-    assert.deepEqual(cfg.reranker, { type: 'decision' });
   });
 
-  it('a decision: section without reranker: is valid', () => {
+  it('a decision: section alone is valid', () => {
     assert.doesNotThrow(() => resolve('decision:\n  provider: typesafe\n'));
   });
 });
@@ -139,7 +135,7 @@ describe('decision.model / decision.baseUrl through ${VAR}', () => {
   });
 });
 
-describe('decision: / reranker: validation', () => {
+describe('decision: validation', () => {
   for (const [yaml, re] of [
     ['decision:\n  model: x\n', /decision\.provider/],
     ['decision:\n  provider: openai\n', /decision\.provider/],
@@ -170,14 +166,6 @@ describe('decision: / reranker: validation', () => {
     [
       'decision:\n  provider: typesafe\n  maxRetries: -1\n',
       /decision\.maxRetries/,
-    ],
-    [
-      'decision:\n  provider: typesafe\nreranker:\n  type: llm\n',
-      /reranker\.type/,
-    ],
-    [
-      'reranker:\n  type: decision\n',
-      /reranker\.type: decision requires a decision: section/,
     ],
   ] as const) {
     it(`rejects ${JSON.stringify(yaml)}`, () => {

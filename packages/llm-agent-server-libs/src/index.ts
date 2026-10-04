@@ -11,7 +11,7 @@ export * from './smart-agent/build-stepper-root.js';
 export * from './smart-agent/config.js';
 export type {
   SmartServerDecisionConfig,
-  SmartServerRerankerConfig,
+  SmartServerRetrievalConfig,
 } from './smart-agent/decision-config.js';
 export * from './smart-agent/jsonl-knowledge-backend.js';
 export * from './smart-agent/mcp/mcp-clients-with-descriptors.js';

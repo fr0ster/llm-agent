@@ -8,6 +8,7 @@
  * `credentialRef` is a NAME the composition root resolves — never a value.
  */
 import type { IRetrievalEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { SmartServerRetrievalConfig } from './decision-config.js';
 
 /**
  * The in-memory store. The search knobs live here because this is the only store
@@ -161,6 +162,8 @@ export interface SmartServerRagConfig {
   store: SmartServerRagStoreConfig;
   /** Absent → no embedder: only an in-memory store works without one (keyword-only). */
   embedder?: SmartServerEmbedderConfig;
+  /** Per-store retrieval strategy, keyed by store key; a store not listed uses embedding. */
+  retrieval?: Record<string, SmartServerRetrievalConfig>;
 }
 
 /**

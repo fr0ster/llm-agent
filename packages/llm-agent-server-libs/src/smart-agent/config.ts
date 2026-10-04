@@ -17,7 +17,6 @@ import {
   resolvePipelineSelection,
   resolvePromptsSection,
   resolveRagSection,
-  resolveRerankerSection,
 } from './resolve-config-sections.js';
 import { parseSkillPluginsConfig } from './skill-plugins-config.js';
 import type {
@@ -96,6 +95,12 @@ function resolveWorkerConfig(
   env: NodeJS.ProcessEnv,
   subConfigPath: string,
 ): SmartServerWorkerConfig {
+  // Strategies are server-wide (§13.4): never silently ignored in a worker.
+  if (get(subYaml, 'rag', 'retrieval') !== undefined) {
+    throw new Error(
+      `subagent '${name}' rag.retrieval: strategies are server-wide — set them in the main config's rag.retrieval`,
+    );
+  }
   const { llm: rawLlm, ...withoutLlm } = subYaml;
   const llm = parseWorkerLlm(name, rawLlm);
   const { llm: _none, ...rest } = resolveSmartServerConfig(
@@ -289,10 +294,6 @@ export function resolveSmartServerConfig(
     ...(() => {
       const decision = resolveDecisionSection(yaml);
       return decision ? { decision } : {};
-    })(),
-    ...(() => {
-      const reranker = resolveRerankerSection(yaml);
-      return reranker ? { reranker } : {};
     })(),
   };
   validateResolvedConfig(resolved, yaml, env, {

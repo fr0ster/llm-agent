@@ -11,10 +11,17 @@ export interface SmartServerDecisionConfig {
   maxRetries?: number;
 }
 
-/** `reranker:` — which reranker the server wires into its agents. */
-export interface SmartServerRerankerConfig {
-  /** `decision` uses the model of the `decision:` section. */
-  type: 'decision';
+/** One entry of `rag.retrieval` — the retrieval strategy of one store. */
+export interface SmartServerRetrievalConfig {
+  strategy: 'embedding' | 'rerank' | 'rerank-all';
+  /** Required for `rerank` / `rerank-all`; `decision` uses the `decision:` section. */
+  reranker?: 'decision' | 'llm';
+  /** Key of the llm: map entry; required for reranker: llm. */
+  llm?: string;
+  question?: 'tool' | 'passage';
+  task?: string;
+  overfetch?: number;
+  maxCandidates?: number;
 }
 
 /**

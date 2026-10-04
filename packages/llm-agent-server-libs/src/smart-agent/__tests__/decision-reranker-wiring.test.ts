@@ -36,8 +36,6 @@ rag:
 `;
 const YAML = `${BASE_YAML}decision:
   provider: typesafe
-reranker:
-  type: decision
 `;
 const QUERY = 'find the passage';
 const stubEmbedder = {
@@ -123,59 +121,6 @@ function post(port: number, path: string, body: unknown): Promise<number> {
 }
 
 describe('decision reranker wiring (§7.4)', () => {
-  it('HTTP: a chat request on a session reaches the decision model', async () => {
-    const { model, seen } = recordingModel();
-    const server = new SmartServer(
-      { ...configFrom(YAML), pluginLoader: noPlugins },
-      {
-        ...constructionSeams,
-        makeRag,
-        embedder: stubEmbedder,
-        makeDecisionModel: async () => model,
-      },
-    );
-    const handle = await server.start();
-    try {
-      const status = await post(handle.port, '/v1/chat/completions', {
-        model: 'gpt-4o',
-        messages: [{ role: 'user', content: QUERY }],
-      });
-      assert.equal(status, 200);
-      assert.ok(seen.length >= 1, 'the per-session agent must rerank');
-      assert.equal(seen[0].state, QUERY);
-      assert.deepEqual(
-        passagesOf(seen[0]),
-        HITS.map((h) => h.text),
-      );
-    } finally {
-      await handle.close();
-    }
-  });
-
-  it('embedded buildAgent(): the same YAML reaches the decision model', async () => {
-    const { model, seen } = recordingModel();
-    const { agent, close } = await buildAgent(
-      { ...configFrom(YAML), pluginLoader: noPlugins },
-      {
-        ...constructionSeams,
-        makeRag,
-        embedder: stubEmbedder,
-        makeDecisionModel: async () => model,
-      },
-    );
-    try {
-      await agent.process(QUERY);
-      assert.ok(seen.length >= 1, 'the embedded agent must rerank');
-      assert.equal(seen[0].state, QUERY);
-      assert.deepEqual(
-        passagesOf(seen[0]),
-        HITS.map((h) => h.text),
-      );
-    } finally {
-      await close();
-    }
-  });
-
   it('regression: a plugin reranker reaches the session agent', async () => {
     const calls: Array<{ query: string; texts: string[] }> = [];
     const plugin: IReranker = {

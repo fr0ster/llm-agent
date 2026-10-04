@@ -12,7 +12,7 @@ import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
 import {
   parseIntegerField,
   type SmartServerDecisionConfig,
-  type SmartServerRerankerConfig,
+  type SmartServerRetrievalConfig,
 } from './decision-config.js';
 import { optionalNumber } from './llm-config-map.js';
 import type {
@@ -331,7 +331,36 @@ export function resolveRagSection(
     !Array.isArray(embedder)
       ? { embedder: resolveRagEmbedder(embedder as Record<string, unknown>) }
       : {}),
+    ...resolveRetrieval(get(yaml, 'rag', 'retrieval')),
   };
+}
+
+/** `rag.retrieval` → entry by entry, named fields only; null/absent → absent. */
+function resolveRetrieval(raw: unknown): {
+  retrieval?: Record<string, SmartServerRetrievalConfig>;
+} {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const retrieval: Record<string, SmartServerRetrievalConfig> = {};
+  for (const [key, e] of Object.entries(raw as Record<string, unknown>)) {
+    // checkRetrieval already refused anything that is not a valid mapping.
+    const r = e as Record<string, unknown>;
+    const overfetch = parseIntegerField(r.overfetch);
+    const maxCandidates = parseIntegerField(r.maxCandidates);
+    retrieval[key] = {
+      strategy: r.strategy as SmartServerRetrievalConfig['strategy'],
+      ...(r.reranker != null
+        ? { reranker: r.reranker as 'decision' | 'llm' }
+        : {}),
+      ...(typeof r.llm === 'string' ? { llm: r.llm } : {}),
+      ...(r.question != null
+        ? { question: r.question as 'tool' | 'passage' }
+        : {}),
+      ...(typeof r.task === 'string' ? { task: r.task } : {}),
+      ...(typeof overfetch === 'number' ? { overfetch } : {}),
+      ...(typeof maxCandidates === 'number' ? { maxCandidates } : {}),
+    };
+  }
+  return { retrieval };
 }
 
 /** Namespace-prefix label charset — mirrors IToolNamespace's exposed-name
@@ -637,13 +666,4 @@ export function resolveDecisionSection(
   const maxRetries = parseIntegerField(raw.maxRetries);
   if (typeof maxRetries === 'number') out.maxRetries = maxRetries;
   return out;
-}
-
-/** `reranker:` → `{ type }`, or undefined when absent. */
-export function resolveRerankerSection(
-  yaml: YamlConfig,
-): SmartServerRerankerConfig | undefined {
-  const raw = get(yaml, 'reranker') as Record<string, unknown> | undefined;
-  if (raw === undefined || raw === null) return undefined;
-  return { type: raw.type } as SmartServerRerankerConfig;
 }

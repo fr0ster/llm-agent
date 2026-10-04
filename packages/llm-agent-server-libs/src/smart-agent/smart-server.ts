@@ -246,8 +246,6 @@ export interface SmartServerConfig {
   rag?: SmartServerRagConfig;
   /** Decision model (`decision:`); built only when a consumer (the reranker) asks. */
   decision?: SmartServerDecisionConfig;
-  /** Reranker selection (`reranker:`). Conflicts with a plugin reranker. */
-  reranker?: SmartServerRerankerConfig;
   mcp?: SmartServerMcpConfig | SmartServerMcpConfig[];
   agent?: SmartServerAgentConfig;
   prompts?: SmartServerPromptsConfig;
@@ -521,10 +519,7 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
-import type {
-  SmartServerDecisionConfig,
-  SmartServerRerankerConfig,
-} from './decision-config.js';
+import type { SmartServerDecisionConfig } from './decision-config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
 import { llmKeySet, optionalNumber } from './llm-config-map.js';
 import {
@@ -1224,9 +1219,6 @@ export class SmartServer {
     // buildAgent() — and applied by buildBaseBuilder outside the
     // applyServerExtras gate, so per-session agents get it too.
     this._reranker = await resolveReranker({
-      rerankerCfg: this.cfg.reranker,
-      decisionCfg: this.cfg.decision,
-      makeDecisionModel: this._deps.makeDecisionModel,
       pluginReranker: plugins.reranker,
     });
 
