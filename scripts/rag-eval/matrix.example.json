@@ -24,6 +24,17 @@
       }
     },
     {
+      "name": "in-memory-aicore-ada",
+      "store": { "type": "in-memory" },
+      "embedder": {
+        "provider": "sap-ai-core",
+        "model": "text-embedding-ada-002",
+        "scenario": "foundation-models",
+        "resourceGroup": "default",
+        "credentialRef": "AICORE"
+      }
+    },
+    {
       "name": "qdrant-ollama",
       "store": {
         "type": "qdrant",
