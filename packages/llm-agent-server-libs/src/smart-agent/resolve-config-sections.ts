@@ -621,11 +621,16 @@ export function resolveDecisionSection(
   const raw = get(yaml, 'decision') as Record<string, unknown> | undefined;
   if (raw === undefined || raw === null) return undefined;
   const out = { provider: raw.provider } as SmartServerDecisionConfig;
-  if (raw.model !== undefined) out.model = String(raw.model);
+  // An empty YAML value (`model:`) parses as null: absent, never the string "null".
+  if (raw.model !== undefined && raw.model !== null) {
+    out.model = String(raw.model);
+  }
   if (raw.credentialRef !== undefined) {
     out.credentialRef = raw.credentialRef as string;
   }
-  if (raw.baseUrl !== undefined) out.baseUrl = String(raw.baseUrl);
+  if (raw.baseUrl !== undefined && raw.baseUrl !== null) {
+    out.baseUrl = String(raw.baseUrl);
+  }
   // Invalid values are left out here; the validator (same parser) reports them.
   const timeoutMs = parseIntegerField(raw.timeoutMs);
   if (typeof timeoutMs === 'number') out.timeoutMs = timeoutMs;

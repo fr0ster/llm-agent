@@ -204,3 +204,14 @@ describe('decision: / reranker: validation', () => {
     );
   });
 });
+
+describe('decision: empty YAML values (null) are absent, never the string "null"', () => {
+  it('model: / baseUrl: left empty resolve to absent fields', () => {
+    const cfg = resolve(
+      'decision:\n  provider: typesafe\n  model:\n  baseUrl:\n',
+    );
+    assert.deepEqual(cfg.decision, { provider: 'typesafe' });
+    assert.equal('model' in (cfg.decision ?? {}), false);
+    assert.equal('baseUrl' in (cfg.decision ?? {}), false);
+  });
+});
