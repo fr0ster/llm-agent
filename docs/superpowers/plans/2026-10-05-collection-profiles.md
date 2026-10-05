@@ -3520,7 +3520,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Fail-loud tasks 4F–4O — overview
 
-Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), §13 (behaviour table B1–B17; B16 is D79, Task 19B; B17 is V10, Task 4M). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR"; the user's decisions of 2026-10-05 on U1–U10. These twelve tasks (4F–4Q) run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
+Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), §13 (behaviour table B1–B18; B16 is D79, Task 19B; B17 is V10, Task 4M; B18 is D81, Task 4M). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR"; the user's decisions of 2026-10-05 on U1–U10. These twelve tasks (4F–4Q) run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
 
 **The same discipline in every task (TDD per item):**
 1. a failing test that shows today's fake success — the empty stream, the `ok: true` with original text, the skipped store, the 200;
@@ -4144,7 +4144,7 @@ A test that relied on the carry-forward without passing `strict` now passes `str
 
 ## Task 4M: Server (server-libs + server)
 
-Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28), §10.5.6 L7 (models route), §13 B10, B17; §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
+Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28; the startup agent's update inside V10's rollback and an atomic `SmartAgent.reconfigure` are D81, spec §17.29), §10.5.6 L7 (models route), §13 B10, B17, B18; §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` (~90), `controller/session-bundle.ts` (~57), `controller/run-scope.ts` (~79), `controller/artifacts.ts` (~261), `smart-server.ts` (~3112 session meta), `config-reload-watcher.ts` (~132), `tools-rag-handle.ts` (~90 eager load), `build-stepper-root.ts` (~97, ~234), `http/models-route-handler.ts` (~17, ~48)
@@ -4152,6 +4152,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-failure.test.ts` (V6), `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/models-route-fail-loud.test.ts`; extend `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts`; modify `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-weights.test.ts` (V6: `snapshotConfig`, awaited reloads)
 - Modify (U10): `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (the worker wire, ~2240–2262); Create `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-shared-clients-log.test.ts`
 - Create (D80, V10): `packages/llm-agent-server-libs/src/smart-agent/config-transaction-queue.ts` (the server's one config queue); Modify: `packages/llm-agent-server-libs/src/smart-agent/http/config-route-handler.ts` (`IConfigUpdateTarget.transactions` / `snapshotConfig`, the `PUT` transaction), `packages/llm-agent-server-libs/src/smart-agent/llm/llm-circuit-breakers.ts` (`snapshot()`), `smart-server.ts` (the `_configTransactions` field, the watcher's and the route's deps)
+- Modify (D81): `packages/llm-agent-libs/src/agent.ts` (`SmartAgent.reconfigure`, ~336–365: atomic); extend `packages/llm-agent-libs/src/__tests__/reconfigure.test.ts`
 - Create (V10): `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/config-route-transactions.test.ts`; extend `packages/llm-agent-server-libs/src/smart-agent/__tests__/llm-circuit-breakers.test.ts` (`snapshot()`). The real-server PUT tests (`config-endpoints.test.ts`, `smart-server-config-reload.test.ts`) are unchanged and must stay green (their drains and invalidations succeed)
 
 - [ ] **Step 1: Write the failing tests**
@@ -4311,6 +4312,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     import type { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
     import { ConfigReloadWatcher } from '../../config-reload-watcher.js';
     import { ConfigTransactionQueue } from '../../config-transaction-queue.js';
+    import { LlmCircuitBreakers } from '../../llm/llm-circuit-breakers.js';
     import { handleConfigUpdate, type IConfigUpdateTarget } from '../config-route-handler.js';
 
     function deferred() {
@@ -4330,8 +4332,10 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
 
     /**
      * One server's state, reached by both paths: the startup agent's config, the
-     * server's mirror (`cfg.agent`) and its held main LLM. Every drain — the
-     * reload's and the PUT's — is a fresh deferred in `drains`.
+     * server's mirror (`cfg.agent`), its held main LLM and that LLM's breaker (a
+     * real `LlmCircuitBreakers`, as the server's). Every drain — the reload's and
+     * the PUT's — is a fresh deferred in `drains`. `failReconfigure` makes the
+     * startup agent's `reconfigure` throw (D81).
      */
     function harness(t: { after(fn: () => void): void }) {
       const dir = mkdtempSync(join(tmpdir(), 'config-tx-'));
@@ -4339,10 +4343,11 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       const configFile = join(dir, 'smart-server.yaml');
       writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
       const queue = new ConfigTransactionQueue();
+      const breakers = new LlmCircuitBreakers({});
       const state = {
         agent: { maxIterations: 10 } as Record<string, unknown>,
         mirror: { maxIterations: 10 } as Record<string, unknown>,
-        heldMain: { model: 'm0' } as unknown as ILlm,
+        heldMain: breakers.wrap({ model: 'm0' } as unknown as ILlm, 'main'),
       };
       const agentCalls: string[] = [];
       const drains: ReturnType<typeof deferred>[] = [];
@@ -4352,6 +4357,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         return d.promise;
       };
       let invalidate: () => Promise<void> = async () => {};
+      let reconfigureError: Error | undefined;
       const agent = {
         applyConfigUpdate: (patch: Record<string, unknown>) => {
           agentCalls.push('applyConfigUpdate');
@@ -4359,6 +4365,9 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         },
         reconfigure: () => {
           agentCalls.push('reconfigure');
+          // A real SmartAgent's reconfigure is atomic (D81, tested in libs'
+          // reconfigure.test.ts): a throw leaves the agent as it was.
+          if (reconfigureError) throw reconfigureError;
         },
         getActiveConfig: () => ({ mainModel: state.heldMain.model }),
         getAgentConfig: () => ({ ...state.agent }),
@@ -4367,8 +4376,8 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         modelResolver: { resolve: async (name: string) => ({ model: name }) as unknown as ILlm },
         skipModelValidation: true,
         setMainLlm: (llm) => {
-          state.heldMain = llm;
-          return llm;
+          state.heldMain = breakers.wrap(llm, 'main');
+          return state.heldMain;
         },
         setClassifierLlm: (llm) => llm,
         setHelperLlm: (llm) => llm,
@@ -4381,9 +4390,11 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         snapshotConfig: () => {
           const mirror = state.mirror;
           const heldMain = state.heldMain;
+          const restoreBreakers = breakers.snapshot();
           return () => {
             state.mirror = mirror;
             state.heldMain = heldMain;
+            restoreBreakers();
           };
         },
       };
@@ -4435,7 +4446,10 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
           throw err;
         };
       };
-      return { state, agentCalls, drains, events, reload, put, failInvalidation };
+      const failReconfigure = (err: Error | undefined) => {
+        reconfigureError = err;
+      };
+      return { state, breakers, agentCalls, drains, events, reload, put, failInvalidation, failReconfigure };
     }
 
     test('D80/V10: a PUT waits for a reload in flight; the reload fails after the PUT was queued → the reload restored, then the PUT applied', async (t) => {
@@ -4521,8 +4535,118 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       assert.deepEqual(h.agentCalls, ['reconfigure', 'applyConfigUpdate']);
       assert.equal(h.state.mirror.maxIterations, 25);
     });
+
+    test("V10/D81: a PUT whose startup-agent reconfigure throws → 500 naming it; the held model, breakers and config restored; the next PUT applies", async (t) => {
+      const h = harness(t);
+      const heldBefore = h.state.heldMain;
+      const breakersBefore = [...h.breakers.list()];
+      h.failReconfigure(new Error('pipeline swap failed'));
+      const a = h.put({ models: { mainModel: 'm1' }, agent: { maxIterations: 25 } });
+      await settle();
+      h.drains[0].resolve();
+      await a.done;
+      assert.equal(a.reply.status, 500);
+      const error = JSON.parse(a.reply.body ?? '{}').error;
+      assert.equal(error.type, 'server_error');
+      assert.match(
+        error.message,
+        /config update failed, the previous config is kept — startup agent: Error: pipeline swap failed/,
+      );
+      assert.equal(h.state.heldMain, heldBefore, 'the held model restored');
+      assert.deepEqual(h.breakers.list(), breakersBefore, 'the breakers restored');
+      assert.deepEqual(h.state.mirror, { maxIterations: 10 }, 'the mirror restored');
+      assert.equal(h.state.agent.maxIterations, 10, "the startup agent's config untouched");
+      assert.deepEqual(h.agentCalls, ['reconfigure'], 'applyConfigUpdate never called');
+      // The next transaction snapshots the restored config and applies.
+      h.failReconfigure(undefined);
+      const b = h.put({ models: { mainModel: 'm2' }, agent: { maxIterations: 40 } });
+      await settle();
+      h.drains[1].resolve();
+      await b.done;
+      assert.equal(b.reply.status, 200);
+      assert.deepEqual(JSON.parse(b.reply.body ?? '{}'), {
+        models: { mainModel: 'm2' },
+        agent: { maxIterations: 40 },
+      });
+      assert.deepEqual(h.agentCalls, ['reconfigure', 'reconfigure', 'applyConfigUpdate']);
+      assert.equal(h.state.mirror.maxIterations, 40);
+      assert.equal(h.breakers.list().length, 1, "one key, the PUT's main LLM");
+    });
     ```
-    Today: the file fails at the import of `../../config-transaction-queue.js`; without the queue and the restore, the first test fails at `h.drains.length` (the PUT applies and drains at once), the third rejects (the drain's error escapes the handler — on a server the catch-all answers 500) with the mirror left at 25, the fourth gets 200 (the invalidation swallowed).
+    Today: the file fails at the import of `../../config-transaction-queue.js`; without the queue and the restore, the first test fails at `h.drains.length` (the PUT applies and drains at once), the third rejects (the drain's error escapes the handler — on a server the catch-all answers 500) with the mirror left at 25, the fourth gets 200 (the invalidation swallowed), the last (D81) rejects (the `reconfigure` error escapes the handler) with the mirror left at 25 and the held model `m1`.
+  - **D81 — `SmartAgent.reconfigure` is atomic** (`packages/llm-agent-libs/src/__tests__/reconfigure.test.ts`, appended; add `import type { IPipeline } from '../interfaces/pipeline.js';` to its imports — `SmartAgent`, `makeDefaultDeps`, `makeLlm`, `describe`, `it` and `assert` are imported already):
+    ```ts
+    describe('SmartAgent.reconfigure — atomic (spec V10, D81)', () => {
+      function named(model: string) {
+        const llm = makeLlm([{ content: model }]);
+        Object.defineProperty(llm, 'model', { value: model });
+        return llm;
+      }
+
+      /** An agent whose pipeline has only the reconfigure hook (the constructor reads nothing else of it). */
+      function agentWithHook() {
+        const { deps } = makeDefaultDeps();
+        const hook = { calls: 0, error: undefined as Error | undefined };
+        const pipeline = {
+          reconfigure() {
+            hook.calls++;
+            if (hook.error) throw hook.error;
+          },
+        } as unknown as IPipeline;
+        const oldMain = named('old-main');
+        const agent = new SmartAgent(
+          {
+            ...deps,
+            mainLlm: oldMain,
+            helperLlm: named('old-helper'),
+            classifierLlm: named('old-classifier'),
+            pipeline,
+          },
+          { maxIterations: 5 },
+        );
+        return { agent, hook, oldMain };
+      }
+
+      const classifierOf = (agent: SmartAgent) =>
+        (agent as unknown as { _classifier: unknown })._classifier;
+
+      it('a pipeline hook that throws after a model swap → rethrown; the previous LLMs and classifier kept; nothing else called', () => {
+        const { agent, hook, oldMain } = agentWithHook();
+        const classifierBefore = classifierOf(agent);
+        hook.error = new Error('pipeline swap failed');
+        assert.throws(
+          () =>
+            agent.reconfigure({
+              mainLlm: named('new-main'),
+              helperLlm: named('new-helper'),
+              classifierLlm: named('new-classifier'),
+            }),
+          /pipeline swap failed/,
+        );
+        assert.equal(agent.currentMainLlm, oldMain);
+        assert.deepEqual(agent.getActiveConfig(), {
+          mainModel: 'old-main',
+          classifierModel: 'old-classifier',
+          helperModel: 'old-helper',
+        });
+        assert.equal(classifierOf(agent), classifierBefore, 'the classifier restored');
+        assert.equal(hook.calls, 1, 'the hook is not called again to undo');
+      });
+
+      it('a later reconfigure whose hook succeeds applies', () => {
+        const { agent, hook } = agentWithHook();
+        hook.error = new Error('pipeline swap failed');
+        assert.throws(() => agent.reconfigure({ mainLlm: named('new-main') }), /pipeline swap failed/);
+        hook.error = undefined;
+        const next = named('next-main');
+        agent.reconfigure({ mainLlm: next });
+        assert.equal(agent.currentMainLlm, next);
+        assert.equal(agent.getActiveConfig().helperModel, 'old-helper', 'a role not in the update kept');
+        assert.equal(hook.calls, 2);
+      });
+    });
+    ```
+    Today: the first case fails at `agent.currentMainLlm` (`new-main` — the fields were swapped before the hook threw); the second passes (pinned).
   - **V10 — the breakers follow a restore** (`llm-circuit-breakers.test.ts`, appended inside `describe('LlmCircuitBreakers', …)`):
     ```ts
     it('snapshot(): the restore puts every key back to its breaker — a swapped key and a key added later (V10)', () => {
@@ -4672,6 +4796,65 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     (`SmartServerPromptsConfig` is declared in `smart-server.ts`; `getAgentConfig()` returns only fields of `SmartAgentConfig`, so the spread type-checks against `applyConfigUpdate(Partial<SmartAgentConfig>)` — after Task 4Q it no longer carries `toolUnavailableTtlMs`, and the restore follows without an edit.)
   - `smart-server.ts`: the field `private readonly _configTransactions = new ConfigTransactionQueue();` (beside `_workers`; `import { ConfigTransactionQueue } from './config-transaction-queue.js';`), and the `new ConfigReloadWatcher({` deps gain `transactions: this._configTransactions,` (after `snapshotConfig`).
 
+  **D81 — `SmartAgent.reconfigure` is atomic (`packages/llm-agent-libs/src/agent.ts`, ~336–365; signature unchanged).** The method body becomes:
+    ```ts
+    reconfigure(update: SmartAgentReconfigureOptions): void {
+      // Atomic (spec §10.5.9 V10, D81): everything that can be built is built
+      // before anything is assigned; the previous fields are kept; when the
+      // pipeline hook throws they are put back — nothing else is called — and
+      // the error is rethrown, so the agent and its pipeline never disagree.
+      const classifier = update.classifierLlm
+        ? new LlmClassifier(
+            update.classifierLlm,
+            this.deps.classifierConfig,
+            this.requestLogger,
+          )
+        : undefined;
+      const previous = {
+        mainLlm: this._mainLlm,
+        helperLlm: this._helperLlm,
+        classifierLlm: this._classifierLlm,
+        classifier: this._classifier,
+      };
+      if (update.mainLlm) {
+        this._mainLlm = update.mainLlm;
+      }
+      if (update.helperLlm) {
+        this._helperLlm = update.helperLlm;
+      }
+      if (update.classifierLlm && classifier) {
+        this._classifierLlm = update.classifierLlm;
+        this._classifier = classifier;
+      }
+      try {
+        // Propagate the swap into the structured pipeline (when configured via the
+        // Builder). The pipeline keeps its own deps snapshot and derives the usage
+        // `byModel` key from `ctx.mainLlm.model`; without this, post-swap requests
+        // would keep being logged under the INITIAL model (issue #164).
+        this.deps.pipeline?.reconfigure?.({
+          mainLlm: update.mainLlm,
+          helperLlm: update.helperLlm,
+          classifierLlm: update.classifierLlm,
+        });
+      } catch (err) {
+        this._mainLlm = previous.mainLlm;
+        this._helperLlm = previous.helperLlm;
+        this._classifierLlm = previous.classifierLlm;
+        this._classifier = previous.classifier;
+        throw err;
+      }
+    }
+    ```
+    Its doc comment gains, after "Reconfigured LLMs do not inherit builder-time wrappers …":
+    ```ts
+       * **Atomic:** when the pipeline's `reconfigure` hook throws, the agent's
+       * previous LLMs (and classifier) are restored and the error is rethrown —
+       * nothing is half-applied. The hook is synchronous
+       * (`IPipeline.reconfigure?(…): void`); a pipeline that changed its own
+       * state before throwing restores that itself.
+    ```
+    and the hook's doc comment in `interfaces/pipeline.ts` (~204) gains ` * A throw makes SmartAgent.reconfigure() restore the agent's previous LLMs and rethrow.` The one production caller is `applyConfigTransaction` (below); the success path is unchanged.
+
   **V10 (spec D80 extended, §17.28) — `PUT /v1/config` is one transaction in the same queue:**
   - `llm/llm-circuit-breakers.ts`, `LlmCircuitBreakers` gains (after `list()`):
     ```ts
@@ -4731,8 +4914,10 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
      * server's config queue. The server's state (the held LLMs, `cfg.agent`) is
      * applied first: it is what the drain, the invalidation and every rebuild
      * read. The startup agent changes only after both succeeded — a SmartAgent
-     * cannot be restored exactly (no getter for its LLMs; `reconfigure` cannot
-     * unset a role). A failed drain or invalidation restores the snapshot.
+     * cannot be restored from outside (no getter for its LLMs; `reconfigure`
+     * cannot unset a role) — and still inside the rollback (D81): its
+     * `reconfigure` is atomic, so a throw leaves it as it was. A failed drain,
+     * invalidation or startup-agent update restores the snapshot.
      */
     async function applyConfigTransaction(
       body: Record<string, unknown>,
@@ -4778,8 +4963,20 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
             message: `config update failed, the previous config is kept — ${failures.join('; ')}`,
           };
         }
-        if (resolvedModels) smartAgent.reconfigure(held);
-        if (patch) smartAgent.applyConfigUpdate(patch);
+        // The startup agent last, inside the rollback (spec V10, D81): an atomic
+        // `reconfigure` first (a throwing pipeline hook leaves the agent's LLMs
+        // as they were), then `applyConfigUpdate` — a spread that cannot fail —
+        // only after it succeeded.
+        try {
+          if (resolvedModels) smartAgent.reconfigure(held);
+          if (patch) smartAgent.applyConfigUpdate(patch);
+        } catch (err) {
+          restore();
+          return {
+            ok: false,
+            message: `config update failed, the previous config is kept — startup agent: ${String(err)}`,
+          };
+        }
       }
       return { ok: true, models: smartAgent.getActiveConfig(), agent: smartAgent.getAgentConfig() };
     }
@@ -4816,10 +5013,11 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
 git grep -n "rag_hydration_failed\|emptyBundle\|STUB_LLM_CFG\|smart-agent'\|config_reload_drain_error\|config_reload_invalidate_error\|tools_catalog_eager_load_failed\|could not load env file" -- 'packages/llm-agent-server-libs/src' 'packages/llm-agent-server/src'
 git grep -n "new ConfigReloadWatcher(" -- 'packages/llm-agent-server-libs/src'   # every hit passes `transactions` (V6, D80)
 git grep -n "_reloadTail\|dispose hiccup" -- 'packages/llm-agent-server-libs/src'   # expect no hits (the queue is the server's; the swallowed invalidation is gone, V10)
-npx tsc -b packages/llm-agent-server-libs packages/llm-agent-server
-npm test --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
+npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server
+npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
 ```
-- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed reload, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change (D80, V10); a worker on the parent's clients is logged (U10)` (with the two trailers).
+(libs is in the gate for D81: `agent.ts` and its `reconfigure.test.ts`, `handle-hotswap.test.ts` and `issue-164-hotswap-usage-model.test.ts` — the success path, unchanged, must stay green.)
+- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed reload, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change, the startup agent's atomic reconfigure inside its rollback (D80, D81, V10); a worker on the parent's clients is logged (U10)` (with the two trailers).
 
 ---
 
@@ -19948,10 +20146,10 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 #     tools: { variant: faceted-rerank, poolItems: 30 }   # poolItems: your number
 ```
 
-- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B17)**
+- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B18)**
 
 - `docs/INTEGRATION.md` (~347, `upsertManyPrecomputedRaw`): add that a failed bulk call fails the startup catalog — no per-tool retry; the status reports `complete: false` and `writeFailure` (D79, B16).
-- `docs/INTEGRATION.md` (`### Runtime config endpoints`, ~271): `PUT /v1/config` and a hot reload of `smart-server.yaml` run one at a time (one queue: a `PUT` waits for a reload or another `PUT` in flight); a failed worker drain or session invalidation answers **500** `server_error` naming it and keeps the previous config — nothing of the update is applied; send the `PUT` again once the cause is fixed (D80, V10, B17). `docs/DEPLOYMENT.md` (the hot-reload section, ~390–418): reloads and `PUT`s share that queue, and a reload whose drain or invalidation fails keeps the previous config and logs `config_reload_failed` (B10). `docs/EXAMPLES.md` (~844) and `docs/QUICK_START.md` (~163): the `PUT /v1/config` row adds "500 and nothing applied when the worker drain or session invalidation fails".
+- `docs/INTEGRATION.md` (`### Runtime config endpoints`, ~271): `PUT /v1/config` and a hot reload of `smart-server.yaml` run one at a time (one queue: a `PUT` waits for a reload or another `PUT` in flight); a failed worker drain, session invalidation or startup-agent update (the pipeline's `reconfigure` hook) answers **500** `server_error` naming it and keeps the previous config — nothing of the update is applied; send the `PUT` again once the cause is fixed (D80, D81, V10, B17). The `SmartAgent.reconfigure` paragraph (or, if none, the `### Runtime config endpoints` section): `reconfigure` is atomic — a throwing pipeline hook restores the previous LLMs and the error is rethrown (D81, B18). `docs/DEPLOYMENT.md` (the hot-reload section, ~390–418): reloads and `PUT`s share that queue, and a reload whose drain or invalidation fails keeps the previous config and logs `config_reload_failed` (B10). `docs/EXAMPLES.md` (~844) and `docs/QUICK_START.md` (~163): the `PUT /v1/config` row adds "500 and nothing applied when the worker drain, the session invalidation or the startup agent's update fails".
 
 - `docs/INTEGRATION.md`: a new `## Errors — fail loud` section (TL;DR first): a stage failure is the stream's last item `{ ok: false, error }` and `process()`'s result; the error carries the failing component's code (table of the codes a consumer meets: `PIPELINE_ERROR`, `MCP_UNAVAILABLE`, `CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `QUERY_EXPAND_ERROR`, `RERANK_ERROR`, `LLM_ERROR`, `SKILL_ERROR`, the `COORDINATOR_*` codes, and `PIPELINE_FAILURE_CODES`); **a degraded mode is your injected strategy** — an `IRag` wrapper (implement `IRagDecorator`), an `IReranker` that answers unranked, `agent.llmCallStrategy: fallback` — with one short example of an `IRag` wrapper; `FallbackQueryEmbedding` stands in only for a pipeline without an embedder. Every existing sentence that says a stage "continues", "skips", "falls back" or "keeps the original" on a failure is rewritten.
 - `docs/ARCHITECTURE.md`: the pipeline section states that a stage error reaches the consumer (executor → `ctx.error` → `pipelineToStream` → `{ ok: false }`).
@@ -20000,7 +20198,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 34: CHANGELOG, migration notes, `CLAUDE.md`
 
-Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B17, incl. the user's U1–U10 decisions and D79, §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
+Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B18, incl. the user's U1–U10 decisions, D79 and D81, §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
 
 **Files:**
 - Modify: `CHANGELOG.md` (`## [Unreleased]`)
@@ -20159,7 +20357,8 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B14 | `lazy`'s factory fails while a `fallback` was given | calls went to the fallback instance | the init error reaches every call (`LazyInitError` with `cause`); the option is removed (line 73) | wrap the proxy yourself for a substitute |
 | B15 | a tool error whose text matches "not found", "permission", … | the tool blocked for the session for 10 min by default | nothing blocked unless a policy is injected; the error reaches the LLM as the tool result | inject `HeuristicToolAvailabilityPolicy({ ttlMs })`, or set `agent.toolUnavailableTtlMs` in the server YAML; `PUT /v1/config` with that key now answers 400 |
 | B16 | a bulk write of the startup tool catalog into a tools store without a profile (`upsertManyPrecomputedRaw` answers `ok: false` or throws) | the tools written again one by one | no per-tool write: the catalog is incomplete (`complete: false`, `ToolCatalogStatus.writeFailure`), the summary log line names it, `/health` answers 503 | fix the store the error names; a store that cannot take a bulk write does not implement `upsertManyPrecomputedRaw` |
-| B17 | `PUT /v1/config` whose worker drain or session invalidation fails | a failed invalidation swallowed (200, the new config); a failed drain → 500, the new config left applied | 500 `server_error` naming the failure; the previous config kept, nothing of the update applied; a `PUT` waits for a reload or another `PUT` in flight | fix what the error names and send the `PUT` again |
+| B17 | `PUT /v1/config` whose worker drain, session invalidation or startup-agent update (the pipeline's `reconfigure` hook) fails | a failed invalidation swallowed (200, the new config); a failed drain → 500, the new config left applied; a failed startup-agent `reconfigure` → 500, the server's new models / config and the agent's swapped LLMs left | 500 `server_error` naming the failure; the previous config kept (held models, breakers, agent fields, mirror, the startup agent's LLMs), nothing of the update applied; a `PUT` waits for a reload or another `PUT` in flight | fix what the error names and send the `PUT` again |
+| B18 | `SmartAgent.reconfigure` whose pipeline's `reconfigure` hook throws | the error rethrown with the agent's LLMs already swapped (agent and pipeline disagree) | the error rethrown; the previous LLMs and classifier restored, nothing else called; signature unchanged | nothing, unless code relied on the half-applied swap — call `reconfigure` again once the hook is fixed |
 
 New codes, in a set of their own: `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`,
 `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) from `@mcp-abap-adt/llm-agent`. Every other error carries the
@@ -20532,6 +20731,12 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 | D80 (extended) | One queue for every config change: the server owns one `ConfigTransactionQueue` and injects it into the reload watcher (`ConfigReloadDeps.transactions`) and the `PUT` route (`IConfigUpdateTarget.transactions`); a `PUT` is one transaction (snapshot after the previous settled → the server's state → drain + invalidation → on success the startup agent and 200; on a failure restore and 500 `server_error` naming it) | Task 4M (`config-transaction-queue.ts`; `_onReload` over the server's queue; V10 in `config-route-handler.ts`, `LlmCircuitBreakers.snapshot()`, the server's `_configTransactions` and `snapshotConfig`; tests in `http/__tests__/config-route-transactions.test.ts` and `llm-circuit-breakers.test.ts`); Task 23A ((10c) on a real server; the watchers in `config-reload-entry.test.ts` get a queue); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/DEPLOYMENT.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`); Task 34 (B17) |
 | D79 (confirmed) | `ToolCatalogStatus.writeFailure?: string` (contract in `@mcp-abap-adt/llm-agent`, set by libs' `vectorizeMcpTools`) approved by the user | Task 19B Steps 6–10 (unchanged) |
 
+## Review finding on 2026-10-06 — the startup agent's update inside the rollback (spec §17.29)
+
+| # | Decision | Done in |
+|---|---|---|
+| D81 | `SmartAgent.reconfigure` is atomic (signature unchanged): previous LLM fields and classifier captured, the new classifier built before any assignment, a throwing pipeline hook → the fields restored, nothing else called, rethrown (B18). `PUT /v1/config`'s startup-agent update (`reconfigure`, then `applyConfigUpdate`) runs inside the transaction's failure handling: a throw restores the server's snapshot (held LLMs, breakers, `cfg.agent`) and answers 500 `server_error` (`… — startup agent: …`). The file reload never calls `reconfigure` (V6 unchanged) | Task 4M (`agent.ts` `reconfigure`, `interfaces/pipeline.ts` doc; `applyConfigTransaction`; tests in libs' `reconfigure.test.ts` and `http/__tests__/config-route-transactions.test.ts`; libs in the gate); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`); Task 34 (B17, B18) |
+
 ## Self-review (done while writing)
 
 - **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename without an alias (§3.8, §13, D30, D58) → 20A; the RAG implementations' move (§11.3, D57) → 1A; no re-exports (§11.4, D59; the pre-existing ones, S12) → 1A, 4B, 4D, 35; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
@@ -20551,3 +20756,4 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for D79 (spec §17.26 — decided by the user on 2026-10-06).** Task 19B gains Steps 6–10, its own TDD cycle after Steps 1–5 in the same function and test file: the failing tests (bulk write `ok: false` / throwing while per-tool writes would succeed → no per-tool write, `complete: false`, `writeFailure`), the optional contract field `ToolCatalogStatus.writeFailure` (every earlier object literal of `ToolCatalogStatus` still compiles; the test file is not type-checked by `tsc -b` — the package excludes tests —, so Step 7 fails on behaviour, not on compile, and Step 8's field makes the tests' `summary?.writeFailure` type-correct for the editor and Biome), the `else` branch in `listAndIndexTools`, the gate (`tsc -b` + the three suites, a grep that the retry test and comment are gone) and a `fix(libs)` commit. Task 19 (the rename to `listAndIndexTools`) and 19A touch no line Step 8 changes; Task 25 (F1) edits the embedder read (~168–171), above it. Task 33 Step 8b and Task 34 (B16) document it.
 - **Rework for D80 (spec §17.27 — review finding of 2026-10-06).** Task 4M: `_onReload` becomes the queued entry point over a promise chain (`_reloadTail`), the D77 transaction moves unchanged to `_applyReload`; the listener and its `config_reload_failed` boundary are unchanged. Two new tests (overlapping reloads with a deferred drain; a failed reload followed by a successful one through the event). Task 23A's entry test moves its `seen` assertion after a turn, since the transaction no longer runs in the emit's call stack; its other assertions and the server's `_onReload` callers are unaffected (still `Promise<void>`). `tsc`: `_reloadTail` is read in `_onReload` (`noUnusedLocals`), `run.then(() => undefined, () => undefined)` is `Promise<void>`.
 - **Rework for D80 extended (spec §17.28 — decided by the user on 2026-10-06).** Task 4M: the queue moves from the watcher (`_reloadTail`) into the server (`ConfigTransactionQueue`, one instance injected into the watcher and the `PUT` route); `PUT /v1/config` becomes one transaction (validation outside the queue; snapshot → the server's state → drain + invalidation → the startup agent and 200, or restore and 500 `server_error`). The startup agent is changed only on success because a `SmartAgent` cannot be restored exactly; the breakers are restored with the LLMs (`LlmCircuitBreakers.snapshot()`, internal). Every `new ConfigReloadWatcher(` in the plan's tests passes `transactions` (the V6 cases, the D80 harness, `watcherOver`, Task 23A's `makeWatcher`); tests run through `tsx` without type-checking, so a missing `transactions` would fail at runtime (`run` of undefined) — the Step 4 grep lists every construction. Compile: `IConfigUpdateTarget` has one implementation (`_configUpdateTarget()`), which gains both members in the same step; `ConfigReloadDeps` has one production construction (`smart-server.ts`), which gains `transactions` in the same step; `ReturnType<SmartAgent['getActiveConfig']>` / `['getAgentConfig']` type the outcome without a new type import. Real-server PUT tests are unchanged (their drains and invalidations succeed).
+- **Rework for D81 (spec §17.29 — review finding of 2026-10-06).** Task 4M: `SmartAgent.reconfigure` (libs `agent.ts`) becomes atomic with its signature kept — the startup agent's update in `applyConfigTransaction` was outside the restore boundary, so a throwing pipeline hook left the server's new held models / mirror / breakers and a half-updated agent behind a 500, and the next transaction snapshotted that. The startup-agent update now runs in a `try` whose `catch` restores the snapshot and answers 500. New tests: two in libs' `reconfigure.test.ts` (hook throws after a swap → old LLMs and classifier kept, hook called once; a later successful call applies) and one in `config-route-transactions.test.ts` (the harness gains a real `LlmCircuitBreakers` and `failReconfigure`: 500 naming the startup agent, held model / breakers / mirror / agent config unchanged, `applyConfigUpdate` never called, the next `PUT` → 200). The gate gains libs. The file-reload path was checked: it calls only `applyConfigUpdate` (no `reconfigure`), so V6 is unchanged. Task 33 Step 8b and Task 34's B17 / new B18 follow.
