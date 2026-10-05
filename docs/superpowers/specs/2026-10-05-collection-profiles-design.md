@@ -35,7 +35,7 @@
 >   decision and the user's of 2026-10-05, D57–D60, §17.18): the RAG implementations' files move
 >   into `llm-agent-rag` now (S10 closed); every renamed or moved name keeps no old name; no package
 >   re-exports another package's names; the user accepts the reload window of replicas over one
->   persistent store (D60). **One spec issue is open for the user (S11, §17.18):** `OllamaRag` in
+>   persistent store (D60). **S11 decided by the user on 2026-10-05 (§17.18):** `OllamaRag` in
 >   `ollama-embedder` extends `VectorRag`, and `llm-agent-rag` depends on `ollama-embedder` — a
 >   package cycle once `VectorRag` lives in `llm-agent-rag`; this spec removes `OllamaRag`.
 >
@@ -212,7 +212,7 @@
 > - **replicas over one persistent store** (D60): each clears and reloads it at its start and the
 >   others read a partial store meanwhile — accepted by the user as the price of the simple corpus
 >   flow; no marker, no coordination;
-> - **S11 open** (§17.18): `OllamaRag` (`ollama-embedder`) extends `VectorRag`; `llm-agent-rag`
+> - **S11 decided — remove** (user, 2026-10-05; §17.18): `OllamaRag` (`ollama-embedder`) extends `VectorRag`; `llm-agent-rag`
 >   depends on `ollama-embedder` (optional peer, `tsconfig` reference), so `ollama-embedder` cannot
 >   import `llm-agent-rag` — a cycle. This spec removes `OllamaRag` (one migration line).
 >
@@ -343,7 +343,7 @@
   this PR; `@mcp-abap-adt/llm-agent` stops exporting them (no aliases, no subpath). Nothing left in
   `llm-agent` imports them, so there is no cycle. Store helpers the store packages below
   `llm-agent-rag` need (`AbstractRagProvider`, the query embeddings, the identity filter) stay in
-  `llm-agent` (§11.3). `OllamaRag` is removed (S11, open for the user, §17.18).
+  `llm-agent` (§11.3). `OllamaRag` is removed (S11, decided by the user, §17.18).
 - **No package re-exports another package's names** (D59): every package, ours included, imports
   a name from the package that owns it (§11.4).
 - **Every part of this design lives in exactly one layer** — the consumer, the llm-agent framework
@@ -4147,7 +4147,7 @@ nothing outside `VectorRag`, the strategies and `llm-agent-rag`'s factories, and
 names the `InvertedIndex` class, which moves; putting them in `interfaces/` would need a new
 interface for `InvertedIndex`. One migration line each (§13, lines 22–26).
 
-**S11 — open for the user: `OllamaRag` and a package cycle.** `@mcp-abap-adt/ollama-embedder`
+**S11 — decided by the user on 2026-10-05: remove `OllamaRag` (package cycle).** Moving it into `llm-agent-rag` was considered and rejected: it would make `ollama-embedder` a hard dependency of `llm-agent-rag` (today an optional, dynamically imported peer), put vendor code in a vendor-free package, and duplicate what the factory already builds. `@mcp-abap-adt/ollama-embedder`
 exports `OllamaRag extends VectorRag`. `@mcp-abap-adt/llm-agent-rag` depends on `ollama-embedder`
 (optional peer, dev dependency, `tsconfig` reference — it loads the Ollama embedder by name), so
 once `VectorRag` lives in `llm-agent-rag`, `ollama-embedder` cannot import it: a package cycle and
