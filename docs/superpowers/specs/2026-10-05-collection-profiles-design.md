@@ -2195,11 +2195,16 @@ there. Under a profile that would leave a bound store empty: the server fills it
   without `injected`): `resolveWorkerLlmSet` creates a new store, `withToolsStore` binds it with its fill
   source, and that construction fills it. In the earlier design
   (`fillWorkerToolsStores`, startup only) these rebuilds left the new bound stores empty.
-- **A construction whose fill throws leaves no cached worker.** `resolveWorkerLlmSet` caches the
-  worker's set before the build; when the fill throws (an incompatible corpus, a store the corpus
-  source refuses, an invalid `IToolRecordKey`, a binding its store does not carry), `buildSubAgent` removes that
-  entry before rethrowing, so no later session re-wires a worker whose store was never filled. A
-  configuration error stays loud: the next session's construction throws again.
+- **A construction that fails anywhere leaves no cached worker.** `resolveWorkerLlmSet` caches the
+  worker's set before the build; the cleanup covers the **whole** construction — the server's fill,
+  `subBuilder.build()` (where a worker on its own `mcp:` is filled by its builder through the
+  store's fill source) and the backfill of the entry from the built handle. When any of them throws
+  (an incompatible corpus, a store the corpus source refuses, an invalid `IToolRecordKey`, a binding
+  its store does not carry, a failing build), `buildSubAgent` removes that entry and closes the
+  handle it built before rethrowing; a `build()` that fails has no handle and disposes its own
+  connection itself. So no later session re-wires a worker whose store was never filled — an empty
+  or partial store, possibly with the parent's clients — and the next session constructs it again
+  (a new store, filled again). A configuration error stays loud: that construction throws again.
 - A worker's own **persistent** store (its `rag` on qdrant, …) is bound again on every construction
   and its source runs again: `live` replaces each record in place; `corpus` clears the store and
   loads the corpus again (D54). Several server processes writing one persistent
@@ -2271,7 +2276,8 @@ are in the agent's catalog.
   - main store → startup fails, as on the builder's path;
   - a worker's startup build → startup fails;
   - a worker's lazy rebuild → that session's worker build fails, like any worker build error; its
-    cache entry is removed (rule 2), so the next session constructs it again.
+    cache entry is removed (rule 2) — whether the server's fill, the builder-driven fill inside
+    `subBuilder.build()` or the backfill threw — so the next session constructs it again.
 - An incomplete fill (`complete: false`, or aborted) does not fail anything and is **not retried**
   (D41): it is reported as above and stays until a new instance is created; a reconnect's
   `toolsChanged` does not write a bound store (D46).
@@ -3946,8 +3952,11 @@ again, written either way.
   - **Never refilled (D41):** a worker's client whose `listTools()` fails at startup → nothing
     indexed, the summary line logged; after the client recovers, re-wires still index nothing —
     the store stays as created.
-  - **A construction whose fill throws leaves no cached worker:** a lazy rebuild whose fill throws
-    → that session's worker build fails and the cache holds no entry for the worker.
+  - **A construction that fails anywhere leaves no cached worker:** a lazy rebuild whose fill
+    throws — the server's, or the builder-driven fill of a worker on its own `mcp:` — or whose
+    backfill throws → that session's worker build fails and the cache holds no entry for the
+    worker; the next session constructs a fresh store, fills it again and never re-wires the
+    parent's clients into it.
   - `fillToolsBinding` refuses a binding its store does not carry; `vectorizeMcpTools` has no
     `binding` option (the libs tests bind through `bindToolsProfile`).
 - Fill sources (§3.10, libs):
