@@ -12,8 +12,10 @@
 > - D1–D11 and `IItemCut.limit()`: approved by the user on 2026-10-05 (§17.2);
 > - D17, D19, D20, D21: settled by the `compact` measurement (§17.3);
 > - D16, D18, D22, D23: decided by the user on 2026-10-05 (§17.3);
-> - S1–S9 (raised by the plan) and Cohere through `IDecisionModel`: decided by the user on
->   2026-10-05 (§17.4). Choices made while writing them in are listed for review (§17.5).
+> - S1–S9 (raised by the plan): decided by the user on 2026-10-05 (§17.4);
+> - probability vs relevance decisions, packages by role, one `decision:` section, the reranker
+>   package, the caller's k capping every cut, kept cleanup failures: decided by the user on
+>   2026-10-05 (§17.6). Choices made while writing them in are listed for review (§17.5).
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -25,10 +27,26 @@
 > (§7.1). The coarse-set (`compact`) measurement is in (§2.5.1): the coarse default is now one record
 > per tool + rerank-all + 3 tools.
 >
-> **Amended 2026-10-05 (3)** for the goal's decision on Cohere: Cohere Rerank on SAP AI Core is one
-> more `IDecisionModel` (`SapAiCoreDecisionModel`, new package `@mcp-abap-adt/sap-aicore-decision`),
-> used by the existing `DecisionReranker`. No cross-encoder contract, no `crossEncoder:` YAML, no new
-> seam (§5, §6.2). The plan's spec issues S1–S9 are written in (§17.4).
+> **Amended 2026-10-05 (3)** — *replaced by (4).* It had made Cohere one more `IDecisionModel`
+> behind the existing `DecisionReranker`. The plan's spec issues S1–S9 written in then still hold
+> (§17.4).
+>
+> **Amended 2026-10-05 (4)** for the goal's decisions on probability and relevance decisions, and
+> the user's decisions of the same day (§17.6):
+> - **two decision contracts:** `IProbabilityDecision` (today's `IDecisionModel`, renamed; Jev) and
+>   the new `IRelevanceDecision` (one relevance score per passage; a cross-encoder such as Cohere —
+>   **not** a probability) (§3.9, §5);
+> - **two rerankers:** `ProbabilityReranker` (today's `DecisionReranker`, renamed) and the new
+>   `RelevanceReranker`; every reranker moves to the new vendor-neutral package
+>   **`@mcp-abap-adt/llm-agent-reranker`** (§5.4, §11);
+> - **packages by role:** `typesafe-decision` (unchanged, `IProbabilityDecision`) and the new
+>   `sap-aicore-decision` (`SapAiCoreRelevanceDecision`, `IRelevanceDecision`);
+>   `SapAiCoreDecisionModel` is withdrawn;
+> - **one `decision:` section:** the provider decides the kind; `reranker: decision` builds the
+>   matching reranker (§6.2);
+> - old names stay as **deprecated aliases** until the next major (§13);
+> - **the caller's k caps every cut** (§3.4, §4.5, §4.9) and **cleanup failures are kept for retry**
+>   (§3.3) — two approved review findings.
 
 ## TL;DR
 
@@ -55,7 +73,12 @@
   No canonical record → the hit is dropped and counted.
 - **Replacing an item is not atomic (§3.3).** It is several per-record writes. No generations, no
   locks: the writer or the store serializes concurrent writers of one item.
-- **`k` is the overall limit of a retrieval, as in 30.1.0:** at most k items come back.
+- **A failed cleanup is never reported as indexed (§3.3).** Every stale-record delete is checked;
+  ids not yet deleted stay listed on the canonical record, and the next `index` or `remove`
+  retries them. Failure handling, not a concurrency protocol.
+- **`k` is the overall limit of a retrieval, as in 30.1.0:** at most k items come back. Every cut
+  is capped by the caller's k: the limit is `min(requestedK, the cut's own limit)`, with or without
+  decomposition. `FixedItemsCut(n)` is a ceiling, not an override.
 - **Query decomposition is an injected strategy slot (§4.5).** `StagedRetrieval` calls the
   consumer's `IQueryDecomposer` (query + budget k → sub-queries whose budgets sum to ≤ k). None
   injected → the query runs as is. No shipped variant uses it; no implementation ships.
@@ -78,11 +101,12 @@
      - `baseline` = 30.1.0 (one record per tool, top-k) — what a consumer gets by choosing nothing;
      - `faceted` = `full` + `summary` + `parameters` records (all schema-derived), item pool,
        collapse by max — for **fine-grained** tool sets;
-     - `faceted-cohere` = faceted + `DecisionReranker` over Cohere on SAP AI Core
-       (`SapAiCoreDecisionModel`);
-     - `faceted-jev` = faceted + `DecisionReranker` over TypeSafe Jev (`TypeSafeDecisionModel`);
-     - `small-set-jev` = one record per tool + Jev over the **whole** set (rerank-all) + **3
-       tools** — for **coarse / small** tool sets. Measured on mcp-abap-adt `compact`: 0.970
+     - `faceted-cohere` = faceted + `RelevanceReranker` over Cohere on SAP AI Core
+       (`SapAiCoreRelevanceDecision`, an `IRelevanceDecision`);
+     - `faceted-jev` = faceted + `ProbabilityReranker` over TypeSafe Jev (`TypeSafeDecisionModel`,
+       an `IProbabilityDecision`);
+     - `small-set-jev` = one record per tool + `ProbabilityReranker` (Jev) over the **whole** set
+       (rerank-all) + at most **3 tools** — for **coarse / small** tool sets. Measured on mcp-abap-adt `compact`: 0.970
        required-recall at ~1.6k tokens, against ~7.9k for the whole set (§2.5).
      **Intents** are an indexing strategy the consumer can add to any of them: an `intent` record
      per tool (default placement) or a companion collection.
@@ -96,13 +120,19 @@
      of their choosing) through `index()` / `remove()`; the profile finds them and returns each
      item **whole**; every record carries owner keys and a visibility (`user` / `group` /
      `global`). What an item contains is the writing element's business, not this spec's.
-- **Rerankers are alternatives** (goal 10), and both reuse what exists: the existing
-  **`DecisionReranker`** over an injected `IDecisionModel` (goal decision 2026-10-05):
-  - Cohere Rerank on SAP AI Core → the new **`SapAiCoreDecisionModel`** in its own package
-    **`@mcp-abap-adt/sap-aicore-decision`** (one `/rerank` call per decision request);
-  - TypeSafe Jev → the existing `TypeSafeDecisionModel` (`typesafe-decision`).
-  - Each gets a default profile configuration. No new reranker contract, no new YAML section:
-    `decision:` gains `provider: sap-aicore`.
+- **Rerankers are alternatives** (goal 10). **A decision and a reranker are different things, and a
+  probability and a relevance are different decisions** (goal decision 2026-10-05):
+
+  | Decision contract (`llm-agent`) | What it answers | Provider (package) | Reranker (`llm-agent-reranker`) |
+  |---|---|---|---|
+  | **`IProbabilityDecision`** (today's `IDecisionModel`, renamed) | typed yes/no, choice and score questions, with probabilities | TypeSafe Jev — `TypeSafeDecisionModel` (`typesafe-decision`, unchanged) | **`ProbabilityReranker`** (today's `DecisionReranker`, renamed) |
+  | **`IRelevanceDecision`** (new) | one relevance score per passage for a query — **not** a probability, comparable only within one call | Cohere Rerank on SAP AI Core — `SapAiCoreRelevanceDecision` (new `sap-aicore-decision`) | **`RelevanceReranker`** (new) |
+
+  - Every reranker lives in the new vendor-neutral package **`@mcp-abap-adt/llm-agent-reranker`**;
+    the retrieval strategies stay in libs and use rerankers only through `IReranker`.
+  - Old names stay exported as **deprecated aliases** until the next major (§13).
+  - YAML keeps **one** `decision:` section: `provider: typesafe` → probability, `provider:
+    sap-aicore` → relevance; `reranker: decision` builds the matching reranker (§6.2).
 - A reranker that returns a wrong or missing score count is a **reranker error**, counted and
   traced — never silent.
 - In-scope fixes: the store's embedder hidden behind `StrategyRag`; de-duplication in
@@ -134,6 +164,9 @@
 | **Profile** | The indexing + retrieval pair for one collection kind (`ICollectionProfile`) — a composition of strategies | `ComposedToolsProfile` |
 | **Variant** | A **default composition**: a named, shipped set of strategy instances for one kind. It fills in what the consumer did not choose; its tuned numbers cite a measurement (§7.1) | `faceted-cohere`, `small-set-jev` |
 | **Binding** | A profile applied to one concrete store set (`IBoundCollection`) | `mcpTools.bind({ key: 'tools', rag })` |
+| **Probability decision** | A model's answer to a typed question, as a probability (yes/no, choice, score) — `IProbabilityDecision` | TypeSafe Jev: P(this tool helps) = 0.93 |
+| **Relevance decision** | A model's relevance score for each passage against one query — `IRelevanceDecision`. **Not a probability**: comparable only among the passages of one call, never with another call, another model or a probability | Cohere Rerank on SAP AI Core: `relevance_score` per document |
+| **Reranker** | An `IReranker`: reorders candidates. It **adapts** a decision; it is not one | `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker` |
 
 **One profile, several stores (goal 6).** A profile instance holds what the kind shares (records,
 reranker, cut, candidate count). `bind()` is called once per store and returns that store's
@@ -151,9 +184,18 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 | `IToolIndexingStrategy` | orphan, unexported | **deleted** (§10.3) |
 | `IQueryPreprocessor` / `IQueryExpander` | in-store / pipeline query rewrites, one text → one text | untouched; query decomposition (one query → budgeted sub-queries) is the new `IQueryDecomposer` (§4.5) |
 | `RagCollectionOwner` | owner of a whole **collection** (catalog record) | untouched; a **record's** owner is `RecordOwner` |
-| `IReranker` | `rerank(query, results, options)` | unchanged; `DecisionReranker` implements it for both named rerankers |
-| `IDecisionModel` | `decide({ state, questions })` → typed answers | unchanged; `SapAiCoreDecisionModel` is one more implementation (§5) |
-| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `IndexNote`, `isIndexNoteSource`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `isSizeBoundedCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `CharsPerTokenEstimator`, `ToolDefinitionSizeEstimator`, `SharedItemsProfile`, `SapAiCoreDecisionModel`, `SapAiCoreDecisionConfig`, `FetchLike` (in `sap-aicore-decision`); reserved record key `companionRecordIds` |
+| `IReranker` | `rerank(query, results, options)` | unchanged; `ProbabilityReranker` and `RelevanceReranker` implement it |
+| `IDecisionModel` | `decide({ state, questions })` → typed answers | **renamed `IProbabilityDecision`** (same members); the old name stays a deprecated alias (§3.9, §13) |
+| `DecisionReranker`, `DecisionRerankerOptions` | reranker over `IDecisionModel` | **renamed `ProbabilityReranker`, `ProbabilityRerankerOptions`**, moved to `@mcp-abap-adt/llm-agent-reranker`; old names re-exported from libs as deprecated aliases (§5.4, §13) |
+| `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA` | the probability reranker's default wording | **renamed `PROBABILITY_RERANK_DEFAULT_TASK`, `PROBABILITY_RERANK_DEFAULT_CRITERIA`**, moved with it; old names are deprecated aliases |
+| `wrapDecisionModel` | usage-logging adapter of a decision model | **renamed `wrapProbabilityDecision`**, stays in libs (§5.4); the old name is a deprecated alias |
+| `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` | rerankers / wording presets in libs | **moved** to `@mcp-abap-adt/llm-agent-reranker`, names unchanged; libs re-exports them (deprecated path) |
+| `DecisionRequest`, `DecisionResult`, `DecisionQuestion`, the answer types, `DecisionEntry`, `DecisionError`, `DecisionErrorCode` | the decision vocabulary | **unchanged**: still `IProbabilityDecision`'s request and answers; `DecisionError` and its codes serve both decisions (§3.9) |
+| `TypeSafeDecisionModel`, `SmartServerDecisionConfig`, `BuildAgentDeps.makeDecisionModel` | Jev provider; `decision:` type; probability seam | unchanged names (`makeDecisionModel` now typed `IProbabilityDecision` — the same type) |
+| — | new | `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`, `RelevanceReranker`, `RelevanceRerankerOptions`, `wrapRelevanceDecision`, `BuildAgentDeps.makeRelevanceDecision`, package `@mcp-abap-adt/llm-agent-reranker`; in `sap-aicore-decision`: `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike`; reserved record keys `staleRecordIds`, `staleCompanionRecordIds` |
+| — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `IndexNote`, `isIndexNoteSource`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `isSizeBoundedCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `CharsPerTokenEstimator`, `ToolDefinitionSizeEstimator`, `SharedItemsProfile`; reserved record key `companionRecordIds` |
+
+Every new name above was checked with `git grep -w` over `packages/`: 0 hits (2026-10-05).
 
 ---
 
@@ -300,7 +342,8 @@ Sizes of one server's two sets (mcp-abap-adt, exported definitions — **example
 ## 3. Contracts — `@mcp-abap-adt/llm-agent`
 
 New file `packages/llm-agent/src/interfaces/collection-profile.ts`. All additive; `IRag`,
-`IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed.
+`IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed. The decision contracts (§3.9) live in
+`interfaces/decision-model.ts`: one rename with a deprecated alias, one new contract.
 
 ### 3.1 Records, owners, visibility
 
@@ -317,10 +360,13 @@ export type RecordOwner =
 
 /** Keys the framework writes; a profile's or writer's extras can never set them.
  *  `companionRecordIds` (canonical only): `{ <companion name>: string[] }` — the item's records in
- *  each companion store, so `remove` and replacement reach them too (§3.3, S7). */
+ *  each companion store, so `remove` and replacement reach them too (§3.3, S7).
+ *  `staleRecordIds` / `staleCompanionRecordIds` (canonical only): old record ids a replacement must
+ *  still delete — in this store / per companion; kept until a delete succeeds (§3.3). */
 export type ReservedRecordKey =
   | 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'generated' | 'recordIds'
-  | 'companionRecordIds' | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl';
+  | 'companionRecordIds' | 'staleRecordIds' | 'staleCompanionRecordIds'
+  | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl';
 
 /** What an indexer produces. The physical id is not the indexer's to choose. */
 export type RecordDraft = Omit<IndexedRecord, 'id'>;
@@ -509,6 +555,9 @@ export interface ICollectionProfile<TItem, TTarget extends BindTarget = Collecti
   name; `remove` and replacement delete them from that companion store. A listed companion the
   binding no longer has (the consumer unbound it) is left as is: dropping a companion means
   clearing its store (§7.3.3).
+- **Why `staleRecordIds` / `staleCompanionRecordIds` (approved review finding):** a stale-record
+  delete can fail. Without a list, the id is forgotten and the record outlives the item. With it,
+  the next `index` or `remove` of the item retries the delete (below).
 
 **Replacing an item is not atomic — and the framework does not try to make it so.**
 
@@ -517,6 +566,30 @@ export interface ICollectionProfile<TItem, TTarget extends BindTarget = Collecti
   `companionRecordIds`), then deletes of the old ids it no longer lists (in each store). A
   store's bulk write (`upsertManyPrecomputedRaw`) is all-or-nothing per batch, but the deletes are
   separate calls; nothing spans them.
+
+**Cleanup failures are kept, never reported as success** (approved review finding — failure
+handling, not a concurrency protocol: no generations, no locks, D13 stands).
+
+| Step | What |
+|---|---|
+| 1. stale set | per store: (old `recordIds` ∪ old `staleRecordIds`) − the new ids; per bound companion: (old `companionRecordIds[c]` ∪ old `staleCompanionRecordIds[c]`) − the new ids |
+| 2. write ahead | the new canonical record carries the stale sets in `staleRecordIds` / `staleCompanionRecordIds` (absent when empty) |
+| 3. delete | every stale id, each `deleteByIdRaw` **`Result` checked** (primary and companion); `ok` (deleted, or already absent → `false`) counts as done; `ok: false` or a throw keeps the id |
+| 4. settle | if the stale lists changed, the canonical is rewritten with exactly the ids still pending (keys absent when none) |
+| 5. report | any id still pending → the item is **not** indexed: `failedItems` reason `cleanup-failed: <n> stale record(s) kept for retry`; `indexedItems` excludes it |
+
+- **Retry:** the next `index` of the item folds the pending ids into its stale set (step 1);
+  `remove` deletes listed **and** pending ids. A retry of an already-deleted id is a no-op
+  (`deleteByIdRaw` → `ok: true, false`).
+- **`remove` with a failed delete:** it tries every listed and pending id, keeps the canonical
+  record (so a retry still finds the list) and returns a `RagError` naming how many deletes failed.
+  The item stays whole and readable until a retry succeeds.
+- **Step 4 fails** (the settling rewrite): the written-ahead lists stay — a superset of what is
+  pending; retries of the deleted ones are no-ops. The item's report follows step 5.
+- **A companion the binding no longer has:** its ids are not carried (S7 rule: dropping a
+  companion means clearing its store).
+- **Tested:** replacement → a failed stale delete → not indexed, id listed → retry `index` → the
+  record is gone, list cleared; then `remove` leaves nothing in any store (§14.1).
 - **Concurrent writers of the same item** must be serialized by the writing element or by the
   store. Two concurrent `index` calls for one item may interleave; there is **no** item-level
   last-write-wins guarantee.
@@ -563,8 +636,9 @@ export interface ICollapseRule {
  *  Applied once, to the final result. Returns a rank-order PREFIX of whole items. */
 export interface IItemCut {
   readonly name: string;
-  /** An UPPER BOUND, in items, on what `cut` returns for `requestedK` — the retrieval's budget
-   *  (§4.5). Not a promise to return that many: a cut may stop earlier (score floor, token
+  /** An UPPER BOUND, in items, on what `cut` returns for `requestedK` — never above `requestedK`
+   *  (the caller's k caps every cut: `min(requestedK, the cut's own limit)`). The retrieval's
+   *  budget (§4.5). Not a promise to return that many: a cut may stop earlier (score floor, token
    *  budget, §4.10). `cut(...)` never returns more items than this. */
   limit(requestedK: number): number;
   cut(items: readonly RagResult[], requestedK: number): RagResult[];
@@ -674,6 +748,14 @@ export interface IToolFacet {
   derive(tool: ToolItem): string | undefined;
 }
 
+/** Composes the provider text of a tool — the canonical `full` record's text, which is also the
+ *  reranker's item text (§4.6) and every non-canonical record's `itemText`. Provider words only. */
+export interface IToolTextComposer {
+  readonly name: string;
+  /** Non-empty; pure: the same tool always gets the same text. */
+  compose(tool: ToolItem): string;
+}
+
 /** Picks a coarse tool's discriminating parameter (§7.3.2). Undefined → no per-value records. */
 export interface IDiscriminatorSelector {
   readonly name: string;
@@ -743,6 +825,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISourceSelector`, `RetrievalSource` | goal 1's new steps, each a consumer-swappable strategy (principle 5) | same users as above |
 | `IQueryDecomposer`, `SubQuery` | goal decision 2026-10-05: query splitting is a strategy the consumer injects and the default retrieval uses | libs (`StagedRetrieval` calls it), server-libs (YAML name → instance), consumers (implementations) |
 | `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource` | typed input of the tools indexers; facets and intents are indexing strategies a consumer may write. `parameters` replaces the earlier `parameterNames`: goal 9 requires records from the whole input schema (descriptions, enum values), and names alone cannot carry them. The raw `inputSchema` is there so a consumer can build a profile for **any** server from the contracts (goal 9, §7.9). `definitionChars` is what a token budget measures (§4.10) | builder (libs) + indexers + consumers that bring their own facets or precomputed intents |
+| `IToolTextComposer` | review finding 4 (schema text in the provider record), measured within noise (§7.3.1): how much of the schema the provider text carries is a choice the consumer may inject, not a rule fixed inside `FacetedToolIndexer`. The default composition is unchanged (C0, measured) | libs (`FacetedToolIndexer` and the three shipped composers), server-libs (YAML name → instance), consumers |
 | `IDiscriminatorSelector` | goal 9, coarse tool sets: which parameter's values become records is a choice the consumer may inject, not a rule fixed inside the indexer (§7.3.2). Serves `EnumValueToolIndexer`, a generic strategy in no default | libs (`EnumValueToolIndexer`), server-libs (YAML), consumers |
 | `IItemSizeEstimator` | goal 9, token-budget cut (a prompt-size guard in no default): how an item's size is counted is injected, so a consumer can bring its model's tokenizer (§4.10) | libs (`TokenBudgetCut`), consumers |
 | `ISizeBoundedCut` + `isSizeBoundedCut` (S6) | "never silent" for a size guard: `over_budget` and `cut.tokens` / `cut.budgetTokens` (§4.10, §9.1) need the cut's budget and estimator, which `IItemCut` does not carry. An optional capability, so count cuts stay as they are | libs (`TokenBudgetCut` implements it, `StagedRetrieval` reads it), consumers' own size cuts |
@@ -754,8 +837,84 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `IRetrievalMetrics` | reranker errors must reach metrics and `/health` (goal *Evidence*) without growing `IMetrics` (principle 4) | metrics implementations live in libs; consumers plug their own backends |
 | `IRetrievalEmbedderOwner` | replaces the `(toolsRag as any).embedder` read — a cast that erased a type and is the cause of F1 | implemented by `VectorRag` (llm-agent) and the qdrant / pg-vector / hana provider packages |
 | `HealthComponentStatus.toolCatalog.records?`, `.profile?`, `MetricsSnapshot.retrievalOutcome?` | additive optional fields for §9 | where the health types already live |
-| `SmartServerDecisionConfig`: `provider` gains `'sap-aicore'`; optional `deploymentId`, `resourceGroup` | goal 10 + the goal decision on Cohere: the `decision:` section selects the `IDecisionModel` provider, so Cohere needs a provider name and its deployment (§6.2). Kept one interface with optional fields — additive, so a consumer's own `makeDecisionModel` still compiles (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`decision-config.ts`), where the section's type already lives |
+| `IDecisionModel` → **`IProbabilityDecision`** (rename; `IDecisionModel` stays a deprecated alias of the same type) | goal decision 2026-10-05: a probability and a relevance are different decisions, named by what the decision is based on. Same members, so every implementation (`TypeSafeDecisionModel`, a consumer's) still compiles | `@mcp-abap-adt/llm-agent` (`decision-model.ts`), where it lives |
+| **`IRelevanceDecision`**, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore` (§3.9) | goal decision 2026-10-05: a cross-encoder scores passages against a query and gives no probability, so it cannot honestly implement `IProbabilityDecision` (whose `NoulAnswer.probability` must be P(yes) in [0, 1]). Each type is the minimum: a request (query + passages), a result (one score per passage + the model id), one score entry (index + score) | `@mcp-abap-adt/llm-agent`: implemented by a provider package (`sap-aicore-decision`), consumed by `llm-agent-reranker` and server-libs |
+| `DecisionError` / `DecisionErrorCode` reused by `IRelevanceDecision` — **no new code** | every failure of a relevance call already has a code (`DECISION_INVALID_REQUEST`, `_AUTH`, `_RATE_LIMITED`, `_UNAVAILABLE`, `_ABORTED`, `_ERROR`); `DECISION_UNSUPPORTED_QUESTION` is simply never returned (a relevance request has no questions). Nothing widens the shared set | — |
+| `BuildAgentDeps.makeRelevanceDecision?` (new optional seam) | the provider decides the kind of decision (§6.2), and a relevance provider returns `IRelevanceDecision`, which `makeDecisionModel` (typed `IProbabilityDecision`) cannot return. A second optional seam keeps both typed and leaves every existing `makeDecisionModel` compiling; a union return type would break code that calls the seam (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`smart-server.ts`, `resolve-retrieval.ts`), beside `makeDecisionModel` |
+| `SmartServerDecisionConfig`: `provider` gains `'sap-aicore'`; optional `deploymentId`, `resourceGroup` | goal 10 + the goal decision 2026-10-05 (one `decision:` section; the provider decides the kind): Cohere needs a provider name and its deployment (§6.2). Kept one interface with optional fields — additive, so a consumer's own `makeDecisionModel` still compiles (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`decision-config.ts`), where the section's type already lives |
+| `ReservedRecordKey` gains `staleRecordIds`, `staleCompanionRecordIds` | approved review finding 3: a failed stale-record delete must be retried by the next `index` / `remove`, so its id is kept on the canonical; reserved so no extra can overwrite it. `ReservedRecordKey` is new in this spec | libs (record writer, tools binding) |
+| `IItemCut.limit()` — doc only: never above `requestedK` | approved review finding 1: the caller's k caps every cut (§4.5, §4.9). No signature change | — |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
+
+### 3.9 Decision contracts — probability and relevance
+
+File `packages/llm-agent/src/interfaces/decision-model.ts` (the existing file, its style and its
+`Result` / `DecisionError` conventions).
+
+```ts
+/**
+ * A model that answers typed questions about a state with probabilities, not text
+ * (today's `IDecisionModel`, renamed — same members, same rules).
+ */
+export interface IProbabilityDecision {
+  readonly model?: string;
+  decide(request: DecisionRequest, options?: CallOptions)
+    : Promise<Result<DecisionResult, DecisionError>>;
+}
+
+/** @deprecated Use `IProbabilityDecision`. Kept as an alias until the next major. */
+export type IDecisionModel = IProbabilityDecision;
+
+export interface RelevanceRequest {
+  /** The query every passage is judged against. Non-empty. */
+  query: string;
+  /** Non-empty; each a non-empty string. `RelevanceScore.index` points into this array. */
+  passages: readonly string[];
+}
+
+export interface RelevanceScore {
+  /** Index into `RelevanceRequest.passages`. */
+  index: number;
+  /** Finite. NOT a probability: higher = more relevant, comparable only within one call. */
+  score: number;
+}
+
+export interface RelevanceResult {
+  /** Exactly one entry per passage, each index once; any order. */
+  scores: readonly RelevanceScore[];
+  /** The model that actually answered. */
+  model: string;
+  usage?: { inputTokens: number; outputTokens?: number };
+}
+
+/**
+ * A model that scores how relevant each passage is to a query (a cross-encoder).
+ *
+ * - Returns `Result`; never throws for provider failures. Errors are `DecisionError`, with the
+ *   existing codes; `DECISION_UNSUPPORTED_QUESTION` is never returned.
+ * - The score is not a probability: compare scores only among the passages of ONE call — never
+ *   across calls, models, or with a probability. A threshold on it is the consumer's calibration.
+ * - Cancellation through `options.signal` yields `DECISION_ABORTED`.
+ */
+export interface IRelevanceDecision {
+  readonly model?: string;
+  score(request: RelevanceRequest, options?: CallOptions)
+    : Promise<Result<RelevanceResult, DecisionError>>;
+}
+```
+
+| Type | Why it exists | Why this shape |
+|---|---|---|
+| `IRelevanceDecision` | the decision a cross-encoder makes (goal decision 2026-10-05) | one method, like `IProbabilityDecision`; a different method name (`score`, not `decide`) so one class can never satisfy both by accident |
+| `RelevanceRequest` | the input a cross-encoder takes | a query and passages — no questions, task or criteria: a cross-encoder reads no wording |
+| `RelevanceScore` | one answer | `index` + `score`, the shape every rerank API returns (Cohere: `results[{index, relevance_score}]`), so a provider maps it without reordering; the reranker checks it (§5.2) |
+| `RelevanceResult` | the answer of one call | scores + `model`, as `DecisionResult`; `usage` optional — `outputTokens` optional because a rerank call produces none |
+
+- **Not a probability, by contract.** That is why it is a separate contract: a
+  `NoulAnswer.probability` is P(yes) in [0, 1] and consumers may rely on it unchecked; a relevance
+  score may not be read that way.
+- **Comparable only within one call** — the property `RelevanceReranker` must respect when it
+  batches (§5.2).
 
 These are the llm-agent family's own contracts, used only inside this monorepo and by its
 consumers, so they belong in `@mcp-abap-adt/llm-agent` (the YAML config type stays in
@@ -818,7 +977,7 @@ merge hits
   → keep the first pool.items items per items source
   → rerank items on their item text (optional, §4.6); check the result (§4.8)
   → hydrate in rank order from the CANONICAL record (§4.6); drop + count orphans
-  → cut (IItemCut) over hydrated items, once: at most cut.limit(k) items
+  → cut (IItemCut) over hydrated items, once: at most min(k, cut.limit(k)) items
     (with a decomposer this runs per sub-query and the results are merged, §4.5)
 ```
 
@@ -866,19 +1025,19 @@ decomposer.
 
 | Step | What |
 |---|---|
-| budget | `budget = cut.limit(requestedK)` (`TopItemsCut` → k; `FixedItemsCut(n)` → n; `ScoreFloorCut` → `maxItems`; `TokenBudgetCut` → `maxItems ?? k`, §4.10) |
+| budget | `budget = min(requestedK, cut.limit(requestedK))` — the caller's k caps every cut (`TopItemsCut` → k; `FixedItemsCut(n)` → min(k, n); `ScoreFloorCut` → min(k, `maxItems`); `TokenBudgetCut` → min(k, `maxItems ?? k`), §4.10). `StagedRetrieval` applies the `min` itself, so a consumer's cut whose `limit` exceeds k is still capped |
 | decompose | `decomposer.decompose(text, budget)` → sub-queries; the strategy owns how the budget is shared |
 | check | each `k` an integer ≥ 1, each `text` non-empty, `Σ k ≤ budget`; else a `RagError('…', 'DECOMPOSE_ERROR')` |
 | `[]` | the query runs as is with the whole budget (same as no decomposer) |
 | run | each sub-query through §4.3 up to hydration, in parallel: embedded with `queryEmbedder`, reranked against its **own** text, its first `k` items kept |
 | merge | union in sub-query order, de-duplicated by owner-qualified item (best score kept) |
-| cut | the `IItemCut`, **once**, over the union → **at most `budget` items** |
+| cut | the `IItemCut`, **once**, over the union, then the result is truncated to `budget` → **at most `budget` ≤ k items** |
 
 - A decomposer error or a failed check is **returned**, never swallowed: the retrieval fails with
   the error, counted as `outcome=decompose_error` and on the span (§9). No silent fall-back to the
   whole query.
-- Since the budgets sum to ≤ k and the final cut is enforced anyway, no contract here lets a
-  retrieval return more than k items.
+- Since the budget is ≤ k, the sub-query budgets sum to ≤ it, and the final result is truncated to
+  it, no contract here lets a retrieval return more than k items — with or without decomposition.
 
 **How it relates to the existing query steps and #323.**
 
@@ -962,15 +1121,17 @@ including a consumer's own.
 | candidate pool | `ItemPool(n)` | `n` items per items source (§4.4) |
 | collapse | `MaxScoreCollapse` | item score = best record score (measured winner). Count / RRF are **not** shipped. |
 | cut | `TopItemsCut` | first `requestedK` items (default); `limit` = `requestedK` |
-| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `minItems`, then more up to `maxItems` while `score ≥ minScore`; `limit` = `maxItems` |
-| cut | `FixedItemsCut(k)` | ignores the caller's k — for a store whose profile owns k; `limit` = its k |
-| cut | `TokenBudgetCut({ budgetTokens, maxItems?, estimator? })` | rank-order prefix of whole items while their summed size ≤ `budgetTokens`, at most `maxItems ?? requestedK` items; `limit` = `maxItems ?? requestedK`; implements `ISizeBoundedCut` (§4.10) |
+| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)` |
+| cut | `FixedItemsCut(n)` | a **ceiling**: first `min(requestedK, n)` items — for a store whose profile measured its own k; it never raises the caller's k; `limit` = `min(requestedK, n)` |
+| cut | `TokenBudgetCut({ budgetTokens, maxItems?, estimator? })` | rank-order prefix of whole items while their summed size ≤ `budgetTokens`, at most `limit` items; `limit` = `min(requestedK, maxItems ?? requestedK)`; implements `ISizeBoundedCut` (§4.10) |
 | query decomposition | — | **none shipped**; the consumer injects its own `IQueryDecomposer` (§4.5) |
 
 - **k in items.** The caller's k (`ragQueryK ?? 10` in `rag-query`, 20 in `IToolsRagHandle` and the
   controller's `selectTools`) arrives unchanged; under a profile it counts items and is the
-  overall limit of the retrieval, with or without a decomposer. A consumer that wants its own
-  number uses `FixedItemsCut`. The cut classes carry no number of their own; a default
+  overall limit of the retrieval, with or without a decomposer. **Every cut is capped by it**
+  (approved review finding 1): the effective limit is `min(requestedK, the cut's own limit)`. A
+  consumer that wants fewer than the caller's k uses `FixedItemsCut(n)`; nothing returns more than
+  the caller asked for. The cut classes carry no number of their own; a default
   composition carries its measured cut in its definition (§7.1), and the consumer chooses it or
   another cut.
 - **Score scales.** After a reranker, scores are the reranker's; the global
@@ -1000,7 +1161,7 @@ only when tools are alike; a budget bounds it always (goal 9).
 ```ts
 new TokenBudgetCut({
   budgetTokens: number,            // required, a positive integer — the library picks no number
-  maxItems?: number,               // optional count ceiling; absent → the caller's k
+  maxItems?: number,               // optional count ceiling, capped by the caller's k; absent → the caller's k
   estimator?: IItemSizeEstimator,  // absent → ToolDefinitionSizeEstimator (below)
 })
 ```
@@ -1009,7 +1170,7 @@ new TokenBudgetCut({
 
 1. Walk the ranked, hydrated items in rank order.
 2. Keep an item while `Σ estimate(kept) + estimate(item) ≤ budgetTokens` **and** fewer than
-   `maxItems ?? requestedK` are kept.
+   `limit(requestedK)` are kept.
 3. **Stop at the first item that does not fit.** No skipping ahead to smaller items: a lower-ranked
    small tool must never displace a higher-ranked large one.
 4. **Never truncates an item.** A tool is returned whole or not at all.
@@ -1018,7 +1179,7 @@ new TokenBudgetCut({
 
 | Question | Answer |
 |---|---|
-| What does `limit(requestedK)` return? | `maxItems ?? requestedK` — a count, as for every cut |
+| What does `limit(requestedK)` return? | `min(requestedK, maxItems ?? requestedK)` — a count, as for every cut, capped by the caller's k |
 | Is it the number returned? | No. It is an **upper bound** in items (the contract's meaning, §3.4). The budget may stop the cut earlier |
 | Where is the token bound? | In the cut itself, enforced once over the final result (§4.3) |
 | With a decomposer? | Sub-query `k`s share `limit(k)` items (§4.5); the token budget applies once, to the merged union |
@@ -1027,7 +1188,7 @@ new TokenBudgetCut({
   `ScoreFloorCut` also returns fewer. Adding a token figure to `IItemCut` would make every count
   cut carry a meaningless member (ISP). The budget lives in the one cut that has it.
 - **`k` stays the overall limit** (goal decision 2026-10-05): a token cut never returns more than
-  k items unless the consumer set `maxItems` explicitly (like `FixedItemsCut`).
+  k items; `maxItems` can only lower it (approved review finding 1).
 
 **Top item alone over budget.** The result is **empty**; counted as `outcome=over_budget` and on
 the span (§9). Never silent, never truncated.
@@ -1056,8 +1217,9 @@ cut. A consumer wanting skip-ahead injects its own `IItemCut`. Settled — D19 (
 | `CharsPerTokenEstimator(charsPerToken)` | `ceil(text.length / charsPerToken)` | shared items and other kinds: the returned text is what reaches the prompt |
 | a consumer's own | e.g. the model's real tokenizer | when ~4 chars/token is not close enough |
 
-- **Why 4 chars per token:** the unit convention `DecisionReranker` already uses for its batch
-  budget (`decision-reranker.ts`: `Math.ceil(s.length / 4)`). It is a generic chars-to-tokens
+- **Why 4 chars per token:** the unit convention the probability reranker (today's
+  `DecisionReranker`) already uses for its batch budget (`decision-reranker.ts`:
+  `Math.ceil(s.length / 4)`). It is a generic chars-to-tokens
   estimate, not tuned to any server; a consumer that needs precision injects its own estimator
   (e.g. its model's tokenizer).
 - **Why `definitionChars` is written at index time:** the canonical record's text is the RAG text,
@@ -1067,27 +1229,86 @@ cut. A consumer wanting skip-ahead injects its own `IItemCut`. Settled — D19 (
 
 ## 5. Rerankers are alternatives (goal 10)
 
-**TL;DR.** Both rerankers the goal names are the **existing `DecisionReranker`**. What differs is the
-`IDecisionModel` injected into it. Cohere on SAP AI Core is one more `IDecisionModel` —
-`SapAiCoreDecisionModel` in the new package `@mcp-abap-adt/sap-aicore-decision` (goal decision
-2026-10-05). No new reranker contract, no cross-encoder abstraction, no new seam.
+**TL;DR.**
+
+- **A decision and a reranker are different things; a probability and a relevance are different
+  decisions** (goal decision 2026-10-05).
+- Two decision contracts in `llm-agent` (§3.9): `IProbabilityDecision` (Jev) and
+  `IRelevanceDecision` (Cohere on SAP AI Core).
+- Two rerankers adapt them: `ProbabilityReranker` and `RelevanceReranker`. Every reranker lives in
+  the new vendor-neutral package `@mcp-abap-adt/llm-agent-reranker` (§5.4).
+- Vendor providers stay in packages of their own, named by role: `typesafe-decision`,
+  `sap-aicore-decision`.
 
 ### 5.1 What ships
 
-| Reranker | Reranker class | Decision model (package) | Scores from |
+| Reranker (`llm-agent-reranker`) | Adapts | Provider (package) | `score` it writes |
 |---|---|---|---|
-| Cohere Rerank on SAP AI Core | `DecisionReranker` + `TOOL_QUESTION` / `PASSAGE_QUESTION` (libs, existing) | **new** `SapAiCoreDecisionModel` (`@mcp-abap-adt/sap-aicore-decision`) | `/rerank` of an AI Core deployment |
-| TypeSafe Jev | `DecisionReranker` + `TOOL_QUESTION` / `PASSAGE_QUESTION` (libs, existing) | existing `TypeSafeDecisionModel` (`@mcp-abap-adt/typesafe-decision`) | `IDecisionModel.decide` |
-| LLM | `LlmReranker` (existing, unchanged) | — | not recommended (no gain, §2.2) |
+| **`ProbabilityReranker`** (today's `DecisionReranker`, renamed; behaviour unchanged) + `TOOL_QUESTION` / `PASSAGE_QUESTION` | `IProbabilityDecision` | `TypeSafeDecisionModel` (`typesafe-decision`, unchanged) | P(relevant), in [0, 1] |
+| **`RelevanceReranker`** (new) | `IRelevanceDecision` | **new** `SapAiCoreRelevanceDecision` (`sap-aicore-decision`) — Cohere Rerank on SAP AI Core | the relevance score — **not a probability** |
+| `LlmReranker` (moved, unchanged) | `ILlm` | any LLM | not recommended (no gain, §2.2) |
+| `NoopReranker` (moved, unchanged) | — | — | unchanged |
 
-- `IReranker`, `IDecisionModel` and `DecisionReranker` are unchanged.
-- The consumer picks the model per deployment (`decision.provider`, §6.2) or injects its own
+- `IReranker` is unchanged. The retrieval strategies (`RerankedRetrieval`, `RerankAllRetrieval`,
+  `StagedRetrieval`) stay in libs and see rerankers only through `IReranker`.
+- The consumer picks the provider per deployment (`decision.provider`, §6.2) or injects its own
   instance (builder). Any reranker composes with any indexing and candidate strategy (§7.5).
 
-### 5.2 `SapAiCoreDecisionModel`
+### 5.2 `RelevanceReranker`
 
 ```ts
-export interface SapAiCoreDecisionConfig {
+export interface RelevanceRerankerOptions {
+  /** Estimated-token budget per `score()` call (~4 chars/token, query + passages); a positive
+   *  integer. ABSENT → every candidate in ONE call (the default; see "Batches" below). */
+  maxBatchTokens?: number;
+  /** Max `score()` calls in flight when batching; a positive integer. Default 4. */
+  concurrency?: number;
+}
+
+export class RelevanceReranker implements IReranker {
+  /** @throws Error when `maxBatchTokens` or `concurrency` is not a positive integer. */
+  constructor(decision: IRelevanceDecision, options?: RelevanceRerankerOptions);
+  rerank(query: string, results: RagResult[], options?: CallOptions)
+    : Promise<Result<RagResult[], RagError>>;
+}
+```
+
+**Behaviour.**
+
+1. No candidates → returned as is, no call.
+2. `score({ query, passages: results.map(r => r.text) })` — one call, or one per batch (below).
+3. **Output check** on every call's result — anything else is `RagError('…', 'RERANK_ERROR')`:
+   - exactly one entry per passage of that call (wrong count → error);
+   - every `index` an integer in range, each once (duplicate or missing → error);
+   - every `score` finite (non-finite → error).
+4. A `DecisionError` from the provider → `RagError('decision rerank failed: <code>: <message>',
+   'RERANK_ERROR')`, as the probability reranker does.
+5. Each result's `score` is set to its relevance score; sorted descending, ties in input order.
+6. Any failed call fails the whole `rerank`.
+
+- **Not a probability — documented on the class and in the docs.** Scores are the provider's
+  scale. A `ScoreFloorCut` threshold on them, or a global `IToolSelectionStrategy` threshold after
+  them, is the **consumer's calibration** for its provider; **no default composition uses one**.
+- `StagedRetrieval` checks the result again (§4.8), whichever reranker it is.
+
+**Batches — and "comparable only within one call".**
+
+| `maxBatchTokens` | What happens |
+|---|---|
+| absent (**default**) | one `score()` call with every candidate: every score comes from one call, so the order is the contract's |
+| set | batches as the probability reranker does (a batch closes when its estimate would pass the budget; up to `concurrency` in flight); scores of all batches are merged into one order |
+
+- Merging batches compares scores **across calls**, which `IRelevanceDecision` does not promise. It
+  is sound only for a provider whose score depends on the (query, passage) pair alone — true of a
+  pairwise cross-encoder such as Cohere. Setting `maxBatchTokens` is therefore the consumer's
+  statement that its provider is pairwise; it is documented on the option (§17.5, open for the
+  user).
+- The default compositions rerank ≤ 30 tools (`faceted-cohere`, §7.4): one call either way.
+
+### 5.3 `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`)
+
+```ts
+export interface SapAiCoreRelevanceConfig {
   /** The AI Core deployment that serves the rerank model (D10: an id, not a model name). */
   deploymentId: string;
   /** Sent as `model` in the body (e.g. the Cohere rerank model name). */
@@ -1102,64 +1323,45 @@ export interface SapAiCoreDecisionConfig {
   fetch?: FetchLike;
 }
 
-/** The one fetch shape the model uses. */
+/** The one fetch shape the provider uses. */
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
-export class SapAiCoreDecisionModel implements IDecisionModel {
+export class SapAiCoreRelevanceDecision implements IRelevanceDecision {
   readonly model: string;                      // = config.model
-  decide(request: DecisionRequest, options?: CallOptions)
-    : Promise<Result<DecisionResult, DecisionError>>;
+  score(request: RelevanceRequest, options?: CallOptions)
+    : Promise<Result<RelevanceResult, DecisionError>>;
 }
 ```
 
-**What it answers.** A cross-encoder scores (query, passage) pairs. So it answers exactly one
-question shape:
-
-| Request | Answer |
-|---|---|
-| `state` is a string, and **every** question is `noul` with `instructions.passage` a string | one `noul` answer per question, `probability` = the passage's `relevance_score` |
-| any `choice` or `score` question | the whole request fails: `DecisionError`, code `DECISION_UNSUPPORTED_QUESTION` |
-| a `noul` question without a string `instructions.passage` | the same `DECISION_UNSUPPORTED_QUESTION` |
-| a `state` that is not a string | the same `DECISION_UNSUPPORTED_QUESTION` (the model reads text) |
-
-- `instructions.task` and `criteria` are **not read**: Cohere takes only the query and the
-  documents. The answer is the passage's relevance to the state, whatever the wording (§17.5).
-- This is how `DecisionReranker` already asks: the query as the state, one `noul` question per
-  passage with `{ task, passage }` (`decision-reranker.ts`).
-- The existing code `DECISION_UNSUPPORTED_QUESTION` fits ("a question type the implementation
-  cannot answer fails the whole request"); no new error code.
-
-**Wire — ONE call per `decide`:**
+**Wire — ONE call per `score`:**
 
 - `POST {apiBaseUrl}/v2/inference/deployments/{deploymentId}/rerank`
 - headers: `Authorization: Bearer <credential token>`, `AI-Resource-Group: <resourceGroup>`,
   `Content-Type: application/json`
-- body: `{ model, query: state, documents: <passages in question order>, top_n: <question count> }`
-- response: `{ results: [{ index, relevance_score }] }`
+- body: `{ model, query, documents: passages, top_n: passages.length }`
+- response: `{ results: [{ index, relevance_score }] }` → `scores: [{ index, score: relevance_score }]`
+  (order as returned); `model` = the configured `model`; no `usage` (the response carries no token
+  counts).
 
-**Mapping.** `results[j].index` points into `documents`, i.e. at the j-th question in insertion order.
-Each question key gets `{ type: 'noul', probability: relevance_score }`. `DecisionResult.model` =
-the configured `model`; no `usage` (the response carries no token counts).
-
-**Errors — always a `DecisionError`, never a zero-filled or dropped answer:**
+**Errors — always a `DecisionError` with an existing code, never a zero-filled or dropped score:**
 
 | Failure | Code |
 |---|---|
-| empty `questions` | `DECISION_INVALID_REQUEST` |
-| unsupported question or state (above) | `DECISION_UNSUPPORTED_QUESTION` |
+| empty `query`, empty `passages`, or an empty passage | `DECISION_INVALID_REQUEST` (no call) |
 | the credential cannot give a token | `DECISION_AUTH` |
 | HTTP 401 / 403 | `DECISION_AUTH` |
 | HTTP 429 | `DECISION_RATE_LIMITED` |
 | HTTP 400 / 404 / 422 | `DECISION_INVALID_REQUEST` |
 | HTTP 5xx, network failure | `DECISION_UNAVAILABLE` |
 | `options.signal` aborted | `DECISION_ABORTED` |
-| no `results` array; fewer or more results than passages; a missing, duplicated, non-integer or out-of-range `index`; a `relevance_score` that is not finite or not in [0, 1] (the `NoulAnswer` invariant) | `DECISION_ERROR` |
+| no `results` array; fewer or more results than passages; a missing, duplicated, non-integer or out-of-range `index`; a non-finite `relevance_score` | `DECISION_ERROR` |
 | any other HTTP status | `DECISION_ERROR` |
 
+- No [0, 1] check: the score is not a probability (§3.9). `DECISION_UNSUPPORTED_QUESTION` is never
+  returned.
 - Messages carry the HTTP status, never the token or the response body (as `typesafe-decision`'s
   `mapError`).
-- `DecisionReranker` turns any of these into `RagError('…', 'RERANK_ERROR')`; `StagedRetrieval`
-  handles it by `onFailure` and counts it (§4.8, §9).
+- A bad answer is caught twice: here (`DECISION_ERROR`) and by `RelevanceReranker`'s output check.
 
 **Rules it follows (same as `typesafe-decision` and the AI Core embedder):**
 
@@ -1174,44 +1376,48 @@ the configured `model`; no `usage` (the response carries no token counts).
   `sap-aicore-auth`.
 - No timeout of its own; `options.signal` aborts the request. No retries inside.
 
-### 5.3 How `DecisionReranker` batches map to `/rerank` calls
+**Withdrawn:** `SapAiCoreDecisionModel` / `SapAiCoreDecisionConfig` and the "Cohere behind
+`IDecisionModel`" design (amendment 3). It mapped `relevance_score` into `NoulAnswer.probability` —
+exactly the confusion the goal decision separates — and needed the `instructions.passage` and
+`DECISION_UNSUPPORTED_QUESTION` rules that no longer apply. It was never released, so it gets no
+alias.
 
-`DecisionReranker` (unchanged) splits the candidates into batches and calls `decide` once per batch:
+### 5.4 Package placement
 
-| `DecisionReranker` | With `SapAiCoreDecisionModel` |
-|---|---|
-| a batch closes when its estimated tokens would pass `maxBatchTokens` (default 48 000; ~4 chars per token; per passage it counts the passage + the task/criteria JSON) | one batch = one `decide` = **one `/rerank` call** with that batch's passages |
-| up to `concurrency` batches in flight (default 4) | up to 4 `/rerank` calls in parallel |
-| any failed batch fails the whole `rerank` | any failed call → `RERANK_ERROR` |
-| scores of all batches sorted together, ties in input order | `relevance_score` is per (query, passage) pair, so batches merge on one scale — the same assumption `DecisionReranker` makes for Jev |
+| What | Package | Why |
+|---|---|---|
+| `IProbabilityDecision`, `IRelevanceDecision` and their types | `@mcp-abap-adt/llm-agent` | contracts shared by providers, rerankers, server-libs and consumers |
+| `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, the `PROBABILITY_RERANK_DEFAULT_*` wording | **new `@mcp-abap-adt/llm-agent-reranker`** | rerankers carry no vendor specifics (goal decision 2026-10-05): one vendor-neutral package. Peer: `@mcp-abap-adt/llm-agent` only — nothing in them imports `interfaces-auth` |
+| `wrapProbabilityDecision` (ex-`wrapDecisionModel`), `wrapRelevanceDecision` | `@mcp-abap-adt/llm-agent-libs` (`adapters/`) | they are usage-logging **decision** adapters beside `usage-logging-embedder`, not rerankers: they import only `llm-agent`, wrap a decision (not an `IReranker`), and their caller is server-libs' resolver, which wraps the decision before handing it to a reranker. No reranker imports them |
+| `SapAiCoreRelevanceDecision` | **new `@mcp-abap-adt/sap-aicore-decision`** | one package per vendor and role, shaped like `typesafe-decision`: peers `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/interfaces-auth`, `LGPL-3.0-only`, plain `fetch`, no runtime dependency |
+| `TypeSafeDecisionModel` | `typesafe-decision` (unchanged) | implements `IProbabilityDecision` (the same type as before) |
 
-- The default compositions rerank ≤ 30 tools (`faceted-cohere`, §7.4): typically **one** call.
-- The task/criteria part of the estimate is not sent to Cohere, so a batch is smaller on the wire
-  than estimated. A consumer that must respect the deployment's own request limits sets
-  `DecisionRerankerOptions.maxBatchTokens` lower; no knob is added.
-
-### 5.4 Package placement — why its own package
-
-| Option | Verdict |
-|---|---|
-| Inside `llm-agent-libs` | ✗ libs is vendor-neutral; no provider HTTP client lives there |
-| Inside `sap-aicore-embedder` or `sap-aicore-llm` | ✗ a reranking consumer would install an embedder / LLM and their `@sap-ai-sdk/*` dependencies; one package would carry a second role |
-| Inside `typesafe-decision` | ✗ another vendor |
-| **New `@mcp-abap-adt/sap-aicore-decision`** | ✓ one package per vendor and role (goal decision 2026-10-05), shaped like `typesafe-decision`: `peerDependencies` on `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/interfaces-auth`, `LGPL-3.0-only`, plain `fetch`, no runtime dependency |
-
-- `llm-agent-server` (the app) adds it as a dependency, like `typesafe-decision`; its existing
-  `createMakeDecisionModel` gains the `sap-aicore` arm (§6.2).
+- **`assertPositiveInteger` is copied** into `llm-agent-reranker` (a private 6-line util). Moving it
+  into `llm-agent` would add a public export to the contracts package that is not a contract;
+  libs keeps its own copy for `RerankedRetrieval`. The reranker package cannot import libs (libs
+  depends on it — a cycle).
+- **libs depends on `llm-agent-reranker`** (a peer, workspace sibling — the repo's standing
+  exception) and re-exports every moved name from its root, plus the old names as deprecated
+  aliases, until the next major (§13). libs has no subpath for rerankers, so its root is the only
+  old path.
+- Server-libs imports the rerankers from `llm-agent-reranker` (new peer); the app adds it as a
+  dependency.
+- Rejected placements for `SapAiCoreRelevanceDecision`: inside `llm-agent-reranker` (a vendor HTTP
+  client in a vendor-neutral package); inside `sap-aicore-embedder` / `sap-aicore-llm` (one package
+  would carry a second role and its `@sap-ai-sdk/*` dependencies); inside `typesafe-decision`
+  (another vendor).
 - **Deployment id vs model name:** this PR takes `deploymentId`. Resolving a deployment by model
   name needs the deployment listing that lives privately in `sap-aicore-embedder`
   (`resolveDeploymentId`). Decided — D10 (§17).
 
 ### 5.5 Rerankers in the default tools compositions
 
-- Cohere: `faceted-cohere` = `DecisionReranker(SapAiCoreDecisionModel, TOOL_QUESTION)`.
-- Jev: `faceted-jev`, `small-set-jev` = `DecisionReranker(TypeSafeDecisionModel, TOOL_QUESTION)`.
-- In the library both take an `IDecisionModel`; the name says which model the composition was
-  measured with. In YAML the name is checked against `decision.provider` (§6.2).
-- Which reranker runs is the consumer's choice: any decision model composes with any indexing and
+- Cohere: `faceted-cohere` = `RelevanceReranker(IRelevanceDecision)`.
+- Jev: `faceted-jev`, `small-set-jev` = `ProbabilityReranker(IProbabilityDecision, TOOL_QUESTION)`.
+- The type says which: a `faceted-cohere` factory takes an `IRelevanceDecision`, the Jev ones an
+  `IProbabilityDecision`. In YAML the variant is checked against the kind `decision.provider`
+  gives (§6.2).
+- Which reranker runs is the consumer's choice: any reranker composes with any indexing and
   candidate strategy (§7.5).
 
 ---
@@ -1246,8 +1452,8 @@ tools stores (e.g. per role, or a second MCP server's) binds them in its composi
 `profile.bind({ key, rag })` + `builder.withRetrievalStrategy(key, bound.retrieval)` (§6.1, §7.5).
 
 ```yaml
-decision:                 # existing section — ONE decision model per server. Secrets never here.
-  provider: sap-aicore                           # typesafe (Jev) | sap-aicore (Cohere Rerank on SAP AI Core) — new value
+decision:                 # existing section — ONE decision per server; the provider decides its kind. Secrets never here.
+  provider: sap-aicore                           # typesafe (Jev → probability) | sap-aicore (Cohere on SAP AI Core → relevance) — new value
   deploymentId: ${RERANK_DEPLOYMENT_ID}          # sap-aicore: required (D10: an id, not a model name)
   model: <rerank model name>                     # sap-aicore: required, sent as `model`
   resourceGroup: default                         # sap-aicore: optional, header AI-Resource-Group
@@ -1283,27 +1489,35 @@ rag:
     tools:
       compose:
         indexer: { faceted: [summary, parameters] }  # facet names → IToolFacet instances; name-tail is opt-in
+        # text: parameter-names                    # provider text composer (§7.3.1): parameter-names (default, C0) | enum-values | schema | a registered name
         # or (generic, in no default; measured worse on `compact`, §7.3.2):
         #   indexer: { enum-values: { inner: { faceted: [] }, discriminator: required-enum, maxValues: <n> } }
         # discriminator: required-enum | { named: <parameter> } | a registered name
         pool: { items: 30 }                        # → ItemPool(30)
         collapse: max                              # → MaxScoreCollapse
-        reranker: decision                         # none | decision | llm — decision = the decision: section's model (Jev or Cohere)
-        question: tool                             # decision (typesafe only) / llm
+        reranker: decision                         # none | decision | llm — decision = ProbabilityReranker (typesafe) or RelevanceReranker (sap-aicore)
+        question: tool                             # probability decision (typesafe) / llm only — refused for a relevance decision
         decomposer: none                           # none | a registered name (no built-in)
         cut: { fixed-items: 5 }                    # top-items | fixed-items | score-floor {minItems,maxItems,minScore} | token-budget {budgetTokens,maxItems?}
         onFailure: stage1                          # stage1 | error
 ```
 
-**`decision:` with `provider: sap-aicore`** — mirrors `provider: typesafe`:
+**One `decision:` section; the provider decides the kind** (goal decision 2026-10-05):
 
 | | `typesafe` (existing) | `sap-aicore` (new) |
 |---|---|---|
+| kind of decision | **probability** (`IProbabilityDecision`) | **relevance** (`IRelevanceDecision`) |
+| `reranker: decision` builds | `ProbabilityReranker` (+ the `question` / `task` wording) | `RelevanceReranker` (no wording) |
 | fields | `model?`, `baseUrl?`, `timeoutMs?`, `maxRetries?` | `deploymentId`, `model`, `resourceGroup?` |
 | credential kind | api key | bearer + `apiBaseUrl` (a SAP AI Core service key) |
 | default `credentialRef` | `DECISION` → env `DECISION_API_KEY` | `DECISION` → env `DECISION_SERVICE_KEY` |
 | a named ref, e.g. `credentialRef: AICORE` | `AICORE_API_KEY` | `AICORE_SERVICE_KEY` (e.g. the same AI Core account as the LLM) |
-| built by | the app's `createMakeDecisionModel` (existing seam `BuildAgentDeps.makeDecisionModel`) | the same function, new `sap-aicore` arm |
+| built by | the app's `createMakeDecisionModel` (existing seam `BuildAgentDeps.makeDecisionModel`, returns `IProbabilityDecision`) | the app's new `createMakeRelevanceDecision` (new optional seam `BuildAgentDeps.makeRelevanceDecision`, returns `IRelevanceDecision`, §3.8) |
+
+- **The kind table is server-libs' one place** that maps a provider name to a kind
+  (`typesafe` → probability, `sap-aicore` → relevance); the resolver calls the seam of that kind.
+  A kind's seam missing while the config asks for it → startup error naming the seam (as today's
+  `makeDecisionModel` message).
 
 - **Where the AI Core service key comes from:** the shipped app reads the service key JSON of the
   SAP AI Core instance (`clientid`, `clientsecret`, `url`, `serviceurls.AI_API_URL`) from
@@ -1311,9 +1525,16 @@ rag:
   credential (client-credentials token, refreshed by `TokenProvider`) and `apiBaseUrl`. Same rule as
   the AI Core LLM and embedder. A consumer with its own composition root builds the credential its
   own way.
-- **One decision model per server:** `decision:` is one section. `rag.retrieval` entries with
-  `reranker: decision` and `rag.profiles.tools` share that model. With `provider: sap-aicore`,
-  `rag.retrieval`'s `reranker: decision` reranks with Cohere too — no new key needed there.
+- **One decision per server:** `decision:` is one section. `rag.retrieval` entries with
+  `reranker: decision` and `rag.profiles.tools` share it. With `provider: sap-aicore`,
+  `rag.retrieval`'s `reranker: decision` builds a `RelevanceReranker` (Cohere) too — no new key
+  needed there.
+- **Wording is the probability decision's only.** `question` / `task` select the
+  `ProbabilityReranker`'s wording; a relevance decision reads none, so they are **refused at
+  startup** when the provider is relevance (accepting them would be a silent no-op).
+- **A threshold on relevance scores is the consumer's calibration.** `cut: { score-floor: … }`
+  over a `RelevanceReranker` is allowed and documented as provider-specific calibration; no
+  default composition uses it.
 
 **Resolution.**
 
@@ -1327,9 +1548,14 @@ rag:
 - A decomposer factory gets the store's query embedder from the resolver (the same one `makeRag`
   gives the store); YAML carries no decomposer parameters — they belong to the registered factory.
 - Rerankers resolve through the same code as `rag.retrieval`:
-  - `decision`: `DecisionReranker` over the ONE model the existing `makeDecisionModel` seam builds
-    from `decision:` (Jev or Cohere); the library constructs none from configuration;
+  - `decision`: by the provider's kind — `ProbabilityReranker` over the ONE
+    `IProbabilityDecision` the `makeDecisionModel` seam builds, or `RelevanceReranker` over the ONE
+    `IRelevanceDecision` the `makeRelevanceDecision` seam builds, each wrapped once for usage
+    logging (`wrapProbabilityDecision` / `wrapRelevanceDecision`); the library constructs none
+    from configuration;
   - `llm`: `LlmReranker` over a key of the `llm:` map (existing).
+- Provider text composers resolve through `toolsStrategyFactories` like facets: built-ins
+  `parameter-names` (default), `enum-values`, `schema` (§7.3.1).
 - Stores are built through the existing `makeRag` seam, so a companion shares the primary's
   embedder.
 - `record: { file }` / `companion: { source: { file } }` is a JSON object
@@ -1346,13 +1572,14 @@ rag:
   without `maxValues`; non-positive `budgetTokens`;
 - a decision reranker without a `decision:` section: `faceted-cohere`, `faceted-jev`,
   `small-set-jev`, or `compose.reranker: decision`;
-- a named variant whose decision model is another provider: `faceted-cohere` needs
-  `decision.provider: sap-aicore`; `faceted-jev` and `small-set-jev` need `typesafe` (§17.5);
+- a named variant whose decision is of the other kind: `faceted-cohere` needs a relevance provider
+  (`sap-aicore`); `faceted-jev` and `small-set-jev` need a probability provider (`typesafe`);
 - `decision:`: `provider` not `typesafe` | `sap-aicore`; with `sap-aicore`, a missing `deploymentId`
   or `model`, or a typesafe-only field (`baseUrl`, `timeoutMs`, `maxRetries`); with `typesafe`, a
   sap-aicore-only field (`deploymentId`, `resourceGroup`); a secret (`apiKey`) as today;
-- an explicit `question` (or, in `rag.retrieval`, `task`) for a decision reranker when
-  `decision.provider` is `sap-aicore` — Cohere reads no question wording (§5.2, §17.5);
+- an explicit `question` (`rag.profiles` `compose`, `rag.retrieval`) or `task` (`rag.retrieval`)
+  for a decision reranker when the provider's kind is relevance — a relevance decision reads no wording (§3.9);
+- an unknown `text` composer name;
 - a tools key whose variant is not a tools profile.
 
 - Server-wide like `rag.retrieval`: worker configs that declare `rag.profiles` are rejected;
@@ -1431,15 +1658,16 @@ rag:
 
 | Step | Contract | Shipped instances |
 |---|---|---|
-| indexing | `IItemIndexer<ToolItem>` | 30.1.0 single record (no profile); `FacetedToolIndexer(facets)`; `EnumValueToolIndexer(inner, { discriminator, maxValues })`; `IntentRecordIndexer(inner, source)`; `IntentCompanionIndexer(source)` |
+| indexing | `IItemIndexer<ToolItem>` | 30.1.0 single record (no profile); `FacetedToolIndexer(facets, { text? })`; `EnumValueToolIndexer(inner, { discriminator, maxValues })`; `IntentRecordIndexer(inner, source)`; `IntentCompanionIndexer(source)` |
+| provider text (inside faceted indexing) | `IToolTextComposer` | `ParameterNamesToolText` (default, C0); `EnumValuesToolText` (C0e), `SchemaToolText` (C0s) — measured within noise, in no default (§7.3.1) |
 | facet (inside faceted indexing) | `IToolFacet` | `SummaryFacet`, `ParametersFacet`; opt-in, convention-dependent: `NameTailFacet` |
 | discriminator (inside per-value indexing) | `IDiscriminatorSelector` | `RequiredEnumDiscriminator`, `NamedDiscriminator(parameter)` |
 | intent source | `IToolIntentSource` | `StaticIntentSource(map)`, `LlmIntentSource(llm, { prompt? })` |
 | in-store scoring | `ISearchStrategy` (existing, on the store) | the store's own (hybrid or cosine) |
 | candidate pool | `ICandidatePool` | `ItemPool(n)` |
 | collapse | `ICollapseRule` | `MaxScoreCollapse` |
-| reranker | `IReranker` (existing) | none; `DecisionReranker` + `TOOL_QUESTION` over an `IDecisionModel`; `LlmReranker` |
-| decision model (inside `DecisionReranker`) | `IDecisionModel` (existing) | `SapAiCoreDecisionModel` (Cohere on SAP AI Core, new); `TypeSafeDecisionModel` (Jev, existing) |
+| reranker | `IReranker` (existing) | none; `ProbabilityReranker` + `TOOL_QUESTION` over an `IProbabilityDecision`; `RelevanceReranker` over an `IRelevanceDecision`; `LlmReranker` (all in `llm-agent-reranker`) |
+| decision (inside a reranker) | `IProbabilityDecision` / `IRelevanceDecision` (§3.9) | `TypeSafeDecisionModel` (Jev, probability, existing); `SapAiCoreRelevanceDecision` (Cohere on SAP AI Core, relevance, new) |
 | query decomposition | `IQueryDecomposer` (optional, §4.5) | **none** — the consumer's own |
 | final cut | `IItemCut` | `TopItemsCut`, `FixedItemsCut(k)`, `ScoreFloorCut(...)`, `TokenBudgetCut(...)` |
 | size estimate (inside a token cut) | `IItemSizeEstimator` | `ToolDefinitionSizeEstimator` (default), `CharsPerTokenEstimator(n)` |
@@ -1466,11 +1694,12 @@ new ComposedToolsProfile({
 
 #### 7.3.1 Provider records — fine-grained sets (`FacetedToolIndexer`)
 
-`FacetedToolIndexer([new SummaryFacet(), new ParametersFacet()])`:
+`FacetedToolIndexer([new SummaryFacet(), new ParametersFacet()], { text? })` — `text` is the
+provider text composer (below); absent → `ParameterNamesToolText` (C0):
 
 | Kind | Id | Text | Written when |
 |---|---|---|---|
-| `full` (canonical) | `recordId(global, itemId, 'full', 0)` — `itemId` is the 30.1.0 id | `Tool: <name> — <description>` + `\nParameters: <p1>, <p2>, …` when there are any | always — not a facet, so it cannot be left out |
+| `full` (canonical) | `recordId(global, itemId, 'full', 0)` — `itemId` is the 30.1.0 id | the composer's text; default (`ParameterNamesToolText`, C0): `Tool: <name> — <description>` + `\nParameters: <p1>, <p2>, …` when there are any | always — not a facet, so it cannot be left out |
 | `summary` (`SummaryFacet`) | `recordId(global, itemId, 'summary', 0)` | `<name words> — <first clause of description>` | the first clause is non-empty |
 | `parameters` (`ParametersFacet`) | `recordId(global, itemId, 'parameters', 0)` | `<name words> — ` + per parameter, in schema order, `; `-joined: `<parameter words>` + ` (<first clause of its description>)` when it has one + `: <value words>, …` when it has string values | the tool has ≥ 1 parameter |
 | `name-tail` (`NameTailFacet`, **opt-in only**) | `recordId(global, itemId, 'name-tail', 0)` | `<name words after the first word>` | the name has ≥ 2 words |
@@ -1489,6 +1718,32 @@ new ComposedToolsProfile({
     tag (`[...]`) removed (example: mcp-abap-adt's `[read-only]`); at most 200 characters.
   - No lexicon, no synonyms, no LLM: every word comes from the provider. A rule that would produce
     nothing produces no record — never a made-up word.
+- **Provider text composition is a strategy (`IToolTextComposer`, review finding 4).** The `full`
+  text is also the reranker's item text (§4.6) and every non-canonical record's `itemText`, so the
+  composer shapes both stage 1 and the reranker. Shipped composers — provider words only:
+
+  | Composer | `full` text | Default? |
+  |---|---|---|
+  | `ParameterNamesToolText` (**C0**) | `Tool: <name> — <description>` + `\nParameters: <names>` | **yes** — measured |
+  | `EnumValuesToolText` (**C0e**) | C0 + per parameter with string values: `<name>: <values>` | no |
+  | `SchemaToolText` (**C0s**) | C0 + per parameter: its description's first clause and its string values | no |
+
+  **Measured** (mcp-abap-adt `compact`, Jev over the whole role set, required-recall; EN 67 rows,
+  non-ASCII 21 rows; ~1.6k tokens at k=3 for all three):
+
+  | Text | EN k=3 | EN k=5 | non-ASCII k=3 |
+  |---|---|---|---|
+  | C0 | 0.970 | 0.970 | 1.000 |
+  | C0s | 0.970 | 0.985 | 1.000 |
+  | C0e | 1.000 | 1.000 | 0.905 |
+
+  - Without a reranker, schema text helps non-ASCII at k=5 (0.667 → 0.857) but hurts English at
+    k=2–3.
+  - **Net: within noise, no winner** (1 row ≈ 1.5 points EN, ≈ 4.8 points non-ASCII). `compact`
+    already lists its object types in the descriptions, so the case the review raised — objects
+    named **only** in an enum — is neither confirmed nor refuted here.
+  - **So the default stays C0** (measured, no change), and C0e / C0s are strategies a consumer may
+    inject and measure on its own server (§14.3), documented with these numbers as the caveat.
 - **Why `parameters` replaces the measured `object` record in the default:** it carries the same
   kind of signal — what the tool acts on — from the **schema** (e.g. a `path` or `class_name`
   parameter) instead of from a naming convention. **Not measured yet**; the faceted variants' rows
@@ -1614,15 +1869,15 @@ its measurement.
 |---|---|---|---|
 | **`baseline`** — no choice made | any | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | Fine-grained read-only set: EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
 | **`faceted`** | fine-grained | `FacetedToolIndexer([SummaryFacet, ParametersFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | **Schema-derived layout not yet measured.** Closest measured layouts, both 0.966 at k=5 (hub spike `spike-facets`): LLM-generated `operation` / `object` facets, and name-derived facets (`full` + `operation`=`summary` + `object`=`NameTailFacet`); the latter 0.977 at k=8 with ~13 tools. Pool 15 and cut 8 are that layout's (without a reranker `ItemPool(15)` = 30, §7.5). |
-| **`faceted-cohere`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(SapAiCoreDecisionModel, TOOL_QUESTION)` + `FixedItemsCut(5)` | **Not measured as one composition.** Closest: one record per tool + Cohere, pool 30 items, k=5 (§2.3): EN-ext 0.931 with 8.3 tools; single 0.973, multi 0.714, non-English 0.962. At most 5 tools. |
-| **`faceted-jev`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `DecisionReranker(TypeSafeDecisionModel, TOOL_QUESTION)` + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest: one record per tool + Jev, pool 30 items, k=5 (§2.3): EN-ext 0.977 with 8.3 tools; single 1.000, multi 0.857, non-English 1.000. At most 5 tools. |
-| **`small-set-jev`** | coarse / small (the whole set fits one rerank) | `FacetedToolIndexer([])` (one `full` record per tool) + `ItemPool(poolItems)` with `poolItems` ≥ the tool count (= rerank-all) + `MaxScoreCollapse` + `DecisionReranker(TypeSafeDecisionModel, TOOL_QUESTION)` + `FixedItemsCut(3)` | `compact`, writer set (25 tools), §2.5.1: **0.970 at ~1.6k tokens** (whole set ≈ 7.9k); multi-step 1.000, non-English 1.000. k=3 is the measured knee (C0 + Jev: k=2 0.925, k=3 0.970, k=5 0.970). Rerank-all = Jev over a stage-1 pool (0.970 both): stage 1 adds nothing at this size. |
+| **`faceted-cohere`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `RelevanceReranker(IRelevanceDecision)` (Cohere: `SapAiCoreRelevanceDecision`) + `FixedItemsCut(5)` | **Not measured as one composition.** Closest: one record per tool + Cohere, pool 30 items, k=5 (§2.3): EN-ext 0.931 with 8.3 tools; single 0.973, multi 0.714, non-English 0.962. At most 5 tools. |
+| **`faceted-jev`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `ProbabilityReranker(IProbabilityDecision, TOOL_QUESTION)` (Jev: `TypeSafeDecisionModel`) + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest: one record per tool + Jev, pool 30 items, k=5 (§2.3): EN-ext 0.977 with 8.3 tools; single 1.000, multi 0.857, non-English 1.000. At most 5 tools. |
+| **`small-set-jev`** | coarse / small (the whole set fits one rerank) | `FacetedToolIndexer([])` (one `full` record per tool) + `ItemPool(poolItems)` with `poolItems` ≥ the tool count (= rerank-all) + `MaxScoreCollapse` + `ProbabilityReranker(IProbabilityDecision, TOOL_QUESTION)` (Jev) + `FixedItemsCut(3)` | `compact`, writer set (25 tools), §2.5.1: **0.970 at ~1.6k tokens** (whole set ≈ 7.9k); multi-step 1.000, non-English 1.000. k=3 is the measured knee (C0 + Jev: k=2 0.925, k=3 0.970, k=5 0.970). Rerank-all = Jev over a stage-1 pool (0.970 both): stage 1 adds nothing at this size. |
 
 ```ts
 mcpToolsVariants.faceted();
-mcpToolsVariants.facetedCohere({ decisionModel: new SapAiCoreDecisionModel({ … }) });
-mcpToolsVariants.facetedJev({ decisionModel: new TypeSafeDecisionModel({ … }) });
-mcpToolsVariants.smallSetJev({ decisionModel, poolItems });   // Jev; poolItems ≥ the store's tool count
+mcpToolsVariants.facetedCohere({ relevanceDecision: new SapAiCoreRelevanceDecision({ … }) });
+mcpToolsVariants.facetedJev({ probabilityDecision: new TypeSafeDecisionModel({ … }) });
+mcpToolsVariants.smallSetJev({ probabilityDecision, poolItems });   // Jev; poolItems ≥ the store's tool count
 // intents on top of any variant except baseline:
 mcpToolsVariants.facetedCohere({ …, intents: { record: staticIntents } });
 // the consumer's own decomposer on top of any variant except baseline (none shipped):
@@ -1638,10 +1893,14 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
   check (§14.3) measures the schema-derived layout; a consumer on a verb-first server may compose
   the measured name-derived layout itself (§7.5).
 - **`faceted-cohere`:** V0 + Cohere (one record per tool), not the faceted composition.
-- **`faceted-cohere` and `faceted-jev` are the same composition** with a different decision model
-  (§5.5). Two names, because each cites the measurement of its own model. In the library the
-  argument is any `IDecisionModel`; YAML checks the name against `decision.provider` (§6.2).
-- **Cohere's rerank batches:** ≤ 30 tools per query → typically one `/rerank` call (§5.3).
+- **`faceted-cohere` and `faceted-jev` share indexing, pool, collapse and cut**; they differ in the
+  reranker and the kind of decision (§5.5). Each cites the measurement of its own model. The
+  factory's argument type says which decision it takes; YAML checks the variant against the
+  provider's kind (§6.2).
+- **Cohere's rerank calls:** ≤ 30 tools per query → one `/rerank` call (`RelevanceReranker`
+  sends all candidates in one call by default, §5.2).
+- **Every `FixedItemsCut` here is a ceiling** under the caller's k (§4.9): a caller asking for 2
+  gets at most 2.
 - **`faceted-jev` caveat:** faceted + Jev was never run as one composition on an item pool. It ships
   marked **"to be measured as one composition on fresh consumer queries before promotion"** and is
   not recommended over the others until the consumer check (§14.3) runs it (D11, decided).
@@ -1658,8 +1917,9 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
     set. It is the default for **small** sets; a large coarse set is the consumer's own
     composition (e.g. `ItemPool(n)` below the count, or no reranker).
   - Equivalent in 30.1.0 terms: `rag.retrieval.tools: { strategy: rerank-all, reranker: decision,
-    maxCandidates: <tool count> }` with the caller's k = 3. The variant fixes k=3 inside the
-    profile, so the caller's k (20 in `IToolsRagHandle`) does not undo the measured cut.
+    maxCandidates: <tool count> }` with the caller's k = 3. The variant caps at 3 inside the
+    profile, so a larger caller's k (20 in `IToolsRagHandle`) does not undo the measured cut; a
+    smaller one still wins (`min(k, 3)`, §4.9).
 - **On a fine-grained set** `small-set-jev` is the wrong default: hundreds of tools in every rerank.
   Use `faceted-jev` or the 30.1.0 `rerank` strategy there.
 - One record + Jev on a stage-1 pool (the best measured fine-grained Jev composition) is already
@@ -1676,7 +1936,7 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
 
 - Any shipped strategy combines with any other; a consumer's own strategy implements the same
   contract (e.g. its own `IToolFacet`, `IDiscriminatorSelector`, `ICandidatePool`,
-  `IItemSizeEstimator`, `IReranker` or `IDecisionModel`).
+  `IItemSizeEstimator`, `IReranker`, `IProbabilityDecision` or `IRelevanceDecision`).
 - Typed rule: `full` cannot be dropped (it is not a facet).
 - Examples:
   - the **measured** name-derived fine-grained layout, for a verb-first server:
@@ -1684,10 +1944,14 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
     consumer's choice;
   - a prompt-size guard on top of a count: `TokenBudgetCut({ budgetTokens, maxItems: 5 })` in
     place of `FixedItemsCut(5)` — the count stays the main cut, the budget only caps it (§4.10);
-  - `small-set-jev` with Cohere instead of Jev: `mcpToolsVariants.smallSetJev({ decisionModel:
-    new SapAiCoreDecisionModel({ … }), poolItems })` in code, or `compose` with
-    `reranker: decision` under `decision.provider: sap-aicore` in YAML (not measured on `compact`;
-    the consumer measures it, §14.3);
+  - the `small-set-jev` composition with Cohere instead of Jev: a `ComposedToolsProfile` with
+    `FacetedToolIndexer([])`, `ItemPool(poolItems)`, `MaxScoreCollapse`,
+    `RelevanceReranker(new SapAiCoreRelevanceDecision({ … }))` and `FixedItemsCut(3)` in code, or
+    `compose` with `reranker: decision` under `decision.provider: sap-aicore` in YAML (not measured
+    on `compact`; the consumer measures it, §14.3). `smallSetJev` itself takes only an
+    `IProbabilityDecision`;
+  - schema-enriched provider text: `FacetedToolIndexer([...], { text: new EnumValuesToolText() })`
+    (C0e) or `SchemaToolText` (C0s) — within noise on `compact` (§7.3.1);
   - per-value records for a coarse set where the consumer expects them to help:
     `EnumValueToolIndexer(new FacetedToolIndexer([]), { discriminator, maxValues })` (measured
     worse on `compact`, §7.3.2).
@@ -1751,6 +2015,7 @@ pipeline. The contracts are enough for that; nothing in the library has to chang
 | To change | Implement | Example reason |
 |---|---|---|
 | a record view | `IToolFacet` | the server puts the object in a URI template, a tag or an `x-` schema annotation |
+| the provider text (the `full` record, the reranker's text) | `IToolTextComposer` | the objects are named only in an enum (try `EnumValuesToolText` first) |
 | which parameter splits a coarse tool | `IDiscriminatorSelector` | the split is by two parameters, or per tool |
 | the whole record layout | `IItemIndexer<ToolItem>` | records from a server-side catalog document |
 | candidate depth, collapse, cut, size | `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator` | the model's own tokenizer for the budget |
@@ -1872,9 +2137,9 @@ builder.withToolsProfile(myServerTools);                   // or register a name
   and every readable group store — all `items` sources.
 - Collapse by the owner-qualified item (source, scope, owner key, `itemId`) with
   `MaxScoreCollapse`; the same `itemId` in two partitions, or from two owners, is two items.
-- Optional reranker, e.g. `DecisionReranker` with `PASSAGE_QUESTION` over Jev or over
-  `SapAiCoreDecisionModel` (Cohere); it reads the item's `text`.
-- Cut: the consumer's `IItemCut`; `FixedItemsCut(3)` recommended.
+- Optional reranker, e.g. `ProbabilityReranker` with `PASSAGE_QUESTION` over Jev, or
+  `RelevanceReranker` over `SapAiCoreRelevanceDecision` (Cohere); it reads the item's `text`.
+- Cut: the consumer's `IItemCut`; `FixedItemsCut(3)` recommended (a ceiling under the caller's k).
 - Each returned `RagResult` is the item **whole**, hydrated from its canonical record whichever
   record matched (§4.6): `text`, `metadata.data`, `metadata.visibility`, owner keys,
   `matchedKinds`, `source`. A hit whose canonical record is missing is dropped and counted.
@@ -1910,10 +2175,11 @@ new SharedItemsProfile({
 | request logger | yes | reranker LLM / decision calls, as today (`component: 'rerank'`) |
 
 - **A reranker error is always observable under a profile.** A wrong or missing score count from
-  any reranker (Cohere or Jev through `DecisionReranker`, LLM, or a consumer's) → `RERANK_ERROR` →
-  counted (`rerank_fallback` or `rerank_error`), on the span, as a session step. Never silent.
-- With Cohere, a bad `/rerank` answer is caught twice: `SapAiCoreDecisionModel` returns a
-  `DecisionError` (§5.2), which `DecisionReranker` turns into `RERANK_ERROR`.
+  any reranker (`ProbabilityReranker`, `RelevanceReranker`, LLM, or a consumer's) → `RERANK_ERROR`
+  → counted (`rerank_fallback` or `rerank_error`), on the span, as a session step. Never silent.
+- With Cohere, a bad `/rerank` answer is caught twice: `SapAiCoreRelevanceDecision` returns a
+  `DecisionError` (§5.3), and `RelevanceReranker`'s output check (§5.2) turns any error into
+  `RERANK_ERROR`.
 
 ### 9.2 The 30.1.0 rerank strategies too
 
@@ -1981,18 +2247,21 @@ new SharedItemsProfile({
 
 | What | Package | Why |
 |---|---|---|
-| All contracts of §3 | `@mcp-abap-adt/llm-agent` | shared by libs, server-libs, provider packages and consumers |
+| All contracts of §3 (incl. `IProbabilityDecision`, `IRelevanceDecision`, §3.9) | `@mcp-abap-adt/llm-agent` | shared by libs, the reranker package, server-libs, provider packages and consumers |
+| `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*` | **new** `@mcp-abap-adt/llm-agent-reranker` | §5.4 — rerankers carry no vendor specifics; one vendor-neutral package (goal decision 2026-10-05) |
+| deprecated re-exports of every moved / renamed reranker name; `wrapProbabilityDecision`, `wrapRelevanceDecision` (+ `wrapDecisionModel` alias) | `@mcp-abap-adt/llm-agent-libs` | §5.4, §13 |
 | `StagedRetrieval`, `ItemPool`, cuts (incl. `TokenBudgetCut`), size estimators, `MaxScoreCollapse`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `SharedItemsProfile` | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | the retrieval built-ins, rerankers and the builder that uses them already live here; `llm-agent-rag` is the backend/embedder factory layer **below** libs and has no rerankers or LLM steps |
-| `SapAiCoreDecisionModel`, `SapAiCoreDecisionConfig` | **new** `@mcp-abap-adt/sap-aicore-decision` | §5.4 — one package per vendor and role, like `typesafe-decision` |
-| YAML resolver + validation (`rag.profiles`; `decision.provider: sap-aicore`) | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts`, `decision-config.ts` and the existing `makeDecisionModel` seam type |
-| the `sap-aicore` arm of `createMakeDecisionModel` (builds `SapAiCoreDecisionModel`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | in `make-decision-model.ts`, beside the `typesafe` arm |
+| `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike` | **new** `@mcp-abap-adt/sap-aicore-decision` | §5.4 — one package per vendor and role, like `typesafe-decision` |
+| YAML resolver + validation (`rag.profiles`; `decision.provider: sap-aicore`; the provider → kind table); the `makeRelevanceDecision` seam type | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts`, `decision-config.ts` and the existing `makeDecisionModel` seam type |
+| `createMakeRelevanceDecision` with the `sap-aicore` arm (builds `SapAiCoreRelevanceDecision`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | `make-relevance-decision.ts`, beside `make-decision-model.ts` |
 | `IRetrievalEmbedderOwner` implementations | `llm-agent` (`VectorRag`), `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | where the stores are |
 
-- Decided — D1 (libs, not a new `llm-agent-collections` package) and D2 (own provider package
-  `sap-aicore-decision`) (§17).
-- Build and publish order: `sap-aicore-decision` depends only on `llm-agent` (and the
-  `interfaces-auth` peer), so it builds after `llm-agent` and is published before
-  `llm-agent-server`, at the same version.
+- Decided — D1 (libs, not a new `llm-agent-collections` package), D2 (own provider package
+  `sap-aicore-decision`) and D24 (one reranker package) (§17).
+- **Build and publish order:** `llm-agent` → `llm-agent-reranker` → `typesafe-decision`,
+  `sap-aicore-decision` (each depends only on `llm-agent` and the `interfaces-auth` peer) → … →
+  `llm-agent-libs` (depends on `llm-agent-reranker`) → `llm-agent-server-libs` →
+  `llm-agent-server`; all at the same version.
 - New files carry no per-file licence header (the repo has none); every package, the new one
   included, is `LGPL-3.0-only` in `package.json`.
 
@@ -2018,17 +2287,35 @@ new SharedItemsProfile({
 - **No profile configured → no change.** Same records (golden test), same stages, same k
   semantics, same `RerankHandler` precedence, same YAML.
 - Removed: only the unexported `IToolIndexingStrategy` file.
+- **Renamed, old names kept as deprecated aliases until the next major** (goal decision
+  2026-10-05) — nothing a 30.1.0 consumer imports stops compiling:
+
+  | Old (30.1.0) | New | Where the old name stays |
+  |---|---|---|
+  | `IDecisionModel` | `IProbabilityDecision` | `@mcp-abap-adt/llm-agent` (`type` alias) |
+  | `DecisionReranker` | `ProbabilityReranker` (in `@mcp-abap-adt/llm-agent-reranker`) | `@mcp-abap-adt/llm-agent-libs` root (`const` + `type` alias) |
+  | `DecisionRerankerOptions` | `ProbabilityRerankerOptions` | libs root (`type` alias) |
+  | `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA` | `PROBABILITY_RERANK_DEFAULT_TASK`, `PROBABILITY_RERANK_DEFAULT_CRITERIA` | libs root |
+  | `wrapDecisionModel` | `wrapProbabilityDecision` | libs root |
+  | `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` from libs | the same names from `@mcp-abap-adt/llm-agent-reranker` | libs root (re-export, deprecated path) |
+
+  Every alias carries `@deprecated` naming its replacement. **Migration note** (CHANGELOG): import
+  rerankers from `@mcp-abap-adt/llm-agent-reranker`, use the new names; a consumer's own
+  `IDecisionModel` implementation needs no change (same type). A behaviour change: none.
+- **The caller's k caps every cut** (approved review finding 1). 30.1.0 has no item cuts, so
+  nothing released changes; `FixedItemsCut` is new in this spec and is a ceiling from the start.
 - Added, all optional: the contracts of §3, one builder method, the YAML section `rag.profiles`
   (key `tools` only, S8), the value `sap-aicore` for the existing `decision.provider` (with
   `deploymentId`, `model`, `resourceGroup`), optional health fields, the embedder capability,
-  telemetry options on the 30.1.0 rerank strategies, one new package
-  (`@mcp-abap-adt/sap-aicore-decision`). **No new composition seam:** the existing
-  `BuildAgentDeps.makeDecisionModel` builds the Cohere model too.
-- **A consumer with its own composition root** that implements `makeDecisionModel` and wants
-  Cohere adds a `sap-aicore` arm (build `SapAiCoreDecisionModel` with a bearer credential and
-  `apiBaseUrl`); its code compiles unchanged without it, since `SmartServerDecisionConfig` only
-  gains a provider value and optional fields (§17.5).
-- Release: a **minor** version. The new package is published at the same version, before the app.
+  telemetry options on the 30.1.0 rerank strategies, the optional seam
+  `BuildAgentDeps.makeRelevanceDecision`, two new packages (`@mcp-abap-adt/llm-agent-reranker`,
+  `@mcp-abap-adt/sap-aicore-decision`).
+- **A consumer with its own composition root** that wants Cohere supplies `makeRelevanceDecision`
+  (build `SapAiCoreRelevanceDecision` with a bearer credential and `apiBaseUrl`); its existing
+  `makeDecisionModel` compiles unchanged, since `SmartServerDecisionConfig` only gains a provider
+  value and optional fields (§17.5).
+- Release: a **minor** version. The new packages are published at the same version, in the order
+  of §11.
 - Opting in on a persistent tools store = a fresh collection (§7.8).
 - **k is unchanged:** the overall limit of a retrieval, now counted in items under a profile, with
   or without a decomposer. `docs/INTEGRATION.md` documents the `IQueryDecomposer` slot and its
@@ -2041,8 +2328,11 @@ new SharedItemsProfile({
   `docs/PERFORMANCE.md`, `docs/EXAMPLES.md` (YAML, both decision providers),
   `docs/TROUBLESHOOTING.md` (rerank error metric; switching profiles needs a fresh collection),
   `docs/DEPLOYMENT.md` (`DECISION_SERVICE_KEY`), `docs/SECURITY_THREAT_MODEL.md` (Cohere receives
-  the query and the candidate texts), `CLAUDE.md` key API notes, the new package's `README.md`,
-  the `typesafe-decision` README (the decision model is now one of two providers).
+  the query and the candidate texts), `CLAUDE.md` key API notes, both new packages' `README.md`,
+  the `typesafe-decision` README (`IProbabilityDecision`; one of two decision kinds), the
+  `llm-agent` and `llm-agent-libs` READMEs (renames, reranker package), `scripts/rag-eval/README.md`;
+  every page that names a renamed or moved symbol uses the new name and says the old one is a
+  deprecated alias.
 
 ---
 
@@ -2069,7 +2359,7 @@ new SharedItemsProfile({
   than 2 values. `EnumValueToolIndexer` and `IntentRecordIndexer` forward notes; the binding
   collects them from the primary and companion indexers; no notes → no `notes` key.
 - `TokenBudgetCut`: rank-order prefix; stops at the first item that does not fit (no skip-ahead);
-  `maxItems ?? requestedK` ceiling; `limit()` = that ceiling; top item over budget → empty,
+  `min(requestedK, maxItems ?? requestedK)` ceiling; `limit()` = that ceiling; top item over budget → empty,
   `over_budget` counted (through `ISizeBoundedCut`, S6), with `cut.tokens` / `cut.budgetTokens`
   on the span; items never truncated; `ToolDefinitionSizeEstimator` uses `definitionChars`, falls
   back to text length; `isSizeBoundedCut` true for `TokenBudgetCut`, false for the count cuts.
@@ -2089,8 +2379,9 @@ new SharedItemsProfile({
   collapse, reranker, cut), with no decomposer unless the consumer passes one; `baseline` binds
   nothing; intents and a decomposer refused on `baseline`; **no variant contains `NameTailFacet`**;
   `small-set-jev` = `FacetedToolIndexer([])` + `ItemPool(poolItems)` + `MaxScoreCollapse` +
-  `DecisionReranker` + `FixedItemsCut(3)`, and refuses a missing `poolItems` / `decisionModel`
-  (type-level); **no variant contains `EnumValueToolIndexer` or `TokenBudgetCut`**.
+  `ProbabilityReranker` + `FixedItemsCut(3)`, and refuses a missing `poolItems` /
+  `probabilityDecision` (type-level); `facetedCohere` builds a `RelevanceReranker` and does not
+  accept an `IProbabilityDecision` (type-level); **no variant contains `EnumValueToolIndexer` or `TokenBudgetCut`**.
 - Generic strategies carry no tuned number: the counts and sizes of `ItemPool`, `FixedItemsCut`,
   `ScoreFloorCut`, `TokenBudgetCut` (`budgetTokens`) and `EnumValueToolIndexer` (`maxValues`) are
   required constructor arguments (type-level); an optional one (`TokenBudgetCut.maxItems`) falls
@@ -2120,47 +2411,76 @@ new SharedItemsProfile({
   `orphans`; orphans do not use up k; **the reranker never receives intent text**; `getById`
   result outside the identity filter dropped; user partition skipped without `userId`; both failure
   policies; reranker output check (wrong count, duplicate, non-finite → `RERANK_ERROR`); the cut
-  applied once, at most `cut.limit(k)` items returned; **decomposer:** none → one run; `[]` →
+  applied once, at most `min(k, cut.limit(k))` items returned; **decomposer:** none → one run; `[]` →
   one run with the whole budget; each sub-query reranked against its own text and kept to its
   `k`; union de-duplicated by owner-qualified item; budgets summing to > k, `k < 1`, empty text or
   a decomposer error → `DECOMPOSE_ERROR`, counted, never a silent fall-back; at most `budget`
   items with any decomposer; `keepStage1Top` counted inside k; collapse keys on the owner-qualified item;
   `keepStage1Top`; every cut; telemetry (span attributes, counter, session
   step).
-- `SapAiCoreDecisionModel` (injected `fetch`): URL, `AI-Resource-Group` header (default
-  `default`), bearer asked per call, ONE call per `decide`, body `{model, query, documents, top_n}`
-  with documents in question order; answers mapped by `index` to the question keys,
-  `probability = relevance_score`; `choice` / `score` / passage-less `noul` / non-string state →
-  `DECISION_UNSUPPORTED_QUESTION` with no call; empty questions → `DECISION_INVALID_REQUEST`;
-  missing / duplicate / non-integer / out-of-range index, wrong count, non-finite or out-of-[0, 1]
-  score, no `results` → `DECISION_ERROR` (never zero-filled); HTTP 401/403 → `DECISION_AUTH`, 429 →
-  `DECISION_RATE_LIMITED`, 400/404/422 → `DECISION_INVALID_REQUEST`, 5xx / network →
-  `DECISION_UNAVAILABLE`; `signal` → `DECISION_ABORTED`; the token never appears in an error
-  message.
-- `DecisionReranker` over `SapAiCoreDecisionModel`: one `/rerank` call per batch; a small
-  `maxBatchTokens` splits the candidates into several calls and the scores merge into one order;
-  a `DecisionError` becomes `RERANK_ERROR`.
+- `SapAiCoreRelevanceDecision` (injected `fetch`): URL, `AI-Resource-Group` header (default
+  `default`), bearer asked per call, ONE call per `score`, body `{model, query, documents, top_n}`
+  with documents in passage order; `results[{index, relevance_score}]` → `scores[{index, score}]`;
+  empty query / passages / passage → `DECISION_INVALID_REQUEST` with no call; missing / duplicate /
+  non-integer / out-of-range index, wrong count, non-finite score, no `results` → `DECISION_ERROR`
+  (never zero-filled); a score outside [0, 1] is accepted (not a probability); HTTP 401/403 →
+  `DECISION_AUTH`, 429 → `DECISION_RATE_LIMITED`, 400/404/422 → `DECISION_INVALID_REQUEST`, 5xx /
+  network → `DECISION_UNAVAILABLE`; `signal` → `DECISION_ABORTED`; the token never appears in an
+  error message.
+- `RelevanceReranker`: default = one `score()` call for every candidate; `score` = the relevance
+  score, sorted descending, ties in input order; wrong count, duplicate index, out-of-range index,
+  non-finite score → `RERANK_ERROR`; a `DecisionError` → `RERANK_ERROR`; with `maxBatchTokens` set,
+  several calls (up to `concurrency` in flight) merged into one order; any failed call fails the
+  whole rerank; a non-positive option throws. Over `SapAiCoreRelevanceDecision` + fake fetch: one
+  `/rerank` call per batch.
+- `ProbabilityReranker`: the 30.1.0 `DecisionReranker` tests, moved unchanged with the class.
+- Renames and aliases: `IDecisionModel` is assignable both ways with `IProbabilityDecision`
+  (type check); libs' `DecisionReranker === ProbabilityReranker`, `DECISION_RERANK_DEFAULT_TASK ===
+  PROBABILITY_RERANK_DEFAULT_TASK`, `wrapDecisionModel === wrapProbabilityDecision`, and libs'
+  `LlmReranker` / `NoopReranker` / `TOOL_QUESTION` / `PASSAGE_QUESTION` are the reranker package's
+  objects; a 30.1.0-style import file compiles unchanged.
+- `wrapRelevanceDecision`: logs `component: 'decision'` per successful call (estimated tokens when
+  no `usage`); no logger → no-op; idempotent.
+- Text composers: `ParameterNamesToolText` reproduces the former `full` text byte for byte;
+  `EnumValuesToolText` / `SchemaToolText` add only provider words (values; description first
+  clauses); `FacetedToolIndexer` without `text` = C0; the composer's text is the non-canonical
+  records' `itemText`.
+- Caller's k caps every cut: `FixedItemsCut(5)` with k=2 → 2 items, `limit(2) = 2`;
+  `ScoreFloorCut({ minItems: 3, maxItems: 8 })` with k=2 → at most 2; `TokenBudgetCut({ maxItems:
+  5 })` with k=2 → at most 2; a consumer cut whose `limit` returns more than k → `StagedRetrieval`
+  still returns ≤ k; with a decomposer, the budget is `min(k, cut.limit(k))`.
+- Cleanup failures: a replacement whose stale delete fails (a writer that fails `deleteByIdRaw`
+  for one id) → the item is in `failedItems` (`cleanup-failed: …`), not in `indexedItems`; the
+  canonical lists the id in `staleRecordIds` (or `staleCompanionRecordIds` for a companion); a
+  retry `index` deletes it and clears the list; `remove` after that leaves nothing in any store; a
+  `remove` whose delete fails keeps the canonical and returns an error, and a second `remove`
+  completes.
 - `vectorizeMcpTools`: golden test of the default path; item accounting with a profile; one batch
   for all records; F1 regression through `StrategyRag` and `FallbackRag`.
 - F2 / F3.
 - Precedence: a profiled store is skipped by `RerankHandler`; binding is idempotent (server +
   builder).
 - YAML: every validation rule of §6.2 through the real `resolveSmartServerConfig` (incl. a
-  `rag.profiles` key other than `tools` refused, S8; a variant against the wrong
-  `decision.provider`; `decision.provider: sap-aicore` fields); the existing `makeDecisionModel`
-  seam builds `SapAiCoreDecisionModel` from `decision:` (default ref `DECISION` → bearer +
-  `apiBaseUrl` from `DECISION_SERVICE_KEY`; a named ref; `credentialRef` and `provider` never reach
-  the provider).
+  `rag.profiles` key other than `tools` refused, S8; a variant against the wrong kind of decision;
+  `question` / `task` refused for a relevance provider; `decision.provider: sap-aicore` fields; an
+  unknown `text` composer); `reranker: decision` builds `ProbabilityReranker` under `typesafe` and
+  `RelevanceReranker` under `sap-aicore`, in `rag.profiles` and `rag.retrieval`; a missing seam of
+  the needed kind → startup error naming it; the app's `makeRelevanceDecision` builds
+  `SapAiCoreRelevanceDecision` from `decision:` (default ref `DECISION` → bearer + `apiBaseUrl` from
+  `DECISION_SERVICE_KEY`; a named ref; `credentialRef` and `provider` never reach the provider).
 
 ### 14.2 Conformance kit
 
 `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance` (beside
 `rag-filter-conformance`): for any `ICollectionProfile` — owner keys and visibility on every
 record; deterministic, owner-scoped ids (`recordId`; the same `itemId` under two owners → disjoint
-ids); every returned item hydrated from its canonical record; **at most `cut.limit(k)` distinct
-items returned, with or without a decomposer** (S9: `cut.limit(k)` is the §4.5 budget — `k` for
-`TopItemsCut`, the profile's own k for `FixedItemsCut`; the kit also runs an adversarial
-decomposer whose budgets overrun the budget and expects `DECOMPOSE_ERROR`);
+ids); every returned item hydrated from its canonical record; **at most `min(k, cut.limit(k))` ≤
+k distinct items returned, with or without a decomposer** (S9 as amended by review finding 1: the
+§4.5 budget — `k` for `TopItemsCut`, `min(k, n)` for `FixedItemsCut(n)`; the kit also runs an
+adversarial decomposer whose budgets overrun the budget and expects `DECOMPOSE_ERROR`); **every
+shipped profile is called with a k smaller than its default cut** (e.g. k=2 for `faceted*` and
+`small-set-jev`) and returns ≤ k; a stale delete that fails is reported as `cleanup-failed` and
+retried by the next `index`;
 no record outside the caller's identity filter returned; generated records never canonical;
 **with a size-bounded cut, the summed size of the returned items ≤ the budget** (by the cut's own
 estimator) and no item is truncated. A consumer runs it against its own profile.
@@ -2170,8 +2490,9 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 - `scripts/rag-eval` gains `--variant baseline|faceted|faceted-cohere|faceted-jev|small-set-jev`, or a
   composition by strategy name (`--indexer`, `--facets`, `--discriminator`, `--intents
   off|record|companion`, `--pool-items`, `--reranker none|decision`, `--cut`,
-  `--budget-tokens`; `--decision-provider typesafe|sap-aicore` with `--rerank-deployment` /
-  `--rerank-model` / `--rerank-credential-ref` picks the decision model, as `decision:` does),
+  `--budget-tokens`, `--text parameter-names|enum-values|schema`; `--decision-provider
+  typesafe|sap-aicore` with `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref`
+  picks the decision and with it the reranker kind, as `decision:` does),
   any tools snapshot file (not tied to one server), and
   **prompt size** (summed definition tokens of the returned tools) next to the item count, and
   **required-recall** (AND of OR-groups; an optional `required` field in the queries file),
@@ -2212,23 +2533,24 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 ## 16. Architecture-principle check
 
 1. **Built on existing components:** `IRag`, `IRetrievalStrategy`, `StrategyRag`,
-   `applyRetrievalStrategy`, `IReranker`, `DecisionReranker`, `TOOL_QUESTION`,
-   `vectorizeMcpTools`'s batch path, the `makeRag` / `makeDecisionModel` seams, `IDecisionModel`
-   (Cohere is one more implementation, not a new reranker contract), `IRagDecorator`,
+   `applyRetrievalStrategy`, `IReranker`, `ProbabilityReranker` (ex-`DecisionReranker`), `TOOL_QUESTION`,
+   `vectorizeMcpTools`'s batch path, the `makeRag` / `makeDecisionModel` seams, the decision
+   contract (renamed `IProbabilityDecision`; relevance is its own contract because it is a
+   different decision, §3.9), `DecisionError` and its codes, `IRagDecorator`,
    `matchesRagIdentity`, `IBearerCredential`, metadata `ttl`.
 2. **The app is the example:** SmartServer selects profiles and rerankers from YAML through the
    same builder API.
 3. **Interfaces:** consumers depend on `ICollectionProfile` / `IRetrievalStrategy` / `IReranker`.
-4. **ISP:** new small interfaces; `IRag`, `IReranker`, `IDecisionModel`, `IMetrics`,
+4. **ISP:** new small interfaces; `IRag`, `IReranker`, `IProbabilityDecision`, `IMetrics`,
    `IRetrievalStrategy`, `IItemIndexer`, `IItemCut` not grown — notes and size budgets are optional
    capabilities (`IIndexNoteSource`, `ISizeBoundedCut`).
 5. **Strategies:** collapse, cut, query decomposition, reranker, intent source, source selector, group
-   partitions, indexing, facets, intent sources, candidate pool — all injected. A variant is a
+   partitions, indexing, provider text, facets, intent sources, candidate pool — all injected. A variant is a
    named set of instances, never flags; the library picks no k, no pool and no reranker by guessing.
    The consumer makes the main behaviour choices by choosing strategies; a default composition
    fills only what it left open, and is the only place a tuned number lives, next to its
    measurement (§7.1).
-6. **File size:** new logic in `src/collections/*` and the new package; `builder.ts` and
+6. **File size:** new logic in `src/collections/*` and the new packages; `builder.ts` and
    `smart-server.ts` get one call site each per binding.
 7. **Additive:** the only removal is an unexported, unwired file.
 8. **Any MCP server (goal 9):** shipped strategies read only what every server exports; the one
@@ -2247,9 +2569,10 @@ No longer asked:
 - intents' home → an indexing strategy of the tools profiles, default placement `record` (§7.3.3);
 - one profile with flags → strategies the consumer injects, plus default compositions (§7);
 - the reranker text → provider text (§4.6); the pool unit → items (§4.4);
-- the Cohere reranker in this PR (§5) — as one more `IDecisionModel` in its own package
-  `sap-aicore-decision`, used by the existing `DecisionReranker`; no new reranker contract (goal
-  decision 2026-10-05);
+- the Cohere reranker in this PR (§5) — as an `IRelevanceDecision` (`SapAiCoreRelevanceDecision`)
+  in its own package `sap-aicore-decision`, adapted by the new `RelevanceReranker`; Jev stays the
+  `IProbabilityDecision` adapted by `ProbabilityReranker` (goal decision 2026-10-05, the row that
+  replaced "Cohere as one more `IDecisionModel`");
 - query splitting → an injected `IQueryDecomposer` slot, no shipped implementation, `k` stays the
   overall limit (§4.5; goal decision 2026-10-05 — the former D12, "k per clause run", is withdrawn);
 - profiles for different MCP servers (goal 9, goal decision 2026-10-05): shipped strategies read
@@ -2274,7 +2597,7 @@ Recommendations approved by the user on 2026-10-05:
 | # | Decision | Where |
 |---|---|---|
 | D1 | Default implementations live in **`llm-agent-libs`** (`src/collections/`), not a new `llm-agent-collections` package. | §11 |
-| D2 | Cohere on SAP AI Core in its **own package** — amended 2026-10-05 by the goal: `@mcp-abap-adt/sap-aicore-decision` (`SapAiCoreDecisionModel`, an `IDecisionModel`), replacing the earlier `sap-aicore-reranker` / `SapAiCoreReranker`. | §5.4 |
+| D2 | Cohere on SAP AI Core in its **own package** — amended twice by the goal on 2026-10-05: `@mcp-abap-adt/sap-aicore-decision` with `SapAiCoreRelevanceDecision` (an `IRelevanceDecision`); the earlier `sap-aicore-reranker` / `SapAiCoreReranker` and `SapAiCoreDecisionModel` are withdrawn. | §5.3, §5.4 |
 | D3 | Companion intents: **one record per tool**, as in `record` placement. | §7.3.3 |
 | D4 | Builder skills **coexist** in the tools store (pass-through). | §7.7 |
 | D5 | Shared-item visibility: `user` / `group` / `global` as **partitions**; group stores supplied by the consumer (`ISharedItemGroups`). | §8.3 |
@@ -2282,7 +2605,7 @@ Recommendations approved by the user on 2026-10-05:
 | D7 | Ship `keepStage1Top`, **default 0, counted inside k**, documented as unmeasured without the former split. | §4.7 |
 | D8 | Replace the private embedder read with **`IRetrievalEmbedderOwner`** (3 provider packages) in this PR. | §10.1 |
 | D9 | Query preparation stays **outside** profiles; #323 is a pipeline fix. | §12 |
-| D10 | `SapAiCoreDecisionModel` takes **`deploymentId`** in this PR; resolving by model name is a follow-up. | §5.2, §5.4 |
+| D10 | `SapAiCoreRelevanceDecision` takes **`deploymentId`** in this PR; resolving by model name is a follow-up. | §5.3, §5.4 |
 | D11 | Ship `faceted-jev`, marked **"to be measured as one composition on fresh consumer queries before promotion"**. | §7.4 |
 | `limit()` | `IItemCut.limit(requestedK)` — the most items a cut returns; the retrieval's budget for a decomposer. Stated as an **upper bound** in items, so `ScoreFloorCut` and `TokenBudgetCut` fit with no signature change (§4.10). | §3.4, §4.5 |
 
@@ -2308,13 +2631,12 @@ The `compact` measurement (§2.5.1) settles four of them; the user decided the o
 | D22 | `ToolItem` carries the raw `inputSchema` (for consumer strategies) and `parameters` replaces `parameterNames`. | **Yes** — without the raw schema a consumer cannot build a profile for a server whose signal sits elsewhere in the schema (goal 9); `ToolItem` is new in this spec, so nothing breaks. |
 | D23 | `small-set-jev` takes `poolItems` (≥ the tool count) as a required argument and the composition root checks it at startup. Alternative: a new `ICandidatePool` that always takes the whole store (no number at all). | **Required `poolItems` + startup check** — no new strategy class, same shape as 30.1.0's `RerankAllRetrieval.maxCandidates` ("configured, never derived"). A whole-store pool can be added later if consumers ask. |
 
-### 17.4 Decided by the user on 2026-10-05 — Cohere through `IDecisionModel`, S1–S9
+### 17.4 Decided by the user on 2026-10-05 — S1–S9
 
-**Cohere on SAP AI Core** (goal decision 2026-10-05): one more `IDecisionModel`
-(`SapAiCoreDecisionModel`) in the new package `@mcp-abap-adt/sap-aicore-decision`, used by the
-existing `DecisionReranker`. Removed from this spec: the `sap-aicore-reranker` package,
-`SapAiCoreReranker`, every cross-encoder contract, the `crossEncoder:` YAML section and its seam
-(and with it S5). See §5, §6.2.
+*(The Cohere-through-`IDecisionModel` decision recorded here first is replaced by §17.6.)* Still
+removed: the `sap-aicore-reranker` package, `SapAiCoreReranker`, the `crossEncoder:` YAML section
+and its seam (and with it S5). The new cross-encoder contract is `IRelevanceDecision` (§3.9), a
+decision contract — not a reranker contract.
 
 The plan's spec issues:
 
@@ -2328,19 +2650,38 @@ The plan's spec issues:
 | S6 | `StagedRetrieval` could not learn a size cut's tokens | Optional capability **`ISizeBoundedCut`** (`budgetTokens`, `estimator`): `over_budget`, `cut.tokens`, `cut.budgetTokens` | §3.4, §4.10, §9.1 |
 | S7 | `remove` left companion records behind | Reserved key **`companionRecordIds`** on the canonical record; `remove` and replacement clear companion records | §3.1, §3.3, §7.3.3 |
 | S8 | YAML keys other than `tools` had no store or filling path | **Only `rag.profiles.tools`** in this PR; any other key refused loudly at config resolution | §6.2 |
-| S9 | "At most k" contradicted `FixedItemsCut` | The kit checks **at most `cut.limit(k)`** items | §14.2 |
+| S9 | "At most k" contradicted `FixedItemsCut` | The kit checks **at most `cut.limit(k)`** items — amended by review finding 1 (§17.6): `cut.limit(k)` ≤ k for every cut, so "at most k" holds again | §14.2 |
 
-### 17.5 Choices made while writing §17.4 in — for the user's review
+### 17.5 Choices made while writing §17.4 and §17.6 in — for the user's review
 
-Each follows from a decision above or an existing rule; none adds a contract beyond §3.8. Listed so
-the user can overrule any of them.
+Each follows from a decision above or an existing rule. Listed so the user can overrule any of
+them.
 
 | Choice | Why | Where |
 |---|---|---|
 | `SmartServerDecisionConfig` stays **one interface**: `provider: 'typesafe' \| 'sap-aicore'` + optional `deploymentId`, `resourceGroup`; the validator enforces which fields each provider takes | additive for a minor release: a consumer's own `makeDecisionModel` that reads `cfg.baseUrl` still compiles (a discriminated union would break it) | §3.8, §6.2 |
-| A named variant is checked against `decision.provider`: `faceted-cohere` ↔ `sap-aicore`; `faceted-jev`, `small-set-jev` ↔ `typesafe`. `compose` with `reranker: decision` takes either | a name that cites one model's measurement must not silently run the other; Cohere on a small set stays available through `compose` or code | §6.2, §7.4, §7.5 |
-| An explicit `question` / `task` for a decision reranker is refused when `decision.provider: sap-aicore` | Cohere reads no wording; accepting it would be a silent no-op | §5.2, §6.2 |
-| `SapAiCoreDecisionModel` answers a `noul`-with-passage question with the passage's relevance to the state and does not read `task` / `criteria` | a cross-encoder has no question input; this is the user's "answers yes/no questions with a passage". Whether it fully meets `IDecisionModel`'s "answers are never faked" for a custom wording is open for the user — the YAML refusal above keeps the server from sending one | §5.2 |
-| A non-string `state` → `DECISION_UNSUPPORTED_QUESTION` | the existing code for "this implementation cannot answer"; no new code | §5.2 |
-| A `relevance_score` outside [0, 1] → `DECISION_ERROR` | `NoulAnswer.probability` must be in [0, 1], and consumers may rely on it unchecked | §5.2 |
-| No peer on `sap-aicore-auth`; the token exchange is reused through the composition root | verified: the embedder and LLM receive an injected `IBearerCredential` built by `credential-for.ts` with `serviceKeyCredential` | §5.2 |
+| **A second optional seam `makeRelevanceDecision`**, beside `makeDecisionModel` | the provider decides the kind, and the two kinds are different types. One seam returning a union would break code that calls the seam and uses the result as a probability decision; a tagged result would break every implementer. Two typed seams keep both compiling | §3.8, §6.2 |
+| `IRelevanceDecision.score` returns `{ index, score }` entries (not a parallel array) | the shape every rerank API returns; the provider maps without reordering, and the reranker's output check (wrong count / duplicate / non-finite) has something to check | §3.9, §5.2 |
+| `IRelevanceDecision` reuses `DecisionError` and its codes; no new code set | every relevance failure already has a fitting code; nothing widens a shared set | §3.8, §5.3 |
+| **`RelevanceReranker` sends every candidate in ONE call by default**; batching only when the consumer sets `maxBatchTokens` | the user defined relevance scores as comparable only within one call, and asked for batching. Merging batches compares scores across calls — sound only for a pairwise cross-encoder (Cohere is one). So batching exists but is the consumer's explicit statement that its provider is pairwise. **Open for the user:** alternatively, widen the contract to "comparable across calls with the same query" (pairwise by contract), and batch by default like `ProbabilityReranker` | §5.2 |
+| The probability reranker's wording constants are renamed too (`PROBABILITY_RERANK_DEFAULT_*`, aliases kept); the decision vocabulary (`DecisionRequest`, answers, `DecisionError`) is **not** renamed | the constants belong to the renamed reranker; the vocabulary is shared by both decisions (`DecisionError`) or still exactly the probability decision's request/answers — renaming it would churn every implementer for nothing | §1, §13 |
+| `wrapDecisionModel` → `wrapProbabilityDecision` stays in libs; new `wrapRelevanceDecision` beside it | decided by its imports: only `llm-agent`; it wraps a decision, not an `IReranker`; its caller is server-libs. It is a usage-logging adapter like `usage-logging-embedder`, not a reranker | §5.4 |
+| `assertPositiveInteger` copied into `llm-agent-reranker` | no cycle (libs depends on the reranker package) and no non-contract export in `llm-agent` | §5.4 |
+| A named variant is checked against the provider's **kind**: `faceted-cohere` ↔ relevance; `faceted-jev`, `small-set-jev` ↔ probability. `compose` with `reranker: decision` takes either | a name that cites one model's measurement must not silently run the other; the factories' argument types say the same in code | §6.2, §7.4, §7.5 |
+| An explicit `question` / `task` is refused when the provider's kind is relevance | a relevance decision reads no wording; accepting it would be a silent no-op | §6.2 |
+| `RelevanceReranker` / `SapAiCoreRelevanceDecision` do **no** [0, 1] check | the score is not a probability (§3.9); only finiteness is checked | §5.2, §5.3 |
+| Cleanup failures: the stale ids are written **ahead** on the canonical, then settled | a crash between delete and list-update cannot lose an id; retrying a deleted id is a no-op. The cost is one extra canonical write when an item had stale records | §3.3 |
+| Three provider text composers ship (`ParameterNamesToolText` default, `EnumValuesToolText`, `SchemaToolText`) as classes, not one class with flags | "no booleans where a strategy is the choice"; each is a measured layout (C0, C0e, C0s) | §7.3.1 |
+| No peer on `sap-aicore-auth`; the token exchange is reused through the composition root | verified: the embedder and LLM receive an injected `IBearerCredential` built by `credential-for.ts` with `serviceKeyCredential` | §5.3 |
+
+### 17.6 Decided by the user on 2026-10-05 — decisions split, reranker package, review findings
+
+| # | Decision | Where |
+|---|---|---|
+| D24 | **A decision and a reranker are different; a probability and a relevance are different decisions** (goal decision 2026-10-05). `IDecisionModel` → `IProbabilityDecision`; new `IRelevanceDecision`; `DecisionReranker` → `ProbabilityReranker`; new `RelevanceReranker`. Old names are deprecated aliases until the next major, with a migration note. | §3.9, §5, §13 |
+| D25 | **Packages by role:** `typesafe-decision` unchanged (`IProbabilityDecision`); new `@mcp-abap-adt/sap-aicore-decision` implements `IRelevanceDecision` through AI Core `/v2/inference/deployments/<deploymentId>/rerank`. `SapAiCoreDecisionModel` is withdrawn. | §5.3, §5.4 |
+| D26 | **All rerankers in ONE new package `@mcp-abap-adt/llm-agent-reranker`** (goal decision 2026-10-05) — they carry no vendor specifics: `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`. libs re-exports the old names and paths as deprecated aliases; retrieval strategies stay in libs and use rerankers only through `IReranker`. | §5.4, §11, §13 |
+| D27 | **One `decision:` section;** the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance); `reranker: decision` builds the matching reranker. Wording options apply only to probability and are refused for relevance at startup. `faceted-cohere` = relevance; `faceted-jev`, `small-set-jev` = probability. A threshold on relevance scores is the consumer's calibration; no default uses one. | §6.2, §7.4 |
+| F1 (review) | **The caller's k caps every cut:** effective limit `min(requestedK, the cut's own limit)`, also after decomposition; `FixedItemsCut(n)` is a ceiling. The kit calls each shipped profile with k below its default and asserts ≤ k. | §3.4, §4.5, §4.9, §14.2 |
+| F3 (review) | **Cleanup failures are kept:** every stale delete's `Result` is checked (primary and companion); an item with a failed cleanup is never reported indexed; the ids not yet deleted stay on the canonical (`staleRecordIds`, `staleCompanionRecordIds`) and the next `index` / `remove` retries them. Failure handling, not a concurrency protocol (D13 stands). | §3.1, §3.3, §14 |
+| F4 (review, measured) | The default provider text stays **C0** (measured). How the provider text is composed becomes an injected strategy (`IToolTextComposer`); the schema-enriched C0e / C0s ship as strategies in no default, documented with the `compact` numbers (within noise, no winner). | §3.5, §7.3.1 |
