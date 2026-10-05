@@ -15,7 +15,10 @@
 > - S1–S9 (raised by the plan): decided by the user on 2026-10-05 (§17.4);
 > - probability vs relevance decisions, packages by role, one `decision:` section, the reranker
 >   package, the caller's k capping every cut, kept cleanup failures: decided by the user on
->   2026-10-05 (§17.6). Choices made while writing them in are listed for review (§17.5).
+>   2026-10-05 (§17.6). Choices made while writing them in are listed for review (§17.5);
+> - relevance scores comparable for the same query and model (batching by default), the second
+>   seam `makeRelevanceDecision`, the seam rename `makeDecisionModel` → `makeProbabilityDecision`:
+>   decided by the user on 2026-10-05 (§17.7).
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -47,6 +50,16 @@
 > - old names stay as **deprecated aliases** until the next major (§13);
 > - **the caller's k caps every cut** (§3.4, §4.5, §4.9) and **cleanup failures are kept for retry**
 >   (§3.3) — two approved review findings.
+>
+> **Amended 2026-10-05 (5)** for the user's decisions of the same day (§17.7):
+> - **relevance scores are comparable for the same query and model** — a cross-encoder scores each
+>   (query, passage) pair independently (§3.9); so `RelevanceReranker` **batches by default**, like
+>   `ProbabilityReranker` (§5.2);
+> - the second optional seam **`makeRelevanceDecision` is approved** (§3.8, §6.2);
+> - the released probability seam is **renamed symmetric to its contract:**
+>   `BuildAgentDeps.makeDecisionModel` → **`makeProbabilityDecision`** (the old name a deprecated
+>   alias; both supplied → startup error naming both); the app's `createMakeDecisionModel` →
+>   **`createMakeProbabilityDecision`** (§3.8, §6.2, §13).
 
 ## TL;DR
 
@@ -126,7 +139,7 @@
   | Decision contract (`llm-agent`) | What it answers | Provider (package) | Reranker (`llm-agent-reranker`) |
   |---|---|---|---|
   | **`IProbabilityDecision`** (today's `IDecisionModel`, renamed) | typed yes/no, choice and score questions, with probabilities | TypeSafe Jev — `TypeSafeDecisionModel` (`typesafe-decision`, unchanged) | **`ProbabilityReranker`** (today's `DecisionReranker`, renamed) |
-  | **`IRelevanceDecision`** (new) | one relevance score per passage for a query — **not** a probability, comparable only within one call | Cohere Rerank on SAP AI Core — `SapAiCoreRelevanceDecision` (new `sap-aicore-decision`) | **`RelevanceReranker`** (new) |
+  | **`IRelevanceDecision`** (new) | one relevance score per passage for a query — **not** a probability; comparable for the same query and model | Cohere Rerank on SAP AI Core — `SapAiCoreRelevanceDecision` (new `sap-aicore-decision`) | **`RelevanceReranker`** (new) |
 
   - Every reranker lives in the new vendor-neutral package **`@mcp-abap-adt/llm-agent-reranker`**;
     the retrieval strategies stay in libs and use rerankers only through `IReranker`.
@@ -165,7 +178,7 @@
 | **Variant** | A **default composition**: a named, shipped set of strategy instances for one kind. It fills in what the consumer did not choose; its tuned numbers cite a measurement (§7.1) | `faceted-cohere`, `small-set-jev` |
 | **Binding** | A profile applied to one concrete store set (`IBoundCollection`) | `mcpTools.bind({ key: 'tools', rag })` |
 | **Probability decision** | A model's answer to a typed question, as a probability (yes/no, choice, score) — `IProbabilityDecision` | TypeSafe Jev: P(this tool helps) = 0.93 |
-| **Relevance decision** | A model's relevance score for each passage against one query — `IRelevanceDecision`. **Not a probability**: comparable only among the passages of one call, never with another call, another model or a probability | Cohere Rerank on SAP AI Core: `relevance_score` per document |
+| **Relevance decision** | A model's relevance score for each passage against one query — `IRelevanceDecision`. **Not a probability**: comparable among passages scored against the same query by the same model — also across calls (a cross-encoder scores each (query, passage) pair independently); never across queries, across models or with a probability | Cohere Rerank on SAP AI Core: `relevance_score` per document |
 | **Reranker** | An `IReranker`: reorders candidates. It **adapts** a decision; it is not one | `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker` |
 
 **One profile, several stores (goal 6).** A profile instance holds what the kind shares (records,
@@ -191,8 +204,10 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 | `wrapDecisionModel` | usage-logging adapter of a decision model | **renamed `wrapProbabilityDecision`**, stays in libs (§5.4); the old name is a deprecated alias |
 | `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` | rerankers / wording presets in libs | **moved** to `@mcp-abap-adt/llm-agent-reranker`, names unchanged; libs re-exports them (deprecated path) |
 | `DecisionRequest`, `DecisionResult`, `DecisionQuestion`, the answer types, `DecisionEntry`, `DecisionError`, `DecisionErrorCode` | the decision vocabulary | **unchanged**: still `IProbabilityDecision`'s request and answers; `DecisionError` and its codes serve both decisions (§3.9) |
-| `TypeSafeDecisionModel`, `SmartServerDecisionConfig`, `BuildAgentDeps.makeDecisionModel` | Jev provider; `decision:` type; probability seam | unchanged names (`makeDecisionModel` now typed `IProbabilityDecision` — the same type) |
-| — | new | `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`, `RelevanceReranker`, `RelevanceRerankerOptions`, `wrapRelevanceDecision`, `BuildAgentDeps.makeRelevanceDecision`, package `@mcp-abap-adt/llm-agent-reranker`; in `sap-aicore-decision`: `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike`; reserved record keys `staleRecordIds`, `staleCompanionRecordIds` |
+| `TypeSafeDecisionModel`, `SmartServerDecisionConfig` | Jev provider; `decision:` type | unchanged names |
+| `BuildAgentDeps.makeDecisionModel` | probability seam | **renamed `BuildAgentDeps.makeProbabilityDecision`** (typed `IProbabilityDecision` — the same type); `makeDecisionModel` stays a deprecated alias until the next major; both supplied → startup error naming both (§3.8, §13) |
+| `createMakeDecisionModel` (app, `make-decision-model.ts`) | the app's probability seam | **renamed `createMakeProbabilityDecision`** in `make-probability-decision.ts` — internal to the app (not exported from `@mcp-abap-adt/llm-agent-server`), so no alias |
+| — | new | `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`, `RelevanceReranker`, `RelevanceRerankerOptions`, `wrapRelevanceDecision`, `BuildAgentDeps.makeProbabilityDecision`, `BuildAgentDeps.makeRelevanceDecision`, package `@mcp-abap-adt/llm-agent-reranker`; in `sap-aicore-decision`: `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike`; reserved record keys `staleRecordIds`, `staleCompanionRecordIds` |
 | — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `IndexNote`, `isIndexNoteSource`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `isSizeBoundedCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `CharsPerTokenEstimator`, `ToolDefinitionSizeEstimator`, `SharedItemsProfile`; reserved record key `companionRecordIds` |
 
 Every new name above was checked with `git grep -w` over `packages/`: 0 hits (2026-10-05).
@@ -840,8 +855,9 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `IDecisionModel` → **`IProbabilityDecision`** (rename; `IDecisionModel` stays a deprecated alias of the same type) | goal decision 2026-10-05: a probability and a relevance are different decisions, named by what the decision is based on. Same members, so every implementation (`TypeSafeDecisionModel`, a consumer's) still compiles | `@mcp-abap-adt/llm-agent` (`decision-model.ts`), where it lives |
 | **`IRelevanceDecision`**, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore` (§3.9) | goal decision 2026-10-05: a cross-encoder scores passages against a query and gives no probability, so it cannot honestly implement `IProbabilityDecision` (whose `NoulAnswer.probability` must be P(yes) in [0, 1]). Each type is the minimum: a request (query + passages), a result (one score per passage + the model id), one score entry (index + score) | `@mcp-abap-adt/llm-agent`: implemented by a provider package (`sap-aicore-decision`), consumed by `llm-agent-reranker` and server-libs |
 | `DecisionError` / `DecisionErrorCode` reused by `IRelevanceDecision` — **no new code** | every failure of a relevance call already has a code (`DECISION_INVALID_REQUEST`, `_AUTH`, `_RATE_LIMITED`, `_UNAVAILABLE`, `_ABORTED`, `_ERROR`); `DECISION_UNSUPPORTED_QUESTION` is simply never returned (a relevance request has no questions). Nothing widens the shared set | — |
-| `BuildAgentDeps.makeRelevanceDecision?` (new optional seam) | the provider decides the kind of decision (§6.2), and a relevance provider returns `IRelevanceDecision`, which `makeDecisionModel` (typed `IProbabilityDecision`) cannot return. A second optional seam keeps both typed and leaves every existing `makeDecisionModel` compiling; a union return type would break code that calls the seam (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`smart-server.ts`, `resolve-retrieval.ts`), beside `makeDecisionModel` |
-| `SmartServerDecisionConfig`: `provider` gains `'sap-aicore'`; optional `deploymentId`, `resourceGroup` | goal 10 + the goal decision 2026-10-05 (one `decision:` section; the provider decides the kind): Cohere needs a provider name and its deployment (§6.2). Kept one interface with optional fields — additive, so a consumer's own `makeDecisionModel` still compiles (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`decision-config.ts`), where the section's type already lives |
+| `BuildAgentDeps.makeRelevanceDecision?` (new optional seam) | the provider decides the kind of decision (§6.2), and a relevance provider returns `IRelevanceDecision`, which the probability seam (typed `IProbabilityDecision`) cannot return. A second optional seam keeps both typed and leaves every existing probability seam compiling; a union return type would break code that calls the seam. Approved by the user (D29, §17.7) | `@mcp-abap-adt/llm-agent-server-libs` (`smart-server.ts`, `resolve-retrieval.ts`), beside `makeProbabilityDecision` |
+| `BuildAgentDeps.makeDecisionModel?` → **`makeProbabilityDecision?`** (rename; `makeDecisionModel` stays a `@deprecated` alias of the same type until the next major) | the user's decision 2026-10-05 (D30, §17.7): the seam is named symmetric to its contract (`IProbabilityDecision`) and to `makeRelevanceDecision`. Same signature, so a consumer's function moves by renaming the key. **Both supplied → startup error naming both** — never silently pick one (two functions for one seam is a consumer bug: which one was meant is unknowable). The seam-missing message names `makeProbabilityDecision` | `@mcp-abap-adt/llm-agent-server-libs` (`smart-server.ts` — `BuildAgentDeps`, and the constructor's `probabilityDecisionSeam` check beside `assertConstructionSeams`) |
+| `SmartServerDecisionConfig`: `provider` gains `'sap-aicore'`; optional `deploymentId`, `resourceGroup` | goal 10 + the goal decision 2026-10-05 (one `decision:` section; the provider decides the kind): Cohere needs a provider name and its deployment (§6.2). Kept one interface with optional fields — additive, so a consumer's own probability seam still compiles (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`decision-config.ts`), where the section's type already lives |
 | `ReservedRecordKey` gains `staleRecordIds`, `staleCompanionRecordIds` | approved review finding 3: a failed stale-record delete must be retried by the next `index` / `remove`, so its id is kept on the canonical; reserved so no extra can overwrite it. `ReservedRecordKey` is new in this spec | libs (record writer, tools binding) |
 | `IItemCut.limit()` — doc only: never above `requestedK` | approved review finding 1: the caller's k caps every cut (§4.5, §4.9). No signature change | — |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
@@ -875,7 +891,8 @@ export interface RelevanceRequest {
 export interface RelevanceScore {
   /** Index into `RelevanceRequest.passages`. */
   index: number;
-  /** Finite. NOT a probability: higher = more relevant, comparable only within one call. */
+  /** Finite. NOT a probability: higher = more relevant. Comparable for the same query and
+   *  model — also across calls; never across queries or models. */
   score: number;
 }
 
@@ -892,8 +909,11 @@ export interface RelevanceResult {
  *
  * - Returns `Result`; never throws for provider failures. Errors are `DecisionError`, with the
  *   existing codes; `DECISION_UNSUPPORTED_QUESTION` is never returned.
- * - The score is not a probability: compare scores only among the passages of ONE call — never
- *   across calls, models, or with a probability. A threshold on it is the consumer's calibration.
+ * - The score is not a probability. It depends on the (query, passage) pair alone — a
+ *   cross-encoder scores each pair independently — so scores for the SAME query from the SAME
+ *   model are comparable, also across calls (a reranker may batch and merge). Never compare
+ *   across queries, across models, or with a probability. A threshold on it is the consumer's
+ *   calibration.
  * - Cancellation through `options.signal` yields `DECISION_ABORTED`.
  */
 export interface IRelevanceDecision {
@@ -913,8 +933,12 @@ export interface IRelevanceDecision {
 - **Not a probability, by contract.** That is why it is a separate contract: a
   `NoulAnswer.probability` is P(yes) in [0, 1] and consumers may rely on it unchecked; a relevance
   score may not be read that way.
-- **Comparable only within one call** — the property `RelevanceReranker` must respect when it
-  batches (§5.2).
+- **Comparable for the same query and model** (decided by the user, D28, §17.7): a cross-encoder
+  scores each (query, passage) pair independently, so a score does not depend on which other
+  passages share the call. This is what lets `RelevanceReranker` batch by default and merge the
+  batches' scores into one order (§5.2). An implementation whose scores depend on the other
+  passages of a call (e.g. a listwise model that normalizes within a call) does **not** satisfy
+  `IRelevanceDecision`.
 
 These are the llm-agent family's own contracts, used only inside this monorepo and by its
 consumers, so they belong in `@mcp-abap-adt/llm-agent` (the YAML config type stays in
@@ -1259,9 +1283,9 @@ cut. A consumer wanting skip-ahead injects its own `IItemCut`. Settled — D19 (
 ```ts
 export interface RelevanceRerankerOptions {
   /** Estimated-token budget per `score()` call (~4 chars/token, query + passages); a positive
-   *  integer. ABSENT → every candidate in ONE call (the default; see "Batches" below). */
+   *  integer. Default 48000 (as `ProbabilityReranker`). */
   maxBatchTokens?: number;
-  /** Max `score()` calls in flight when batching; a positive integer. Default 4. */
+  /** Max `score()` calls in flight; a positive integer. Default 4 (as `ProbabilityReranker`). */
   concurrency?: number;
 }
 
@@ -1276,14 +1300,16 @@ export class RelevanceReranker implements IReranker {
 **Behaviour.**
 
 1. No candidates → returned as is, no call.
-2. `score({ query, passages: results.map(r => r.text) })` — one call, or one per batch (below).
+2. Candidates are split into batches under `maxBatchTokens` (below); `score({ query, passages })`
+   once per batch, up to `concurrency` in flight.
 3. **Output check** on every call's result — anything else is `RagError('…', 'RERANK_ERROR')`:
    - exactly one entry per passage of that call (wrong count → error);
    - every `index` an integer in range, each once (duplicate or missing → error);
    - every `score` finite (non-finite → error).
 4. A `DecisionError` from the provider → `RagError('decision rerank failed: <code>: <message>',
    'RERANK_ERROR')`, as the probability reranker does.
-5. Each result's `score` is set to its relevance score; sorted descending, ties in input order.
+5. Each result's `score` is set to its relevance score; the scores of all batches are merged and
+   sorted descending, ties in input order.
 6. Any failed call fails the whole `rerank`.
 
 - **Not a probability — documented on the class and in the docs.** Scores are the provider's
@@ -1291,19 +1317,19 @@ export class RelevanceReranker implements IReranker {
   them, is the **consumer's calibration** for its provider; **no default composition uses one**.
 - `StagedRetrieval` checks the result again (§4.8), whichever reranker it is.
 
-**Batches — and "comparable only within one call".**
+**Batches — by default, as the probability reranker** (decided by the user, D28, §17.7).
 
-| `maxBatchTokens` | What happens |
-|---|---|
-| absent (**default**) | one `score()` call with every candidate: every score comes from one call, so the order is the contract's |
-| set | batches as the probability reranker does (a batch closes when its estimate would pass the budget; up to `concurrency` in flight); scores of all batches are merged into one order |
-
-- Merging batches compares scores **across calls**, which `IRelevanceDecision` does not promise. It
-  is sound only for a provider whose score depends on the (query, passage) pair alone — true of a
-  pairwise cross-encoder such as Cohere. Setting `maxBatchTokens` is therefore the consumer's
-  statement that its provider is pairwise; it is documented on the option (§17.5, open for the
-  user).
-- The default compositions rerank ≤ 30 tools (`faceted-cohere`, §7.4): one call either way.
+- Same defaults and validation as `ProbabilityReranker`: `maxBatchTokens` 48000, `concurrency` 4,
+  each a positive integer (a non-positive or non-integer value throws in the constructor).
+- A batch closes when the next passage's estimate (`ceil(text.length / 4)`) would take it past
+  the budget; the query's estimate counts once per batch; a single passage larger than the budget
+  is a batch of its own (never dropped).
+- **Merging is sound by contract:** relevance scores are comparable for the same query and model,
+  also across calls (§3.9), and every batch of one `rerank` has the same query and decision.
+- There is no single-call mode: a consumer that wants one call per rerank sets a budget large
+  enough for its candidates.
+- The default compositions rerank ≤ 30 tools (`faceted-cohere`, §7.4): one call under the default
+  budget.
 
 ### 5.3 `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`)
 
@@ -1512,12 +1538,18 @@ rag:
 | credential kind | api key | bearer + `apiBaseUrl` (a SAP AI Core service key) |
 | default `credentialRef` | `DECISION` → env `DECISION_API_KEY` | `DECISION` → env `DECISION_SERVICE_KEY` |
 | a named ref, e.g. `credentialRef: AICORE` | `AICORE_API_KEY` | `AICORE_SERVICE_KEY` (e.g. the same AI Core account as the LLM) |
-| built by | the app's `createMakeDecisionModel` (existing seam `BuildAgentDeps.makeDecisionModel`, returns `IProbabilityDecision`) | the app's new `createMakeRelevanceDecision` (new optional seam `BuildAgentDeps.makeRelevanceDecision`, returns `IRelevanceDecision`, §3.8) |
+| built by | the app's `createMakeProbabilityDecision` (seam `BuildAgentDeps.makeProbabilityDecision`, renamed from `makeDecisionModel`, which stays a deprecated alias; returns `IProbabilityDecision`) | the app's new `createMakeRelevanceDecision` (new optional seam `BuildAgentDeps.makeRelevanceDecision`, returns `IRelevanceDecision`, §3.8) |
 
 - **The kind table is server-libs' one place** that maps a provider name to a kind
   (`typesafe` → probability, `sap-aicore` → relevance); the resolver calls the seam of that kind.
-  A kind's seam missing while the config asks for it → startup error naming the seam (as today's
-  `makeDecisionModel` message).
+  A kind's seam missing while the config asks for it → startup error naming the seam
+  (`BuildAgentDeps.makeProbabilityDecision is required: …` / `BuildAgentDeps.makeRelevanceDecision
+  is required: …`).
+- **The probability seam's alias:** SmartServer reads the probability seam as
+  `makeProbabilityDecision ?? makeDecisionModel`. Both supplied → the constructor throws
+  `BuildAgentDeps.makeDecisionModel and BuildAgentDeps.makeProbabilityDecision are both supplied:
+  makeDecisionModel is the deprecated alias of makeProbabilityDecision — supply only
+  makeProbabilityDecision.` (D30, §17.7).
 
 - **Where the AI Core service key comes from:** the shipped app reads the service key JSON of the
   SAP AI Core instance (`clientid`, `clientsecret`, `url`, `serviceurls.AI_API_URL`) from
@@ -1549,7 +1581,7 @@ rag:
   gives the store); YAML carries no decomposer parameters — they belong to the registered factory.
 - Rerankers resolve through the same code as `rag.retrieval`:
   - `decision`: by the provider's kind — `ProbabilityReranker` over the ONE
-    `IProbabilityDecision` the `makeDecisionModel` seam builds, or `RelevanceReranker` over the ONE
+    `IProbabilityDecision` the `makeProbabilityDecision` seam builds, or `RelevanceReranker` over the ONE
     `IRelevanceDecision` the `makeRelevanceDecision` seam builds, each wrapped once for usage
     logging (`wrapProbabilityDecision` / `wrapRelevanceDecision`); the library constructs none
     from configuration;
@@ -1897,8 +1929,8 @@ mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryE
   reranker and the kind of decision (§5.5). Each cites the measurement of its own model. The
   factory's argument type says which decision it takes; YAML checks the variant against the
   provider's kind (§6.2).
-- **Cohere's rerank calls:** ≤ 30 tools per query → one `/rerank` call (`RelevanceReranker`
-  sends all candidates in one call by default, §5.2).
+- **Cohere's rerank calls:** ≤ 30 tools per query → one `/rerank` call (they fit in
+  `RelevanceReranker`'s default 48000-token batch, §5.2).
 - **Every `FixedItemsCut` here is a ceiling** under the caller's k (§4.9): a caller asking for 2
   gets at most 2.
 - **`faceted-jev` caveat:** faceted + Jev was never run as one composition on an item pool. It ships
@@ -2252,8 +2284,8 @@ new SharedItemsProfile({
 | deprecated re-exports of every moved / renamed reranker name; `wrapProbabilityDecision`, `wrapRelevanceDecision` (+ `wrapDecisionModel` alias) | `@mcp-abap-adt/llm-agent-libs` | §5.4, §13 |
 | `StagedRetrieval`, `ItemPool`, cuts (incl. `TokenBudgetCut`), size estimators, `MaxScoreCollapse`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `SharedItemsProfile` | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | the retrieval built-ins, rerankers and the builder that uses them already live here; `llm-agent-rag` is the backend/embedder factory layer **below** libs and has no rerankers or LLM steps |
 | `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike` | **new** `@mcp-abap-adt/sap-aicore-decision` | §5.4 — one package per vendor and role, like `typesafe-decision` |
-| YAML resolver + validation (`rag.profiles`; `decision.provider: sap-aicore`; the provider → kind table); the `makeRelevanceDecision` seam type | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts`, `decision-config.ts` and the existing `makeDecisionModel` seam type |
-| `createMakeRelevanceDecision` with the `sap-aicore` arm (builds `SapAiCoreRelevanceDecision`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | `make-relevance-decision.ts`, beside `make-decision-model.ts` |
+| YAML resolver + validation (`rag.profiles`; `decision.provider: sap-aicore`; the provider → kind table); the `makeRelevanceDecision` seam type; `makeProbabilityDecision` (renamed seam) + its deprecated alias `makeDecisionModel` | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts`, `decision-config.ts` and the probability seam type |
+| `createMakeProbabilityDecision` (renamed from `createMakeDecisionModel`; `make-decision-model.ts` → `make-probability-decision.ts`), `createMakeRelevanceDecision` with the `sap-aicore` arm (builds `SapAiCoreRelevanceDecision`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | `make-relevance-decision.ts`, beside `make-probability-decision.ts` |
 | `IRetrievalEmbedderOwner` implementations | `llm-agent` (`VectorRag`), `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | where the stores are |
 
 - Decided — D1 (libs, not a new `llm-agent-collections` package), D2 (own provider package
@@ -2297,23 +2329,30 @@ new SharedItemsProfile({
   | `DecisionRerankerOptions` | `ProbabilityRerankerOptions` | libs root (`type` alias) |
   | `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA` | `PROBABILITY_RERANK_DEFAULT_TASK`, `PROBABILITY_RERANK_DEFAULT_CRITERIA` | libs root |
   | `wrapDecisionModel` | `wrapProbabilityDecision` | libs root |
+  | `BuildAgentDeps.makeDecisionModel` | `BuildAgentDeps.makeProbabilityDecision` | `@mcp-abap-adt/llm-agent-server-libs` (`BuildAgentDeps` keeps the optional `@deprecated` member, same type; both supplied → startup error naming both) |
   | `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` from libs | the same names from `@mcp-abap-adt/llm-agent-reranker` | libs root (re-export, deprecated path) |
 
   Every alias carries `@deprecated` naming its replacement. **Migration note** (CHANGELOG): import
   rerankers from `@mcp-abap-adt/llm-agent-reranker`, use the new names; a consumer's own
-  `IDecisionModel` implementation needs no change (same type). A behaviour change: none.
+  `IDecisionModel` implementation needs no change (same type). **A consumer with its own
+  composition root** renames the key `makeDecisionModel` → `makeProbabilityDecision` in its
+  `BuildAgentDeps` (same function, same signature); until it does, `makeDecisionModel` keeps
+  working (deprecated). Supplying **both** keys is refused at startup with an error naming both —
+  remove `makeDecisionModel`. A behaviour change: none for a consumer supplying one of them.
 - **The caller's k caps every cut** (approved review finding 1). 30.1.0 has no item cuts, so
   nothing released changes; `FixedItemsCut` is new in this spec and is a ceiling from the start.
 - Added, all optional: the contracts of §3, one builder method, the YAML section `rag.profiles`
   (key `tools` only, S8), the value `sap-aicore` for the existing `decision.provider` (with
   `deploymentId`, `model`, `resourceGroup`), optional health fields, the embedder capability,
   telemetry options on the 30.1.0 rerank strategies, the optional seam
-  `BuildAgentDeps.makeRelevanceDecision`, two new packages (`@mcp-abap-adt/llm-agent-reranker`,
+  `BuildAgentDeps.makeRelevanceDecision`, `BuildAgentDeps.makeProbabilityDecision` (the renamed
+  probability seam; `makeDecisionModel` stays its deprecated alias), two new packages (`@mcp-abap-adt/llm-agent-reranker`,
   `@mcp-abap-adt/sap-aicore-decision`).
 - **A consumer with its own composition root** that wants Cohere supplies `makeRelevanceDecision`
   (build `SapAiCoreRelevanceDecision` with a bearer credential and `apiBaseUrl`); its existing
-  `makeDecisionModel` compiles unchanged, since `SmartServerDecisionConfig` only gains a provider
-  value and optional fields (§17.5).
+  probability seam (`makeDecisionModel`, or `makeProbabilityDecision` after the rename) compiles
+  unchanged, since `SmartServerDecisionConfig` only gains a provider value and optional fields
+  (§17.5).
 - Release: a **minor** version. The new packages are published at the same version, in the order
   of §11.
 - Opting in on a persistent tools store = a fresh collection (§7.8).
@@ -2427,11 +2466,15 @@ new SharedItemsProfile({
   `DECISION_AUTH`, 429 → `DECISION_RATE_LIMITED`, 400/404/422 → `DECISION_INVALID_REQUEST`, 5xx /
   network → `DECISION_UNAVAILABLE`; `signal` → `DECISION_ABORTED`; the token never appears in an
   error message.
-- `RelevanceReranker`: default = one `score()` call for every candidate; `score` = the relevance
-  score, sorted descending, ties in input order; wrong count, duplicate index, out-of-range index,
-  non-finite score → `RERANK_ERROR`; a `DecisionError` → `RERANK_ERROR`; with `maxBatchTokens` set,
-  several calls (up to `concurrency` in flight) merged into one order; any failed call fails the
-  whole rerank; a non-positive option throws. Over `SapAiCoreRelevanceDecision` + fake fetch: one
+- `RelevanceReranker`: batches by default (defaults 48000 / 4, as `ProbabilityReranker`); a
+  small candidate set under the default budget → one `score()` call; candidates over the budget →
+  several calls (up to `concurrency` in flight), each call's scores mapped by its own indices, and
+  the scores of all calls **merged into one order by score** (a passage scored highest in a later
+  batch comes first); `score` = the relevance score, sorted descending, ties in input order; a
+  passage larger than the budget is a batch of its own; wrong count, duplicate index,
+  out-of-range index, non-finite score (checked per call) → `RERANK_ERROR`; a `DecisionError` →
+  `RERANK_ERROR`; any failed call fails the whole rerank; a non-positive or non-integer
+  `maxBatchTokens` / `concurrency` throws. Over `SapAiCoreRelevanceDecision` + fake fetch: one
   `/rerank` call per batch.
 - `ProbabilityReranker`: the 30.1.0 `DecisionReranker` tests, moved unchanged with the class.
 - Renames and aliases: `IDecisionModel` is assignable both ways with `IProbabilityDecision`
@@ -2465,7 +2508,11 @@ new SharedItemsProfile({
   `question` / `task` refused for a relevance provider; `decision.provider: sap-aicore` fields; an
   unknown `text` composer); `reranker: decision` builds `ProbabilityReranker` under `typesafe` and
   `RelevanceReranker` under `sap-aicore`, in `rag.profiles` and `rag.retrieval`; a missing seam of
-  the needed kind → startup error naming it; the app's `makeRelevanceDecision` builds
+  the needed kind → startup error naming it (`makeProbabilityDecision` / `makeRelevanceDecision`);
+  the probability seam's alias: `makeDecisionModel` alone builds the probability decision as
+  `makeProbabilityDecision` does, `makeProbabilityDecision` alone likewise, **both** → the
+  SmartServer constructor throws naming both; the app supplies `makeProbabilityDecision` (built by
+  `createMakeProbabilityDecision`) and not `makeDecisionModel`; the app's `makeRelevanceDecision` builds
   `SapAiCoreRelevanceDecision` from `decision:` (default ref `DECISION` → bearer + `apiBaseUrl` from
   `DECISION_SERVICE_KEY`; a named ref; `credentialRef` and `provider` never reach the provider).
 
@@ -2534,7 +2581,7 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 
 1. **Built on existing components:** `IRag`, `IRetrievalStrategy`, `StrategyRag`,
    `applyRetrievalStrategy`, `IReranker`, `ProbabilityReranker` (ex-`DecisionReranker`), `TOOL_QUESTION`,
-   `vectorizeMcpTools`'s batch path, the `makeRag` / `makeDecisionModel` seams, the decision
+   `vectorizeMcpTools`'s batch path, the `makeRag` / `makeProbabilityDecision` (ex-`makeDecisionModel`) seams, the decision
    contract (renamed `IProbabilityDecision`; relevance is its own contract because it is a
    different decision, §3.9), `DecisionError` and its codes, `IRagDecorator`,
    `matchesRagIdentity`, `IBearerCredential`, metadata `ttl`.
@@ -2659,11 +2706,11 @@ them.
 
 | Choice | Why | Where |
 |---|---|---|
-| `SmartServerDecisionConfig` stays **one interface**: `provider: 'typesafe' \| 'sap-aicore'` + optional `deploymentId`, `resourceGroup`; the validator enforces which fields each provider takes | additive for a minor release: a consumer's own `makeDecisionModel` that reads `cfg.baseUrl` still compiles (a discriminated union would break it) | §3.8, §6.2 |
-| **A second optional seam `makeRelevanceDecision`**, beside `makeDecisionModel` | the provider decides the kind, and the two kinds are different types. One seam returning a union would break code that calls the seam and uses the result as a probability decision; a tagged result would break every implementer. Two typed seams keep both compiling | §3.8, §6.2 |
+| `SmartServerDecisionConfig` stays **one interface**: `provider: 'typesafe' \| 'sap-aicore'` + optional `deploymentId`, `resourceGroup`; the validator enforces which fields each provider takes | additive for a minor release: a consumer's own probability seam that reads `cfg.baseUrl` still compiles (a discriminated union would break it) | §3.8, §6.2 |
+| **A second optional seam `makeRelevanceDecision`**, beside the probability seam — **approved by the user (D29, §17.7)** | the provider decides the kind, and the two kinds are different types. One seam returning a union would break code that calls the seam and uses the result as a probability decision; a tagged result would break every implementer. Two typed seams keep both compiling | §3.8, §6.2 |
 | `IRelevanceDecision.score` returns `{ index, score }` entries (not a parallel array) | the shape every rerank API returns; the provider maps without reordering, and the reranker's output check (wrong count / duplicate / non-finite) has something to check | §3.9, §5.2 |
 | `IRelevanceDecision` reuses `DecisionError` and its codes; no new code set | every relevance failure already has a fitting code; nothing widens a shared set | §3.8, §5.3 |
-| **`RelevanceReranker` sends every candidate in ONE call by default**; batching only when the consumer sets `maxBatchTokens` | the user defined relevance scores as comparable only within one call, and asked for batching. Merging batches compares scores across calls — sound only for a pairwise cross-encoder (Cohere is one). So batching exists but is the consumer's explicit statement that its provider is pairwise. **Open for the user:** alternatively, widen the contract to "comparable across calls with the same query" (pairwise by contract), and batch by default like `ProbabilityReranker` | §5.2 |
+| ~~`RelevanceReranker` sends every candidate in ONE call by default; batching only when the consumer sets `maxBatchTokens`~~ — **decided otherwise by the user (D28, §17.7):** relevance scores are comparable for the same query and model (pairwise by contract), and `RelevanceReranker` batches by default like `ProbabilityReranker` (same `maxBatchTokens` / `concurrency` defaults and validation); no single-call mode | a cross-encoder scores each (query, passage) pair independently, so merging batches is sound by contract | §3.9, §5.2 |
 | The probability reranker's wording constants are renamed too (`PROBABILITY_RERANK_DEFAULT_*`, aliases kept); the decision vocabulary (`DecisionRequest`, answers, `DecisionError`) is **not** renamed | the constants belong to the renamed reranker; the vocabulary is shared by both decisions (`DecisionError`) or still exactly the probability decision's request/answers — renaming it would churn every implementer for nothing | §1, §13 |
 | `wrapDecisionModel` → `wrapProbabilityDecision` stays in libs; new `wrapRelevanceDecision` beside it | decided by its imports: only `llm-agent`; it wraps a decision, not an `IReranker`; its caller is server-libs. It is a usage-logging adapter like `usage-logging-embedder`, not a reranker | §5.4 |
 | `assertPositiveInteger` copied into `llm-agent-reranker` | no cycle (libs depends on the reranker package) and no non-contract export in `llm-agent` | §5.4 |
@@ -2685,3 +2732,11 @@ them.
 | F1 (review) | **The caller's k caps every cut:** effective limit `min(requestedK, the cut's own limit)`, also after decomposition; `FixedItemsCut(n)` is a ceiling. The kit calls each shipped profile with k below its default and asserts ≤ k. | §3.4, §4.5, §4.9, §14.2 |
 | F3 (review) | **Cleanup failures are kept:** every stale delete's `Result` is checked (primary and companion); an item with a failed cleanup is never reported indexed; the ids not yet deleted stay on the canonical (`staleRecordIds`, `staleCompanionRecordIds`) and the next `index` / `remove` retries them. Failure handling, not a concurrency protocol (D13 stands). | §3.1, §3.3, §14 |
 | F4 (review, measured) | The default provider text stays **C0** (measured). How the provider text is composed becomes an injected strategy (`IToolTextComposer`); the schema-enriched C0e / C0s ship as strategies in no default, documented with the `compact` numbers (within noise, no winner). | §3.5, §7.3.1 |
+
+### 17.7 Decided by the user on 2026-10-05 — relevance comparability, the second seam, the seam rename
+
+| # | Decision | Where |
+|---|---|---|
+| D28 | **Relevance scores are comparable for the same query and model** — a cross-encoder scores each (query, passage) pair independently. `IRelevanceDecision` says so (replacing "comparable only within one call"); `RelevanceReranker` **batches by default** like `ProbabilityReranker` (`maxBatchTokens` 48000, `concurrency` 4, the same validation) and merges the batches' scores into one order; no single-call default. Closes §17.5's open choice. | §3.9, §5.2, §7.4, §14.1 |
+| D29 | **The second optional seam `makeRelevanceDecision` is approved** (was a §17.5 choice). | §3.8, §6.2 |
+| D30 | **The released probability seam is renamed symmetric to its contract:** `BuildAgentDeps.makeDecisionModel` → **`makeProbabilityDecision`**; the app's `createMakeDecisionModel` → **`createMakeProbabilityDecision`** (`createMakeRelevanceDecision` stays). `makeDecisionModel` stays a deprecated alias until the next major; **both supplied → startup fails with an explicit error naming both** (never silently pick one); the seam-missing message names `makeProbabilityDecision`. Migration note in §13. | §1, §3.8, §6.2, §11, §13, §14.1 |
