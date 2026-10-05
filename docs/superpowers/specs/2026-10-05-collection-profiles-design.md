@@ -38,6 +38,10 @@
 >   persistent store (D60). **S11 decided by the user on 2026-10-05 (§17.18):** `OllamaRag` in
 >   `ollama-embedder` extends `VectorRag`, and `llm-agent-rag` depends on `ollama-embedder` — a
 >   package cycle once `VectorRag` lives in `llm-agent-rag`; this spec removes `OllamaRag`.
+>   **S12 decided by the user on 2026-10-05 (§17.18):** the pre-existing re-exports go in this same
+>   major — no public entry point of any package exports another package's names (§11.4, 18 more
+>   migration lines, §13). **The search-strategy types move with `VectorRag`** to `llm-agent-rag`:
+>   the user's decision of 2026-10-05 (§17.18).
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -199,7 +203,7 @@
 > - **the RAG implementations' files move into `packages/llm-agent-rag/src/` in this PR** (D57,
 >   §11.3): `@mcp-abap-adt/llm-agent` stops exporting them; no `rag-implementations` subpath, no
 >   aliases; the search-strategy types (`ISearchStrategy`, …) move with `VectorRag`, whose option
->   types they are; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to
+>   types they are (the user's decision, §17.18); `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to
 >   `llm-agent/src/interfaces/`; nothing left in `llm-agent` imports a moved file. The store kit stays
 >   in `llm-agent` (unchanged);
 > - **no deprecated aliases** (D58): `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`,
@@ -207,8 +211,9 @@
 >   (and with it the "both supplied" startup error); every in-repo use takes the new name;
 > - **no re-exports at all** (D59): every package — ours included — imports a name from the package
 >   that owns it. `llm-agent-libs` re-exports nothing from `llm-agent-reranker` or `llm-agent-rag`;
->   `llm-agent-rag` exports only what lives in it. Pre-existing re-exports this PR does not touch are
->   listed for the user (§11.4);
+>   `llm-agent-rag` exports only what lives in it. The pre-existing re-exports go too (S12, decided
+>   by the user, §11.4): libs' root names of `llm-agent`, server-libs' `legacy/*` re-exports,
+>   `llm-agent-server`'s dead `export *`;
 > - **replicas over one persistent store** (D60): each clears and reloads it at its start and the
 >   others read a partial store meanwhile — accepted by the user as the price of the simple corpus
 >   flow; no marker, no coordination;
@@ -345,7 +350,8 @@
   `llm-agent-rag` need (`AbstractRagProvider`, the query embeddings, the identity filter) stay in
   `llm-agent` (§11.3). `OllamaRag` is removed (S11, decided by the user, §17.18).
 - **No package re-exports another package's names** (D59): every package, ours included, imports
-  a name from the package that owns it (§11.4).
+  a name from the package that owns it — the pre-existing re-exports are removed in this major too
+  (S12, decided by the user; §11.4).
 - **Every part of this design lives in exactly one layer** — the consumer, the llm-agent framework
   (contracts; generic implementations), llm-agent-server, or the pipelines in llm-agent. The map
   is §11.1; the audit of suspected misplacements and how each is resolved is §11.2.
@@ -1061,9 +1067,10 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `ICandidatePool.items(requestedK)` / `recordsToFetch(requestedK, maxRecordsPerItem)` — the pool takes the caller's k (D56) | goal decision 2026-10-05 (no tuned numbers): the generic default pool is **k items** of the (sub-)query, which a pool can only compute when it is given k. `ICandidatePool` is new in this spec, so nothing released changes | libs (`ItemPool`, `StagedRetrieval`), consumers' own pools |
 | **The RAG implementations move to `@mcp-abap-adt/llm-agent-rag`** — their files, their tests, their exports (D53, D57, §11.3); `@mcp-abap-adt/llm-agent` stops exporting them; no subpath, no alias — **breaking** | goal decisions 2026-10-05 (layers; no deprecated aliases, a major release): the contracts package holds contracts, the implementations live in `llm-agent-rag`. No cycle: nothing left in `llm-agent` imports a moved file once the three contract types below move to `interfaces/` (verified 2026-10-05 with `git grep` over `packages/llm-agent/src`: the only imports from a moved file by a file that stays were `interfaces/index.ts` and `interfaces/plugin.ts` → `rag/query-expander.ts`, plus the barrels `index.ts`, `rag/index.ts`, `rag/providers/index.ts`, `rag/corrections/index.ts`, `resilience/index.ts`). Every name a moved file needs from a file that stays is already a root export of `llm-agent` | `@mcp-abap-adt/llm-agent-rag` (`src/`), `@mcp-abap-adt/llm-agent` (exports removed) |
 | The contract types defined inside implementation files move into `interfaces/` — `IQueryExpander` (`rag/query-expander.ts`), `IQueryPreprocessor`, `IDocumentEnricher` (`rag/preprocessor.ts`) — same names, same root exports, **no contract change** | the contracts must not live in files that leave the package: `interfaces/plugin.ts` and `interfaces/index.ts` import `IQueryExpander` from `rag/query-expander.ts` today, and the implementations in `llm-agent-rag` implement these contracts (D53, D57) | `@mcp-abap-adt/llm-agent` (`interfaces/query-expander.ts`, `interfaces/query-preprocessor.ts`) |
-| The search-strategy types (`ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext`) move **with `VectorRag`** to `llm-agent-rag` (`src/search-strategy.ts`) — **breaking** (import path) | they are `VectorRag`'s option types (`VectorRagConfig.strategy`), used by nothing else in the repo but `VectorRag`, the five strategies and `llm-agent-rag`'s `rag-factories.ts`; `ISearchContext.index` names the `InvertedIndex` class, which moves too. Moving them to `interfaces/` would need a new interface for `InvertedIndex` — a contract nobody asked for (§17.18, choice for review) | `@mcp-abap-adt/llm-agent-rag` |
+| The search-strategy types (`ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext`) move **with `VectorRag`** to `llm-agent-rag` (`src/search-strategy.ts`) — **breaking** (import path) | they are `VectorRag`'s option types (`VectorRagConfig.strategy`), used by nothing else in the repo but `VectorRag`, the five strategies and `llm-agent-rag`'s `rag-factories.ts`; `ISearchContext.index` names the `InvertedIndex` class, which moves too. Moving them to `interfaces/` would need a new interface for `InvertedIndex` — a contract nobody asked for (§17.18, **decided by the user** on 2026-10-05) | `@mcp-abap-adt/llm-agent-rag` |
 | `OllamaRag` removed from `@mcp-abap-adt/ollama-embedder` — **breaking** (S11, §17.18) | it extends `VectorRag`, which now lives in `llm-agent-rag`; `llm-agent-rag` depends on `ollama-embedder` (optional peer, `tsconfig` reference, dev dependency), so `ollama-embedder` importing `llm-agent-rag` is a package and `tsc -b` reference cycle. `OllamaRag` is a 6-line convenience (`VectorRag` + `symmetricEmbedder(new OllamaEmbedder(cfg))`) with no user in the repo | `@mcp-abap-adt/ollama-embedder` |
 | No re-exports across packages (D59) — `llm-agent-libs` exports no reranker and no RAG implementation; `llm-agent-rag` exports only its own files — **breaking** for libs-root imports of rerankers | goal decision 2026-10-05 and the user's: a re-export makes a second home for a name; every package imports a name from its owner, so a name has one import path. Libs keeps its own dependency on `llm-agent-reranker` for internal use (`NoopReranker` as the default reranker) | `@mcp-abap-adt/llm-agent-libs` (`src/index.ts`) |
+| The pre-existing re-exports removed (S12, §11.4) — libs' root stops exporting 15 names of `@mcp-abap-adt/llm-agent`; server-libs' `./legacy/flat` subpath is removed and `./legacy/linear`, `./legacy/dag` stop exporting libs' classes; `llm-agent-server`'s unreachable `src/index.ts` is deleted — **breaking** (import path; migration lines 52–69) | the user's decision of 2026-10-05 (S12): the rule of D59 holds for every public entry point, not only for the names this PR moves. Same types and classes, imported from their owner | `@mcp-abap-adt/llm-agent-libs` (`src/index.ts`), `@mcp-abap-adt/llm-agent-server-libs` (`src/legacy/`, `package.json` `exports`), `@mcp-abap-adt/llm-agent-server` (`src/index.ts`) |
 | `SmartServerConfig.toolsFillFactories?` (D42) | YAML `rag.profiles.tools.fill` names a source (§6.2); a consumer's own source is registered by name, like `toolsVariantFactories` | `llm-agent-server-libs` (`smart-server.ts` config type, `resolve-collection-profiles.ts`) |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
 | `FallbackRag.writer()` — `upsertPrecomputedRaw` present **only when the primary's writer has it** (D52, §10.4) — **no contract change**, a behaviour change of one implementation | review finding 2026-10-05: the writer always exposed `upsertPrecomputedRaw` and, when the primary had none, called the primary's `upsertRaw` — the given vector dropped, the text re-embedded silently. A caller that checks the capability (the `corpus` source, §6.5; the batch paths of `vectorizeMcpTools` and the record writer) was told a precomputed write exists when it does not. `IRagBackendWriter.upsertPrecomputedRaw` is already optional, so every caller already handles its absence | `@mcp-abap-adt/llm-agent-rag` (`src/fallback-rag.ts`), where `FallbackRag`'s file lives after the move (D53, D57, §11.3) |
@@ -3307,7 +3314,8 @@ it from `@mcp-abap-adt/llm-agent-rag`. `llm-agent-libs`, `llm-agent-server-libs`
 ### 11.4 Re-exports across packages (D59)
 
 **Rule:** a package exports only the names it owns. A consumer — and every package of this repo —
-imports a name from its owner. This PR adds no re-export and removes the ones its design had:
+imports a name from its owner. This PR adds no re-export, removes the ones its design had, and
+removes the pre-existing ones (S12, below):
 
 - `llm-agent-libs` exports no reranker (`ProbabilityReranker`, `LlmReranker`, `NoopReranker`,
   `TOOL_QUESTION`, `PASSAGE_QUESTION`, …): they are imported from `@mcp-abap-adt/llm-agent-reranker`.
@@ -3316,21 +3324,61 @@ imports a name from its owner. This PR adds no re-export and removes the ones it
   module re-exporting `@mcp-abap-adt/llm-agent`).
 - `@mcp-abap-adt/llm-agent` exports no RAG implementation (D57).
 
-**Pre-existing re-exports this PR does not touch — reported for the user** (found 2026-10-05 by
-scanning every `export … from '@mcp-abap-adt/…'` under `packages/*/src`):
+**The pre-existing re-exports are removed too — S12, decided by the user on 2026-10-05 (§17.18).**
+Found on 2026-10-05 by scanning every `export … from '<package>'` under `packages/*/src` **and**
+every `import { X } from '<package>'` followed by `export { X }` / `export type { X }` (the second
+form is how most of libs' root re-exports are written), then following each to the public entry
+points (`package.json` `exports`). No package re-exports a third-party package.
 
-| Where | What it re-exports | Reaches |
-|---|---|---|
-| `llm-agent-libs/src/agent.ts` | `AgentCallOptions`, `OrchestratorError`, `SmartAgentResponse`, `StopReason` from `llm-agent` | libs root (`OrchestratorError`, `SmartAgentResponse`, `StopReason`) |
-| `llm-agent-libs/src/pipeline/types.ts` | `BuiltInStageType`, `ControlFlowType`, `StageDefinition`, `StageType` from `llm-agent` | libs root (`StageDefinition`, `StageType`, via `pipeline/index.ts`) |
-| `llm-agent-libs/src/{health,metrics,tracer,validator,session}/types.ts`, `interfaces/mcp-connection-strategy.ts`, `interfaces/model-resolver.ts`, `logger/index.ts` | `llm-agent` contracts (`IMetrics`, `ITracer`, `IOutputValidator`, `ISessionManager`, `ILogger`, …) | internal modules only (libs' own files import through them); not on a public path |
-| `llm-agent-libs/src/adapters/index.ts` | `McpClientAdapter` from `llm-agent-mcp` | internal module only |
-| `llm-agent-libs/src/reranker/types.ts` | `IReranker` from `llm-agent` | deleted by this PR with `src/reranker/` |
-| `llm-agent-server-libs/src/legacy/{flat,linear,dag}.ts` | `SmartAgentBuilder`, `CoordinatorHandler`, `DagCoordinatorHandler` from `llm-agent-libs` | the public subpaths `./legacy/flat`, `./legacy/linear`, `./legacy/dag` |
-| `llm-agent-server/src/index.ts` | `export * from '@mcp-abap-adt/llm-agent-server-libs'` | the whole `llm-agent-server` root |
+**Rule for deciding:** a name is a re-export when a **public entry point** (a path in a package's
+`exports`) exports it and its declaration lives in **another package**. Removed are the re-exports
+on a public path. Kept are (a) libs' **internal** modules that re-export `llm-agent` contracts for
+libs' own files (`health/types.ts`, `metrics/types.ts`, `tracer/types.ts`, `validator/types.ts`,
+`session/types.ts`, `interfaces/mcp-connection-strategy.ts`, `logger/index.ts`, and the internal
+barrels `pipeline/types.ts`, `plugins/types.ts`, `agent.ts`, `adapters/llm-adapter.ts`,
+`metrics/in-memory-metrics.ts`), which no `exports` path reaches once the root lines go — they are
+an import convenience inside one package, not a second public home; and (b) names **declared** in
+the exporting package, even when they are built from another package's type: libs'
+`SmartAgentHandle = SmartAgentHandle<SmartAgent>` and `IStageHandler = IStageHandler<PipelineContext>`
+(specialisations to libs' own classes — different types), and `llm-agent`'s
+`ITextLogger = ILogger` of `@mcp-abap-adt/interfaces-utils` (its own name for an ecosystem type;
+see "Left for the user" below).
 
-The plan removes only `src/reranker/types.ts` (its directory leaves libs). The rest is for the
-user to decide (S12, §17.18).
+| Where | What it re-exports | Reaches | In this PR |
+|---|---|---|---|
+| `llm-agent-libs/src/index.ts` ← `agent.ts` | `OrchestratorError`, `SmartAgentResponse`, `StopReason` (`llm-agent`) | libs root | removed from the root (lines 54–56) |
+| `llm-agent-libs/src/index.ts` ← `adapters/llm-adapter.ts` | `AgentCallOptions`, `BaseAgentLlmBridge` (`llm-agent`) | libs root | removed from the root (lines 52–53) |
+| `llm-agent-libs/src/index.ts` ← `metrics/in-memory-metrics.ts` | `CounterSnapshot`, `HistogramSnapshot`, `MetricsSnapshot` (`llm-agent`) | libs root | removed from the root (lines 57–59) |
+| `llm-agent-libs/src/index.ts` ← `pipeline/index.ts` ← `pipeline/types.ts` | `BuiltInStageType`, `ControlFlowType`, `StageDefinition`, `StageType` (`llm-agent`) | libs root | removed from the root (lines 60–63) |
+| `llm-agent-libs/src/index.ts` ← `plugins/index.ts` ← `plugins/types.ts` | `IPluginLoader`, `LoadedPlugins`, `PluginExports` (`llm-agent`) | libs root | removed from the root (lines 64–66) |
+| `llm-agent-server-libs/src/legacy/flat.ts` | `SmartAgentBuilder` (libs) — its only export | `./legacy/flat` | file deleted, the subpath removed from `exports` (line 67) |
+| `llm-agent-server-libs/src/legacy/linear.ts` | `CoordinatorHandler` (libs) | `./legacy/linear` | the line removed; `LinearFactory` (own) stays (line 68) |
+| `llm-agent-server-libs/src/legacy/dag.ts` | `DagCoordinatorHandler` (libs) | `./legacy/dag` | the line removed; `DagFactory`, `buildDagCoordinatorDeps` (own) stay (line 69) |
+| `llm-agent-server/src/index.ts` | `export * from '@mcp-abap-adt/llm-agent-server-libs'` | nothing: the package's `exports` lists only `./package.json` (binary-only since 12.0.1), and no file imports `src/index.ts` | file deleted; no migration line (nothing could import it) |
+| `llm-agent-libs/src/{health,metrics,tracer,validator,session}/types.ts`, `interfaces/mcp-connection-strategy.ts`, `logger/index.ts` | `llm-agent` contracts for libs' own files | internal modules only | kept (rule (a)) |
+| `llm-agent-libs/src/adapters/index.ts` (`McpClientAdapter` of `llm-agent-mcp`), `interfaces/model-resolver.ts` (`IModelResolver`) | — | internal, and imported by no file | kept (rule (a)); dead files — see "Left for the user" |
+| `llm-agent-libs/src/reranker/types.ts` | `IReranker` (`llm-agent`) | internal | deleted with `src/reranker/` (Task 4B) |
+
+`llm-agent-libs/src/index.ts`'s internal sources keep their local `export type { … }` lines (rule
+(a)): only the root's lines change, so libs' own files compile unchanged. Every in-repo importer
+of a removed root name switches to its owner (2026-10-05: `llm-agent-server-libs`
+`smart-agent/http/chat-route-handler.ts`, `smart-agent/http/response-helpers.ts`,
+`smart-agent/smart-server.ts`; `llm-agent-server` `smart-agent/server.ts`,
+`smart-agent/__tests__/server.test.ts`; no importer of a `legacy/*` subpath in code). Docs that
+show the old paths: `docs/INTEGRATION.md` (custom plugin loader), `docs/PIPELINES.md` ("Embedding
+in code", `legacy/dag`), `packages/llm-agent-libs/README.md` ("type re-exports of the core
+contracts").
+
+**The guard** (§14.1): a repo test reads every package's public entry points (the `types` of each
+`exports` path, after the build) with the TypeScript checker and fails when an exported name's
+declaration lies outside the exporting package — so no package can re-export another's names
+again, written either way.
+
+**Left for the user (not removed; no task depends on them):** `llm-agent`'s `ITextLogger`
+(`= ILogger` of `@mcp-abap-adt/interfaces-utils`, the same type under a second name, kept by its own
+comment "until a major") — it is a name `llm-agent` declares, so the rule above keeps it, but it is
+an alias of an ecosystem type; and libs' two unused internal modules (`adapters/index.ts`,
+`interfaces/model-resolver.ts`).
 
 ---
 
@@ -3354,12 +3402,15 @@ user to decide (S12, §17.18).
 - **No profile configured → no change.** Same records (golden test), same stages, same k
   semantics, same `RerankHandler` precedence, same YAML.
 - **This is a major release — breaking** (D57–D59, the goal's decision "No deprecated aliases").
-  Old names are not kept; no package re-exports another package's names. Removed besides the
-  table below: only the unexported `IToolIndexingStrategy` file and the unexported
-  `createMakeDecisionModel` of the server binary (renamed `createMakeProbabilityDecision`).
+  Old names are not kept; no package re-exports another package's names — neither the names
+  this PR moves nor the pre-existing re-exports (S12, §11.4: lines 52–69). Removed besides the
+  table below: only the unexported `IToolIndexingStrategy` file, the unexported
+  `createMakeDecisionModel` of the server binary (renamed `createMakeProbabilityDecision`), and
+  `llm-agent-server`'s `src/index.ts` (`export *` of server-libs), which no import could reach —
+  the package's `exports` lists only `./package.json`.
 - **Migration table — one line per removed or moved name** (the CHANGELOG's **Breaking** section
-  carries it as is). Every name keeps its members and behaviour; only the name or the import path
-  changes, except `OllamaRag` (line 51), which is removed:
+  carries it as is; **69 lines**). Every name keeps its members and behaviour; only the name or the
+  import path changes, except `OllamaRag` (line 51), which is removed:
 
   | # | Old name | Old import | New name | Import it from |
   |---|---|---|---|---|
@@ -3414,12 +3465,36 @@ user to decide (S12, §17.18).
   | 49 | `wrapDecisionModel` | `@mcp-abap-adt/llm-agent-libs` | `wrapProbabilityDecision` | `@mcp-abap-adt/llm-agent-libs` |
   | 50 | `BuildAgentDeps.makeDecisionModel` | `@mcp-abap-adt/llm-agent-server-libs` (the key in your `BuildAgentDeps`) | `BuildAgentDeps.makeProbabilityDecision` | `@mcp-abap-adt/llm-agent-server-libs` (same function, same signature — rename the key) |
   | 51 | `OllamaRag` | `@mcp-abap-adt/ollama-embedder` | removed — `new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)` | `VectorRag` from `@mcp-abap-adt/llm-agent-rag`, `symmetricEmbedder` from `@mcp-abap-adt/llm-agent`, `OllamaEmbedder` from `@mcp-abap-adt/ollama-embedder` (S11) |
+  | 52 | `AgentCallOptions` | `@mcp-abap-adt/llm-agent-libs` | `AgentCallOptions` | `@mcp-abap-adt/llm-agent` |
+  | 53 | `BaseAgentLlmBridge` | `@mcp-abap-adt/llm-agent-libs` | `BaseAgentLlmBridge` | `@mcp-abap-adt/llm-agent` |
+  | 54 | `OrchestratorError` | `@mcp-abap-adt/llm-agent-libs` | `OrchestratorError` | `@mcp-abap-adt/llm-agent` |
+  | 55 | `SmartAgentResponse` | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentResponse` | `@mcp-abap-adt/llm-agent` |
+  | 56 | `StopReason` | `@mcp-abap-adt/llm-agent-libs` | `StopReason` | `@mcp-abap-adt/llm-agent` |
+  | 57 | `CounterSnapshot` | `@mcp-abap-adt/llm-agent-libs` | `CounterSnapshot` | `@mcp-abap-adt/llm-agent` |
+  | 58 | `HistogramSnapshot` | `@mcp-abap-adt/llm-agent-libs` | `HistogramSnapshot` | `@mcp-abap-adt/llm-agent` |
+  | 59 | `MetricsSnapshot` | `@mcp-abap-adt/llm-agent-libs` | `MetricsSnapshot` | `@mcp-abap-adt/llm-agent` |
+  | 60 | `BuiltInStageType` | `@mcp-abap-adt/llm-agent-libs` | `BuiltInStageType` | `@mcp-abap-adt/llm-agent` |
+  | 61 | `ControlFlowType` | `@mcp-abap-adt/llm-agent-libs` | `ControlFlowType` | `@mcp-abap-adt/llm-agent` |
+  | 62 | `StageDefinition` | `@mcp-abap-adt/llm-agent-libs` | `StageDefinition` | `@mcp-abap-adt/llm-agent` |
+  | 63 | `StageType` | `@mcp-abap-adt/llm-agent-libs` | `StageType` | `@mcp-abap-adt/llm-agent` |
+  | 64 | `IPluginLoader` | `@mcp-abap-adt/llm-agent-libs` | `IPluginLoader` | `@mcp-abap-adt/llm-agent` |
+  | 65 | `LoadedPlugins` | `@mcp-abap-adt/llm-agent-libs` | `LoadedPlugins` | `@mcp-abap-adt/llm-agent` |
+  | 66 | `PluginExports` | `@mcp-abap-adt/llm-agent-libs` | `PluginExports` | `@mcp-abap-adt/llm-agent` |
+  | 67 | `SmartAgentBuilder` | `@mcp-abap-adt/llm-agent-server-libs/legacy/flat` (subpath removed) | `SmartAgentBuilder` | `@mcp-abap-adt/llm-agent-libs` |
+  | 68 | `CoordinatorHandler` | `@mcp-abap-adt/llm-agent-server-libs/legacy/linear` | `CoordinatorHandler` | `@mcp-abap-adt/llm-agent-libs` |
+  | 69 | `DagCoordinatorHandler` | `@mcp-abap-adt/llm-agent-server-libs/legacy/dag` | `DagCoordinatorHandler` | `@mcp-abap-adt/llm-agent-libs` |
 
   - Lines 1–39: add `@mcp-abap-adt/llm-agent-rag` as a dependency. A package that
     `llm-agent-rag` itself depends on (a store or embedder package) cannot import them (§11.3).
   - Lines 41–48: add `@mcp-abap-adt/llm-agent-reranker` as a dependency.
   - Line 40: a class implementing `IDecisionModel` changes only the name it implements (same
     members).
+  - Lines 52–66: the same names were always declared in `@mcp-abap-adt/llm-agent`, which
+    `llm-agent-libs` peers on — import them from there (add it as a dependency if you have not).
+  - Lines 67–69: the classes were always `llm-agent-libs`' — import them from its root. The
+    subpath `@mcp-abap-adt/llm-agent-server-libs/legacy/flat` is gone (it held only
+    `SmartAgentBuilder`); `./legacy/linear` keeps `LinearFactory`, `./legacy/dag` keeps
+    `DagFactory` and `buildDagCoordinatorDeps`, `./legacy/stepper` is unchanged.
   - Line 50: a consumer that still passes `makeDecisionModel` gets a compile error (excess property
     on the `BuildAgentDeps` literal); a JavaScript consumer that passes it is not called — the
     config that asks for a probability decision then fails at startup with `BuildAgentDeps.makeProbabilityDecision is required: …`.
@@ -3490,7 +3565,10 @@ user to decide (S12, §17.18).
   the `typesafe-decision` README (`IProbabilityDecision`; one of two decision kinds), the
   `ollama-embedder` README (`OllamaRag` removed, its replacement), the `llm-agent`,
   `llm-agent-rag` and `llm-agent-libs` READMEs (renames, reranker package, the RAG
-  implementations in `llm-agent-rag`, no re-exports), `scripts/rag-eval/README.md`;
+  implementations in `llm-agent-rag`, no re-exports — the libs README drops its "type re-exports of
+  the core contracts"), `docs/PIPELINES.md` ("Embedding in code": `DagCoordinatorHandler` from
+  `llm-agent-libs`, no `legacy/dag` re-export), `docs/INTEGRATION.md`'s custom plugin loader
+  (`IPluginLoader`, `LoadedPlugins` from `@mcp-abap-adt/llm-agent`), `scripts/rag-eval/README.md`;
   every page that names a renamed or moved symbol uses the new name and import; the old name
   appears only in the CHANGELOG's migration table.
 
@@ -3621,6 +3699,14 @@ user to decide (S12, §17.18).
   this PR adds or edits (`llm-agent-libs/src/index.ts`, `llm-agent-rag/src/**`,
   `llm-agent-reranker/src/**`, `sap-aicore-decision/src/**`); `IProbabilityDecision` is
   implemented by `TypeSafeDecisionModel`.
+- No public entry point re-exports another package's names (D59, S12): a repo test reads the built
+  `types` file of every `exports` path of every package with the TypeScript checker and fails when
+  an exported name's declaration lies outside the exporting package (so both `export { X } from
+  '<pkg>'` and `import { X } from '<pkg>'; export { X }` are caught, and a new re-export in any
+  package fails it); `OrchestratorError` is not in libs' runtime namespace,
+  `CoordinatorHandler` / `DagCoordinatorHandler` not in `./legacy/linear` / `./legacy/dag`'s, and
+  importing `@mcp-abap-adt/llm-agent-server-libs/legacy/flat` fails with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`.
 - `wrapRelevanceDecision`: logs `component: 'decision'` per successful call (estimated tokens when
   no `usage`); no logger → no-op; idempotent.
 - Text composers: `ParameterNamesToolText` reproduces the former `full` text byte for byte;
@@ -3821,7 +3907,6 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 | Shared items in the server YAML | D6 |
 | A query-decomposition **implementation** (splitting multi-step queries) | the consumer: it injects its own `IQueryDecomposer` into the slot `StagedRetrieval` provides (§4.5); the framework ships none and no variant uses one (goal decision 2026-10-05) |
 | BM25 identifier tokenization (`ZDEMO_D_TEST` → `test`) | separate change to the in-store scoring (`ISearchStrategy` / tokenizer) |
-| The pre-existing re-exports this PR does not touch (§11.4: libs' `OrchestratorError` / `StageDefinition` …, server-libs' `legacy/*` subpaths, `llm-agent-server`'s `export *`) | the user's decision (S12, §17.18) |
 | A package for the store kit (`AbstractRagProvider`, the query embeddings, …) below both `llm-agent-rag` and the store packages | a later decision (§11.2 item 1); the kit stays in `llm-agent` |
 | A deploy-time corpus step, a record of the load in the store, resuming an interrupted load | not built (D54): the server loads the corpus at every start, from the start |
 | Tuned numbers for any shipped strategy or composition | the consumer's calibration (D55); measured with the harness in the consumer (§14.3) |
@@ -4128,7 +4213,7 @@ now, without aliases, in a major release.** Kept as written for the record:
   the query embeddings, the retrieval-embedder adapters) stays in `llm-agent` in either option —
   moving it needs a package below both `llm-agent-rag` and the store packages (§11.2 item 1).
 
-### 17.18 Decided by the user on 2026-10-05 — a major release without aliases or re-exports (D57–D60); S11, S12 open
+### 17.18 Decided by the user on 2026-10-05 — a major release without aliases or re-exports (D57–D60); S11, S12 and the search-strategy types decided
 
 From the goal's newest decision ("No deprecated aliases", 2026-10-05) and the user's instructions of
 the same day.
@@ -4136,13 +4221,14 @@ the same day.
 | # | Decision | Where |
 |---|---|---|
 | D57 | **The RAG implementations really move now** (S10 decided: the alternative). The files of every class of §11.3's "moves" table — `VectorRag`, `InMemoryRag`, `FallbackRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry` / `ragStoreKey`, the providers, the search strategies (with their types), the preprocessors / enrichers, the query expanders, `buildRagCollectionToolEntries`, their config / option types, the private `InvertedIndex` and tokenizer — and their tests move to `packages/llm-agent-rag/src/`. `@mcp-abap-adt/llm-agent` stops exporting them; no `rag-implementations` subpath; no aliases. `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to `llm-agent/src/interfaces/`. Nothing left in `llm-agent` imports a moved file (verified, §11.3); a repo test pins that `llm-agent` does not depend on `llm-agent-rag`. Every importer switches to `llm-agent-rag`. The store kit stays in `llm-agent` (unchanged). Supersedes the "public home now, files in the next major" of D53 and amendment (12) | §1, §3.8, §10.4, §11, §11.3, §13, §14.1, §15, §16 |
-| D58 | **No deprecated aliases anywhere** — a major release. Removed without an old name: `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_TASK` / `_CRITERIA`, `wrapDecisionModel`, `BuildAgentDeps.makeDecisionModel` (and with it the "both supplied" startup error and its tests), the libs-root reranker exports, the RAG implementations' `llm-agent` exports. Every in-repo use takes the new name. The CHANGELOG has a **Breaking** section with one migration line per removed or moved name (§13: 51 lines). The plan does no version bump or publish; its docs task says the release is a major. Supersedes the alias parts of D24, D26, D30, D53, §17.5 and amendments (4), (5), (12) | §1, §3.8, §3.9, §5.4, §6.2, §11, §13, §14.1 |
-| D59 | **No re-exports at all.** Every consumer — our own packages included — imports a name from the package that owns it. `llm-agent-libs` re-exports nothing from `llm-agent-reranker` or `llm-agent-rag`; `llm-agent-rag` exports only what lives in it; `@mcp-abap-adt/llm-agent` exports no implementation it moved. The migration table says where each name is imported from now. Pre-existing re-exports this PR does not touch are listed in §11.4 for the user (S12) | §3.8, §5.4, §11, §11.4, §13, §14.1 |
+| D58 | **No deprecated aliases anywhere** — a major release. Removed without an old name: `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_TASK` / `_CRITERIA`, `wrapDecisionModel`, `BuildAgentDeps.makeDecisionModel` (and with it the "both supplied" startup error and its tests), the libs-root reranker exports, the RAG implementations' `llm-agent` exports. Every in-repo use takes the new name. The CHANGELOG has a **Breaking** section with one migration line per removed or moved name (§13: 51 lines, 69 with S12). The plan does no version bump or publish; its docs task says the release is a major. Supersedes the alias parts of D24, D26, D30, D53, §17.5 and amendments (4), (5), (12) | §1, §3.8, §3.9, §5.4, §6.2, §11, §13, §14.1 |
+| D59 | **No re-exports at all.** Every consumer — our own packages included — imports a name from the package that owns it. `llm-agent-libs` re-exports nothing from `llm-agent-reranker` or `llm-agent-rag`; `llm-agent-rag` exports only what lives in it; `@mcp-abap-adt/llm-agent` exports no implementation it moved. The migration table says where each name is imported from now. The pre-existing re-exports are removed in this major too (S12, decided below; §11.4) | §3.8, §5.4, §11, §11.4, §13, §14.1 |
 | D60 | **Replicas over one persistent tools store: accepted as is.** Each replica clears and reloads the store at its start, and the others read a partial store meanwhile — the price of the simple corpus flow (D54). No marker or coordination is added | §3.10, §6.5, §11.1 |
 
-**Choice made while writing D57 in — for the user's review:** the search-strategy types
-(`ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext`) move
-**with `VectorRag`** rather than to `interfaces/`. They are `VectorRag`'s option types, used by
+**The search-strategy types — decided by the user on 2026-10-05** (written in as a choice for
+review while writing D57 in; the user chose it): `ISearchStrategy`, `ISearchCandidate`,
+`ISearchQuery`, `IScoredResult`, `ISearchContext` move **with `VectorRag`** to `llm-agent-rag`
+rather than to `interfaces/`. They are `VectorRag`'s option types, used by
 nothing outside `VectorRag`, the strategies and `llm-agent-rag`'s factories, and `ISearchContext`
 names the `InvertedIndex` class, which moves; putting them in `interfaces/` would need a new
 interface for `InvertedIndex`. One migration line each (§13, lines 22–26).
@@ -4164,9 +4250,27 @@ a `tsc -b` reference cycle. Options:
 
 Only Task 1A's `OllamaRag` step depends on the choice.
 
-**S12 — open for the user: pre-existing re-exports** (§11.4). This PR removes the re-exports its
-own design had and deletes libs' `src/reranker/types.ts`; it leaves libs' root re-exports of
-`OrchestratorError`, `SmartAgentResponse`, `StopReason`, `StageDefinition`, `StageType` (from
-`llm-agent`), server-libs' `legacy/flat`, `legacy/linear`, `legacy/dag` subpaths (libs classes) and
-`llm-agent-server`'s `export * from '@mcp-abap-adt/llm-agent-server-libs'`, plus libs' internal
-type-only shims. Whether they go in this major, and how, is the user's decision.
+**S12 — decided by the user on 2026-10-05: remove the pre-existing re-exports in this same
+major** (§11.4). Every public entry point exports only the names its package declares:
+
+- libs' root stops exporting `AgentCallOptions`, `BaseAgentLlmBridge`, `OrchestratorError`,
+  `SmartAgentResponse`, `StopReason`, `CounterSnapshot`, `HistogramSnapshot`, `MetricsSnapshot`,
+  `BuiltInStageType`, `ControlFlowType`, `StageDefinition`, `StageType`, `IPluginLoader`,
+  `LoadedPlugins`, `PluginExports` — all declared in `@mcp-abap-adt/llm-agent` (lines 52–66);
+- server-libs' `./legacy/flat` held only the re-export of `SmartAgentBuilder`: the file and the
+  subpath go (line 67); `./legacy/linear` and `./legacy/dag` hold own code too (`LinearFactory`;
+  `DagFactory`, `buildDagCoordinatorDeps`), so only their `CoordinatorHandler` /
+  `DagCoordinatorHandler` lines go (lines 68–69); `./legacy/stepper` re-exports nothing;
+- `llm-agent-server`'s `src/index.ts` (`export * from '@mcp-abap-adt/llm-agent-server-libs'`) is
+  deleted; no migration line — the package's `exports` lists only `./package.json`, so nothing
+  could import it;
+- libs' internal type-only shims stay: no `exports` path reaches them, and libs' own files import
+  through them (§11.4 rule (a));
+- names a package declares itself stay even when built from another package's type
+  (`SmartAgentHandle`, libs' `IStageHandler`, `llm-agent`'s `ITextLogger`) — §11.4 rule (b);
+- every in-repo importer switches to the owner in the same commit; a repo test over the built
+  entry points (§14.1) keeps any package from re-exporting another's names again.
+
+Migration: 18 more lines (§13, lines 52–69; **69 in total**). Left for the user: `ITextLogger` (an
+alias of `@mcp-abap-adt/interfaces-utils`' `ILogger` under `llm-agent`'s own name) and libs' two
+unused internal modules (§11.4).
