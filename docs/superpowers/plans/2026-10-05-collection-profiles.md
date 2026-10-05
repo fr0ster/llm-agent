@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it; and with the user's decisions D83 (6), (7) of 2026-10-06 (spec §17.33, amendment 26): one grammar for numbers and flags at start, on a reload and on `PUT` — a number or a string that is exactly a `NUMBER_LITERAL`, `true` / `false` or exactly `"true"` / `"false"` — and every config field the start coerced with `Number()` / `Boolean()` / `String()` validated (spec §10.5.9 *Start-only fields*): Task 4M (`config-fields.ts`'s grammar and start-only rules, the section readers, `parseIntegerField`, `parseSkillPluginsConfig`, `parseStepperCoordinatorConfig`, `optionalNumber` removed), Task 4Q (`agent.toolUnavailableTtlMs` joins the start-only rules), Task 21 (`score-floor.minScore` normalized), Task 33 (DEPLOYMENT: environment-variable values for number / flag fields), Task 34 (migration line 75). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -4144,7 +4144,7 @@ A test that relied on the carry-forward without passing `strict` now passes `str
 
 ## Task 4M: Server (server-libs + server)
 
-Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28; a failed config change is an error that leaves the server not ready, with no rollback — D82, decided by the user on 2026-10-06, spec §17.30, which withdraws D77's restore and D81; D82 (8), the user's decision of 2026-10-06: while not ready only a whole config clears the state, a partial `PUT` is refused with 409; every config field validated before it applies, one validator for the reload and the `PUT`, no coercion — D83, review finding of 2026-10-06, spec §17.31 and §10.5.9 *Config field rules*; the start config checked by the same validator, an invalid value fails the start — D83 (5), the user's rule of 2026-10-06, spec §17.32 and §10.5.9 *The start config*), §10.5.10 (the config-not-applied readiness, D82), §10.5.6 L7 (models route), §13 B10, B17, B19, B20 (B18 withdrawn); §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
+Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28; a failed config change is an error that leaves the server not ready, with no rollback — D82, decided by the user on 2026-10-06, spec §17.30, which withdraws D77's restore and D81; D82 (8), the user's decision of 2026-10-06: while not ready only a whole config clears the state, a partial `PUT` is refused with 409; every config field validated before it applies, one validator for the reload and the `PUT`, no coercion — D83, review finding of 2026-10-06, spec §17.31 and §10.5.9 *Config field rules*; the start config checked by the same validator, an invalid value fails the start — D83 (5), the user's rule of 2026-10-06, spec §17.32 and §10.5.9 *The start config*; one grammar for numbers and flags — a number literal string and `"true"` / `"false"` accepted, everything else refused — and every coerced config field validated — D83 (6), (7), decided by the user on 2026-10-06, spec §17.33, §10.5.9 *Start-only fields*), §10.5.10 (the config-not-applied readiness, D82), §10.5.6 L7 (models route), §13 B10, B17, B19, B20 (B18 withdrawn); §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` (~90), `controller/session-bundle.ts` (~57), `controller/run-scope.ts` (~79), `controller/artifacts.ts` (~261), `smart-server.ts` (~3112 session meta), `config-reload-watcher.ts` (~132), `tools-rag-handle.ts` (~90 eager load), `build-stepper-root.ts` (~97, ~234), `http/models-route-handler.ts` (~17, ~48)
@@ -4155,7 +4155,8 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
 - Modify (D82, the not-ready gate): `packages/llm-agent-server-libs/src/smart-agent/http/route-table.ts` (`RouteContext.notReadyMessage?`, `.configNotApplied?`), `http/response-helpers.ts` (`writeNotReady`'s optional `message`), `http/health-route-handler.ts` (`configNotApplied` in the body)
 - Create (V10, D82): `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-transaction-queue.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/config-route-transactions.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-not-ready.test.ts`. The real-server PUT tests (`config-endpoints.test.ts`, `smart-server-config-reload.test.ts`) are unchanged and must stay green (their drains and invalidations succeed). No libs change for D82: `SmartAgent.reconfigure` stays as in 30.1.0 (D81 withdrawn by D82); `LlmCircuitBreakers` gets no `snapshot()` (it existed only for the restore)
 - Create (D83): `packages/llm-agent-server-libs/src/smart-agent/config-fields.ts` (the one config field validator, internal — not exported from the package), `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-field-validation.test.ts`; Modify (D83): `packages/llm-agent-libs/src/config/config-watcher.ts` (`HotReloadableInput`; `_extractReloadable` passes the values as read — no `Number()` / `Boolean()` / `String()`), `packages/llm-agent-libs/src/config/index.ts` and `packages/llm-agent-libs/src/index.ts` (`type HotReloadableInput` exported beside `HotReloadableConfig`), `packages/llm-agent-libs/src/config/__tests__/config-watcher.test.ts` (one case: values as read); server-libs `config-reload-watcher.ts` (the validation step) and `http/config-route-handler.ts` (the values validated, the whitelists from the validator)
-- Modify (D83 (5), the start config): server-libs `smart-agent/config.ts` (`resolveSmartServerConfig` validates first; `resolveWorkerConfig` names the worker in a field error), `smart-agent/resolve-config-sections.ts` (`resolveAgentSection`, `resolveRagSection` / `resolveRagStore`, `resolvePromptsSection` take the validated values); `config-fields.ts` gains `startConfigInput` / `validateStartConfig`; tests: `config-field-validation.test.ts` (three cases), `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts` (one case). `__tests__/agent-mcp-shared-client-config.test.ts` is unchanged: its `resolveAgentSection(yaml, {})` passes an empty `StartConfigFields`
+- Modify (D83 (5), the start config): server-libs `smart-agent/config.ts` (`resolveSmartServerConfig` validates first; `resolveWorkerConfig` names the worker in a field error), `smart-agent/resolve-config-sections.ts` (`resolveAgentSection`, `resolveRagSection` / `resolveRagStore`, `resolvePromptsSection` take the validated values); `config-fields.ts` gains `startConfigInput` / `validateStartConfig`; tests: `config-field-validation.test.ts` (three cases), `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts` (one case). `__tests__/agent-mcp-shared-client-config.test.ts` passes an empty `StartConfigFields` and a `FieldCheck` (D83 (7), below): `resolveAgentSection(yaml, {}, new FieldCheck())`
+- Modify (D83 (6), (7), spec §17.33 — one grammar; every coerced config field): server-libs `smart-agent/config-fields.ts` (`NUMBER_LITERAL`, `numberOf`, `flagOf`, `FieldCheck` exported with `oneOf` / `numberOr` / `flagOr`, `START_NUMBER_RULES` and the name lists, `checkStartConfig`), `smart-agent/config.ts` (one `FieldCheck` per start; `port`; the literal split so the file's own fields throw before `skillPlugins` and the workers), `smart-agent/resolve-config-sections.ts` (every `Number()` / `Boolean()` / `String()` of a config value → the check; `positiveIntOption` and `whenThrottledOption` take the check; the heartbeat warning goes), `smart-agent/decision-config.ts` (`parseIntegerField` over `numberOf`), `smart-agent/skill-plugins-config.ts` (`posInt`, `threshold`, `loadOnStartup`, `strict`, the embedder names → its own `FieldCheck`), `smart-agent/stepper-config.ts` (`maxParallelSteps`, `maxDepth`, `tokenBudget` → its own `FieldCheck`), `smart-agent/llm-config-map.ts` (`optionalNumber` removed), `smart-agent/smart-server.ts` (~1174–1197: the temperatures read as they are); `packages/llm-agent-server/src/composition/model-resolver.ts` (~4, ~40–45: the same). Tests: `config-field-validation.test.ts` (three cases: the grammar, the start-only fields, the own parsers), `__tests__/resolve-llm-section.test.ts` (its `optionalNumber` case goes; the `maxTokens` / `maxAttempts` messages are the shared ones), `skill-plugins-config.test.ts` and `__tests__/stepper-config.test.ts` (messages), `__tests__/decision-config.test.ts` (one case: `" 5000"` refused); `docs/examples/stepper/0{1,2,3,4,5}-*.yaml` (the `url: ${EMBEDDER_URL:-}` line removed — `""` when unset, refused by `rag.embedder.url`)
 
 - [ ] **Step 1: Write the failing tests**
   - V1: a session whose persisted collection's `openCollection` answers `ok: false` (`CollectionNotFoundError`) → the session's creation rejects with it. Today: the session without the collection.
@@ -4873,9 +4874,10 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     import type { ILlm } from '@mcp-abap-adt/llm-agent';
     import { ConfigWatcher, type HotReloadableInput, type SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
     import { parse as parseYaml } from 'yaml';
-    import { resolveSmartServerConfig, type YamlConfig } from '../config.js';
+    import { parseStepperCoordinatorConfig, resolveSmartServerConfig, type YamlConfig } from '../config.js';
     import {
       ConfigFieldError,
+      NUMBER_LITERAL,
       startConfigInput,
       validateAgentUpdate,
       validateModelUpdate,
@@ -4884,7 +4886,10 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     } from '../config-fields.js';
     import { ConfigReloadWatcher } from '../config-reload-watcher.js';
     import { ConfigTransactionQueue } from '../config-transaction-queue.js';
+    import { parseIntegerField } from '../decision-config.js';
     import { handleConfigUpdate, type IConfigUpdateTarget } from '../http/config-route-handler.js';
+    import { parseSkillPluginsConfig } from '../skill-plugins-config.js';
+    import { loadYamlConfig } from '../yaml-loader.js';
     import { SmartServer } from '../smart-server.js';
     import { constructionSeams } from './construction-seams.js';
 
@@ -4903,16 +4908,16 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       // [the field as the error names it, the input with value v, a valid boundary, invalid values]
       const rules: [string, (v: unknown) => HotReloadableInput, unknown, unknown[]][] = [
         ['agent.maxIterations', (v) => ({ maxIterations: v }), 1, [0, 2.5, 'oops', null, Number.NaN, Number.POSITIVE_INFINITY]],
-        ['agent.maxToolCalls', (v) => ({ maxToolCalls: v }), 0, [-1, 1.5, '3']],
-        ['agent.ragQueryK', (v) => ({ ragQueryK: v }), 1, [0, 2.5, '5']],
-        ['agent.toolUnavailableTtlMs', (v) => ({ toolUnavailableTtlMs: v }), 0, [-1, Number.NaN, '600000']],
+        ['agent.maxToolCalls', (v) => ({ maxToolCalls: v }), 0, [-1, 1.5, '3abc']],
+        ['agent.ragQueryK', (v) => ({ ragQueryK: v }), 1, [0, 2.5, ' 5']],
+        ['agent.toolUnavailableTtlMs', (v) => ({ toolUnavailableTtlMs: v }), 0, [-1, Number.NaN, '10m']],
         ['agent.historyAutoSummarizeLimit', (v) => ({ historyAutoSummarizeLimit: v }), 0, [-1, 0.5]],
         ['agent.toolResultCacheTtlMs', (v) => ({ toolResultCacheTtlMs: v }), 0, [-1, Number.POSITIVE_INFINITY]],
         ['agent.sessionTokenBudget', (v) => ({ sessionTokenBudget: v }), 0, [-1, 1.5]],
-        ['agent.showReasoning', (v) => ({ showReasoning: v }), false, ['false', 0, null]],
+        ['agent.showReasoning', (v) => ({ showReasoning: v }), false, ['no', 0, null]],
         ['agent.classificationEnabled', (v) => ({ classificationEnabled: v }), true, ['yes', 1]],
         ['agent.queryExpansionEnabled', (v) => ({ queryExpansionEnabled: v }), true, ['no']],
-        ['rag.store.vectorWeight', (v) => ({ vectorWeight: v }), 1, [1.01, -0.01, Number.NaN, '0.5']],
+        ['rag.store.vectorWeight', (v) => ({ vectorWeight: v }), 1, [1.01, -0.01, Number.NaN, '0,5']],
         ['rag.store.keywordWeight', (v) => ({ keywordWeight: v }), 0, [-0.5, 2]],
         ['prompts', (v) => ({ prompts: v }), {}, ['text', [], null]],
         ['prompts.ragTranslate', (v) => ({ prompts: { ragTranslate: v } }), 'Translate', ['', '   ', 5]],
@@ -5022,6 +5027,14 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       assert.equal(e.event, 'config_reload_applied');
       assert.equal(h.queue.notApplied, undefined); // ready
       assert.equal(h.agent.maxIterations, 25);
+
+      // D83 (6): a number literal string is the number; one with spaces is refused.
+      e = await h.save('agent:\n  maxIterations: "30"\n');
+      assert.equal(e.event, 'config_reload_applied');
+      assert.equal(h.agent.maxIterations, 30);
+      e = await h.save('agent:\n  maxIterations: " 30"\n');
+      assert.equal(e.event, 'config_reload_failed');
+      assert.match(h.queue.notApplied?.reason ?? '', /agent\.maxIterations must be a finite number, got " 30"/);
     });
 
     /** `handleConfigUpdate` over a recording target with a model resolver; `put` sends a raw body. */
@@ -5077,7 +5090,8 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         ['{"agent":{"maxIterations":1e999}}', /agent\.maxIterations must be a finite number, got Infinity/],
         ['{"agent":{"maxIterations":0}}', /agent\.maxIterations must be >= 1, got 0/],
         ['{"agent":{"ragQueryK":2.5}}', /agent\.ragQueryK must be an integer, got 2\.5/],
-        ['{"agent":{"showReasoning":"false"}}', /agent\.showReasoning must be true or false, got "false"/],
+        ['{"agent":{"showReasoning":"yes"}}', /agent\.showReasoning must be true or false, got "yes"/],
+        ['{"agent":{"maxIterations":" 25"}}', /agent\.maxIterations must be a finite number, got " 25"/],
         ['{"models":{"mainModel":""}}', /models\.mainModel must be a non-empty string, got ""/],
         ['{"agent":{"maxIterations":"oops","maxToolCalls":-1}}', /agent\.maxIterations .*; agent\.maxToolCalls must be >= 0, got -1/],
       ];
@@ -5090,10 +5104,12 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         assert.deepEqual(h.calls, [], raw); // no model resolved, nothing applied, no drain
         assert.equal(h.queue.notApplied, undefined, raw);
       }
-      // A valid one applies, as before.
-      const h = putHarness();
-      assert.equal((await h.put('{"agent":{"maxIterations":25}}')).status, 200);
-      assert.deepEqual(h.calls, ['applyConfigUpdate', 'mirrorAgentCfg', 'drainWorkers']);
+      // A valid one applies, as before — a number literal string too (D83 (6)).
+      for (const raw of ['{"agent":{"maxIterations":25}}', '{"agent":{"maxIterations":"25","showReasoning":"true"}}']) {
+        const h = putHarness();
+        assert.equal((await h.put(raw)).status, 200, raw);
+        assert.deepEqual(h.calls, ['applyConfigUpdate', 'mirrorAgentCfg', 'drainWorkers'], raw);
+      }
     });
 
     test('D83/V10, D82 (8): while not ready, a whole PUT with an invalid value → 400 (not 409), the state the same object', async () => {
@@ -5116,14 +5132,14 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         ['agent.maxIterations', (v) => ({ agent: { maxIterations: v } }), 1, 'oops'],
         ['agent.maxToolCalls', (v) => ({ agent: { maxToolCalls: v } }), 0, -1],
         ['agent.ragQueryK', (v) => ({ agent: { ragQueryK: v } }), 1, 2.5],
-        ['agent.toolUnavailableTtlMs', (v) => ({ agent: { toolUnavailableTtlMs: v } }), 0, '600000'],
+        ['agent.toolUnavailableTtlMs', (v) => ({ agent: { toolUnavailableTtlMs: v } }), 0, '10m'],
         ['agent.historyAutoSummarizeLimit', (v) => ({ agent: { historyAutoSummarizeLimit: v } }), 0, -1],
         ['agent.toolResultCacheTtlMs', (v) => ({ agent: { toolResultCacheTtlMs: v } }), 0, Number.NaN],
         ['agent.sessionTokenBudget', (v) => ({ agent: { sessionTokenBudget: v } }), 0, 1.5],
-        ['agent.showReasoning', (v) => ({ agent: { showReasoning: v } }), true, 'false'],
+        ['agent.showReasoning', (v) => ({ agent: { showReasoning: v } }), true, 'off'],
         ['agent.classificationEnabled', (v) => ({ agent: { classificationEnabled: v } }), false, 1],
         ['agent.queryExpansionEnabled', (v) => ({ agent: { queryExpansionEnabled: v } }), false, 'no'],
-        ['rag.store.vectorWeight', (v) => ({ rag: { store: { type: 'in-memory', vectorWeight: v } } }), 0.4, '0.5'],
+        ['rag.store.vectorWeight', (v) => ({ rag: { store: { type: 'in-memory', vectorWeight: v } } }), 0.4, '0.5 '],
         ['rag.store.keywordWeight', (v) => ({ rag: { store: { type: 'in-memory', keywordWeight: v } } }), 0.6, 2],
         ['prompts', (v) => ({ prompts: v }), { system: 'S' }, 'text'],
         ['prompts.system', (v) => ({ prompts: { system: v } }), 'S', ''],
@@ -5200,8 +5216,8 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
           err.message === 'invalid config — agent.maxIterations must be a finite number, got "oops"',
       ); // 30.1.0: maxIterations NaN — no iteration limit
       assert.throws(
-        () => resolveSmartServerConfig({}, { llm, agent: { showReasoning: 'false' } }, {}),
-        /^invalid config — agent\.showReasoning must be true or false, got "false"$/,
+        () => resolveSmartServerConfig({}, { llm, agent: { showReasoning: 'False' } }, {}),
+        /^invalid config — agent\.showReasoning must be true or false, got "False"$/,
       ); // 30.1.0: true
       assert.throws(
         () => resolveSmartServerConfig({}, { llm, prompts: { system: '' } }, {}),
@@ -5263,6 +5279,201 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         await handle.close();
       }
     });
+
+    /** `fn` throws no `ConfigFieldError` — another error (a config incomplete for the row's purpose) is not this check's. */
+    function noFieldError(fn: () => unknown, label: string): void {
+      try {
+        fn();
+      } catch (err) {
+        assert.ok(!(err instanceof ConfigFieldError), `${label}: ${String(err)}`);
+      }
+    }
+
+    test('D83 (6): one grammar — a number literal string is a number, "true" / "false" a flag; everything else is the same error', () => {
+      // The grammar itself.
+      for (const ok of ['0', '25', '-1', '0.5', '1e3', '2.5E-1', '-0']) assert.ok(NUMBER_LITERAL.test(ok), ok);
+      for (const bad of [' 25', '25 ', '25abc', '', 'NaN', 'Infinity', '-Infinity', '0x19', '025', '+5', '.5', '5.', '1_000', '1e', '--1']) {
+        assert.ok(!NUMBER_LITERAL.test(bad), bad);
+      }
+      // A literal is parsed, then the field's rule applies; the value is the number.
+      assert.deepEqual(
+        validateReloadedConfig({ maxIterations: '25', sessionTokenBudget: '0', vectorWeight: '0.5', toolResultCacheTtlMs: '3e5' }),
+        { maxIterations: 25, sessionTokenBudget: 0, vectorWeight: 0.5, toolResultCacheTtlMs: 300000 },
+      );
+      for (const bad of [' 25', '25 ', '25abc', '', 'NaN', 'Infinity', '0x19', '025', '+5', '.5', '1e999']) {
+        assert.deepEqual(
+          fieldError(() => validateReloadedConfig({ maxIterations: bad })).issues,
+          [`agent.maxIterations must be a finite number, got ${JSON.stringify(bad)}`],
+          bad,
+        );
+      }
+      // The sign is grammar; the range refuses it. An integer field refuses a fraction literal.
+      assert.deepEqual(fieldError(() => validateReloadedConfig({ maxToolCalls: '-1' })).issues, [
+        'agent.maxToolCalls must be >= 0, got "-1"',
+      ]);
+      assert.deepEqual(fieldError(() => validateReloadedConfig({ ragQueryK: '2.5' })).issues, [
+        'agent.ragQueryK must be an integer, got "2.5"',
+      ]);
+      // Flags: true / false, or exactly "true" / "false".
+      assert.deepEqual(validateReloadedConfig({ showReasoning: 'true', classificationEnabled: 'false' }), {
+        showReasoning: true,
+        classificationEnabled: false,
+      });
+      for (const bad of ['yes', 'True', 'TRUE', '1', 1, '']) {
+        assert.deepEqual(
+          fieldError(() => validateReloadedConfig({ showReasoning: bad })).issues,
+          [`agent.showReasoning must be true or false, got ${JSON.stringify(bad)}`],
+          String(bad),
+        );
+      }
+      // PUT and the start: the same grammar.
+      assert.deepEqual(validateAgentUpdate({ maxIterations: '25', showReasoning: 'true' }), {
+        maxIterations: 25,
+        showReasoning: true,
+      });
+      assert.deepEqual(validateStartConfig({ agent: { maxIterations: '25' } }, { 'agent-show-reasoning': 'false' }), {
+        maxIterations: 25,
+        showReasoning: false,
+      });
+      // The integer parser of config-validator's fields takes the same grammar.
+      assert.equal(parseIntegerField('5000'), 5000);
+      assert.equal(parseIntegerField('5e3'), 5000);
+      assert.equal(parseIntegerField(' 5000'), 'invalid'); // 30.1.0: 5000
+      assert.equal(parseIntegerField('5.5'), 'invalid');
+      assert.equal(parseIntegerField(null), undefined);
+    });
+
+    test('D83 (6): ${VAR} at start — a number literal or true / false passes, anything else fails naming the field', (t) => {
+      const dir = mkdtempSync(join(tmpdir(), 'start-env-'));
+      t.after(() => rmSync(dir, { recursive: true, force: true }));
+      const file = join(dir, 'smart-server.yaml');
+      writeFileSync(file, 'llm:\n  provider: ollama\n  model: m\nagent:\n  maxIterations: ${MAX}\n  showReasoning: ${SHOW}\n');
+      const cfg = resolveSmartServerConfig({}, loadYamlConfig(file, { MAX: '25', SHOW: 'true' }), {});
+      assert.equal(cfg.agent?.maxIterations, 25);
+      assert.equal(cfg.agent?.showReasoning, true);
+      assert.deepEqual(
+        fieldError(() => resolveSmartServerConfig({}, loadYamlConfig(file, { MAX: '25abc', SHOW: 'yes' }), {})).issues,
+        ['agent.maxIterations must be a finite number, got "25abc"', 'agent.showReasoning must be true or false, got "yes"'],
+      );
+    });
+
+    test('D83 (7): every start-only field — one valid and one invalid value, named at its path', () => {
+      const llm = { provider: 'ollama', model: 'm' };
+      const inMemory = (embedder: Record<string, unknown>) => ({ rag: { store: { type: 'in-memory' }, embedder } });
+      const store = (type: string, f: Record<string, unknown>) => ({
+        rag: { store: { type, collectionName: 'c', ...(type === 'qdrant' ? { url: 'http://q' } : {}), ...f } },
+      });
+      const http = (f: Record<string, unknown>) => ({ mcp: { type: 'http', url: 'http://m', ...f } });
+      // [the field as the error names it, a YAML with a valid value, the same YAML with an invalid one]
+      const rows: [string, YamlConfig, YamlConfig][] = [
+        ['port', { port: '8080' }, { port: 70000 }],
+        ['agent.contextBudgetTokens', { agent: { contextBudgetTokens: 0 } }, { agent: { contextBudgetTokens: -1 } }],
+        ['agent.historyRecencyWindow', { agent: { historyRecencyWindow: '4' } }, { agent: { historyRecencyWindow: 0 } }],
+        ['agent.heartbeatIntervalMs', { agent: { heartbeatIntervalMs: 0 } }, { agent: { heartbeatIntervalMs: 2147483648 } }],
+        ['agent.healthTimeoutMs', { agent: { healthTimeoutMs: '15000' } }, { agent: { healthTimeoutMs: 0 } }],
+        ['agent.semanticHistoryEnabled', { agent: { semanticHistoryEnabled: 'true' } }, { agent: { semanticHistoryEnabled: 'yes' } }],
+        ['agent.toolReselectPerIteration', { agent: { toolReselectPerIteration: false } }, { agent: { toolReselectPerIteration: 1 } }],
+        ['agent.ragTranslateEnabled', { agent: { ragTranslateEnabled: true } }, { agent: { ragTranslateEnabled: 'no' } }],
+        ['agent.refreshToolsPerIteration', { agent: { refreshToolsPerIteration: 'false' } }, { agent: { refreshToolsPerIteration: null } }],
+        ['agent.mcpSharedClient', { agent: { mcpSharedClient: true } }, { agent: { mcpSharedClient: 'on' } }],
+        ['agent.historyTurnSummaryPrompt', { agent: { historyTurnSummaryPrompt: 'Summarize' } }, { agent: { historyTurnSummaryPrompt: '' } }],
+        ['agent.streamMode', { agent: { streamMode: 'final' } }, { agent: { streamMode: 'partial' } }],
+        ['agent.llmCallStrategy', { agent: { llmCallStrategy: 'fallback' } }, { agent: { llmCallStrategy: 'retry' } }],
+        ['llm.temperature', { llm: { ...llm, temperature: '0.7' } }, { llm: { ...llm, temperature: 'warm' } }],
+        ['llm.classifierTemperature', { llm: { ...llm, classifierTemperature: 0 } }, { llm: { ...llm, classifierTemperature: -0.1 } }],
+        ['llm.maxTokens', { llm: { ...llm, maxTokens: '4096' } }, { llm: { ...llm, maxTokens: ' 4096' } }],
+        ['llm.whenThrottled.maxAttempts',
+          { llm: { ...llm, whenThrottled: { strategy: 'wait-as-told', maxAttempts: '3' } } },
+          { llm: { ...llm, whenThrottled: { strategy: 'wait-as-told', maxAttempts: 0 } } }],
+        ['llm.resourceGroup', { llm: { ...llm, provider: 'sap-ai-sdk', resourceGroup: 'default' } }, { llm: { ...llm, provider: 'sap-ai-sdk', resourceGroup: 7 } }],
+        ['llm.main.temperature', { llm: { main: { ...llm, temperature: 1 } } }, { llm: { main: { ...llm, temperature: 'hot' } } }],
+        ['llm.main.classifierTemperature', { llm: { main: { ...llm, classifierTemperature: '0.1' } } }, { llm: { main: { ...llm, classifierTemperature: '0,1' } } }],
+        ['llm.main.resourceGroup', { llm: { main: { ...llm, resourceGroup: 'rg' } } }, { llm: { main: { ...llm, resourceGroup: '' } } }],
+        ['llm.main.maxTokens', { llm: { main: { ...llm, maxTokens: 100 } } }, { llm: { main: { ...llm, maxTokens: 1.5 } } }],
+        ['rag.store.collectionName', store('qdrant', { collectionName: 'c' }), store('qdrant', { collectionName: '' })],
+        ['rag.store.url', store('qdrant', { url: 'http://q:6333' }), store('qdrant', { url: 5 })],
+        ['rag.store.timeoutMs', store('qdrant', { timeoutMs: '1000' }), store('qdrant', { timeoutMs: 0 })],
+        ['rag.store.connectionString', store('pg-vector', { connectionString: 'postgres://h/db' }), store('pg-vector', { connectionString: '' })],
+        ['rag.store.host', store('pg-vector', { host: 'db' }), store('pg-vector', { host: '' })],
+        ['rag.store.port', store('pg-vector', { port: '5432' }), store('pg-vector', { port: 0 })],
+        ['rag.store.schema', store('hana-vector', { schema: 'S' }), store('hana-vector', { schema: 1 })],
+        ['rag.store.database', store('pg-vector', { database: 'rag' }), store('pg-vector', { database: '' })],
+        ['rag.store.poolMax', store('pg-vector', { poolMax: 10 }), store('pg-vector', { poolMax: 0 })],
+        ['rag.store.connectTimeout', store('pg-vector', { connectTimeout: 0 }), store('pg-vector', { connectTimeout: -1 })],
+        ['rag.store.dimension', store('pg-vector', { dimension: '1024' }), store('pg-vector', { dimension: 1.5 })],
+        ['rag.store.autoCreateSchema', store('pg-vector', { autoCreateSchema: 'true' }), store('pg-vector', { autoCreateSchema: 'yes' })],
+        ['rag.store.dedupThreshold', { rag: { store: { type: 'in-memory', dedupThreshold: 0.92 } } }, { rag: { store: { type: 'in-memory', dedupThreshold: 1.5 } } }],
+        ['rag.embedder.provider', inMemory({ provider: 'ollama', model: 'm' }), inMemory({ provider: 3, model: 'm' })],
+        ['rag.embedder.factory', inMemory({ factory: 'mine' }), inMemory({ factory: '' })],
+        ['rag.embedder.model', inMemory({ provider: 'ollama', model: 'bge-m3' }), inMemory({ provider: 'ollama', model: '' })],
+        ['rag.embedder.url', inMemory({ provider: 'ollama', model: 'm', url: 'http://o' }), inMemory({ provider: 'ollama', model: 'm', url: '' })],
+        ['rag.embedder.resourceGroup', inMemory({ provider: 'sap-ai-core', model: 'm', resourceGroup: 'default' }), inMemory({ provider: 'sap-ai-core', model: 'm', resourceGroup: '' })],
+        ['rag.embedder.scenario', inMemory({ provider: 'sap-ai-core', model: 'm', scenario: 'orchestration' }), inMemory({ provider: 'sap-ai-core', model: 'm', scenario: 'chat' })],
+        ['rag.embedder.maxBatchSize', inMemory({ provider: 'ollama', model: 'm', maxBatchSize: '64' }), inMemory({ provider: 'ollama', model: 'm', maxBatchSize: 0 })],
+        ['rag.embedder.asymmetric', inMemory({ provider: 'sap-ai-core', model: 'm', asymmetric: 'false' }), inMemory({ provider: 'sap-ai-core', model: 'm', asymmetric: 'maybe' })],
+        ['mcp.timeout', http({ timeout: '120000' }), http({ timeout: 0 })],
+        ['mcp[0].timeout', { mcp: [{ type: 'http', url: 'http://m', timeout: 1000 }] }, { mcp: [{ type: 'http', url: 'http://m', timeout: 'soon' }] }],
+        ['mcp.args', { mcp: { type: 'stdio', command: 'x', args: '--a --b' } }, { mcp: { type: 'stdio', command: 'x', args: ['--a'] } }],
+        ['decision.model', { decision: { provider: 'typesafe', model: 'm' } }, { decision: { provider: 'typesafe', model: '' } }],
+        ['decision.baseUrl', { decision: { provider: 'typesafe', baseUrl: 'http://d' } }, { decision: { provider: 'typesafe', baseUrl: 9 } }],
+      ];
+      for (const [field, ok, bad] of rows) {
+        noFieldError(() => resolveSmartServerConfig({}, { llm, ...ok }, {}), field);
+        const err = fieldError(() => resolveSmartServerConfig({}, { llm, ...bad }, {}));
+        assert.equal(err.issues.length, 1, `${field}: ${err.message}`);
+        assert.ok(err.issues[0].startsWith(`${field} `), err.issues[0]);
+      }
+      // The port's other sources, named so; the valid value is the number.
+      assert.equal(resolveSmartServerConfig({ port: '8080' }, { llm }, {}).port, 8080);
+      assert.ok(fieldError(() => resolveSmartServerConfig({ port: ' 80' }, { llm }, {})).issues[0].startsWith('args.port '));
+      assert.ok(fieldError(() => resolveSmartServerConfig({}, { llm }, { PORT: 'x' })).issues[0].startsWith('env.PORT '));
+      // The validated values are numbers and flags, not the strings.
+      const cfg = resolveSmartServerConfig({}, { llm: { ...llm, temperature: '0.7' }, agent: { historyRecencyWindow: '4', mcpSharedClient: 'true' } }, {});
+      assert.equal((cfg.llm as { temperature?: unknown }).temperature, 0.7);
+      assert.equal(cfg.agent?.historyRecencyWindow, 4);
+      assert.equal(cfg.agent?.mcpSharedClient, true);
+    });
+
+    test('D83 (7): the sections with their own parser — skillPlugins and the stepper — the same grammar and error', () => {
+      const sources = [{ id: 'a', records: [] }];
+      // [the field as the error names it, the key path inside skillPlugins, a valid value, an invalid one]
+      const skill: [string, (v: unknown) => Record<string, unknown>, unknown, unknown][] = [
+        ['skillPlugins.k', (v) => ({ k: v }), '4', ' 4'],
+        ['skillPlugins.maxInjectChars', (v) => ({ maxInjectChars: v }), 4000, 0],
+        ['skillPlugins.catalogCasMaxAttempts', (v) => ({ catalogCasMaxAttempts: v }), 3, '0x3'],
+        ['skillPlugins.retiredGraceMs', (v) => ({ retiredGraceMs: v }), 30000, 999],
+        ['skillPlugins.orphanGraceMs', (v) => ({ orphanGraceMs: v }), '3600000', -1],
+        ['skillPlugins.recallTimeoutMs', (v) => ({ recallTimeoutMs: v }), 1000, 1.5],
+        ['skillPlugins.dimension', (v) => ({ dimension: v }), 1024, 'NaN'],
+        ['skillPlugins.chunk.maxChars', (v) => ({ chunk: { maxChars: v } }), 1500, ''],
+        ['skillPlugins.threshold', (v) => ({ threshold: v }), '0.3', 1.5],
+        ['skillPlugins.strict', (v) => ({ strict: v }), 'false', 'off'],
+        ['skillPlugins.loadOnStartup', (v) => ({ loadOnStartup: v }), true, 'yes'],
+        ['skillPlugins.embedder.provider', (v) => ({ embedder: { provider: v } }), 'ollama', 5],
+        ['skillPlugins.embedder.model', (v) => ({ embedder: { provider: 'ollama', model: v } }), 'm', ''],
+      ];
+      for (const [field, block, ok, bad] of skill) {
+        assert.doesNotThrow(() => parseSkillPluginsConfig({ sources, ...block(ok) }), field);
+        const err = fieldError(() => parseSkillPluginsConfig({ sources, ...block(bad) }));
+        assert.equal(err.issues.length, 1, `${field}: ${err.message}`);
+        assert.ok(err.issues[0].startsWith(`${field} `), err.issues[0]);
+      }
+      assert.equal(parseSkillPluginsConfig({ sources, strict: 'false' }).strict, false); // 30.1.0: Boolean("false") → true
+      assert.equal(parseSkillPluginsConfig({ sources }).strict, true); // Task 4L's default
+      // The stepper's section (public parser, same signature).
+      const stepper: [string, string, unknown, unknown][] = [
+        ['stepper.maxParallelSteps', 'maxParallelSteps', '8', 0],
+        ['stepper.maxDepth', 'maxDepth', 0, 'x'],
+        ['stepper.tokenBudget', 'tokenBudget', '500000', 0],
+      ];
+      for (const [field, key, ok, bad] of stepper) {
+        assert.doesNotThrow(() => parseStepperCoordinatorConfig({ mode: 'planned-react', stepper: { [key]: ok } }), field);
+        const err = fieldError(() => parseStepperCoordinatorConfig({ mode: 'planned-react', stepper: { [key]: bad } }));
+        assert.deepEqual(err.issues.length, 1, field);
+        assert.ok(err.issues[0].startsWith(`${field} `), err.issues[0]);
+      }
+      assert.equal(parseStepperCoordinatorConfig({ mode: 'planned-react', stepper: { maxParallelSteps: '8' } }).maxParallelSteps, 8);
+    });
     ```
     `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts` gains (D83 (5), the binary's exit — beside the V8 cases):
     ```ts
@@ -5277,7 +5488,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       });
     });
     ```
-    (A valid start is pinned by the server-libs case above — a real `SmartServer` from the resolved config; the binary itself would need a reachable LLM to start.) Today: `validateStartConfig` / `startConfigInput` do not exist (the import fails); with them but the old readers, `resolveSmartServerConfig` returns `maxIterations: NaN`, `showReasoning: true` and no prompt, and the CLI starts (no exit 1).
+    (A valid start is pinned by the server-libs case above — a real `SmartServer` from the resolved config; the binary itself would need a reachable LLM to start.) The D83 (6), (7) cases: today `NUMBER_LITERAL` does not exist (the import fails); with it but the old readers, `"25"` fails the reload table's fields, `historyRecencyWindow: 0`, `temperature: 'warm'`, `skillPlugins.strict: 'false'` and `stepper.maxDepth: 'x'` are taken without an error, and `parseIntegerField(' 5000')` is 5000. Today: `validateStartConfig` / `startConfigInput` do not exist (the import fails); with them but the old readers, `resolveSmartServerConfig` returns `maxIterations: NaN`, `showReasoning: true` and no prompt, and the CLI starts (no exit 1).
     Today: the file fails at the import of `../config-fields.js`; with the module but the old callers, the watcher applies `NaN` (`h.applied` is `[{ maxIterations: NaN }]`, the reload `config_reload_applied`) and every invalid `PUT` answers 200.
   - **U10** (`worker-shared-clients-log.test.ts`, a server with a recording `cfg.log`): a worker declaring neither `mcp` / `mcpClients` nor `rag`, parent with clients and a tools store → each wire emits exactly one `{ event: 'worker_uses_shared_clients', worker: <name>, shared: ['toolsRag', 'mcpClients'] }`; a worker with its own store but no clients → `shared: ['mcpClients']`; a worker with both of its own → no such event (pinned); the worker's behaviour is unchanged (it still gets the parent's clients — pinned). Today: no event.
 - [ ] **Step 2: Run to see them fail.** Expected: FAIL.
@@ -5651,10 +5862,35 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     import type { YamlConfig } from './yaml-loader.js';
 
     /** A number's rule: what the code that reads the field can work with. */
-    interface NumberRule {
+    export interface NumberRule {
       readonly integer: boolean;
       readonly min: number;
       readonly max?: number;
+    }
+
+    /**
+     * A number written as text (spec §10.5.9, D83 (6)) — how `${VAR}` substitution and a
+     * quoted YAML / JSON value arrive. JSON's number grammar over the whole string: an
+     * optional `-`, an integer part without leading zeros, an optional fraction, an
+     * optional exponent. No spaces, no `+`, no `.5` / `5.`, no hex, no `_`, no `NaN` /
+     * `Infinity`. The sign is grammar for every field; a field's range refuses it.
+     */
+    export const NUMBER_LITERAL = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
+
+    /**
+     * A numeric field's value as a number (spec D83 (6)): a number as it is, a
+     * `NUMBER_LITERAL` string parsed; anything else `undefined`. Finiteness and the
+     * field's rule are the caller's (`"1e999"` parses to `Infinity`).
+     */
+    export function numberOf(value: unknown): number | undefined {
+      if (typeof value === 'number') return value;
+      return typeof value === 'string' && NUMBER_LITERAL.test(value) ? Number(value) : undefined;
+    }
+
+    /** A flag's value (spec D83 (6)): `true` / `false`, or exactly `"true"` / `"false"`; anything else `undefined`. */
+    export function flagOf(value: unknown): boolean | undefined {
+      if (typeof value === 'boolean') return value;
+      return value === 'true' ? true : value === 'false' ? false : undefined;
     }
 
     /** The numeric `agent.*` fields the file reload reads. */
@@ -5732,6 +5968,51 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     /** PUT /v1/config's `models` section, validated. */
     export type ModelUpdate = { [K in (typeof MODEL_FIELDS)[number]]?: string };
 
+    /** Node clamps a timer delay above 2^31 − 1 ms to 1 ms. */
+    const MAX_TIMER_MS = 2_147_483_647;
+
+    /**
+     * The rules of the fields read at start only (spec §10.5.9 *Start-only fields*,
+     * D83 (7)), keyed by meaning — the reader passes the field's name. Applied by the
+     * section readers with the start's `FieldCheck`, and by `parseSkillPluginsConfig` and
+     * `parseStepperCoordinatorConfig` with their own.
+     */
+    export const START_NUMBER_RULES = {
+      // A TCP port; 0 lets the OS pick one (`port`).
+      port: { integer: true, min: 0, max: 65_535 },
+      // `rag.store.port`.
+      storePort: { integer: true, min: 1, max: 65_535 },
+      // A token budget; 0 = no limit (`agent.contextBudgetTokens`).
+      contextBudgetTokens: { integer: true, min: 0 },
+      // The last N client messages; 0 would `slice(-0)` — keep every one (`agent.historyRecencyWindow`).
+      historyRecencyWindow: { integer: true, min: 1 },
+      // A timer delay; 0 disables the keep-alive, as documented (`agent.heartbeatIntervalMs`).
+      heartbeatIntervalMs: { integer: true, min: 0, max: MAX_TIMER_MS },
+      // Timer delays in ms (`agent.healthTimeoutMs`, `mcp.timeout`, `mcp[i].timeout`, `rag.store.timeoutMs`).
+      timerMs: { integer: true, min: 1, max: MAX_TIMER_MS },
+      // A sampling temperature; the upper bound is the provider's (`llm.*temperature`).
+      temperature: { integer: false, min: 0 },
+      // Counts and sizes (`llm.*maxTokens`, `whenThrottled.maxAttempts`, `rag.store.poolMax`,
+      // `rag.store.dimension`, `rag.embedder.maxBatchSize`, the `skillPlugins` counts and
+      // durations, `stepper.maxParallelSteps`, `stepper.tokenBudget`).
+      count: { integer: true, min: 1 },
+      // ms; 0 = the driver's "no timeout" (`rag.store.connectTimeout`).
+      connectTimeout: { integer: true, min: 0 },
+      // A similarity threshold (`rag.store.dedupThreshold`, `skillPlugins.threshold`).
+      unitInterval: { integer: false, min: 0, max: 1 },
+      // Its 30.1.0 rule (`skillPlugins.retiredGraceMs`).
+      retiredGraceMs: { integer: true, min: 1000 },
+      // A recursion depth; 0 = none (`stepper.maxDepth`).
+      depth: { integer: true, min: 0 },
+    } as const satisfies Readonly<Record<string, NumberRule>>;
+
+    /** `agent.streamMode`. */
+    export const STREAM_MODES = ['full', 'final'] as const;
+    /** `agent.llmCallStrategy`. */
+    export const LLM_CALL_STRATEGIES = ['streaming', 'non-streaming', 'fallback'] as const;
+    /** `rag.embedder.scenario`. */
+    export const EMBEDDER_SCENARIOS = ['orchestration', 'foundation-models'] as const;
+
     /** Every invalid field of one input (spec D83): `<field> <rule>, got <value>`. */
     export class ConfigFieldError extends Error {
       constructor(readonly issues: readonly string[]) {
@@ -5745,22 +6026,44 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       return typeof value === 'number' ? String(value) : (JSON.stringify(value) ?? String(value));
     }
 
-    /** Collects every invalid field of one input, then throws them together. */
-    class FieldCheck {
+    /**
+     * Collects every invalid field of one input, then throws them together (spec D83).
+     * Each check returns the validated value, or `undefined` after recording an issue.
+     * A caller that needs a value of the field's type before `done()` uses a stand-in
+     * (`numberOr` / `flagOr`, or `?? ''`); `done()` throws whenever an issue was
+     * recorded, so a stand-in for an invalid value never outlives it.
+     */
+    export class FieldCheck {
       private readonly issues: string[] = [];
 
       number(field: string, rule: NumberRule, value: unknown): number | undefined {
-        if (typeof value !== 'number' || !Number.isFinite(value)) {
-          return this.bad(field, 'must be a finite number', value);
-        }
-        if (rule.integer && !Number.isInteger(value)) return this.bad(field, 'must be an integer', value);
-        if (value < rule.min) return this.bad(field, `must be >= ${rule.min}`, value);
-        if (rule.max !== undefined && value > rule.max) return this.bad(field, `must be <= ${rule.max}`, value);
-        return value;
+        // D83 (6): a number, or a string that is exactly a number literal.
+        const n = numberOf(value);
+        if (n === undefined || !Number.isFinite(n)) return this.bad(field, 'must be a finite number', value);
+        if (rule.integer && !Number.isInteger(n)) return this.bad(field, 'must be an integer', value);
+        if (n < rule.min) return this.bad(field, `must be >= ${rule.min}`, value);
+        if (rule.max !== undefined && n > rule.max) return this.bad(field, `must be <= ${rule.max}`, value);
+        return n;
+      }
+
+      /** `absent` when `value` is absent; otherwise `number(…)`, with `absent` as the stand-in for an invalid one. */
+      numberOr(field: string, rule: NumberRule, value: unknown, absent: number): number {
+        return value === undefined ? absent : (this.number(field, rule, value) ?? absent);
       }
 
       flag(field: string, value: unknown): boolean | undefined {
-        return typeof value === 'boolean' ? value : this.bad(field, 'must be true or false', value);
+        // D83 (6): `true` / `false`, or exactly "true" / "false".
+        return flagOf(value) ?? this.bad(field, 'must be true or false', value);
+      }
+
+      /** `absent` when `value` is absent; otherwise `flag(…)`, with `absent` as the stand-in for an invalid one. */
+      flagOr(field: string, value: unknown, absent: boolean): boolean {
+        return value === undefined ? absent : (this.flag(field, value) ?? absent);
+      }
+
+      /** One of `names`, exactly (spec D83 (7): `agent.streamMode`, `agent.llmCallStrategy`, `rag.embedder.scenario`). */
+      oneOf<T extends string>(field: string, names: readonly T[], value: unknown): T | undefined {
+        return names.find((n) => n === value) ?? this.bad(field, `must be one of ${names.join(', ')}`, value);
       }
 
       text(field: string, value: unknown): string | undefined {
@@ -5869,22 +6172,32 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     export type StartConfigFields = HotReloadableConfig;
 
     /**
-     * The start config (spec §10.5.9 *The start config*, D83 (5)): the YAML the
-     * server starts from — the same rules and the same error as a reload — and the
-     * two `ResolveConfigArgs` overrides that replace a field, checked in place and
-     * applied over it. Throws `ConfigFieldError` naming every invalid field.
+     * The start config's fields of the reload table into `check` (spec §10.5.9 *The
+     * start config*, D83 (5)): the YAML the server starts from — the same rules as a
+     * reload — and the two `ResolveConfigArgs` overrides that replace a field, checked in
+     * place and applied over it. Collects only: `resolveSmartServerConfig` goes on with
+     * the same `check` through the section readers (D83 (7)) and calls `done()` once.
      */
-    export function validateStartConfig(
+    export function checkStartConfig(
+      check: FieldCheck,
       yaml: YamlConfig,
       args: { readonly 'agent-show-reasoning'?: unknown; readonly 'log-dir'?: unknown },
     ): StartConfigFields {
-      const check = new FieldCheck();
       const out: StartConfigFields = checkReloadable(check, startConfigInput(yaml));
       if (args['agent-show-reasoning'] !== undefined) {
         out.showReasoning = check.flag('args.agent-show-reasoning', args['agent-show-reasoning']);
       }
       if (args['log-dir'] !== undefined) out.logDir = check.text('args.log-dir', args['log-dir']);
-      return check.done(out);
+      return out;
+    }
+
+    /** `checkStartConfig` on its own check — throws `ConfigFieldError` naming every invalid field. */
+    export function validateStartConfig(
+      yaml: YamlConfig,
+      args: { readonly 'agent-show-reasoning'?: unknown; readonly 'log-dir'?: unknown },
+    ): StartConfigFields {
+      const check = new FieldCheck();
+      return check.done(checkStartConfig(check, yaml, args));
     }
 
     /** PUT /v1/config's `agent` section (spec V10, D83); its keys are whitelisted by the route. */
@@ -5910,7 +6223,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       return check.done(out);
     }
     ```
-    `out[k] = …` with `k` a union of keys compiles because every key in the union has the type the check returns (`number` / `boolean` / `string`, optional): a field listed under the wrong kind, or a key `HotReloadableConfig` does not have, is a compile error — so when U8 (Task 4Q) removes `toolUnavailableTtlMs` from `HotReloadableConfig`, this file does not compile until it is removed here too. A JSON `null` / YAML empty value is a value, so it is checked (`got null`), not skipped. `input[k] = agent[k]` in `startConfigInput` compiles because every value of `HotReloadableInput` is `unknown`; `yaml-loader.ts` imports nothing from this file, so the type import adds no cycle (`config.ts` imports both).
+    `names.find((n) => n === value)` narrows to `T` without a cast. `Number(value)` in `numberOf` runs only on a string the grammar accepted — it parses, it does not coerce (the one `Number(` of a config value left in server-libs, gate below). `out[k] = …` with `k` a union of keys compiles because every key in the union has the type the check returns (`number` / `boolean` / `string`, optional): a field listed under the wrong kind, or a key `HotReloadableConfig` does not have, is a compile error — so when U8 (Task 4Q) removes `toolUnavailableTtlMs` from `HotReloadableConfig`, this file does not compile until it is removed here too. A JSON `null` / YAML empty value is a value, so it is checked (`got null`), not skipped. `input[k] = agent[k]` in `startConfigInput` compiles because every value of `HotReloadableInput` is `unknown`; `yaml-loader.ts` imports nothing from this file, so the type import adds no cycle (`config.ts` imports both).
 
   **D83 — libs `config/config-watcher.ts`: the values as read.** After `HotReloadableConfig`:
     ```ts
@@ -5956,15 +6269,17 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     The class doc's "Emits `reload` with the reloadable portion of the config" gains "— the values as the file holds them (`HotReloadableInput`, not validated)". `config/index.ts` and the package root export `type HotReloadableInput` beside `type HotReloadableConfig`.
 
   **D83 (5) — the start config, the same validator (spec §17.32, §10.5.9 *The start config*; the user's rule of 2026-10-06: no silent degradation).** No field of the table is coerced at start any more; the start fails, as it already does for an unusable start config.
-  - `config.ts` `resolveSmartServerConfig`: `import { validateStartConfig } from './config-fields.js';` (and `ConfigFieldError` for the worker below); right after `assertNoLegacyRagShape(yaml);`:
+  - `config.ts` `resolveSmartServerConfig`: `import { checkStartConfig, ConfigFieldError, FieldCheck } from './config-fields.js';`; right after `assertNoLegacyRagShape(yaml);`:
     ```ts
-    // Every field of the config field rules, before any section is read (spec
-    // §10.5.9, D83 (5)): the reload's and PUT's validator, rules and error — an
-    // invalid value fails the start, never coerced. The CLI's catch writes it to
-    // stderr and exits 1, as for any unusable start config.
-    const fields = validateStartConfig(yaml, args);
+    // Every config field the start reads, one check (spec §10.5.9, D83 (5), (7)):
+    // the reload table's fields first, then each section reader's own — the
+    // reload's and PUT's validator, grammar and error; an invalid value fails the
+    // start, never coerced. The CLI's catch writes it to stderr and exits 1, as for
+    // any unusable start config.
+    const check = new FieldCheck();
+    const fields = checkStartConfig(check, yaml, args);
     ```
-    and in `resolved`: `rag: resolveRagSection(yaml, args as Record<string, unknown>, fields),`, `agent: resolveAgentSection(yaml, fields),`, `prompts: resolvePromptsSection(fields),`, `logDir: fields.logDir ?? null,` (the override is already applied — `args['log-dir']` no longer read here). `ResolveConfigArgs` is assignable to `validateStartConfig`'s `args` (its two keys are `boolean` / `string`), so no cast.
+    The `resolved` literal is split in two (D83 (7)): `const own = { … }` holds every key read from this file — `port` (below), `host`, `llm: resolveLlmSection(yaml, check)`, `rag: resolveRagSection(yaml, args as Record<string, unknown>, fields, check)`, `mcp: resolveMcpSection(yaml, args as Record<string, unknown>, check)`, `agent: resolveAgentSection(yaml, fields, check)`, `prompts: resolvePromptsSection(fields)`, `mode`, `logDir: fields.logDir ?? null` (the override is already applied — `args['log-dir']` no longer read here), `pluginDir`, `plugins`, `...resolvePipelineSelection(yaml)`, `skills`, and the decision (`resolveDecisionSection(yaml, check)`); then `check.done(own);` — every invalid field of this file in one `ConfigFieldError`; then `const resolved: Omit<SmartServerConfig, 'log'> = { ...own, ...subagents, ...skillPlugins };` with the two IIFE / conditional spreads moved unchanged (a worker file and `skillPlugins` are parsed only after this file's own fields passed). `ResolveConfigArgs` is assignable to `checkStartConfig`'s `args` (its two keys are `boolean` / `string`), so no cast.
   - `config.ts` `resolveWorkerConfig`: the `resolveSmartServerConfig(…)` call is wrapped so a field error names the worker and its file (the message alone would not say which file):
     ```ts
     let resolved: Omit<SmartServerConfig, 'log'>;
@@ -6002,6 +6317,37 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       const prompts = fields.prompts;
       return prompts !== undefined && Object.keys(prompts).length > 0 ? { ...prompts } : undefined;
       ```
+
+  **D83 (6), (7) — one grammar; every coerced config field validated (spec §17.33, §10.5.9 *Start-only fields*; decided by the user on 2026-10-06).** The grammar is `config-fields.ts`'s `numberOf` / `flagOf` (above): the reload and `PUT` get it through `FieldCheck.number` / `.flag` with no other change. Every other config value the start read with `Number()` / `Boolean()` / `String()` is read through the start's `FieldCheck` (`import { EMBEDDER_SCENARIOS, type FieldCheck, LLM_CALL_STRATEGIES, START_NUMBER_RULES, STREAM_MODES } from './config-fields.js';` in `resolve-config-sections.ts`); a field is read when it is not `undefined` — a `null` (a key with no value) is a value and fails its rule, as in the reload table; an absent field keeps its 30.1.0 default. `R` below is `START_NUMBER_RULES`.
+  - `config.ts`, `port`: `port: check.numberOr(args.port !== undefined ? 'args.port' : get(yaml, 'port') !== undefined ? 'port' : 'env.PORT', R.port, args.port ?? get(yaml, 'port') ?? env.PORT, 4004),` — the source used is the one checked and named (the CLI passes `--port` as a string: `"8080"` passes, `" 80"` fails).
+  - `resolveLlmSection(yaml, check)`: `resourceGroup: check.text('llm.resourceGroup', v)` (same condition as today); `temperature` / `classifierTemperature`: `...(v !== undefined ? { temperature: check.number('llm.temperature', R.temperature, v) } : {})` (likewise `llm.classifierTemperature`) — `optionalNumber` is gone; `positiveIntOption(value, key, check)` keeps its name and shape and reads `check.number(key, R.count, value)` (absent → `{}`; its doc comment's "Silently coercing …" paragraph stays as the reason); `whenThrottledOption(value, path, check)`: `maxAttempts` → `check.number(\`${path}.maxAttempts\`, R.count, v)` (the strategy-name and unknown-key errors stay plain `Error`s — they are shape errors, thrown at once). `validateLlmMap(map, check)` also checks, for each role, `temperature` / `classifierTemperature` (`llm.<role>.temperature`, `R.temperature`) and `resourceGroup` (`llm.<role>.resourceGroup`, non-empty string) when present, and writes the validated values back as it already does for `maxTokens`.
+  - `resolveRagStore(raw, args, fields, check)`: `collectionName`, `connectionString`, `host`, `schema`, `database`, `url` → `check.text('rag.store.<k>', s.<k>)` (`url: check.text('rag.store.url', s.url) ?? ''` — the stand-in until `done()`; `checkRag` still reports a missing qdrant `url`); `port` → `check.number('rag.store.port', R.storePort, …)`; `poolMax` / `dimension` → `R.count`; `connectTimeout` → `R.connectTimeout`; `timeoutMs` → `R.timerMs`; `autoCreateSchema` → `check.flag('rag.store.autoCreateSchema', …)`; the in-memory arm's `dedupThreshold: check.numberOr('rag.store.dedupThreshold', R.unitInterval, s.dedupThreshold, 0.92)`. The `has(...)` guards become `!== undefined` (`has` goes when unused). `args['rag-collection-name']` stays as the override it is (a CLI string).
+  - `resolveRagEmbedder(raw, check)`: `model`, `url`, `resourceGroup`, `factory`, `provider` → `check.text('rag.embedder.<k>', …)` (`factory` / `provider` keep their branches; `provider` absent stays `'ollama'`; `?? ''` / `?? 'ollama'` as the stand-ins until `done()`); `scenario` → `check.oneOf('rag.embedder.scenario', EMBEDDER_SCENARIOS, raw.scenario)`; `maxBatchSize` → `positiveIntOption(raw.maxBatchSize, 'rag.embedder.maxBatchSize', check)`; `asymmetric` → `...(check.flagOr('rag.embedder.asymmetric', raw.asymmetric, false) ? { asymmetric: true } : {})` (`checkRag` keeps its provider / scenario rule for it).
+  - `resolveMcpSection(yaml, args, check)`: single form — `args: (args['mcp-args'] ?? get(yaml, 'mcp', 'args')) !== undefined ? check.text(args['mcp-args'] !== undefined ? 'args.mcp-args' : 'mcp.args', args['mcp-args'] ?? get(yaml, 'mcp', 'args'))?.split(' ') : undefined` (30.1.0's `||` treated `""` as absent; now `""` fails); `timeout` → `check.number('mcp.timeout', R.timerMs, …)`; array form — after `validateMcpNames`, each entry's `timeout` (when present) is checked as `mcp[<i>].timeout` and the entries are returned with the validated number written back (`entries.map((e, i) => e.timeout !== undefined ? { ...e, timeout: check.number(\`mcp[${i}].timeout\`, R.timerMs, e.timeout) } : e)`); the entries' other fields stay as cast (spec: not part of this decision).
+  - `resolveAgentSection(yaml, fields, check)`: `contextBudgetTokens` → `check.number('agent.contextBudgetTokens', R.contextBudgetTokens, …)`; `historyRecencyWindow` → `R.historyRecencyWindow`; `healthTimeoutMs` → `R.timerMs`; `heartbeatIntervalMs` → `R.heartbeatIntervalMs` — the IIFE, its `normalizeHeartbeatMs` call and the `console.warn` go (an invalid value fails the start; `0` passes and disables the keep-alive at runtime, as `normalizeHeartbeatMs` still does in libs) and the `normalizeHeartbeatMs` import goes; `semanticHistoryEnabled`, `toolReselectPerIteration`, `ragTranslateEnabled`, `refreshToolsPerIteration`, `mcpSharedClient` → `check.flag('agent.<k>', …)`; `historyTurnSummaryPrompt` → `check.text(…)`; `streamMode` → `check.oneOf('agent.streamMode', STREAM_MODES, …)`; `llmCallStrategy` → `check.oneOf('agent.llmCallStrategy', LLM_CALL_STRATEGIES, …)` — their `as` casts go (`oneOf` returns the union). Each keeps its `!== undefined ? { … } : {}` spread. `externalToolsValidationMode`, `retry`, `toolSelection` are casts, not coercions, and stay (spec: not part of this decision).
+  - `resolveDecisionSection(yaml, check)`: `model` / `baseUrl` → `check.text('decision.<k>', …)` (the `null` guard becomes `!== undefined`); `timeoutMs` / `maxRetries` stay on `parseIntegerField` (`checkDecision` reports them).
+  - `decision-config.ts` `parseIntegerField`: the string branch becomes the shared grammar — `import { numberOf } from './config-fields.js';` and
+    ```ts
+    if (value === undefined || value === null) return undefined;
+    // Spec D83 (6): a number, or a string that is exactly a number literal — no
+    // surrounding spaces (30.1.0 took " 5 "); the integer rule is this parser's.
+    const n = numberOf(value);
+    return n !== undefined && Number.isInteger(n) ? n : 'invalid';
+    ```
+    (`config-fields.ts` imports nothing from `decision-config.ts`, so no cycle; its doc comment says the string form follows `NUMBER_LITERAL`.) `"5000"` and `"0"` still pass; `"5e3"` is 5000; `" 5000"` and `"5.5"` are `'invalid'`.
+  - `skill-plugins-config.ts` (after Task 4L's `strict` default): `import { FieldCheck, START_NUMBER_RULES } from './config-fields.js';`; `parseSkillPluginsConfig` makes `const check = new FieldCheck();` after `parseCatalog`; `posInt(raw, name)` is replaced by `check.numberOr(\`skillPlugins.${name}\`, START_NUMBER_RULES.count, raw, <its default>)` for `k` (4), `maxInjectChars` (4000), `catalogCasMaxAttempts` (3), `orphanGraceMs` (3600000), `chunk.maxChars` (1500); `retiredGraceMs` → `START_NUMBER_RULES.retiredGraceMs` (30000; the `retiredGraceMs < 1000` `fail` goes — it is the rule); `recallTimeoutMs` → `check.number('skillPlugins.recallTimeoutMs', START_NUMBER_RULES.count, raw.recallTimeoutMs)` when present; `dimension` (moved up beside them) → `START_NUMBER_RULES.count`; `threshold` → `check.numberOr('skillPlugins.threshold', START_NUMBER_RULES.unitInterval, raw.threshold, 0.3)`; `loadOnStartupReq` → `raw.loadOnStartup !== undefined ? check.flag('skillPlugins.loadOnStartup', raw.loadOnStartup) : undefined`; `strict` → `check.flagOr('skillPlugins.strict', raw.strict, true)`; the embedder's `provider` / `model` → `check.text('skillPlugins.embedder.<k>', …) ?? ''` (stand-in until `done()`); then `check.done(undefined);` before the first cross-field rule (`recallTimeoutMs >= retiredGraceMs`, the `loadOnStartup` / `sources` rules), so they run on valid numbers only. `posInt` goes; `fail()` stays for the shape errors. `parseSkillEmbedderAsymmetric`'s `String(raw.provider)` reads the checked provider (passed in).
+  - `stepper-config.ts` `parseStepperCoordinatorConfig` (public, signature unchanged): `import { FieldCheck, START_NUMBER_RULES } from './config-fields.js';`;
+    ```ts
+    // Spec D83 (7): the stepper's numbers, the shared grammar and rules — named as
+    // the key inside the pipeline's `config` (30.1.0: Number("x") → NaN).
+    const check = new FieldCheck();
+    const maxParallelSteps = check.numberOr('stepper.maxParallelSteps', START_NUMBER_RULES.count, stepper.maxParallelSteps, 4);
+    const maxDepth = check.numberOr('stepper.maxDepth', START_NUMBER_RULES.depth, stepper.maxDepth, 4);
+    const tokenBudget = check.numberOr('stepper.tokenBudget', START_NUMBER_RULES.count, stepper.tokenBudget, 1_000_000);
+    check.done(undefined);
+    ```
+    replacing the three `Number(…)` lines.
+  - `llm-config-map.ts`: `optionalNumber` is deleted, and its export from `config.ts` (migration line 75, spec §13). `smart-server.ts` (~1174–1197): `const mainTemp = topMain?.temperature;`, `const classifierTemp = topMain?.classifierTemperature;`, `temperature: helperCfg.temperature` — the resolved config holds validated numbers; the import of `optionalNumber` goes. `llm-agent-server` `composition/model-resolver.ts`: the import goes and the three calls read the fields directly (`map.main.temperature`, `map.main.classifierTemperature`, `base.temperature`).
 
   **D82 — the not-ready gate (`smart-server.ts` `_handle`, `http/route-table.ts`, `http/response-helpers.ts`, `http/health-route-handler.ts`; spec §10.5.10):**
   - `http/route-table.ts`: `import type { ConfigNotApplied } from '../config-transaction-queue.js';`; `RouteContext` gains, after `ready`:
@@ -6048,11 +6394,14 @@ git grep -n "validateReloadedConfig(\|validateAgentUpdate(\|validateModelUpdate(
 git grep -n "validateStartConfig(" -- 'packages/llm-agent-server-libs/src' ':!*.test.ts'   # config-fields.ts (the definition) and config.ts only (D83 (5))
 git grep -n "get(yaml, 'agent', '\(maxIterations\|maxToolCalls\|ragQueryK\|toolUnavailableTtlMs\|showReasoning\|historyAutoSummarizeLimit\|queryExpansionEnabled\|toolResultCacheTtlMs\|sessionTokenBudget\|classificationEnabled\)')\|get(yaml, 'prompts'\|s\.vectorWeight\|s\.keywordWeight\|agent-show-reasoning" -- 'packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts'   # expect no hits (the start reads the validated values, D83 (5))
 git grep -n "get(yaml, 'logDir')\|args\['log-dir'\]" -- 'packages/llm-agent-server-libs/src/smart-agent/config.ts'   # expect no hits (D83 (5))
+git grep -n "Number(\|Boolean(\|String(" -- 'packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts' 'packages/llm-agent-server-libs/src/smart-agent/config.ts' 'packages/llm-agent-server-libs/src/smart-agent/stepper-config.ts' 'packages/llm-agent-server-libs/src/smart-agent/decision-config.ts' 'packages/llm-agent-server-libs/src/smart-agent/llm-config-map.ts'   # expect only error-message text (`${String(…)}` inside a thrown message, e.g. stepper-config's `unknown coordinator.mode`) — no config value read through them (D83 (7))
+git grep -n "Number(\|Boolean(" -- 'packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.ts' 'packages/llm-agent-server-libs/src/smart-agent/config-fields.ts'   # expect only config-fields.ts `numberOf` (parses a NUMBER_LITERAL string) and `describe` (D83 (6))
+git grep -n "optionalNumber\|normalizeHeartbeatMs\|posInt(" -- 'packages/llm-agent-server-libs/src' 'packages/llm-agent-server/src'   # expect no hits (D83 (7); normalizeHeartbeatMs stays in libs, unused by the config resolver)
 npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server
 npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
 ```
-A test that resolved a start config with a quoted number, a string flag or an empty prompt for a field of the table (none today — `git grep` over `packages/*/src/**/__tests__` for those keys with a quoted value finds none) now expects the `ConfigFieldError`; every YAML in the repo (examples, `docs/examples`, the template) holds valid values — checked by parsing each and applying the rules: none fails. (The only libs change in this task is D83's `config-watcher.ts` and its exports — D81 is withdrawn, `SmartAgent.reconfigure` stays as in 30.1.0.)
-- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed config change, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change, a failed one leaves the server not ready until one applies — no rollback (D80, D82, V6, V10); every config field validated before it applies — at start, on a reload and on PUT — no coercion; an invalid start value fails the start (D83, D83 (5)); a worker on the parent's clients is logged (U10)` (with the two trailers).
+A test that resolved a start config with an empty prompt for a field of the table, or a value outside the grammar (a quoted number with spaces, a flag other than `true` / `false` / `"true"` / `"false"`), now expects the `ConfigFieldError` (a quoted number literal and `"true"` / `"false"` pass, D83 (6)); the tests that pinned 30.1.0's messages of `positiveIntOption` / `whenThrottled.maxAttempts` (`resolve-llm-section.test.ts`), of `posInt` / `threshold` (`skill-plugins-config.test.ts`: `/dimension must be a positive integer/` → `/skillPlugins\.dimension must be (>= 1|an integer|a finite number)/`) and the stepper's numbers expect the shared `invalid config — <field> <rule>, got <value>`; `resolve-llm-section.test.ts`'s `describe('optionalNumber', …)` is deleted with the function; the tests that call a section reader directly pass the new `FieldCheck` argument (`import { FieldCheck } from '../config-fields.js';`, `new FieldCheck()` last): `resolve-llm-section.test.ts` (`resolveLlmSection(yaml, new FieldCheck())`, 4 calls — its `classifierTemperature: '0.2'` case still reads 0.2, a number literal), `resolve-mcp-name.test.ts` (5), `resolve-mcp-timeout.test.ts` (3), `agent-mcp-shared-client-config.test.ts` (2, `resolveAgentSection(yaml, {}, new FieldCheck())`) — a reader only records an issue, so a case that expects an invalid value to fail calls `check.done(undefined)` after it; every YAML in the repo (examples, `docs/examples`, `pipelines/`, the template) holds valid values — checked by parsing each with `${VAR}` resolved to its default and applying the rules — except `rag.embedder.url: ${EMBEDDER_URL:-}` in the five `docs/examples/stepper/0[1-5]-*.yaml` files: unset, it is `""`, which fails `rag.embedder.url` (D83 (7)); this task removes that line from the five files (Task 33 documents the variable), and `node scripts/check-example-configs.mjs` then reports no `SHAPE-FAIL`. (The only libs change in this task is D83's `config-watcher.ts` and its exports — D81 is withdrawn, `SmartAgent.reconfigure` stays as in 30.1.0.)
+- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed config change, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change, a failed one leaves the server not ready until one applies — no rollback (D80, D82, V6, V10); every config field validated before it applies — at start, on a reload and on PUT — no coercion — a number literal string and "true" / "false" accepted, every coerced config field validated; an invalid start value fails the start (D83, D83 (5), (6), (7)); a worker on the parent's clients is logged (U10)` (with the two trailers).
 
 ---
 
@@ -6172,7 +6521,7 @@ Spec §10.5.12 U8 (decided by the user on 2026-10-05), §3.8, §13 migration lin
 - Modify: `packages/llm-agent-libs/src/agent.ts` (`SmartAgentConfig.toolUnavailableTtlMs` removed, ~164, ~276, ~459–468; `SmartAgentDeps.toolAvailabilityPolicy?`; passes it to the tool loop, ~718, ~1369), `builder.ts` (`withToolAvailabilityPolicy`), `pipeline/context.ts` (`toolAvailabilityPolicy?`, beside `toolAvailabilityRegistry`), `pipeline/default-pipeline.ts` (copies the policy from its deps into the context, as `toolPolicy`), `pipeline/handlers/tool-loop-core.ts` (~218 deps, ~383 the block), `pipeline/handlers/tool-loop.ts` (~907 passes it), `config/config-watcher.ts` (~22 and the `AGENT_KEYS` entry Task 4M added: the key removed; `HotReloadableInput` follows)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts` (`resolveAgentSection`'s `toolUnavailableTtlMs` line, Task 4M D83 (5): no `600000` default — absent stays absent), `smart-server.ts` (~204 the config field stays; where the main and worker builders are made: inject `new HeuristicToolAvailabilityPolicy({ ttlMs })` only when `agent.toolUnavailableTtlMs` is set), `config-reload-watcher.ts` (~86: the key removed), `config-fields.ts` (Task 4M, D83: removed from `AGENT_NUMBER_FIELDS`, `AGENT_NUMBER_RULES` and `UPDATABLE_AGENT_NUMBER_FIELDS` — required by the compiler once the key leaves `HotReloadableConfig`; the route's `AGENT_CONFIG_FIELDS` is built from `UPDATABLE_AGENT_FIELDS`, so the key leaves the whitelist with it; D83 (5): its rule stays as a start-only rule — `StartConfigFields` gains the key and `validateStartConfig` checks it — because the start still reads it), `yaml-loader.ts` (~52: the template line commented out — `# toolUnavailableTtlMs: 600000   # opt-in: block a tool for this long after a "not found"/"permission" error`)
 - Create: `packages/llm-agent-libs/src/policy/__tests__/tool-availability-policy.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-core-availability-policy.test.ts`, `packages/llm-agent-libs/src/__tests__/tool-availability-policy.typecheck.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/tool-availability-yaml.test.ts`
-- Modify: `packages/llm-agent-libs/src/policy/__tests__/tool-availability-registry.test.ts` (TTL passed to every `block`), `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-field-validation.test.ts` (Task 4M: the reload row of `agent.toolUnavailableTtlMs` goes — the reload no longer reads it; its start row stays)
+- Modify: `packages/llm-agent-libs/src/policy/__tests__/tool-availability-registry.test.ts` (TTL passed to every `block`), `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-field-validation.test.ts` (Task 4M: the reload row of `agent.toolUnavailableTtlMs` goes — the reload no longer reads it; its row in the D83 (5) start case moves to the D83 (7) start-only rows, read through `resolveSmartServerConfig`)
 
 **Interfaces:**
 - Produces (libs root):
@@ -6227,19 +6576,13 @@ Expected: FAIL — the policy module does not exist; with no policy the tool is 
   - `builder.ts`: `withToolAvailabilityPolicy(policy) { this._toolAvailabilityPolicy = policy; return this; }`, passed into `SmartAgentDeps` and the pipeline's deps;
   - `context.ts` / `default-pipeline.ts`: `toolAvailabilityPolicy?: IToolAvailabilityPolicy` on the context, copied from the deps; `tool-loop.ts` passes `ctx.toolAvailabilityPolicy`;
   - `config-watcher.ts` (`HotReloadableConfig`, `AGENT_KEYS`), server-libs `config-reload-watcher.ts`, `config-fields.ts` (the three lists / the rule, D83): the key removed — `config-route-handler.ts`'s whitelist follows `UPDATABLE_AGENT_FIELDS`; `startConfigInput` follows `AGENT_NUMBER_FIELDS`, so the reload and the start still read the same paths;
-  - `config-fields.ts` (D83 (5)): the start still reads `agent.toolUnavailableTtlMs` (it builds the policy), so its rule moves to a start-only rule:
+  - `config-fields.ts` (D83 (5), (7)): the start still reads `agent.toolUnavailableTtlMs` (it builds the policy), so its rule joins Task 4M's start-only rules — `START_NUMBER_RULES` gains
     ```ts
-    /** `agent.*` numbers read at start only — never reloaded or PUT (spec D83 (5), U8). */
-    const START_ONLY_AGENT_NUMBER_RULES = {
-      // A duration in ms: HeuristicToolAvailabilityPolicy's ttlMs.
+      // A duration in ms: HeuristicToolAvailabilityPolicy's ttlMs (spec U8, D83 (5)).
       toolUnavailableTtlMs: { integer: false, min: 0 },
-    } as const satisfies Readonly<Record<string, NumberRule>>;
-
-    /** The validated start values of the fields above (spec D83 (5)). */
-    export type StartConfigFields = HotReloadableConfig & { toolUnavailableTtlMs?: number };
     ```
-    (the alias replaces Task 4M's `= HotReloadableConfig`) and `validateStartConfig`, after `checkReloadable(…)` and before the overrides: `const ttl = agentOf(yaml).toolUnavailableTtlMs; if (ttl !== undefined) out.toolUnavailableTtlMs = check.number('agent.toolUnavailableTtlMs', START_ONLY_AGENT_NUMBER_RULES.toolUnavailableTtlMs, ttl);` — one `ConfigFieldError` with every other invalid field, as before;
-  - server-libs `resolve-config-sections.ts`: `toolUnavailableTtlMs` read from the validated start fields without a default — `toolUnavailableTtlMs: fields.toolUnavailableTtlMs ?? 600000,` becomes `...(fields.toolUnavailableTtlMs !== undefined ? { toolUnavailableTtlMs: fields.toolUnavailableTtlMs } : {}),` (absent stays absent; an invalid value already failed the start with the shared validator's `ConfigFieldError` naming `agent.toolUnavailableTtlMs`, as every field of the table — Task 4M, D83 (5)); `smart-server.ts`: one helper `toolAvailabilityPolicyFor(agentCfg)` returning `agentCfg.toolUnavailableTtlMs !== undefined ? new HeuristicToolAvailabilityPolicy({ ttlMs: agentCfg.toolUnavailableTtlMs }) : undefined`, applied with `withToolAvailabilityPolicy` to the main builder and to each worker builder (a worker's own `agent.toolUnavailableTtlMs` wins, else the parent's — as the worker's other agent settings); `yaml-loader.ts`: the template line commented as above.
+    (`StartConfigFields` stays `HotReloadableConfig`: like every start-only field, it is read by its section reader with the start's `FieldCheck`, not by `checkStartConfig`);
+  - server-libs `resolve-config-sections.ts`: `resolveAgentSection` reads `toolUnavailableTtlMs` as a start-only field without a default — `toolUnavailableTtlMs: fields.toolUnavailableTtlMs ?? 600000,` becomes `...(get(yaml, 'agent', 'toolUnavailableTtlMs') !== undefined ? { toolUnavailableTtlMs: check.number('agent.toolUnavailableTtlMs', START_NUMBER_RULES.toolUnavailableTtlMs, get(yaml, 'agent', 'toolUnavailableTtlMs')) } : {}),` (absent stays absent; an invalid value fails the start in the same `ConfigFieldError` as every other invalid field of the file — Task 4M, D83 (5), (7)); Task 4M's Step 4 gate on `get(yaml, 'agent', 'toolUnavailableTtlMs')` in this file now has this one hit; `smart-server.ts`: one helper `toolAvailabilityPolicyFor(agentCfg)` returning `agentCfg.toolUnavailableTtlMs !== undefined ? new HeuristicToolAvailabilityPolicy({ ttlMs: agentCfg.toolUnavailableTtlMs }) : undefined`, applied with `withToolAvailabilityPolicy` to the main builder and to each worker builder (a worker's own `agent.toolUnavailableTtlMs` wins, else the parent's — as the worker's other agent settings); `yaml-loader.ts`: the template line commented as above.
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
@@ -6247,7 +6590,7 @@ git grep -n "toolUnavailableTtlMs\|tool_blacklisted_\|isToolContextUnavailableEr
 npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server
 npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
 ```
-A test that expected a tool to be blocked **without** injecting a policy now injects `HeuristicToolAvailabilityPolicy` (its name says "with the heuristic policy"); a test asserting the `600000` default asserts absence; in `config-field-validation.test.ts` the reload row `['agent.toolUnavailableTtlMs', …]` of the D83 rules is deleted (the reload no longer reads the key), while the start row of the D83 (5) case stays and passes on the start-only rule. Expected: PASS; `toolUnavailableTtlMs` remains only in server-libs' YAML resolution, the server's config type and the helper.
+A test that expected a tool to be blocked **without** injecting a policy now injects `HeuristicToolAvailabilityPolicy` (its name says "with the heuristic policy"); a test asserting the `600000` default asserts absence; in `config-field-validation.test.ts` the reload row `['agent.toolUnavailableTtlMs', …]` of the D83 rules is deleted (the reload no longer reads the key), and its row in the D83 (5) case (`validateStartConfig`, which no longer reads the key) moves to the D83 (7) case's rows as `['agent.toolUnavailableTtlMs', { agent: { toolUnavailableTtlMs: 0 } }, { agent: { toolUnavailableTtlMs: '10m' } }]` and passes on the start-only rule. Expected: PASS; `toolUnavailableTtlMs` remains only in server-libs' YAML resolution, the server's config type and the helper.
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -14814,11 +15157,12 @@ export const DECISION_KINDS: Readonly<
 
 `resolve-config-sections.ts` `resolveDecisionSection`, after the `baseUrl` block:
 ```ts
-  if (raw.deploymentId !== undefined && raw.deploymentId !== null) {
-    out.deploymentId = String(raw.deploymentId);
+  // Names, read with the start's check like `model` / `baseUrl` (spec D83 (7)) — never String()-coerced.
+  if (raw.deploymentId !== undefined) {
+    out.deploymentId = check.text('decision.deploymentId', raw.deploymentId);
   }
-  if (raw.resourceGroup !== undefined && raw.resourceGroup !== null) {
-    out.resourceGroup = String(raw.resourceGroup);
+  if (raw.resourceGroup !== undefined) {
+    out.resourceGroup = check.text('decision.resourceGroup', raw.resourceGroup);
   }
 ```
 
@@ -14831,6 +15175,7 @@ export const DECISION_KINDS: Readonly<
  * (same parser) to report. The decision model comes from the existing
  * `decision:` section (Jev or Cohere) — there is no reranker section here.
  */
+import { numberOf } from './config-fields.js';
 import { parseIntegerField } from './decision-config.js';
 
 /** S8: the only store key the server binds from YAML in this PR (its own tools store). */
@@ -14886,7 +15231,7 @@ const int = (v: unknown): number | undefined => {
   return typeof n === 'number' ? n : undefined;
 };
 
-/** Integers that arrive as `${VAR}` strings become numbers; everything else is copied. */
+/** Numbers that arrive as `${VAR}` strings become numbers (spec D83 (6): the shared grammar); everything else is copied. */
 function normalizeNumbers(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(normalizeNumbers);
   if (!isMap(v)) return v;
@@ -14895,7 +15240,9 @@ function normalizeNumbers(v: unknown): unknown {
     const n =
       ['items', 'maxValues', 'poolItems', 'fixed-items', 'minItems', 'maxItems', 'budgetTokens'].includes(k)
         ? int(x)
-        : undefined;
+        : k === 'minScore'
+          ? numberOf(x)
+          : undefined;
     out[k] = n ?? normalizeNumbers(x);
   }
   return out;
@@ -14921,6 +15268,7 @@ export function resolveProfilesSection(
 
 ```ts
 // packages/llm-agent-server-libs/src/smart-agent/profiles-config-validator.ts
+import { numberOf } from './config-fields.js';
 import { DECISION_KINDS, type DecisionKind, parseIntegerField } from './decision-config.js';
 import { PROFILE_STORE_KEYS, WITHDRAWN_VARIANTS } from './profiles-config.js';
 import { get, type YamlConfig } from './yaml-loader.js';
@@ -14959,7 +15307,9 @@ function checkCut(label: string, cut: unknown, issues: string[]): void {
     if (typeof min !== 'number' || min < 0) issues.push(`${label}.score-floor.minItems: must be a non-negative integer`);
     if (typeof max !== 'number' || max < 1) issues.push(`${label}.score-floor.maxItems: must be a positive integer`);
     if (typeof min === 'number' && typeof max === 'number' && min > max) issues.push(`${label}.score-floor: minItems > maxItems`);
-    if (!Number.isFinite(Number(o.minScore)) || o.minScore == null) issues.push(`${label}.score-floor.minScore: must be a number`);
+    // Spec D83 (6): a number or a number literal string — `Number(" 0.5")` / `Number("")` no longer pass.
+    const minScore = numberOf(o.minScore);
+    if (minScore === undefined || !Number.isFinite(minScore)) issues.push(`${label}.score-floor.minScore: must be a number`);
   }
   if (kind === 'token-budget') {
     const o = isMap(v) ? v : {};
@@ -15132,7 +15482,7 @@ export function checkProfiles(
 ```
 
 `config-validator.ts`:
-- imports (cumulative; both are used below, and neither is imported today): line 1 `import { parseIntegerField } from './decision-config.js';` → `import { DECISION_KINDS, parseIntegerField } from './decision-config.js';` (used by the `checkRetrieval` rule); add `import { checkProfiles } from './profiles-config-validator.js';` (used in the `checkRag` caller). No cycle: `profiles-config-validator.ts` imports only `decision-config.js`, `profiles-config.js` and `yaml-loader.js`.
+- imports (cumulative; both are used below, and neither is imported today): line 1 `import { parseIntegerField } from './decision-config.js';` → `import { DECISION_KINDS, parseIntegerField } from './decision-config.js';` (used by the `checkRetrieval` rule); add `import { checkProfiles } from './profiles-config-validator.js';` (used in the `checkRag` caller). No cycle: `profiles-config-validator.ts` imports only `config-fields.js` (`numberOf`; it imports nothing but libs' types and `yaml-loader.js`'s type), `decision-config.js`, `profiles-config.js` and `yaml-loader.js`.
 - `TYPESAFE_ONLY` / `SAP_AICORE_ONLY` below are MODULE-level constants (next to `RETRIEVAL_STRATEGIES`), not locals of `checkDecision`.
 - `checkDecision` — replace its body's provider check and add the per-provider rules (the `apiKey`, `credentialRef`, `timeoutMs`, `maxRetries` checks stay):
   ```ts
@@ -21261,7 +21611,7 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 
 - `docs/INTEGRATION.md` (~347, `upsertManyPrecomputedRaw`): add that a failed bulk call fails the startup catalog — no per-tool retry; the status reports `complete: false` and `writeFailure` (D79, B16).
 - `docs/INTEGRATION.md` (`### Runtime config endpoints`, ~271), TL;DR first: `PUT /v1/config` and a hot reload of `smart-server.yaml` run one at a time (one queue: a `PUT` waits for a reload or another `PUT` in flight). **A config change that fails to apply is an error and leaves the server not ready — there is no rollback** (D82, B17): a `PUT` whose apply (the startup agent's update included), worker drain or session invalidation fails answers **500** `server_error` naming it; what it applied stays applied; until a whole config applies, `/health` answers 503 with `ready: false` and `configNotApplied: { reason, source, at }`, and `POST /v1/chat/completions` / `POST /v1/messages` answer **503** `service_unavailable` (`config not applied — <reason>`); `GET` / `PUT /v1/config` keep answering. What to do: fix what the error names, then send the whole config — a `PUT` carrying every section (`models` and `agent`; `agent` alone on a server without a model resolver), or save the YAML file; the first whole config that applies makes the server ready. **While the server is not ready a partial `PUT` is refused** (a rule, D82 (8)): **409** `invalid_request_error`, code `config_not_applied`, `server not ready — send the whole config: <missing sections>`, and nothing changes — a failed change may have applied part of itself, so only the whole config can clear the state. While the server is ready, partial `PUT`s work as before. The server starts ready from its config (a start config that cannot be applied fails the start). `docs/DEPLOYMENT.md` (the hot-reload section, ~390–418, and the health / load-balancer paragraph): reloads and `PUT`s share that queue; a reload whose drain or invalidation fails logs `config_reload_failed`, restores nothing and leaves the server not ready (a load balancer takes it out) until the next reload or `PUT` applies — saving the file again re-reads all of it (B10, B17). `docs/EXAMPLES.md` (~844) and `docs/QUICK_START.md` (~163): the `PUT /v1/config` row adds "500 when the update, the worker drain or the session invalidation fails — the server is then not ready (`/health` 503, chat 503) until a whole config applies; nothing is rolled back; while not ready, a `PUT` without every section answers 409 `config_not_applied`". `docs/TROUBLESHOOTING.md` (`## Errors instead of fallbacks`): a row `config not applied — …` (503 on chat, `/health` `configNotApplied`) → a config change failed → fix the named step and send the whole config (a `PUT` with every section, or save the file); a row `server not ready — send the whole config: …` (409 on `PUT /v1/config`) → a partial `PUT` while not ready → send the sections it names too. Nowhere is `reconfigure` described as atomic (D81 withdrawn).
-- **Config field validation (D83, D83 (5); spec §10.5.9 *Config field rules*, *The start config*; §13 B19, B20)** — `docs/DEPLOYMENT.md` (the hot-reload section and the paragraph on starting the server) and `docs/INTEGRATION.md` (`### Runtime config endpoints`), TL;DR first: every hot-reloadable field and every field `PUT /v1/config` accepts is checked **at start, on a reload and on a `PUT`, by the same rules, with no coercion** — one short table (field → rule) copied from spec §10.5.9. An invalid value: the start fails (exit code 1, `Error: invalid config — <field> <rule>, got <value>` on stderr; a worker file's error names the worker and its path), a reload fails (`config_reload_failed`, the server not ready until a whole config applies — B17), a `PUT` answers 400 naming the field. Write each value as its rule says — a YAML number, `true` / `false`, a non-empty string, unquoted; a field of the table cannot take `${VAR}` (the start substitutes it as a string, the reload does not substitute at all). `docs/TROUBLESHOOTING.md` (`## Errors instead of fallbacks`): a row `invalid config — <field> <rule>, got <value>` (at start: exit 1; on a reload: `config_reload_failed`; on `PUT /v1/config`: 400) → fix the value the message names. `docs/examples/*.yaml` and the YAML template need no change (every value they hold passes the rules — checked).
+- **Config field validation (D83, D83 (5); spec §10.5.9 *Config field rules*, *The start config*; §13 B19, B20)** — `docs/DEPLOYMENT.md` (the hot-reload section and the paragraph on starting the server) and `docs/INTEGRATION.md` (`### Runtime config endpoints`), TL;DR first: every hot-reloadable field and every field `PUT /v1/config` accepts is checked **at start, on a reload and on a `PUT`, by the same rules, with no coercion** — one short table (field → rule) copied from spec §10.5.9. An invalid value: the start fails (exit code 1, `Error: invalid config — <field> <rule>, got <value>` on stderr; a worker file's error names the worker and its path), a reload fails (`config_reload_failed`, the server not ready until a whole config applies — B17), a `PUT` answers 400 naming the field. Write each value as its rule says — a number or a number literal string, `true` / `false` or `"true"` / `"false"`, a non-empty string, one of the listed names. **An environment variable's value is allowed for a number or flag field** (D83 (6)): `maxIterations: ${MAX_ITERATIONS}` works when the variable holds a number literal (`25`, not ` 25` or `25abc`) or `true` / `false`; an unset variable with no default is `""` and fails. The reload does not substitute `${VAR}`, so a reloadable field written as `${VAR}` passes at start and fails every reload — change it by a restart. A second short table lists the start-only fields (spec §10.5.9 *Start-only fields*, D83 (7)) — `port`, the `agent`, `llm`, `rag.store`, `rag.embedder`, `mcp`, `decision`, `skillPlugins` and `stepper` fields — and the number-literal grammar in one line with examples that pass and fail. `docs/ARCHITECTURE.md` (~799): `agent.heartbeatIntervalMs` — "`0` disables; any other value outside [1, 2147483647] fails the start" replaces "`<= 0`/invalid disables". `docs/examples/stepper/0[1-5]-*.yaml`: the removed `url: ${EMBEDDER_URL:-}` line (Task 4M) becomes a comment `# url: ${EMBEDDER_URL}   # ollama / openai: the embedder's address (sap-ai-core reads none)`. `docs/TROUBLESHOOTING.md` (`## Errors instead of fallbacks`): a row `invalid config — <field> <rule>, got <value>` (at start: exit 1; on a reload: `config_reload_failed`; on `PUT /v1/config`: 400) → fix the value the message names. `docs/examples/*.yaml` and the YAML template need no change (every value they hold passes the rules — checked).
 
 - `docs/INTEGRATION.md`: a new `## Errors — fail loud` section (TL;DR first): a stage failure is the stream's last item `{ ok: false, error }` and `process()`'s result; the error carries the failing component's code (table of the codes a consumer meets: `PIPELINE_ERROR`, `MCP_UNAVAILABLE`, `CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `QUERY_EXPAND_ERROR`, `RERANK_ERROR`, `LLM_ERROR`, `SKILL_ERROR`, the `COORDINATOR_*` codes, and `PIPELINE_FAILURE_CODES`); **a degraded mode is your injected strategy** — an `IRag` wrapper (implement `IRagDecorator`), an `IReranker` that answers unranked, `agent.llmCallStrategy: fallback` — with one short example of an `IRag` wrapper; `FallbackQueryEmbedding` stands in only for a pipeline without an embedder. Every existing sentence that says a stage "continues", "skips", "falls back" or "keeps the original" on a failure is rewritten.
 - `docs/ARCHITECTURE.md`: the pipeline section states that a stage error reaches the consumer (executor → `ctx.error` → `pipelineToStream` → `{ ok: false }`).
@@ -21310,7 +21660,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 34: CHANGELOG, migration notes, `CLAUDE.md`
 
-Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B20, incl. the user's U1–U10 decisions, D79, D82 (B18 withdrawn by D82), D83 (B19) and D83 (5) (B20), §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
+Spec §13 (**a major release**: the Breaking section with the 75-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B20, incl. the user's U1–U10 decisions, D79, D82 (B18 withdrawn by D82), D83 (B19) and D83 (5) (B20), §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
 
 **Files:**
 - Modify: `CHANGELOG.md` (`## [Unreleased]`)
@@ -21328,7 +21678,7 @@ Spec §13 (**a major release**: the Breaking section with the 74-line migration 
 
 Every line is one removed or moved name. Members and behaviour are unchanged; only the name or the
 package changes — except `FallbackRag` (line 5), `OllamaRag` (line 51) and the members of
-lines 71–74, which are removed.
+lines 71–75, which are removed.
 
 | # | Old name | Old import | New name | Import it from |
 |---|---|---|---|---|
@@ -21406,10 +21756,12 @@ lines 71–74, which are removed.
 | 72 | `SmartAgentBuilder.withCircuitBreakers` (method) | `@mcp-abap-adt/llm-agent-libs` | — (removed) | — wrap the embedder with `withCircuitBreaker(embedder, breaker)` (`@mcp-abap-adt/llm-agent`); list the breaker in `HealthCheckerDeps.circuitBreakers` |
 | 73 | `LazyOptions.fallback` (option of `lazy`) | `@mcp-abap-adt/llm-agent-libs` | — (removed) | — an init failure rejects the call (`LazyInitError`, `cause` = the factory's error); wrap the proxy yourself for a substitute |
 | 74 | `SmartAgentConfig.toolUnavailableTtlMs` (field) | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder.withToolAvailabilityPolicy(new HeuristicToolAvailabilityPolicy({ ttlMs }))` | `@mcp-abap-adt/llm-agent-libs`; inject nothing for no blacklist (the new default) |
+| 75 | `optionalNumber` (function) | `@mcp-abap-adt/llm-agent-server-libs` | — (removed) | — the temperatures of a resolved config are numbers (validated at start); read them as they are |
 
 - Line 5, lines 71–72: `FallbackRag` is removed with `SimpleRagRegistry.replaceRag` and `SmartAgentBuilder.withCircuitBreakers`, which existed only for it. The builder wraps no store; `withCircuitBreaker(config)` builds the main-LLM breaker only. **With the circuit breaker on, an embedder outage now makes retrieval fail with an error instead of falling back to an in-memory copy:** the open breaker throws `CIRCUIT_OPEN` without calling the provider and the store's query returns that error (what the pipeline then does is the fail-loud entry's, goal decision "No fallbacks anywhere in the pipeline"). To fail fast, wrap the embedder with `withCircuitBreaker(embedder, breaker)` below its document/query role and list the breaker in `HealthCheckerDeps.circuitBreakers` (the server does both); for a degraded mode, write your own `IRag` wrapper (implement `IRagDecorator`, so a strategy, a binding and a store embedder under it stay visible).
 - Line 73: `lazy(factory, { fallback })` no longer compiles; the init error reaches the call (behaviour row B14).
 - Line 74: the tool availability blacklist is no longer on by default — inject `HeuristicToolAvailabilityPolicy({ ttlMs })` to keep it (behaviour row B15). The server's YAML key `agent.toolUnavailableTtlMs` stays and now **opts in**; `PUT /v1/config` no longer accepts it.
+- Line 75: `optionalNumber` turned any value into a number (`"warm"` → `NaN`); the start now validates the temperatures (behaviour row B20), so read `temperature` / `classifierTemperature` of a resolved config directly.
 - Lines 1–4, 6–39: add `@mcp-abap-adt/llm-agent-rag` as a dependency. Lines 41–48: add `@mcp-abap-adt/llm-agent-reranker`.
 - Line 40: a class implementing `IDecisionModel` changes only the name it implements (same members).
 - Lines 52–66: these names were always declared in `@mcp-abap-adt/llm-agent` (which `llm-agent-libs` peers on); `llm-agent-libs` no longer re-exports them — import them from `@mcp-abap-adt/llm-agent`.
@@ -21471,8 +21823,8 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B16 | a bulk write of the startup tool catalog into a tools store without a profile (`upsertManyPrecomputedRaw` answers `ok: false` or throws) | the tools written again one by one | no per-tool write: the catalog is incomplete (`complete: false`, `ToolCatalogStatus.writeFailure`), the summary log line names it, `/health` answers 503 | fix the store the error names; a store that cannot take a bulk write does not implement `upsertManyPrecomputedRaw` |
 | B17 | a config change that fails to apply — `PUT /v1/config` whose apply (the startup agent's update included), worker drain or session invalidation fails; a hot reload whose drain or invalidation fails | `PUT`: a failed invalidation swallowed (200, the new config); a failed drain or `reconfigure` → 500, the new config left applied, the server still ready. Reload: logged, counted applied | `PUT`: 500 `server_error` naming the failure; reload: `config_reload_failed`. No rollback — what the change applied stays. The server is **not ready** until a whole config applies: `/health` 503 with `configNotApplied: { reason, source, at }`, the chat routes 503 `service_unavailable` (`config not applied — …`). Changes run one at a time. While not ready, a `PUT` missing a section the route can change answers 409 `config_not_applied` (`server not ready — send the whole config: …`) and changes nothing | fix what the error names, then send the whole config (a `PUT` with every section — `models` and `agent`, `agent` alone without a model resolver — or save the YAML file); a partial `PUT` is refused until then; the first whole config that applies makes the server ready |
 | B18 | *Withdrawn.* `SmartAgent.reconfigure` is unchanged from 30.1.0; on the server a throwing pipeline hook is a failed `PUT` (B17) | — | — | — |
-| B19 | a config field with an invalid value in a hot reload or a `PUT /v1/config` — a non-number, a non-integer, an out-of-range number, a non-boolean flag, an empty string | reload: coerced and applied (`maxIterations: oops` → `NaN`, no iteration limit; `showReasoning: "false"` → `true`); `PUT`: applied as sent | reload: `config_reload_failed` naming each invalid field, nothing applied, the server not ready (B17); `PUT`: **400** `invalid_request_error` naming each field, nothing applied. `ConfigWatcher`'s `reload` event carries the values as read (`HotReloadableInput`) | fix the value the error names; a direct consumer of `ConfigWatcher` validates the event's values before applying them |
-| B20 | the same fields with an invalid value in the start config — the server YAML, a worker file, or the `ResolveConfigArgs` overrides `agent-show-reasoning` / `log-dir` | coerced at start (`maxIterations: oops` → `NaN`, `"false"` → `true`, `vectorWeight: "0.5"` → 0.5, an empty prompt read as absent; a `${VAR}` number accepted as its string) | **the start fails, exit code 1**: `Error: invalid config — <field> <rule>, got <value>` (the reload's and the `PUT`'s message; a worker file's names the worker and its path) | write the value as its rule says — a YAML number, `true` / `false`, a non-empty string; no `${VAR}` in these fields |
+| B19 | a config field with an invalid value in a hot reload or a `PUT /v1/config` — neither a number nor a number literal string, a non-integer, an out-of-range number, a flag other than `true` / `false` / `"true"` / `"false"`, an empty string | reload: coerced and applied (`maxIterations: oops` → `NaN`, no iteration limit; `showReasoning: "false"` → `true`); `PUT`: applied as sent | reload: `config_reload_failed` naming each invalid field, nothing applied, the server not ready (B17); `PUT`: **400** `invalid_request_error` naming each field, nothing applied. `ConfigWatcher`'s `reload` event carries the values as read (`HotReloadableInput`) | fix the value the error names; a direct consumer of `ConfigWatcher` validates the event's values before applying them |
+| B20 | the same fields, or any start-only field (`port`, `agent`, `llm`, `rag.store`, `rag.embedder`, `mcp`, `decision`, `skillPlugins`, `stepper`), with an invalid value in the start config — the server YAML, a worker file, or the `ResolveConfigArgs` overrides | coerced at start (`maxIterations: oops` → `NaN`, `showReasoning: "false"` → `true`, `skillPlugins.strict: "false"` → `true`, `historyRecencyWindow: oops` → `NaN`, `llm.maxTokens: " 25"` → 25, `mcp.args` as a list → `"a,b"`, an empty prompt read as absent) | **the start fails, exit code 1**: `Error: invalid config — <field> <rule>, got <value>` (the reload's and the `PUT`'s message; a worker file's names the worker and its path). A number literal string (`"25"`, e.g. from `${VAR}`) and `"true"` / `"false"` pass | write the value as its rule says — a number or a number literal, `true` / `false` (or `"true"` / `"false"`), a non-empty string, one of the listed names; a `${VAR}` must hold such a value |
 
 New codes, in a set of their own: `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`,
 `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) from `@mcp-abap-adt/llm-agent`. Every other error carries the
@@ -21499,7 +21851,7 @@ failing component's existing code.
 ```markdown
 ## Unreleased
 
-**Breaking (major):** `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The subpath `./legacy/flat` is removed and `./legacy/linear`, `./legacy/dag` no longer re-export `CoordinatorHandler` / `DagCoordinatorHandler` — import `SmartAgentBuilder` and both handlers from `@mcp-abap-adt/llm-agent-libs` (lines 67–69). The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). The server no longer hands its embedder breaker to the builder (`withCircuitBreakers` is removed, line 72): it still wraps the retrieval embedder and is listed in `/health`, and with it open a store's query fails fast instead of answering from an in-memory copy. `skillPlugins.strict` defaults to `true`; `agent.toolUnavailableTtlMs` now opts in to the tool availability blacklist (unset → none) and is no longer accepted by `PUT /v1/config`; a worker on the parent's clients logs `worker_uses_shared_clients`. Config changes (`PUT /v1/config`, hot reload) run one at a time; one that fails to apply answers 500 / logs `config_reload_failed`, rolls nothing back and leaves the server not ready (`/health` 503 with `configNotApplied`, chat 503) until a whole config applies — a reload or a `PUT` with every section; a partial `PUT` then answers 409 `config_not_applied`; `writeNotReady` takes an optional message. Every config field of spec §10.5.9's table is validated — at start, on a reload and on `PUT /v1/config` — by one validator with no coercion: an invalid value fails the start (exit 1), fails the reload (not ready) or answers 400, each `invalid config — <field> <rule>, got <value>` (B19, B20). See the root CHANGELOG's Breaking table.
+**Breaking (major):** `optionalNumber` is removed (line 75) — a resolved config's temperatures are validated numbers; every config field is validated at start, on a reload and on `PUT` (a number literal string and `"true"` / `"false"` accepted, B19, B20). `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The subpath `./legacy/flat` is removed and `./legacy/linear`, `./legacy/dag` no longer re-export `CoordinatorHandler` / `DagCoordinatorHandler` — import `SmartAgentBuilder` and both handlers from `@mcp-abap-adt/llm-agent-libs` (lines 67–69). The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). The server no longer hands its embedder breaker to the builder (`withCircuitBreakers` is removed, line 72): it still wraps the retrieval embedder and is listed in `/health`, and with it open a store's query fails fast instead of answering from an in-memory copy. `skillPlugins.strict` defaults to `true`; `agent.toolUnavailableTtlMs` now opts in to the tool availability blacklist (unset → none) and is no longer accepted by `PUT /v1/config`; a worker on the parent's clients logs `worker_uses_shared_clients`. Config changes (`PUT /v1/config`, hot reload) run one at a time; one that fails to apply answers 500 / logs `config_reload_failed`, rolls nothing back and leaves the server not ready (`/health` 503 with `configNotApplied`, chat 503) until a whole config applies — a reload or a `PUT` with every section; a partial `PUT` then answers 409 `config_not_applied`; `writeNotReady` takes an optional message. Every config field of spec §10.5.9's table is validated — at start, on a reload and on `PUT /v1/config` — by one validator with no coercion: an invalid value fails the start (exit 1), fails the reload (not ready) or answers 400, each `invalid config — <field> <rule>, got <value>` (B19, B20). See the root CHANGELOG's Breaking table.
 ```
 The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (major)** paragraph naming its lines of the root Breaking table):
 - `packages/llm-agent/CHANGELOG.md`: "**Breaking (major):** the RAG implementations (`VectorRag`, `InMemoryRag`, … — root CHANGELOG lines 1–4, 6–39) moved to `@mcp-abap-adt/llm-agent-rag` and are no longer exported here; `FallbackRag` and `SimpleRagRegistry.replaceRag` are removed (lines 5, 71 — with the circuit breaker on, an embedder outage makes a store's query fail with `CIRCUIT_OPEN` instead of answering from an in-memory copy); `IDecisionModel` is renamed `IProbabilityDecision` (line 40). New: the collection-profile contracts, `IRelevanceDecision`, `IToolsFillSource`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` now live in `interfaces/` (same exports); `ITextLogger` is removed — import `ILogger` from `@mcp-abap-adt/interfaces-utils` (line 70). `FallbackLlmCallStrategy` logs each fallback as `llm_streaming_fallback` and takes an optional `{ fallbackCount }` counter; `ToolCatalogStatus`, `IndexReport` and `HealthComponentStatus.toolCatalog` gain optional `batchFailures`."
@@ -21535,7 +21887,7 @@ The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (
 
 ```bash
 git add CHANGELOG.md CLAUDE.md packages/*/CHANGELOG.md
-git commit -m "docs: changelog (major: Breaking table, 74 lines) and migration notes for collection profiles; CLAUDE.md key API notes
+git commit -m "docs: changelog (major: Breaking table, 75 lines) and migration notes for collection profiles; CLAUDE.md key API notes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -21859,6 +22211,7 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 | D82 (8) | *Decided by the user on 2026-10-06 (spec amendment 23).* While the server is not ready, only a whole config clears the state: a file reload (scope `'full'`) or a `PUT` carrying every top-level section the route can change — `agent`, and `models` when the server has a model resolver — each a non-empty object. Any other `PUT` is refused with **409** `invalid_request_error`, code `config_not_applied`, `server not ready — send the whole config: <missing sections>`, and changes nothing: refused in the route before the queue (nothing resolved or probed), and by the queue at the transaction's start (`run(source, scope, tx)`, scope `'partial'` → `ConfigChangeRefusedError`, `tx` never runs, the state untouched), since a transaction ahead of it can fail while it waits. While ready, a partial `PUT` works as before | Task 4M (`ConfigChangeScope`, `ConfigChangeRefusedError`, `run`'s scope; `_onReload` `'full'`; `missingSections` / `writeConfigIncomplete` and the refusal in `handleConfigUpdate`; tests in `config-transaction-queue.test.ts`, `http/__tests__/config-route-transactions.test.ts`, `config-not-ready.test.ts`); Task 23A ((10b): a partial `PUT` → 409, then a reload → ready); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`, `docs/TROUBLESHOOTING.md`); Task 34 (B17, the server-libs CHANGELOG) |
 | D83 | *Review finding of 2026-10-06 (spec §17.31, amendment 24).* Every config field a running server changes is validated before it applies — one validator (server-libs `config-fields.ts`, internal) for the file reload and `PUT /v1/config`, no coercion: numbers finite and in range (`maxIterations` integer ≥ 1, `maxToolCalls` integer ≥ 0, `ragQueryK` integer ≥ 1, the ms durations ≥ 0, `historyAutoSummarizeLimit` / `sessionTokenBudget` integers ≥ 0, the weights in [0, 1], `circuitBreaker.failureThreshold` integer ≥ 1), flags booleans, prompts / `logDir` / model names non-empty strings. An invalid reload fails its transaction before anything applies (not ready, `config_reload_failed`); an invalid `PUT` → 400 naming the field, before the queue. `ConfigWatcher` passes the values as read (`HotReloadableInput`) | Task 4M (`config-fields.ts`; `_applyReload`'s first step; the route's values and whitelists; libs `config-watcher.ts` and its exports; tests `config-field-validation.test.ts`, the new `config-watcher.test.ts` case); Task 4Q (`toolUnavailableTtlMs` leaves the validator's lists); Task 34 (B19, the libs and server-libs CHANGELOGs) |
 | D83 (5) | *The user's rule of 2026-10-06 — no silent degradation, everything in this change (spec §17.32, amendment 25); it replaced "the start config is not part of this finding".* The start config is checked by the same validator: `resolveSmartServerConfig` validates the YAML at the reload's paths (`startConfigInput`, pinned equal to the real `ConfigWatcher` event) and the `agent-show-reasoning` / `log-dir` overrides before any section is read (`validateStartConfig`); `resolveAgentSection`, `resolveRagSection` (the in-memory weights), `resolvePromptsSection` and `logDir` take the validated values, an absent one its 30.1.0 default; an invalid value throws the same `ConfigFieldError` (a worker file's prefixed with the worker and its path) and the CLI exits 1, as for any unusable start config | Task 4M (`config-fields.ts` `startConfigInput` / `validateStartConfig`; `config.ts`; `resolve-config-sections.ts`; three `config-field-validation.test.ts` cases, one `cli-flags.test.ts` case); Task 4Q (`agent.toolUnavailableTtlMs` a start-only rule); Task 33 Step 8b (docs); Task 34 (B20, the server-libs CHANGELOG) |
+| D83 (6), (7) | *Decided by the user on 2026-10-06 (spec §17.33, amendment 26).* One grammar for numbers and flags at start, on a reload and on `PUT`: a number or a string that is exactly a `NUMBER_LITERAL` (`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`), then the field's rule; `true` / `false` or exactly `"true"` / `"false"`; anything else the same `ConfigFieldError`. Every config field the start coerced with `Number()` / `Boolean()` / `String()` has a rule (`START_NUMBER_RULES` and the name lists in `config-fields.ts`) and is read through the start's `FieldCheck`; `skillPlugins` and the stepper's section with their own; `parseIntegerField` on the same grammar; `optionalNumber` removed (migration line 75) | Task 4M (D83 (6), (7)), Task 4Q, Task 21, Task 33, Task 34 |
 
 ## Self-review (done while writing)
 
@@ -21884,3 +22237,4 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for D82 (8) (spec amendment 23 — decided by the user on 2026-10-06).** Task 4M: `ConfigTransactionQueue.run` gains a required `scope` (`'full' | 'partial'`) as its second parameter — required, not defaulted, so a call site that forgets it fails to compile instead of silently clearing the state; every call passes one (`_onReload` `'full'`; the route `'full'` when no section is missing, else `'partial'`; the queue tests). A `'partial'` change that starts while `notApplied` is set rejects with the new `ConfigChangeRefusedError` (carries the `ConfigNotApplied`), never runs `tx` and leaves the state as it was. The route checks the same before the queue (right after the body is read as an object, before the whitelist, the model resolution and the probe) with `missingSections` against `configSections(target)` (`agent`, plus `models` when `target.modelResolver` is set — the route's whitelist has no other top-level section; without a resolver `models` is a 400, so `agent` alone is whole) and answers 409 through `writeConfigIncomplete`; the in-queue refusal maps to the same 409. Why both: the pre-check alone races a transaction ahead of the `PUT` that fails while it waits; the in-queue check alone would resolve and probe models for a request that is refused. Tests: the queue (a partial change refused, never run, state untouched; checked at start, not when queued), V10 (the first serialized test now queues a partial and a whole `PUT` behind a failing reload: 409, then 200 and ready; a failed `PUT` → a reload → ready; while not ready `{}`, `{ agent }`, `{ models }`, `{ models, agent: {} }` → 409 naming the missing sections, nothing applied, no drain, then a whole `PUT` → 200; while ready a partial `PUT` → 200 and `{}` → 200 outside the queue), the real server (`{}` → 409 naming `agent`, still not ready), Task 23A's (10b) (with a model resolver: `{ agent }` → 409, nothing applied, then a reload → ready). The harness's `failInvalidation` takes `undefined` to succeed again. The error messages say `until a whole config applies` (was `until a config change applies`); every test regex that matches them was changed with them. **Cumulative compile:** `ConfigChangeScope` is used by `IConfigTransactionQueue.run` and the class; `ConfigChangeRefusedError` is a value import in `config-route-handler.ts` (the `instanceof`) and in the queue test; `missingSections`, `configSections` and `writeConfigIncomplete` are module-local and each used (`noUnusedLocals`); `ServerResponse` is already imported by the route; `jsonError`'s third parameter (`code`) exists. Real-server PUT tests (`config-endpoints.test.ts`, `smart-server-config-reload.test.ts`, (10c)) run on a ready server, so their partial `PUT`s are unchanged. The gates stay as they are.
 - **Rework for D83 (spec §17.31, amendment 24 — review finding of 2026-10-06).** Task 4M: a new internal module `config-fields.ts` holds the rule of every field the reload reads and the `PUT` accepts; `_applyReload` validates first, so an invalid file is a failed transaction that applied nothing (the queue keeps or sets *config not applied* with the validation reason); `handleConfigUpdate` validates the `agent` values and the `models` names after the whitelists and before any model is resolved (400 naming the field) and applies the validated values (`applyConfigTransaction`'s `patch: AgentUpdate`); the route's whitelists are built from the validator's lists. libs `config-watcher.ts` stops coercing and exports `HotReloadableInput` (spec §3.8), so libs re-enters Task 4M's gate (`tsc -b` and its tests). Task 4Q removes `toolUnavailableTtlMs` from the validator's lists too (a compile error otherwise). **Cumulative compile:** `HotReloadableInput` is used by the watcher, `config-reload-watcher.ts` and the validator; `AgentUpdate` / `ModelUpdate` / `MODEL_FIELDS` / `UPDATABLE_AGENT_FIELDS` / `ConfigFieldError` by the route; `validateReloadedConfig` by `_applyReload`; every list and rule is read (`noUnusedLocals`). The existing reload and `PUT` tests send valid values only (checked: `config-endpoints.test.ts`, `smart-server-config-reload.test.ts`, `config-reload-weights.test.ts`, and every `_onReload` / `put` call in this plan), so they stay green. The start config is no longer left out — see the next bullet (D83 (5)).
 - **Rework for D83 (5) (spec §17.32, amendment 25 — the user's rule of 2026-10-06: no silent degradation, everything in this change).** Task 4M: `config-fields.ts` splits `validateReloadedConfig` into the shared `checkReloadable` and gains `startConfigInput` (the reload's paths over the start YAML) and `validateStartConfig` (those values plus the two `ResolveConfigArgs` overrides, one `ConfigFieldError`); `resolveSmartServerConfig` calls it first; `resolveAgentSection(yaml, fields)` (its `args` parameter gone — `noUnusedParameters`), `resolveRagSection` / `resolveRagStore` (a `fields` parameter) and `resolvePromptsSection(fields)` (its `yaml` parameter gone) read the validated values with the 30.1.0 defaults; `resolveWorkerConfig` prefixes a worker's field errors with the worker and its path. All three readers are internal to server-libs (`config.ts` does not re-export them), and every caller is updated in the same commit: `config.ts` and the one test that calls `resolveAgentSection(yaml, {})` (unchanged — `{}` is an empty `StartConfigFields`). Tests: three server-libs cases (every rule at its YAML path and the overrides; the watcher parity; `resolveSmartServerConfig` — invalid fails with the same message, valid applies as written and starts a real `SmartServer`, absent keeps the defaults, a worker file names itself) and one CLI case (exit 1 naming the field). Task 4Q: `toolUnavailableTtlMs` leaves the reload's lists but keeps its rule as a start-only rule (`StartConfigFields` widened, checked in `validateStartConfig`), its reload test row deleted; its text no longer claims a `ConfigValidationError` — the start's error is the shared validator's `ConfigFieldError`. Every YAML in the repo was parsed and checked against the rules: none fails. Task 33 Step 8b and Task 34 document B19 and B20 (B19 was named in D83's row but missing from Task 34's table — added).
+- **Rework for D83 (6), (7) (spec §17.33, amendment 26 — decided by the user on 2026-10-06).** Task 4M: `config-fields.ts` gains `NUMBER_LITERAL`, `numberOf`, `flagOf` (the one grammar — `FieldCheck.number` / `.flag` accept a number literal string and `"true"` / `"false"`), exports `FieldCheck` (with `oneOf`, `numberOr`, `flagOr`) and `START_NUMBER_RULES`, and splits `validateStartConfig` into `checkStartConfig` + a thin `validateStartConfig`; `resolveSmartServerConfig` runs one `FieldCheck` through every section reader and throws once before `skillPlugins` and the workers; every `Number()` / `Boolean()` / `String()` of a config value in `resolve-config-sections.ts`, `config.ts` (`port`), `skill-plugins-config.ts`, `stepper-config.ts` goes through it; `parseIntegerField` uses `numberOf`; `optionalNumber` is deleted (server-libs, the server's `model-resolver.ts`); the heartbeat warning goes; three new test cases (the grammar incl. `${VAR}`, every start-only field, the own parsers) and the old cases' now-valid strings replaced; the five stepper examples lose `url: ${EMBEDDER_URL:-}`. Task 4Q: `agent.toolUnavailableTtlMs` joins `START_NUMBER_RULES` and is read by `resolveAgentSection` with the start's check (its D83 (5) test row moves to the D83 (7) rows). Task 21: `decision.deploymentId` / `resourceGroup` read with the check; `score-floor.minScore` parsed with `numberOf` in the validator and normalized to a number. Task 33: environment-variable values for number / flag fields, the start-only table, the heartbeat wording, the examples' comment. Task 34: migration line 75 (75-line table), B19 / B20 rows, the server-libs CHANGELOG line.
