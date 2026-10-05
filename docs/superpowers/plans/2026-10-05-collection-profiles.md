@@ -1719,7 +1719,7 @@ Spec §3.9, §3.8 (rows for the rename, `IRelevanceDecision`, reused `DecisionEr
 - Modify: `packages/llm-agent-libs/src/adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`; `wrapDecisionModel` removed)
 - Modify: `packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts`
 - Modify: `packages/llm-agent-libs/src/index.ts`, `tsconfig.typecheck.json`
-- Modify (every other use, Step 3b): `packages/typesafe-decision/src/typesafe-decision-model.ts`; `packages/llm-agent-server-libs/src/smart-agent/{resolve-retrieval,smart-server}.ts`; `packages/llm-agent-server-libs/src/smart-agent/__tests__/{resolve-retrieval,retrieval-wiring,session-history}.test.ts`; `packages/llm-agent-server/src/composition/make-decision-model.ts`
+- Modify (every other use, Step 3b): `packages/llm-agent-libs/src/reranker/decision-reranker.ts`, `packages/llm-agent-libs/src/reranker/__tests__/{decision-reranker,decision-reranker-batching}.test.ts` (the type only — the move and the class rename are Task 4B's); `packages/typesafe-decision/src/typesafe-decision-model.ts`; `packages/llm-agent-server-libs/src/smart-agent/{resolve-retrieval,smart-server}.ts`; `packages/llm-agent-server-libs/src/smart-agent/__tests__/{resolve-retrieval,retrieval-wiring,session-history}.test.ts`; `packages/llm-agent-server/src/composition/make-decision-model.ts`
 
 **Interfaces:**
 - Produces (llm-agent):
@@ -2011,13 +2011,16 @@ export {
 
 - [ ] **Step 3b: Switch every other use of the removed names (no alias — each commit builds)**
 
+- `packages/llm-agent-libs/src/reranker/decision-reranker.ts` (libs builds it — without this switch Task 4A's `npm run build` fails with `TS2305: Module '"@mcp-abap-adt/llm-agent"' has no exported member 'IDecisionModel'`): L5 `type IDecisionModel,` → `type IProbabilityDecision,` (the import stays sorted: `DecisionEntry` < `IProbabilityDecision` < `NoulQuestion`); L65 `private readonly model: IDecisionModel,` → `private readonly model: IProbabilityDecision,`. **Only the type changes here:** the parameter keeps the name `model` (so L159 `this.model.decide(` is untouched), the class keeps the name `DecisionReranker`, the file stays in libs — the move, the class rename and the parameter rename to `decision` are Task 4B's.
+- `packages/llm-agent-libs/src/reranker/__tests__/decision-reranker.test.ts`: L6 `type IDecisionModel,` → `type IProbabilityDecision,`; L23, L119, L140 `const model: IDecisionModel = {` → `const model: IProbabilityDecision = {`. Nothing else in the file changes here (`DecisionReranker`, `DECISION_RERANK_DEFAULT_*` are Task 4B's).
+- `packages/llm-agent-libs/src/reranker/__tests__/decision-reranker-batching.test.ts`: L6 `type IDecisionModel,` → `type IProbabilityDecision,`; L24 `const m: IDecisionModel = {` → `const m: IProbabilityDecision = {`.
 - `packages/typesafe-decision/src/typesafe-decision-model.ts`: L9 `IDecisionModel,` → `IProbabilityDecision,` (keep the import's sort order — Biome sorts it); L56 doc "`IDecisionModel` over TypeSafe AI's Jev" → "`IProbabilityDecision` over TypeSafe AI's Jev"; L62 `implements IDecisionModel` → `implements IProbabilityDecision`. The class name `TypeSafeDecisionModel` is unchanged (spec §1).
 - `packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts`: L2 `IDecisionModel,` → `IProbabilityDecision,`; L28 `=> Promise<IDecisionModel>;` → `=> Promise<IProbabilityDecision>;`; L50 `let decisionModel: IDecisionModel | undefined;` → `let decisionModel: IProbabilityDecision | undefined;`; L15 `wrapDecisionModel,` → `wrapProbabilityDecision,` and L66 `decisionModel = wrapDecisionModel(` → `decisionModel = wrapProbabilityDecision(`. (The rerankers in its libs import are switched in Task 4B, the seam key in Task 20A, the whole closure replaced in Task 22.)
 - `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`: L55 `type IDecisionModel,` → `type IProbabilityDecision,`; L383 `) => Promise<IDecisionModel>;` → `) => Promise<IProbabilityDecision>;`.
 - `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts` (L5, L38), `retrieval-wiring.test.ts` (L10, L113), `session-history.test.ts` (L7, L217): `IDecisionModel` → `IProbabilityDecision` in the import and the fixture's type.
 - `packages/llm-agent-server/src/composition/make-decision-model.ts`: L1, L12, L27 `IDecisionModel` → `IProbabilityDecision` (the file and function rename is Task 20A's).
 
-Verify: `git grep -n -w "IDecisionModel\|wrapDecisionModel" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'` prints only the `@ts-expect-error` line of `decision-model.typecheck.ts` (the docs are Task 33's).
+Verify: `git grep -n -w "IDecisionModel\|wrapDecisionModel" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'` prints only the three lines of `decision-model.typecheck.ts` that name the removed type on purpose (the `@ts-expect-error` comment, its `import type`, `_Removed`) and the `description` of `packages/typesafe-decision/package.json` (prose — Task 33's, with the docs). In particular it prints nothing under `packages/llm-agent-libs/src/reranker/`.
 
 - [ ] **Step 4: Run**
 
@@ -2026,11 +2029,12 @@ Run:
 npm run build
 npm run typecheck
 node --import tsx/esm --test packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts packages/llm-agent/src/interfaces/__tests__/decision-model.test.ts
+npm test --workspace @mcp-abap-adt/llm-agent-libs
 npm test --workspace @mcp-abap-adt/typesafe-decision
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs
 npm test --workspace @mcp-abap-adt/llm-agent-server
 ```
-Expected: PASS; the full build proves no package still names `IDecisionModel` or `wrapDecisionModel` (`TypeSafeDecisionModel` implements `IProbabilityDecision`); the typecheck's `@ts-expect-error` is used. The test files are not in any `tsc -b` project (`**/__tests__/**` is excluded); tsx runs them without type-checking, so the grep of Step 3b is what proves the tests switched.
+Expected: PASS; the full build proves no package still names `IDecisionModel` or `wrapDecisionModel` (`TypeSafeDecisionModel` implements `IProbabilityDecision`, `DecisionReranker`'s constructor takes one); the libs suite runs the two existing `decision-reranker*` tests against the switched fixtures, still under the old class name; the typecheck's `@ts-expect-error` is used. The test files are not in any `tsc -b` project (`**/__tests__/**` is excluded); tsx runs them without type-checking, so the grep of Step 3b is what proves the tests switched.
 
 - [ ] **Step 5: Commit**
 
@@ -2167,24 +2171,26 @@ decision**; the decision comes from a provider package you inject.
 
 - [ ] **Step 2: Rename inside the moved files**
 
-Every rename below is listed with **each use** in the moved file (line numbers of today's `packages/llm-agent-libs/src/reranker/…` files; read the file, they are all there). A renamed declaration whose uses are not all renamed does not compile — the build in this step catches it.
+**Starting state (after Task 4A):** `decision-reranker.ts` and its two tests already name `IProbabilityDecision` (Task 4A switched the type in place, one line for one line, so the line numbers below are unchanged); the class is still `DecisionReranker`, its parameter still `model`, the constants still `DECISION_RERANK_DEFAULT_*`. Check before editing: `git grep -n -w IDecisionModel -- packages/llm-agent-libs/src/reranker` prints nothing.
+
+Every rename below is listed with **each use** in the moved file (line numbers of the `packages/llm-agent-libs/src/reranker/…` files as Task 4A left them; read the file, they are all there). A renamed declaration whose uses are not all renamed does not compile — the build in this step catches it.
 
 In `probability-reranker.ts` (was `decision-reranker.ts`):
-- L1–10, the `@mcp-abap-adt/llm-agent` import: `type IDecisionModel` (L5) → `type IProbabilityDecision`; add `type IReranker` (L12's `import type { IReranker } from './types.js'` is deleted — `types.js` is gone);
+- L1–10, the `@mcp-abap-adt/llm-agent` import: `type IProbabilityDecision` (L5) is already there — Task 4A switched it; add `type IReranker` (L12's `import type { IReranker } from './types.js'` is deleted — `types.js` is gone);
 - L11: `'../util/assert-positive-integer.js'` → `'./assert-positive-integer.js'`;
 - `DECISION_RERANK_DEFAULT_TASK` → `PROBABILITY_RERANK_DEFAULT_TASK`: its declaration L14 and its uses L26 (in `PASSAGE_QUESTION`) and L85 (in `rerank`);
 - `DECISION_RERANK_DEFAULT_CRITERIA` → `PROBABILITY_RERANK_DEFAULT_CRITERIA`: its declaration L17 and its uses L27 (in `PASSAGE_QUESTION`) and L86 (in `rerank`);
 - `DecisionRerankerOptions` → `ProbabilityRerankerOptions`: its declaration L41 and its use L66 (the constructor's `options` type);
 - `class DecisionReranker` (L59) → `class ProbabilityReranker`, and the two `assertPositiveInteger('DecisionReranker', …)` labels (L71, L75) → `'ProbabilityReranker'`;
-- the constructor parameter `private readonly model: IDecisionModel` (L65) → `private readonly decision: IProbabilityDecision`, **and its only member access**, L159 in `runBatch`: `await this.model.decide({ state: query, questions }, options)` → `await this.decision.decide({ state: query, questions }, options)`;
+- the constructor parameter `private readonly model: IProbabilityDecision` (L65; typed by Task 4A, name unchanged there) → `private readonly decision: IProbabilityDecision`, **and its only member access**, L159 in `runBatch`: `await this.model.decide({ state: query, questions }, options)` → `await this.decision.decide({ state: query, questions }, options)`;
 - the class doc (L54–58): "Rerank RAG results with a probability decision (spec §5.1): the query as the state, one yes/no question per passage, batched under a token budget. `score` becomes P(relevant). Any failed batch fails the whole call." Behaviour unchanged.
 - **Not renamed:** `DecisionAnswer`, `DecisionEntry`, `NoulQuestion`, `res.value.answers` (the shared decision vocabulary, spec §17.5), the error text `decision rerank failed: …` / `decision rerank: no yes/no answer …` (asserted by the moved tests).
 
 In `llm-reranker.ts`: L8 `'../util/assert-positive-integer.js'` → `'./assert-positive-integer.js'`; L9 `'./decision-reranker.js'` → `'./probability-reranker.js'` (it imports `PASSAGE_QUESTION`, whose name is unchanged); L10 `import type { IReranker } from './types.js'` → `type IReranker` added to the L1–7 `@mcp-abap-adt/llm-agent` imports. The file has **no** `this.model`: L181 `model: this.llm.model ?? 'unknown'` reads `ILlm.model` and is not part of the rename — leave it. In `noop-reranker.ts`: L7 `import type { IReranker } from './types.js'` → `type IReranker` added to its L1–6 `@mcp-abap-adt/llm-agent` import.
 
 In the moved tests:
-- `probability-reranker.test.ts` (was `decision-reranker.test.ts`): L6 `type IDecisionModel` → `type IProbabilityDecision`, and its uses L23, L119, L140 (`const model: IDecisionModel` → `: IProbabilityDecision`); L9–13 import `PROBABILITY_RERANK_DEFAULT_CRITERIA`, `PROBABILITY_RERANK_DEFAULT_TASK`, `ProbabilityReranker` from `'../probability-reranker.js'`; `DECISION_RERANK_DEFAULT_CRITERIA` → `PROBABILITY_RERANK_DEFAULT_CRITERIA` at L36 (describe title), L38, L60, L98; `DECISION_RERANK_DEFAULT_TASK` → `PROBABILITY_RERANK_DEFAULT_TASK` at L59, L112; `describe('DecisionReranker'` (L42) → `describe('ProbabilityReranker'`; `new DecisionReranker(` → `new ProbabilityReranker(` at L45, L53, L66, L80, L90, L106, L125, L133, L153. **Stay:** the local variable `model`, the result field `{ model: 'fake', answers }` (that is `DecisionResult.model`, not the renamed parameter) and `/DECISION_AUTH/` (L128, an error code).
-- `probability-reranker-batching.test.ts` (was `decision-reranker-batching.test.ts`): L6 `type IDecisionModel` → `type IProbabilityDecision` and its use L24; L9–13 import `ProbabilityReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `'../probability-reranker.js'`; describe titles L53, L62, L102 `DecisionReranker …` → `ProbabilityReranker …`; `new DecisionReranker(` → `new ProbabilityReranker(` at L68, L87, L97, L113, L120; **the expected message L114** `` new RegExp(`DecisionReranker: ${field} must be a positive integer`) `` → `` `ProbabilityReranker: ${field} must be a positive integer` `` (the constructor labels changed above). **Stays:** `{ model: 'f', answers }` (L47, `DecisionResult.model`).
+- `probability-reranker.test.ts` (was `decision-reranker.test.ts`): L6 `type IProbabilityDecision` and its uses L23, L119, L140 are already switched (Task 4A) — unchanged here; L9–13 import `PROBABILITY_RERANK_DEFAULT_CRITERIA`, `PROBABILITY_RERANK_DEFAULT_TASK`, `ProbabilityReranker` from `'../probability-reranker.js'`; `DECISION_RERANK_DEFAULT_CRITERIA` → `PROBABILITY_RERANK_DEFAULT_CRITERIA` at L36 (describe title), L38, L60, L98; `DECISION_RERANK_DEFAULT_TASK` → `PROBABILITY_RERANK_DEFAULT_TASK` at L59, L112; `describe('DecisionReranker'` (L42) → `describe('ProbabilityReranker'`; `new DecisionReranker(` → `new ProbabilityReranker(` at L45, L53, L66, L80, L90, L106, L125, L133, L153. **Stay:** the local variable `model`, the result field `{ model: 'fake', answers }` (that is `DecisionResult.model`, not the renamed parameter) and `/DECISION_AUTH/` (L128, an error code).
+- `probability-reranker-batching.test.ts` (was `decision-reranker-batching.test.ts`): L6 `type IProbabilityDecision` and its use L24 are already switched (Task 4A) — unchanged here; L9–13 import `ProbabilityReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `'../probability-reranker.js'`; describe titles L53, L62, L102 `DecisionReranker …` → `ProbabilityReranker …`; `new DecisionReranker(` → `new ProbabilityReranker(` at L68, L87, L97, L113, L120; **the expected message L114** `` new RegExp(`DecisionReranker: ${field} must be a positive integer`) `` → `` `ProbabilityReranker: ${field} must be a positive integer` `` (the constructor labels changed above). **Stays:** `{ model: 'f', answers }` (L47, `DecisionResult.model`).
 - `reranker.test.ts`: L4 `import { makeLlm } from '../../testing/index.js'` → `'./fake-llm.js'` (below); L5–6 `'../llm-reranker.js'`, `'../noop-reranker.js'` resolve unchanged after the move.
 
 `reranker.test.ts` imported `makeLlm` from libs' testing — the reranker package must not import libs (a cycle, and `scoped-dependencies.test.ts` would demand a peer): create
@@ -2997,7 +3003,7 @@ npm run lint:check
 git grep -n -w ITextLogger -- packages scripts test docs ':!docs/superpowers' ':!docs/MIGRATION-v*.md' ':!**/CHANGELOG.md'
 ls packages/llm-agent/src/logger/text-logger.ts packages/llm-agent-libs/src/adapters/index.ts packages/llm-agent-libs/src/interfaces/model-resolver.ts
 ```
-Expected: build, typecheck (the `@ts-expect-error` of Step 1 is used), tests, repo tests (the guard of Task 4D) and lint PASS; the grep prints only the two `ITextLogger` lines of `text-logger-removed.typecheck.ts`; `ls` fails for all three files.
+Expected: build, typecheck (the `@ts-expect-error` of Step 1 is used), tests, repo tests (the guard of Task 4D) and lint PASS; the grep prints only the three `ITextLogger` lines of `text-logger-removed.typecheck.ts` (the `@ts-expect-error` comment, its `import type`, `_Removed`); `ls` fails for all three files.
 
 - [ ] **Step 7: Commit**
 
@@ -4669,6 +4675,8 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 Spec §3.1, §3.3 (incl. **cleanup failures kept for retry** — `staleRecordIds`, §17.6 F3), §4.4 (refusal), §7.6 (one batch pass), §8.2. Failure handling only — no generations, no locks (D13). One store per write: no companion stores, no companion ids, no `generated` key (spec §17.15, D50 — intents and companion stores removed).
 
+**Duplicate item ids in one batch are rejected** (spec §3.3, §17.19). Two versions of one item in one batch (same owner-qualified item id = same canonical record id) would both read the same old canonical, and the version whose canonical lands last lists only its own records — the other version's extra records (e.g. its `note` 1) are then listed nowhere, so no `index` or `remove` ever deletes them. `storeItems` checks the batch **first**, before any `getById`, embedding or write: duplicates → nothing read or written, every item not indexed, `rejected` = one `RagError` naming each duplicate (`user:A/case-42 (2×)`). The bindings (Tasks 15, 17) run the same check, `duplicateItemsError`, over their **whole** `index` batch before their first `storeItems` call and return it as `{ ok: false, error }` — the shared-items binding writes several partitions, so a per-store check alone could leave the partitions before the offending one written.
+
 **A replacement replaces the record — on every backend.** Re-indexing writes the same ids again, and the backends differ on what a write to an existing id does with the old metadata (read in the repo, 2026-10-05):
 
 | Backend | Write to an existing id | Code |
@@ -4701,13 +4709,17 @@ Correct on both kinds: a merging store overwrites the key with `undefined` (read
   export function prepareItem(w: ItemWrite, o: { canonicalKind: string; profile: string; maxRecordsPerItem: number }): { ok: true; item: PreparedItem } | { ok: false; reason: string };
   // F3: stale deletes in the store, every Result checked; ids written ahead on the
   // canonical (staleRecordIds), settled after.
-  export function storeItems(rag: IRag, items: readonly PreparedItem[], options?: CallOptions): Promise<{ indexed: boolean[]; records: number; failures: (string | undefined)[]; batchFailure?: string }>;
+  // Duplicate owner-qualified item ids in the batch → one error naming them; undefined when none.
+  export function duplicateItemsError(items: readonly PreparedItem[]): RagError | undefined;
+  // Checks duplicateItemsError FIRST: a rejected batch reads and writes nothing (`rejected` set,
+  // every `indexed[i]` false, `records` 0).
+  export function storeItems(rag: IRag, items: readonly PreparedItem[], options?: CallOptions): Promise<{ indexed: boolean[]; records: number; failures: (string | undefined)[]; batchFailure?: string; rejected?: RagError }>;
   export function getItem(rag: IRag, canonicalId: string, filter: CallOptions | undefined, options?: CallOptions): Promise<Result<RagResult | null, RagError>>;
   export function removeItem(rag: IRag, canonicalId: string, options?: CallOptions): Promise<Result<number, RagError>>; // F3: listed AND stale ids; a failed delete keeps the canonical and returns an error
   export function asItem(canonical: RagResult, score: number, extra?: { matchedKinds?: string[]; source?: string }): RagResult; // metadata.id = itemId
   export function isExpired(meta: RagMetadata, nowSecs?: number): boolean;
   ```
-  Failure reasons: `'too-many-records'`, `'missing-canonical'`, `'owner-mismatch'`, `'item-id-mismatch'`, `'no-records'`, `'write-failed'`, `'read-failed: <message>'`, `'cleanup-failed: <n> stale record(s) kept for retry'` (F3).
+  Failure reasons: `'too-many-records'`, `'missing-canonical'`, `'owner-mismatch'`, `'item-id-mismatch'`, `'no-records'`, `'write-failed'`, `'read-failed: <message>'`, `'cleanup-failed: <n> stale record(s) kept for retry'` (F3); a rejected batch puts `rejected.message` on every item.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4726,7 +4738,13 @@ import {
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag, VectorRag } from '@mcp-abap-adt/llm-agent-rag';
-import { getItem, prepareItem, removeItem, storeItems } from '../record-writer.js';
+import {
+  duplicateItemsError,
+  getItem,
+  prepareItem,
+  removeItem,
+  storeItems,
+} from '../record-writer.js';
 
 const U_A: RecordOwner = { scope: 'user', userId: 'A' };
 const draft = (kind: string, text: string, owner: RecordOwner = U_A): RecordDraft => ({
@@ -4974,6 +4992,102 @@ describe('cleanup failures are kept for retry (spec §3.3, F3)', () => {
     const done = await removeItem(rag, canonId);
     assert.ok(done.ok);
     for (const id of [canonId, staleId]) {
+      const x = await raw.getById(id);
+      assert.ok(x.ok && x.value === null, id);
+    }
+  });
+});
+
+/** Logs every store call (read, write, delete); a rejected batch must make none. */
+function counting(inner: InMemoryRag): { rag: IRag; calls: string[] } {
+  const calls: string[] = [];
+  const w = inner.writer();
+  const rag = {
+    ...inner,
+    query: inner.query.bind(inner),
+    getById: async (id: string, o?: CallOptions) => {
+      calls.push(`getById ${id}`);
+      return inner.getById(id, o);
+    },
+    writer: () => ({
+      ...w,
+      upsertRaw: async (...a: Parameters<typeof w.upsertRaw>) => {
+        calls.push(`upsertRaw ${a[0]}`);
+        return w.upsertRaw(...a);
+      },
+      deleteByIdRaw: async (id: string, o?: CallOptions) => {
+        calls.push(`deleteByIdRaw ${id}`);
+        return w.deleteByIdRaw(id, o);
+      },
+    }),
+  } as IRag;
+  return { rag, calls };
+}
+
+describe('duplicate item ids in one batch are rejected (spec §3.3, §17.19)', () => {
+  const canonId = recordId(U_A, 'case-42', 'item', 0);
+  const note0 = recordId(U_A, 'case-42', 'note', 0);
+  const note1 = recordId(U_A, 'case-42', 'note', 1);
+  const other = () =>
+    prepareItem(
+      { itemId: 'case-43', drafts: [{ ...draft('item', 'd'), itemId: 'case-43' }] },
+      { canonicalKind: 'item', profile: 'shared-items', maxRecordsPerItem: 5 },
+    );
+
+  it('two versions of one item: rejected before any read or write, naming the duplicate; store untouched', async () => {
+    const raw = new InMemoryRag();
+    const v0 = prep([draft('item', 'v0')]);
+    const o = other();
+    const v1 = prep([draft('item', 'v1'), draft('note', 'a')]);
+    const v2 = prep([draft('item', 'v2')]);
+    assert.ok(v0.ok && o.ok && v1.ok && v2.ok);
+    await storeItems(raw, [v0.item]);
+    const { rag, calls } = counting(raw);
+    const r = await storeItems(rag, [o.item, v1.item, v2.item]);
+    assert.deepEqual(calls, [], 'nothing read, written or deleted');
+    assert.ok(r.rejected);
+    assert.match(r.rejected.message, /duplicate item ids in one batch/);
+    assert.match(r.rejected.message, /user:A\/case-42 \(2×\)/);
+    assert.doesNotMatch(r.rejected.message, /case-43/, 'only the duplicates are named');
+    assert.deepEqual(r.indexed, [false, false, false]);
+    assert.equal(r.records, 0);
+    assert.deepEqual(r.failures, [r.rejected.message, r.rejected.message, r.rejected.message]);
+    const canon = await raw.getById(canonId);
+    assert.ok(canon.ok && canon.value?.text === 'v0', 'the stored version is untouched');
+    for (const id of [note0, recordId(U_A, 'case-43', 'item', 0)]) {
+      const x = await raw.getById(id);
+      assert.ok(x.ok && x.value === null, id);
+    }
+    // The same item id under another owner is a different item: no rejection.
+    const b = prepareItem(
+      { itemId: 'case-42', drafts: [draft('item', 'b', { scope: 'user', userId: 'B' })] },
+      { canonicalKind: 'item', profile: 'shared-items', maxRecordsPerItem: 5 },
+    );
+    assert.ok(b.ok);
+    assert.equal(duplicateItemsError([v2.item, b.item]), undefined);
+  });
+
+  it('note records + replacement in one batch cannot leave an untracked record', async () => {
+    // Unchecked, both versions would read the same (absent) canonical; v1's notes 0 and 1 are
+    // written, v2's canonical lands last and lists only its note 0 — note 1 is listed nowhere,
+    // and `remove` would leave it behind. Rejected, nothing is written.
+    const raw = new InMemoryRag();
+    const v1 = prep([draft('item', 'v1'), draft('note', 'a'), draft('note', 'b')]);
+    const v2 = prep([draft('item', 'v2'), draft('note', 'a2')]);
+    assert.ok(v1.ok && v2.ok);
+    const r = await storeItems(raw, [v1.item, v2.item]);
+    assert.ok(r.rejected);
+    assert.deepEqual(r.indexed, [false, false]);
+    for (const id of [canonId, note0, note1]) {
+      const x = await raw.getById(id);
+      assert.ok(x.ok && x.value === null, id);
+    }
+    // The same versions in two batches: every record stays tracked, remove leaves nothing.
+    assert.deepEqual((await storeItems(raw, [v1.item])).indexed, [true]);
+    assert.deepEqual((await storeItems(raw, [v2.item])).indexed, [true]);
+    const n = await removeItem(raw, canonId);
+    assert.ok(n.ok);
+    for (const id of [canonId, note0, note1]) {
       const x = await raw.getById(id);
       assert.ok(x.ok && x.value === null, id);
     }
@@ -5240,9 +5354,38 @@ async function deleteAll(
   return kept;
 }
 
+/** An item's owner-qualified id, for messages: `user:A/case-42`, `global/tool:read_file`. */
+function itemLabel(it: PreparedItem): string {
+  const key = ownerKeyOf(it.owner);
+  return `${it.owner.scope}${key ? `:${key}` : ''}/${it.itemId}`;
+}
+
+/**
+ * The batch's duplicate owner-qualified item ids as ONE error, or undefined (spec §3.3).
+ * Same owner + item id = same canonical record id. Two versions of one item in one
+ * batch would read the same old canonical and overwrite each other's records — the
+ * records of the version whose canonical lands first could end up listed nowhere.
+ */
+export function duplicateItemsError(items: readonly PreparedItem[]): RagError | undefined {
+  const seen = new Map<string, { label: string; n: number }>();
+  for (const it of items) {
+    const e = seen.get(it.canonical.id);
+    if (e) e.n++;
+    else seen.set(it.canonical.id, { label: itemLabel(it), n: 1 });
+  }
+  const dups = [...seen.values()].filter((e) => e.n > 1);
+  if (dups.length === 0) return undefined;
+  return new RagError(
+    `index: duplicate item ids in one batch, nothing read or written: ${dups
+      .map((d) => `${d.label} (${d.n}×)`)
+      .join(', ')}`,
+  );
+}
+
 /**
  * Write prepared items into ONE store (spec §3.3 order). `indexed[i]` = every
- * record of item i written AND its stale cleanup done (F3).
+ * record of item i written AND its stale cleanup done (F3). A batch with a
+ * duplicate item id is rejected first — nothing read or written (`rejected`).
  */
 export async function storeItems(
   rag: IRag,
@@ -5253,7 +5396,18 @@ export async function storeItems(
   records: number;
   failures: (string | undefined)[];
   batchFailure?: string;
+  rejected?: RagError;
 }> {
+  // Before any read or write (spec §3.3): no partial batch.
+  const rejected = duplicateItemsError(items);
+  if (rejected) {
+    return {
+      indexed: items.map(() => false),
+      records: 0,
+      failures: items.map(() => rejected.message),
+      rejected,
+    };
+  }
   const failures: (string | undefined)[] = items.map(() => undefined);
   const stale: string[][] = items.map(() => []);
   const olds: (RagMetadata | undefined)[] = items.map(() => undefined);
@@ -5420,14 +5574,14 @@ Run:
 npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts
 ```
-Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.) The replacement test runs on `InMemoryRag` and `VectorRag` — the two stores that merge metadata (table above); a `tsc` error naming `UNSET_RESERVED` means `ReservedRecordKey` gained or lost a key: list it there.
+Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). The duplicate tests pin the order: the call log of a rejected batch is empty (no `getById` either), and two versions of one item never reach the store. (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.) The replacement test runs on `InMemoryRag` and `VectorRag` — the two stores that merge metadata (table above); a `tsc` error naming `UNSET_RESERVED` means `ReservedRecordKey` gained or lost a key: list it there.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 npx biome check --write packages/llm-agent-libs/src/collections
 git add packages/llm-agent-libs/src/collections
-git commit -m "feat(libs): record writer — owner-scoped ids, one batch pass, replacement, get, remove
+git commit -m "feat(libs): record writer — owner-scoped ids, one batch pass, replacement, get, remove, duplicate check
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -6860,14 +7014,15 @@ Spec §3.3 (cleanup failures kept for retry, F3 — primary store only), §6.1 (
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`
 
 **Interfaces:**
-- Consumes: `StagedRetrieval` (Tasks 12–14); `prepareItem`, `storeItems` (F3: stale deletes checked, kept for retry), `getItem`, `removeItem` (Task 11); `isIndexNoteSource`, `IndexNote` (Task 3); `StrategyRag`, `hasRetrievalStrategy` (`src/retrieval/strategy-rag.ts`); indexers of Tasks 8–9.
+- Consumes: `StagedRetrieval` (Tasks 12–14); `prepareItem`, `storeItems` (F3: stale deletes checked, kept for retry), `duplicateItemsError` (the batch's duplicate item ids, checked before any write — spec §3.3), `getItem`, `removeItem` (Task 11); `isIndexNoteSource`, `IndexNote` (Task 3); `StrategyRag`, `hasRetrievalStrategy` (`src/retrieval/strategy-rag.ts`); indexers of Tasks 8–9.
 - Produces:
   ```ts
   export interface ComposedToolsProfileOptions { readonly indexer: IItemIndexer<ToolItem>; readonly pool?: ICandidatePool /* absent → ItemPool(), the caller's k (D56) */; readonly collapse: ICollapseRule; readonly rerank?: StagedRetrievalOptions['rerank']; readonly decompose?: StagedRetrievalOptions['decompose']; readonly cut?: IItemCut; readonly telemetry?: StagedRetrievalOptions['telemetry'] }
   export const TOOLS_PROFILE_NAME = 'mcp-tools';
   export class ComposedToolsProfile implements ICollectionProfile<ToolItem> { constructor(composition: ComposedToolsProfileOptions); readonly name: 'mcp-tools'; readonly composition: ComposedToolsProfileOptions }
   // bind({ key, rag }): bound.rag = StrategyRag(target.rag, StagedRetrieval) over ONE source, 'primary'.
-  // index(): non-canonical → canonical → stale deletes (Task 11); IndexReport.notes from an IIndexNoteSource indexer (S1).
+  // index(): duplicate item ids in the batch → { ok: false, RagError naming them }, nothing written; else
+  // non-canonical → canonical → stale deletes (Task 11); IndexReport.notes from an IIndexNoteSource indexer (S1).
   // remove(): the canonical's listed and stale ids, then the canonical (Task 11).
   export function bindToolsProfile(profile: ICollectionProfile<ToolItem>, target: CollectionStore): IBoundCollection<ToolItem>; // idempotent per store
   export function toolsBindingOf(rag: IRag): IBoundCollection<ToolItem> | undefined;         // walks IRagDecorator.inner
@@ -6881,6 +7036,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type IRag,
+  recordId,
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -6970,6 +7126,18 @@ describe('ComposedToolsProfile', () => {
     const n = await bound.remove([{ itemId: 'tool:read_file', owner: G }]);
     assert.ok(n.ok && n.value === 2);
   });
+
+  it('two versions of one tool in one batch → an error naming it; nothing written (spec §3.3)', async () => {
+    const rag = new InMemoryRag();
+    const bound = profile().bind({ key: 'tools', rag });
+    const r = await bound.index([...TOOLS, tool('read_file', 'Read a file (v2)')]);
+    assert.ok(!r.ok);
+    assert.match(r.error.message, /duplicate item ids in one batch.*global\/tool:read_file \(2×\)/);
+    for (const id of ['tool:read_file', 'tool:list_issues']) {
+      const x = await rag.getById(recordId(G, id, 'full', 0));
+      assert.ok(x.ok && x.value === null, id);
+    }
+  });
 });
 
 describe('bindToolsProfile / toolsBindingOf', () => {
@@ -7016,6 +7184,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { StrategyRag } from '../retrieval/strategy-rag.js';
 import {
+  duplicateItemsError,
   getItem,
   type PreparedItem,
   prepareItem,
@@ -7088,6 +7257,9 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
       }
       prepared.push({ at, item: p.item });
     }
+    // Spec §3.3: two versions of one item in one batch → the batch is refused, nothing written.
+    const duplicates = duplicateItemsError(prepared.map((p) => p.item));
+    if (duplicates) return { ok: false, error: duplicates };
     // Write order (spec §3.3): non-canonical → canonical → stale deletes, every
     // delete's Result checked (F3). NOT atomic (D13); readers stay safe through hydration.
     const main = await storeItems(
@@ -7714,6 +7886,7 @@ Spec §8 (all), §3.6; D5, D6, D13–D15; D55, D56 (`pool?` → `ItemPool()`, th
   // refusal reasons: 'reserved-kind', 'too-many-records', 'foreign-user', 'no-partition'
   // sources: 'user' (ragFilter { userId: options.userId }; skipped without userId), 'global' (unfiltered), 'group:<id>' per readable group
   // remove of another user's item → RagError code 'OWNER_MISMATCH'
+  // index: duplicate owner-qualified item ids in the batch → { ok: false, RagError naming them }, no partition written (Task 11 duplicateItemsError)
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -7842,6 +8015,23 @@ describe('SharedItemsProfile', () => {
     const rm = await bound.remove([{ itemId: 'case-42', owner: { scope: 'user', userId: 'A' } }], B);
     assert.ok(!rm.ok && rm.error.code === 'OWNER_MISMATCH');
   });
+
+  it('two versions of one item in one batch → an error naming it; no partition written (spec §3.3)', async () => {
+    const user = new InMemoryRag();
+    const global = new InMemoryRag();
+    const bound = profile().bind({ key: 'shared', user, global });
+    // The global item comes first: a per-store check would already have written it.
+    const r = await bound.index(
+      [{ itemId: 'pub', visibility: { scope: 'global' }, text: 'public' }, userItem('A', 'v1'), userItem('A', 'v2')],
+      A,
+    );
+    assert.ok(!r.ok);
+    assert.match(r.error.message, /duplicate item ids in one batch.*user:A\/case-42 \(2×\)/);
+    const pub = await global.getById(recordId({ scope: 'global' }, 'pub', 'item', 0));
+    assert.ok(pub.ok && pub.value === null, 'the other partition is not written either');
+    const mine = await user.getById(recordId({ scope: 'user', userId: 'A' }, 'case-42', 'item', 0));
+    assert.ok(mine.ok && mine.value === null);
+  });
 });
 ```
 
@@ -7907,6 +8097,7 @@ import {
 import { StrategyRag } from '../retrieval/strategy-rag.js';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import {
+  duplicateItemsError,
   getItem,
   type PreparedItem,
   prepareItem,
@@ -8067,6 +8258,10 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
       list.push({ at, item: p.item });
       byStore.set(store, list);
     }
+    // Spec §3.3: duplicate item ids anywhere in the batch → refused before the FIRST
+    // partition is written (a per-store check would leave earlier partitions written).
+    const duplicates = duplicateItemsError([...byStore.values()].flatMap((l) => l.map((x) => x.item)));
+    if (duplicates) return { ok: false, error: duplicates };
     let indexedItems = 0;
     let records = 0;
     for (const [store, list] of byStore) {
@@ -16675,7 +16870,7 @@ Expected: the first prints nothing outside `CHANGELOG.md` history and the `### M
 - [ ] **Step 10: Commit**
 
 ```bash
-git add README.md docs packages/llm-agent/README.md packages/llm-agent-libs/README.md packages/llm-agent-server-libs/README.md packages/llm-agent-server/README.md packages/typesafe-decision/README.md scripts/rag-eval/README.md examples/docker-sap-ai-core/smart-server.yaml
+git add README.md docs packages/llm-agent/README.md packages/llm-agent-libs/README.md packages/llm-agent-server-libs/README.md packages/llm-agent-server/README.md packages/typesafe-decision/README.md packages/typesafe-decision/package.json scripts/rag-eval/README.md examples/docker-sap-ai-core/smart-server.yaml
 git commit -m "docs: collection profiles across README, architecture, integration, performance, examples, troubleshooting, deployment, security
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -17065,11 +17260,17 @@ Recommendations applied to the earlier open choices (the user may still overrule
 
 ---
 
+## Review finding on 2026-10-05 — duplicate item ids in one batch (spec §17.19)
+
+| # | Decision | Done in |
+|---|---|---|
+| D61 | An `index` batch with a duplicate owner-qualified item id is rejected whole, before any store read or write: `duplicateItemsError` names each duplicate; `storeItems` checks it first (`rejected`, nothing read or written); both bindings check the whole batch before their first `storeItems` and return `{ ok: false, error }` — no partition written. Tests: two versions of one item → rejected, call log empty, store untouched; note records + replacement in one batch → nothing written, and the same versions in two batches leave no untracked record after `remove`; tools binding and shared-items binding (a global item before the duplicate is not written) | Task 11 (Steps 1, 3), Task 15 (Steps 1, 3), Task 17 (Steps 1, 3) |
+
 ## Self-review (done while writing)
 
 - **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename without an alias (§3.8, §13, D30, D58) → 20A; the RAG implementations' move (§11.3, D57) → 1A; no re-exports (§11.4, D59; the pre-existing ones, S12) → 1A, 4B, 4D, 35; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
 - **Placeholders.** None; no gated step remains.
-- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `prepareItem(w, { canonicalKind, profile, maxRecordsPerItem })`, `storeItems(rag, items, options?)` and `removeItem(rag, canonicalId, options?)` (Task 11 — no companion parameters, D50) are what Tasks 15 and 17 use; `ToolsCorpusDeployReport { unchanged, written, deleted }` (Task 19A, D51) is what Tasks 33–34 document; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (`makeDecisionModel` exists nowhere after Task 20A); `DecisionSeams` (Task 22) is what Task 23 threads; Task 23's `withToolsStore(store): IRag` is synchronous and binds the primary only (`bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill)` after 23B) — no companion stores, no `makeRag` for them; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
+- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `prepareItem(w, { canonicalKind, profile, maxRecordsPerItem })`, `storeItems(rag, items, options?)`, `duplicateItemsError(items)` and `removeItem(rag, canonicalId, options?)` (Task 11 — no companion parameters, D50) are what Tasks 15 and 17 use (both bindings run `duplicateItemsError` over the whole batch before their first `storeItems`); `ToolsCorpusDeployReport { unchanged, written, deleted }` (Task 19A, D51) is what Tasks 33–34 document; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (`makeDecisionModel` exists nowhere after Task 20A); `DecisionSeams` (Task 22) is what Task 23 threads; Task 23's `withToolsStore(store): IRag` is synchronous and binds the primary only (`bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill)` after 23B) — no companion stores, no `makeRag` for them; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
 - **Review Focus.** Each of the ten lines has its test in the named task (Tasks 1A, 4A, 4B, 4C, 4D, 4E, 6, 11, 12, 13, 14, 17, 18, 19A, 20A, 21, 23B, 30, 34, 35).
 - **Rework for D50 / D51 (spec §17.15).** Task 10 withdrawn with no heading left, numbers kept stable (as Task 22A earlier); no remaining task imports an intent or companion symbol, every "Tasks 8–10" reference reads "8–9"; each changed task drops the imports, types and parameters it no longer uses (`strict` + `noUnusedLocals`) and keeps its gate; Task 35 Step 4 greps that no intent / companion symbol remains in `packages/` or `scripts/`, that no doc describes them as usable, and that the deploy report has `written` and no `hashes`; the trailing decision tables mark S2, S7, D33, the companion parts of F3 / D47 and the hash-skip of D43 / D48 as superseded.
 - **Rework for D52 (spec §17.16).** `FallbackRag` is fixed first in Task 19A (Steps 0a–0d, its own `fix(llm-agent)` commit, `packages/llm-agent` rebuilt before the libs tests run against `dist/`); the libs commit then adds the resolved-backend check and the three `FallbackRag` / claiming-decorator cases. No other task changes: Task 25 (F1) wraps stores that have the precomputed write (`QdrantRag`, `PgVectorRag`, `HanaVectorRag`) in `FallbackRag`, so its batch path is unaffected; Task 19's binding-through-`FallbackRag` test writes through the binding into the store under the `FallbackRag`, never through `FallbackRag`'s writer.
