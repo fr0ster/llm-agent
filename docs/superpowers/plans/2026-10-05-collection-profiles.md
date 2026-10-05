@@ -35,7 +35,7 @@
 
 ## Review Focus
 
-The seven inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
+The eight inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
 
 1. **Identical `itemId`s across owners** (users A and B both write `case-42` into one `user` store) — two separate items: A's `get` returns A's text and `data`, B's re-index and `remove` leave A untouched, A's retrieval returns only A's item. → Task 17 (`identical item ids across users stay separate`), Task 12 (`collapse keys on the owner-qualified item`).
 2. **Canonical record missing** (deleted item, interrupted replacement) — the hit is dropped, never returned with its own text, does not use up k, and is counted. → Task 12 (`a hit without its canonical record is an orphan`), Task 28 (`orphan counted`).
@@ -44,6 +44,7 @@ The seven inputs the spec implies, most likely to bite a user, each pinned by a 
 5. **A tool definition larger than the token budget** (top item alone over budget) — empty result, never truncated, never replaced by a smaller lower-ranked tool. → Task 6 (`the top item alone over budget gives an empty result`).
 6. **A caller's k below a profile's own cut** (k=2 against `FixedItemsCut(5)`) — at most 2 items, also after decomposition. → Task 6 (`FixedItemsCut is a ceiling`), Task 12 (`a consumer cut whose limit ignores k is still capped`), Task 14, Task 30 (`a caller k below the profile's own default cut`).
 7. **A stale-record delete that fails** during a replacement — the item is `cleanup-failed`, never indexed; the id stays listed and the next `index` / `remove` deletes it. → Task 11 (`replacement → failed stale delete → … → remove leaves nothing`), Task 15, Task 30.
+8. **Two score scales in one result** (`keepStage1Top` pins stage-1 items beside reranked ones; a failed rerank falls back to stage 1) — a pinned item carries its reranked score, never its embedding score, under a probability and a relevance reranker; the `stage1` fallback returns stage-1 ids and scores; `keepStage1Top` + `ScoreFloorCut` and `ScoreFloorCut` + `onFailure: 'stage1'` are refused with their messages. → Task 13 (`a pinned item carries its RERANKED score …`, `a failed rerank under 'stage1' with keepStage1Top …`, the two rejection cases), Task 21 (`compose: score-floor with a reranker needs onFailure: error`).
 
 ## File Structure
 
@@ -1606,14 +1607,27 @@ decision**; the decision comes from a provider package you inject.
 
 - [ ] **Step 2: Rename inside the moved files**
 
-In `probability-reranker.ts`:
-- imports: `type IDecisionModel` → `type IProbabilityDecision`; `../util/assert-positive-integer.js` → `./assert-positive-integer.js`; `./types.js` (`IReranker`) → `type IReranker` from `@mcp-abap-adt/llm-agent`;
-- `DECISION_RERANK_DEFAULT_TASK` → `PROBABILITY_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA` → `PROBABILITY_RERANK_DEFAULT_CRITERIA`, `DecisionRerankerOptions` → `ProbabilityRerankerOptions`, `class DecisionReranker` → `class ProbabilityReranker` (also inside the `assertPositiveInteger('…')` labels), constructor parameter `model: IDecisionModel` → `decision: IProbabilityDecision`;
-- class doc: "Rerank RAG results with a probability decision (spec §5.1): the query as the state, one yes/no question per passage, batched under a token budget. `score` becomes P(relevant). Any failed batch fails the whole call." Behaviour unchanged.
+Every rename below is listed with **each use** in the moved file (line numbers of today's `packages/llm-agent-libs/src/reranker/…` files; read the file, they are all there). A renamed declaration whose uses are not all renamed does not compile — the build in this step catches it.
 
-In `llm-reranker.ts`: `../util/assert-positive-integer.js` → `./assert-positive-integer.js`; `./decision-reranker.js` → `./probability-reranker.js`; `./types.js` → `type IReranker` from `@mcp-abap-adt/llm-agent`. In `noop-reranker.ts`: `./types.js` → `@mcp-abap-adt/llm-agent`.
+In `probability-reranker.ts` (was `decision-reranker.ts`):
+- L1–10, the `@mcp-abap-adt/llm-agent` import: `type IDecisionModel` (L5) → `type IProbabilityDecision`; add `type IReranker` (L12's `import type { IReranker } from './types.js'` is deleted — `types.js` is gone);
+- L11: `'../util/assert-positive-integer.js'` → `'./assert-positive-integer.js'`;
+- `DECISION_RERANK_DEFAULT_TASK` → `PROBABILITY_RERANK_DEFAULT_TASK`: its declaration L14 and its uses L26 (in `PASSAGE_QUESTION`) and L85 (in `rerank`);
+- `DECISION_RERANK_DEFAULT_CRITERIA` → `PROBABILITY_RERANK_DEFAULT_CRITERIA`: its declaration L17 and its uses L27 (in `PASSAGE_QUESTION`) and L86 (in `rerank`);
+- `DecisionRerankerOptions` → `ProbabilityRerankerOptions`: its declaration L41 and its use L66 (the constructor's `options` type);
+- `class DecisionReranker` (L59) → `class ProbabilityReranker`, and the two `assertPositiveInteger('DecisionReranker', …)` labels (L71, L75) → `'ProbabilityReranker'`;
+- the constructor parameter `private readonly model: IDecisionModel` (L65) → `private readonly decision: IProbabilityDecision`, **and its only member access**, L159 in `runBatch`: `await this.model.decide({ state: query, questions }, options)` → `await this.decision.decide({ state: query, questions }, options)`;
+- the class doc (L54–58): "Rerank RAG results with a probability decision (spec §5.1): the query as the state, one yes/no question per passage, batched under a token budget. `score` becomes P(relevant). Any failed batch fails the whole call." Behaviour unchanged.
+- **Not renamed:** `DecisionAnswer`, `DecisionEntry`, `NoulQuestion`, `res.value.answers` (the shared decision vocabulary, spec §17.5), the error text `decision rerank failed: …` / `decision rerank: no yes/no answer …` (asserted by the moved tests).
 
-In the moved tests: imports from `../probability-reranker.js`, `../llm-reranker.js`, `../noop-reranker.js`; `IDecisionModel` → `IProbabilityDecision`; new names. `reranker.test.ts` imported `makeLlm` from libs' testing — the reranker package must not import libs (a cycle, and `scoped-dependencies.test.ts` would demand a peer): create
+In `llm-reranker.ts`: L8 `'../util/assert-positive-integer.js'` → `'./assert-positive-integer.js'`; L9 `'./decision-reranker.js'` → `'./probability-reranker.js'` (it imports `PASSAGE_QUESTION`, whose name is unchanged); L10 `import type { IReranker } from './types.js'` → `type IReranker` added to the L1–7 `@mcp-abap-adt/llm-agent` imports. The file has **no** `this.model`: L181 `model: this.llm.model ?? 'unknown'` reads `ILlm.model` and is not part of the rename — leave it. In `noop-reranker.ts`: L7 `import type { IReranker } from './types.js'` → `type IReranker` added to its L1–6 `@mcp-abap-adt/llm-agent` import.
+
+In the moved tests:
+- `probability-reranker.test.ts` (was `decision-reranker.test.ts`): L6 `type IDecisionModel` → `type IProbabilityDecision`, and its uses L23, L119, L140 (`const model: IDecisionModel` → `: IProbabilityDecision`); L9–13 import `PROBABILITY_RERANK_DEFAULT_CRITERIA`, `PROBABILITY_RERANK_DEFAULT_TASK`, `ProbabilityReranker` from `'../probability-reranker.js'`; `DECISION_RERANK_DEFAULT_CRITERIA` → `PROBABILITY_RERANK_DEFAULT_CRITERIA` at L36 (describe title), L38, L60, L98; `DECISION_RERANK_DEFAULT_TASK` → `PROBABILITY_RERANK_DEFAULT_TASK` at L59, L112; `describe('DecisionReranker'` (L42) → `describe('ProbabilityReranker'`; `new DecisionReranker(` → `new ProbabilityReranker(` at L45, L53, L66, L80, L90, L106, L125, L133, L153. **Stay:** the local variable `model`, the result field `{ model: 'fake', answers }` (that is `DecisionResult.model`, not the renamed parameter) and `/DECISION_AUTH/` (L128, an error code).
+- `probability-reranker-batching.test.ts` (was `decision-reranker-batching.test.ts`): L6 `type IDecisionModel` → `type IProbabilityDecision` and its use L24; L9–13 import `ProbabilityReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `'../probability-reranker.js'`; describe titles L53, L62, L102 `DecisionReranker …` → `ProbabilityReranker …`; `new DecisionReranker(` → `new ProbabilityReranker(` at L68, L87, L97, L113, L120; **the expected message L114** `` new RegExp(`DecisionReranker: ${field} must be a positive integer`) `` → `` `ProbabilityReranker: ${field} must be a positive integer` `` (the constructor labels changed above). **Stays:** `{ model: 'f', answers }` (L47, `DecisionResult.model`).
+- `reranker.test.ts`: L4 `import { makeLlm } from '../../testing/index.js'` → `'./fake-llm.js'` (below); L5–6 `'../llm-reranker.js'`, `'../noop-reranker.js'` resolve unchanged after the move.
+
+`reranker.test.ts` imported `makeLlm` from libs' testing — the reranker package must not import libs (a cycle, and `scoped-dependencies.test.ts` would demand a peer): create
 
 ```ts
 // packages/llm-agent-reranker/src/__tests__/fake-llm.ts
@@ -1652,6 +1666,15 @@ export {
   TOOL_QUESTION,
 } from './probability-reranker.js';
 ```
+
+Build the new package on its own and run the moved tests — the batching tests included — **before** libs is touched, so a missed rename (e.g. a leftover `this.model.decide`) fails here, in the package that owns it:
+
+```bash
+npx tsc -b packages/llm-agent-reranker
+node --import tsx/esm --test packages/llm-agent-reranker/src/__tests__/probability-reranker-batching.test.ts packages/llm-agent-reranker/src/__tests__/probability-reranker.test.ts packages/llm-agent-reranker/src/__tests__/reranker.test.ts
+grep -rn "this\.model\|IDecisionModel\|DecisionReranker\|DECISION_RERANK\|decision-reranker\|\.\./util/\|\./types\.js\|testing/index" packages/llm-agent-reranker/src
+```
+Expected: the build is clean (a renamed parameter with a leftover `this.model` is `TS2339: Property 'model' does not exist`); every moved test PASSES under the new names, the option-validation cases with the `ProbabilityReranker:` message; the grep prints nothing.
 
 - [ ] **Step 3: libs depends on the package and keeps the old names (deprecated)**
 
@@ -5509,21 +5532,23 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 13: `StagedRetrieval` — reranker on provider text, output check, failure policy (libs)
 
-Spec §4.6 (reranker text), §4.7, §4.8, §9.1 (session step), §9.3.
+Spec §4.6 (reranker text), §4.7 (incl. F5: pinned items carry reranked scores; `keepStage1Top` / the `stage1` fallback never with `ScoreFloorCut`), §4.8, §9.1 (session step), §9.3.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/rerank-check.ts`
-- Modify: `packages/llm-agent-libs/src/collections/staged-retrieval.ts` (replace `rank`, add `itemText`)
+- Modify: `packages/llm-agent-libs/src/collections/staged-retrieval.ts` (replace `rank`, add `itemText`, the two `ScoreFloorCut` rejections in the constructor)
 - Create: `packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts`
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`
 
 **Interfaces:**
-- Consumes: Task 12 (`Unit`, `RunContext`, `canonicalOf`).
+- Consumes: Task 12 (`Unit`, `RunContext`, `canonicalOf`); `ScoreFloorCut` (Task 6); for the tests `ProbabilityReranker`, `RelevanceReranker` (`@mcp-abap-adt/llm-agent-reranker`, Tasks 4B–4C).
 - Produces:
   ```ts
   export function checkRerankOutput(candidates: readonly RagResult[], out: readonly RagResult[]): string | undefined; // undefined = valid
   // StagedRetrieval: reranker failure → session step 'retrieval_rerank_error' { store, strategy, code, message };
-  //   onFailure 'stage1' → stage-1 order (stats.rerankOutcome 'fallback'); 'error' → RagError code 'RERANK_ERROR' (stats 'error').
+  //   onFailure 'stage1' → stage-1 order AND stage-1 scores (stats.rerankOutcome 'fallback'); 'error' → RagError code 'RERANK_ERROR' (stats 'error').
+  // keepStage1Top n > 0 → the stage-1 top-n first, each with its RERANKED score; the rest by reranked score.
+  // constructor throws: keepStage1Top > 0 with ScoreFloorCut; ScoreFloorCut with rerank.onFailure 'stage1' (spec §4.7, F5).
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -5534,24 +5559,34 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type CallOptions,
+  type IItemCut,
   InMemoryRag,
+  type IProbabilityDecision,
   type IRag,
+  type IRelevanceDecision,
   type IReranker,
   RagError,
   type RagResult,
   type RetrievalSource,
   recordId,
 } from '@mcp-abap-adt/llm-agent';
+import { ProbabilityReranker, RelevanceReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import {
   checkRerankOutput,
   ItemPool,
   MaxScoreCollapse,
+  ScoreFloorCut,
   StagedRetrieval,
   type StagedRetrievalOptions,
 } from '../index.js';
 import { G, ids, matchesOnly, put, q } from './staged-retrieval-helpers.js';
 
-function staged(rag: IRag, rerank: StagedRetrievalOptions['rerank'], extra: (o?: CallOptions) => RetrievalSource[] = () => []) {
+function staged(
+  rag: IRag,
+  rerank: StagedRetrievalOptions['rerank'],
+  extra: (o?: CallOptions) => RetrievalSource[] = () => [],
+  cut?: IItemCut,
+) {
   return new StagedRetrieval({
     name: 'test',
     storeKey: 'tools',
@@ -5561,8 +5596,41 @@ function staged(rag: IRag, rerank: StagedRetrievalOptions['rerank'], extra: (o?:
     sources: { sources: async (options) => [{ name: 'primary', rag, role: 'items', options }, ...extra(options)] },
     collapse: new MaxScoreCollapse(),
     rerank,
+    ...(cut ? { cut } : {}),
   });
 }
+
+/** A probability decision answering P(relevant) per passage text. */
+function probabilityDecision(p: ReadonlyMap<string, number>): IProbabilityDecision {
+  return {
+    decide: async (req) => ({
+      ok: true,
+      value: {
+        model: 'fake',
+        answers: Object.fromEntries(
+          Object.entries(req.questions).map(([k, qq]) => [
+            k,
+            { type: 'noul' as const, probability: p.get(String((qq as { instructions: { passage: string } }).instructions.passage)) ?? 0 },
+          ]),
+        ),
+      },
+    }),
+  };
+}
+
+/** A relevance decision answering a score per passage text — not a probability. */
+function relevanceDecision(s: ReadonlyMap<string, number>): IRelevanceDecision {
+  return {
+    score: async ({ passages }) => ({
+      ok: true,
+      value: { model: 'fake', scores: passages.map((text, index) => ({ index, score: s.get(text) ?? 0 })) },
+    }),
+  };
+}
+
+/** Reranked scores by stage-1 rank: the stage-1 top gets the LOWEST, so a pinned item is visible. */
+const RERANKED = { probability: [0.05, 0.9, 0.8], relevance: [-3.5, 9.25, 4.5] } as const;
+const floor = () => new ScoreFloorCut({ minItems: 1, maxItems: 3, minScore: 0.5 });
 
 /** Records what it was asked and answers via `answer`. */
 function spy(answer: (c: RagResult[]) => RagResult[] | Error | 'throw') {
@@ -5651,6 +5719,65 @@ describe('StagedRetrieval — reranker', () => {
     assert.equal(r.value.length, 2);
     assert.equal(r.value[0].metadata.id, stage1.value[0].metadata.id);
   });
+
+  for (const kind of ['probability', 'relevance'] as const) {
+    it(`keepStage1Top: a pinned item carries its RERANKED score, never the embedding score (${kind})`, async () => {
+      const rag = await fixture();
+      const stage1 = await staged(rag, undefined).retrieve(rag, q('needle'), 3);
+      assert.ok(stage1.ok && stage1.value.length === 3);
+      const given = new Map(stage1.value.map((x, i) => [x.text, RERANKED[kind][i]] as const));
+      const reranker: IReranker =
+        kind === 'probability'
+          ? new ProbabilityReranker(probabilityDecision(given))
+          : new RelevanceReranker(relevanceDecision(given));
+      const r = await staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }).retrieve(rag, q('needle'), 3);
+      assert.ok(r.ok && r.value.length === 3);
+      assert.equal(r.value[0].metadata.id, stage1.value[0].metadata.id, 'pinned first, though the reranker put it last');
+      for (const x of r.value) assert.equal(x.score, given.get(x.text), `${String(x.metadata.id)} carries its reranked score`);
+      assert.notEqual(r.value[0].score, stage1.value[0].score, 'never the stage-1 (embedding) score');
+      assert.deepEqual(
+        r.value.slice(1).map((x) => x.score),
+        [...RERANKED[kind].slice(1)].sort((a, b) => b - a),
+        'the rest by reranked score',
+      );
+    });
+  }
+
+  it("a failed rerank under 'stage1' with keepStage1Top returns the stage-1 result — its ids AND its stage-1 scores", async () => {
+    const rag = await fixture();
+    const stage1 = await staged(rag, undefined).retrieve(rag, q('needle'), 3);
+    const { reranker } = spy(() => new Error('bad'));
+    const r = await staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }).retrieve(rag, q('needle'), 3);
+    assert.ok(stage1.ok && r.ok);
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.id, x.score]),
+      stage1.value.map((x) => [x.metadata.id, x.score]),
+    );
+  });
+
+  it('keepStage1Top with ScoreFloorCut is rejected at construction (keepStage1Top is unmeasured, D7)', async () => {
+    const rag = await fixture();
+    const { reranker } = spy(reversed);
+    for (const onFailure of ['stage1', 'error'] as const) {
+      assert.throws(
+        () => staged(rag, { reranker, onFailure, keepStage1Top: 1 }, undefined, floor()),
+        /^Error: StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured \(D7\)/,
+      );
+    }
+    // keepStage1Top with a rank-order cut stays allowed
+    assert.doesNotThrow(() => staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }));
+  });
+
+  it("ScoreFloorCut with a reranker needs onFailure 'error' — a stage1 fallback would cut stage-1 scores", async () => {
+    const rag = await fixture();
+    const { reranker } = spy(reversed);
+    assert.throws(
+      () => staged(rag, { reranker, onFailure: 'stage1' }, undefined, floor()),
+      /^Error: StagedRetrieval: ScoreFloorCut with a reranker needs rerank\.onFailure 'error'/,
+    );
+    assert.doesNotThrow(() => staged(rag, { reranker, onFailure: 'error' }, undefined, floor()));
+    assert.doesNotThrow(() => staged(rag, undefined, undefined, floor()), 'without a reranker the floor cuts stage-1 scores, calibrated on them');
+  });
 });
 
 describe('checkRerankOutput', () => {
@@ -5670,8 +5797,12 @@ describe('checkRerankOutput', () => {
 
 - [ ] **Step 2: Run to see it fail**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts`
-Expected: FAIL — `checkRerankOutput` not exported.
+Run:
+```bash
+npx tsc -b packages/llm-agent-reranker
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts
+```
+Expected: FAIL — `checkRerankOutput` not exported. (Once it is, the pinned-score cases fail on the pinned item's stage-1 score and the two rejection cases on "Missing expected exception" until Step 3 is in.)
 
 - [ ] **Step 3: Implement**
 
@@ -5706,7 +5837,28 @@ export function checkRerankOutput(
 }
 ```
 
-In `staged-retrieval.ts`: add `RagError` as a value import (change `type RagError` to `RagError` in the import list), import `checkRerankOutput` from `./rerank-check.js`, add `const MAX_THROWN_MESSAGE = 500;` at module level, and replace the `rank` method with:
+In `staged-retrieval.ts`: add `RagError` as a value import (change `type RagError` to `RagError` in the import list), import `checkRerankOutput` from `./rerank-check.js`, change `import { TopItemsCut } from './cuts.js'` to `import { ScoreFloorCut, TopItemsCut } from './cuts.js'`, add `const MAX_THROWN_MESSAGE = 500;` at module level, append to the end of the constructor (after `this.cut = …`, so a consumer's `cut` is the one checked):
+
+```ts
+    // Spec §4.7 (F5): pinned items are unmeasured (D7), and a 'stage1' fallback
+    // returns stage-1 scores — a threshold calibrated on reranked scores must
+    // see neither.
+    const rr = options.rerank;
+    if (rr && this.cut instanceof ScoreFloorCut) {
+      if ((rr.keepStage1Top ?? 0) > 0) {
+        throw new Error(
+          'StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured (D7); a threshold over a pinned head would let an unmeasured order decide what a calibrated threshold keeps',
+        );
+      }
+      if (rr.onFailure !== 'error') {
+        throw new Error(
+          "StagedRetrieval: ScoreFloorCut with a reranker needs rerank.onFailure 'error' — a 'stage1' fallback returns stage-1 scores, which a threshold calibrated on reranker scores must not cut",
+        );
+      }
+    }
+```
+
+and replace the `rank` method with:
 
 ```ts
   /**
@@ -5793,7 +5945,15 @@ In `staged-retrieval.ts`: add `RagError` as a value import (change `type RagErro
     }
     const keepTop = rr.keepStage1Top ?? 0;
     if (keepTop === 0) return { ok: true, value: reranked };
-    const head = live.slice(0, keepTop);
+    // Pinned items keep their stage-1 PLACE but carry their RERANKED score
+    // (spec §4.7, F5): one scale across the result. The output check above
+    // guarantees every live unit has a reranked entry.
+    const rerankedByKey = new Map(reranked.map((u) => [u.key, u] as const));
+    const head: Unit[] = [];
+    for (const u of live.slice(0, keepTop)) {
+      const scored = rerankedByKey.get(u.key);
+      if (scored) head.push(scored);
+    }
     const headKeys = new Set(head.map((u) => u.key));
     return {
       ok: true,
@@ -5810,7 +5970,7 @@ export { checkRerankOutput } from './rerank-check.js';
 - [ ] **Step 4: Run**
 
 Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts`
-Expected: PASS.
+Expected: PASS — incl. the pinned-score cases under both rerankers, the stage1-fallback case and both rejections.
 
 - [ ] **Step 5: Commit**
 
@@ -9156,6 +9316,14 @@ describe('rag.profiles validation — startup errors, never a silent drop', () =
     refused(`tools: { compose: { ${base}, cut: { token-budget: { budgetTokens: 0 } } } }`, /budgetTokens: required/);
     refused(`tools: { compose: { ${base}, reranker: llm, llm: nope } }`, /"nope" is not a key of the llm: map/);
   });
+  it('compose: score-floor with a reranker needs onFailure: error (a stage1 fallback returns stage-1 scores, spec §4.7 F5)', () => {
+    const base = 'indexer: { faceted: [] }, pool: { items: 3 }';
+    const floor = 'cut: { score-floor: { minItems: 1, maxItems: 3, minScore: 0.5 } }';
+    refused(`tools: { compose: { ${base}, reranker: decision, ${floor} } }`, /compose\.cut: score-floor with a reranker needs onFailure: error/, COHERE);
+    refused(`tools: { compose: { ${base}, reranker: decision, onFailure: stage1, ${floor} } }`, /compose\.cut: score-floor with a reranker needs onFailure: error/, COHERE);
+    assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, reranker: decision, onFailure: error, ${floor} } }`, COHERE));
+    assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, ${floor} } }`));
+  });
   it('a worker config declaring rag.profiles is refused (server-wide)', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'profiles-worker-'));
     writeFileSync(path.join(dir, 'w.yaml'), `${RAG}  profiles:\n    tools: { variant: faceted }\n`);
@@ -9474,6 +9642,14 @@ function checkCompose(label: string, c: unknown, ctx: DecisionCtx, issues: strin
   if (c.onFailure != null) {
     if (c.onFailure !== 'stage1' && c.onFailure !== 'error') issues.push(`${label}.onFailure: must be stage1 | error`);
     if (rr === 'none') issues.push(`${label}.onFailure: only applies with a reranker`);
+  }
+  // Spec §4.7 (F5): a 'stage1' fallback (the default) returns stage-1 scores; a
+  // threshold calibrated on reranked scores must not cut them. StagedRetrieval's
+  // constructor refuses the same; this names the YAML key first.
+  if (rr !== 'none' && isMap(c.cut) && 'score-floor' in c.cut && (c.onFailure ?? 'stage1') !== 'error') {
+    issues.push(
+      `${label}.cut: score-floor with a reranker needs onFailure: error — a stage1 fallback returns stage-1 scores, which a threshold calibrated on reranker scores must not cut`,
+    );
   }
   if (c.decomposer != null && !name(c.decomposer)) issues.push(`${label}.decomposer: must be none or a registered name`);
   checkCut(`${label}.cut`, c.cut, issues);
@@ -9934,7 +10110,19 @@ export async function decisionRerankerFor(
 }
 ```
 
-In `resolve-retrieval.ts` (the 30.1.0 `rag.retrieval` resolver): `ResolveRetrievalInput` extends `DecisionSeams` (drops its own `decisionCfg` / `makeProbabilityDecision` fields — same names, same types as after Task 20A, so `smart-server.ts` call sites compile; the missing-seam message stays `BuildAgentDeps.makeProbabilityDecision is required: …`, so the Task 20A test keeps passing); replace the `decisionModel` / `decisionReranker` closure with `const decisions = decisionBuilders(input);` and a cache keyed by `JSON.stringify([preset.criteria, task])` over `decisionRerankerFor(decisions, { task, criteria: preset.criteria, explicit: cfg.question !== undefined || cfg.task !== undefined })`; import `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `@mcp-abap-adt/llm-agent-reranker` (libs keeps `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`). Under `typesafe` nothing changes (golden: the existing `retrieval-*` tests pass untouched). Add to the retrieval tests:
+In `resolve-retrieval.ts` (the 30.1.0 `rag.retrieval` resolver): `ResolveRetrievalInput` extends `DecisionSeams` (drops its own `decisionCfg` / `makeProbabilityDecision` fields — same names, same types as after Task 20A, so `smart-server.ts` call sites compile; the missing-seam message stays `BuildAgentDeps.makeProbabilityDecision is required: …`, so the Task 20A test keeps passing); replace the `decisionModel` / `decisionReranker` closure with `const decisions = decisionBuilders(input);` and a cache keyed by `JSON.stringify([preset.criteria, task])` over `decisionRerankerFor(decisions, { task, criteria: preset.criteria, explicit: cfg.question !== undefined || cfg.task !== undefined })`; import `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `@mcp-abap-adt/llm-agent-reranker` (libs keeps `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`). Under `typesafe` nothing changes (golden: the existing `retrieval-*` tests pass untouched).
+
+Everything the replaced closure used goes with it — `noUnusedLocals` (`tsconfig.base.json`) fails the build on any leftover. In today's `resolve-retrieval.ts` (read it):
+- L1–6 `@mcp-abap-adt/llm-agent` type import: drop `IDecisionModel` (L2; its only use was the closure's `let decisionModel` at L50); keep `ILlm`, `IReranker`, `IRetrievalStrategy`;
+- L7–16 `@mcp-abap-adt/llm-agent-libs` import: keep only `EmbeddingRetrieval`, `RerankAllRetrieval`, `RerankedRetrieval`; drop `DecisionReranker` (L8) and `wrapDecisionModel` (L15) — `decisionRerankerFor` / `decisionBuilders` build and wrap now; `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` move to the `@mcp-abap-adt/llm-agent-reranker` import;
+- L22–31 `ResolveRetrievalInput`: drop its own `decisionCfg` and `makeProbabilityDecision` members (both now come from `DecisionSeams`);
+- L33–34 `const MISSING_SEAM`: delete — `decision-seams.ts`'s `missing('makeProbabilityDecision')` produces `BuildAgentDeps.makeProbabilityDecision is required: …`, which the Task 20A test (`/BuildAgentDeps\.makeProbabilityDecision is required/`) matches;
+- L50–76 `let decisionModel`, `const decisionRerankers`, `const decisionReranker = async (…)`: replaced as above; the one call site L89 `reranker = await decisionReranker(preset, task);` becomes the cached `decisionRerankerFor(…)` call (with `explicit` from `cfg`);
+- the function doc L36–42 ("The decision model is built ONCE and shared; one `DecisionReranker` per distinct question wording") → "The decision of the `decision:` section's kind is built ONCE and shared (`decisionBuilders`); one reranker per distinct question wording (`decisionRerankerFor`)."
+
+Check: `git grep -n "IDecisionModel\|DecisionReranker\|wrapDecisionModel\|MISSING_SEAM\|decisionModel\b" packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` → empty.
+
+Add to the retrieval tests:
 
 ```ts
 it('reranker: decision under a relevance provider builds a RelevanceReranker over makeRelevanceDecision', async () => {
@@ -10749,7 +10937,7 @@ In `make-probability-decision.ts` (renamed and typed `IProbabilityDecision` in T
         );
 ```
 
-In `composition/index.ts`: add `makeRelevanceDecision: NonNullable<BuildAgentDeps['makeRelevanceDecision']>;` to the deps type and `makeRelevanceDecision: createMakeRelevanceDecision(lookup),` beside `makeProbabilityDecision: createMakeProbabilityDecision(lookup),`; in `model-resolver.test.ts`, add `'makeRelevanceDecision'` to the seams list (six).
+In `composition/index.ts`: add `import { createMakeRelevanceDecision } from './make-relevance-decision.js';` beside the `./make-probability-decision.js` import, `makeRelevanceDecision: NonNullable<BuildAgentDeps['makeRelevanceDecision']>;` to the deps type and `makeRelevanceDecision: createMakeRelevanceDecision(lookup),` beside `makeProbabilityDecision: createMakeProbabilityDecision(lookup),`; in `model-resolver.test.ts`, add `'makeRelevanceDecision'` to the seams list (six).
 
 - [ ] **Step 4: Run**
 
@@ -12866,7 +13054,8 @@ decisions.** Every reranker is in `@mcp-abap-adt/llm-agent-reranker`; the decisi
 | `ProbabilityReranker` (was `DecisionReranker`) | `IProbabilityDecision` (was `IDecisionModel`) | `TypeSafeDecisionModel` (`@mcp-abap-adt/typesafe-decision`, Jev) | P(relevant) in [0, 1] |
 | `RelevanceReranker` | `IRelevanceDecision` | `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`, Cohere; one `/rerank` call per batch) | relevance — **not a probability**; comparable for the same query and model, so batches merge into one order |
 
-- A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no default uses one.
+- A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no default uses one. Under a reranker it needs `onFailure: 'error'` (a `'stage1'` fallback returns stage-1 scores) and never goes with `keepStage1Top` — both refused at construction.
+- `keepStage1Top: n` pins the stage-1 top-n first; each pinned item carries its **reranked** score, the rest follow by reranked score. Unmeasured — default 0.
 - The old names still import from `@mcp-abap-adt/llm-agent-libs` / `@mcp-abap-adt/llm-agent` as deprecated aliases until the next major.
 
 Any reranker composes with any indexing. Under a profile every reranker result is checked: wrong count,
@@ -13002,7 +13191,7 @@ rag:
   stores in code (`profile.bind({ key, rag })` + `builder.withRetrievalStrategy(key, bound.retrieval)`).
 - A named variant needs a decision of its kind: `faceted-cohere` ↔ relevance (`sap-aicore`);
   `faceted-jev`, `small-set-jev` ↔ probability (`typesafe`). `compose` with `reranker: decision` takes either.
-- A `score-floor` cut over relevance scores is your calibration for that provider — no default uses one.
+- A `score-floor` cut over relevance scores is your calibration for that provider — no default uses one. With a reranker it needs `onFailure: error`: a `stage1` fallback returns stage-1 scores, which that threshold must not cut (refused at startup).
 ````
 
 And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facetedJev({ probabilityDecision }))`) next to the existing builder example. In the existing decision-model example (~line 335): `wrapDecisionModel` → `wrapProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker` imported from `@mcp-abap-adt/llm-agent-reranker`, with a one-line note that the old names still work as deprecated aliases.
@@ -13278,4 +13467,4 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 - **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 / F3 reserved keys in 2–3); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
 - **Placeholders.** None; no gated step remains.
 - **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15) are what Tasks 19, 20, 23 use; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `CompanionIds` / `listedCompanions` and `storeItems(rag, items, options, companions)` (Task 11) are what Tasks 15 and 17 use; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (the alias `makeDecisionModel` is read only by Task 20A's `probabilityDecisionSeam`); `DecisionSeams` (Task 22) is what Task 23 threads; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
-- **Review Focus.** Each of the seven lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 30).
+- **Review Focus.** Each of the eight lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 21, 30).
