@@ -27,7 +27,8 @@
 > - a decorator exposes an optional writer capability only when its backend has it (`FallbackRag`:
 >   `upsertPrecomputedRaw` and `clearAll` only when its primary has them), and the corpus load checks
 >   every capability it needs on the resolved backend too: review findings of 2026-10-05,
->   dispatched by the user (D52, §10.4, §17.16). The layer map (§11.1) assigns every part of this design to one
+>   dispatched by the user (D52, §10.4, §17.16); `FallbackRag` has no writer at all when its primary
+>   has none: decided by the user on 2026-10-05 (D62, §17.20). The layer map (§11.1) assigns every part of this design to one
 >   layer; its audit lists suspected misplacements for the user's decision (§11.2);
 > - the RAG implementations' home is `@mcp-abap-adt/llm-agent-rag`; the server loads a ready corpus
 >   at start (no deploy step, no service record); shipped compositions carry no tuned numbers:
@@ -352,7 +353,8 @@
   `tools-rag-handle` and `skill-select`; the orphan `IToolIndexingStrategy` is deleted;
   `FallbackRag` offers an optional writer capability (a precomputed write, `clearAll`) only when
   its primary has it — it no longer re-embeds silently behind a precomputed call nor reports a
-  clear it did not do (§10.4, D52).
+  clear it did not do (§10.4, D52); and no writer at all when its primary has none — no reported
+  success for writes the primary never receives (§10.4, D62).
 - **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag`** (D53, D57, §11.3). `VectorRag`,
   `InMemoryRag`, `FallbackRag` and the other RAG implementations — their files — move there in
   this PR; `@mcp-abap-adt/llm-agent` stops exporting them (no aliases, no subpath). Nothing left in
@@ -1085,7 +1087,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `ITextLogger` removed from `@mcp-abap-adt/llm-agent` (§11.4) — **breaking** (name and import path; migration line 70) | the user's decision of 2026-10-05 (§17.18): it is `@mcp-abap-adt/interfaces-utils`' `ILogger` under a second name, kept until a major by its own comment; this is the major. Same type: `AnyLogger`, `isTextLogger`, `normaliseLogger` keep their names, signatures (structurally) and behaviour | `@mcp-abap-adt/llm-agent` (`src/logger/text-logger.ts` deleted, `src/index.ts`, `src/logger/normalise-logger.ts`) |
 | `SmartServerConfig.toolsFillFactories?` (D42) | YAML `rag.profiles.tools.fill` names a source (§6.2); a consumer's own source is registered by name, like `toolsVariantFactories` | `llm-agent-server-libs` (`smart-server.ts` config type, `resolve-collection-profiles.ts`) |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
-| `FallbackRag.writer()` — every optional member of `IRagBackendWriter` (`upsertPrecomputedRaw`, `clearAll`; `upsertManyPrecomputedRaw` stays absent) present **only when the primary's writer has it** (D52, §10.4) — **no contract change**, a behaviour change of one implementation | review findings 2026-10-05: the writer always exposed `upsertPrecomputedRaw` and, when the primary had none, called the primary's `upsertRaw` — the given vector dropped, the text re-embedded silently; it always exposed `clearAll` too and, when the primary had none, returned success without clearing. A caller that checks a capability (the `corpus` source, §6.5; the batch paths of `vectorizeMcpTools` and the record writer; `SimpleRagRegistry`'s collection delete; the edit strategies' `clear`) was told it exists when it does not. Both members are already optional in `IRagBackendWriter`, so every caller already handles their absence | `@mcp-abap-adt/llm-agent-rag` (`src/fallback-rag.ts`), where `FallbackRag`'s file lives after the move (D53, D57, §11.3) |
+| `FallbackRag.writer()` — every optional member of `IRagBackendWriter` (`upsertPrecomputedRaw`, `clearAll`; `upsertManyPrecomputedRaw` stays absent) present **only when the primary's writer has it** (D52, §10.4); `writer()` itself `undefined` when the primary has no writer, whatever the fallback has (D62, §10.4) — **no contract change**, a behaviour change of one implementation | review findings 2026-10-05: the writer always exposed `upsertPrecomputedRaw` and, when the primary had none, called the primary's `upsertRaw` — the given vector dropped, the text re-embedded silently; it always exposed `clearAll` too and, when the primary had none, returned success without clearing. A caller that checks a capability (the `corpus` source, §6.5; the batch paths of `vectorizeMcpTools` and the record writer; `SimpleRagRegistry`'s collection delete; the edit strategies' `clear`) was told it exists when it does not. And over a primary with no writer it still returned a writer whose `upsertRaw` / `deleteByIdRaw` reported success for the primary, which received nothing (D62). Both members are already optional in `IRagBackendWriter`, and `writer` is optional in `IRag` and may return `undefined`, so every caller already handles their absence | `@mcp-abap-adt/llm-agent-rag` (`src/fallback-rag.ts`), where `FallbackRag`'s file lives after the move (D53, D57, §11.3) |
 
 ### 3.9 Decision contracts — probability and relevance
 
@@ -3090,7 +3092,7 @@ new SharedItemsProfile({
   `docs/INTEGRATION.md:1516-1550`, `docs/PERFORMANCE.md:335-355`,
   `docs/ARCHITECTURE.md:584, 608-611`.
 
-### 10.4 `FallbackRag` — no optional writer capability its primary lacks (D52)
+### 10.4 `FallbackRag` — no optional writer capability its primary lacks (D52); no writer without a primary writer (D62)
 
 *File:* `packages/llm-agent-rag/src/fallback-rag.ts` — moved from
 `packages/llm-agent/src/resilience/fallback-rag.ts` in this PR (D53, D57, §11.3).
@@ -3132,9 +3134,52 @@ new SharedItemsProfile({
     own way; the shipped fallback, `InMemoryRag`, calls no embedder.
   - Not added: `upsertManyPrecomputedRaw` (`FallbackRag` never exposed it; leaving it out is
     allowed by the rule; callers fall back to per-record writes).
-  - Out of this fix (reported, not decided): with no primary writer and a fallback writer,
-    `writer()` still returns a writer whose `upsertRaw` / `deleteByIdRaw` report success for the
-    primary; the rule above covers the optional members only.
+- **No primary writer → no writer** (D62, decided by the user on 2026-10-05; it was reported here
+  as "not decided" after D52, whose rule covers the optional members only). `writer()` returns
+  `undefined` when the primary has no writer — `if (!pw) return undefined;` — **even when the
+  fallback has one**. Before, it returned a writer whose `upsertRaw` / `deleteByIdRaw` /
+  `clearAll` / `upsertPrecomputedRaw` returned success for the primary (`ok: true`, nothing
+  written) and wrote only to the fallback: a write the authoritative store never received was
+  reported as done. The fallback serves only while the breaker is open, so records that exist only
+  in the fallback would appear then and vanish when it closes. A read-only primary is read-only
+  through its `FallbackRag` too.
+  - **The concrete case:** the builder's circuit-breaker loop (`builder.ts`, the `FallbackRag`
+    wrap over every `ragRegistry.list()` entry, ~L1045-1063) wraps every registered store in
+    `new FallbackRag(store, new InMemoryRag(), embedderBreaker)` — the fallback always has a
+    writer. The `relevant-skills:<group>` collections (`registerSkillSources` →
+    `skillsRagSource`, whose `writer()` returns `undefined`) were therefore given a writer by
+    the wrap; now they have none, as unwrapped.
+  - **Every caller of `writer()` in `packages/` checked** (`git grep` for `.writer?.()` /
+    `.writer()` outside tests, 2026-10-05) — each already handles `undefined`; the effect over a
+    writerless primary:
+    - `SimpleRagRegistry` collection delete (`simple-rag-registry.ts`, `writer?.clearAll`): no
+      change — it is reached only for a provider-backed collection (`providerName` set), and since
+      D52 a `FallbackRag` over a writerless primary already had no `clearAll`
+      (`DeleteUnsupportedError`). The skills collections carry no provider: their delete returns
+      before it.
+    - RAG edit strategies (`DirectEditStrategy`, `SessionScopedEditStrategy`) and the RAG
+      collection tools: no change — they write through the registry entry's **editor**, built by
+      the provider (`AbstractRagProvider`, `base-provider.ts`) from the unwrapped store's writer
+      before the wrap; the wrap keeps the editor (`replaceRag`). The skills collections register
+      no editor.
+    - `vectorizeMcpTools` (30.1.0 path) and `vectorizeSkills` (`vectorize-mcp-tools.ts`, the tools
+      store): a writerless tools store under the wrap is now **skipped** — status unknown
+      (`undefined`), as for an unwrapped writerless store — instead of filling only the in-memory
+      fallback and reporting a complete catalog. The bound path is unaffected: it fills through
+      `bound.index` whether or not `bound.rag.writer()` exists (§7.6).
+    - `summarizeAndStore` (`history-upsert.ts`, the history store): a writerless history store
+      under the wrap now logs `history_upsert_failed` ("RAG writer not available"), as unwrapped,
+      instead of reporting the summary stored when only the fallback held it.
+    - `StrategyRag.writer()` passes the inner writer through: a `StrategyRag` over such a
+      `FallbackRag` has no writer either.
+    - `ToolsCorpusLoader` (§6.5, new in this PR): refuses the store, as for any store without a
+      precomputed write — one check earlier (no writer).
+    - `rag-filter-conformance` (testing kit): throws "exposes no writer()" for such a store under
+      test — it never targets a `FallbackRag` over a writerless primary in the repo.
+    - No caller writes the `relevant-skills:<group>` collections through `writer()`: for them the
+      change is visible only to a consumer that calls `registry.get(...).writer()` itself.
+  - **With a primary writer, nothing changes:** a missing fallback writer still only drops the
+    mirror (`fw` absent → the primary alone is written).
 - **Other decorators in the repository** (checked against the rule, `git grep` for `IRagDecorator`,
   `writer()` and `IRagBackendWriter` in `packages/`): `StrategyRag` (libs) returns its inner
   store's writer unchanged — it follows the rule by construction; `ActiveFilteringRag`,
@@ -3155,7 +3200,8 @@ new SharedItemsProfile({
   `FallbackRag` over a precomputed-capable writer without `clearAll` → rejected, zero writes, no
   embedder call; a decorator that claims `clearAll` over a precomputed-capable backend without it →
   rejected by the resolved-backend check, zero writes, no embedder call; `FallbackRag` unit tests
-  for each writer shape (no precomputed write, no `clearAll`, both, no primary writer).
+  for each writer shape (no precomputed write, no `clearAll`, both); and no primary writer with a
+  fallback writer → `writer()` is `undefined` (D62).
 
 ---
 
@@ -3608,6 +3654,16 @@ again, written either way.
   longer re-embeds silently, and its `clearAll` no longer reports a clear of a primary that cannot
   clear. **Migration note:** none — both members are optional in `IRagBackendWriter`, so a caller
   already handles their absence.
+- **Behaviour note — `FallbackRag` has no writer when its primary has none** (D62, §10.4). Before,
+  over a writerless primary (e.g. the `relevant-skills:<group>` collections, which the builder's
+  circuit breaker wraps with an `InMemoryRag` fallback) `writer()` returned a writer that reported
+  success for the primary and wrote only the fallback. Now `writer()` is `undefined` there, even when
+  the fallback has a writer: a writerless tools store is skipped by the 30.1.0 tools / skills
+  vectorization (status unknown) instead of reported complete, and a writerless history store logs
+  `history_upsert_failed` instead of reporting the summary stored. With a primary writer nothing
+  changes. **Changelog** ("Fixed"): `FallbackRag` no longer reports success for writes its primary
+  never receives — it has no writer when its primary has none. **Migration note:** none — `writer`
+  is optional in `IRag` and may return `undefined`, so a caller already handles it.
 - **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
   `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
   requires `poolItems`. New in this release, so nothing released changes.
@@ -3821,8 +3877,9 @@ again, written either way.
   `upsertPrecomputedRaw` and no `clearAll`, even when the fallback has both (`upsertRaw`,
   `deleteByIdRaw` unchanged); over a precomputed-capable primary → present, the primary receives
   the given vector (no `upsertRaw` call), the fallback mirrors it; over a primary with `clearAll` →
-  present, the primary is cleared, the fallback mirrors it; no primary writer → both absent;
-  `upsertManyPrecomputedRaw` absent in every shape.
+  present, the primary is cleared, the fallback mirrors it; `upsertManyPrecomputedRaw` absent in
+  every shape; no primary writer and a fallback writer → `writer()` is `undefined` (D62); neither
+  has a writer → `undefined` (unchanged).
 - Precedence: a profiled store is skipped by `RerankHandler`; binding is idempotent (server +
   builder).
 - Server fill (§6.3, D31), through `SmartServer.start()`: ready clients (`cfg.mcpClients`) + a YAML
@@ -4271,7 +4328,7 @@ to `toolsChanged`*).
 
 | # | Decision | Where |
 |---|---|---|
-| D52 | *Read with D54 (§17.17): the corpus step is `ToolsCorpusLoader` only. Generalized by the second review finding of 2026-10-05 (dispatched by the user): the rule, not one member.* **The rule: a decorator's writer exposes an optional member of `IRagBackendWriter` (`upsertPrecomputedRaw`, `upsertManyPrecomputedRaw`, `clearAll`) only when its backend's writer has it** — it may leave one out, never emulate one. **`FallbackRag` exposes `upsertPrecomputedRaw` and `clearAll` each only when its primary (authoritative) writer has it.** Before, it always exposed both: over a raw-only primary, the precomputed write called the primary's `upsertRaw` — the vector dropped, the text re-embedded silently; over a primary without `clearAll`, `clearAll` returned success without clearing it — so the corpus load's capability checks passed and it then embedded, or appended the corpus to the old records and reported complete. The fallback mirror is unchanged; `upsertManyPrecomputedRaw` is not added. The other decorators follow the rule already (`StrategyRag` passes its inner writer through; `ActiveFilteringRag`, `OverlayRag`, `SessionScopedRag` expose no writer). **The corpus load checks every capability it uses on the resolved backend too:** `ToolsCorpusLoader` requires a precomputed write **and** `clearAll` on the given store's writer **and** on the innermost store's writer (through `IRagDecorator.inner`, ≤ 16 levels), and throws before any mutation or embedding call otherwise. No contract change; a behaviour change of one implementation (§13 note, changelog "Fixed"). Tests: the loader through `FallbackRag` over a raw-only writer → rejected, nothing written, no embedder call; over a precomputed-capable writer → works with no embedding call; over a precomputed-capable writer without `clearAll` → rejected, nothing written, no embedder call; a decorator claiming the precomputed write over a raw-only store, or `clearAll` over a store without it → rejected; `FallbackRag` writer shape for each primary (with / without each member, no writer) | §3.8, §3.10, §6.5, §10.4, §11, §13, §14.1 |
+| D52 | *Read with D54 (§17.17): the corpus step is `ToolsCorpusLoader` only. Completed by D62 (§17.20): no writer at all over a primary without one.* Generalized by the second review finding of 2026-10-05 (dispatched by the user): the rule, not one member.* **The rule: a decorator's writer exposes an optional member of `IRagBackendWriter` (`upsertPrecomputedRaw`, `upsertManyPrecomputedRaw`, `clearAll`) only when its backend's writer has it** — it may leave one out, never emulate one. **`FallbackRag` exposes `upsertPrecomputedRaw` and `clearAll` each only when its primary (authoritative) writer has it.** Before, it always exposed both: over a raw-only primary, the precomputed write called the primary's `upsertRaw` — the vector dropped, the text re-embedded silently; over a primary without `clearAll`, `clearAll` returned success without clearing it — so the corpus load's capability checks passed and it then embedded, or appended the corpus to the old records and reported complete. The fallback mirror is unchanged; `upsertManyPrecomputedRaw` is not added. The other decorators follow the rule already (`StrategyRag` passes its inner writer through; `ActiveFilteringRag`, `OverlayRag`, `SessionScopedRag` expose no writer). **The corpus load checks every capability it uses on the resolved backend too:** `ToolsCorpusLoader` requires a precomputed write **and** `clearAll` on the given store's writer **and** on the innermost store's writer (through `IRagDecorator.inner`, ≤ 16 levels), and throws before any mutation or embedding call otherwise. No contract change; a behaviour change of one implementation (§13 note, changelog "Fixed"). Tests: the loader through `FallbackRag` over a raw-only writer → rejected, nothing written, no embedder call; over a precomputed-capable writer → works with no embedding call; over a precomputed-capable writer without `clearAll` → rejected, nothing written, no embedder call; a decorator claiming the precomputed write over a raw-only store, or `clearAll` over a store without it → rejected; `FallbackRag` writer shape for each primary (with / without each member, no writer) | §3.8, §3.10, §6.5, §10.4, §11, §13, §14.1 |
 
 ### 17.17 Decided by the goal on 2026-10-05 — layers, corpus flow, no tuned numbers (D53–D56); S10 decided in §17.18
 
@@ -4384,3 +4441,9 @@ Migration: 18 more lines (§13, lines 52–69; 69 with S12).
 | # | Decision | Where |
 |---|---|---|
 | D61 | **An `index` batch with a duplicate owner-qualified item id is rejected whole.** Same owner + item id = same canonical record id. Two versions of one item in one batch both read the same old canonical (step 1 of §3.3), and the version whose canonical is written last lists only its own records: the other version's extra records (e.g. a `note` the replacement no longer has) are listed nowhere, so no later `index` or `remove` deletes them. The binding checks the whole batch after preparing the items and **before any store read or write**; duplicates → `ok: false` with a `RagError` naming each duplicate and its count — nothing is written in any partition (the shared-items binding writes several, so the check is over the batch, not per store). The record writer runs the same check first and reads or writes nothing on a duplicate. Same item id under another owner is a different item. Tested: two versions of one item → rejected, store untouched (no read, no write); the note-record + replacement scenario leaves no untracked record; a duplicate after an item of another partition → that partition is not written either. Failure handling, not a concurrency protocol (D13 stands) | §3.3 |
+
+### 17.20 Decided by the user on 2026-10-05 — `FallbackRag` without a primary writer
+
+| # | Decision | Where |
+|---|---|---|
+| D62 | **`FallbackRag.writer()` returns `undefined` when its primary has no writer** (`if (!pw) return undefined;`), **even when the fallback has one** — no reported success for writes the primary never receives. Decides the item §10.4 left "reported, not decided" after D52 (whose rule covers the optional members only). Before, over a writerless primary it returned a writer whose `upsertRaw` / `deleteByIdRaw` / `clearAll` / `upsertPrecomputedRaw` returned `ok: true` for the primary and wrote only the fallback. Concrete case: the builder's circuit-breaker loop wraps every registered store in `FallbackRag(store, new InMemoryRag(), breaker)`, so the `relevant-skills:<group>` collections (`skillsRagSource`, no writer) got a writer from the wrap. Every `writer()` caller in `packages/` checked (§10.4): registry delete and the edit strategies unchanged (provider-only path; editors built from the unwrapped store); the 30.1.0 tools / skills vectorization skips a writerless tools store (status unknown) instead of reporting it complete; the history upsert logs `history_upsert_failed` instead of a silent fallback-only write; `StrategyRag` passes `undefined` through; the corpus load refuses the store. No contract change (`IRag.writer` is optional and may return `undefined`); a behaviour change of one implementation (§13 note, changelog "Fixed"). Test: primary without a writer + fallback with one → `writer()` is `undefined` | §1, §3.8, §10.4, §13, §14.1 |
