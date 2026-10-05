@@ -1091,7 +1091,7 @@ export interface ToolsFillContext {
 |---|---|---|---|
 | **`LiveToolsFill`** (`live`, the default) | `ctx.indexLiveTools()` — 30.1.0's listing, indexed through the profile | yes | at creation only |
 | **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, the in-memory source) | its only job: checks the corpus's fingerprint against `expect` and the binding (below), writes every record with its precomputed vector into `ctx.target` (primary + companions), reports the status. Nothing else: no service record, no diff, no refill, no memo, no retry, no watching | **none** | at creation only |
-| **`PrebuiltToolsStore({ expect })`** (`prebuilt`) | reads the store's service record (§6.5) and checks it as `corpus` does; writes nothing; the status comes from the record | none | **never** |
+| **`PrebuiltToolsStore({ expect })`** (`prebuilt`) | reads the store's service record (§6.5) and checks it as `corpus` does; refuses a record that is not finalized (`state` ≠ `'final'`: a deploy unfinished or running) with a throw naming the deploy step; writes nothing; the status comes from the record | none | **never** |
 | **`ConsumerToolsFill`** (`consumer`) | nothing (`undefined`): the consumer fills through `bound.index` or `fillToolsBinding` | — | **never** (the consumer writes) |
 
 A reconnect that reports `toolsChanged` calls no source: a bound store is not written after its
@@ -2219,24 +2219,39 @@ export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';   // the service record's 
 
 **Deploy (`deployToolsCorpus`) — one current state, in place, idempotent.**
 
-1. Read the store's service record (`TOOLS_CORPUS_RECORD_ID`). Its `corpusHash` and identity equal
-   the corpus's → `{ unchanged: true }`, nothing written.
+1. Read the store's service record (`TOOLS_CORPUS_RECORD_ID`). It is **finalized** (`state:
+   'final'`) and its `corpusHash` and identity equal the corpus's → `{ unchanged: true }`, nothing
+   written. A record that is not finalized never answers `unchanged`.
 2. Every target store (primary + each companion the corpus names; a corpus companion the target
    lacks, or a target companion the corpus lacks → throw) must accept precomputed vectors
    (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`) — else throw: the step makes no
    embedding call.
-3. **Write ahead:** the service record is rewritten first with the old hashes plus `pending` = the
-   ids this run may write. An interrupted run's records are therefore always listed, and the next
-   run deletes what its corpus does not hold (the same write-ahead rule as §3.3's stale lists).
-4. Upsert every record whose hash is new or differs from the service record's, in batches.
+3. **Write ahead:** before the first record write, the service record is rewritten with `state:
+   'pending'`, the old hashes, and `pending` = the ids this run may write (plus any an earlier
+   unfinished run listed). Any interruption from here on leaves the store marked unfinished; an
+   interrupted run's records are always listed, and the next run deletes what its corpus does not
+   hold (the same write-ahead rule as §3.3's stale lists).
+4. Upsert, in batches:
+   - the old service record is **finalized** → every record whose hash is new or differs from the
+     record's hashes (the optimisation: an unchanged record is not rewritten);
+   - the old service record is **not finalized** (a previous deploy did not finish), or there is
+     none → **every** record of the corpus. The old hashes describe what the last finished deploy
+     wrote, not what the store holds now: the unfinished run may have overwritten or deleted any of
+     those records. So they are not trusted, and the whole corpus is written again. No journal, no
+     generations — one current state, rewritten in full.
 5. Delete every id the old service record lists (or lists as `pending`) that the corpus no longer
    holds, per store; every `deleteByIdRaw` Result checked — a failure throws (the service record
    still lists it, so a rerun deletes it).
-6. Write the final service record: `{ serviceRecord: { kind: 'tools-corpus', manifest, hashes: {
-   <store>: { <id>: <hash> } } } }`, text `tools corpus <corpusHash>`, vector = a unit vector of the
+6. Write the final service record: `{ serviceRecord: { kind: 'tools-corpus', state: 'final',
+   manifest, hashes: { <store>: { <id>: <hash> } } } }` (no `pending`), text `tools corpus <corpusHash>`, vector = a unit vector of the
    corpus dimension. Retrieval drops it (§4.3); `ReservedRecordKey` keeps extras from setting it.
 
-- A failed write throws; nothing is reported as deployed that is not. A rerun is safe.
+- A failed write throws; nothing is reported as deployed that is not. A rerun is safe: after an
+  interruption it rewrites the whole corpus (step 4), so a store a later run left mixed — records
+  overwritten or deleted by a deploy that never finished — is restored to the requested corpus
+  before it is certified `final`.
+- `PrebuiltToolsStore` accepts only a finalized service record (§3.10): an unfinished or running
+  deploy is refused at instance creation.
 - The service record holds one hash per record (~80 bytes each): a few hundred tools with several
   records each fit a Qdrant payload, a pg-vector `jsonb` and a HANA `NCLOB`.
 - Concurrent deploy steps against one store are the backend's concern (§3.3, D13); a deploy runs
@@ -3318,10 +3333,16 @@ new SharedItemsProfile({
     corpus → `unchanged: true`, no write; a corpus with one changed and one dropped tool → only the
     changed records upserted, the dropped tool's records deleted (primary and companion); a
     store without precomputed writes → throws; a failed delete → throws, and a rerun deletes it;
+    a finalized redeploy of the same corpus → a writer spy sees no write;
+  - recovery after an unfinished deploy (D48): A deployed → B interrupted after overwriting one of
+    A's records → redeploy A → every stored record equals A's and the service record is `final`
+    with A's manifest; the same with B interrupted after deleting one of A's records → the record
+    is recreated;
   - `ToolsCorpusLoader`: loads with zero embedding calls, the catalog status complete with `records`;
     a mismatching `profile` / `embedder` / `profileName` / companion set → throws naming it;
   - `PrebuiltToolsStore`: a deployed store → status from the service record, **no write** (a writer
-    spy sees none); a store never deployed → throws "not deployed"; a mismatching identity →
+    spy sees none); a store never deployed → throws "not deployed"; a store whose service record is
+    not finalized (an interrupted deploy) → throws naming the deploy step; a mismatching identity →
     throws.
 - `StagedRetrieval`: a hit carrying `serviceRecord` is dropped — not an item, not an orphan.
 - Server `fill` (§6.2): `{ corpus: … }` on an in-memory store with ready clients → the store holds
@@ -3627,7 +3648,7 @@ persistent store is written by the consumer's deploy step).
 |---|---|---|
 | D41 | **A tools store is filled once, when its instance is created, and never refilled while running.** The main store: `_buildInfra`, once. A worker's own store: its construction (`buildSubAgent` without `injected`: the startup primary build or the lazy rebuild after a drain); a per-session re-wire never fills. No refill API, no fill memo, no retry: an incomplete fill is reported (`complete: false`; `/health` `degraded` for the main store; the summary line logged for a worker) and stays. A construction whose fill throws leaves no cached worker. Supersedes D36; amends D35 | §3.10, §6.3, §6.4, §14.1 |
 | D42 | *Amended by D46 (§17.12): `IToolsFillSource` has `fill` only.* **The fill source is a strategy the consumer injects**: `IToolsFillSource` (`fill` at creation, `toolsChanged` on a reconnect) with `ToolsFillContext` (binding, target, `indexLiveTools`, logger), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store like it (D34). Shipped: `live`, `corpus` (`ToolsCorpusLoader`), `prebuilt` (`PrebuiltToolsStore`), `consumer` (`ConsumerToolsFill`). YAML `rag.profiles.tools.fill`; a consumer's own through `toolsFillFactories`. Compatibility (`corpus`, `prebuilt`) is checked at creation and fails loudly; the profile and embedder fingerprints are the consumer's names (`ToolsCorpusIdentity`), because no contract carries one | §3.8, §3.10, §6.1, §6.2, §6.3 |
-| D43 | **Offline corpus API**: `buildToolsCorpus` (build step: provider tool definitions → records + vectors with the profile's own indexer and record writer over capture stores, and an embedder), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: any store with precomputed writes, in place, one current state, idempotent, write-ahead, a service record with the fingerprint, the corpus hash and record hashes). Reserved record key `serviceRecord`; `StagedRetrieval` drops a hit that carries it. Recommended: in-memory → `corpus`; persistent → `prebuilt` | §3.1, §4.3, §6.5, §7.8, §13 |
+| D43 | *Amended by D48 (§17.13): a deploy after an unfinished one rewrites the whole corpus; `prebuilt` refuses an unfinished store.* **Offline corpus API**: `buildToolsCorpus` (build step: provider tool definitions → records + vectors with the profile's own indexer and record writer over capture stores, and an embedder), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: any store with precomputed writes, in place, one current state, idempotent, write-ahead, a service record with the fingerprint, the corpus hash and record hashes). Reserved record key `serviceRecord`; `StagedRetrieval` drops a hit that carries it. Recommended: in-memory → `corpus`; persistent → `prebuilt` | §3.1, §4.3, §6.5, §7.8, §13 |
 | D44 | *Superseded by D46 (§17.12): no source answers `toolsChanged`; a bound store is not written on a reconnect.* **`toolsChanged` is the source's answer**: `live` and `consumer` re-index what is listed through the profile, as 30.1.0; `corpus` and `prebuilt` write nothing and log a warning (the user's decision: `ToolsCorpusLoader` fills the in-memory store at creation and does nothing else; the process never writes a prebuilt store). D40 stands: a tool no longer listed keeps its records | §3.10, §6.3, §6.4 |
 | D45 | **Single-flight worker construction and the drain ordering move out of this PR** — a pre-existing 30.1.0 race unrelated to profiles, described in §15 for a separate issue. D37 and its plan task are withdrawn here; no remaining task depends on them | §6.3, §13, §15 |
 
@@ -3640,3 +3661,9 @@ to `toolsChanged`*).
 |---|---|---|
 | D46 | **No reaction to `toolsChanged` for a bound store.** Until its collections are filled the pipeline and its MCP do not work, so the tool list cannot change under a working pipeline; the only case is an MCP server plugged in at runtime, and a consumer who builds such a pipeline does its own checks and filling in it. So: `IToolsFillSource` loses `toolsChanged` — the contract is `fill`, once at instance creation; `McpToolRegistry.revectorizeTools` with a bound store (found through decorators) writes nothing, calls no source, lists nothing, and logs one line under the `mcp` debug area (no warning); `vectorizeMcpTools` is reached for a bound store only from creation paths. `corpus` / `prebuilt` never write on `toolsChanged` by construction; `ConsumerToolsFill`: the library never writes. **Without a profile, 30.1.0 behaviour is unchanged** (the legacy re-vectorize stays). Supersedes D44; amends D34, D40, D42 | §3.8, §3.10, §6.1, §6.3, §6.4, §7.6, §13, §14.1, §15 |
 | D47 | **Approved as proposed:** (1) the corpus / prebuilt fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks (the binding's `profileName`, the companion set, the corpus format and one vector dimension); (2) a worker construction whose fill throws drops that worker's cache entry before rethrowing; (3) a worker with its own `rag` and its own clients is refused when the fill source is `corpus` or `prebuilt` | §3.10, §6.2, §6.3, §14.1 |
+
+### 17.13 Review finding on 2026-10-05 — an unfinished corpus deploy is rewritten in full
+
+| # | Decision | Where |
+|---|---|---|
+| D48 | **A deploy after an unfinished one rewrites the whole corpus.** The service record carries `state: 'pending' \| 'final'`; the write-ahead record (`pending`) is written before the first record write, so any interruption leaves it set. When the record read at the start is not `final` (or absent), `deployToolsCorpus` does not trust its per-record hashes — the unfinished run may have overwritten or deleted any record they describe — and writes every record of the requested corpus, deletes the listed and pending ids the corpus does not hold, then finalizes. When it is `final`, the hash-skip optimisation stays (and a matching `corpusHash` answers `unchanged`). `PrebuiltToolsStore` refuses a store whose record is not `final`, loudly at instance creation. One current state: no journals, no generations (the user's principle). Amends D43 | §3.10, §6.5, §14.1 |
