@@ -491,8 +491,9 @@ Run:
 ```bash
 node --import tsx/esm --test packages/llm-agent/src/interfaces/__tests__/record-id.test.ts
 npm run typecheck
+npx tsc -b packages/llm-agent
 ```
-Expected: PASS; typecheck exit 0 (an unused `@ts-expect-error` would fail with TS2578).
+Expected: PASS; typecheck exit 0 (an unused `@ts-expect-error` would fail with TS2578); the build compiles `collection-profile.ts` and the new `interfaces/index.ts` export block (the typecheck file imports `../collection-profile.js` directly, never `index.ts`; the tsx test does not type-check).
 
 - [ ] **Step 6: Commit**
 
@@ -613,10 +614,10 @@ Expected: FAIL — `isRetrievalMetrics`, `isIndexNoteSource`, `isSizeBoundedCut`
 
 - [ ] **Step 3: Implement — append to `collection-profile.ts`**
 
-Add these imports at the top of the file (next to the existing ones):
+Add these imports at the top of the file, merging `IRag` into Task 2's `./rag.js` import (one import per module):
 ```ts
 import type { ICounter } from './metrics.js';
-import type { IRag } from './rag.js';
+import type { IRag, RagJsonValue } from './rag.js';
 import type { IRetrievalStrategy } from './retrieval-strategy.js';
 import type { CallOptions, RagError, RagResult, Result } from './types.js';
 ```
@@ -1282,12 +1283,26 @@ export const _e: RelevanceResult = { answers: {}, model: 'm' };
 
 Add `"packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts"` to `tsconfig.typecheck.json` `include`.
 
-In `usage-logging-decision-model.test.ts`, keep every existing case (switch the import to `wrapProbabilityDecision`) and append:
+In `usage-logging-decision-model.test.ts`, keep every existing case, rename `describe('wrapDecisionModel'` to `describe('wrapProbabilityDecision'` and every `wrapDecisionModel(` call in it to `wrapProbabilityDecision(`, and replace the file's two import statements (lines 3–9 today) with this complete block:
 
 ```ts
-import type { IRelevanceDecision } from '@mcp-abap-adt/llm-agent';
-import { wrapDecisionModel, wrapRelevanceDecision } from '../usage-logging-decision-model.js';
+import {
+  DecisionError,
+  type IDecisionModel,
+  type IRelevanceDecision,
+  type IRequestLogger,
+  type LlmCallEntry,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  wrapDecisionModel,
+  wrapProbabilityDecision,
+  wrapRelevanceDecision,
+} from '../usage-logging-decision-model.js';
+```
 
+(`IDecisionModel` stays: the existing `model()` / `failing` fixtures are typed with it, which also pins the alias.) Then append:
+
+```ts
 describe('wrapRelevanceDecision', () => {
   const relevance = (ok: boolean): IRelevanceDecision => ({
     model: 'cohere-rerank',
@@ -1318,7 +1333,6 @@ describe('wrapRelevanceDecision', () => {
   });
 });
 ```
-(Merge the imports with the file's existing ones; `DecisionError` is already imported there.)
 
 Run: `npm run typecheck; node --import tsx/esm --test packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts`
 Expected: FAIL — `IProbabilityDecision`, `wrapRelevanceDecision` do not exist.
@@ -1405,10 +1419,57 @@ In `interfaces/index.ts`, add to the `./decision-model.js` type export list: `IP
 
 - [ ] **Step 3: Implement the wrappers**
 
-In `usage-logging-decision-model.ts`: rename the class to `UsageLoggingProbabilityDecision` (type `IProbabilityDecision`), rename the function to `wrapProbabilityDecision`, and add:
+Today `usage-logging-decision-model.ts` imports `IDecisionModel` (type-only) and has ONE construction site, `new UsageLoggingDecisionModel(inner)` inside `wrapDecisionModel`. Replace the whole file with (cumulative: the import block names every type both classes use and nothing else — `noUnusedLocals`):
 
 ```ts
+import type {
+  CallOptions,
+  DecisionError,
+  DecisionRequest,
+  DecisionResult,
+  IProbabilityDecision,
+  IRelevanceDecision,
+  RelevanceRequest,
+  RelevanceResult,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+
+const BRAND = Symbol.for('@mcp-abap-adt/usage-logging-decision-model');
 const RELEVANCE_BRAND = Symbol.for('@mcp-abap-adt/usage-logging-relevance-decision');
+
+class UsageLoggingProbabilityDecision implements IProbabilityDecision {
+  readonly [BRAND] = true;
+  constructor(private readonly inner: IProbabilityDecision) {}
+
+  get model(): string | undefined {
+    return this.inner.model;
+  }
+
+  async decide(
+    request: DecisionRequest,
+    options?: CallOptions,
+  ): Promise<Result<DecisionResult, DecisionError>> {
+    const started = Date.now();
+    const r = await this.inner.decide(request, options);
+    const logger = options?.requestLogger;
+    if (!r.ok || !logger) return r;
+    const usage = r.value.usage;
+    const promptTokens = usage?.inputTokens ?? Math.ceil(JSON.stringify(request).length / 4);
+    const completionTokens = usage?.outputTokens ?? 0;
+    logger.logLlmCall({
+      component: 'decision',
+      model: r.value.model,
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      durationMs: Date.now() - started,
+      scope: 'request',
+      requestId: options?.trace?.traceId,
+      ...(usage === undefined ? { estimated: true } : {}),
+    });
+    return r;
+  }
+}
 
 class UsageLoggingRelevanceDecision implements IRelevanceDecision {
   readonly [RELEVANCE_BRAND] = true;
@@ -1444,6 +1505,15 @@ class UsageLoggingRelevanceDecision implements IRelevanceDecision {
   }
 }
 
+/**
+ * Account every successful probability-decision call to the request's logger
+ * (`component: 'decision'`). No logger → no-op. Idempotent.
+ */
+export function wrapProbabilityDecision(inner: IProbabilityDecision): IProbabilityDecision {
+  if ((inner as { [BRAND]?: boolean })[BRAND]) return inner;
+  return new UsageLoggingProbabilityDecision(inner);
+}
+
 /** Account every successful relevance call to the request's logger
  *  (`component: 'decision'`). No logger → no-op. Idempotent. */
 export function wrapRelevanceDecision(inner: IRelevanceDecision): IRelevanceDecision {
@@ -1455,7 +1525,9 @@ export function wrapRelevanceDecision(inner: IRelevanceDecision): IRelevanceDeci
 export const wrapDecisionModel = wrapProbabilityDecision;
 ```
 
-In `packages/llm-agent-libs/src/index.ts`, replace the `wrapDecisionModel` export line with:
+The probability brand symbol keeps its 30.1.0 key (`usage-logging-decision-model`), so a model wrapped by a 30.1.0 `wrapDecisionModel` is still recognised and not wrapped twice. `UsageLoggingDecisionModel` was not exported, so the class rename touches no other file (`grep -rn UsageLoggingDecisionModel packages --include='*.ts'` → only this file before the edit, nothing after).
+
+In `packages/llm-agent-libs/src/index.ts`, replace the `wrapDecisionModel` export line (line 19 today) with:
 ```ts
 export {
   wrapDecisionModel,
@@ -1470,12 +1542,12 @@ Callers stay on the alias until their own task switches them (server-libs: Task 
 
 Run:
 ```bash
-npx tsc -b packages/llm-agent packages/llm-agent-libs
+npx tsc -b packages/llm-agent packages/llm-agent-libs packages/typesafe-decision
 npm run typecheck
 node --import tsx/esm --test packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts
 npm test --workspace @mcp-abap-adt/typesafe-decision
 ```
-Expected: PASS; `TypeSafeDecisionModel` (typed `IDecisionModel`) still compiles — the alias is the same type.
+Expected: PASS; the `tsc -b` line builds both edited packages (`llm-agent`: `decision-model.ts`, `interfaces/index.ts`; `llm-agent-libs`: the wrapper and `src/index.ts`) and `typesafe-decision`, whose `TypeSafeDecisionModel` (typed `IDecisionModel`) still compiles — the alias is the same type. The test file is not in any `tsc -b` project (`**/__tests__/**` is excluded); tsx runs it without type-checking.
 
 - [ ] **Step 5: Commit**
 
@@ -1682,6 +1754,16 @@ Expected: the build is clean (a renamed parameter with a leftover `this.model` i
 
 Internal imports: `./reranker/types.js` / `../reranker/types.js` (`IReranker`) → `type IReranker` from `@mcp-abap-adt/llm-agent`; `./reranker/noop-reranker.js` / `../reranker/noop-reranker.js` (`NoopReranker`) → `@mcp-abap-adt/llm-agent-reranker`. Files: `agent.ts`, `agent/rag-orchestrator-types.ts`, `builder.ts`, `interfaces/pipeline.ts`, `pipeline/context.ts`, `pipeline/default-pipeline.ts`, `testing/index.ts`. Verify: `grep -rn "reranker/" packages/llm-agent-libs/src` → empty.
 
+`scripts/rag-eval/rag-eval.ts` (in `tsconfig.typecheck.json`, so `npm run typecheck` below compiles it) imports `DecisionReranker`, `LlmReranker`, `TOOL_QUESTION` from `'../../packages/llm-agent-libs/src/reranker/index.js'` (lines 54–58) — a file this task deletes. Switch it now: the import becomes
+```ts
+import {
+  LlmReranker,
+  ProbabilityReranker,
+  TOOL_QUESTION,
+} from '../../packages/llm-agent-reranker/src/index.js';
+```
+and `new DecisionReranker(` (line 537) becomes `new ProbabilityReranker(` (same arguments). Verify: `grep -rn "reranker/" scripts test/repo` → empty.
+
 In `packages/llm-agent-libs/src/index.ts`, replace the Reranker block with:
 
 ```ts
@@ -1793,7 +1875,7 @@ Expected: PASS — the moved tests pass under the new names; server-libs still c
 
 ```bash
 npx biome check --write packages/llm-agent-reranker packages/llm-agent-libs/src
-git add -A packages/llm-agent-reranker packages/llm-agent-libs package.json package-lock.json scripts/publish-all.sh packages/llm-agent-server/package.json packages/llm-agent-server/tsconfig.json
+git add -A packages/llm-agent-reranker packages/llm-agent-libs package.json package-lock.json scripts/publish-all.sh scripts/rag-eval/rag-eval.ts packages/llm-agent-server/package.json packages/llm-agent-server/tsconfig.json
 git commit -m "feat(llm-agent-reranker): new vendor-neutral reranker package; DecisionReranker → ProbabilityReranker (aliases kept in libs)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2403,8 +2485,12 @@ export * from './collections/index.js';
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/pool-and-collapse.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/pool-and-collapse.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the task's sources and `collections/index.ts` and rebuilds `llm-agent` through the project references; the tsx run does not type-check).
 
 - [ ] **Step 5: Commit**
 
@@ -2731,8 +2817,12 @@ export { TokenBudgetCut } from './token-budget-cut.js';
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/cuts.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/cuts.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the task's sources and `collections/index.ts` and rebuilds `llm-agent` through the project references; the tsx run does not type-check).
 
 - [ ] **Step 5: Commit**
 
@@ -3017,8 +3107,12 @@ export { toolItemFromTool } from './tools/tool-item.js';
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/derive-tool-facets.test.ts packages/llm-agent-libs/src/collections/__tests__/tool-item.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/derive-tool-facets.test.ts packages/llm-agent-libs/src/collections/__tests__/tool-item.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the task's sources and `collections/index.ts` and rebuilds `llm-agent` through the project references; the tsx run does not type-check).
 
 - [ ] **Step 5: Commit**
 
@@ -3382,8 +3476,12 @@ export {
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/faceted-tool-indexer.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/faceted-tool-indexer.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the task's sources and `collections/index.ts` and rebuilds `llm-agent` through the project references; the tsx run does not type-check).
 
 - [ ] **Step 5: Commit**
 
@@ -3715,8 +3813,12 @@ In `enum-value-tool-indexer.ts`: add `type IIndexNoteSource`, `type IndexNote`, 
   }
 ```
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/enum-value-tool-indexer.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/enum-value-tool-indexer.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the task's sources and `collections/index.ts` and rebuilds `llm-agent` through the project references; the tsx run does not type-check).
 
 - [ ] **Step 6: Commit**
 
@@ -4080,8 +4182,12 @@ In `intent-indexers.ts`: add `type IIndexNoteSource`, `type IndexNote`, `isIndex
   }
 ```
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/intents.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/intents.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the task's sources and `collections/index.ts` and rebuilds `llm-agent` through the project references; the tsx run does not type-check).
 
 - [ ] **Step 6: Commit**
 
@@ -4647,8 +4753,10 @@ function withStale(c: PreparedRecord, st: Stale): PreparedRecord {
     ...c,
     metadata: {
       ...rest,
-      ...(st.primary.length > 0 ? { staleRecordIds: st.primary } : {}),
-      ...(Object.keys(comp).length > 0 ? { staleCompanionRecordIds: comp } : {}),
+      // Always written, `undefined` once settled: InMemoryRag's upsert MERGES metadata
+      // on the same id, so an omitted key would keep the previous list.
+      staleRecordIds: st.primary.length > 0 ? st.primary : undefined,
+      staleCompanionRecordIds: Object.keys(comp).length > 0 ? comp : undefined,
     },
   };
 }
@@ -4787,7 +4895,12 @@ export function asItem(
     text: canonical.text,
     metadata: {
       ...canonical.metadata,
-      id: canonical.metadata.itemId,
+      // RagMetadata's index signature types itemId as unknown (TS2322 against id?: string);
+      // a canonical always carries a string one.
+      id:
+        typeof canonical.metadata.itemId === 'string'
+          ? canonical.metadata.itemId
+          : canonical.metadata.id,
       ...extra,
     },
     score,
@@ -4885,8 +4998,12 @@ export { asItem } from './record-writer.js';
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts`
-Expected: PASS. (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.)
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts
+```
+Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.)
 
 - [ ] **Step 5: Commit**
 
@@ -5514,8 +5631,12 @@ export {
 
 - [ ] **Step 5: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts
+```
+Expected: PASS (`tsc -b` type-checks `staged-retrieval.ts` and `collections/index.ts`; the tsx run does not).
 
 - [ ] **Step 6: Commit**
 
@@ -5969,8 +6090,12 @@ export { checkRerankOutput } from './rerank-check.js';
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts`
-Expected: PASS — incl. the pinned-score cases under both rerankers, the stage1-fallback case and both rejections.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts
+```
+Expected: PASS — incl. the pinned-score cases under both rerankers, the stage1-fallback case and both rejections. After this task the `@mcp-abap-adt/llm-agent` import of `staged-retrieval.ts` is: `type CallOptions, type ICandidatePool, type ICollapseRule, type IItemCut, type IQueryDecomposer, type IQueryEmbedder, type IQueryEmbedding, type IRag, type IReranker, type IRetrievalMetrics, type IRetrievalStrategy, type ISourceSelector, type ITracer, matchesRagIdentity, RagError, type RagResult, type Result, type RetrievalSource, ragIdentityFilter, recordId, type SourcedHit` — every name used.
 
 - [ ] **Step 5: Commit**
 
@@ -6179,16 +6304,18 @@ Replace `retrieve` with:
       value: this.cut.cut(items, k).slice(0, budget),
     });
     const d = this.options.decompose;
-    const subs = d
-      ? await this.decomposeQuery(d.decomposer, query.text, budget, callOptions)
-      : ({ ok: true, value: [] } as const);
-    if (!subs.ok) return subs;
-    if (!d || subs.value.length === 0) {
+    let subs: readonly SubQuery[] = [];
+    if (d) {
+      const decomposed = await this.decomposeQuery(d.decomposer, query.text, budget, callOptions);
+      if (!decomposed.ok) return decomposed;
+      subs = decomposed.value;
+    }
+    if (!d || subs.length === 0) {
       const run = await this.runOne(query, budget, newRunContext(callOptions));
       return run.ok ? finish(run.value) : run;
     }
     const runs = await Promise.all(
-      subs.value.map((s) =>
+      subs.map((s) =>
         this.runOne(
           new QueryEmbedding(s.text, d.queryEmbedder, callOptions),
           s.k,
@@ -6252,11 +6379,25 @@ Replace `retrieve` with:
   }
 ```
 
-Add `resultKey` to the `staged-retrieval.js` export line in `collections/index.ts`.
+Add `resultKey` to the `staged-retrieval.js` export line in `collections/index.ts`:
+```ts
+export {
+  resultKey,
+  type RunStats,
+  StagedRetrieval,
+  type StagedRetrievalOptions,
+} from './staged-retrieval.js';
+```
+
+After this task the `@mcp-abap-adt/llm-agent` import of `staged-retrieval.ts` is Task 13's list plus `QueryEmbedding` (value, after `matchesRagIdentity`) and `type SubQuery` (after `type SourcedHit`); `itemKey` and `ownerFromMetadata` (from `./owner.js`, Task 12) are now used by `resultKey` as well.
 
 - [ ] **Step 4: Run all StagedRetrieval tests**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval*.test.ts`
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval*.test.ts
+```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -6751,8 +6892,12 @@ export { bindToolsProfile, toolsBindingOf } from './tools-binding.js';
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the edited sources; the tsx run does not, and `__tests__/**` is excluded from the package build).
 
 - [ ] **Step 5: Companion records on remove and replacement (S7); notes in the report (S1)**
 
@@ -6822,9 +6967,15 @@ describe('companion records (S7) and notes (S1) in the binding', () => {
 
   it('a failed companion write fails the item before its primary records are written', async () => {
     const rag = new InMemoryRag();
-    const broken = new InMemoryRag();
-    const w = broken.writer();
-    w.upsertRaw = async () => ({ ok: false, error: new RagError('down') });
+    // InMemoryRag.writer() returns a FRESH object per call (in-memory-rag.ts `writer()`), so
+    // patching one writer instance changes nothing: wrap the store instead.
+    const raw = new InMemoryRag();
+    const broken = {
+      query: raw.query.bind(raw),
+      healthCheck: raw.healthCheck.bind(raw),
+      getById: raw.getById.bind(raw),
+      writer: () => ({ ...raw.writer(), upsertRaw: async () => ({ ok: false as const, error: new RagError('down') }) }),
+    } as IRag;
     const bound = companionProfile({ read_file: ['open my notes'] }).bind({ key: 'tools', rag, companions: { intents: broken } });
     const r = await bound.index(TOOLS);
     assert.ok(r.ok);
@@ -6848,7 +6999,18 @@ describe('companion records (S7) and notes (S1) in the binding', () => {
   });
 });
 ```
-Add `RagError` and `type CallOptions` to the test's `@mcp-abap-adt/llm-agent` import. (If `InMemoryRag.writer()` returns a fresh object per call, wrap the store instead: `{ ...broken, writer: () => ({ ...broken.writer(), upsertRaw: async () => ({ ok: false, error: new RagError('down') }) }) }` cast to `IRag`, keeping `getById` / `query` delegating.)
+Add `RagError` and `type CallOptions` to the test's `@mcp-abap-adt/llm-agent` import; the complete import is:
+```ts
+import {
+  type CallOptions,
+  InMemoryRag,
+  type IRag,
+  RagError,
+  recordId,
+  TextOnlyEmbedding,
+  toolNameFromRecord,
+} from '@mcp-abap-adt/llm-agent';
+```
 
 Run it: FAIL — no `companionRecordIds`; `remove` leaves the intent; no `notes`.
 
@@ -7004,8 +7166,12 @@ In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the
   }
 ```
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts`
-Expected: PASS (the earlier tests too: with no companions and no notes the report has no `notes` key and `companionRecordIds` is not written).
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts
+```
+Expected: PASS; `tsc -b` type-checks the replaced `index` / `remove` and the added `IndexNote` / `isIndexNoteSource` imports (the earlier tests too: with no companions and no notes the report has no `notes` key and `companionRecordIds` is not written).
 
 - [ ] **Step 6: Commit**
 
@@ -7379,10 +7545,11 @@ export {
 
 Run:
 ```bash
+npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/mcp-tools-variants.test.ts
 npm run typecheck
 ```
-Expected: PASS; exit 0.
+Expected: PASS; exit 0. `tsc -b` type-checks `mcp-tools-variants.ts` under the package build and (re)builds the referenced `llm-agent-reranker` `dist/`, which `npm run typecheck` resolves `@mcp-abap-adt/llm-agent-reranker` to.
 
 - [ ] **Step 5: Commit**
 
@@ -7548,12 +7715,22 @@ describe('SharedItemsProfile', () => {
 });
 ```
 
-Append to `collection-profile.typecheck.ts` (imports at the top):
+In `collection-profile.typecheck.ts`, replace the Task 16 import block with this complete one (one import per module; every name used):
 ```ts
-import type { ICollectionProfile, ToolItem } from '@mcp-abap-adt/llm-agent';
+import type {
+  ICollectionProfile,
+  IProbabilityDecision,
+  IRelevanceDecision,
+  IToolIntentSource,
+  ToolItem,
+} from '@mcp-abap-adt/llm-agent';
 import { ItemPool } from '../item-pool.js';
 import { MaxScoreCollapse } from '../max-score-collapse.js';
+import { mcpToolsVariants } from '../mcp-tools-variants.js';
 import { SharedItemsProfile } from '../shared-items-profile.js';
+```
+and append:
+```ts
 
 const shared = new SharedItemsProfile({ maxRecordsPerItem: 2, pool: new ItemPool(5), collapse: new MaxScoreCollapse() });
 // @ts-expect-error a shared-items profile is not a tools profile
@@ -7847,6 +8024,7 @@ export {
 
 Run:
 ```bash
+npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/shared-items-profile.test.ts
 npm run typecheck
 npm test --workspace @mcp-abap-adt/llm-agent-libs
@@ -8492,6 +8670,7 @@ Run:
 ```bash
 node --import tsx/esm --test packages/sap-aicore-decision/src/__tests__/sap-aicore-relevance-decision.test.ts
 npx tsc -b packages/sap-aicore-decision
+npm run build
 node --import tsx/esm --test --test-reporter=spec 'test/repo/*.test.ts'
 ```
 Expected: PASS — `licensing`, `readme-badges` and `scoped-dependencies` accept the new package. (How `RelevanceReranker` batches map to `/rerank` calls is tested in Task 24, the one package that depends on both the reranker package and this provider.)
@@ -8515,7 +8694,7 @@ Spec §7.6 (incl. notes logged, S1). The 30.1.0 path stays byte-for-byte (Task 1
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/mcp/index-tools-through-profile.ts`
-- Modify: `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (the `ns` parameter type; one early return after `ids` is computed)
+- Modify: `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (the `ns` parameter type; the writer guard at lines 144–148 applies only without a binding; one early return after `ids` is computed, then the writer guard for the 30.1.0 path)
 - Create: `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts`
 
 **Interfaces:**
@@ -8526,6 +8705,7 @@ Spec §7.6 (incl. notes logged, S1). The 30.1.0 path stays byte-for-byte (Task 1
   export function indexToolsThroughProfile(binding: IBoundCollection<ToolItem>, tools: readonly LlmTool[], originalNames: readonly string[], ids: readonly string[], seed: { total: number; clientFailures: number }, logger: ILogger | undefined, options?: CallOptions): Promise<ToolCatalogStatus>;
   // summary: vectorized = items with every record written; failed = tool names; records; profile
   // every IndexReport.notes entry is logged as a warning naming the tool (S1)
+  // a binding needs NO raw writer on binding.rag: the 30.1.0 "no writer → undefined" guard is the legacy path's only
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -8535,13 +8715,16 @@ Spec §7.6 (incl. notes logged, S1). The 30.1.0 path stays byte-for-byte (Task 1
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  type IBoundCollection,
   type IEmbedder,
   type ILogger,
   type IMcpClient,
+  type IRag,
   InMemoryRag,
   type McpTool,
   recordId,
   symmetricEmbedder,
+  type ToolItem,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -8608,6 +8791,57 @@ describe('vectorizeMcpTools with a tools profile', () => {
     const logger = { log: (e: { message: string }) => messages.push(e.message) } as unknown as ILogger;
     await vectorizeMcpTools([client([ambiguous])], binding.rag, new NoopRequestLogger(), logger, undefined, undefined, { binding });
     assert.ok(messages.some((m) => /make: ambiguous-discriminator \(kind, region\)/.test(m)), messages.join('\n'));
+  });
+
+  it('a binding whose rag has no writer still fills through its own index; catalog complete, not unknown', async () => {
+    // IRag allows a store without writer() (a query facade); StrategyRag preserves that.
+    // The profile indexes through its OWN backend, so vectorizeMcpTools must not
+    // require a raw writer on binding.rag when a binding is present.
+    const backend = new InMemoryRag();
+    const backendWriter = backend.writer();
+    assert.ok(backendWriter);
+    const facade: IRag = {
+      query: (e, k, o) => backend.query(e, k, o),
+      healthCheck: (o) => backend.healthCheck(o),
+      getById: (id, o) => backend.getById(id, o),
+    };
+    assert.equal(facade.writer?.(), undefined);
+    const binding: IBoundCollection<ToolItem> = {
+      key: 'tools',
+      profileName: 'facade-profile',
+      rag: facade,
+      retrieval: { name: 'plain', retrieve: (store, q, k, o) => store.query(q, k, o) },
+      index: async (items, o) => {
+        for (const it of items) {
+          const w = await backendWriter.upsertRaw(`p:${it.itemId}`, `${it.name} ${it.description}`, { name: it.name }, o);
+          if (!w.ok) return w;
+        }
+        return { ok: true, value: { items: items.length, indexedItems: items.length, records: items.length, failedItems: [] } };
+      },
+      remove: async () => ({ ok: true, value: 0 }),
+      get: (ref, o) => backend.getById(`p:${ref.itemId}`, o),
+    };
+    const s = await vectorizeMcpTools([client(TOOLS)], binding.rag, new NoopRequestLogger(), undefined, undefined, undefined, { binding });
+    assert.deepEqual(s, { total: 2, vectorized: 2, failed: [], clientFailures: 0, complete: true, records: 2, profile: 'facade-profile' });
+    const hits = await binding.retrieval.retrieve(binding.rag, { text: 'read a file', toVector: async () => [] }, 2);
+    assert.ok(hits.ok);
+    assert.deepEqual(hits.value.map((h) => h.metadata.id).sort(), ['p:tool:list_issues', 'p:tool:read_file']);
+    const legacy = await backend.getById('tool:read_file');
+    assert.ok(legacy.ok && legacy.value === null, 'no 30.1.0 record');
+  });
+
+  it('without a binding, a store without a writer still returns undefined (30.1.0 unchanged)', async () => {
+    const backend = new InMemoryRag();
+    const facade: IRag = {
+      query: (e, k, o) => backend.query(e, k, o),
+      healthCheck: (o) => backend.healthCheck(o),
+      getById: (id, o) => backend.getById(id, o),
+    };
+    let listed = 0;
+    const counting = { ...client(TOOLS), listTools: async () => { listed++; return { ok: true, value: TOOLS }; } } as unknown as IMcpClient;
+    const s = await vectorizeMcpTools([counting], facade, new NoopRequestLogger(), undefined);
+    assert.equal(s, undefined);
+    assert.equal(listed, 0, 'the legacy guard returns before listing, as in 30.1.0');
   });
 });
 ```
@@ -8707,13 +8941,32 @@ export async function indexToolsThroughProfile(
 ```
 
 In `vectorize-mcp-tools.ts`:
-- add imports: `IBoundCollection`, `ToolItem` to the type import from `@mcp-abap-adt/llm-agent`; `import { indexToolsThroughProfile } from './index-tools-through-profile.js';`
+- add imports: `IBoundCollection`, `ToolItem` to the type import from `@mcp-abap-adt/llm-agent` (alphabetical: `IBoundCollection` before `ILogger`, `ToolItem` after `ToolCatalogStatus`); `import { indexToolsThroughProfile } from './index-tools-through-profile.js';`
 - add to the `ns?: { … }` type, after `toolNamespace?: IToolNamespace;`:
   ```ts
     /** A bound tools profile (spec §7.6): fill through `binding.index` instead of the 30.1.0 records. */
     binding?: IBoundCollection<ToolItem>;
   ```
-- immediately after the `const ids = tools.map(…)` block (before `let vectors`), insert:
+- the writer guard (lines 144–148 today) applies ONLY to the 30.1.0 path. A bound profile indexes through `binding.index` — its own backend — so `binding.rag` may be a writerless query facade (allowed by `IRag`, preserved by `StrategyRag`); requiring a raw writer there would skip `index()` and leave the catalog empty and its status unknown. Replace:
+  ```ts
+  const writer = toolsRag?.writer?.();
+  // No store, or a deliberately read-only one: nothing is attempted, and the
+  // status stays unknown rather than reporting a permanently incomplete
+  // catalog for a configuration that never intended to write.
+  if (!toolsRag || !writer) return undefined;
+  ```
+  with:
+  ```ts
+  const writer = toolsRag?.writer?.();
+  // No store: nothing is attempted. Without a binding (the 30.1.0 path) a
+  // deliberately read-only store is skipped too, and the status stays unknown
+  // rather than reporting a permanently incomplete catalog for a configuration
+  // that never intended to write. A bound profile writes through
+  // `binding.index` (its own backend), never through `toolsRag.writer()`, so
+  // it needs no raw writer (spec §7.6).
+  if (!toolsRag || (!writer && !ns?.binding)) return undefined;
+  ```
+- immediately after the `const ids = tools.map(…)` block (before `let vectors`), insert the profile branch, then re-narrow `writer` for the 30.1.0 code below it (it reads `writer.upsertPrecomputedRaw`, `writer.upsertManyPrecomputedRaw` and passes `writer` to `writeOne`; under `strict` the guard above no longer narrows it to `IRagBackendWriter`):
   ```ts
   if (ns?.binding) {
     return indexToolsThroughProfile(
@@ -8726,12 +8979,19 @@ In `vectorize-mcp-tools.ts`:
       options,
     );
   }
+  // 30.1.0 path from here on. Unreachable without a writer (the guard above
+  // returned), but the compiler needs the narrowing.
+  if (!writer) return undefined;
   ```
 
 - [ ] **Step 4: Run (profile path + golden + existing vectorize tests)**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts packages/llm-agent-libs/src/__tests__/baseline-tool-records.golden.test.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts packages/llm-agent-libs/src/__tests__/baseline-tool-records.golden.test.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts
+```
+Expected: PASS (`tsc -b` type-checks the two edited sources; the tsx run does not).
 
 - [ ] **Step 5: Commit**
 
@@ -8774,6 +9034,7 @@ import {
   type CollectionStore,
   type ICollectionProfile,
   type IMcpClient,
+  type IMcpConnectionStrategy,
   InMemoryRag,
   isToolCatalogReporter,
   type McpTool,
@@ -8796,7 +9057,13 @@ function counting(p: ICollectionProfile<ToolItem>) {
   const profile: ICollectionProfile<ToolItem> = { name: p.name, bind: (t: CollectionStore) => { c.binds++; return p.bind(t); } };
   return { profile, c };
 }
-const builder = () => new SmartAgentBuilder({}).withMainLlm(makeLlm([{ content: 'ok' }])).withMcpClients([client()]);
+// Through a connection strategy, not withMcpClients: the builder vectorizes (and so fills a
+// profile) only on the auto-connect branch — withMcpClients / withMcpServers skip vectorization
+// entirely (builder.ts ~1144, "Caller-provided clients: skip auto-connect and vectorization").
+const connection: IMcpConnectionStrategy = {
+  resolve: async () => ({ clients: [client()], toolsChanged: true }),
+};
+const builder = () => new SmartAgentBuilder({}).withMainLlm(makeLlm([{ content: 'ok' }])).withMcpConnectionStrategy(connection);
 
 describe('SmartAgentBuilder.withToolsProfile', () => {
   it('binds the tools store, fills it through the profile, and reports records + profile', async () => {
@@ -8849,9 +9116,8 @@ describe('SmartAgentBuilder.withToolsProfile', () => {
 });
 ```
 
-Append to `collection-profile.typecheck.ts`:
+In `collection-profile.typecheck.ts`, add `import { SmartAgentBuilder } from '../../builder.js';` to the import block at the top (first line after the `@mcp-abap-adt/llm-agent` import; `shared` is Task 17's), and append:
 ```ts
-import { SmartAgentBuilder } from '../../builder.js';
 // @ts-expect-error a shared-items profile is not a tools profile
 export const _builderRefusesShared = new SmartAgentBuilder({}).withToolsProfile(shared);
 ```
@@ -8918,6 +9184,7 @@ In `builder.ts`:
 
 Run:
 ```bash
+npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/builder-tools-profile.test.ts packages/llm-agent-libs/src/retrieval/__tests__/*.test.ts packages/llm-agent-libs/src/__tests__/baseline-tool-records.golden.test.ts
 npm run typecheck
 npm test --workspace @mcp-abap-adt/llm-agent-libs
@@ -9113,7 +9380,7 @@ import { createMakeProbabilityDecision } from './make-probability-decision.js';
 
 Run:
 ```bash
-npx tsc -b packages/llm-agent-server-libs
+npx tsc -b packages/llm-agent-server-libs packages/llm-agent-server
 node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-wiring.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/session-history.test.ts
 node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-probability-decision.test.ts packages/llm-agent-server/src/composition/__tests__/model-resolver.test.ts
 npm run typecheck
@@ -9723,6 +9990,8 @@ export function checkProfiles(
 ```
 
 `config-validator.ts`:
+- imports (cumulative; both are used below, and neither is imported today): line 1 `import { parseIntegerField } from './decision-config.js';` → `import { DECISION_KINDS, parseIntegerField } from './decision-config.js';` (used by the `checkRetrieval` rule); add `import { checkProfiles } from './profiles-config-validator.js';` (used in the `checkRag` caller). No cycle: `profiles-config-validator.ts` imports only `decision-config.js`, `profiles-config.js` and `yaml-loader.js`.
+- `TYPESAFE_ONLY` / `SAP_AICORE_ONLY` below are MODULE-level constants (next to `RETRIEVAL_STRATEGIES`), not locals of `checkDecision`.
 - `checkDecision` — replace its body's provider check and add the per-provider rules (the `apiKey`, `credentialRef`, `timeoutMs`, `maxRetries` checks stay):
   ```ts
   const TYPESAFE_ONLY = ['baseUrl', 'timeoutMs', 'maxRetries'] as const;
@@ -9774,7 +10043,7 @@ Wiring edits:
   profiles?: Record<string, SmartServerProfileConfig>;
   ```
   (`import type { SmartServerProfileConfig } from './profiles-config.js';`)
-- `resolve-config-sections.ts` `resolveRagSection`: after `...resolveRetrieval(get(yaml, 'rag', 'retrieval')),` add
+- `resolve-config-sections.ts`: add `import { resolveProfilesSection } from './profiles-config.js';` (beside the `./llm-config-map.js` import — not imported today); in `resolveRagSection`, after `...resolveRetrieval(get(yaml, 'rag', 'retrieval')),` add
   ```ts
     ...(() => {
       const profiles = resolveProfilesSection(get(yaml, 'rag', 'profiles'));
@@ -9794,7 +10063,7 @@ Wiring edits:
 
 - [ ] **Step 5: Run (new + existing config tests)**
 
-Run: `node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profiles-config.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-config.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-validation.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/decision-config.test.ts`
+Run: `npx tsc -b packages/llm-agent-server-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profiles-config.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-config.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-validation.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/decision-config.test.ts`
 Expected: PASS. (If an existing test asserts the old message `decision.provider: must be 'typesafe'`, update it to the new message — the rule widened, the check did not weaken.)
 
 - [ ] **Step 6: Commit**
@@ -10434,7 +10703,8 @@ export async function resolveCollectionProfiles(
         });
         break;
       case 'llm':
-        reranker = new LlmReranker(await input.resolveLlm(need(c.llm, 'reranker: llm needs llm:')), { question: { task: preset.task } });
+        // TOOL_QUESTION.task is a DecisionEntry; LlmReranker's question.task is a string (as resolve-retrieval.ts casts it)
+        reranker = new LlmReranker(await input.resolveLlm(need(c.llm, 'reranker: llm needs llm:')), { question: { task: preset.task as string } });
         break;
     }
     const cut = cutOf(c.cut);
@@ -10517,7 +10787,7 @@ with, beside the `./resolve-retrieval.js` import (L139–142): `import type { To
 
 Export from `src/index.ts`: `assertSmallSetPool`, `BUILT_IN_TOOLS_STRATEGIES`, `BUILT_IN_TOOLS_VARIANTS`, `resolveCollectionProfiles`, `decisionBuilders`, `decisionRerankerFor`, and types `DecisionSeams`, `ResolvedToolsProfile`, `ToolsStrategyFactories`, `ToolsVariantFactory`, `ToolsVariantInput`.
 
-`config-validator.ts` (Task 21's `checkRetrieval` rule) imports `DECISION_KINDS` from `./decision-config.js` — check it is there.
+`config-validator.ts` already imports `DECISION_KINDS` from `./decision-config.js` (Task 21); nothing to change there.
 
 - [ ] **Step 4: Run**
 
@@ -10713,6 +10983,7 @@ In `smart-server.ts`:
 
 Run:
 ```bash
+npx tsc -b packages/llm-agent-server-libs
 node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-wiring.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs
 ```
@@ -10959,6 +11230,7 @@ In `composition/index.ts`: add `import { createMakeRelevanceDecision } from './m
 
 Run:
 ```bash
+npx tsc -b packages/llm-agent-server
 node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-relevance-decision.test.ts packages/llm-agent-server/src/composition/__tests__/make-probability-decision.test.ts packages/llm-agent-server/src/composition/__tests__/model-resolver.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-server
 ```
@@ -11081,7 +11353,7 @@ describe('HanaVectorRag — IRetrievalEmbedderOwner (F1)', () => {
   });
 });
 ```
-(Add `retrievalEmbedderOf` to each file's `@mcp-abap-adt/llm-agent` import. Check each constructor's second argument against the file's existing tests — Qdrant takes only the config.)
+(Add `retrievalEmbedderOf` to each file's VALUE import from `@mcp-abap-adt/llm-agent` — not the `import type { IEmbedder }` line; these provider packages' `tsconfig.json` include `src/**/*.ts` without excluding tests, so Step 4's `tsc -b` type-checks the tests too. Check each constructor's second argument against the file's existing tests — Qdrant takes only the config.)
 
 Append the server-level regression to `mcp-yaml-vectorization.test.ts`:
 ```ts
@@ -11303,17 +11575,18 @@ Export it in `interfaces/index.ts` next to `toolNameFromRecord`.
         .filter((n): n is string => n !== undefined),
     );
 ```
-and in the fallback loop replace the `id.startsWith('skill:')` block with
+and in the fallback loop replace BOTH the `const id = r.metadata.id as string;` line and the `if (id?.startsWith('skill:')) { … }` block below it with
 ```ts
             const name = skillNameFromRecord(r.metadata);
             if (name !== undefined) ragSkillNames.add(name);
 ```
+(leaving `const id` behind is an unused local — `noUnusedLocals` fails the build). `skillNameFromRecord` joins the existing value import: `import { QueryEmbedding, skillNameFromRecord, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';`.
 
 - [ ] **Step 4: Run**
 
 Run:
 ```bash
-npx tsc -b packages/llm-agent
+npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
 node --import tsx/esm --test packages/llm-agent/src/interfaces/tool-record-key.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/tools-rag-handle-dedupe.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
 ```
@@ -11503,21 +11776,80 @@ Expected: FAIL — `isRetrievalMetrics(new InMemoryMetrics())` is false.
 
 - [ ] **Step 3: Implement — metrics**
 
-`in-memory-metrics.ts`: import `type IRetrievalMetrics` from `@mcp-abap-adt/llm-agent`; `export class InMemoryMetrics implements IMetrics, IRetrievalMetrics {`; add `readonly retrievalOutcome = new MemCounter();` after `toolCacheHitCount`; add `retrievalOutcome: this.retrievalOutcome.snapshot(),` to `snapshot()`.
+`in-memory-metrics.ts`: add `IRetrievalMetrics` to the existing `import type { … } from '@mcp-abap-adt/llm-agent'` block (after `IMetrics`; one import per module); `export class InMemoryMetrics implements IMetrics, IRetrievalMetrics {`; add `readonly retrievalOutcome = new MemCounter();` after `toolCacheHitCount`; add `retrievalOutcome: this.retrievalOutcome.snapshot(),` to `snapshot()`.
 
-`noop-metrics.ts`: import `type IRetrievalMetrics` from `@mcp-abap-adt/llm-agent`; `export class NoopMetrics implements IMetrics, IRetrievalMetrics {`; add `readonly retrievalOutcome: ICounter = noopCounter;`.
+`noop-metrics.ts`: add `import type { IRetrievalMetrics } from '@mcp-abap-adt/llm-agent';` above the existing `import type { ICounter, IHistogram, IMetrics } from './types.js';` (`ICounter` stays imported from `./types.js` — it is the same type, re-exported there); `export class NoopMetrics implements IMetrics, IRetrievalMetrics {`; add `readonly retrievalOutcome: ICounter = noopCounter;`.
 
 - [ ] **Step 4: Implement — `StagedRetrieval` telemetry**
 
-In `staged-retrieval.ts`, add `type ISpan` to the `@mcp-abap-adt/llm-agent` import, rename the Task 14 `retrieve` method to `private async run(query, k, callOptions, runs: RunStats[], info: { subqueries: number })`, and inside it replace each `newRunContext(callOptions)` with a context whose stats are collected:
+In `staged-retrieval.ts`, add `type ISpan` to the `@mcp-abap-adt/llm-agent` import (after `type IRetrievalStrategy`… alphabetical: `type ISourceSelector, type ISpan, type ITracer`), and add, next to `RunStats`:
+
 ```ts
-    const ctx = () => {
+/** What one retrieval observed beyond its runs; filled by `run`, read by `report`. */
+interface RunInfo {
+  subqueries: number;
+}
+```
+
+Replace the Task 14 `retrieve` method with the private `run` below — the same body with three changes: the signature (no `store` parameter; `callOptions` is a required parameter of type `CallOptions | undefined`, so no optional parameter precedes the required `runs` / `info`), every `newRunContext(callOptions)` becomes `newCtx()`, which records each run's stats, and `info.subqueries` is set after a successful decomposition:
+
+```ts
+  private async run(
+    query: IQueryEmbedding,
+    k: number,
+    callOptions: CallOptions | undefined,
+    runs: RunStats[],
+    info: RunInfo,
+  ): Promise<Result<RagResult[], RagError>> {
+    const newCtx = (): RunContext => {
       const c = newRunContext(callOptions);
       runs.push(c.stats);
       return c;
     };
+    // The caller's k caps every cut, also after decomposition (spec §4.5, F1).
+    const budget = Math.min(k, this.cut.limit(k));
+    const finish = (items: RagResult[]): Result<RagResult[], RagError> => ({
+      ok: true,
+      value: this.cut.cut(items, k).slice(0, budget),
+    });
+    const d = this.options.decompose;
+    let subs: readonly SubQuery[] = [];
+    if (d) {
+      const decomposed = await this.decomposeQuery(d.decomposer, query.text, budget, callOptions);
+      if (!decomposed.ok) return decomposed;
+      subs = decomposed.value;
+      info.subqueries = subs.length;
+    }
+    if (!d || subs.length === 0) {
+      const one = await this.runOne(query, budget, newCtx());
+      return one.ok ? finish(one.value) : one;
+    }
+    const results = await Promise.all(
+      subs.map((s) =>
+        this.runOne(new QueryEmbedding(s.text, d.queryEmbedder, callOptions), s.k, newCtx()),
+      ),
+    );
+    // Union in sub-query order, de-duplicated by owner-qualified item, best score kept.
+    const union: RagResult[] = [];
+    const at = new Map<string, number>();
+    for (const r of results) {
+      if (!r.ok) return r;
+      for (const item of r.value) {
+        const key = resultKey(item);
+        const i = at.get(key);
+        if (i === undefined) {
+          at.set(key, union.length);
+          union.push(item);
+        } else if (item.score > union[i].score) {
+          union[i] = item;
+        }
+      }
+    }
+    return finish(union);
+  }
 ```
-(`this.runOne(query, budget, ctx())` and, per sub-query, `this.runOne(new QueryEmbedding(…), s.k, ctx())`; set `info.subqueries = subs.value.length` after a successful decomposition.) Then add:
+
+(The local names `one` / `results` replace Task 14's `run` / `runs` so they do not shadow the method or the `runs` parameter.) Then add the public `retrieve` (the `IRetrievalStrategy` signature, unchanged) and `report`:
 
 ```ts
   async retrieve(
@@ -11533,7 +11865,7 @@ In `staged-retrieval.ts`, add `type ISpan` to the `@mcp-abap-adt/llm-agent` impo
       attributes: { store: this.options.storeKey, strategy: this.name },
     });
     const runs: RunStats[] = [];
-    const info = { subqueries: 0 };
+    const info: RunInfo = { subqueries: 0 };
     const result = await this.run(query, k, callOptions, runs, info);
     this.report(result, runs, info, span);
     return result;
@@ -11543,7 +11875,7 @@ In `staged-retrieval.ts`, add `type ISpan` to the `@mcp-abap-adt/llm-agent` impo
   private report(
     result: Result<RagResult[], RagError>,
     runs: readonly RunStats[],
-    info: { subqueries: number },
+    info: RunInfo,
     span: ISpan | undefined,
   ): void {
     const sum = (f: (s: RunStats) => number) => runs.reduce((a, s) => a + f(s), 0);
@@ -11596,9 +11928,10 @@ In `staged-retrieval.ts`, add `type ISpan` to the `@mcp-abap-adt/llm-agent` impo
 
 Run:
 ```bash
+npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval*.test.ts packages/llm-agent-libs/src/metrics/__tests__/metrics.test.ts
 ```
-Expected: PASS.
+Expected: PASS (`tsc -b` type-checks `staged-retrieval.ts` and both metrics classes; the tsx run does not).
 
 - [ ] **Step 6: `over_budget` and `cut.tokens` / `cut.budgetTokens` through `ISizeBoundedCut` (S6, spec §4.10)**
 
@@ -11634,7 +11967,15 @@ describe('StagedRetrieval telemetry — size-bounded cuts (S6)', () => {
 
 Run it: FAIL — no `cut.tokens`; the empty result is counted `empty`.
 
-In `staged-retrieval.ts`: add `isSizeBoundedCut` to the `@mcp-abap-adt/llm-agent` import; widen `info` to `{ subqueries: number; firstRanked?: RagResult }` (in `retrieve`: `const info: { subqueries: number; firstRanked?: RagResult } = { subqueries: 0 };`, and the same type on `run` / `report`); in `run`, make `finish` record the first ranked, hydrated item before the cut:
+In `staged-retrieval.ts`: add `isSizeBoundedCut` (value) to the `@mcp-abap-adt/llm-agent` import; widen `RunInfo` (the one type `retrieve`, `run` and `report` share):
+```ts
+interface RunInfo {
+  subqueries: number;
+  /** The first ranked, hydrated item before the cut — what an over-budget check measures. */
+  firstRanked?: RagResult;
+}
+```
+in `run`, make `finish` record the first ranked, hydrated item before the cut:
 ```ts
     const finish = (items: RagResult[]): Result<RagResult[], RagError> => {
       info.firstRanked = items[0];
@@ -11663,7 +12004,11 @@ insert `: overBudget ? 'over_budget'` into the `outcome` chain right before the 
     }
 ```
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-telemetry.test.ts`
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval*.test.ts
+```
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -11810,8 +12155,12 @@ calling `count('ok')` before the success `return`, and `count('rerank_fallback',
 
 - [ ] **Step 4: Run (new + existing retrieval/health suites)**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/retrieval/__tests__/*.test.ts packages/llm-agent-libs/src/health/__tests__/*.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/retrieval/__tests__/*.test.ts packages/llm-agent-libs/src/health/__tests__/*.test.ts
+```
+Expected: PASS (`tsc -b` type-checks `reranked-retrieval.ts` and `health-checker.ts`; tsx does not).
 
 - [ ] **Step 5: Commit**
 
@@ -12039,7 +12388,8 @@ export const collectionProfileConformanceCases: readonly CollectionProfileConfor
       for (const k of ks) {
         const r = await bound.retrieval.retrieve(bound.rag, h.query, k, h.reader.options);
         assert.ok(r.ok && r.value.length <= limit(k), `${h.name}: more than ${limit(k)} items for k=${k}`);
-        const keys = r.value.map((x) => JSON.stringify(refOf(x) ?? x.metadata.id));
+        // Annotated: inside the loop, `r`'s assertion narrowing makes the inferred type circular (TS7022 under strict).
+        const keys: string[] = r.value.map((x) => JSON.stringify(refOf(x) ?? x.metadata.id));
         assert.equal(new Set(keys).size, keys.length, `${h.name}: duplicate items`);
       }
       const split: IQueryDecomposer = {
@@ -12545,8 +12895,12 @@ export {
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/testing/__tests__/evaluate-retrieval.test.ts`
-Expected: PASS.
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/testing/__tests__/evaluate-retrieval.test.ts
+```
+Expected: PASS (`tsc -b` type-checks `testing/evaluate-retrieval.ts` and `testing/index.ts` and emits `dist/testing`, which `@mcp-abap-adt/llm-agent-libs/testing` resolves to).
 
 - [ ] **Step 5: Commit**
 
@@ -12573,7 +12927,7 @@ Spec §14.3 (flags; any tools snapshot; the decision picked like `decision:` —
 - Modify: `tsconfig.typecheck.json` (`include`: `scripts/rag-eval/profile-arm.ts`, `test/repo/rag-eval-profile-arm.test.ts`)
 
 **Interfaces:**
-- Consumes: `mcpToolsVariants`, `ComposedToolsProfile`, facets, text composers, `EnumValueToolIndexer`, discriminators, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts (libs sources); `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`packages/llm-agent-reranker/src`); `vectorizeMcpTools` (`ns.binding`); `evaluateRetrieval` (Task 31); `buildCompositionDeps` (`makeDecisionModel` for `typesafe`, `makeRelevanceDecision` for `sap-aicore` — Task 24).
+- Consumes: `mcpToolsVariants`, `ComposedToolsProfile`, facets, text composers, `EnumValueToolIndexer`, discriminators, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts (libs sources); `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`packages/llm-agent-reranker/src`); `vectorizeMcpTools` (`ns.binding`); `evaluateRetrieval` (Task 31); `TypeSafeDecisionModel` (constructed directly for `typesafe`, as `rag-eval.ts` does today), `buildCompositionDeps(…).makeRelevanceDecision` for `sap-aicore` (Task 24).
 - Produces:
   ```ts
   export interface ProfileArmFlags { variant?: string; indexer?: 'faceted' | 'enum-values'; facets?: string[]; text?: 'parameter-names' | 'enum-values' | 'schema'; discriminator?: string; maxValues?: number; intents?: 'off' | 'record' | 'companion'; intentsFile?: string; poolItems?: number; reranker?: 'none' | 'decision'; cut?: string; budgetTokens?: number }
@@ -12895,7 +13249,7 @@ export async function runProfileArm(
 Edits to `rag-eval.ts`:
 - `interface Case { query: string; expect: string[]; required?: string[][] }` (an optional `required` field in the queries file — AND of OR-groups).
 - add to the `parseArgs` options: `variant`, `indexer`, `facets`, `text` (`parameter-names` | `enum-values` | `schema`), `discriminator`, `'max-values'`, `intents`, `'intents-file'`, `'pool-items'`, `cut`, `'budget-tokens'`, `'decision-provider'` (`typesafe` | `sap-aicore`, default `typesafe`), `'rerank-deployment'`, `'rerank-model'`, `'rerank-credential-ref'` (all `{ type: 'string' }`), and allow `--reranker none|decision` alongside the existing values (`decision` = Jev or Cohere by `--decision-provider`).
-- one decision per run, picked like the server's `decision:` section, and of its provider's kind: `--decision-provider typesafe` → the existing `TypeSafeDecisionModel` construction (`staticApiKey(process.env.DECISION_API_KEY ?? '')`), a probability decision; `--decision-provider sap-aicore` → `buildCompositionDeps(process.env).makeRelevanceDecision({ provider: 'sap-aicore', deploymentId: <--rerank-deployment>, model: <--rerank-model>, ...(credentialRef ? { credentialRef } : {}) })` (default ref `DECISION` → `DECISION_SERVICE_KEY`; a missing `--rerank-deployment` / `--rerank-model` skips the arm with a printed reason, like a missing key), a relevance decision. The existing `buildReranker` for `--reranker decision` arms builds `ProbabilityReranker` or `RelevanceReranker` by that kind (imports switch from libs' deprecated names to `packages/llm-agent-reranker/src`), so the 30.1.0 rerank arms can be measured with Cohere too.
+- one decision per run, picked like the server's `decision:` section, and of its provider's kind: `--decision-provider typesafe` → the existing `TypeSafeDecisionModel` construction (`staticApiKey(process.env.DECISION_API_KEY ?? '')`), a probability decision; `--decision-provider sap-aicore` → `buildCompositionDeps(process.env).makeRelevanceDecision({ provider: 'sap-aicore', deploymentId: <--rerank-deployment>, model: <--rerank-model>, ...(credentialRef ? { credentialRef } : {}) })` (default ref `DECISION` → `DECISION_SERVICE_KEY`; a missing `--rerank-deployment` / `--rerank-model` skips the arm with a printed reason, like a missing key), a relevance decision. The existing `buildReranker` for `--reranker decision` arms builds `ProbabilityReranker` or `RelevanceReranker` by that kind (add `RelevanceReranker` to the `packages/llm-agent-reranker/src/index.js` import Task 4B already switched), so the 30.1.0 rerank arms can be measured with Cohere too.
 - when `--variant` or `--indexer` is given: build `ProfileArmDeps` — `decisionProvider` and the decision of its kind (`probabilityDecision` or `relevanceDecision`, lazily) — then, per matrix entry, call `runProfileArm(await buildProfileArm(flags, deps), { tools, cases, ks: [...REPORT_KS], makeStore: <the entry's existing makeRag path>, queryEmbedder: <the entry's resolved embedder> })` and print one row per k: `required-recall`, `avg items`, `avg prompt tokens`, `MRR`. The existing arms and their output are unchanged when no profile flag is given.
 
 `scripts/rag-eval/README.md`: add a "Profile arms" section listing the flags above (including `--text` with the C0 / C0e / C0s `compact` figures as the caveat, `--decision-provider` and the three `--rerank-*` flags for Cohere on SAP AI Core — a relevance decision, its scores not probabilities), the `required` field (`"required": [["CreateClass"], ["Activate", "ActivateObjects"]]`), the prompt-size column, `evaluateRetrieval` from `@mcp-abap-adt/llm-agent-libs/testing` for consumers, and the four acceptance runs of spec §14.3 (each env-gated; the hub's consumer check).
