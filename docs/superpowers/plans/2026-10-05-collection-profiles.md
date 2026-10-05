@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -4162,6 +4162,131 @@ Spec §10.5.9 (V1–V9), §10.5.6 L7 (models route), §13 B10; §10.5.12 U10 (de
     - both reject → one rejection naming both.
     - success → resolves, no restore, weights applied, `config_reload_applied` logged once (pinned).
     - the event boundary: `watcher.start()`, then the inner `ConfigWatcher` emits `reload` with a rejecting `drainWorkers` → after a turn of the event loop the log carries `{ event: 'config_reload_failed', error: /worker drain/ }` and no `config_reload_applied`; no unhandled rejection (the test registers `process.on('unhandledRejection', …)` and asserts it was not called).
+    - **serialized (D80)** — the same file, appended. `ConfigWatcher` debounces file events but does not await its listener, so two reloads can overlap; each transaction must snapshot only after the previous one settled. A harness whose agent config is a live object (`applyAgentUpdate` merges into it, `snapshotConfig` copies it and its restore puts the copy back) and whose `drainWorkers` returns a fresh deferred per call:
+      ```ts
+      // Add to the file's imports: `import type { EventEmitter } from 'node:events';`,
+      // `import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';`,
+      // `import { tmpdir } from 'node:os';`, `import { join } from 'node:path';`
+      // (each only if not already there). The helpers are prefixed `serial` / `Serial` so they cannot collide with the V6 cases' own helpers in this file. `test`, `assert` and `ConfigReloadWatcher`
+      // are imported by the cases above.
+      type SerialWeights = { vectorWeight?: number; keywordWeight?: number };
+      type SerialEntry = {
+        watcher: EventEmitter;
+        _onReload: (u: Record<string, unknown>) => Promise<void>;
+      };
+
+      function serialDeferred() {
+        let resolve!: () => void;
+        let reject!: (e: unknown) => void;
+        const promise = new Promise<void>((res, rej) => {
+          resolve = res;
+          reject = rej;
+        });
+        return { promise, resolve, reject };
+      }
+
+      const serialTurn = () => new Promise<void>((r) => setImmediate(r));
+
+      function serialHarness(t: { after(fn: () => void): void }) {
+        const dir = mkdtempSync(join(tmpdir(), 'reload-serial-'));
+        t.after(() => rmSync(dir, { recursive: true, force: true }));
+        const configFile = join(dir, 'smart-server.yaml');
+        writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
+        let live: Record<string, unknown> = { maxIterations: 10 };
+        const snapshots: Record<string, unknown>[] = [];
+        const weights: SerialWeights[] = [];
+        const events: Record<string, unknown>[] = [];
+        const drains: ReturnType<typeof serialDeferred>[] = [];
+        const watcher = new ConfigReloadWatcher({
+          configFile,
+          log: (e) => {
+            events.push(e);
+          },
+          applyAgentUpdate: (u) => {
+            live = { ...live, ...u };
+          },
+          mirrorCfg: () => {},
+          snapshotConfig: () => {
+            const before = { ...live };
+            snapshots.push(before);
+            return () => {
+              live = before;
+            };
+          },
+          drainWorkers: () => {
+            const d = serialDeferred();
+            drains.push(d);
+            return d.promise;
+          },
+          invalidateSessions: async () => {},
+          // findWeightedStore takes any object with an `updateWeights` function.
+          ragStores: {
+            tools: {
+              updateWeights: (w: SerialWeights) => {
+                weights.push(w);
+              },
+            },
+          },
+        });
+        // White-box: the inner ConfigWatcher (an EventEmitter) and the entry point.
+        const entry = watcher as unknown as SerialEntry;
+        return { watcher, entry, live: () => live, snapshots, weights, events, drains };
+      }
+
+      test("D80: reload B waits for reload A to settle; A's drain fails after B was queued → A restored and reported, then B applied — config and weights are B's", async (t) => {
+        const h = serialHarness(t);
+        const a = h.entry._onReload({ maxIterations: 25, vectorWeight: 0.3 });
+        const b = h.entry._onReload({ maxIterations: 40, vectorWeight: 0.7 });
+        await serialTurn();
+        assert.equal(h.drains.length, 1, 'B has not started while A is in flight');
+        assert.deepEqual(h.snapshots, [{ maxIterations: 10 }]);
+        assert.equal(h.live().maxIterations, 25, "A's provisional config is live");
+        h.drains[0].reject(new Error('close failed'));
+        await assert.rejects(a, /worker drain: Error: close failed/);
+        await serialTurn();
+        assert.equal(h.drains.length, 2, 'B started only after A settled');
+        assert.deepEqual(
+          h.snapshots[1],
+          { maxIterations: 10 },
+          "B's snapshot is the config A's restore left, not A's provisional one",
+        );
+        h.drains[1].resolve();
+        await b;
+        assert.equal(h.live().maxIterations, 40, "the final config is B's");
+        assert.deepEqual(h.weights, [{ vectorWeight: 0.7, keywordWeight: undefined }], "only B's weights");
+        assert.equal(h.events.filter((e) => e.event === 'config_reload_applied').length, 1);
+      });
+
+      test('D80: a failed reload does not block the next one; each is reported on its own at the event boundary', async (t) => {
+        const h = serialHarness(t);
+        let unhandled: unknown;
+        const onUnhandled = (r: unknown) => {
+          unhandled = r;
+        };
+        process.on('unhandledRejection', onUnhandled);
+        t.after(() => process.off('unhandledRejection', onUnhandled));
+        h.watcher.start();
+        t.after(() => h.watcher.stop());
+        h.entry.watcher.emit('reload', { maxIterations: 25 });
+        h.entry.watcher.emit('reload', { maxIterations: 40 });
+        await serialTurn();
+        assert.equal(h.drains.length, 1, 'the second reload is queued, not started');
+        h.drains[0].reject(new Error('close failed'));
+        await serialTurn();
+        assert.equal(h.drains.length, 2, 'the failed reload did not block the next one');
+        h.drains[1].resolve();
+        await serialTurn();
+        const outcomes = h.events
+          .filter((e) => e.event === 'config_reload_failed' || e.event === 'config_reload_applied')
+          .map((e) => e.event);
+        assert.deepEqual(outcomes, ['config_reload_failed', 'config_reload_applied']);
+        const failed = h.events.find((e) => e.event === 'config_reload_failed');
+        assert.match(String(failed?.error), /worker drain: Error: close failed/);
+        assert.equal(h.live().maxIterations, 40);
+        assert.equal(unhandled, undefined);
+      });
+      ```
+      Today (Task 4M before this change): the first test fails at `h.drains.length` (B starts at once, its snapshot is A's provisional `{ maxIterations: 25 }`, and A's restore leaves `maxIterations: 10` with B's weights applied).
   - V7: the eager tool catalog load fails at start → the server's `start()` rejects with the `McpError`.
   - V8 (`cli-flags.test.ts`): `--env /no/such/file` → exit code 1 with the path in stderr; `--secrets-dir /no/such/dir` → exit code 1; no `--env` and no `.env` → starts (kept, pinned).
   - V9: a stepper role whose LLM config does not resolve → `ConfigValidationError` naming the role. Today: the stub OpenAI model.
@@ -4191,7 +4316,34 @@ Spec §10.5.9 (V1–V9), §10.5.6 L7 (models route), §13 B10; §10.5.12 U10 (de
       });
     });
     ```
-  - `_onReload` becomes `private async _onReload(update: HotReloadableConfig): Promise<void>` with the doc "The reload entry point (spec §14.1 D39, §10.5.9 V6 D77). Resolves when the reload is applied: the agent update, the worker drain, the session invalidation and the RAG weights. Rejects when the drain or the invalidation fails — after restoring the previous config, without applying the weights." Its body: `log({ event: 'config_reload', update })`; `const restore = this.deps.snapshotConfig();`; the agent update and the mirror exactly as today; then, replacing the two fire-and-forget `.catch(log)` calls:
+  - **Reloads run one at a time (spec D80).** `ConfigWatcher` debounces file events but does not await its listener, so without a queue reload B snapshots reload A's provisional config while A waits on a slow drain, and A's later restore overwrites B's config while B's weights stay. The watcher therefore keeps one queue of complete transactions; `_onReload` is the queued entry point and the transaction itself moves to `_applyReload`:
+    ```ts
+    /** Settles when the last queued reload transaction settled (spec V6, D80). */
+    private _reloadTail: Promise<void> = Promise.resolve();
+
+    /**
+     * The reload entry point (spec §14.1 D39, §10.5.9 V6 D77, D80). Queues one
+     * complete reload transaction (`_applyReload`) behind the previous one and
+     * returns that transaction's own promise: it starts — and takes its snapshot —
+     * only after the previous transaction settled, so a restore always returns to
+     * the config the previous transaction left. Resolves when this reload is
+     * applied; rejects when it failed (the previous config restored).
+     */
+    private _onReload(update: HotReloadableConfig): Promise<void> {
+      const run = this._reloadTail.then(() => this._applyReload(update));
+      // The queue waits only for `run` to settle. Its rejection is not handled
+      // here: it is `run`'s, returned to the caller (the event boundary logs it
+      // as config_reload_failed; a direct caller awaits it). So a failed
+      // transaction is reported on its own and never blocks the next one.
+      this._reloadTail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    }
+    ```
+    The listener above is unchanged (it calls `this._onReload(update).catch(…)`), so every event joins the queue. `PUT /v1/config` does not go through this watcher — `handleConfigUpdate` (`http/config-route-handler.ts`) awaits its own drain and invalidation per request — so it does not join this queue (spec V6).
+  - `_applyReload` is `private async _applyReload(update: HotReloadableConfig): Promise<void>` with the doc "One reload transaction (spec §10.5.9 V6 D77). Run only by the queue in `_onReload` (D80). Resolves when the reload is applied: the agent update, the worker drain, the session invalidation and the RAG weights. Rejects when the drain or the invalidation fails — after restoring the previous config, without applying the weights." Its body (the former `_onReload` body): `log({ event: 'config_reload', update })`; `const restore = this.deps.snapshotConfig();`; the agent update and the mirror exactly as today; then, replacing the two fire-and-forget `.catch(log)` calls:
     ```ts
     // Both run (each settles), then one verdict — a failure is never swallowed
     // into "applied" (spec V6, D77). Called synchronously, as before, so the
@@ -14278,7 +14430,7 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` `buildSubAgent` (`injected.mcpClientDescriptors?` / `configuredSlotCount?`; `withToolNamespace`; clients with descriptors → `withMcpServers`; **the worker's own bound store filled before `subBuilder.build()`**, D35)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts` (append the D38 startup fill on `yamlBuilderConnect`; reuses its stub MCP server)
-- Unchanged: `packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts` — Task 4M made `_onReload` the awaitable entry point that rejects on a failed drain / invalidation after restoring the previous config (spec V6, D77); this task only holds the watcher
+- Unchanged: `packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts` — Task 4M made `_onReload` the awaitable, queued entry point (one reload transaction at a time, D80) that rejects on a failed drain / invalidation after restoring the previous config (spec V6, D77); this task only holds the watcher
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts` (the watcher's `reload` event reaches `_onReload`, D39; a failed drain / invalidation at the event boundary, D77)
 
 **Interfaces:**
@@ -15837,7 +15989,7 @@ In `smart-server.ts`:
 - the reload entry point the hot-reload test drives (D39):
   - field, beside `_serverToolCatalog`: `private _configReload?: ConfigReloadWatcher;`
   - in the `if (this.cfg.configFile) {` block: after `reloadWatcher.start();` add `this._configReload = reloadWatcher;` and replace `closeFns.push(() => reloadWatcher.stop());` with `closeFns.push(() => this._configReload?.stop());` (the field is read, so `noUnusedLocals` accepts it).
-- `config-reload-watcher.ts` — **no change in this task.** Task 4M already gave it its final shape (spec V6, D77), which is what this task's hot-reload test drives: `_onReload` is the awaitable reload entry point (D39); it applies the agent update, awaits the worker drain and the session invalidation, and on a failure of either **restores** the pre-reload config (`snapshotConfig`), skips the RAG weights and **rejects** with an error naming the failure; the watcher's `reload` listener is the one place the rejection is handled (`config_reload_failed` through the server's log sink); `config_reload_applied` only on success. This task must not add a `.catch` that turns the drain or invalidation rejection into a resolved promise — that is the V6 regression (spec D77).
+- `config-reload-watcher.ts` — **no change in this task.** Task 4M already gave it its final shape (spec V6, D77, D80), which is what this task's hot-reload test drives: `_onReload` is the awaitable reload entry point (D39), queued behind the previous reload (D80); it applies the agent update, awaits the worker drain and the session invalidation, and on a failure of either **restores** the pre-reload config (`snapshotConfig`), skips the RAG weights and **rejects** with an error naming the failure; the watcher's `reload` listener is the one place the rejection is handled (`config_reload_failed` through the server's log sink); `config_reload_applied` only on success. This task must not add a `.catch` that turns the drain or invalidation rejection into a resolved promise — that is the V6 regression (spec D77).
 - `__tests__/config-reload-entry.test.ts` (new, D39 — the one link the server test skips — and the event boundary of V6, D77):
   ```ts
   /**
@@ -15907,9 +16059,10 @@ In `smart-server.ts`:
     t.after(() => watcher.stop());
     inner.watcher.emit('reload', { maxIterations: 25 });
     assert.deepEqual(reached, [{ maxIterations: 25 }], 'the event reached the entry point');
-    // Called synchronously by the entry point, before its first await.
-    assert.deepEqual(seen, ['agent', 'drain', 'invalidate']);
+    // The transaction runs from the reload queue (D80), so after a turn, not in
+    // the emit's own call stack.
     await new Promise((r) => setImmediate(r));
+    assert.deepEqual(seen, ['agent', 'drain', 'invalidate']);
     assert.ok(events.some((e) => e.event === 'config_reload_applied'));
   });
 
@@ -19900,6 +20053,12 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 |---|---|---|
 | D79 | The 30.1.0 tools path does not retry a failed bulk write (`ok: false` or a throw) tool by tool: the batch fails, every tool of it in `failed`, `complete: false` with `ToolCatalogStatus.writeFailure` and the reason in the summary line; U7's embedding retry unchanged (spec §10.5.4 R14, §13 B16) | Task 19B Steps 6–10 (the contract field, `listAndIndexTools`, the tests replacing the retry test); Task 33 Step 8b (`docs/INTEGRATION.md`); Task 34 (B16) |
 
+## Review finding on 2026-10-06 — reload transactions serialized (spec §17.27)
+
+| # | Decision | Done in |
+|---|---|---|
+| D80 | Config reloads run one at a time: the watcher queues complete reload transactions (snapshot only after the previous one settled); a failed one rejects and is reported on its own (`config_reload_failed`) and never blocks later ones; `PUT /v1/config` (`handleConfigUpdate`) is a separate path, not queued | Task 4M (V6 — `_onReload` the queue, `_applyReload` the transaction; the two D80 tests in `config-reload-failure.test.ts`); Task 23A (the entry test asserts the transaction after a turn) |
+
 ## Self-review (done while writing)
 
 - **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename without an alias (§3.8, §13, D30, D58) → 20A; the RAG implementations' move (§11.3, D57) → 1A; no re-exports (§11.4, D59; the pre-existing ones, S12) → 1A, 4B, 4D, 35; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
@@ -19917,3 +20076,4 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for the fail-loud sweep (spec §10.5, §13 B1–B11, §17.24 — D69–D74).** Ten new tasks, 4F–4O, after Task 4E (every file they touch is in its final package: `preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` since Task 1A; the rerankers in `llm-agent-reranker` since Task 4B) and before Task 5, so every later task builds on code that fails loud; 4F (N1) first, because no later stage error reaches a consumer without it. Each item: a failing test showing today's fake success, the fix, the gate; each task names the grep for existing tests that pinned the fallback. `onFailure` is removed **in place** (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33): no task introduces it to remove it later; Task 12's `Unit.reranked` and the two-scales branch of `mergeByScore` go with it (one scale per run); Task 29 counts `rerank_error` from `rerankOrError` (Task 4I's rename). The carriers keep signatures: `McpToolRegistry.resolve` throws (Task 4F's executor keeps a thrown `OrchestratorError`'s code) instead of growing an error branch; the only contract additions are `PIPELINE_FAILURE_CODES` and `SkillLoadResult.carried?` (spec §3.8). U1–U10 untouched (Global Constraints). Review Focus 12 added. Every commit builds: 4F adds the codes before any task uses them; 4G–4O touch disjoint files except `agent.ts` / `rag-orchestrator.ts` / `tool-loop.ts` / `smart-server.ts`, edited in different functions in task order.
 - **Rework for the user's U1–U10 decisions (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24).** Extended in place: Task 4J (U1 — `FallbackLlmCallStrategy`'s second, optional constructor argument; the server's call compiles unchanged), Task 4K (U5 — `HybridDispatch`), Task 4L (U2 — the `strict` default in the host and the server's config), Task 4M (U10 — one event in the worker wire). New: Task 4P (U6 — `lazy` without `fallback`, after 4O), Task 4Q (U8 — `IToolAvailabilityPolicy`, after 4P and before Task 5), Task 19B (U7 — `batchFailures`, after 19A because it needs `storeItems`, both bindings and `indexToolsThroughProfile`). Each: failing tests first (incl. `@ts-expect-error` typechecks for the two removed members), the gate (`tsc -b` + the touched packages' suites), one commit. Compile order holds: 4P and 4Q touch files no earlier task leaves half-done; 4Q's `tool-loop-core.ts` / `tool-loop.ts` / `agent.ts` edits come after 4F–4G's in those files; every field 19B adds is optional, so the object literals of Tasks 3, 15, 17, 19 and 19A keep compiling. Task 33 Step 8b documents every mode as decided (and a new grep for `toolUnavailableTtlMs` / `fallback:` / `strict: false`); Task 34's Breaking table has 74 lines and the behaviour table B12–B15. U3, U4 untouched; U9 is Task 0A.
 - **Rework for D79 (spec §17.26 — decided by the user on 2026-10-06).** Task 19B gains Steps 6–10, its own TDD cycle after Steps 1–5 in the same function and test file: the failing tests (bulk write `ok: false` / throwing while per-tool writes would succeed → no per-tool write, `complete: false`, `writeFailure`), the optional contract field `ToolCatalogStatus.writeFailure` (every earlier object literal of `ToolCatalogStatus` still compiles; the test file is not type-checked by `tsc -b` — the package excludes tests —, so Step 7 fails on behaviour, not on compile, and Step 8's field makes the tests' `summary?.writeFailure` type-correct for the editor and Biome), the `else` branch in `listAndIndexTools`, the gate (`tsc -b` + the three suites, a grep that the retry test and comment are gone) and a `fix(libs)` commit. Task 19 (the rename to `listAndIndexTools`) and 19A touch no line Step 8 changes; Task 25 (F1) edits the embedder read (~168–171), above it. Task 33 Step 8b and Task 34 (B16) document it.
+- **Rework for D80 (spec §17.27 — review finding of 2026-10-06).** Task 4M: `_onReload` becomes the queued entry point over a promise chain (`_reloadTail`), the D77 transaction moves unchanged to `_applyReload`; the listener and its `config_reload_failed` boundary are unchanged. Two new tests (overlapping reloads with a deferred drain; a failed reload followed by a successful one through the event). Task 23A's entry test moves its `seen` assertion after a turn, since the transaction no longer runs in the emit's call stack; its other assertions and the server's `_onReload` callers are unaffected (still `Promise<void>`). `tsc`: `_reloadTail` is read in `_onReload` (`noUnusedLocals`), `run.then(() => undefined, () => undefined)` is `Promise<void>`.
