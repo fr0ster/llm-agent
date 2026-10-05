@@ -1288,7 +1288,7 @@ interface StagedRetrievalOptions {
     onFailure: 'stage1' | 'error';      // 'stage1' = 30.1.0 behaviour
     keepStage1Top?: number;             // §4.7, default 0; counted inside k; never with ScoreFloorCut
   };
-  decompose?: {                 // §4.5; absent → the query runs as is (one run)
+  decompose?: {                 // §4.5; absent → the query runs as is (one run); never with ScoreFloorCut (D63)
     decomposer: IQueryDecomposer;
     queryEmbedder: IQueryEmbedder;      // embeds each sub-query
   };
@@ -1370,8 +1370,23 @@ decomposer.
 | check | each `k` an integer ≥ 1, each `text` non-empty, `Σ k ≤ budget`; else a `RagError('…', 'DECOMPOSE_ERROR')` |
 | `[]` | the query runs as is with the whole budget (same as no decomposer) |
 | run | each sub-query through §4.3 up to hydration, in parallel: embedded with `queryEmbedder`, reranked against its **own** text, its first `k` items kept |
-| merge | union in sub-query order, de-duplicated by owner-qualified item (best score kept) |
-| cut | the `IItemCut`, **once**, over the union, then the result is truncated to `budget` → **at most `budget` ≤ k items** |
+| merge | **union in sub-query order**: each sub-query's own ranked list (its own `k` items), one after the other; an item already in the union (same owner-qualified item) **stays at its first occurrence, with that occurrence's score** — a later occurrence is dropped, whatever its score (D63) |
+| cut | the `IItemCut`, **once**, over the union by **position**, then the result is truncated to `budget` → **at most `budget` ≤ k items** |
+
+**No score is compared across sub-queries** (D63). A score is comparable only for the same query
+(and model) — the relevance contract says so (§3.9, D28), and a stage-1 search score is no more
+comparable between two query texts. Each sub-query is reranked against its own text, so two
+sub-queries' scores are on unrelated scales. Hence:
+
+- the merge never picks the best score of a duplicate and never re-sorts the union by score — the
+  order is sub-query order, then each sub-query's own rank;
+- **a decomposer with `ScoreFloorCut` is rejected** when `StagedRetrieval` is constructed:
+  `StagedRetrieval: a decomposer cannot be combined with ScoreFloorCut — scores of different
+  sub-queries are not comparable (§4.5, D63); a threshold over the merged union would compare
+  them`. The YAML validator refuses the same combination first (§6.2). The cuts allowed with a
+  decomposer read only position (`TopItemsCut`, `FixedItemsCut`) or position and size
+  (`TokenBudgetCut`). A consumer's own `IItemCut` behind a decomposer receives the union in this
+  order; the scores it sees are not comparable across sub-queries, and nothing here re-sorts them.
 
 - A decomposer error or a failed check is **returned**, never swallowed: the retrieval fails with
   the error, counted as `outcome=decompose_error` and on the span (§9). No silent fall-back to the
@@ -1488,7 +1503,7 @@ including a consumer's own.
 | candidate pool | `ItemPool(n?)` | `n` items per source; no `n` → the caller's k (§4.4, D56) |
 | collapse | `MaxScoreCollapse` | item score = best record score (measured winner). Count / RRF are **not** shipped. |
 | cut | `TopItemsCut` | first `requestedK` items (default); `limit` = `requestedK` |
-| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)`. Under a reranker only with `onFailure: 'error'`; never with `keepStage1Top` > 0 — both rejected at construction (§4.7) |
+| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)`. Under a reranker only with `onFailure: 'error'`; never with `keepStage1Top` > 0 (§4.7); never with a decomposer (§4.5, D63) — all rejected at construction |
 | cut | `FixedItemsCut(n)` | a **ceiling**: first `min(requestedK, n)` items — for a consumer that wants fewer than the caller's k (its own calibration); it never raises the caller's k; `limit` = `min(requestedK, n)` |
 | cut | `TokenBudgetCut({ budgetTokens, maxItems?, estimator? })` | rank-order prefix of whole items while their summed size ≤ `budgetTokens`, at most `limit` items; `limit` = `min(requestedK, maxItems ?? requestedK)`; implements `ISizeBoundedCut` (§4.10) |
 | query decomposition | — | **none shipped**; the consumer injects its own `IQueryDecomposer` (§4.5) |
@@ -2029,6 +2044,8 @@ rag:
 - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
 - `compose.cut: { score-floor: … }` with a reranker and `onFailure` not `error` (absent = `stage1`)
   (§4.7, F5);
+- `compose.cut: { score-floor: … }` with a decomposer — `rag.profiles.tools.decomposer`, or
+  `compose.decomposer` other than `none` (§4.5, D63);
 - `faceted-rerank` without `poolItems`; a non-positive `poolItems` or `maxItems`; `poolItems` or
   `maxItems` with `baseline` or with `compose` (there they are `compose.pool` / `compose.cut`); an
   `enum-values` indexer without `maxValues`; non-positive `budgetTokens`;
@@ -3792,7 +3809,11 @@ again, written either way.
   policies; reranker output check (wrong count, duplicate, non-finite → `RERANK_ERROR`); the cut
   applied once, at most `min(k, cut.limit(k))` items returned; **decomposer:** none → one run; `[]` →
   one run with the whole budget; each sub-query reranked against its own text and kept to its
-  `k`; union de-duplicated by owner-qualified item; budgets summing to > k, `k < 1`, empty text or
+  `k`; union in sub-query order, de-duplicated by owner-qualified item — **two sub-queries
+  returning the same item with different scores → it is kept once, at its first position with its
+  first score** (no best-score selection, no re-sort), and at most `budget` ≤ k items; **a
+  decomposer with `ScoreFloorCut` throws at construction** with its message (also with a reranker
+  under `onFailure: 'error'`); budgets summing to > k, `k < 1`, empty text or
   a decomposer error → `DECOMPOSE_ERROR`, counted, never a silent fall-back; at most `budget`
   items with any decomposer; `keepStage1Top` counted inside k; collapse keys on the owner-qualified item;
   `keepStage1Top`: pinned items first in stage-1 order, each carrying its **reranked** score (never
@@ -3803,7 +3824,8 @@ again, written either way.
   `keepStage1Top` returns the stage-1 result, ids and scores; every cut; telemetry (span
   attributes, counter, session step).
 - Config validator: `compose` with `cut: { score-floor: … }` and a reranker refused unless
-  `onFailure: error`.
+  `onFailure: error`; `compose` with `cut: { score-floor: … }` and a decomposer (profile-level
+  `decomposer`, or `compose.decomposer` other than `none`) refused (D63).
 - `SapAiCoreRelevanceDecision` (injected `fetch`): URL, `AI-Resource-Group` header (default
   `default`), bearer asked per call, ONE call per `score`, body `{model, query, documents, top_n}`
   with documents in passage order; `results[{index, relevance_score}]` → `scores[{index, score}]`;
@@ -4447,3 +4469,9 @@ Migration: 18 more lines (§13, lines 52–69; 69 with S12).
 | # | Decision | Where |
 |---|---|---|
 | D62 | **`FallbackRag.writer()` returns `undefined` when its primary has no writer** (`if (!pw) return undefined;`), **even when the fallback has one** — no reported success for writes the primary never receives. Decides the item §10.4 left "reported, not decided" after D52 (whose rule covers the optional members only). Before, over a writerless primary it returned a writer whose `upsertRaw` / `deleteByIdRaw` / `clearAll` / `upsertPrecomputedRaw` returned `ok: true` for the primary and wrote only the fallback. Concrete case: the builder's circuit-breaker loop wraps every registered store in `FallbackRag(store, new InMemoryRag(), breaker)`, so the `relevant-skills:<group>` collections (`skillsRagSource`, no writer) got a writer from the wrap. Every `writer()` caller in `packages/` checked (§10.4): registry delete and the edit strategies unchanged (provider-only path; editors built from the unwrapped store); the 30.1.0 tools / skills vectorization skips a writerless tools store (status unknown) instead of reporting it complete; the history upsert logs `history_upsert_failed` instead of a silent fallback-only write; `StrategyRag` passes `undefined` through; the corpus load refuses the store. No contract change (`IRag.writer` is optional and may return `undefined`); a behaviour change of one implementation (§13 note, changelog "Fixed"). Test: primary without a writer + fallback with one → `writer()` is `undefined` | §1, §3.8, §10.4, §13, §14.1 |
+
+### 17.21 Review finding on 2026-10-05 — decomposed results merge without cross-query scores
+
+| # | Decision | Where |
+|---|---|---|
+| D63 | **The merge of sub-query results never compares scores across sub-queries; a decomposer never goes with `ScoreFloorCut`.** Scores are comparable only for the same query (§3.9, D28), and each sub-query is reranked against its own text. The previous merge kept a duplicate item's **best** score across sub-queries — a comparison the contract does not allow — and a `ScoreFloorCut` over the merged union would apply one threshold to scores of different queries. Now: (a) the union is built in sub-query order, each sub-query's own ranked list (its own `k`); a duplicate item stays at its **first** occurrence with that occurrence's score; then the one cut runs over the union by position and the result is truncated to `budget` ≤ k. (b) `StagedRetrieval` with a `decompose` and a `ScoreFloorCut` throws at construction (`StagedRetrieval: a decomposer cannot be combined with ScoreFloorCut — …`), like `keepStage1Top` + `ScoreFloorCut` (§4.7); the YAML validator refuses `compose.cut: { score-floor }` with a profile-level `decomposer` or a `compose.decomposer` other than `none`. Tests: two sub-queries with a floor → rejected at construction; the same item in both sub-queries with different scores → kept once at its first position and score; at most `budget` ≤ k items | §4.2, §4.5, §4.9, §6.2, §14.1 |
