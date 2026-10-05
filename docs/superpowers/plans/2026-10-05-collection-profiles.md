@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a config change applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -98,7 +98,7 @@ The twelve inputs the spec implies, most likely to bite a user, each pinned by a
 
 **`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`).
 
-**`packages/llm-agent-server-libs/src/smart-agent/`** — Task 0A: `smart-server.ts` (the `withCircuitBreakers` call removed), `config-reload-watcher.ts` (a doc comment), `__tests__/config-reload-weights.test.ts`, `__tests__/session-breakers.test.ts`, `__tests__/smart-server-session-rag-registry.test.ts`, `session-lifecycle/__tests__/session-rag-registry.test.ts`; `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam — `makeDecisionModel` removed, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable, rejecting on a failed drain / invalidation after restoring the previous config, Task 4M — V6, D77), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a construction that fails anywhere — fill, build, backfill — leaves no cached worker, D47; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2), `http/chat-route-handler.ts` + `http/response-helpers.ts` (`StopReason` from `llm-agent`, Task 4D); `package.json` (peer `llm-agent-reranker`; `./legacy/flat` removed from `exports`, Task 4D). **`packages/llm-agent-server-libs/src/legacy/`** — `flat.ts` DELETED, `linear.ts` / `dag.ts` lose their libs re-export (Task 4D).
+**`packages/llm-agent-server-libs/src/smart-agent/`** — Task 0A: `smart-server.ts` (the `withCircuitBreakers` call removed), `config-reload-watcher.ts` (a doc comment), `__tests__/config-reload-weights.test.ts`, `__tests__/session-breakers.test.ts`, `__tests__/smart-server-session-rag-registry.test.ts`, `session-lifecycle/__tests__/session-rag-registry.test.ts`; `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam — `makeDecisionModel` removed, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable and queued, rejecting on a failed drain / invalidation — nothing restored, the server not ready until a config change applies, Task 4M — V6, D77, D80, D82), `config-transaction-queue.ts` (NEW, Task 4M: the server's one config queue and its *config not applied* state, D80, D82), `http/{route-table,response-helpers,health-route-handler}.ts` (the not-ready gate and `/health`'s `configNotApplied`, Task 4M — D82), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a construction that fails anywhere — fill, build, backfill — leaves no cached worker, D47; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2), `http/chat-route-handler.ts` + `http/response-helpers.ts` (`StopReason` from `llm-agent`, Task 4D); `package.json` (peer `llm-agent-reranker`; `./legacy/flat` removed from `exports`, Task 4D). **`packages/llm-agent-server-libs/src/legacy/`** — `flat.ts` DELETED, `linear.ts` / `dag.ts` lose their libs re-export (Task 4D).
 
 **`packages/llm-agent-server/src/composition/`** — `make-relevance-decision.ts` (NEW: `createMakeRelevanceDecision`, the `sap-aicore` arm), `make-probability-decision.ts` (RENAMED from `make-decision-model.ts`, Task 20A: `createMakeProbabilityDecision`; names the other seam for `sap-aicore`, Task 24), `index.ts`, `__tests__/make-relevance-decision.test.ts` (NEW), `__tests__/make-probability-decision.test.ts` (RENAMED). **`packages/llm-agent-server/src/`** — `index.ts` DELETED (unreachable `export *` of server-libs, Task 4D); `smart-agent/server.ts`, `smart-agent/__tests__/server.test.ts` (`StopReason`, `OrchestratorError`, `SmartAgentResponse` from `llm-agent`, Task 4D).
 
@@ -3520,7 +3520,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Fail-loud tasks 4F–4O — overview
 
-Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), §13 (behaviour table B1–B18; B16 is D79, Task 19B; B17 is V10, Task 4M; B18 is D81, Task 4M). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR"; the user's decisions of 2026-10-05 on U1–U10. These twelve tasks (4F–4Q) run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
+Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), §13 (behaviour table B1–B18; B16 is D79, Task 19B; B17 is V6 / V10 with D82, Task 4M; B18 is withdrawn by D82). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR"; the user's decisions of 2026-10-05 on U1–U10. These twelve tasks (4F–4Q) run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
 
 **The same discipline in every task (TDD per item):**
 1. a failing test that shows today's fake success — the empty stream, the `ok: true` with original text, the skipped store, the 200;
@@ -4144,28 +4144,89 @@ A test that relied on the carry-forward without passing `strict` now passes `str
 
 ## Task 4M: Server (server-libs + server)
 
-Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28; the startup agent's update inside V10's rollback and an atomic `SmartAgent.reconfigure` are D81, spec §17.29), §10.5.6 L7 (models route), §13 B10, B17, B18; §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
+Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28; a failed config change is an error that leaves the server not ready, with no rollback — D82, decided by the user on 2026-10-06, spec §17.30, which withdraws D77's restore and D81), §10.5.10 (the config-not-applied readiness, D82), §10.5.6 L7 (models route), §13 B10, B17 (B18 withdrawn); §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` (~90), `controller/session-bundle.ts` (~57), `controller/run-scope.ts` (~79), `controller/artifacts.ts` (~261), `smart-server.ts` (~3112 session meta), `config-reload-watcher.ts` (~132), `tools-rag-handle.ts` (~90 eager load), `build-stepper-root.ts` (~97, ~234), `http/models-route-handler.ts` (~17, ~48)
 - Modify: `packages/llm-agent-server/src/smart-agent/cli.ts` (~146)
-- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-failure.test.ts` (V6), `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/models-route-fail-loud.test.ts`; extend `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts`; modify `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-weights.test.ts` (V6: `snapshotConfig`, awaited reloads)
+- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-failure.test.ts` (V6), `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/models-route-fail-loud.test.ts`; extend `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts`; modify `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-weights.test.ts` (V6: the queue, awaited reloads)
 - Modify (U10): `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (the worker wire, ~2240–2262); Create `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-shared-clients-log.test.ts`
-- Create (D80, V10): `packages/llm-agent-server-libs/src/smart-agent/config-transaction-queue.ts` (the server's one config queue); Modify: `packages/llm-agent-server-libs/src/smart-agent/http/config-route-handler.ts` (`IConfigUpdateTarget.transactions` / `snapshotConfig`, the `PUT` transaction), `packages/llm-agent-server-libs/src/smart-agent/llm/llm-circuit-breakers.ts` (`snapshot()`), `smart-server.ts` (the `_configTransactions` field, the watcher's and the route's deps)
-- Modify (D81): `packages/llm-agent-libs/src/agent.ts` (`SmartAgent.reconfigure`, ~336–365: atomic); extend `packages/llm-agent-libs/src/__tests__/reconfigure.test.ts`
-- Create (V10): `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/config-route-transactions.test.ts`; extend `packages/llm-agent-server-libs/src/smart-agent/__tests__/llm-circuit-breakers.test.ts` (`snapshot()`). The real-server PUT tests (`config-endpoints.test.ts`, `smart-server-config-reload.test.ts`) are unchanged and must stay green (their drains and invalidations succeed)
+- Create (D80, D82, V10): `packages/llm-agent-server-libs/src/smart-agent/config-transaction-queue.ts` (the server's one config queue and its *config not applied* state); Modify: `packages/llm-agent-server-libs/src/smart-agent/http/config-route-handler.ts` (`IConfigUpdateTarget.transactions`, the `PUT` transaction), `smart-server.ts` (the `_configTransactions` field, the watcher's and the route's deps, the readiness in `_handle`, the chat gates' message)
+- Modify (D82, the not-ready gate): `packages/llm-agent-server-libs/src/smart-agent/http/route-table.ts` (`RouteContext.notReadyMessage?`, `.configNotApplied?`), `http/response-helpers.ts` (`writeNotReady`'s optional `message`), `http/health-route-handler.ts` (`configNotApplied` in the body)
+- Create (V10, D82): `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-transaction-queue.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/config-route-transactions.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-not-ready.test.ts`. The real-server PUT tests (`config-endpoints.test.ts`, `smart-server-config-reload.test.ts`) are unchanged and must stay green (their drains and invalidations succeed). No libs file changes: `SmartAgent.reconfigure` stays as in 30.1.0 (D81 withdrawn by D82); `LlmCircuitBreakers` gets no `snapshot()` (it existed only for the restore)
 
 - [ ] **Step 1: Write the failing tests**
   - V1: a session whose persisted collection's `openCollection` answers `ok: false` (`CollectionNotFoundError`) → the session's creation rejects with it. Today: the session without the collection.
   - V2, V3, V4: a malformed bundle line / terminal entry / an artifact claim without `writeOrdinal` → `OrchestratorError` (or `RagError` where the module already uses one) with code `STATE_CORRUPT` naming the session / entry / claim. Today: an older / empty bundle, a skip, a drop.
   - V5: a session-meta store whose `recordSessionStart` throws → the chat request answers 500 `jsonError`; `recordSessionEnd` throwing → the response is unaffected and `session_meta_end_failed` is logged.
-  - V6 (`config-reload-failure.test.ts`, the watcher driven through `_onReload`, which this task makes awaitable — spec V6, D77): deps recording `applyAgentUpdate` / `mirrorCfg` calls, a `snapshotConfig` whose restore records `'restored'`, a weighted store (as in `config-reload-weights.test.ts`), and `transactions: new ConfigTransactionQueue()` (`import { ConfigTransactionQueue } from '../config-transaction-queue.js';` — every watcher in this task's tests gets its own queue, as the server injects one, D80):
-    - `drainWorkers` rejects with `new Error('close failed')` → `await assert.rejects(_onReload({ maxIterations: 25, vectorWeight: 0.3 }), /worker drain: Error: close failed/)`; the restore ran (after the update was applied); the store's `updateWeights` was never called; the log has no `config_reload_applied`. Today: resolves (`void`), weights applied, `config_reload_drain_error` logged only.
+  - **The server's one config queue and its readiness** (`config-transaction-queue.test.ts`, new; spec §10.5.10, D80, D82):
+    ```ts
+    /**
+     * Spec §10.5.9 V6, V10, §10.5.10 (D80, D82): the server's one config queue
+     * runs transactions one at a time and holds the "config not applied" state —
+     * set when a transaction rejects, cleared when a later one resolves.
+     */
+    import assert from 'node:assert/strict';
+    import { test } from 'node:test';
+    import { ConfigTransactionQueue } from '../config-transaction-queue.js';
+
+    test('empty at construction — the server starts ready from its config (D82)', () => {
+      assert.equal(new ConfigTransactionQueue().notApplied, undefined);
+    });
+
+    test('a rejected transaction sets notApplied with its message and source; the rejection is the caller\'s', async () => {
+      const q = new ConfigTransactionQueue();
+      await assert.rejects(
+        q.run('reload', async () => {
+          throw new Error('config reload failed — worker drain: Error: close failed');
+        }),
+        /worker drain/,
+      );
+      assert.equal(q.notApplied?.source, 'reload');
+      assert.match(q.notApplied?.reason ?? '', /^config reload failed — worker drain: Error: close failed$/);
+      assert.ok(!Number.isNaN(Date.parse(q.notApplied?.at ?? '')), 'at is an ISO timestamp');
+    });
+
+    test('a later transaction that resolves clears it; one that rejects replaces it', async () => {
+      const q = new ConfigTransactionQueue();
+      await assert.rejects(q.run('put', async () => { throw new Error('a'); }));
+      await assert.rejects(q.run('reload', async () => { throw new Error('b'); }));
+      assert.deepEqual([q.notApplied?.source, q.notApplied?.reason], ['reload', 'b']);
+      assert.equal(await q.run('put', async () => 42), 42);
+      assert.equal(q.notApplied, undefined);
+    });
+
+    test('one at a time, in order; a failure never blocks the next; the state is the last settled one', async () => {
+      const q = new ConfigTransactionQueue();
+      const order: string[] = [];
+      let releaseA!: () => void;
+      const a = q.run('reload', () =>
+        new Promise<void>((_, reject) => {
+          releaseA = () => reject(new Error('a failed'));
+        }),
+      );
+      const b = q.run('put', async () => {
+        order.push('b');
+      });
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(order, [], 'b waits for a');
+      assert.equal(q.notApplied, undefined, 'a transaction in flight changes nothing');
+      releaseA();
+      await assert.rejects(a, /a failed/);
+      await b;
+      assert.deepEqual(order, ['b']);
+      assert.equal(q.notApplied, undefined, "b applied after a failed — b's state is the last");
+    });
+    ```
+    Today: the module does not exist.
+  - V6 (`config-reload-failure.test.ts`, the watcher driven through `_onReload`, which this task makes awaitable — spec V6, D77's rejection and event boundary, D82): deps recording `applyAgentUpdate` / `mirrorCfg` calls, a weighted store (as in `config-reload-weights.test.ts`), and `transactions: new ConfigTransactionQueue()` held by the test (`import { ConfigTransactionQueue } from '../config-transaction-queue.js';` — every watcher in this task's tests gets its own queue, as the server injects one, D80):
+    - `drainWorkers` rejects with `new Error('close failed')` → `await assert.rejects(_onReload({ maxIterations: 25, vectorWeight: 0.3 }), /config reload failed, the server is not ready until a config change applies — worker drain: Error: close failed/)`; **nothing restored** — `applyAgentUpdate` was called once with `{ maxIterations: 25 }` and `mirrorCfg` once, and neither again (no rollback, D82); the store's `updateWeights` was never called; the log has no `config_reload_applied`; `queue.notApplied` is `{ source: 'reload', reason: /worker drain: Error: close failed/ }`. Today: resolves (`void`), weights applied, `config_reload_drain_error` logged only.
     - `invalidateSessions` rejects → the same, `/session invalidation: Error: …/`.
     - both reject → one rejection naming both.
-    - success → resolves, no restore, weights applied, `config_reload_applied` logged once (pinned).
+    - `applyAgentUpdate` throws → rejects with that error (`/boom/`), the drain never called, `queue.notApplied.source === 'reload'` (any throw in the transaction fails it, D82).
+    - success → resolves, weights applied, `config_reload_applied` logged once, `queue.notApplied` undefined (pinned); a failed reload, then a successful one → `notApplied` set, then cleared.
     - the event boundary: `watcher.start()`, then the inner `ConfigWatcher` emits `reload` with a rejecting `drainWorkers` → after a turn of the event loop the log carries `{ event: 'config_reload_failed', error: /worker drain/ }` and no `config_reload_applied`; no unhandled rejection (the test registers `process.on('unhandledRejection', …)` and asserts it was not called).
-    - **serialized (D80)** — the same file, appended. `ConfigWatcher` debounces file events but does not await its listener, so two reloads can overlap; each transaction must snapshot only after the previous one settled. A harness whose agent config is a live object (`applyAgentUpdate` merges into it, `snapshotConfig` copies it and its restore puts the copy back) and whose `drainWorkers` returns a fresh deferred per call:
+    - **serialized (D80)** — the same file, appended. `ConfigWatcher` debounces file events but does not await its listener, so two reloads can overlap; each transaction must start only after the previous one settled. A harness whose agent config is a live object (`applyAgentUpdate` merges into it) and whose `drainWorkers` returns a fresh deferred per call:
       ```ts
       // Add to the file's imports: `import type { EventEmitter } from 'node:events';`,
       // `import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';`,
@@ -4197,10 +4258,11 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         const configFile = join(dir, 'smart-server.yaml');
         writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
         let live: Record<string, unknown> = { maxIterations: 10 };
-        const snapshots: Record<string, unknown>[] = [];
         const weights: SerialWeights[] = [];
         const events: Record<string, unknown>[] = [];
         const drains: ReturnType<typeof serialDeferred>[] = [];
+        // The server's one config queue (D80) — here this watcher's alone.
+        const queue = new ConfigTransactionQueue();
         const watcher = new ConfigReloadWatcher({
           configFile,
           log: (e) => {
@@ -4210,13 +4272,6 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
             live = { ...live, ...u };
           },
           mirrorCfg: () => {},
-          snapshotConfig: () => {
-            const before = { ...live };
-            snapshots.push(before);
-            return () => {
-              live = before;
-            };
-          },
           drainWorkers: () => {
             const d = serialDeferred();
             drains.push(d);
@@ -4231,36 +4286,31 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
               },
             },
           },
-          // The server's one config queue (D80) — here this watcher's alone.
-          transactions: new ConfigTransactionQueue(),
+          transactions: queue,
         });
         // White-box: the inner ConfigWatcher (an EventEmitter) and the entry point.
         const entry = watcher as unknown as SerialEntry;
-        return { watcher, entry, live: () => live, snapshots, weights, events, drains };
+        return { watcher, entry, queue, live: () => live, weights, events, drains };
       }
 
-      test("D80: reload B waits for reload A to settle; A's drain fails after B was queued → A restored and reported, then B applied — config and weights are B's", async (t) => {
+      test("D80: reload B waits for reload A to settle; A's drain fails after B was queued → A reported (not ready), then B applied (ready) — config and weights are B's", async (t) => {
         const h = serialHarness(t);
         const a = h.entry._onReload({ maxIterations: 25, vectorWeight: 0.3 });
         const b = h.entry._onReload({ maxIterations: 40, vectorWeight: 0.7 });
         await serialTurn();
         assert.equal(h.drains.length, 1, 'B has not started while A is in flight');
-        assert.deepEqual(h.snapshots, [{ maxIterations: 10 }]);
-        assert.equal(h.live().maxIterations, 25, "A's provisional config is live");
+        assert.equal(h.live().maxIterations, 25, "A's config is live while its drain is pending");
         h.drains[0].reject(new Error('close failed'));
         await assert.rejects(a, /worker drain: Error: close failed/);
         await serialTurn();
         assert.equal(h.drains.length, 2, 'B started only after A settled');
-        assert.deepEqual(
-          h.snapshots[1],
-          { maxIterations: 10 },
-          "B's snapshot is the config A's restore left, not A's provisional one",
-        );
+        assert.equal(h.queue.notApplied?.source, 'reload', 'A left the server not ready');
         h.drains[1].resolve();
         await b;
         assert.equal(h.live().maxIterations, 40, "the final config is B's");
         assert.deepEqual(h.weights, [{ vectorWeight: 0.7, keywordWeight: undefined }], "only B's weights");
         assert.equal(h.events.filter((e) => e.event === 'config_reload_applied').length, 1);
+        assert.equal(h.queue.notApplied, undefined, 'B applied — the server is ready again');
       });
 
       test('D80: a failed reload does not block the next one; each is reported on its own at the event boundary', async (t) => {
@@ -4289,17 +4339,19 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         const failed = h.events.find((e) => e.event === 'config_reload_failed');
         assert.match(String(failed?.error), /worker drain: Error: close failed/);
         assert.equal(h.live().maxIterations, 40);
+        assert.equal(h.queue.notApplied, undefined);
         assert.equal(unhandled, undefined);
       });
       ```
-      Today: the file fails at the import of `../config-transaction-queue.js` (no such module); with the module but no queue in `_onReload`, the first test fails at `h.drains.length` (B starts at once, its snapshot is A's provisional `{ maxIterations: 25 }`, and A's restore leaves `maxIterations: 10` with B's weights applied).
-  - **V10 — `PUT /v1/config` in the server's config queue** (`http/__tests__/config-route-transactions.test.ts`, new; spec V10, D80 extended by the user on 2026-10-06). The real `handleConfigUpdate` and the real `ConfigReloadWatcher` over one server state and **one** `ConfigTransactionQueue`, every drain a deferred the test settles:
+      Today: the file fails at the import of `../config-transaction-queue.js` (no such module); with the module but no queue in `_onReload`, the first test fails at `h.drains.length` (B starts at once).
+  - **V10 — `PUT /v1/config` in the server's config queue** (`http/__tests__/config-route-transactions.test.ts`, new; spec V10, D80 extended, D82 — decided by the user on 2026-10-06). The real `handleConfigUpdate` and the real `ConfigReloadWatcher` over one server state and **one** `ConfigTransactionQueue`, every drain a deferred the test settles:
     ```ts
     /**
-     * Spec §10.5.9 V10, D80 (extended by the user on 2026-10-06): PUT /v1/config
-     * runs as one transaction in the server's config queue — the queue the file
-     * reload uses — and a failed drain or invalidation restores the previous
-     * config and answers 500.
+     * Spec §10.5.9 V10, D80 (extended) and D82 (decided by the user on
+     * 2026-10-06): PUT /v1/config runs as one transaction in the server's config
+     * queue — the queue the file reload uses. A failed apply, drain or
+     * invalidation answers 500, restores nothing and leaves the server not ready
+     * (the queue's notApplied) until a config change applies.
      */
     import assert from 'node:assert/strict';
     import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -4312,7 +4364,6 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     import type { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
     import { ConfigReloadWatcher } from '../../config-reload-watcher.js';
     import { ConfigTransactionQueue } from '../../config-transaction-queue.js';
-    import { LlmCircuitBreakers } from '../../llm/llm-circuit-breakers.js';
     import { handleConfigUpdate, type IConfigUpdateTarget } from '../config-route-handler.js';
 
     function deferred() {
@@ -4330,12 +4381,14 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       for (let i = 0; i < 10; i++) await new Promise<void>((r) => setImmediate(r));
     }
 
+    const FAILED = /^config update failed, the server is not ready until a config change applies — /;
+
     /**
      * One server's state, reached by both paths: the startup agent's config, the
-     * server's mirror (`cfg.agent`), its held main LLM and that LLM's breaker (a
-     * real `LlmCircuitBreakers`, as the server's). Every drain — the reload's and
-     * the PUT's — is a fresh deferred in `drains`. `failReconfigure` makes the
-     * startup agent's `reconfigure` throw (D81).
+     * server's mirror (`cfg.agent`) and its held main LLM. Every drain — the
+     * reload's and the PUT's — is a fresh deferred in `drains`.
+     * `failReconfigure` makes the startup agent's `reconfigure` throw (30.1.0's
+     * `reconfigure`, unchanged).
      */
     function harness(t: { after(fn: () => void): void }) {
       const dir = mkdtempSync(join(tmpdir(), 'config-tx-'));
@@ -4343,11 +4396,10 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       const configFile = join(dir, 'smart-server.yaml');
       writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
       const queue = new ConfigTransactionQueue();
-      const breakers = new LlmCircuitBreakers({});
       const state = {
         agent: { maxIterations: 10 } as Record<string, unknown>,
         mirror: { maxIterations: 10 } as Record<string, unknown>,
-        heldMain: breakers.wrap({ model: 'm0' } as unknown as ILlm, 'main'),
+        heldMain: { model: 'm0' } as unknown as ILlm,
       };
       const agentCalls: string[] = [];
       const drains: ReturnType<typeof deferred>[] = [];
@@ -4365,8 +4417,6 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         },
         reconfigure: () => {
           agentCalls.push('reconfigure');
-          // A real SmartAgent's reconfigure is atomic (D81, tested in libs'
-          // reconfigure.test.ts): a throw leaves the agent as it was.
           if (reconfigureError) throw reconfigureError;
         },
         getActiveConfig: () => ({ mainModel: state.heldMain.model }),
@@ -4376,8 +4426,8 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         modelResolver: { resolve: async (name: string) => ({ model: name }) as unknown as ILlm },
         skipModelValidation: true,
         setMainLlm: (llm) => {
-          state.heldMain = breakers.wrap(llm, 'main');
-          return state.heldMain;
+          state.heldMain = llm;
+          return llm;
         },
         setClassifierLlm: (llm) => llm,
         setHelperLlm: (llm) => llm,
@@ -4387,16 +4437,6 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         drainWorkers,
         invalidateSessions: () => invalidate(),
         transactions: queue,
-        snapshotConfig: () => {
-          const mirror = state.mirror;
-          const heldMain = state.heldMain;
-          const restoreBreakers = breakers.snapshot();
-          return () => {
-            state.mirror = mirror;
-            state.heldMain = heldMain;
-            restoreBreakers();
-          };
-        },
       };
       const events: Record<string, unknown>[] = [];
       const watcher = new ConfigReloadWatcher({
@@ -4409,14 +4449,6 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         },
         mirrorCfg: (patch) => {
           state.mirror = { ...state.mirror, ...patch };
-        },
-        snapshotConfig: () => {
-          const agentBefore = state.agent;
-          const mirror = state.mirror;
-          return () => {
-            state.agent = agentBefore;
-            state.mirror = mirror;
-          };
         },
         drainWorkers,
         invalidateSessions: async () => {},
@@ -4449,29 +4481,31 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       const failReconfigure = (err: Error | undefined) => {
         reconfigureError = err;
       };
-      return { state, breakers, agentCalls, drains, events, reload, put, failInvalidation, failReconfigure };
+      return { state, queue, agentCalls, drains, events, reload, put, failInvalidation, failReconfigure };
     }
 
-    test('D80/V10: a PUT waits for a reload in flight; the reload fails after the PUT was queued → the reload restored, then the PUT applied', async (t) => {
+    test('D80/V10: a PUT waits for a reload in flight; the reload fails after the PUT was queued → the reload reported, then the PUT applied and the server ready', async (t) => {
       const h = harness(t);
       const a = h.reload({ maxIterations: 25 });
       const b = h.put({ agent: { maxIterations: 40 } });
       await settle();
       assert.equal(h.drains.length, 1, 'the PUT has not started while the reload is in flight');
-      assert.equal(h.state.mirror.maxIterations, 25, "the reload's provisional config");
+      assert.equal(h.state.mirror.maxIterations, 25, "the reload's config");
       h.drains[0].reject(new Error('close failed'));
       await assert.rejects(a, /worker drain: Error: close failed/);
       await settle();
       assert.equal(h.drains.length, 2, 'the PUT started only after the reload settled');
+      assert.equal(h.queue.notApplied?.source, 'reload', 'the failed reload left the server not ready');
       h.drains[1].resolve();
       await b.done;
       assert.equal(b.reply.status, 200);
       assert.equal(JSON.parse(b.reply.body ?? '{}').agent.maxIterations, 40);
-      assert.equal(h.state.mirror.maxIterations, 40, "the PUT's config is live — the reload's restore ran before it");
+      assert.equal(h.state.mirror.maxIterations, 40);
       assert.equal(h.state.agent.maxIterations, 40);
+      assert.equal(h.queue.notApplied, undefined, 'the PUT applied — ready again');
     });
 
-    test("D80/V10: a reload waits for a PUT in flight; the PUT fails → 500, then the reload applied — the PUT's restore does not overwrite it", async (t) => {
+    test('D80/V10: a reload waits for a PUT in flight; the PUT fails → 500, then the reload applied and the server ready', async (t) => {
       const h = harness(t);
       const a = h.put({ agent: { maxIterations: 25 } });
       await settle();
@@ -4489,11 +4523,11 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       assert.equal(h.state.mirror.maxIterations, 40, "the reload's config is live");
       assert.equal(h.state.agent.maxIterations, 40);
       assert.equal(h.events.filter((e) => e.event === 'config_reload_applied').length, 1);
+      assert.equal(h.queue.notApplied, undefined);
     });
 
-    test('V10: a PUT whose worker drain fails → 500 server_error naming it; the previous config kept, the startup agent untouched', async (t) => {
+    test('V10/D82: a PUT whose worker drain fails → 500 server_error naming it; nothing restored; not ready', async (t) => {
       const h = harness(t);
-      const before = h.state.heldMain;
       const a = h.put({ models: { mainModel: 'm1' }, agent: { maxIterations: 25 } });
       await settle();
       h.drains[0].reject(new Error('close failed'));
@@ -4501,13 +4535,17 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       assert.equal(a.reply.status, 500);
       const error = JSON.parse(a.reply.body ?? '{}').error;
       assert.equal(error.type, 'server_error');
-      assert.match(error.message, /config update failed, the previous config is kept — worker drain: Error: close failed/);
-      assert.deepEqual(h.state.mirror, { maxIterations: 10 }, 'the mirror restored');
-      assert.equal(h.state.heldMain, before, 'the held model restored');
-      assert.deepEqual(h.agentCalls, [], 'the startup agent is never touched');
+      assert.match(error.message, FAILED);
+      assert.match(error.message, /worker drain: Error: close failed$/);
+      // No rollback (D82): what the transaction applied stays applied.
+      assert.equal(h.state.mirror.maxIterations, 25);
+      assert.equal(h.state.heldMain.model, 'm1');
+      assert.deepEqual(h.agentCalls, ['reconfigure', 'applyConfigUpdate'], "the startup agent updated in 30.1.0's order, before the drain");
+      assert.equal(h.queue.notApplied?.source, 'put');
+      assert.equal(h.queue.notApplied?.reason, error.message);
     });
 
-    test('V10: a PUT whose session invalidation fails → 500 naming it; the previous config kept', async (t) => {
+    test('V10/D82: a PUT whose session invalidation fails → 500 naming it; not ready', async (t) => {
       const h = harness(t);
       h.failInvalidation(new Error('dispose failed'));
       const a = h.put({ agent: { maxIterations: 25 } });
@@ -4516,15 +4554,45 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       await a.done;
       assert.equal(a.reply.status, 500);
       assert.match(JSON.parse(a.reply.body ?? '{}').error.message, /session invalidation: Error: dispose failed/);
-      assert.deepEqual(h.state.mirror, { maxIterations: 10 });
-      assert.deepEqual(h.agentCalls, []);
+      assert.equal(h.state.mirror.maxIterations, 25, 'not restored');
+      assert.match(h.queue.notApplied?.reason ?? '', /session invalidation/);
     });
 
-    test('V10: a successful PUT → 200 with its config; the startup agent updated only after the drain and the invalidation (pinned)', async (t) => {
+    test("V10/D82: a PUT whose startup-agent reconfigure throws → 500 'apply: …', the drain never run, not ready; the next PUT applies and the server is ready", async (t) => {
+      const h = harness(t);
+      h.failReconfigure(new Error('pipeline swap failed'));
+      const a = h.put({ models: { mainModel: 'm1' }, agent: { maxIterations: 25 } });
+      await settle();
+      await a.done;
+      assert.equal(a.reply.status, 500);
+      const error = JSON.parse(a.reply.body ?? '{}').error;
+      assert.equal(error.type, 'server_error');
+      assert.match(error.message, FAILED);
+      assert.match(error.message, /apply: Error: pipeline swap failed$/);
+      assert.equal(h.drains.length, 0, 'a failed apply runs no drain');
+      assert.equal(h.state.heldMain.model, 'm1', 'the held model stays — no rollback');
+      assert.deepEqual(h.agentCalls, ['reconfigure'], 'applyConfigUpdate not reached');
+      assert.equal(h.queue.notApplied?.source, 'put');
+      // The consumer sends another config; the first one that applies makes the server ready.
+      h.failReconfigure(undefined);
+      const b = h.put({ models: { mainModel: 'm2' }, agent: { maxIterations: 40 } });
+      await settle();
+      h.drains[0].resolve();
+      await b.done;
+      assert.equal(b.reply.status, 200);
+      assert.deepEqual(JSON.parse(b.reply.body ?? '{}'), {
+        models: { mainModel: 'm2' },
+        agent: { maxIterations: 40 },
+      });
+      assert.equal(h.queue.notApplied, undefined);
+    });
+
+    test('V10: a successful PUT → 200 with its config; the startup agent updated before the drain (30.1.0 order, pinned); ready', async (t) => {
       const h = harness(t);
       const a = h.put({ models: { mainModel: 'm1' }, agent: { maxIterations: 25 } });
       await settle();
-      assert.deepEqual(h.agentCalls, [], 'not before the drain settled');
+      assert.deepEqual(h.agentCalls, ['reconfigure', 'applyConfigUpdate']);
+      assert.equal(h.drains.length, 1);
       h.drains[0].resolve();
       await a.done;
       assert.equal(a.reply.status, 200);
@@ -4532,136 +4600,99 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         models: { mainModel: 'm1' },
         agent: { maxIterations: 25 },
       });
-      assert.deepEqual(h.agentCalls, ['reconfigure', 'applyConfigUpdate']);
       assert.equal(h.state.mirror.maxIterations, 25);
+      assert.equal(h.queue.notApplied, undefined);
     });
 
-    test("V10/D81: a PUT whose startup-agent reconfigure throws → 500 naming it; the held model, breakers and config restored; the next PUT applies", async (t) => {
+    test('D82: a PUT that changes nothing, and a rejected PUT (400), leave the not-ready state as it was', async (t) => {
       const h = harness(t);
-      const heldBefore = h.state.heldMain;
-      const breakersBefore = [...h.breakers.list()];
-      h.failReconfigure(new Error('pipeline swap failed'));
-      const a = h.put({ models: { mainModel: 'm1' }, agent: { maxIterations: 25 } });
+      h.failInvalidation(new Error('dispose failed'));
+      const failed = h.put({ agent: { maxIterations: 25 } });
       await settle();
       h.drains[0].resolve();
-      await a.done;
-      assert.equal(a.reply.status, 500);
-      const error = JSON.parse(a.reply.body ?? '{}').error;
-      assert.equal(error.type, 'server_error');
-      assert.match(
-        error.message,
-        /config update failed, the previous config is kept — startup agent: Error: pipeline swap failed/,
+      await failed.done;
+      const before = h.queue.notApplied;
+      assert.ok(before);
+      const empty = h.put({});
+      await empty.done;
+      assert.equal(empty.reply.status, 200, 'nothing to change: the live config, outside the queue');
+      assert.equal(h.drains.length, 1, 'no transaction ran');
+      const rejected = h.put({ agent: { notAField: 1 } });
+      await rejected.done;
+      assert.equal(rejected.reply.status, 400);
+      assert.equal(h.queue.notApplied, before, 'still not ready');
+    });
+    ```
+    Today: the file fails at the import of `../../config-transaction-queue.js`; without the queue, the first test fails at `h.drains.length` (the PUT applies and drains at once), the drain case rejects (the drain's error escapes the handler — on a server the catch-all answers 500) and no state is recorded, the invalidation case gets 200 (the invalidation swallowed), the reconfigure case rejects (the error escapes the handler).
+  - **D82 on a real server — the not-ready gate** (`__tests__/config-not-ready.test.ts`, new). A `SmartServer` built as in `config-endpoints.test.ts` (copy its file-local `makeLlmDeps`, `makeResolver` and `httpRequest` helpers — they are not exported), `{ port: 0, llm: { model: 'test-model' }, skipModelValidation: true, agent: { maxIterations: 8 } }`; the PUT's drain is made to fail white-box (`(server as unknown as { _workers: { drain(): Promise<void> } })._workers.drain = async () => { throw new Error('close failed'); }`, the original put back before `handle.close()` — the server's close drains the workers):
+    ```ts
+    test('D82: a failed PUT leaves the server not ready — /health 503 naming it, both chat routes 503; a PUT that applies makes it ready', async () => {
+      const server = new SmartServer(
+        { port: 0, llm: { model: 'test-model' }, skipModelValidation: true, agent: { maxIterations: 8 } },
+        makeLlmDeps(),
       );
-      assert.equal(h.state.heldMain, heldBefore, 'the held model restored');
-      assert.deepEqual(h.breakers.list(), breakersBefore, 'the breakers restored');
-      assert.deepEqual(h.state.mirror, { maxIterations: 10 }, 'the mirror restored');
-      assert.equal(h.state.agent.maxIterations, 10, "the startup agent's config untouched");
-      assert.deepEqual(h.agentCalls, ['reconfigure'], 'applyConfigUpdate never called');
-      // The next transaction snapshots the restored config and applies.
-      h.failReconfigure(undefined);
-      const b = h.put({ models: { mainModel: 'm2' }, agent: { maxIterations: 40 } });
-      await settle();
-      h.drains[1].resolve();
-      await b.done;
-      assert.equal(b.reply.status, 200);
-      assert.deepEqual(JSON.parse(b.reply.body ?? '{}'), {
-        models: { mainModel: 'm2' },
-        agent: { maxIterations: 40 },
-      });
-      assert.deepEqual(h.agentCalls, ['reconfigure', 'reconfigure', 'applyConfigUpdate']);
-      assert.equal(h.state.mirror.maxIterations, 40);
-      assert.equal(h.breakers.list().length, 1, "one key, the PUT's main LLM");
-    });
-    ```
-    Today: the file fails at the import of `../../config-transaction-queue.js`; without the queue and the restore, the first test fails at `h.drains.length` (the PUT applies and drains at once), the third rejects (the drain's error escapes the handler — on a server the catch-all answers 500) with the mirror left at 25, the fourth gets 200 (the invalidation swallowed), the last (D81) rejects (the `reconfigure` error escapes the handler) with the mirror left at 25 and the held model `m1`.
-  - **D81 — `SmartAgent.reconfigure` is atomic** (`packages/llm-agent-libs/src/__tests__/reconfigure.test.ts`, appended; add `import type { IPipeline } from '../interfaces/pipeline.js';` to its imports — `SmartAgent`, `makeDefaultDeps`, `makeLlm`, `describe`, `it` and `assert` are imported already):
-    ```ts
-    describe('SmartAgent.reconfigure — atomic (spec V10, D81)', () => {
-      function named(model: string) {
-        const llm = makeLlm([{ content: model }]);
-        Object.defineProperty(llm, 'model', { value: model });
-        return llm;
-      }
+      const handle = await server.start();
+      const workers = (server as unknown as { _workers: { drain(): Promise<void> } })._workers;
+      const drain = workers.drain.bind(workers);
+      try {
+        workers.drain = async () => {
+          throw new Error('close failed');
+        };
+        const failed = await httpRequest(handle.port, 'PUT', '/v1/config', { agent: { maxIterations: 25 } });
+        assert.equal(failed.status, 500);
+        const reason = (failed.body as { error: { message: string } }).error.message;
+        assert.match(reason, /worker drain: Error: close failed/);
 
-      /** An agent whose pipeline has only the reconfigure hook (the constructor reads nothing else of it). */
-      function agentWithHook() {
-        const { deps } = makeDefaultDeps();
-        const hook = { calls: 0, error: undefined as Error | undefined };
-        const pipeline = {
-          reconfigure() {
-            hook.calls++;
-            if (hook.error) throw hook.error;
-          },
-        } as unknown as IPipeline;
-        const oldMain = named('old-main');
-        const agent = new SmartAgent(
-          {
-            ...deps,
-            mainLlm: oldMain,
-            helperLlm: named('old-helper'),
-            classifierLlm: named('old-classifier'),
-            pipeline,
-          },
-          { maxIterations: 5 },
-        );
-        return { agent, hook, oldMain };
-      }
+        const health = await httpRequest(handle.port, 'GET', '/health');
+        assert.equal(health.status, 503);
+        const hb = health.body as { ready: boolean; configNotApplied?: { reason: string; source: string; at: string } };
+        assert.equal(hb.ready, false);
+        assert.equal(hb.configNotApplied?.reason, reason);
+        assert.equal(hb.configNotApplied?.source, 'put');
 
-      const classifierOf = (agent: SmartAgent) =>
-        (agent as unknown as { _classifier: unknown })._classifier;
+        for (const path of ['/v1/chat/completions', '/v1/messages']) {
+          const chat = await httpRequest(handle.port, 'POST', path, {
+            model: 'test-model',
+            messages: [{ role: 'user', content: 'hi' }],
+            max_tokens: 10,
+          });
+          assert.equal(chat.status, 503, path);
+          const err = (chat.body as { error: { type: string; message: string } }).error;
+          assert.equal(err.type, 'service_unavailable');
+          assert.equal(err.message, `config not applied — ${reason}`);
+        }
+        assert.equal((await httpRequest(handle.port, 'GET', '/v1/config')).status, 200, 'the config routes are not gated');
 
-      it('a pipeline hook that throws after a model swap → rethrown; the previous LLMs and classifier kept; nothing else called', () => {
-        const { agent, hook, oldMain } = agentWithHook();
-        const classifierBefore = classifierOf(agent);
-        hook.error = new Error('pipeline swap failed');
-        assert.throws(
-          () =>
-            agent.reconfigure({
-              mainLlm: named('new-main'),
-              helperLlm: named('new-helper'),
-              classifierLlm: named('new-classifier'),
-            }),
-          /pipeline swap failed/,
-        );
-        assert.equal(agent.currentMainLlm, oldMain);
-        assert.deepEqual(agent.getActiveConfig(), {
-          mainModel: 'old-main',
-          classifierModel: 'old-classifier',
-          helperModel: 'old-helper',
+        workers.drain = drain;
+        const ok = await httpRequest(handle.port, 'PUT', '/v1/config', { agent: { maxIterations: 30 } });
+        assert.equal(ok.status, 200);
+        const after = (await httpRequest(handle.port, 'GET', '/health')).body as { ready: boolean; configNotApplied?: unknown };
+        assert.equal(after.ready, true);
+        assert.equal(after.configNotApplied, undefined);
+        const chat = await httpRequest(handle.port, 'POST', '/v1/chat/completions', {
+          model: 'test-model',
+          messages: [{ role: 'user', content: 'hi' }],
         });
-        assert.equal(classifierOf(agent), classifierBefore, 'the classifier restored');
-        assert.equal(hook.calls, 1, 'the hook is not called again to undo');
-      });
+        assert.equal(chat.status, 200, 'past the gate: the chat works again');
+      } finally {
+        workers.drain = drain;
+        await handle.close();
+      }
+    });
 
-      it('a later reconfigure whose hook succeeds applies', () => {
-        const { agent, hook } = agentWithHook();
-        hook.error = new Error('pipeline swap failed');
-        assert.throws(() => agent.reconfigure({ mainLlm: named('new-main') }), /pipeline swap failed/);
-        hook.error = undefined;
-        const next = named('next-main');
-        agent.reconfigure({ mainLlm: next });
-        assert.equal(agent.currentMainLlm, next);
-        assert.equal(agent.getActiveConfig().helperModel, 'old-helper', 'a role not in the update kept');
-        assert.equal(hook.calls, 2);
-      });
+    test('D82: the server starts ready from its config — no configNotApplied at start', async () => {
+      const server = new SmartServer({ port: 0, llm: { model: 'test-model' }, skipModelValidation: true }, makeLlmDeps());
+      const handle = await server.start();
+      try {
+        const body = (await httpRequest(handle.port, 'GET', '/health')).body as { ready: boolean; configNotApplied?: unknown };
+        assert.equal(body.ready, true);
+        assert.equal(body.configNotApplied, undefined);
+      } finally {
+        await handle.close();
+      }
     });
     ```
-    Today: the first case fails at `agent.currentMainLlm` (`new-main` — the fields were swapped before the hook threw); the second passes (pinned).
-  - **V10 — the breakers follow a restore** (`llm-circuit-breakers.test.ts`, appended inside `describe('LlmCircuitBreakers', …)`):
-    ```ts
-    it('snapshot(): the restore puts every key back to its breaker — a swapped key and a key added later (V10)', () => {
-      const b = new LlmCircuitBreakers({});
-      const main = b.wrap(llm('a'), 'main');
-      const restore = b.snapshot();
-      b.wrap(llm('b'), 'main');
-      b.wrap(llm('h'), 'helper');
-      assert.equal(b.list().length, 2);
-      restore();
-      assert.deepEqual(b.list(), [breakerOf(main)]);
-      assert.equal(b.wrap(main, 'main'), main, 'the restored entry still guards the key');
-    });
-    ```
-    Today: `b.snapshot is not a function`.
+    (`makeResolver` is not needed here — copy only `makeLlmDeps` and `httpRequest`; `import { SmartServer } from '../smart-server.js'`, `import { constructionSeams } from './construction-seams.js'`, `import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing'`, `test` from `node:test`, `request` from `node:http`.) Today: the failed PUT answers 500 from the catch-all, `/health` reports `ready: true` (no `configNotApplied`) and the chat routes are not gated on it.
   - V7: the eager tool catalog load fails at start → the server's `start()` rejects with the `McpError`.
   - V8 (`cli-flags.test.ts`): `--env /no/such/file` → exit code 1 with the path in stderr; `--secrets-dir /no/such/dir` → exit code 1; no `--env` and no `.env` → starts (kept, pinned).
   - V9: a stepper role whose LLM config does not resolve → `ConfigValidationError` naming the role. Today: the stub OpenAI model.
@@ -4670,50 +4701,67 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
 - [ ] **Step 2: Run to see them fail.** Expected: FAIL.
 - [ ] **Step 3: Implement** — as the rows say. `STUB_LLM_CFG` is deleted with its use. `gcTerminal`'s catch (cleanup) and the shutdown closes stay (spec §10.5.1).
 
-  **V6 (spec D77) — `config-reload-watcher.ts`, the final shape Task 23A builds on:**
-  - `ConfigReloadDeps` gains
+  **The server's one config queue and its readiness (spec D80, extended by the user on 2026-10-06, §17.28; D82, §17.30).** `ConfigWatcher` debounces file events but does not await its listener, so without a queue reload B starts while reload A waits on a slow drain, and `PUT /v1/config` races a reload the same way. The queue lives in the **server** — the one object both the watcher and the route reach, and the owner of everything a transaction changes; the watcher exists only with a `configFile` and the route handler is a stateless function, so neither can own it, and a module-level queue would be shared by every `SmartServer` in a process. Every config change settles in it, so it also holds the server's *config not applied* state (D82). New file `config-transaction-queue.ts` (internal, not exported from the package):
     ```ts
+    /** Which config change ran a transaction (spec §10.5.10, D82). */
+    export type ConfigChangeSource = 'reload' | 'put';
+
     /**
-     * Captures what a reload changes — the live agent's hot-reloadable config and the
-     * server's mirror (`cfg.agent`, `cfg.prompts`) — and returns the function that
-     * restores exactly that (spec §10.5.9 V6, D77: a failed reload keeps the previous
-     * config live).
+     * The server's "config not applied" state (spec §10.5.10, D82): what the last
+     * settled config transaction left when it failed. No rollback — the server is
+     * not ready until a later config change applies.
      */
-    snapshotConfig(): () => void;
-    ```
-  - `start()`'s listener — the event boundary, the ONE place the rejection is handled (an emitter cannot await):
-    ```ts
-    this.watcher.on('reload', (update: HotReloadableConfig) => {
-      // Spec V6 (D77): handled here, at the event boundary — logged as the failure it
-      // is, never as applied. `_onReload` has already restored the previous config.
-      this._onReload(update).catch((err: unknown) => {
-        this.deps.log({ event: 'config_reload_failed', error: String(err) });
-      });
-    });
-    ```
-  - **One queue for every config change (spec D80, extended by the user on 2026-10-06, §17.28).** `ConfigWatcher` debounces file events but does not await its listener, so without a queue reload B snapshots reload A's provisional config while A waits on a slow drain, and A's later restore overwrites B's config while B's weights stay; `PUT /v1/config` races a reload the same way. The queue lives in the **server** — the one object both the watcher and the route reach, and the owner of everything a transaction changes; the watcher exists only with a `configFile` and the route handler is a stateless function, so neither can own it, and a module-level queue would be shared by every `SmartServer` in a process. New file `config-transaction-queue.ts` (internal, not exported from the package):
-    ```ts
+    export interface ConfigNotApplied {
+      /** The failed transaction's error message — every step that failed. */
+      readonly reason: string;
+      readonly source: ConfigChangeSource;
+      /** When it failed (ISO 8601). */
+      readonly at: string;
+    }
+
     /**
-     * The server's one queue of config transactions (spec §10.5.9 V6, V10; D80).
-     * The file reload and PUT /v1/config run through the same instance, so a
-     * transaction starts — and takes its snapshot — only after the previous one
-     * settled, and a restore always returns to the config the previous
-     * transaction left.
+     * The server's one queue of config transactions (spec §10.5.9 V6, V10; D80,
+     * D82). The file reload and PUT /v1/config run through the same instance, so
+     * a transaction starts only after the previous one settled.
      */
     export interface IConfigTransactionQueue {
       /**
        * Runs `tx` after every earlier transaction settled and returns `tx`'s own
        * promise. A rejection is this caller's alone: it never blocks the next one.
+       * It sets `notApplied`; a resolution clears it.
        */
-      run<T>(tx: () => Promise<T>): Promise<T>;
+      run<T>(source: ConfigChangeSource, tx: () => Promise<T>): Promise<T>;
+      /**
+       * Set when the last settled transaction failed; undefined at construction
+       * (the server starts ready from its config) and after one that applied.
+       */
+      readonly notApplied: ConfigNotApplied | undefined;
     }
 
     export class ConfigTransactionQueue implements IConfigTransactionQueue {
       /** Settles when the last queued transaction settled. */
       private tail: Promise<void> = Promise.resolve();
+      private _notApplied: ConfigNotApplied | undefined;
 
-      run<T>(tx: () => Promise<T>): Promise<T> {
-        const run = this.tail.then(tx);
+      get notApplied(): ConfigNotApplied | undefined {
+        return this._notApplied;
+      }
+
+      run<T>(source: ConfigChangeSource, tx: () => Promise<T>): Promise<T> {
+        const run = this.tail.then(tx).then(
+          (value) => {
+            this._notApplied = undefined;
+            return value;
+          },
+          (err: unknown) => {
+            this._notApplied = {
+              reason: err instanceof Error ? err.message : String(err),
+              source,
+              at: new Date().toISOString(),
+            };
+            throw err;
+          },
+        );
         // The queue waits only for `run` to settle. Its rejection is not handled
         // here: it is returned to the caller (the watcher's event boundary logs
         // config_reload_failed; the route answers 500).
@@ -4725,22 +4773,36 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       }
     }
     ```
-    `ConfigReloadDeps` gains `/** The server's one config queue (spec V6, V10, D80) — PUT /v1/config runs in it too. */ transactions: IConfigTransactionQueue;` (`import type { IConfigTransactionQueue } from './config-transaction-queue.js';`). `_onReload` is the queued entry point and the transaction itself moves to `_applyReload`:
+
+  **V6 (spec D77's rejection and event boundary, D82) — `config-reload-watcher.ts`, the final shape Task 23A builds on:**
+  - `ConfigReloadDeps` gains `/** The server's one config queue (spec V6, V10, D80, D82) — PUT /v1/config runs in it too, and it holds the not-ready state. */ transactions: IConfigTransactionQueue;` (`import type { IConfigTransactionQueue } from './config-transaction-queue.js';`). Nothing else: there is no snapshot (D82 — no rollback).
+  - `start()`'s listener — the event boundary, the ONE place the rejection is handled (an emitter cannot await):
+    ```ts
+    this.watcher.on('reload', (update: HotReloadableConfig) => {
+      // Spec V6 (D77, D82): handled here, at the event boundary — logged as the
+      // failure it is, never as applied. Nothing is restored; the queue has
+      // recorded the server's not-ready state.
+      this._onReload(update).catch((err: unknown) => {
+        this.deps.log({ event: 'config_reload_failed', error: String(err) });
+      });
+    });
+    ```
+  - `_onReload` is the queued entry point and the transaction itself moves to `_applyReload`:
     ```ts
     /**
-     * The reload entry point (spec §14.1 D39, §10.5.9 V6 D77, D80). Runs one
+     * The reload entry point (spec §14.1 D39, §10.5.9 V6, D80, D82). Runs one
      * complete reload transaction (`_applyReload`) in the server's config queue
-     * and returns that transaction's own promise: it starts — and takes its
-     * snapshot — only after the previous config change (a reload or a PUT)
-     * settled. Resolves when this reload is applied; rejects when it failed
-     * (the previous config restored).
+     * and returns that transaction's own promise: it starts only after the
+     * previous config change (a reload or a PUT) settled. Resolves when this
+     * reload is applied; rejects when it failed — nothing restored, the server
+     * not ready until a config change applies.
      */
     private _onReload(update: HotReloadableConfig): Promise<void> {
-      return this.deps.transactions.run(() => this._applyReload(update));
+      return this.deps.transactions.run('reload', () => this._applyReload(update));
     }
     ```
     The listener above is unchanged (it calls `this._onReload(update).catch(…)`), so every event joins the queue; `PUT /v1/config` joins it through `IConfigUpdateTarget.transactions` (V10, below).
-  - `_applyReload` is `private async _applyReload(update: HotReloadableConfig): Promise<void>` with the doc "One reload transaction (spec §10.5.9 V6 D77). Run only by the queue in `_onReload` (D80). Resolves when the reload is applied: the agent update, the worker drain, the session invalidation and the RAG weights. Rejects when the drain or the invalidation fails — after restoring the previous config, without applying the weights." Its body (the former `_onReload` body): `log({ event: 'config_reload', update })`; `const restore = this.deps.snapshotConfig();`; the agent update and the mirror exactly as today; then, replacing the two fire-and-forget `.catch(log)` calls:
+  - `_applyReload` is `private async _applyReload(update: HotReloadableConfig): Promise<void>` with the doc "One reload transaction (spec §10.5.9 V6, D82). Run only by the queue in `_onReload` (D80). Resolves when the reload is applied: the agent update, the worker drain, the session invalidation and the RAG weights. Rejects when anything fails — nothing is restored and the weights are not applied; the queue marks the server not ready." Its body (the former `_onReload` body): `log({ event: 'config_reload', update })`; the agent update and the mirror exactly as today; then, replacing the two fire-and-forget `.catch(log)` calls:
     ```ts
     // Both run (each settles), then one verdict — a failure is never swallowed
     // into "applied" (spec V6, D77). Called synchronously, as before, so the
@@ -4762,249 +4824,154 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       failures.push(`session invalidation: ${String(invalidated.reason)}`);
     }
     if (failures.length > 0) {
-      restore();
+      // No rollback (spec D82): what this reload applied stays; the queue
+      // records the server's not-ready state from this error.
       throw new Error(
-        `config reload failed, the previous config is kept — ${failures.join('; ')}`,
+        `config reload failed, the server is not ready until a config change applies — ${failures.join('; ')}`,
         { cause: drained.status === 'rejected' ? drained.reason : invalidated.status === 'rejected' ? invalidated.reason : undefined },
       );
     }
     ```
-    then the RAG weight updates (unchanged code, now only on success), then `this.deps.log({ event: 'config_reload_applied' });`.
-  - `smart-server.ts`, the `new ConfigReloadWatcher({` deps gain (after `mirrorCfg`):
-    ```ts
-        snapshotConfig: () => {
-          // What a reload changes (spec V6, D77): the agent's whitelisted config,
-          // the prompts it was built with (the builder passes cfg.prompts'
-          // ragTranslate / historySummary as ragTranslatePrompt /
-          // historySummaryPrompt), and the server's mirror. mirrorCfg replaces
-          // cfg.agent / cfg.prompts with new objects, so these references are
-          // the pre-reload values.
-          const agentBefore = smartAgent.getAgentConfig();
-          const cfgAgent = (this.cfg as { agent?: Record<string, unknown> }).agent;
-          const cfgPrompts = this.cfg.prompts;
-          return () => {
-            smartAgent.applyConfigUpdate({
-              ...agentBefore,
-              ragTranslatePrompt: cfgPrompts?.ragTranslate,
-              historySummaryPrompt: cfgPrompts?.historySummary,
-            });
-            (this.cfg as { agent?: Record<string, unknown> }).agent = cfgAgent;
-            (this.cfg as { prompts?: SmartServerPromptsConfig }).prompts = cfgPrompts;
-          };
-        },
-    ```
-    (`SmartServerPromptsConfig` is declared in `smart-server.ts`; `getAgentConfig()` returns only fields of `SmartAgentConfig`, so the spread type-checks against `applyConfigUpdate(Partial<SmartAgentConfig>)` — after Task 4Q it no longer carries `toolUnavailableTtlMs`, and the restore follows without an edit.)
-  - `smart-server.ts`: the field `private readonly _configTransactions = new ConfigTransactionQueue();` (beside `_workers`; `import { ConfigTransactionQueue } from './config-transaction-queue.js';`), and the `new ConfigReloadWatcher({` deps gain `transactions: this._configTransactions,` (after `snapshotConfig`).
+    then the RAG weight updates (unchanged code, now only on success), then `this.deps.log({ event: 'config_reload_applied' });`. A throw from `applyAgentUpdate` / `mirrorCfg` rejects the same transaction (it is `async`).
+  - `smart-server.ts`: the field `private readonly _configTransactions = new ConfigTransactionQueue();` (beside `_workers`; `import { ConfigTransactionQueue } from './config-transaction-queue.js';`), and the `new ConfigReloadWatcher({` deps gain `transactions: this._configTransactions,` (after `invalidateSessions`).
 
-  **D81 — `SmartAgent.reconfigure` is atomic (`packages/llm-agent-libs/src/agent.ts`, ~336–365; signature unchanged).** The method body becomes:
-    ```ts
-    reconfigure(update: SmartAgentReconfigureOptions): void {
-      // Atomic (spec §10.5.9 V10, D81): everything that can be built is built
-      // before anything is assigned; the previous fields are kept; when the
-      // pipeline hook throws they are put back — nothing else is called — and
-      // the error is rethrown, so the agent and its pipeline never disagree.
-      const classifier = update.classifierLlm
-        ? new LlmClassifier(
-            update.classifierLlm,
-            this.deps.classifierConfig,
-            this.requestLogger,
-          )
-        : undefined;
-      const previous = {
-        mainLlm: this._mainLlm,
-        helperLlm: this._helperLlm,
-        classifierLlm: this._classifierLlm,
-        classifier: this._classifier,
-      };
-      if (update.mainLlm) {
-        this._mainLlm = update.mainLlm;
-      }
-      if (update.helperLlm) {
-        this._helperLlm = update.helperLlm;
-      }
-      if (update.classifierLlm && classifier) {
-        this._classifierLlm = update.classifierLlm;
-        this._classifier = classifier;
-      }
-      try {
-        // Propagate the swap into the structured pipeline (when configured via the
-        // Builder). The pipeline keeps its own deps snapshot and derives the usage
-        // `byModel` key from `ctx.mainLlm.model`; without this, post-swap requests
-        // would keep being logged under the INITIAL model (issue #164).
-        this.deps.pipeline?.reconfigure?.({
-          mainLlm: update.mainLlm,
-          helperLlm: update.helperLlm,
-          classifierLlm: update.classifierLlm,
-        });
-      } catch (err) {
-        this._mainLlm = previous.mainLlm;
-        this._helperLlm = previous.helperLlm;
-        this._classifierLlm = previous.classifierLlm;
-        this._classifier = previous.classifier;
-        throw err;
-      }
-    }
-    ```
-    Its doc comment gains, after "Reconfigured LLMs do not inherit builder-time wrappers …":
-    ```ts
-       * **Atomic:** when the pipeline's `reconfigure` hook throws, the agent's
-       * previous LLMs (and classifier) are restored and the error is rethrown —
-       * nothing is half-applied. The hook is synchronous
-       * (`IPipeline.reconfigure?(…): void`); a pipeline that changed its own
-       * state before throwing restores that itself.
-    ```
-    and the hook's doc comment in `interfaces/pipeline.ts` (~204) gains ` * A throw makes SmartAgent.reconfigure() restore the agent's previous LLMs and rethrow.` The one production caller is `applyConfigTransaction` (below); the success path is unchanged.
-
-  **V10 (spec D80 extended, §17.28) — `PUT /v1/config` is one transaction in the same queue:**
-  - `llm/llm-circuit-breakers.ts`, `LlmCircuitBreakers` gains (after `list()`):
-    ```ts
-    /**
-     * Captures every key's entry and returns the function that puts exactly
-     * those back — a key added since is dropped (spec §10.5.9 V10: a failed
-     * PUT /v1/config restores the breakers `/health` lists with the LLMs).
-     */
-    snapshot(): () => void {
-      const saved = new Map(this.entries);
-      return () => {
-        this.entries.clear();
-        for (const [key, entry] of saved) this.entries.set(key, entry);
-      };
-    }
-    ```
+  **V10 (spec D80 extended, D82) — `PUT /v1/config` is one transaction in the same queue:**
   - `http/config-route-handler.ts`: `import type { IConfigTransactionQueue } from '../config-transaction-queue.js';`; `IConfigUpdateTarget` gains
     ```ts
-      /** The server's one config queue (spec V10, D80) — the instance the reload watcher uses. */
+      /** The server's one config queue (spec V10, D80, D82) — the instance the reload watcher uses; it holds the not-ready state. */
       readonly transactions: IConfigTransactionQueue;
-      /**
-       * Captures what a PUT changes on the server — the held role LLMs, their
-       * breakers and `cfg.agent` — and returns the function that restores
-       * exactly that (spec §10.5.9 V10).
-       */
-      snapshotConfig(): () => void;
     ```
-    In `handleConfigUpdate`, everything up to and including the model probe is unchanged (it applies nothing, so it stays outside the queue — a slow probe never holds a reload). Replace everything from `// --- All validation passed — apply mutations ---` to the end of the function with:
+    In `handleConfigUpdate`, everything up to and including the model probe is unchanged (it applies nothing, so it stays outside the queue — a slow probe never holds a reload, and a 400 changes no state). Replace everything from `// --- All validation passed — apply mutations ---` to the end of the function with:
     ```ts
-      // --- All validation passed — one transaction in the server's config queue
-      // (spec §10.5.9 V10, D80): it starts, and takes its snapshot, only after
-      // the previous config change (a PUT or a file reload) settled.
-      const outcome = await target.transactions.run(() =>
-        applyConfigTransaction(body, resolvedModels, smartAgent, target),
-      );
-      if (!outcome.ok) {
-        // A server-side failure: the status and type of this route's model
-        // resolver failure and of the server's catch-all.
+      // --- All validation passed (spec §10.5.9 V10, D80, D82) ---
+      const patch = body.agent as Record<string, unknown> | undefined;
+      if (!resolvedModels && !patch) {
+        // Nothing to change: not a config change, so it neither waits for the
+        // queue nor clears the server's not-ready state.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({ models: smartAgent.getActiveConfig(), agent: smartAgent.getAgentConfig() }),
+        );
+        return;
+      }
+      let applied: ConfigTransactionResult;
+      try {
+        // One transaction in the server's config queue: it starts only after the
+        // previous config change (a PUT or a file reload) settled.
+        applied = await target.transactions.run('put', () =>
+          applyConfigTransaction(resolvedModels, patch, smartAgent, target),
+        );
+      } catch (err) {
+        // The queue has marked the server not ready (D82). A server-side
+        // failure: the status and type of this route's model resolver failure
+        // and of the server's catch-all.
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(jsonError(outcome.message, 'server_error'));
+        res.end(jsonError(err instanceof Error ? err.message : String(err), 'server_error'));
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ models: outcome.models, agent: outcome.agent }));
+      res.end(JSON.stringify(applied));
     }
 
-    type ConfigTransactionOutcome =
-      | {
-          ok: true;
-          models: ReturnType<SmartAgent['getActiveConfig']>;
-          agent: ReturnType<SmartAgent['getAgentConfig']>;
-        }
-      | { ok: false; message: string };
+    type ConfigTransactionResult = {
+      models: ReturnType<SmartAgent['getActiveConfig']>;
+      agent: ReturnType<SmartAgent['getAgentConfig']>;
+    };
+
+    const UPDATE_FAILED =
+      'config update failed, the server is not ready until a config change applies';
 
     /**
-     * One PUT /v1/config transaction (spec §10.5.9 V10, D80). Run only by the
-     * server's config queue. The server's state (the held LLMs, `cfg.agent`) is
-     * applied first: it is what the drain, the invalidation and every rebuild
-     * read. The startup agent changes only after both succeeded — a SmartAgent
-     * cannot be restored from outside (no getter for its LLMs; `reconfigure`
-     * cannot unset a role) — and still inside the rollback (D81): its
-     * `reconfigure` is atomic, so a throw leaves it as it was. A failed drain,
-     * invalidation or startup-agent update restores the snapshot.
+     * One PUT /v1/config transaction (spec §10.5.9 V10, D80, D82). Run only by
+     * the server's config queue. Applies in 30.1.0's order — the held LLMs, the
+     * startup agent (`reconfigure`, then `applyConfigUpdate`), the server's
+     * mirror — then drains the workers and invalidates the sessions (both run,
+     * one verdict). Any failure rejects, naming every failed step; nothing is
+     * restored (no rollback): the server is not ready until a config change
+     * applies.
      */
     async function applyConfigTransaction(
-      body: Record<string, unknown>,
       resolvedModels: SmartAgentReconfigureOptions | undefined,
+      patch: Record<string, unknown> | undefined,
       smartAgent: SmartAgent,
       target: IConfigUpdateTarget,
-    ): Promise<ConfigTransactionOutcome> {
-      const patch = body.agent as Record<string, unknown> | undefined;
-      if (resolvedModels || patch) {
-        const restore = target.snapshotConfig();
-        // The setters return the instance now held (breaker-guarded when
-        // configured); the startup agent gets that same one on success.
-        const held: SmartAgentReconfigureOptions = {};
-        const failures: string[] = [];
-        try {
-          if (resolvedModels?.mainLlm) held.mainLlm = target.setMainLlm(resolvedModels.mainLlm);
-          if (resolvedModels?.classifierLlm) {
+    ): Promise<ConfigTransactionResult> {
+      try {
+        if (resolvedModels) {
+          // Mirror onto the hoisted globals consumed by `buildSessionAgent` so
+          // freshly-built session graphs pick up the new LLMs by reference. The
+          // setters return the instance now held (breaker-guarded when
+          // configured); the startup agent gets that same one.
+          const held: SmartAgentReconfigureOptions = {};
+          if (resolvedModels.mainLlm) held.mainLlm = target.setMainLlm(resolvedModels.mainLlm);
+          if (resolvedModels.classifierLlm) {
             held.classifierLlm = target.setClassifierLlm(resolvedModels.classifierLlm);
           }
-          if (resolvedModels?.helperLlm) held.helperLlm = target.setHelperLlm(resolvedModels.helperLlm);
+          if (resolvedModels.helperLlm) held.helperLlm = target.setHelperLlm(resolvedModels.helperLlm);
+          smartAgent.reconfigure(held);
+        }
+        if (patch) {
+          smartAgent.applyConfigUpdate(patch);
           // Deep-merge onto `cfg.agent`: freshly-built session graphs read it.
-          if (patch) target.mirrorAgentCfg(patch);
-          // Fix #21: drain the per-worker handles BEFORE the sessions are
-          // invalidated. Both run (each settles), then one verdict (spec V6, V10).
-          try {
-            await target.drainWorkers();
-          } catch (err) {
-            failures.push(`worker drain: ${String(err)}`);
-          }
-          try {
-            await target.invalidateSessions();
-          } catch (err) {
-            failures.push(`session invalidation: ${String(err)}`);
-          }
-        } catch (err) {
-          restore();
-          throw err;
+          target.mirrorAgentCfg(patch);
         }
-        if (failures.length > 0) {
-          restore();
-          return {
-            ok: false,
-            message: `config update failed, the previous config is kept — ${failures.join('; ')}`,
-          };
-        }
-        // The startup agent last, inside the rollback (spec V10, D81): an atomic
-        // `reconfigure` first (a throwing pipeline hook leaves the agent's LLMs
-        // as they were), then `applyConfigUpdate` — a spread that cannot fail —
-        // only after it succeeded.
-        try {
-          if (resolvedModels) smartAgent.reconfigure(held);
-          if (patch) smartAgent.applyConfigUpdate(patch);
-        } catch (err) {
-          restore();
-          return {
-            ok: false,
-            message: `config update failed, the previous config is kept — startup agent: ${String(err)}`,
-          };
-        }
+      } catch (err) {
+        throw new Error(`${UPDATE_FAILED} — apply: ${String(err)}`, { cause: err });
       }
-      return { ok: true, models: smartAgent.getActiveConfig(), agent: smartAgent.getAgentConfig() };
+      // Fix #21: drain the per-worker handles BEFORE the sessions are
+      // invalidated. Both run (each settles), then one verdict (spec V6, V10).
+      const failures: string[] = [];
+      let cause: unknown;
+      try {
+        await target.drainWorkers();
+      } catch (err) {
+        failures.push(`worker drain: ${String(err)}`);
+        cause = err;
+      }
+      try {
+        await target.invalidateSessions();
+      } catch (err) {
+        failures.push(`session invalidation: ${String(err)}`);
+        cause ??= err;
+      }
+      if (failures.length > 0) {
+        throw new Error(`${UPDATE_FAILED} — ${failures.join('; ')}`, { cause });
+      }
+      return { models: smartAgent.getActiveConfig(), agent: smartAgent.getAgentConfig() };
     }
     ```
-    The old comment block above the drain ("Failures are non-fatal so the 200 response isn't blocked by a dispose hiccup") and the `catch {}` that swallowed the invalidation go with the replaced code (spec §10.5.1: that catch is not cleanup).
-  - `smart-server.ts` `_configUpdateTarget()` gains (after `invalidateSessions`):
+    The old comment block above the drain ("Failures are non-fatal so the 200 response isn't blocked by a dispose hiccup") and the `catch {}` that swallowed the invalidation go with the replaced code (spec §10.5.1: that catch is not cleanup). `SmartAgent.reconfigure` is **not** changed (D81 withdrawn by D82): a throwing pipeline hook is a failed `PUT` like any other.
+  - `smart-server.ts` `_configUpdateTarget()` gains (after `invalidateSessions`) `transactions: this._configTransactions,`. So the watcher and the route hold the same `ConfigTransactionQueue` instance (Task 23A's (10c) pins it on a real server).
+
+  **D82 — the not-ready gate (`smart-server.ts` `_handle`, `http/route-table.ts`, `http/response-helpers.ts`, `http/health-route-handler.ts`; spec §10.5.10):**
+  - `http/route-table.ts`: `import type { ConfigNotApplied } from '../config-transaction-queue.js';`; `RouteContext` gains, after `ready`:
     ```ts
-      transactions: this._configTransactions,
-      snapshotConfig: () => {
-        // The held (guarded) instances themselves and the breaker entries, so
-        // a restore brings back exactly the breakers /health lists; the setters
-        // and mirrorAgentCfg replace these references, they never mutate them.
-        const main = this._mainLlm;
-        const classifier = this._classifierLlm;
-        const helper = this._helperLlm;
-        const breakers = this._llmBreakers?.snapshot();
-        const agent = (this.cfg as { agent?: Record<string, unknown> }).agent;
-        return () => {
-          this._mainLlm = main;
-          this._classifierLlm = classifier;
-          this._helperLlm = helper;
-          breakers?.();
-          (this.cfg as { agent?: Record<string, unknown> }).agent = agent;
-        };
-      },
+      /** Why `ready` is false — the chat gate's 503 message (spec §10.5.10, D82). */
+      notReadyMessage?: string;
+      /** The server's "config not applied" state (D82) — `/health` reports it. */
+      configNotApplied?: ConfigNotApplied;
     ```
-    So the watcher and the route hold the same `ConfigTransactionQueue` instance (Task 23A's (10c) pins it on a real server).
-  - existing tests: `config-reload-weights.test.ts`'s `watcherOver` gains `snapshotConfig: () => () => {}` and `transactions: new ConfigTransactionQueue()` (imported from `../config-transaction-queue.js`); its `reload` returns the promise and each case `await`s it (the weights are applied after the drain settles now); `config_reload_drain_error` / `config_reload_invalidate_error` are gone (grep below).
+    and the doc of `ready` becomes `/** Pre-computed once in `_handle` — MCP readiness AND no config-not-applied (D82); reused by health/messages/chat. */`.
+  - `smart-server.ts` `_handle`: the readiness block becomes
+    ```ts
+    // Server readiness (spec §10.5.10, D82): the agent's MCP connection
+    // strategy (IReadinessReporter; none / non-reporting ⇒ ready) AND the
+    // config state — a config change that failed to apply leaves the server
+    // not ready until a later one applies. Computed ONCE here and reused by
+    // /health and the pre-dispatch request gate (messages/chat) via `rc.ready`.
+    const mcpReady = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
+    const configNotApplied = this._configTransactions.notApplied;
+    const ready = mcpReady && configNotApplied === undefined;
+    const notReadyMessage = configNotApplied
+      ? `config not applied — ${configNotApplied.reason}`
+      : mcpReady
+        ? undefined
+        : 'MCP unavailable — server not ready';
+    ```
+    and `rc` gains `notReadyMessage, configNotApplied,` (after `ready`). Both chat routes' gate becomes `writeNotReady(rc.res, rc.notReadyMessage);`. No other route reads `rc.ready`: `GET` / `PUT /v1/config`, the models, usage and session routes stay ungated.
+  - `http/response-helpers.ts`: `writeNotReady(res, message = 'MCP unavailable — server not ready')` — the body's `message` is the parameter; the doc gains "`message` names why (spec §10.5.10, D82): a config change that failed to apply, or MCP unavailable." Additive (spec §3.8): existing callers compile and answer as before.
+  - `http/health-route-handler.ts`: the body becomes `JSON.stringify({ ...status, ready: rc.ready, ...(rc.configNotApplied ? { configNotApplied: rc.configNotApplied } : {}) })`; the HTTP code is unchanged here (`rc.ready ? 200 : 503` — `ready` is false while the config is not applied; Task 4O adds `status === 'healthy'`).
+  - existing tests: `config-reload-weights.test.ts`'s `watcherOver` gains `transactions: new ConfigTransactionQueue()` (imported from `../config-transaction-queue.js`); its `reload` returns the promise and each case `await`s it (the weights are applied after the drain settles now); `config_reload_drain_error` / `config_reload_invalidate_error` are gone (grep below). A test that builds `RouteContext` by hand needs nothing (the new fields are optional).
 
   **U10**: in the worker wire, collect `shared: ('toolsRag' | 'mcpClients')[]` in the two `else if (injected?.…)` branches; after both, `if (shared.length > 0) (this.cfg.log ?? this.noop)({ event: 'worker_uses_shared_clients', worker: <the worker's name>, shared });` — one line per wire, the same event sink as `plugins_loaded`.
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
@@ -5012,12 +4979,13 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
 ```bash
 git grep -n "rag_hydration_failed\|emptyBundle\|STUB_LLM_CFG\|smart-agent'\|config_reload_drain_error\|config_reload_invalidate_error\|tools_catalog_eager_load_failed\|could not load env file" -- 'packages/llm-agent-server-libs/src' 'packages/llm-agent-server/src'
 git grep -n "new ConfigReloadWatcher(" -- 'packages/llm-agent-server-libs/src'   # every hit passes `transactions` (V6, D80)
-git grep -n "_reloadTail\|dispose hiccup" -- 'packages/llm-agent-server-libs/src'   # expect no hits (the queue is the server's; the swallowed invalidation is gone, V10)
-npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server
-npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
+git grep -n "_reloadTail\|dispose hiccup\|snapshotConfig\|previous config is kept" -- 'packages/llm-agent-server-libs/src' 'packages/llm-agent-libs/src'   # expect no hits (the queue is the server's; the swallowed invalidation is gone, V10; no rollback anywhere, D82)
+git grep -n "writeNotReady(" -- 'packages/llm-agent-server-libs/src'   # both chat routes pass rc.notReadyMessage (D82)
+npx tsc -b packages/llm-agent-server-libs packages/llm-agent-server
+npm test --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
 ```
-(libs is in the gate for D81: `agent.ts` and its `reconfigure.test.ts`, `handle-hotswap.test.ts` and `issue-164-hotswap-usage-model.test.ts` — the success path, unchanged, must stay green.)
-- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed reload, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change, the startup agent's atomic reconfigure inside its rollback (D80, D81, V10); a worker on the parent's clients is logged (U10)` (with the two trailers).
+(No libs file changes in this task — D81 is withdrawn, `SmartAgent.reconfigure` stays as in 30.1.0.)
+- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed config change, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change, a failed one leaves the server not ready until one applies — no rollback (D80, D82, V6, V10); a worker on the parent's clients is logged (U10)` (with the two trailers).
 
 ---
 
@@ -5054,7 +5022,7 @@ Spec §10.5.10 (D72: the rule; H1–H4; H5 kept), §13 B9. M12's incomplete star
 - Create: `packages/llm-agent-libs/src/health/__tests__/agent-health-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/health-route-503.test.ts`
 
 **Interfaces:**
-- Produces: `/health` HTTP code = `200` iff `ready && status === 'healthy'`, else `503`; the body is unchanged (`{ …status, ready }`). The chat routes keep their gate on `ready` only (`writeNotReady`). `HealthStatus` is unchanged (`'healthy' | 'degraded' | 'unhealthy'`).
+- Produces: `/health` HTTP code = `200` iff `ready && status === 'healthy'`, else `503`; the body is unchanged from Task 4M (`{ …status, ready }`, plus `configNotApplied` while a config change has not applied — D82). The chat routes keep their gate on `ready` only (`writeNotReady` with `rc.notReadyMessage`; `ready` includes the config state since Task 4M). `HealthStatus` is unchanged (`'healthy' | 'degraded' | 'unhealthy'`).
 
 - [ ] **Step 1: Write the failing tests**
   - H1: the route with a checker reporting `degraded` and `ready: true` → **503**, body `status: 'degraded'`; `healthy` + ready → 200; `healthy` + not ready → 503 (unchanged). Today: degraded → 200.
@@ -15040,8 +15008,8 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` `buildSubAgent` (`injected.mcpClientDescriptors?` / `configuredSlotCount?`; `withToolNamespace`; clients with descriptors → `withMcpServers`; **the worker's own bound store filled before `subBuilder.build()`**, D35)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts` (append the D38 startup fill on `yamlBuilderConnect`; reuses its stub MCP server)
-- Unchanged: `packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts` — Task 4M made `_onReload` the awaitable entry point, queued in the server's config queue with `PUT /v1/config` (one transaction at a time, D80) that rejects on a failed drain / invalidation after restoring the previous config (spec V6, D77); this task only holds the watcher
-- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts` (the watcher's `reload` event reaches `_onReload`, D39; a failed drain / invalidation at the event boundary, D77)
+- Unchanged: `packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts` — Task 4M made `_onReload` the awaitable entry point, queued in the server's config queue with `PUT /v1/config` (one transaction at a time, D80) that rejects on a failed drain / invalidation — nothing restored, the server not ready until a config change applies (spec V6, D77, D82); this task only holds the watcher
+- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts` (the watcher's `reload` event reaches `_onReload`, D39; a failed drain / invalidation at the event boundary, D77, and the queue's not-ready state, D82)
 
 **Interfaces:**
 - Consumes: `vectorizeMcpTools`, which reads the binding from the store (Task 19, D34); `bindToolsProfile`, `toolsBindingOf` (Task 15); `mcpToolsVariants` (Task 16); `ToolsVariantFactory`, `SmartServerConfig.toolsVariantFactories` (Task 22); Task 23's `_toolsProfiles` and `withToolsStore`; `ToolCatalogStatus.records` / `.profile` (Task 3).
@@ -15052,7 +15020,7 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
   export function fillToolsBinding(clients: readonly IMcpClient[], binding: IBoundCollection<ToolItem>, options?: FillToolsBindingOptions): Promise<ToolCatalogStatus | undefined>; // runs the store's fill source at creation (D42), then vectorizes `skills` into the same store (D66); undefined when the source attempts nothing (consumer) or callOptions.signal is already aborted; rejects a binding its store does not carry (D34)
   // HealthCheckerDeps gains: toolCatalog?: IToolCatalogReporter  (absent → the agent's own status, 30.1.0)
   ```
-  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`, before its skills) — right after the clients are resolved and before the startup build, so the skills that build vectorizes into the store land after the fill (D66). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38) — their builds skipped the skills (`fillsAfterBuild`), which that pass vectorizes after the fill (`fillToolsBinding`'s `skills`, D66). On every path a store is filled before skills are vectorized into it. So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction that fails anywhere — the server's fill, `subBuilder.build()` (incl. the builder-driven fill of a worker on its own `mcp:`), or the backfill — drops the worker's cache entry and closes the handle it built; a failed `build()` disposes the connection strategy it resolved through (D47). `ConfigReloadWatcher._onReload` (Task 4M's final shape) resolves when the reload is applied and rejects — the previous config restored — when the drain or the invalidation fails; the server keeps the watcher (`_configReload`), so tests drive a hot reload directly and see the rejection (D39, D77). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
+  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`, before its skills) — right after the clients are resolved and before the startup build, so the skills that build vectorizes into the store land after the fill (D66). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38) — their builds skipped the skills (`fillsAfterBuild`), which that pass vectorizes after the fill (`fillToolsBinding`'s `skills`, D66). On every path a store is filled before skills are vectorized into it. So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction that fails anywhere — the server's fill, `subBuilder.build()` (incl. the builder-driven fill of a worker on its own `mcp:`), or the backfill — drops the worker's cache entry and closes the handle it built; a failed `build()` disposes the connection strategy it resolved through (D47). `ConfigReloadWatcher._onReload` (Task 4M's final shape) resolves when the reload is applied and rejects — nothing restored, the server not ready until a config change applies — when the drain or the invalidation fails; the server keeps the watcher (`_configReload`), so tests drive a hot reload directly and see the rejection and the not-ready answers (D39, D77, D82). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
 
 - [ ] **Step 1: Write the failing libs test**
 
@@ -15491,6 +15459,9 @@ type WorkerInternals = {
 };
 type Health = {
   status: string;
+  /** The server's readiness and its config-not-applied state (Task 4M, spec D82). */
+  ready?: boolean;
+  configNotApplied?: { reason: string; source: string; at: string };
   components: {
     toolCatalog?: { total: number; vectorized: number; complete: boolean; clientFailures: number };
   };
@@ -15949,7 +15920,40 @@ test('(10) hot reload: the server reload entry point drains the workers; the nex
   );
 });
 
-test('(10b) hot reload whose worker drain fails: the entry point rejects and the previous config stays live (spec V6, D77)', async (t) => {
+/** POST a JSON body; the status and the parsed body (D82's not-ready answers). */
+function postJson(port: number, path: string, body: unknown): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const raw = JSON.stringify(body);
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw) },
+      },
+      (res) => {
+        let text = '';
+        res.on('data', (c) => {
+          text += c;
+        });
+        res.on('end', () => {
+          let parsed: unknown = text;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            // not JSON — keep the text
+          }
+          resolve({ status: res.statusCode ?? 0, body: parsed });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end(raw);
+  });
+}
+
+test('(10b) hot reload whose worker drain fails: the entry point rejects, nothing is restored, the server is not ready until a config change applies (spec V6, D82)', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'hot-reload-fail-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configFile = join(dir, 'smart-server.yaml');
@@ -15958,11 +15962,11 @@ test('(10b) hot reload whose worker drain fails: the entry point rejects and the
   await withServer(
     rebuildConfig(calls, { configFile }),
     { ...constructionSeams, connectMcpWithDescriptors: labelledSeam },
-    async ({ server }) => {
+    async ({ port, server }) => {
       const s = server as unknown as WorkerInternals;
       const cfg = (server as unknown as { cfg: { agent?: { maxIterations?: number } } }).cfg;
       assert.ok(s._configReload, 'precondition: a configFile gives the server its reload watcher');
-      const before = cfg.agent?.maxIterations;
+      assert.equal((await getHealth(port)).configNotApplied, undefined, 'precondition: the server starts with its config applied');
       const drain = s._workers.drain.bind(s._workers);
       s._workers.drain = async () => {
         throw new Error('close failed');
@@ -15972,7 +15976,24 @@ test('(10b) hot reload whose worker drain fails: the entry point rejects and the
       } finally {
         s._workers.drain = drain; // the server's close drains the workers
       }
-      assert.equal(cfg.agent?.maxIterations, before, 'the mirror is restored — the next session builds on the previous config');
+      assert.equal(cfg.agent?.maxIterations, 25, "no rollback: the mirror keeps the failed reload's value");
+      const down = await getHealth(port);
+      assert.equal(down.ready, false);
+      assert.equal(down.configNotApplied?.source, 'reload');
+      assert.match(down.configNotApplied?.reason ?? '', /worker drain: Error: close failed/);
+      const chat = await postJson(port, '/v1/chat/completions', {
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      assert.equal(chat.status, 503, 'the chat route is gated while the config is not applied');
+      assert.match(
+        String((chat.body as { error?: { message?: string } }).error?.message),
+        /^config not applied — .*worker drain: Error: close failed/,
+      );
+      // The next config change that applies makes the server ready again.
+      await s._configReload._onReload({ maxIterations: 30 });
+      assert.equal((await getHealth(port)).configNotApplied, undefined);
+      assert.equal(cfg.agent?.maxIterations, 30);
     },
   );
 });
@@ -16290,7 +16311,7 @@ test("D47: a worker on its own mcp: whose builder-driven fill throws on a lazy r
 - [ ] **Step 6: Run to see them fail**
 
 Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
-Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10), (10b) and (10c) find no `_configReload`; (12) fails its precondition (no startup fill); (12b) fails its precondition too (no startup fill), and once filled it would find the entry kept — a backfill failure is outside any cleanup; (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`; the S-5 / D75 deferred-pass test passes already (Task 4L: the worker's own build still vectorizes its skills and rejects) — it pins that moving those skills into the deferred pass (`fillsAfterBuild`) keeps the rejection; the D47 own-`mcp:` test finds the cache entry kept after the failed rebuild (the builder-driven fill throws inside `subBuilder.build()`, outside the fill's catch), and the next session re-wires that empty store with the parent's clients. `config-reload-entry.test.ts` passes already (Task 4M gave the watcher its V6 shape: the link, the rejection and the event boundary's `config_reload_failed`), and so does (10b) once (10)'s precondition holds — it pins that this task keeps V6: a failed drain rejects and leaves the previous config live.
+Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10), (10b) and (10c) find no `_configReload`; (12) fails its precondition (no startup fill); (12b) fails its precondition too (no startup fill), and once filled it would find the entry kept — a backfill failure is outside any cleanup; (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`; the S-5 / D75 deferred-pass test passes already (Task 4L: the worker's own build still vectorizes its skills and rejects) — it pins that moving those skills into the deferred pass (`fillsAfterBuild`) keeps the rejection; the D47 own-`mcp:` test finds the cache entry kept after the failed rebuild (the builder-driven fill throws inside `subBuilder.build()`, outside the fill's catch), and the next session re-wires that empty store with the parent's clients. `config-reload-entry.test.ts` passes already (Task 4M gave the watcher its V6 shape: the link, the rejection and the event boundary's `config_reload_failed`), and so does (10b) once (10)'s precondition holds — it pins V6 and D82 on a real server: a failed drain rejects, nothing is restored, `/health` and the chat route answer not ready until a reload applies.
 
 - [ ] **Step 7: Implement (server)**
 
@@ -16649,17 +16670,18 @@ In `smart-server.ts`:
 - the reload entry point the hot-reload test drives (D39):
   - field, beside `_serverToolCatalog`: `private _configReload?: ConfigReloadWatcher;`
   - in the `if (this.cfg.configFile) {` block: after `reloadWatcher.start();` add `this._configReload = reloadWatcher;` and replace `closeFns.push(() => reloadWatcher.stop());` with `closeFns.push(() => this._configReload?.stop());` (the field is read, so `noUnusedLocals` accepts it).
-- `config-reload-watcher.ts` — **no change in this task.** Task 4M already gave it its final shape (spec V6, D77, D80), which is what this task's hot-reload test drives: `_onReload` is the awaitable reload entry point (D39), queued in the server's `ConfigTransactionQueue` behind the previous reload or `PUT` (D80, V10); it applies the agent update, awaits the worker drain and the session invalidation, and on a failure of either **restores** the pre-reload config (`snapshotConfig`), skips the RAG weights and **rejects** with an error naming the failure; the watcher's `reload` listener is the one place the rejection is handled (`config_reload_failed` through the server's log sink); `config_reload_applied` only on success. This task must not add a `.catch` that turns the drain or invalidation rejection into a resolved promise — that is the V6 regression (spec D77).
-- `__tests__/config-reload-entry.test.ts` (new, D39 — the one link the server test skips — and the event boundary of V6, D77):
+- `config-reload-watcher.ts` — **no change in this task.** Task 4M already gave it its final shape (spec V6, D77, D80, D82), which is what this task's hot-reload test drives: `_onReload` is the awaitable reload entry point (D39), queued in the server's `ConfigTransactionQueue` behind the previous reload or `PUT` (D80, V10); it applies the agent update, awaits the worker drain and the session invalidation, and on a failure of either restores **nothing**, skips the RAG weights and **rejects** with an error naming the failure — the queue marks the server not ready (D82); the watcher's `reload` listener is the one place the rejection is handled (`config_reload_failed` through the server's log sink); `config_reload_applied` only on success. This task must not add a `.catch` that turns the drain or invalidation rejection into a resolved promise — that is the V6 regression (spec D77).
+- `__tests__/config-reload-entry.test.ts` (new, D39 — the one link the server test skips — and the event boundary of V6, D77, D82):
   ```ts
   /**
    * Spec §14.1 (D39): the file watcher's `reload` event calls the reload entry
    * point (`_onReload`). The server's hot-reload test drives that entry point
    * directly; this pins the link it skips. No file change, no debounce: the
    * event is emitted on the watcher's own emitter.
-   * Spec V6 (D77): a failed drain or invalidation rejects the entry point, the
-   * previous config is restored, and the event boundary logs config_reload_failed
-   * — never config_reload_applied, never an unhandled rejection.
+   * Spec V6 (D77, D82): a failed drain or invalidation rejects the entry point,
+   * nothing is restored, the queue marks the server not ready, and the event
+   * boundary logs config_reload_failed — never config_reload_applied, never an
+   * unhandled rejection.
    */
   import assert from 'node:assert/strict';
   import type { EventEmitter } from 'node:events';
@@ -16682,6 +16704,7 @@ In `smart-server.ts`:
     writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
     const seen: string[] = [];
     const events: Record<string, unknown>[] = [];
+    const queue = new ConfigTransactionQueue();
     const watcher = new ConfigReloadWatcher({
       configFile,
       log: (e) => {
@@ -16691,9 +16714,6 @@ In `smart-server.ts`:
         seen.push('agent');
       },
       mirrorCfg: () => {},
-      snapshotConfig: () => () => {
-        seen.push('restored');
-      },
       drainWorkers: async () => {
         seen.push('drain');
       },
@@ -16701,12 +16721,12 @@ In `smart-server.ts`:
         seen.push('invalidate');
       },
       ragStores: {},
-      transactions: new ConfigTransactionQueue(),
+      transactions: queue,
       ...over,
     });
     // White-box: the inner ConfigWatcher (an EventEmitter) and the entry point.
     const inner = watcher as unknown as Inner;
-    return { watcher, inner, seen, events };
+    return { watcher, inner, queue, seen, events };
   }
 
   test("the watcher's reload event reaches _onReload: agent update, worker drain, session invalidation", async (t) => {
@@ -16729,18 +16749,19 @@ In `smart-server.ts`:
   });
 
   for (const which of ['drain', 'invalidation'] as const) {
-    test(`a failed ${which}: the entry point rejects, the previous config is restored, the event boundary logs config_reload_failed (D77)`, async (t) => {
+    test(`a failed ${which}: the entry point rejects, nothing is restored, the server is not ready, the event boundary logs config_reload_failed (D77, D82)`, async (t) => {
       const fail = async () => {
         throw new Error(`${which} down`);
       };
-      const { watcher, inner, seen, events } = makeWatcher(
+      const { watcher, inner, queue, seen, events } = makeWatcher(
         t,
         which === 'drain' ? { drainWorkers: fail } : { invalidateSessions: fail },
       );
       const label = which === 'drain' ? 'worker drain' : 'session invalidation';
       // Directly: the rejection is the caller's (the server's hot-reload test awaits it).
       await assert.rejects(inner._onReload({ maxIterations: 25 }), new RegExp(`${label}: Error: ${which} down`));
-      assert.ok(seen.includes('restored'), 'the pre-reload config is restored');
+      assert.deepEqual(seen.filter((s) => s === 'agent'), ['agent'], 'the update applied once — nothing undone (D82)');
+      assert.equal(queue.notApplied?.source, 'reload', 'the server is not ready (D82)');
       assert.ok(!events.some((e) => e.event === 'config_reload_applied'));
       // Through the event: handled at the boundary — logged as failed, not unhandled.
       events.length = 0;
@@ -20146,10 +20167,10 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 #     tools: { variant: faceted-rerank, poolItems: 30 }   # poolItems: your number
 ```
 
-- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B18)**
+- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B17; B18 withdrawn)**
 
 - `docs/INTEGRATION.md` (~347, `upsertManyPrecomputedRaw`): add that a failed bulk call fails the startup catalog — no per-tool retry; the status reports `complete: false` and `writeFailure` (D79, B16).
-- `docs/INTEGRATION.md` (`### Runtime config endpoints`, ~271): `PUT /v1/config` and a hot reload of `smart-server.yaml` run one at a time (one queue: a `PUT` waits for a reload or another `PUT` in flight); a failed worker drain, session invalidation or startup-agent update (the pipeline's `reconfigure` hook) answers **500** `server_error` naming it and keeps the previous config — nothing of the update is applied; send the `PUT` again once the cause is fixed (D80, D81, V10, B17). The `SmartAgent.reconfigure` paragraph (or, if none, the `### Runtime config endpoints` section): `reconfigure` is atomic — a throwing pipeline hook restores the previous LLMs and the error is rethrown (D81, B18). `docs/DEPLOYMENT.md` (the hot-reload section, ~390–418): reloads and `PUT`s share that queue, and a reload whose drain or invalidation fails keeps the previous config and logs `config_reload_failed` (B10). `docs/EXAMPLES.md` (~844) and `docs/QUICK_START.md` (~163): the `PUT /v1/config` row adds "500 and nothing applied when the worker drain, the session invalidation or the startup agent's update fails".
+- `docs/INTEGRATION.md` (`### Runtime config endpoints`, ~271), TL;DR first: `PUT /v1/config` and a hot reload of `smart-server.yaml` run one at a time (one queue: a `PUT` waits for a reload or another `PUT` in flight). **A config change that fails to apply is an error and leaves the server not ready — there is no rollback** (D82, B17): a `PUT` whose apply (the startup agent's update included), worker drain or session invalidation fails answers **500** `server_error` naming it; what it applied stays applied; until a config change applies, `/health` answers 503 with `ready: false` and `configNotApplied: { reason, source, at }`, and `POST /v1/chat/completions` / `POST /v1/messages` answer **503** `service_unavailable` (`config not applied — <reason>`); `GET` / `PUT /v1/config` keep answering. What to do: fix what the error names, then send a config again — a `PUT` with the whole config you want (models and agent fields), since a failed one may have applied part of itself; the first change that applies makes the server ready. A `PUT` that names neither `models` nor `agent` changes nothing and does not make the server ready. The server starts ready from its config (a start config that cannot be applied fails the start). `docs/DEPLOYMENT.md` (the hot-reload section, ~390–418, and the health / load-balancer paragraph): reloads and `PUT`s share that queue; a reload whose drain or invalidation fails logs `config_reload_failed`, restores nothing and leaves the server not ready (a load balancer takes it out) until the next reload or `PUT` applies — saving the file again re-reads all of it (B10, B17). `docs/EXAMPLES.md` (~844) and `docs/QUICK_START.md` (~163): the `PUT /v1/config` row adds "500 when the update, the worker drain or the session invalidation fails — the server is then not ready (`/health` 503, chat 503) until a config change applies; nothing is rolled back". `docs/TROUBLESHOOTING.md` (`## Errors instead of fallbacks`): a row `config not applied — …` (503 on chat, `/health` `configNotApplied`) → a config change failed → fix the named step and send a config again. Nowhere is `reconfigure` described as atomic (D81 withdrawn).
 
 - `docs/INTEGRATION.md`: a new `## Errors — fail loud` section (TL;DR first): a stage failure is the stream's last item `{ ok: false, error }` and `process()`'s result; the error carries the failing component's code (table of the codes a consumer meets: `PIPELINE_ERROR`, `MCP_UNAVAILABLE`, `CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `QUERY_EXPAND_ERROR`, `RERANK_ERROR`, `LLM_ERROR`, `SKILL_ERROR`, the `COORDINATOR_*` codes, and `PIPELINE_FAILURE_CODES`); **a degraded mode is your injected strategy** — an `IRag` wrapper (implement `IRagDecorator`), an `IReranker` that answers unranked, `agent.llmCallStrategy: fallback` — with one short example of an `IRag` wrapper; `FallbackQueryEmbedding` stands in only for a pipeline without an embedder. Every existing sentence that says a stage "continues", "skips", "falls back" or "keeps the original" on a failure is rewritten.
 - `docs/ARCHITECTURE.md`: the pipeline section states that a stage error reaches the consumer (executor → `ctx.error` → `pipelineToStream` → `{ ok: false }`).
@@ -20198,7 +20219,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 34: CHANGELOG, migration notes, `CLAUDE.md`
 
-Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B18, incl. the user's U1–U10 decisions, D79 and D81, §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
+Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B18, incl. the user's U1–U10 decisions, D79 and D82 (B18 withdrawn by D82), §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
 
 **Files:**
 - Modify: `CHANGELOG.md` (`## [Unreleased]`)
@@ -20350,15 +20371,15 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
 | B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type`; a skill whose embedding or write into the tools store fails | the skill (or all skills) left out — for a failed skill write, a warning and `build()` / start succeeded | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails; a failed skill write rejects `build()`, the server's start (or a worker's construction) and `fillToolsBinding` with a `SkillError` naming the skill, the store's error as `cause` | fix the skill source, or the tools store / its embedder the error names; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
 | B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK  | a load balancer that treated `degraded` as up now takes the instance out — intended |
-| B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure (`config_reload_failed`; the previous config restored and kept live), the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
+| B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure (`config_reload_failed`; no rollback — the server is not ready until a config change applies, B17), the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
 | B11 | providers: `sap-aicore-llm` `getModels`, a malformed SSE line (OpenAI, Anthropic), a short or empty SAP AI Core embedding batch, a Qdrant collection whose info cannot be read | the configured model / a silently truncated stream / short or empty vectors / the dimension check skipped for good | `LLM_ERROR` / `EMBED_ERROR` / `UPSERT_ERROR` | — |
 | B12 | a skill plugin source whose `acquire` fails | carried forward by default (`strict: false` was the default) | the default is `strict: true`: the source's group fails and is reported in `omitted` | set `strict: false` (`skillPlugins.strict: false`) to keep the carry-forward, reported in `carried` |
 | B13 | a coordinator step naming an agent the registry lacks, under `HybridDispatch` | silently run by the fallback dispatcher | a failed step naming the agent — `COORDINATOR_STEP_FAILED` under `failPolicy: 'abort'`, a reported failed step under `'continue'`; a step naming no agent still goes to the fallback | register the agent, or plan the step without one |
 | B14 | `lazy`'s factory fails while a `fallback` was given | calls went to the fallback instance | the init error reaches every call (`LazyInitError` with `cause`); the option is removed (line 73) | wrap the proxy yourself for a substitute |
 | B15 | a tool error whose text matches "not found", "permission", … | the tool blocked for the session for 10 min by default | nothing blocked unless a policy is injected; the error reaches the LLM as the tool result | inject `HeuristicToolAvailabilityPolicy({ ttlMs })`, or set `agent.toolUnavailableTtlMs` in the server YAML; `PUT /v1/config` with that key now answers 400 |
 | B16 | a bulk write of the startup tool catalog into a tools store without a profile (`upsertManyPrecomputedRaw` answers `ok: false` or throws) | the tools written again one by one | no per-tool write: the catalog is incomplete (`complete: false`, `ToolCatalogStatus.writeFailure`), the summary log line names it, `/health` answers 503 | fix the store the error names; a store that cannot take a bulk write does not implement `upsertManyPrecomputedRaw` |
-| B17 | `PUT /v1/config` whose worker drain, session invalidation or startup-agent update (the pipeline's `reconfigure` hook) fails | a failed invalidation swallowed (200, the new config); a failed drain → 500, the new config left applied; a failed startup-agent `reconfigure` → 500, the server's new models / config and the agent's swapped LLMs left | 500 `server_error` naming the failure; the previous config kept (held models, breakers, agent fields, mirror, the startup agent's LLMs), nothing of the update applied; a `PUT` waits for a reload or another `PUT` in flight | fix what the error names and send the `PUT` again |
-| B18 | `SmartAgent.reconfigure` whose pipeline's `reconfigure` hook throws | the error rethrown with the agent's LLMs already swapped (agent and pipeline disagree) | the error rethrown; the previous LLMs and classifier restored, nothing else called; signature unchanged | nothing, unless code relied on the half-applied swap — call `reconfigure` again once the hook is fixed |
+| B17 | a config change that fails to apply — `PUT /v1/config` whose apply (the startup agent's update included), worker drain or session invalidation fails; a hot reload whose drain or invalidation fails | `PUT`: a failed invalidation swallowed (200, the new config); a failed drain or `reconfigure` → 500, the new config left applied, the server still ready. Reload: logged, counted applied | `PUT`: 500 `server_error` naming the failure; reload: `config_reload_failed`. No rollback — what the change applied stays. The server is **not ready** until a config change applies: `/health` 503 with `configNotApplied: { reason, source, at }`, the chat routes 503 `service_unavailable` (`config not applied — …`). Changes run one at a time | fix what the error names, then send a config again (a `PUT` with the whole config you want, or save the YAML file); the first change that applies makes the server ready |
+| B18 | *Withdrawn.* `SmartAgent.reconfigure` is unchanged from 30.1.0; on the server a throwing pipeline hook is a failed `PUT` (B17) | — | — | — |
 
 New codes, in a set of their own: `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`,
 `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) from `@mcp-abap-adt/llm-agent`. Every other error carries the
@@ -20385,7 +20406,7 @@ failing component's existing code.
 ```markdown
 ## Unreleased
 
-**Breaking (major):** `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The subpath `./legacy/flat` is removed and `./legacy/linear`, `./legacy/dag` no longer re-export `CoordinatorHandler` / `DagCoordinatorHandler` — import `SmartAgentBuilder` and both handlers from `@mcp-abap-adt/llm-agent-libs` (lines 67–69). The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). The server no longer hands its embedder breaker to the builder (`withCircuitBreakers` is removed, line 72): it still wraps the retrieval embedder and is listed in `/health`, and with it open a store's query fails fast instead of answering from an in-memory copy. `skillPlugins.strict` defaults to `true`; `agent.toolUnavailableTtlMs` now opts in to the tool availability blacklist (unset → none) and is no longer accepted by `PUT /v1/config`; a worker on the parent's clients logs `worker_uses_shared_clients`. See the root CHANGELOG's Breaking table.
+**Breaking (major):** `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The subpath `./legacy/flat` is removed and `./legacy/linear`, `./legacy/dag` no longer re-export `CoordinatorHandler` / `DagCoordinatorHandler` — import `SmartAgentBuilder` and both handlers from `@mcp-abap-adt/llm-agent-libs` (lines 67–69). The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). The server no longer hands its embedder breaker to the builder (`withCircuitBreakers` is removed, line 72): it still wraps the retrieval embedder and is listed in `/health`, and with it open a store's query fails fast instead of answering from an in-memory copy. `skillPlugins.strict` defaults to `true`; `agent.toolUnavailableTtlMs` now opts in to the tool availability blacklist (unset → none) and is no longer accepted by `PUT /v1/config`; a worker on the parent's clients logs `worker_uses_shared_clients`. Config changes (`PUT /v1/config`, hot reload) run one at a time; one that fails to apply answers 500 / logs `config_reload_failed`, rolls nothing back and leaves the server not ready (`/health` 503 with `configNotApplied`, chat 503) until a config change applies; `writeNotReady` takes an optional message. See the root CHANGELOG's Breaking table.
 ```
 The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (major)** paragraph naming its lines of the root Breaking table):
 - `packages/llm-agent/CHANGELOG.md`: "**Breaking (major):** the RAG implementations (`VectorRag`, `InMemoryRag`, … — root CHANGELOG lines 1–4, 6–39) moved to `@mcp-abap-adt/llm-agent-rag` and are no longer exported here; `FallbackRag` and `SimpleRagRegistry.replaceRag` are removed (lines 5, 71 — with the circuit breaker on, an embedder outage makes a store's query fail with `CIRCUIT_OPEN` instead of answering from an in-memory copy); `IDecisionModel` is renamed `IProbabilityDecision` (line 40). New: the collection-profile contracts, `IRelevanceDecision`, `IToolsFillSource`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` now live in `interfaces/` (same exports); `ITextLogger` is removed — import `ILogger` from `@mcp-abap-adt/interfaces-utils` (line 70). `FallbackLlmCallStrategy` logs each fallback as `llm_streaming_fallback` and takes an optional `{ fallbackCount }` counter; `ToolCatalogStatus`, `IndexReport` and `HealthComponentStatus.toolCatalog` gain optional `batchFailures`."
@@ -20697,7 +20718,7 @@ The `closeFns` loop bug (spec §15) is tracked in fr0ster/llm-agent#330 — not 
 |---|---|---|
 | D75 | A skill whose embedding or write into the tools store fails rejects `vectorizeSkills` (a `SkillError` naming it, `cause` the store's error); `build()`, `fillToolsBinding`'s `skills` and the server's start propagate it | Task 4L (S-5: `vectorizeSkills`, builder, server startup build); Task 23A (`fillToolsBinding`, the deferred shared-worker pass) |
 | D76 | A failed bulk write fails every record of its batch with the bulk error — no per-record retry; a failed settle write is reported | Task 11 (`writeAll`, `storeItems`, the bulk-write tests) |
-| D77 | A failed reload restores the previous config and rejects; the watcher's `reload` listener is the one boundary that handles it (`config_reload_failed`) | Task 4M (V6 — the watcher's final shape, `snapshotConfig`); Task 23A (holds the watcher, no change to it; the event-boundary and server failure tests) |
+| D77 | *The restore is withdrawn by D82 (below): nothing is restored, the server is not ready; the rejection and the event boundary stand.* A failed reload restores the previous config and rejects; the watcher's `reload` listener is the one boundary that handles it (`config_reload_failed`) | Task 4M (V6 — the watcher's final shape, `snapshotConfig`); Task 23A (holds the watcher, no change to it; the event-boundary and server failure tests) |
 | D78 | The root span's `error` status is set before the error chunk is yielded | Task 4F (`withRootStatus`; the early-closing consumer test) |
 
 **Plan-wide scan for the same class** (2026-10-05; every `catch`, `.catch(`, `?? []`, `return []`, "never throw", "best-effort", "fallback" in the plan's code blocks, and every task after 4F–4Q that touches a file a fail-loud task changed). Fixed: the three above (Task 23A's reload `.catch` → resolve; Task 11's bulk-write → per-record retry, plus its per-record `catch {}` that dropped the store's error and its unchecked settle write; `vectorizeSkills`' warn-and-resolve, extended through Task 23A). Kept, each for a stated reason:
@@ -20722,20 +20743,26 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 
 | # | Decision | Done in |
 |---|---|---|
-| D80 | *Extended by the user on 2026-10-06 (next section): the queue is the server's and `PUT /v1/config` joins it.* Config reloads run one at a time: the watcher queues complete reload transactions (snapshot only after the previous one settled); a failed one rejects and is reported on its own (`config_reload_failed`) and never blocks later ones; `PUT /v1/config` (`handleConfigUpdate`) is a separate path, not queued | Task 4M (V6 — `_onReload` the queue, `_applyReload` the transaction; the two D80 tests in `config-reload-failure.test.ts`); Task 23A (the entry test asserts the transaction after a turn) |
+| D80 | *Extended by the user on 2026-10-06 (next section): the queue is the server's and `PUT /v1/config` joins it. The snapshot is withdrawn by D82 (below); the ordering stands.* Config reloads run one at a time: the watcher queues complete reload transactions (snapshot only after the previous one settled); a failed one rejects and is reported on its own (`config_reload_failed`) and never blocks later ones; `PUT /v1/config` (`handleConfigUpdate`) is a separate path, not queued | Task 4M (V6 — `_onReload` the queue, `_applyReload` the transaction; the two D80 tests in `config-reload-failure.test.ts`); Task 23A (the entry test asserts the transaction after a turn) |
 
 ## Decided by the user on 2026-10-06 — one queue for every config change; `writeFailure` approved (spec §17.28)
 
 | # | Decision | Done in |
 |---|---|---|
-| D80 (extended) | One queue for every config change: the server owns one `ConfigTransactionQueue` and injects it into the reload watcher (`ConfigReloadDeps.transactions`) and the `PUT` route (`IConfigUpdateTarget.transactions`); a `PUT` is one transaction (snapshot after the previous settled → the server's state → drain + invalidation → on success the startup agent and 200; on a failure restore and 500 `server_error` naming it) | Task 4M (`config-transaction-queue.ts`; `_onReload` over the server's queue; V10 in `config-route-handler.ts`, `LlmCircuitBreakers.snapshot()`, the server's `_configTransactions` and `snapshotConfig`; tests in `http/__tests__/config-route-transactions.test.ts` and `llm-circuit-breakers.test.ts`); Task 23A ((10c) on a real server; the watchers in `config-reload-entry.test.ts` get a queue); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/DEPLOYMENT.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`); Task 34 (B17) |
+| D80 (extended) | *The snapshot / restore and `LlmCircuitBreakers.snapshot()` are withdrawn by D82 (below): a failed `PUT` answers 500, restores nothing, leaves the server not ready; the one queue stands.* One queue for every config change: the server owns one `ConfigTransactionQueue` and injects it into the reload watcher (`ConfigReloadDeps.transactions`) and the `PUT` route (`IConfigUpdateTarget.transactions`); a `PUT` is one transaction (snapshot after the previous settled → the server's state → drain + invalidation → on success the startup agent and 200; on a failure restore and 500 `server_error` naming it) | Task 4M (`config-transaction-queue.ts`; `_onReload` over the server's queue; V10 in `config-route-handler.ts`, `LlmCircuitBreakers.snapshot()`, the server's `_configTransactions` and `snapshotConfig`; tests in `http/__tests__/config-route-transactions.test.ts` and `llm-circuit-breakers.test.ts`); Task 23A ((10c) on a real server; the watchers in `config-reload-entry.test.ts` get a queue); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/DEPLOYMENT.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`); Task 34 (B17) |
 | D79 (confirmed) | `ToolCatalogStatus.writeFailure?: string` (contract in `@mcp-abap-adt/llm-agent`, set by libs' `vectorizeMcpTools`) approved by the user | Task 19B Steps 6–10 (unchanged) |
 
-## Review finding on 2026-10-06 — the startup agent's update inside the rollback (spec §17.29)
+## Review finding on 2026-10-06 — the startup agent's update inside the rollback (spec §17.29) — *withdrawn by D82*
 
 | # | Decision | Done in |
 |---|---|---|
-| D81 | `SmartAgent.reconfigure` is atomic (signature unchanged): previous LLM fields and classifier captured, the new classifier built before any assignment, a throwing pipeline hook → the fields restored, nothing else called, rethrown (B18). `PUT /v1/config`'s startup-agent update (`reconfigure`, then `applyConfigUpdate`) runs inside the transaction's failure handling: a throw restores the server's snapshot (held LLMs, breakers, `cfg.agent`) and answers 500 `server_error` (`… — startup agent: …`). The file reload never calls `reconfigure` (V6 unchanged) | Task 4M (`agent.ts` `reconfigure`, `interfaces/pipeline.ts` doc; `applyConfigTransaction`; tests in libs' `reconfigure.test.ts` and `http/__tests__/config-route-transactions.test.ts`; libs in the gate); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`); Task 34 (B17, B18) |
+| D81 | *Withdrawn by D82 (below): no rollback, so nothing for an atomic `reconfigure` to protect; `SmartAgent.reconfigure` stays as in 30.1.0, no libs change, no `reconfigure.test.ts` cases.* `SmartAgent.reconfigure` is atomic (signature unchanged): previous LLM fields and classifier captured, the new classifier built before any assignment, a throwing pipeline hook → the fields restored, nothing else called, rethrown (B18). `PUT /v1/config`'s startup-agent update (`reconfigure`, then `applyConfigUpdate`) runs inside the transaction's failure handling: a throw restores the server's snapshot (held LLMs, breakers, `cfg.agent`) and answers 500 `server_error` (`… — startup agent: …`). The file reload never calls `reconfigure` (V6 unchanged) | Task 4M (`agent.ts` `reconfigure`, `interfaces/pipeline.ts` doc; `applyConfigTransaction`; tests in libs' `reconfigure.test.ts` and `http/__tests__/config-route-transactions.test.ts`; libs in the gate); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`); Task 34 (B17, B18) |
+
+## Decided by the user on 2026-10-06 — a failed config change: an error and not ready, no rollback (spec §17.30)
+
+| # | Decision | Done in |
+|---|---|---|
+| D82 | A config change (hot reload or `PUT /v1/config`) that fails anywhere in its transaction is an error — the reload rejects (`config_reload_failed`), the `PUT` answers 500 `server_error` naming every failed step (`apply`, `worker drain`, `session invalidation`) — and leaves the server **not ready**; nothing is restored. The server's `ConfigTransactionQueue` holds the *config not applied* state (`{ reason, source, at }`): set by a rejected transaction, cleared by a resolved one, empty at start (the server starts ready from its config). `ready` = MCP readiness and no such state: `/health` 503 with `configNotApplied`, both chat routes 503 `config not applied — <reason>` through the existing gate (`writeNotReady`'s optional message); the config, model, usage and session routes are not gated. A `PUT` naming neither `models` nor `agent` and a 400 stay outside the queue and change no state. The next change that applies drains and invalidates again, so a session or worker built on a failed config never serves — the provisional-session finding (review 24) needs no barrier. Withdrawn: D77's restore, `snapshotConfig`, `LlmCircuitBreakers.snapshot()`, D81 | Task 4M (`config-transaction-queue.ts` with `notApplied`; `_applyReload` without a restore; `applyConfigTransaction` in 30.1.0's order without a restore; `_handle`'s readiness, `RouteContext`, `writeNotReady`, `/health`'s body; tests `config-transaction-queue.test.ts`, `config-reload-failure.test.ts`, `http/__tests__/config-route-transactions.test.ts`, `config-not-ready.test.ts`); Task 4O (the body note); Task 23A ((10b) on a real server, `config-reload-entry.test.ts`); Task 33 Step 8b (`docs/INTEGRATION.md`, `docs/DEPLOYMENT.md`, `docs/EXAMPLES.md`, `docs/QUICK_START.md`, `docs/TROUBLESHOOTING.md`); Task 34 (B10, B17, B18 withdrawn, the server-libs CHANGELOG) |
 
 ## Self-review (done while writing)
 
@@ -20754,6 +20781,7 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for the fail-loud sweep (spec §10.5, §13 B1–B11, §17.24 — D69–D74).** Ten new tasks, 4F–4O, after Task 4E (every file they touch is in its final package: `preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` since Task 1A; the rerankers in `llm-agent-reranker` since Task 4B) and before Task 5, so every later task builds on code that fails loud; 4F (N1) first, because no later stage error reaches a consumer without it. Each item: a failing test showing today's fake success, the fix, the gate; each task names the grep for existing tests that pinned the fallback. `onFailure` is removed **in place** (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33): no task introduces it to remove it later; Task 12's `Unit.reranked` and the two-scales branch of `mergeByScore` go with it (one scale per run); Task 29 counts `rerank_error` from `rerankOrError` (Task 4I's rename). The carriers keep signatures: `McpToolRegistry.resolve` throws (Task 4F's executor keeps a thrown `OrchestratorError`'s code) instead of growing an error branch; the only contract additions are `PIPELINE_FAILURE_CODES` and `SkillLoadResult.carried?` (spec §3.8). U1–U10 untouched (Global Constraints). Review Focus 12 added. Every commit builds: 4F adds the codes before any task uses them; 4G–4O touch disjoint files except `agent.ts` / `rag-orchestrator.ts` / `tool-loop.ts` / `smart-server.ts`, edited in different functions in task order.
 - **Rework for the user's U1–U10 decisions (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24).** Extended in place: Task 4J (U1 — `FallbackLlmCallStrategy`'s second, optional constructor argument; the server's call compiles unchanged), Task 4K (U5 — `HybridDispatch`), Task 4L (U2 — the `strict` default in the host and the server's config), Task 4M (U10 — one event in the worker wire). New: Task 4P (U6 — `lazy` without `fallback`, after 4O), Task 4Q (U8 — `IToolAvailabilityPolicy`, after 4P and before Task 5), Task 19B (U7 — `batchFailures`, after 19A because it needs `storeItems`, both bindings and `indexToolsThroughProfile`). Each: failing tests first (incl. `@ts-expect-error` typechecks for the two removed members), the gate (`tsc -b` + the touched packages' suites), one commit. Compile order holds: 4P and 4Q touch files no earlier task leaves half-done; 4Q's `tool-loop-core.ts` / `tool-loop.ts` / `agent.ts` edits come after 4F–4G's in those files; every field 19B adds is optional, so the object literals of Tasks 3, 15, 17, 19 and 19A keep compiling. Task 33 Step 8b documents every mode as decided (and a new grep for `toolUnavailableTtlMs` / `fallback:` / `strict: false`); Task 34's Breaking table has 74 lines and the behaviour table B12–B15. U3, U4 untouched; U9 is Task 0A.
 - **Rework for D79 (spec §17.26 — decided by the user on 2026-10-06).** Task 19B gains Steps 6–10, its own TDD cycle after Steps 1–5 in the same function and test file: the failing tests (bulk write `ok: false` / throwing while per-tool writes would succeed → no per-tool write, `complete: false`, `writeFailure`), the optional contract field `ToolCatalogStatus.writeFailure` (every earlier object literal of `ToolCatalogStatus` still compiles; the test file is not type-checked by `tsc -b` — the package excludes tests —, so Step 7 fails on behaviour, not on compile, and Step 8's field makes the tests' `summary?.writeFailure` type-correct for the editor and Biome), the `else` branch in `listAndIndexTools`, the gate (`tsc -b` + the three suites, a grep that the retry test and comment are gone) and a `fix(libs)` commit. Task 19 (the rename to `listAndIndexTools`) and 19A touch no line Step 8 changes; Task 25 (F1) edits the embedder read (~168–171), above it. Task 33 Step 8b and Task 34 (B16) document it.
-- **Rework for D80 (spec §17.27 — review finding of 2026-10-06).** Task 4M: `_onReload` becomes the queued entry point over a promise chain (`_reloadTail`), the D77 transaction moves unchanged to `_applyReload`; the listener and its `config_reload_failed` boundary are unchanged. Two new tests (overlapping reloads with a deferred drain; a failed reload followed by a successful one through the event). Task 23A's entry test moves its `seen` assertion after a turn, since the transaction no longer runs in the emit's call stack; its other assertions and the server's `_onReload` callers are unaffected (still `Promise<void>`). `tsc`: `_reloadTail` is read in `_onReload` (`noUnusedLocals`), `run.then(() => undefined, () => undefined)` is `Promise<void>`.
-- **Rework for D80 extended (spec §17.28 — decided by the user on 2026-10-06).** Task 4M: the queue moves from the watcher (`_reloadTail`) into the server (`ConfigTransactionQueue`, one instance injected into the watcher and the `PUT` route); `PUT /v1/config` becomes one transaction (validation outside the queue; snapshot → the server's state → drain + invalidation → the startup agent and 200, or restore and 500 `server_error`). The startup agent is changed only on success because a `SmartAgent` cannot be restored exactly; the breakers are restored with the LLMs (`LlmCircuitBreakers.snapshot()`, internal). Every `new ConfigReloadWatcher(` in the plan's tests passes `transactions` (the V6 cases, the D80 harness, `watcherOver`, Task 23A's `makeWatcher`); tests run through `tsx` without type-checking, so a missing `transactions` would fail at runtime (`run` of undefined) — the Step 4 grep lists every construction. Compile: `IConfigUpdateTarget` has one implementation (`_configUpdateTarget()`), which gains both members in the same step; `ConfigReloadDeps` has one production construction (`smart-server.ts`), which gains `transactions` in the same step; `ReturnType<SmartAgent['getActiveConfig']>` / `['getAgentConfig']` type the outcome without a new type import. Real-server PUT tests are unchanged (their drains and invalidations succeed).
-- **Rework for D81 (spec §17.29 — review finding of 2026-10-06).** Task 4M: `SmartAgent.reconfigure` (libs `agent.ts`) becomes atomic with its signature kept — the startup agent's update in `applyConfigTransaction` was outside the restore boundary, so a throwing pipeline hook left the server's new held models / mirror / breakers and a half-updated agent behind a 500, and the next transaction snapshotted that. The startup-agent update now runs in a `try` whose `catch` restores the snapshot and answers 500. New tests: two in libs' `reconfigure.test.ts` (hook throws after a swap → old LLMs and classifier kept, hook called once; a later successful call applies) and one in `config-route-transactions.test.ts` (the harness gains a real `LlmCircuitBreakers` and `failReconfigure`: 500 naming the startup agent, held model / breakers / mirror / agent config unchanged, `applyConfigUpdate` never called, the next `PUT` → 200). The gate gains libs. The file-reload path was checked: it calls only `applyConfigUpdate` (no `reconfigure`), so V6 is unchanged. Task 33 Step 8b and Task 34's B17 / new B18 follow.
+- **Rework for D80 (spec §17.27 — review finding of 2026-10-06).** *Its restore is withdrawn by D82 (below).* Task 4M: `_onReload` becomes the queued entry point over a promise chain (`_reloadTail`), the D77 transaction moves unchanged to `_applyReload`; the listener and its `config_reload_failed` boundary are unchanged. Two new tests (overlapping reloads with a deferred drain; a failed reload followed by a successful one through the event). Task 23A's entry test moves its `seen` assertion after a turn, since the transaction no longer runs in the emit's call stack; its other assertions and the server's `_onReload` callers are unaffected (still `Promise<void>`). `tsc`: `_reloadTail` is read in `_onReload` (`noUnusedLocals`), `run.then(() => undefined, () => undefined)` is `Promise<void>`.
+- **Rework for D80 extended (spec §17.28 — decided by the user on 2026-10-06).** *Its snapshot / restore and `LlmCircuitBreakers.snapshot()` are withdrawn by D82 (below); the one queue stands.* Task 4M: the queue moves from the watcher (`_reloadTail`) into the server (`ConfigTransactionQueue`, one instance injected into the watcher and the `PUT` route); `PUT /v1/config` becomes one transaction (validation outside the queue; snapshot → the server's state → drain + invalidation → the startup agent and 200, or restore and 500 `server_error`). The startup agent is changed only on success because a `SmartAgent` cannot be restored exactly; the breakers are restored with the LLMs (`LlmCircuitBreakers.snapshot()`, internal). Every `new ConfigReloadWatcher(` in the plan's tests passes `transactions` (the V6 cases, the D80 harness, `watcherOver`, Task 23A's `makeWatcher`); tests run through `tsx` without type-checking, so a missing `transactions` would fail at runtime (`run` of undefined) — the Step 4 grep lists every construction. Compile: `IConfigUpdateTarget` has one implementation (`_configUpdateTarget()`), which gains both members in the same step; `ConfigReloadDeps` has one production construction (`smart-server.ts`), which gains `transactions` in the same step; `ReturnType<SmartAgent['getActiveConfig']>` / `['getAgentConfig']` type the outcome without a new type import. Real-server PUT tests are unchanged (their drains and invalidations succeed).
+- *Withdrawn by D82 (next bullet).* **Rework for D81 (spec §17.29 — review finding of 2026-10-06).** Task 4M: `SmartAgent.reconfigure` (libs `agent.ts`) becomes atomic with its signature kept — the startup agent's update in `applyConfigTransaction` was outside the restore boundary, so a throwing pipeline hook left the server's new held models / mirror / breakers and a half-updated agent behind a 500, and the next transaction snapshotted that. The startup-agent update now runs in a `try` whose `catch` restores the snapshot and answers 500. New tests: two in libs' `reconfigure.test.ts` (hook throws after a swap → old LLMs and classifier kept, hook called once; a later successful call applies) and one in `config-route-transactions.test.ts` (the harness gains a real `LlmCircuitBreakers` and `failReconfigure`: 500 naming the startup agent, held model / breakers / mirror / agent config unchanged, `applyConfigUpdate` never called, the next `PUT` → 200). The gate gains libs. The file-reload path was checked: it calls only `applyConfigUpdate` (no `reconfigure`), so V6 is unchanged. Task 33 Step 8b and Task 34's B17 / new B18 follow.
+- **Rework for D82 (spec §17.30 — decided by the user on 2026-10-06).** Task 4M: the snapshot / restore is removed everywhere (`ConfigReloadDeps.snapshotConfig`, `IConfigUpdateTarget.snapshotConfig`, the server's two `snapshotConfig` closures, `LlmCircuitBreakers.snapshot()` and its test) and D81 is withdrawn (no libs change: `agent.ts`, `interfaces/pipeline.ts` and `reconfigure.test.ts` untouched; libs leaves Task 4M's gate). Each removed name was checked: none exists in the code today, and no other task of this plan uses it (`git grep` over the plan: only Tasks 4M and 23A named them; both rewritten). `ConfigTransactionQueue.run` takes the change's source and keeps the *config not applied* state; `_applyReload` throws without restoring; `applyConfigTransaction` applies in 30.1.0's order and throws on any failed step; the route maps a rejection to 500. The readiness gate is the existing one: `_handle` folds the state into `rc.ready`, adds `rc.notReadyMessage` / `rc.configNotApplied`, the two chat routes pass the message to `writeNotReady`, `/health` adds `configNotApplied`. Tests: the queue's unit test, V6 (nothing restored, `notApplied`), the serialized pair, V10 (500 + not ready for drain / invalidation / apply, then a `PUT` that applies → ready; an empty `PUT` and a 400 keep the state), a real-server test (`/health` 503 with the reason, both chat routes 503, `GET /v1/config` answers; a `PUT` that applies → ready, chat 200); Task 23A's (10b) does the same through a hot reload. **Cumulative compile:** `ConfigNotApplied` is imported by `route-table.ts` (type) and used by `RouteContext`; `ConfigChangeSource` by `IConfigTransactionQueue`; `UPDATE_FAILED` and `ConfigTransactionResult` by `handleConfigUpdate` / `applyConfigTransaction`; nothing Task 23A, 4O or later adds reads a removed name (`noUnusedLocals`). The gates stay: Task 4M runs `tsc -b` and the tests of server-libs and the server; Task 23A's and 4O's gates are unchanged.
