@@ -47,7 +47,7 @@ The ten inputs the spec implies, most likely to bite a user, each pinned by a te
 5. **A tool definition larger than the token budget** (top item alone over budget) — empty result, never truncated, never replaced by a smaller lower-ranked tool. → Task 6 (`the top item alone over budget gives an empty result`).
 6. **A caller's k below a cut's own ceiling** (k=2 against a consumer's `maxItems` 5 → `FixedItemsCut(5)`) — at most 2 items, also after decomposition. → Task 6 (`FixedItemsCut is a ceiling`), Task 12 (`a consumer cut whose limit ignores k is still capped`), Task 14, Task 30 (`a caller k below the cut's own ceiling caps the result`).
 7. **A stale-record delete that fails** during a replacement — the item is `cleanup-failed`, never indexed; the id stays listed and the next `index` / `remove` deletes it. → Task 11 (`replacement → failed stale delete → … → remove leaves nothing`), Task 15, Task 30.
-8. **Two score scales in one result** (`keepStage1Top` pins stage-1 items beside reranked ones; a failed rerank falls back to stage 1) — a pinned item carries its reranked score, never its embedding score, under a probability and a relevance reranker; the `stage1` fallback returns stage-1 ids and scores; `keepStage1Top` + `ScoreFloorCut` and `ScoreFloorCut` + `onFailure: 'stage1'` are refused with their messages. → Task 13 (`a pinned item carries its RERANKED score …`, `a failed rerank under 'stage1' with keepStage1Top …`, the two rejection cases), Task 21 (`compose: score-floor with a reranker needs onFailure: error`).
+8. **Two score scales in one result** (`keepStage1Top` pins stage-1 items beside reranked ones; a failed rerank falls back to stage 1; a decomposer merges sub-queries whose scores are not comparable, D63) — a pinned item carries its reranked score, never its embedding score, under a probability and a relevance reranker; the `stage1` fallback returns stage-1 ids and scores; `keepStage1Top` + `ScoreFloorCut`, `ScoreFloorCut` + `onFailure: 'stage1'` and a decomposer + `ScoreFloorCut` (D63) are refused with their messages. → Task 13 (`a pinned item carries its RERANKED score …`, `a failed rerank under 'stage1' with keepStage1Top …`, the two rejection cases), Task 14 (`the same item from two sub-queries … kept once, at its first position, with its first score`, `a decomposer with ScoreFloorCut is rejected at construction`), Task 21 (`compose: score-floor with a reranker needs onFailure: error`, `compose: score-floor with a decomposer is refused`).
 9. **A corpus that does not fit the server, or a store it cannot be loaded into** (another profile / embedder name, another vector length than the store config's `dimension`, a store without `clearAll` or without a precomputed write — on the given store or on the backend behind its decorators —, a `FallbackRag` over a raw-only primary or over a primary without `clearAll`) — refused with a message naming what differs, **before** the store is cleared; a load interrupted after the clear fails the start, and the next start loads it whole. → Task 19A (`an identity, profileName or dimensions mismatch → throws …; the store is not touched`, the `clearAll` / precomputed / D52 cases, the interrupted load), Task 23B (the declared-dimension startup failure, a store holding foreign records keeps only the corpus).
 10. **A 30.1.0 import of a moved or renamed name** (`import { VectorRag } from '@mcp-abap-adt/llm-agent'`, `import { DecisionReranker } from '@mcp-abap-adt/llm-agent-libs'`, `import type { StopReason } from '@mcp-abap-adt/llm-agent-libs'`, a `makeDecisionModel` key) — **fails to compile** (a major release, no alias, no re-export), and every one of them is a line of the CHANGELOG's migration table that names the new import; nothing in the repo still uses an old name or imports a moved name from its old package; nothing below `llm-agent-rag` imports it (no cycle). → Task 1A (`rag-implementations-home.test.ts`, the `@ts-expect-error` typecheck, the clean build), Task 4A / 4B / 20A (each removes its old names and switches every use in the same commit), Task 4D (the pre-existing re-exports removed; the guard over every public entry point), Task 4E (`ITextLogger` removed; its `@ts-expect-error` typecheck), Task 34 (the migration table: 70 lines), Task 35 (the repo-wide greps).
 
@@ -264,6 +264,7 @@ Spec §11.3 (the moves table, "Why there is no cycle", "Importers switch"), §11
 - Modify: `packages/ollama-embedder/src/ollama.ts`, `src/index.ts`, `package.json` (`description`), `README.md`, root `README.md` — `OllamaRag` removed (Step 4)
 - Modify (codemod, Step 7): the 35 files under `packages/llm-agent-libs/src`, `packages/llm-agent-server-libs/src`, `packages/llm-agent-server/src` that import a moved name from `@mcp-abap-adt/llm-agent`
 - Modify: `tsconfig.typecheck.json` (the two moved typecheck files' paths; the new typecheck file)
+- Modify (Step 5A): `packages/llm-agent-rag/package.json` (`zod` added to `dependencies`), `packages/llm-agent/package.json` (`dependencies` block removed — `zod` was its only entry), `package-lock.json`
 - Create: `test/repo/rag-implementations-home.test.ts`, `packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts`, `packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts`
 
 **Interfaces:**
@@ -553,6 +554,61 @@ export { VectorRag, type VectorRagConfig } from './vector-rag.js';
 Run: `npx tsc -b packages/llm-agent packages/llm-agent-rag`
 Expected: both build. `llm-agent` fails here only if a stay-file still imports a moved file — fix the import, never by importing `llm-agent-rag`. `llm-agent-rag` fails here only on a missed import rewrite.
 
+- [ ] **Step 5A: The dependencies follow the moved code — `llm-agent-rag` declares `zod`**
+
+A moved file keeps its third-party imports, and `llm-agent-rag` must declare each of them itself: inside this workspace a missing declaration still builds (the package is hoisted from another workspace's `node_modules`), but a consumer's install of `llm-agent-rag` would not have it.
+
+Scan of every non-relative import of the files moved in Step 5 and of the tests moved in Step 6 (done 2026-10-05 against the tree at `de1aa0a1`):
+
+| Import | In (moved file) | Declared by `llm-agent-rag`? | Action |
+|---|---|---|---|
+| `zod` | `mcp-tools/rag-collection-tools.ts` (`import { z } from 'zod'`) | **no** | add `"zod": "^4.6.5"` to `dependencies` — the range `llm-agent` declares today |
+| `@mcp-abap-adt/llm-agent` | `fallback-rag.ts`, and every stay-target import rewritten in Step 5; the moved tests (`.../testing/rag-filter-conformance` included) | yes — peer `^30.1.0` | none |
+| `node:crypto` | `in-memory-rag.ts`, `registry/simple-rag-registry.ts` | built in | none |
+
+No other third-party package is imported by a moved file or a moved test. `zod` is the only addition.
+
+`packages/llm-agent-rag/package.json` — add, between `scripts` and `peerDependencies`:
+
+```json
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+```
+
+`packages/llm-agent/package.json` — `rag-collection-tools.ts` was the only file in `llm-agent` that imports `zod`; after Step 5 nothing there does. Check, then delete the whole `"dependencies": { "zod": "^4.6.5" },` block (it has no other entry):
+
+```bash
+grep -rln "zod" packages/llm-agent/src   # → empty after Step 5
+```
+
+(`llm-agent-libs` and `llm-agent-server` declare `zod` themselves today and are not touched here.)
+
+Re-run the scan over the package as it is now, to catch anything this table missed:
+
+```bash
+grep -rhoE "(from|import\()\s*'[^.'][^']*'" packages/llm-agent-rag/src \
+  | sed -E "s/.*'([^']*)'.*/\1/" | grep -v '^node:' | sed -E 's#^(@[^/]+/[^/]+|[^@/][^/]*).*#\1#' | sort -u
+```
+
+Expected: `zod` and `@mcp-abap-adt/*` names only (a literal `@mcp-abap-adt/…` line comes from a doc comment, not an import), each of which is in `packages/llm-agent-rag/package.json` (`zod` in `dependencies`, the `@mcp-abap-adt/*` ones in `peerDependencies`). Any other name → add it to `dependencies` the same way (its range from the package that declares it today) and list it in the table above.
+
+Lockfile:
+
+```bash
+npm install
+node -e '
+const l = require("./package-lock.json");
+console.log("llm-agent-rag deps:", l.packages["packages/llm-agent-rag"].dependencies);
+console.log("llm-agent deps:", l.packages["packages/llm-agent"].dependencies);
+for (const [k, v] of Object.entries(l.packages)) {
+  if (v.link && !String(v.resolved).startsWith("packages/")) console.log("BAD link:", k, v.resolved);
+  if (!v.link && v.resolved && !v.resolved.startsWith("https://registry.npmjs.org/")) console.log("BAD source:", k, v.resolved);
+}'
+```
+
+Expected: `llm-agent-rag deps: { zod: '^4.6.5' }`, `llm-agent deps: undefined`, and no `BAD` line — every `"link": true` entry is a `packages/*` workspace sibling and every other package resolves from the registry (`grep -n '"link": true' package-lock.json` lists only the `node_modules/@mcp-abap-adt/*` → `packages/*` sibling entries).
+
 - [ ] **Step 6: Move the tests that test the moved files**
 
 ```bash
@@ -689,15 +745,48 @@ Expected: no errors — each `@ts-expect-error` is used (the old imports fail), 
 Run: `npm run build && npm run lint:check && npm run typecheck && npm test && npm run clean && npm run build`
 Expected: PASS — every package's tests unchanged in outcome; the clean build proves the `tsc -b` order has no reference cycle (`llm-agent` → … → `ollama-embedder` → … → `llm-agent-rag`).
 
+- [ ] **Step 10A: `llm-agent-rag` installs and imports outside the repo**
+
+The workspace hoists packages, so a build and the tests prove nothing about `llm-agent-rag`'s own declarations. Pack it, install the tarball with a clean `npm install` in a throwaway directory **outside the repo** (no workspace, no hoisting from a sibling, no repo `.npmrc`), and import its root.
+
+Peers: `llm-agent-rag`'s required peers are `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/interfaces-auth`; `llm-agent` in turn peers on `interfaces-auth` and `interfaces-utils`. The two `interfaces-*` packages are published (`npm view @mcp-abap-adt/interfaces-auth@^2.1.0 version` → `2.1.0`, `npm view @mcp-abap-adt/interfaces-utils@^1.1.0 version` → `1.1.1`, checked 2026-10-05) and come from the registry. `@mcp-abap-adt/llm-agent` is a sibling of this release that is **not published in this shape**: the registry's `30.1.0` still carries the moved files and lacks the contract types moved to `interfaces/` in Step 3. So it is **packed from the tree too** and installed from its tarball; both tarballs carry the lockstep version `30.1.0`, which satisfies the peer range `^30.1.0`, and npm takes the tarball named on the command line instead of the registry's `30.1.0` (checked below). The optional peers (`qdrant-rag`, `hana-vector-rag`, `pg-vector-rag`, the three embedders) are not installed: the root reaches them only through `import()` when a factory uses one, so importing the root without them is part of what this proves.
+
+```bash
+npm run build
+T=$(mktemp -d)                      # outside the repo
+npm pack --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-rag --pack-destination "$T"
+mkdir "$T/app"
+(
+  cd "$T/app" &&
+  npm init -y >/dev/null &&
+  npm install --no-audit --no-fund \
+    "$T"/mcp-abap-adt-llm-agent-rag-*.tgz "$T"/mcp-abap-adt-llm-agent-[0-9]*.tgz \
+    @mcp-abap-adt/interfaces-auth@^2.1.0 @mcp-abap-adt/interfaces-utils@^1.1.0 &&
+  node -e "import('@mcp-abap-adt/llm-agent-rag').then((m) => { for (const n of ['VectorRag', 'InMemoryRag', 'FallbackRag', 'buildRagCollectionToolEntries']) if (typeof m[n] !== 'function') throw new Error(n + ' missing'); console.log('root import ok'); })" &&
+  node -p "require('./package-lock.json').packages['node_modules/@mcp-abap-adt/llm-agent'].resolved" &&
+  npm explain zod
+)
+rm -rf "$T"
+```
+
+Expected:
+- `root import ok` — no `ERR_MODULE_NOT_FOUND` (before Step 5A it fails with `Cannot find package 'zod'` imported from `.../llm-agent-rag/dist/mcp-tools/rag-collection-tools.js`);
+- the `resolved` line starts with `file:` and names the `mcp-abap-adt-llm-agent-30.1.0.tgz` tarball — the tree's `llm-agent`, not the registry's;
+- `npm explain zod` lists `@mcp-abap-adt/llm-agent-rag@30.1.0` as the dependent with `zod@"^4.6.5"`, and **not** `@mcp-abap-adt/llm-agent`. This line is what makes the check meaningful: were `zod` still a dependency of `llm-agent`, npm would hoist it to the top of `node_modules` and `llm-agent-rag` would resolve it by accident.
+
+The throwaway lockfile's `file:` entry is the check's own install, outside the repo; it is never committed. The procedure was dry-run on 2026-10-05 against the tree at `de1aa0a1` (before the move): pack, install and root import work as written.
+
 - [ ] **Step 11: Commit**
 
 ```bash
-git add -A packages/llm-agent packages/llm-agent-rag packages/ollama-embedder packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server scripts test README.md tsconfig.typecheck.json
+git add -A packages/llm-agent packages/llm-agent-rag packages/ollama-embedder packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server scripts test README.md tsconfig.typecheck.json package-lock.json
 git commit -m "refactor(rag)!: the RAG implementations move to llm-agent-rag; OllamaRag removed
 
 BREAKING CHANGE: VectorRag, InMemoryRag, FallbackRag and the other RAG implementations
 (spec §11.3) are no longer exported by @mcp-abap-adt/llm-agent; import them from
 @mcp-abap-adt/llm-agent-rag. OllamaRag is removed from @mcp-abap-adt/ollama-embedder.
+llm-agent-rag now depends on zod (used by buildRagCollectionToolEntries); llm-agent no
+longer does.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -6686,15 +6775,15 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 14: `StagedRetrieval` — the `IQueryDecomposer` slot (libs)
 
-Spec §4.5, §2.4; goal decision 2026-10-05; D56 (each sub-query's pool is sized from its own k). No decomposer implementation ships.
+Spec §4.5, §2.4; goal decision 2026-10-05; D56 (each sub-query's pool is sized from its own k); D63 (no score compared across sub-queries: first-occurrence merge; no `ScoreFloorCut` with a decomposer). No decomposer implementation ships.
 
 **Files:**
-- Modify: `packages/llm-agent-libs/src/collections/staged-retrieval.ts` (replace `retrieve`, add `decomposeQuery`, `resultKey`)
+- Modify: `packages/llm-agent-libs/src/collections/staged-retrieval.ts` (replace `retrieve`, add `decomposeQuery`, `resultKey`; one more constructor check)
 - Create: `packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-decompose.test.ts`
 
 **Interfaces:**
 - Consumes: Tasks 12–13; `QueryEmbedding` (`@mcp-abap-adt/llm-agent`, `new QueryEmbedding(text, embedder, options)`); `IQueryDecomposer`, `SubQuery`.
-- Produces: decomposer errors and failed checks → `RagError(…, 'DECOMPOSE_ERROR')`; at most `min(k, cut.limit(k))` ≤ k items in every case. Exported helper `resultKey(r: RagResult): string` (owner-qualified item key of a returned result) — used by Task 30's kit test.
+- Produces: decomposer errors and failed checks → `RagError(…, 'DECOMPOSE_ERROR')`; at most `min(k, cut.limit(k))` ≤ k items in every case; the sub-query union in sub-query order, a duplicate item kept at its first occurrence with that occurrence's score (D63); the constructor throws on `decompose` + `ScoreFloorCut` (D63). Exported helper `resultKey(r: RagResult): string` (owner-qualified item key of a returned result) — used by Task 30's kit test.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -6715,6 +6804,7 @@ import {
   FixedItemsCut,
   ItemPool,
   MaxScoreCollapse,
+  ScoreFloorCut,
   StagedRetrieval,
   type StagedRetrievalOptions,
 } from '../index.js';
@@ -6849,17 +6939,85 @@ describe('StagedRetrieval — query decomposition slot', () => {
     assert.ok(r.ok && r.value.length <= 2);
     assert.ok(ids(r));
   });
+
+  it('the same item from two sub-queries with different scores is kept once, at its first position, with its first score (D63)', async () => {
+    // A score is comparable only for the same query (spec §3.9, D28): each sub-query gets its own scale.
+    const scores: Record<string, Record<string, number>> = {
+      apple: { 'apple one': 0.9, 'apple banana': 0.2 },
+      banana: { 'apple banana': 0.95, 'banana cherry': 0.5 },
+    };
+    const reranker: IReranker = {
+      rerank: async (query, results) => ({
+        ok: true,
+        value: results
+          .map((r) => ({ ...r, score: scores[query]?.[r.text] ?? 0 }))
+          .sort((a, b) => b.score - a.score),
+      }),
+    };
+    const rag = await fixture();
+    const r = await staged(rag, {
+      rerank: { reranker, onFailure: 'error' },
+      decompose: {
+        decomposer: decomposer([{ text: 'apple', k: 2 }, { text: 'banana', k: 2 }]),
+        queryEmbedder: embedder,
+      },
+    }).retrieve(rag, q('apple then banana'), 4);
+    assert.ok(r.ok);
+    // apple's list [A 0.9, B 0.2], then banana's [B 0.95, C 0.5]: B stays where apple put it, with
+    // apple's score (no best-score pick across queries), and the union is not re-sorted (C's 0.5 after B's 0.2).
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.id, x.score]),
+      [['A', 0.9], ['B', 0.2], ['C', 0.5]],
+    );
+    assert.ok(r.value.length <= 4);
+  });
+
+  it('a decomposer with ScoreFloorCut is rejected at construction — sub-query scores are not comparable (D63)', async () => {
+    const rag = await fixture();
+    const floor = new ScoreFloorCut({ minItems: 1, maxItems: 3, minScore: 0.5 });
+    const decompose = {
+      decomposer: decomposer([{ text: 'apple', k: 1 }, { text: 'banana', k: 1 }]),
+      queryEmbedder: embedder,
+    };
+    const reranker: IReranker = { rerank: async (_query, results) => ({ ok: true, value: results }) };
+    const rejected: Partial<StagedRetrievalOptions>[] = [
+      { cut: floor, decompose },
+      // also where the floor alone is allowed (a reranker with onFailure 'error', spec §4.7)
+      { cut: floor, decompose, rerank: { reranker, onFailure: 'error' } },
+    ];
+    for (const o of rejected) {
+      assert.throws(
+        () => staged(rag, o),
+        /^Error: StagedRetrieval: a decomposer cannot be combined with ScoreFloorCut — scores of different sub-queries are not comparable/,
+      );
+    }
+    // The floor without a decomposer, and a decomposer with a rank-order cut, stay allowed.
+    assert.doesNotThrow(() => staged(rag, { cut: floor }));
+    assert.doesNotThrow(() => staged(rag, { cut: new FixedItemsCut(3), decompose }));
+  });
 });
 ```
 
 - [ ] **Step 2: Run to see it fail**
 
 Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-decompose.test.ts`
-Expected: FAIL — the decomposer is never called (`seen` empty; no `DECOMPOSE_ERROR`).
+Expected: FAIL — the decomposer is never called (`seen` empty; no `DECOMPOSE_ERROR`; the first-occurrence case returns the whole query's items, not `A, B, C` with apple's scores); `decompose` + `ScoreFloorCut` constructs without throwing.
 
 - [ ] **Step 3: Implement**
 
-In `staged-retrieval.ts`: add `QueryEmbedding` (value) and `type SubQuery` to the `@mcp-abap-adt/llm-agent` import; import `ownerFromMetadata` is already there. Add module-level:
+In `staged-retrieval.ts`: add `QueryEmbedding` (value) and `type SubQuery` to the `@mcp-abap-adt/llm-agent` import; import `ownerFromMetadata` is already there. Append to the end of the constructor, after Task 13's two `ScoreFloorCut` checks (`ScoreFloorCut` is already imported there):
+
+```ts
+    // Spec §4.5 (D63): scores of different sub-queries are not comparable (§3.9,
+    // D28); a threshold over the merged union would compare them.
+    if (options.decompose && this.cut instanceof ScoreFloorCut) {
+      throw new Error(
+        'StagedRetrieval: a decomposer cannot be combined with ScoreFloorCut — scores of different sub-queries are not comparable (§4.5, D63); a threshold over the merged union would compare them',
+      );
+    }
+```
+
+Add module-level:
 
 ```ts
 /** The owner-qualified key of a returned result (pass-through records by id). */
@@ -6913,20 +7071,18 @@ Replace `retrieve` with:
         ),
       ),
     );
-    // Union in sub-query order, de-duplicated by owner-qualified item, best score kept.
+    // Union in sub-query order (spec §4.5, D63): each sub-query's own ranked list, one
+    // after the other; a duplicate item stays at its FIRST occurrence with that
+    // occurrence's score. Scores of different sub-queries are never compared.
     const union: RagResult[] = [];
-    const at = new Map<string, number>();
+    const seen = new Set<string>();
     for (const run of runs) {
       if (!run.ok) return run;
       for (const item of run.value) {
         const key = resultKey(item);
-        const i = at.get(key);
-        if (i === undefined) {
-          at.set(key, union.length);
-          union.push(item);
-        } else if (item.score > union[i].score) {
-          union[i] = item;
-        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        union.push(item);
       }
     }
     return finish(union);
@@ -11293,6 +11449,14 @@ describe('rag.profiles validation — startup errors, never a silent drop', () =
     assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, reranker: decision, onFailure: error, ${floor} } }`, COHERE));
     assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, ${floor} } }`));
   });
+  it('compose: score-floor with a decomposer is refused (sub-query scores are not comparable, spec §4.5 D63)', () => {
+    const base = 'indexer: { faceted: [] }, pool: { items: 3 }';
+    const floor = 'cut: { score-floor: { minItems: 1, maxItems: 3, minScore: 0.5 } }';
+    refused(`tools: { compose: { ${base}, decomposer: my-split, ${floor} } }`, /compose\.cut: score-floor with a decomposer/);
+    refused(`tools: { decomposer: my-split, compose: { ${base}, ${floor} } }`, /compose\.cut: score-floor with a decomposer/);
+    assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, decomposer: none, ${floor} } }`));
+    assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, decomposer: my-split, cut: { fixed-items: 3 } } }`));
+  });
   it('a worker config declaring rag.profiles is refused (server-wide)', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'profiles-worker-'));
     writeFileSync(path.join(dir, 'w.yaml'), `${RAG}  profiles:\n    tools: { variant: faceted }\n`);
@@ -11654,6 +11818,21 @@ export function checkProfiles(
     }
     if (entry.decomposer != null && !name(entry.decomposer)) issues.push(`${label}.decomposer: must be a registered name`);
     if (hasCompose) checkCompose(`${label}.compose`, entry.compose, { llmKeys, decisionProvider, hasDecision }, issues);
+    // Spec §4.5 (D63): scores of different sub-queries are not comparable, so no score
+    // floor over a decomposed union — the decomposer may sit on the profile or in compose.
+    // StagedRetrieval's constructor refuses the same; this names the YAML key first.
+    const compose = isMap(entry.compose) ? entry.compose : undefined;
+    const composeCut = compose && isMap(compose.cut) ? compose.cut : undefined;
+    const composeDecomposer = compose?.decomposer;
+    if (
+      composeCut &&
+      'score-floor' in composeCut &&
+      (entry.decomposer != null || (composeDecomposer != null && composeDecomposer !== 'none'))
+    ) {
+      issues.push(
+        `${label}.compose.cut: score-floor with a decomposer — scores of different sub-queries are not comparable (spec §4.5, D63); use top-items, fixed-items or token-budget`,
+      );
+    }
   }
 }
 ```
@@ -15027,28 +15206,30 @@ Replace the Task 14 `retrieve` method with the private `run` below — the same 
       info.subqueries = subs.length;
     }
     if (!d || subs.length === 0) {
-      const one = await this.runOne(query, budget, newCtx());
+      const one = await this.runOne(query, budget, newCtx(), k);
       return one.ok ? finish(one.value) : one;
     }
     const results = await Promise.all(
       subs.map((s) =>
-        this.runOne(new QueryEmbedding(s.text, d.queryEmbedder, callOptions), s.k, newCtx()),
+        this.runOne(
+          new QueryEmbedding(s.text, d.queryEmbedder, callOptions),
+          s.k,
+          newCtx(),
+          s.k, // each sub-query's pool is sized from its own k (D56)
+        ),
       ),
     );
-    // Union in sub-query order, de-duplicated by owner-qualified item, best score kept.
+    // Union in sub-query order (spec §4.5, D63): a duplicate item stays at its FIRST
+    // occurrence with that occurrence's score; no score compared across sub-queries.
     const union: RagResult[] = [];
-    const at = new Map<string, number>();
+    const seen = new Set<string>();
     for (const r of results) {
       if (!r.ok) return r;
       for (const item of r.value) {
         const key = resultKey(item);
-        const i = at.get(key);
-        if (i === undefined) {
-          at.set(key, union.length);
-          union.push(item);
-        } else if (item.score > union[i].score) {
-          union[i] = item;
-        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        union.push(item);
       }
     }
     return finish(union);
@@ -15396,7 +15577,7 @@ Spec §14.2 (at most `min(k, cut.limit(k))` ≤ k items — S9 as amended by F1;
   ```ts
   export interface CollectionProfileHarness<TItem> {
     readonly name: string;
-    /** A FRESH binding over empty stores; with `decomposer` / `cut` the retrieval must use them; undefined → that case is skipped. */
+    /** A FRESH binding over empty stores; with `decomposer` / `cut` the retrieval must use them; undefined → that case is skipped (e.g. a profile whose cut is a `ScoreFloorCut` cannot take a decomposer, spec D63 — return undefined for `{ decomposer }`). */
     bind(opts?: { decomposer?: IQueryDecomposer; cut?: IItemCut }): Promise<IBoundCollection<TItem> | undefined>;
     /** Index calls to make, each with its writer's options (two owners may reuse one itemId). */
     readonly writes: readonly { readonly items: readonly TItem[]; readonly options?: CallOptions }[];
@@ -16675,7 +16856,7 @@ decisions.** Every reranker is in `@mcp-abap-adt/llm-agent-reranker`; the decisi
 | `ProbabilityReranker` (was `DecisionReranker`) | `IProbabilityDecision` (was `IDecisionModel`) | `TypeSafeDecisionModel` (`@mcp-abap-adt/typesafe-decision`, Jev) | P(relevant) in [0, 1] |
 | `RelevanceReranker` | `IRelevanceDecision` | `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`, Cohere; one `/rerank` call per batch) | relevance — **not a probability**; comparable for the same query and model, so batches merge into one order |
 
-- A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no named composition uses one. Under a reranker it needs `onFailure: 'error'` (a `'stage1'` fallback returns stage-1 scores) and never goes with `keepStage1Top` — both refused at construction.
+- A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no named composition uses one. Under a reranker it needs `onFailure: 'error'` (a `'stage1'` fallback returns stage-1 scores) and never goes with `keepStage1Top`; it never goes with an `IQueryDecomposer` either — the merged sub-query results carry scores of different queries, which are not comparable, so the union is kept in sub-query order (first occurrence of an item wins) and cut by position. All three are refused at construction.
 - `keepStage1Top: n` pins the stage-1 top-n first; each pinned item carries its **reranked** score, the rest follow by reranked score. Unmeasured — default 0.
 - The old names are gone (a major release): `@mcp-abap-adt/llm-agent-libs` exports no reranker, `@mcp-abap-adt/llm-agent` no `IDecisionModel`. The CHANGELOG's migration table lists each old name with its new import.
 
@@ -16851,7 +17032,7 @@ rag:
   `faceted-cohere`, `faceted-jev`, `small-set-jev` and `smallSet` were withdrawn before release
   (they only carried one consumer's numbers): a leftover is refused at startup, naming
   `faceted-rerank`.
-- A `score-floor` cut over relevance scores is your calibration for that provider — no named composition uses one. With a reranker it needs `onFailure: error`: a `stage1` fallback returns stage-1 scores, which that threshold must not cut (refused at startup).
+- A `score-floor` cut over relevance scores is your calibration for that provider — no named composition uses one. With a reranker it needs `onFailure: error`: a `stage1` fallback returns stage-1 scores, which that threshold must not cut (refused at startup). It is also refused with a `decomposer`: scores of different sub-queries are not comparable (spec D63).
 ````
 
 And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facetedRerank({ reranker: new ProbabilityReranker(probabilityDecision, { task: TOOL_QUESTION.task, criteria: TOOL_QUESTION.criteria }), poolItems }))`) next to the existing builder example. In the existing decision-model example (~line 335): `wrapDecisionModel` → `wrapProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker` imported from `@mcp-abap-adt/llm-agent-reranker`, with a one-line note that the old names still work as deprecated aliases.
@@ -17354,6 +17535,13 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | # | Decision | Done in |
 |---|---|---|
 | D62 | `FallbackRag.writer()` returns `undefined` when the primary has no writer (`if (!pw) return undefined;`), even when the fallback has one — no reported success for writes the primary never receives (the `relevant-skills:<group>` collections under the builder's circuit-breaker wrap are the concrete case). Decides spec §10.4's "reported, not decided" item. Every `writer()` caller in `packages/` already handles `undefined` (spec §10.4 lists the effects); no other task changes | Task 19A Steps 0a–0d (test: primary without a writer + fallback with one → `writer()` is `undefined`); Task 34 (CHANGELOG "Fixed") |
+
+## Review findings on 2026-10-05 — decomposer merge without cross-query scores (spec §17.21); `llm-agent-rag` declares `zod`
+
+| # | Decision | Done in |
+|---|---|---|
+| D63 | The merge of sub-query results never compares scores across sub-queries: union in sub-query order (each sub-query's own ranked list, its own k), a duplicate item kept at its **first** occurrence with that occurrence's score, then the one cut by position and the truncation to `budget` ≤ k. `StagedRetrieval` with a `decompose` and a `ScoreFloorCut` throws at construction; the YAML validator refuses `compose.cut: { score-floor }` with a profile-level `decomposer` or a `compose.decomposer` other than `none`. | Task 14 (constructor check; first-occurrence merge; tests: the same item from two sub-queries with different scores → once, at its first position and score, ≤ k; decomposer + floor → rejected at construction, also with `onFailure: 'error'`), Task 28 (the same merge in `run`; its two `runOne` calls now pass the pool's k — `k` and `s.k` — as Task 14 does, which the copy had dropped), Task 21 (validator rule + test), Task 30 (harness note: a floor-cut profile returns `undefined` for `{ decomposer }`) |
+| — (plan only) | `mcp-tools/rag-collection-tools.ts` imports `zod` and moves to `llm-agent-rag`, which did not declare it. `llm-agent-rag` declares `zod` `^4.6.5` (the range `llm-agent` declared); `llm-agent` drops it (no other importer). A scan of every moved file and moved test found no other third-party import (`node:crypto` is built in; `@mcp-abap-adt/llm-agent` is a declared peer). The lockfile is regenerated and checked for links; the packed tarball is installed and its root imported outside the repo, with the unpublished sibling `llm-agent` packed too. | Task 1A (Files, Step 5A, Step 10A, Step 11's `git add` and commit body) |
 
 ## Self-review (done while writing)
 
