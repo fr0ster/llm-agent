@@ -306,6 +306,21 @@
 >   (U9);
 > - the `closeFns` cleanup bug is tracked as #330 (§15).
 >
+> **Amended 2026-10-05 (17)** for a review of the plan (§17.25, D75–D78) and the user's
+> confirmation of four choices made while writing U5–U8 in (§17.24):
+> - **errors, not warnings:** a skill whose embedding or write into the tools store fails rejects
+>   `vectorizeSkills`, `build()`, `fillToolsBinding`'s `skills` and the server's start, naming the
+>   skill (D75, S-5, B8); a failed bulk write fails its records and is never retried record by
+>   record (D76, §3.3); a reload whose drain or invalidation fails restores the previous config and
+>   rejects, handled once at the watcher's event boundary (`config_reload_failed`) (D77, V6);
+> - **the root span's `error` status** is set before the error chunk is yielded, so a consumer
+>   that stops at that chunk (`process()` does) still sees it (D78, §10.5.2);
+> - **confirmed by the user:** `SmartAgentConfig.toolUnavailableTtlMs` removed, `PUT /v1/config`
+>   with it → 400, the YAML key as the opt-in with no default TTL (U8); `batchFailures` in
+>   `/health`'s `toolCatalog` (U7); a missing named agent fails the request only under
+>   `failPolicy: 'abort'`, a failed step under `'continue'` (U5); `LazyInitError` keeps the
+>   factory error as `cause` (U6).
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -885,6 +900,17 @@ export interface ICollectionProfile<TItem, TTarget extends BindTarget = Collecti
   canonical record (with the new `recordIds`), then deletes of the old ids it no longer lists. A
   store's bulk write (`upsertManyPrecomputedRaw`) is all-or-nothing per batch, but the deletes are
   separate calls; nothing spans them.
+- **A failed write is reported, never retried another way** (D76). When the records were written
+  with the store's bulk write and that call fails (`ok: false` or a throw), every record of the
+  batch is failed with the bulk write's error, and every item with a record in it is reported in
+  `failedItems` with the reason `write-failed: bulk write failed: <error>`. The writer does **not**
+  retry the batch record by record: a store that refused the batch is not asked again through
+  another write path (a silent substitution). The per-record write is used only where the bulk one
+  is not available (no `upsertManyPrecomputedRaw`, or no precomputed vectors — the store embeds);
+  there a record's failure fails that record, with its own error in the reason. The one retry
+  that stays is U7's, on the **embedding** (a failed batch embedding → per-record embedding by the
+  store, counted in `batchFailures`) — never on a write. The settle write of step 4 below is a
+  write too: when it fails the item is reported (`cleanup-failed: …`), never counted indexed.
 
 **Cleanup failures are kept, never reported as success** (approved review finding — failure
 handling, not a concurrency protocol: no generations, no locks, D13 stands).
@@ -895,7 +921,7 @@ handling, not a concurrency protocol: no generations, no locks, D13 stands).
 | 2. write ahead | the new canonical record carries the stale set in `staleRecordIds` (absent when empty) |
 | 3. delete | every stale id, each `deleteByIdRaw` **`Result` checked**; `ok` (deleted, or already absent → `false`) counts as done; `ok: false` or a throw keeps the id |
 | 4. settle | if the stale list changed, the canonical is rewritten with exactly the ids still pending (key absent when none) |
-| 5. report | any id still pending → the item is **not** indexed: `failedItems` reason `cleanup-failed: <n> stale record(s) kept for retry`; `indexedItems` excludes it |
+| 5. report | any id still pending → the item is **not** indexed: `failedItems` reason `cleanup-failed: <n> stale record(s) kept for retry`; `indexedItems` excludes it. A failed settle write (step 4) → the same, reason `cleanup-failed: the settled stale list was not written: <error>` (the written-ahead superset stays; the retry's delete of an already-deleted id is a no-op) (D76) |
 
 - **Retry:** the next `index` of the item folds the pending ids into its stale set (step 1);
   `remove` deletes listed **and** pending ids. A retry of an already-deleted id is a no-op
@@ -3424,7 +3450,10 @@ The consumer gets an empty (or truncated) stream that ends normally, and `proces
   chunk was yielded already** (a handler that yielded its own error is not reported twice), it
   yields `{ ok: false, error: result.error }` as the last item;
 - `streamProcess` sets the root span `error` (with the code) when the stream carried an error, `ok`
-  only otherwise;
+  only otherwise. The `error` status is set **before** the unsuccessful chunk is yielded (D78):
+  `process()` returns on that chunk, which closes the generator, so nothing after the `yield` runs
+  — a status set after it would never be written. Any consumer that stops reading at the error
+  chunk is the same case. The span is still ended in `streamProcess`'s `finally`;
 - `process()` already returns the first `ok: false` chunk — unchanged, it now receives one.
 
 Layer: pipelines in llm-agent (libs `pipeline/`, `agent.ts`). Behaviour: a consumer that saw an
@@ -3522,7 +3551,7 @@ Layer: framework (libs), coordinator.
 | S-2 | `agent/rag-orchestrator.ts` (~262, ~297) | the skill query and `listSkills` failures dropped; a failing `getContent` skipped | `orchestrate` returns the error |
 | S-3 | `skills/skill-utils.ts` (~27) | **any** `readdir` error skips the directory | only `ENOENT` skips (a default search path that does not exist is absent by design); any other error → `SkillError` naming the directory |
 | S-4 | `skills/filesystem-skill.ts` (~98) | a `SKILL.md` that cannot be read or parsed → the skill silently left out | no `SKILL.md` → not a skill (unchanged); a read or frontmatter error → `listSkills` returns `SkillError` naming the file |
-| S-5 | `mcp/vectorize-mcp-tools.ts` `vectorizeSkills` (~443; N20) | `listSkills` fails → silent return | the error is thrown; `build()` fails with it (a writerless store stays skipped, as today: absent by design) |
+| S-5 | `mcp/vectorize-mcp-tools.ts` `vectorizeSkills` (~443; N20) | `listSkills` fails → silent return; a skill whose embedding or write fails (`ok: false` or a throw) → a warning, the skill left out of the store, `vectorizeSkills` resolves | `listSkills` failing → the error is thrown; a skill whose embedding or write fails → `vectorizeSkills` rejects with a `SkillError` naming the skill (`skill:<name>`) and carrying the underlying error (its message in the text, the error as `cause`) — at the first failing skill, no skill after it is attempted (D75). It propagates unchanged: `build()` rejects with it; the server's fill paths reject with it — the startup build of the main store, a worker's construction, and the deferred shared-worker pass through `fillToolsBinding`'s `skills` (D66) — so `start()` (or the worker's construction, which then drops its cache entry, D47) fails. A writerless store stays skipped, as today: absent by design |
 | S-6 | `builder.ts` (~1335; N21) | the plugin loader's `errors` never checked | `build()` fails listing every `{ file, error }` (the server's own `plugin_errors` log stays) |
 | S-7 | `skills/plugin-host/compatible-skills-rag.ts` (~89, ~110) | an incompatible generation, or an abort / timeout → `[]` | an incompatible generation throws `SkillsIncompatibleError` (as the eager path already does); an abort rethrows (the caller's cancellation, not an empty answer) |
 | S-8 | `skills/plugin-host/skill-plugin-host.ts` (~339; N17) | a group's build fails → the prior generation kept, `ok: true` when a prior exists | `ok: false`, the group in `omitted` with its reason; whether the prior generation keeps serving is the consumer's `strict` choice — `strict: true` by default (U2, §10.5.12) |
@@ -3540,7 +3569,7 @@ Layer: framework (libs) for S-1–S-9, server for S-10.
 | V3 | `controller/run-scope.ts` (~79; N24) | a malformed terminal entry skipped | `STATE_CORRUPT`; (`gcTerminal`'s catch at ~101 is cleanup — kept) |
 | V4 | `controller/artifacts.ts` (~261) | a claim without a numeric `writeOrdinal` silently dropped | `STATE_CORRUPT` naming the claim |
 | V5 | `smart-server.ts` (~3112; N25) | session metadata `recordSessionStart` / `recordSessionEnd` throws → swallowed | `recordSessionStart` failing fails the request (500 `jsonError`); `recordSessionEnd` is end-of-request cleanup — kept, but logged (`session_meta_end_failed`) |
-| V6 | `config-reload-watcher.ts` (~132; N26) | a drain / invalidate rejection logged, the reload counted applied | the reload reports failure (`config_reload_failed`, the reload entry point rejects); the old config stays live |
+| V6 | `config-reload-watcher.ts` (~132; N26) | a drain / invalidate rejection logged, the reload counted applied | the reload reports failure and the old config stays live (D77): the reload entry point (`_onReload`) applies the agent update, runs the drain and the invalidation, and when either rejects it **restores** the agent config and the server's mirror (`cfg.agent`, `cfg.prompts`) to the values captured before the reload, does not apply the RAG weights, and **rejects** with an error naming the drain and / or invalidation failure. The file watcher's `reload` listener (an event emitter cannot await) is the boundary that handles the rejection: it logs `config_reload_failed` with the error through the server's log sink — nothing reports the reload applied; `config_reload_applied` is logged only on success. No later code path catches the rejection and resolves |
 | V7 | `tools-rag-handle.ts` (~90; N28) | the eager catalog load fails → logged, startup continues | the start fails with the `McpError` |
 | V8 | `llm-agent-server/src/smart-agent/cli.ts` (~146; N30) | an explicit `--env` file or `--secrets-dir` that cannot be read → a warning, startup continues | exit code 1 with the path and the reason (a missing implicit `.env` stays ignored: absent by design) |
 | V9 | `build-stepper-root.ts` (~97, ~234; N31) | a role with no resolvable LLM config → a stub OpenAI model | `ConfigValidationError` naming the role |
@@ -4099,9 +4128,9 @@ again, written either way.
   | B5 | an MCP client's `listTools` (client, adapter cache, registry, `tool-select`, `tool-loop`, `tools-rag-handle`, the server's bridge and snapshot); a slot that failed to connect | the client's tools left out (or stale), the request continues | `MCP_UNAVAILABLE` / the client's `McpError` code | make the server reachable; a consumer that wants to run on fewer servers builds that pipeline with those clients only |
   | B6 | an LLM step: `translate`, `expand`, `summarize`, `history-upsert`, the query preprocessors and enricher, the stepper's need-resolver / formalizer / planner sections, the DAG planner's empty plan | the original text / full history / a raw-prompt plan | the step's error (`LLM_ERROR`, `QUERY_EXPAND_ERROR`, `COORDINATOR_*`) | — (a consumer that wants untranslated text on failure injects its own handler / preprocessor) |
   | B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
-  | B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type` | the skill (or all skills) left out | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails | fix the skill source; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
+  | B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type`; a skill whose embedding or write into the tools store fails (`vectorizeSkills`, D75) | the skill (or all skills) left out — for a failed skill write, a warning and `build()` / start succeeded | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails; a failed skill write rejects `build()`, the server's start (or a worker's construction) and `fillToolsBinding` with a `SkillError` naming the skill, the store's error as `cause` | fix the skill source, or the tools store / its embedder the error names; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
   | B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK (D72) | a load balancer that treated `degraded` as up now takes the instance out — intended |
-  | B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure, the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
+  | B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure (`config_reload_failed`; the previous config restored and kept live, D77), the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
   | B11 | providers: `sap-aicore-llm` `getModels`, a malformed SSE line (OpenAI, Anthropic), a short or empty SAP AI Core embedding batch, a Qdrant collection whose info cannot be read | the configured model / a silently truncated stream / short or empty vectors / the dimension check skipped for good | `LLM_ERROR` / `EMBED_ERROR` / `UPSERT_ERROR` | — |
   | B12 | a skill plugin source whose `acquire` fails (U2) | carried forward by default (`strict: false` was the default) | the default is `strict: true`: the source's group fails and is reported in `omitted`; nothing old is served for it | set `strict: false` (`skillPlugins.strict: false` in YAML) to keep the carry-forward, reported in `carried` |
   | B13 | a coordinator step naming an agent the registry lacks, under `HybridDispatch` (U5) | silently run by the fallback dispatcher | a failed step naming the agent and the registered ones — `COORDINATOR_STEP_FAILED` under `failPolicy: 'abort'`, a reported failed step under `'continue'`; a step naming no agent still goes to the fallback | register the agent, or plan the step without an agent |
@@ -4473,6 +4502,21 @@ again, written either way.
   when `agent.toolUnavailableTtlMs` is set, and `PUT /v1/config` refuses the key (U8); a worker
   without its own clients logs `worker_uses_shared_clients` once per wire, naming what it shares
   (U10).
+- The review findings of 2026-10-05 (D75–D78): `vectorizeSkills` with a writer whose write
+  answers `ok: false`, and one whose write throws → rejects with a `SkillError` naming the skill,
+  `cause` the store's error; through `build()` → `build()` rejects with it; through
+  `fillToolsBinding`'s `skills` → it rejects with it; the server's start with a skill manager whose
+  skill write fails (the main store, and the deferred shared-worker pass) → `start()` rejects
+  naming the skill (D75). The record writer with a bulk write that answers `ok: false`, and one
+  that throws, while every individual write would succeed → every item of the batch in
+  `failedItems` with `write-failed: bulk write failed: <error>`, the store empty, and the
+  individual writes **never called**; a failed settle write → the item reported `cleanup-failed`
+  (D76). A reload whose drain rejects, and one whose invalidation rejects → `_onReload` rejects
+  naming it, the agent config and the server's mirror are the pre-reload values, the RAG weights
+  are not applied, and through the watcher's `reload` event `config_reload_failed` is logged and
+  `config_reload_applied` is not (D77). `process()` on a pipeline that fails → the root span's
+  status is `error`; a consumer that reads the stream only to the error chunk and closes it
+  (`return()` on the iterator) → the root span is `error` and ended (D78).
 
 ### 14.2 Conformance kit
 
@@ -4990,3 +5034,27 @@ are §13 B12–B15, the migration lines 73–74, the contract changes §3.8):
 Also noted, out of scope (not a fallback, found while verifying): `smart-server.ts`'s `closeFns`
 loop (~1943) stops at the first throwing closer, so later closers never run — a cleanup bug
 tracked in its own issue, fr0ster/llm-agent#330 (§15).
+
+**Decided by the user on 2026-10-05 — the four choices made while writing U5–U8 in.** Writing the
+decisions into §10.5.12 took four choices the U-table did not spell out; the user confirmed each
+as written there:
+
+| # | Choice | Where |
+|---|---|---|
+| U8 | `SmartAgentConfig.toolUnavailableTtlMs` is **removed** (not kept beside the policy): the TTL is the policy's, fixed at construction. `PUT /v1/config` with the key answers **400** (it leaves the whitelist; it never changed a live agent's registry). The server YAML's `agent.toolUnavailableTtlMs` is the **opt-in** for `HeuristicToolAvailabilityPolicy({ ttlMs })`; unset → no policy — the 600000 default TTL is gone | §10.5.12 U8, §3.8, §13 B15, migration line 74 |
+| U7 | `/health`'s `toolCatalog` carries `batchFailures` (`HealthComponentStatus.toolCatalog.batchFailures?`, copied by the health checker as `records` / `profile` are), not only the summary log line | §10.5.12 U7, §3.8 |
+| U5 | a named agent missing from the registry is a **failed step**, not a failed request by itself: under `failPolicy: 'abort'` the coordinator handler fails the request with `COORDINATOR_STEP_FAILED`; under `'continue'` the answer reports the failed step (`[Coordinator: n step(s) failed …]`) | §10.5.12 U5, §13 B13 |
+| U6 | `lazy`'s init failure rejects the call with `LazyInitError`, whose `cause` is the factory's error (the message names the property and the error) | §10.5.12 U6, §13 B14, migration line 73 |
+
+### 17.25 Review findings on 2026-10-05 — skill writes, bulk writes, reload failures, root span status (D75–D78)
+
+A review of the plan found three later tasks that undid an earlier fail-loud rule, and one
+fail-loud fix that could not take effect. Each is decided by the goal's rule (D69: no fallback, no
+silent degradation); none changes a consumer-chosen mode.
+
+| # | Decision | Where |
+|---|---|---|
+| D75 | **A skill that cannot be written into the tools store is an error.** `vectorizeSkills` caught a skill's embedding / write failure, warned and resolved, so `build()` and the server's start succeeded with the skill missing from tool retrieval. Now it rejects at the first failing skill with a `SkillError` naming it (`skill:<name>`), the store's error as `cause`; `build()`, the server's fill paths (incl. `fillToolsBinding`'s `skills`, D66) and `start()` propagate it unchanged. Extends S-5 | §10.5.8 S-5, §13 B8, §14.1 |
+| D76 | **A failed bulk write fails its records; no per-record retry.** The record writer answered a failed `upsertManyPrecomputedRaw` by writing the same records one by one — a second write path the store was never asked to accept, hiding the bulk failure. Now every record of the failed batch is failed with the bulk error (`write-failed: bulk write failed: <error>`); the per-record write stays only where no bulk write is available. A failed settle write is reported (`cleanup-failed: …`), not counted indexed. U7's embedding retry is unchanged | §3.3, §14.1 |
+| D77 | **A failed reload keeps the previous config — and stays failed.** The plan's reload entry point (D39) caught the drain / invalidation rejection, logged it and resolved, undoing V6. Now `_onReload` restores the pre-reload agent config and the server's mirror, skips the RAG weights, and rejects; the watcher's `reload` listener is the one boundary that handles the rejection (`config_reload_failed`); `config_reload_applied` only on success. D39 stands: the entry point is still awaitable | §10.5.9 V6, §13 B10, §14.1 |
+| D78 | **The root span's `error` status is set before the error chunk is yielded.** Set after the stream ended, it never ran: `process()` returns on the first `ok: false` chunk, which closes `streamProcess`'s generator at that `yield`. The span is still ended in `finally` | §10.5.2, §13 B1, §14.1 |
