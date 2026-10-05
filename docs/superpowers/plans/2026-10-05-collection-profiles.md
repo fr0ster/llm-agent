@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -26,7 +26,7 @@
 - **Workspace siblings only.** The new packages (`llm-agent-reranker`, `sap-aicore-decision`) are linked as workspace siblings during development; no `file:` / `link:` to anything outside this repo. After any `npm install`, `grep -n '"link": true' package-lock.json` must list only `packages/*` siblings.
 - **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new packages' `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves. Publish order (the release's job): `llm-agent` → `llm-agent-reranker` → `typesafe-decision`, `sap-aicore-decision`, … → `llm-agent-libs` → `llm-agent-server-libs` → `llm-agent-server`.
 - **Imports between packages resolve to `dist/`.** After editing a package another package imports, rebuild it before running the dependent's tests: `npx tsc -b packages/<pkg>` (or `npm run build`).
-- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
+- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
 - Commits: Conventional Commits, each ending with
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -72,11 +72,11 @@ The eight inputs the spec implies, most likely to bite a user, each pinned by a 
 - `index.ts` — exports; re-exported from `src/index.ts`.
 - `__tests__/*.test.ts`, `__tests__/collection-profile.typecheck.ts`.
 
-**Other libs files:** `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`), `index.ts` (deprecated reranker re-exports), `mcp/vectorize-mcp-tools.ts` (profile path, F1), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts`, `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
+**Other libs files:** `mcp/fill-tools-binding.ts` (NEW, Task 23A: `fillToolsBinding`), `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`), `index.ts` (deprecated reranker re-exports), `mcp/vectorize-mcp-tools.ts` (profile path, F1), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts` (`HealthCheckerDeps.toolCatalog`, Task 23A; records/profile, Task 29), `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
 
 **`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`).
 
-**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam + its deprecated alias `makeDecisionModel`, Task 20A; `makeRelevanceDecision` seam), `tools-rag-handle.ts` (F2); `package.json` (peer `llm-agent-reranker`).
+**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam + its deprecated alias `makeDecisionModel`, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills it from the clients in use, Task 23A), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2); `package.json` (peer `llm-agent-reranker`).
 
 **`packages/llm-agent-server/src/composition/`** — `make-relevance-decision.ts` (NEW: `createMakeRelevanceDecision`, the `sap-aicore` arm), `make-probability-decision.ts` (RENAMED from `make-decision-model.ts`, Task 20A: `createMakeProbabilityDecision`; names the other seam for `sap-aicore`, Task 24), `index.ts`, `__tests__/make-relevance-decision.test.ts` (NEW), `__tests__/make-probability-decision.test.ts` (RENAMED).
 
@@ -11169,6 +11169,662 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
+## Task 23A: The server fills a bound tools profile from the clients it uses (libs + server-libs)
+
+Spec §6.3 (D31, §17.8), §6.1 (the builder keeps its limit), §7.6 (the profile path, reused), §3.8 (`fillToolsBinding`, `HealthCheckerDeps.toolCatalog`), §14.1.
+
+**Why.** After Task 23 a YAML `rag.profiles.tools` is bound on every path, but filled only where the builder connects itself (`yamlBuilderConnect` in `smart-server.ts`). The other provisioning paths in `_buildInfra` hand the clients to the builder through `withMcpClients` (main: `buildBaseBuilder` → `builder.withMcpClients(parts.mcpClients)`; workers: `buildSubAgent` → `subBuilder.withMcpClients(...)`), and the builder does not vectorize there (spec §6.1). The paths, as they are in `smart-server.ts` today:
+
+| Path | Code | Clients |
+|---|---|---|
+| ready clients | `diOrPluginMcpClients = this._deps.mcpClients ?? this.cfg.mcpClients ?? (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined)`; `hasReadyClients` = presence (even `[]`) | `mcpClients = diOrPluginMcpClients` → `buildSharedPipelineInfra` → `_sharedMcpClients` |
+| injected seam | `else if (this.cfg.mcp && this._mcpSeamInjected)` → `_resolveMcpWithDescriptors` (`connectMcpWithDescriptors` > bare `connectMcp`) | `_stepperMcpClients` → `_sharedMcpClients`, `_sharedMcpClientDescriptors`, `_configuredSlotCount` |
+| YAML builder connect | `yamlBuilderConnect = mcpFromYaml` (YAML `mcp:`, no ready clients, no seam) | the builder connects and fills (Task 20); harvested into `_sharedMcpClients` after `build()` |
+| no MCP | none of the above | `buildSharedPipelineInfra` → `_sharedMcpClients = []` |
+
+**Files:**
+- Create: `packages/llm-agent-libs/src/mcp/fill-tools-binding.ts`
+- Modify: `packages/llm-agent-libs/src/index.ts` (export beside `HealthChecker`, ~line 82)
+- Modify: `packages/llm-agent-libs/src/health/health-checker.ts` (`HealthCheckerDeps.toolCatalog?`)
+- Create: `packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (fields after Task 23's `_toolsProfiles`; methods after Task 23's `withToolsStore`; the fill block right after the `if (yamlBuilderConnect) { … buildToolsRagHandle … }` harvest block ~line 1782; Task 23's `assertSmallSetPool(…)` call and `new HealthChecker({` ~line 1888)
+- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
+
+**Interfaces:**
+- Consumes: `vectorizeMcpTools(…, { binding })` (Task 19); `bindToolsProfile`, `toolsBindingOf` (Task 15); `mcpToolsVariants` (Task 16); `ToolsVariantFactory`, `SmartServerConfig.toolsVariantFactories` (Task 22); Task 23's `_toolsProfiles`, `withToolsStore`, `assertSmallSetPool` call and `isToolCatalogReporter` import; `ToolCatalogStatus.records` / `.profile` (Task 3).
+- Produces:
+  ```ts
+  // @mcp-abap-adt/llm-agent-libs
+  export interface FillToolsBindingOptions { readonly logger?: ILogger; readonly toolRecordKey?: IToolRecordKey; readonly toolNamespace?: IToolNamespace; readonly descriptors?: readonly McpClientDescriptor[]; readonly configuredSlotCount?: number; readonly callOptions?: CallOptions }
+  export function fillToolsBinding(clients: readonly IMcpClient[], binding: IBoundCollection<ToolItem>, options?: FillToolsBindingOptions): Promise<ToolCatalogStatus | undefined>; // undefined only when callOptions.signal is already aborted
+  // HealthCheckerDeps gains: toolCatalog?: IToolCatalogReporter  (absent → the agent's own status, 30.1.0)
+  ```
+  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect`; fills each worker's own bound store once; `/health` and the D23 check read the server's status. Without a binding nothing new runs.
+
+- [ ] **Step 1: Write the failing libs test**
+
+```ts
+// packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  type IMcpClient,
+  InMemoryRag,
+  type McpTool,
+  type ToolCatalogStatus,
+} from '@mcp-abap-adt/llm-agent';
+import type { SmartAgent } from '../agent.js';
+import {
+  bindToolsProfile,
+  ComposedToolsProfile,
+  FacetedToolIndexer,
+  ItemPool,
+  MaxScoreCollapse,
+  SummaryFacet,
+} from '../collections/index.js';
+import { HealthChecker } from '../health/health-checker.js';
+import { fillToolsBinding } from '../mcp/fill-tools-binding.js';
+
+const TOOLS: McpTool[] = [
+  { name: 'read_file', description: 'Read a file', inputSchema: { properties: { path: { type: 'string' } } } },
+  { name: 'list_issues', description: 'List issues', inputSchema: {} },
+];
+const client = (tools: McpTool[] | 'fail'): IMcpClient =>
+  ({
+    listTools: async () =>
+      tools === 'fail' ? { ok: false, error: { message: 'listTools failed' } } : { ok: true, value: tools },
+    callTool: async () => ({ ok: true, value: { content: [] } }),
+  }) as unknown as IMcpClient;
+const bound = () =>
+  bindToolsProfile(
+    new ComposedToolsProfile({
+      indexer: new FacetedToolIndexer([new SummaryFacet()]),
+      pool: new ItemPool(10),
+      collapse: new MaxScoreCollapse(),
+    }),
+    { key: 'tools', rag: new InMemoryRag() },
+  );
+
+describe('fillToolsBinding', () => {
+  it('fills a bound store through the profile path; status in items, plus records and profile', async () => {
+    const b = bound();
+    const s = await fillToolsBinding([client(TOOLS)], b);
+    assert.deepEqual(s, { total: 2, vectorized: 2, failed: [], clientFailures: 0, complete: true, records: 4, profile: 'mcp-tools' });
+    const item = await b.get({ itemId: 'tool:read_file', owner: { scope: 'global' } });
+    assert.ok(item.ok && item.value, 'the canonical record is there');
+    const legacy = await b.rag.getById('tool:read_file');
+    assert.ok(legacy.ok && legacy.value === null, 'never the 30.1.0 record');
+  });
+
+  it('a client whose listTools fails is counted — never a silent empty store', async () => {
+    const s = await fillToolsBinding([client(TOOLS), client('fail')], bound());
+    assert.equal(s?.clientFailures, 1);
+    assert.equal(s?.complete, false);
+    assert.equal(s?.vectorized, 2);
+  });
+
+  it('several clients: item ids follow the client order (defaultToolRecordKey)', async () => {
+    const b = bound();
+    await fillToolsBinding([client([TOOLS[0]]), client([TOOLS[1]])], b);
+    const second = await b.get({ itemId: 'tool:1:list_issues', owner: { scope: 'global' } });
+    assert.ok(second.ok && second.value);
+  });
+});
+
+describe('HealthCheckerDeps.toolCatalog', () => {
+  const agent = (status?: ToolCatalogStatus) =>
+    ({
+      healthCheck: async () => ({ ok: true, value: { llm: true, rag: true, mcp: [] } }),
+      getToolCatalogStatus: () => status,
+    }) as unknown as SmartAgent;
+  const partial: ToolCatalogStatus = { total: 3, vectorized: 2, failed: ['x'], clientFailures: 0, complete: false };
+
+  it('a supplied reporter is what /health reports', async () => {
+    const h = await new HealthChecker({
+      agent: agent(undefined),
+      startTime: Date.now(),
+      version: 'x',
+      toolCatalog: { getToolCatalogStatus: () => partial },
+    }).check();
+    assert.equal(h.status, 'degraded');
+    assert.deepEqual(h.components.toolCatalog, { vectorized: 2, total: 3, complete: false, clientFailures: 0 });
+  });
+
+  it("absent → the agent's own status, as in 30.1.0", async () => {
+    const h = await new HealthChecker({ agent: agent(undefined), startTime: Date.now(), version: 'x' }).check();
+    assert.equal(h.status, 'healthy');
+    assert.equal(h.components.toolCatalog, undefined);
+  });
+});
+```
+
+- [ ] **Step 2: Run to see it fail**
+
+Run: `node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts`
+Expected: FAIL — `../mcp/fill-tools-binding.js` does not exist; `toolCatalog` is not read.
+
+- [ ] **Step 3: Implement (libs)**
+
+```ts
+// packages/llm-agent-libs/src/mcp/fill-tools-binding.ts
+import type {
+  CallOptions,
+  IBoundCollection,
+  ILogger,
+  IMcpClient,
+  IToolNamespace,
+  IToolRecordKey,
+  McpClientDescriptor,
+  ToolCatalogStatus,
+  ToolItem,
+} from '@mcp-abap-adt/llm-agent';
+import { NoopRequestLogger } from '../logger/noop-request-logger.js';
+import { vectorizeMcpTools } from './vectorize-mcp-tools.js';
+
+export interface FillToolsBindingOptions {
+  readonly logger?: ILogger;
+  /** Default `defaultToolRecordKey` — the one the builder uses unless `withToolRecordKey` set another. */
+  readonly toolRecordKey?: IToolRecordKey;
+  /** Default `defaultToolNamespace`. */
+  readonly toolNamespace?: IToolNamespace;
+  /** Stable slots from a connection result; absent → array order. */
+  readonly descriptors?: readonly McpClientDescriptor[];
+  readonly configuredSlotCount?: number;
+  readonly callOptions?: CallOptions;
+}
+
+/**
+ * Fill a bound tools profile from MCP clients (spec §6.3, D31): list,
+ * namespace, key, `toolItemFromTool`, `binding.index` — the profile path of
+ * `vectorizeMcpTools` (§7.6), reused, never duplicated. A binding is required,
+ * so the 30.1.0 record path cannot be reached through this function.
+ *
+ * Resolves `undefined` only when `callOptions.signal` is already aborted.
+ * Throws as `vectorizeMcpTools` does: an `IToolRecordKey` id without `tool:`,
+ * or descriptors that do not match the clients.
+ */
+export function fillToolsBinding(
+  clients: readonly IMcpClient[],
+  binding: IBoundCollection<ToolItem>,
+  options: FillToolsBindingOptions = {},
+): Promise<ToolCatalogStatus | undefined> {
+  return vectorizeMcpTools(
+    [...clients],
+    binding.rag,
+    // The profile path logs no embedding usage through the request logger (Task 19).
+    new NoopRequestLogger(),
+    options.logger,
+    options.toolRecordKey,
+    options.callOptions,
+    {
+      descriptors: options.descriptors,
+      configuredSlotCount: options.configuredSlotCount,
+      toolNamespace: options.toolNamespace,
+      binding,
+    },
+  );
+}
+```
+(`toolRecordKey` `undefined` → `vectorizeMcpTools`' default parameter `defaultToolRecordKey` applies.)
+
+`packages/llm-agent-libs/src/index.ts`, right after the `HealthChecker` / `HealthCheckerDeps` export block:
+```ts
+export {
+  type FillToolsBindingOptions,
+  fillToolsBinding,
+} from './mcp/fill-tools-binding.js';
+```
+
+`packages/llm-agent-libs/src/health/health-checker.ts`:
+- type import: `import type { CircuitBreaker, IToolCatalogReporter } from '@mcp-abap-adt/llm-agent';`
+- `HealthCheckerDeps`, after `metrics?`:
+  ```ts
+  /**
+   * The tool catalog /health reports. Absent → the agent's own status (30.1.0).
+   * A server that fills the tools store outside the builder passes its own
+   * (spec §6.3) — the builder's status holder is private to build().
+   */
+  toolCatalog?: IToolCatalogReporter;
+  ```
+- field `private readonly toolCatalog?: IToolCatalogReporter;`, set in the constructor: `this.toolCatalog = deps.toolCatalog;`
+- in `check()`, replace
+  ```ts
+    const tc = isToolCatalogReporter(this.agent)
+      ? this.agent.getToolCatalogStatus()
+      : undefined;
+  ```
+  with
+  ```ts
+    const reporter =
+      this.toolCatalog ??
+      (isToolCatalogReporter(this.agent) ? this.agent : undefined);
+    const tc = reporter?.getToolCatalogStatus();
+  ```
+
+- [ ] **Step 4: Run (libs)**
+
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts packages/llm-agent-libs/src/health/health-checker.test.ts
+```
+Expected: PASS.
+
+- [ ] **Step 5: Write the failing server tests**
+
+```ts
+// packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts
+/**
+ * Spec §6.3 (D31): with ready clients or an injected seam the startup builder
+ * gets the clients through withMcpClients and does not vectorize, so the
+ * SERVER fills a bound `rag.profiles.tools` store — once per store, before
+ * it reports ready. Without a profile nothing new runs (30.1.0).
+ */
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { test } from 'node:test';
+import {
+  type IMcpClient,
+  type IRag,
+  recordId,
+  TextOnlyEmbedding,
+  toolNameFromRecord,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  emptyLoadedPlugins,
+  mcpToolsVariants,
+  toolsBindingOf,
+} from '@mcp-abap-adt/llm-agent-libs';
+import type { ToolsVariantFactory } from '../resolve-collection-profiles.js';
+import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import { constructionSeams } from './construction-seams.js';
+
+type Deps = ConstructorParameters<typeof SmartServer>[1];
+type Internals = { _toolsRag?: IRag };
+type Health = {
+  status: string;
+  components: {
+    toolCatalog?: { total: number; vectorized: number; complete: boolean; clientFailures: number };
+  };
+};
+
+function client(names: readonly string[], opts: { fail?: boolean } = {}): IMcpClient {
+  return {
+    async listTools() {
+      if (opts.fail) return { ok: false as const, error: { message: 'listTools failed' } };
+      return {
+        ok: true as const,
+        value: names.map((name) => ({
+          name,
+          description: `Tool ${name}`,
+          inputSchema: { type: 'object', properties: {} },
+        })),
+      };
+    },
+    async callTool() {
+      return { ok: true as const, value: { content: 'ok' } };
+    },
+  } as unknown as IMcpClient;
+}
+
+/** `faceted`, with each `index` call recorded as the tool names it indexed. */
+function countingVariant(calls: string[][]): ToolsVariantFactory {
+  return () => {
+    const inner = mcpToolsVariants.faceted();
+    return {
+      name: inner.name,
+      bind(target) {
+        const b = inner.bind(target);
+        return {
+          key: b.key,
+          profileName: b.profileName,
+          rag: b.rag,
+          retrieval: b.retrieval,
+          index: (items, o) => {
+            calls.push(items.map((i) => i.name));
+            return b.index(items, o);
+          },
+          remove: (refs, o) => b.remove(refs, o),
+          get: (ref, o) => b.get(ref, o),
+        };
+      },
+    };
+  };
+}
+
+function cfg(extra: Record<string, unknown>, calls?: string[][]): SmartServerConfig {
+  return {
+    port: 0,
+    llm: { model: 'test-model' },
+    skipModelValidation: true,
+    mode: 'smart',
+    rag: calls
+      ? { store: { type: 'in-memory' }, profiles: { tools: { variant: 'counting' } } }
+      : { store: { type: 'in-memory' } },
+    ...(calls ? { toolsVariantFactories: { counting: countingVariant(calls) } } : {}),
+    ...extra,
+  } as unknown as SmartServerConfig;
+}
+
+function getHealth(port: number): Promise<Health> {
+  return new Promise((resolve, reject) => {
+    http
+      .get({ host: '127.0.0.1', port, path: '/health' }, (res) => {
+        let raw = '';
+        res.on('data', (c) => {
+          raw += c;
+        });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(raw) as Health);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      })
+      .on('error', reject);
+  });
+}
+
+async function withServer(
+  config: SmartServerConfig,
+  deps: Deps,
+  body: (s: { port: number; toolsRag: IRag | undefined }) => Promise<void>,
+): Promise<void> {
+  const server = new SmartServer(config, deps);
+  const handle = await server.start();
+  try {
+    await body({ port: handle.port, toolsRag: (server as unknown as Internals)._toolsRag });
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Single-client ids are `tool:<name>` (defaultToolRecordKey, clientCount 1). */
+async function assertFilled(toolsRag: IRag | undefined, names: readonly string[]): Promise<void> {
+  assert.ok(toolsRag, 'the tools store exists');
+  const binding = toolsBindingOf(toolsRag);
+  assert.ok(binding, 'the tools store carries its binding');
+  for (const name of names) {
+    const got = await binding.get({ itemId: `tool:${name}`, owner: { scope: 'global' } });
+    assert.ok(got.ok && got.value, `${name} is in the store`);
+  }
+  const hits = await toolsRag.query(new TextOnlyEmbedding(`Tool ${names[0]}`), 5);
+  assert.ok(hits.ok);
+  assert.ok(
+    hits.value.some((h) => toolNameFromRecord(h.metadata) === names[0]),
+    `${names[0]} is retrievable through the profile`,
+  );
+}
+
+test('(1) ready clients + rag.profiles.tools → filled once, retrievable, catalog complete', async () => {
+  const calls: string[][] = [];
+  await withServer(
+    cfg({ mcpClients: [client(['EchoTool', 'GetTable'])] }, calls),
+    constructionSeams,
+    async ({ port, toolsRag }) => {
+      await assertFilled(toolsRag, ['EchoTool', 'GetTable']);
+      assert.deepEqual(calls, [['EchoTool', 'GetTable']]);
+      const tc = (await getHealth(port)).components.toolCatalog;
+      assert.ok(tc, '/health reports the catalog');
+      assert.equal(tc.complete, true);
+      assert.equal(tc.total, 2);
+      assert.equal(tc.vectorized, 2);
+      assert.equal(tc.clientFailures, 0);
+    },
+  );
+});
+
+test('(2) injected connectMcp seam + YAML mcp: → filled the same way', async () => {
+  const calls: string[][] = [];
+  await withServer(
+    cfg({ mcp: { type: 'http', url: 'http://127.0.0.1:9/never-connected' } }, calls),
+    { ...constructionSeams, connectMcp: async () => [client(['EchoTool', 'GetTable'])] },
+    async ({ port, toolsRag }) => {
+      await assertFilled(toolsRag, ['EchoTool', 'GetTable']);
+      assert.equal(calls.length, 1);
+      assert.equal((await getHealth(port)).components.toolCatalog?.complete, true);
+    },
+  );
+});
+
+test('(3) plugin clients → included in the fill', async () => {
+  const calls: string[][] = [];
+  await withServer(
+    cfg(
+      { pluginLoader: { load: async () => ({ ...emptyLoadedPlugins(), mcpClients: [client(['PluginTool'])] }) } },
+      calls,
+    ),
+    constructionSeams,
+    async ({ toolsRag }) => {
+      await assertFilled(toolsRag, ['PluginTool']);
+      assert.deepEqual(calls, [['PluginTool']]);
+    },
+  );
+});
+
+test('(4) no profile + ready clients → nothing new (30.1.0 unchanged)', async () => {
+  await withServer(
+    cfg({ mcpClients: [client(['EchoTool'])] }),
+    constructionSeams,
+    async ({ port, toolsRag }) => {
+      assert.ok(toolsRag);
+      assert.equal(toolsBindingOf(toolsRag), undefined, 'no binding');
+      const legacy = await toolsRag.getById('tool:EchoTool');
+      assert.ok(legacy.ok && legacy.value === null, 'no 30.1.0 record: withMcpClients does not vectorize');
+      const profiled = await toolsRag.getById(recordId({ scope: 'global' }, 'tool:EchoTool', 'full', 0));
+      assert.ok(profiled.ok && profiled.value === null, 'no profile record');
+      assert.equal((await getHealth(port)).components.toolCatalog, undefined, 'no catalog status, as in 30.1.0');
+    },
+  );
+});
+
+test('(5) a client whose listTools fails → counted and degraded, the others filled — never a silent empty store', async () => {
+  const calls: string[][] = [];
+  await withServer(
+    cfg({ mcpClients: [client(['EchoTool']), client([], { fail: true })] }, calls),
+    constructionSeams,
+    async ({ port, toolsRag }) => {
+      assert.ok(toolsRag);
+      // two clients → ids `tool:<slot>:<name>`; check by retrieval, not by id
+      const hits = await toolsRag.query(new TextOnlyEmbedding('Tool EchoTool'), 5);
+      assert.ok(hits.ok && hits.value.some((h) => toolNameFromRecord(h.metadata) === 'EchoTool'));
+      const h = await getHealth(port);
+      assert.ok(h.components.toolCatalog, 'the catalog is reported, not left unknown');
+      assert.equal(h.components.toolCatalog.clientFailures, 1);
+      assert.equal(h.components.toolCatalog.complete, false);
+      assert.equal(h.components.toolCatalog.total, 1);
+      assert.equal(h.components.toolCatalog.vectorized, 1);
+      assert.notEqual(h.status, 'healthy', 'an incomplete catalog degrades /health');
+    },
+  );
+});
+
+test('(6) main + workers → every store filled exactly once', async () => {
+  const calls: string[][] = [];
+  await withServer(
+    cfg(
+      {
+        mcpClients: [client(['EchoTool'])],
+        subAgentConfigs: [
+          // reads the main store (no own rag) — must not fill it again
+          { name: 'reader', config: { skipModelValidation: true } },
+          // its own store, bound with the main profile (Task 23), its own clients
+          {
+            name: 'own',
+            config: {
+              skipModelValidation: true,
+              rag: { store: { type: 'in-memory' } },
+              mcpClients: [client(['WorkerTool'])],
+            },
+          },
+        ],
+      },
+      calls,
+    ),
+    constructionSeams,
+    async ({ toolsRag }) => {
+      await assertFilled(toolsRag, ['EchoTool']);
+      assert.deepEqual(calls.filter((c) => c.includes('EchoTool')), [['EchoTool']], 'the main store, once');
+      assert.deepEqual(calls.filter((c) => c.includes('WorkerTool')), [['WorkerTool']], "the worker's own store, once, from its own clients");
+      assert.equal(calls.length, 2, 'two stores, two fills');
+    },
+  );
+});
+```
+
+- [ ] **Step 6: Run to see them fail**
+
+Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
+Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (4) passes already (it pins 30.1.0).
+
+- [ ] **Step 7: Implement (server)**
+
+In `smart-server.ts`:
+- imports (cumulative after Task 23):
+  - the `@mcp-abap-adt/llm-agent` **type** import (L11–48): add `IBoundCollection`, `ToolCatalogStatus`, `ToolItem` (`McpClientDescriptor` is already there).
+  - the `@mcp-abap-adt/llm-agent-libs` **value** import (L74–91, which Task 23 extended with `bindToolsProfile`): add `fillToolsBinding`, `toolsBindingOf`.
+  - `isToolCatalogReporter` (Task 23) stays: it moves into `mainToolCatalogStatus` below, so it is still used.
+- fields, after Task 23's `_toolsProfiles`:
+  ```ts
+  /** Tools bindings already filled — by the server or by a builder's own connect (spec §6.3): one fill per store. */
+  private readonly _filledToolsBindings = new WeakSet<IBoundCollection<ToolItem>>();
+  /** The main tools store's catalog when the server filled it (spec §6.3); undefined → the startup agent's, as in 30.1.0. */
+  private _serverToolCatalog?: ToolCatalogStatus;
+  ```
+- methods, after Task 23's `withToolsStore`:
+  ```ts
+  /**
+   * Fill a server-bound tools store from the clients its agents use (spec §6.3,
+   * D31), through `fillToolsBinding` — the profile path of vectorizeMcpTools.
+   * An unbound store → nothing (30.1.0). A binding is filled once.
+   */
+  private async fillBoundToolsStore(
+    store: IRag | undefined,
+    clients: readonly IMcpClient[],
+    slots: {
+      descriptors?: readonly McpClientDescriptor[];
+      configuredSlotCount?: number;
+    } = {},
+  ): Promise<ToolCatalogStatus | undefined> {
+    const binding = store ? toolsBindingOf(store) : undefined;
+    if (!binding || this._filledToolsBindings.has(binding)) return undefined;
+    this._filledToolsBindings.add(binding);
+    return fillToolsBinding(clients, binding, {
+      logger: this._fileLogger,
+      toolNamespace: this._toolNamespace,
+      descriptors: slots.descriptors,
+      configuredSlotCount: slots.configuredSlotCount,
+    });
+  }
+
+  /**
+   * Workers' tools stores (spec §6.3). A worker without its own `rag` reads the
+   * main store by reference (filled once, before this). A worker with its own
+   * store has its own binding (Task 23): filled once from its own
+   * `mcpClients`, else from the shared clients its per-session re-wires
+   * receive. A worker that connects itself from its own `mcp:` was filled by
+   * its own builder (§6.1) — marked, never filled again.
+   */
+  private async fillWorkerToolsStores(): Promise<void> {
+    for (const sub of this.cfg.subAgentConfigs ?? []) {
+      const entry = this._workers.cache.get(sub.name);
+      if (!entry?.toolsRag) continue;
+      const ownDi = (sub.config.mcpClients?.length ?? 0) > 0;
+      if (!ownDi && sub.config.mcp) {
+        const filledByBuilder = toolsBindingOf(entry.toolsRag);
+        if (filledByBuilder) this._filledToolsBindings.add(filledByBuilder);
+        continue;
+      }
+      const own = entry.mcpClients ?? [];
+      await this.fillBoundToolsStore(
+        entry.toolsRag,
+        own.length > 0 ? own : (this._sharedMcpClients ?? []),
+      );
+    }
+  }
+
+  /** The catalog /health and the D23 check read: the server's own fill, else the startup agent's (30.1.0). */
+  private mainToolCatalogStatus(agent: SmartAgent): ToolCatalogStatus | undefined {
+    return (
+      this._serverToolCatalog ??
+      (isToolCatalogReporter(agent) ? agent.getToolCatalogStatus() : undefined)
+    );
+  }
+  ```
+- in `_buildInfra`, immediately after the harvest block
+  ```ts
+    if (yamlBuilderConnect) {
+      this._sharedMcpClients = globalMcpClients ?? [];
+      await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
+    }
+  ```
+  insert:
+  ```ts
+    // ---- A bound tools profile, filled from the clients in use (spec §6.3) ----
+    // The builder fills it only on its own connect (yamlBuilderConnect); every
+    // other path handed it the clients through withMcpClients, which does not
+    // vectorize. Fill ONCE here — clients resolved, before the small-set
+    // check, /health and listen. No binding → nothing runs (30.1.0).
+    if (yamlBuilderConnect) {
+      const filledByBuilder = toolsRag ? toolsBindingOf(toolsRag) : undefined;
+      if (filledByBuilder) this._filledToolsBindings.add(filledByBuilder);
+    } else {
+      this._serverToolCatalog = await this.fillBoundToolsStore(
+        toolsRag,
+        this._sharedMcpClients ?? [],
+        {
+          descriptors: this._sharedMcpClientDescriptors,
+          configuredSlotCount: this._configuredSlotCount,
+        },
+      );
+    }
+    await this.fillWorkerToolsStores();
+  ```
+- Task 23's D23 check reads the same status as `/health`; replace
+  ```ts
+      isToolCatalogReporter(smartAgent) ? smartAgent.getToolCatalogStatus() : undefined,
+  ```
+  with
+  ```ts
+      this.mainToolCatalogStatus(smartAgent),
+  ```
+- in `new HealthChecker({`, after `agent: smartAgent,`:
+  ```ts
+      // The server's own fill when it filled the main store (spec §6.3), else
+      // the startup agent's status — as in 30.1.0.
+      toolCatalog: {
+        getToolCatalogStatus: () => this.mainToolCatalogStatus(smartAgent),
+      },
+  ```
+
+Failure policy (spec §6.3) needs no extra code: `vectorizeMcpTools` counts a failing or throwing `listTools()` in `clientFailures`, sets `complete: false` and logs the summary through `this._fileLogger`; `HealthChecker` turns `complete: false` into `degraded`; startup goes on. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors) propagates out of `_buildInfra` and fails startup, as on the builder's path.
+
+- [ ] **Step 8: Run (gate: build + the new and neighbouring tests)**
+
+Run:
+```bash
+npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs
+npm run typecheck
+node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/server-namespace-snapshot.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-wiring.test.ts
+npm test --workspace @mcp-abap-adt/llm-agent-libs
+npm test --workspace @mcp-abap-adt/llm-agent-server-libs
+```
+Expected: PASS. `tsc -b` with `strict` + `noUnusedLocals` proves the cumulative imports: every added name is used (`IBoundCollection`/`ToolItem` by the WeakSet, `ToolCatalogStatus` by the field and methods, `fillToolsBinding`/`toolsBindingOf` by the methods and the fill block, `isToolCatalogReporter` by `mainToolCatalogStatus`).
+
+- [ ] **Step 9: Commit**
+
+```bash
+npx biome check --write packages/llm-agent-libs/src packages/llm-agent-server-libs/src
+git add packages/llm-agent-libs/src packages/llm-agent-server-libs/src
+git commit -m "feat(server-libs): fill a bound tools profile from ready clients at startup
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
 ## Task 24: Composition root — `createMakeRelevanceDecision` with the `sap-aicore` arm (server)
 
 Spec §5.3 (credential injected; the AI Core token exchange reused), §5.2 (batched by default; one `/rerank` call per batch, scores merged by score), §6.2 (`decision.provider: sap-aicore` is a relevance decision, default ref `DECISION` → `DECISION_SERVICE_KEY`), §3.8 (the `makeRelevanceDecision` seam row), §11; D25, D27. The probability seam (`makeProbabilityDecision`, `typesafe`; renamed in Task 20A) keeps its behaviour; the relevance seam is the app's new `createMakeRelevanceDecision`.
@@ -13581,9 +14237,15 @@ builder.withToolsProfile(myTools);
 
   Several clients: `clientIndex` / `clientCount` follow the client order (or use your own
   `IToolRecordKey`, the one given to `withToolRecordKey`). After `build()`,
-  `toolsBindingOf(handle.ragStores.tools)?.index(items)` works too. The server has the same limit:
-  it fills `rag.profiles.tools` only on its own YAML `mcp:` connect; with ready clients or an injected
-  `connectMcp` seam the profile is bound, not filled.
+  `toolsBindingOf(handle.ragStores.tools)?.index(items)` works too. With several clients, call
+  `fillToolsBinding(clients, bound, { toolRecordKey, toolNamespace })` instead — the same filling
+  path the builder and the server use (lists, namespaces, keys, `bound.index`).
+- **The server fills `rag.profiles.tools` itself, on every path** (spec §6.3): with ready clients
+  (`BuildAgentDeps.mcpClients`, `mcpClients`, plugin clients) or an injected `connectMcp` seam it lists
+  the tools at startup and fills the bound store once, before it reports ready; on its own YAML `mcp:`
+  connect the builder fills it. Workers reading the main store are not filled again; a worker with
+  its own store is filled once from its own clients. A client that fails to list is counted
+  (`/health` `toolCatalog.clientFailures`, `degraded`), never a silent empty store.
 
 ### Shared items
 
@@ -13752,6 +14414,9 @@ rag:
 - Your own strategies: register them on `SmartServerConfig.toolsVariantFactories` /
   `toolsStrategyFactories` (facets, discriminators, pools, collapse, cuts, estimators, decomposers) and
   name them here. A decomposer is never built in.
+- The server fills the bound `tools` store at startup from the MCP clients it uses — YAML `mcp:`, an
+  injected `connectMcp`, `mcpClients` or plugin clients alike — once, before `/health` reports ready.
+  A client whose `listTools()` fails shows in `/health` (`toolCatalog.clientFailures`, `degraded`).
 - `rag.profiles` is server-wide; a worker config must not declare it. In this release only the key
   `tools` (the server's own tools store) is accepted; any other key is refused at startup — bind other
   stores in code (`profile.bind({ key, rag })` + `builder.withRetrievalStrategy(key, bound.retrieval)`).
@@ -13806,7 +14471,7 @@ In-memory stores are rebuilt every boot and need nothing.
   and reword the `typesafe-decision` row: "Probability decision provider — TypeSafe Jev (`IProbabilityDecision`)".
 - `README.md` `### Decision models` (~line 148): two sentences + the YAML lines — a probability and a relevance are different decisions; ONE `decision:` section, the provider decides the kind: `typesafe` (Jev, probability → `ProbabilityReranker`) or `sap-aicore` (Cohere Rerank on SAP AI Core, relevance → `RelevanceReranker`; `deploymentId`, `model`, `resourceGroup?`; default ref `DECISION` → `DECISION_SERVICE_KEY`). Either serves `reranker: decision` in `rag.retrieval` and the decision variants of `rag.profiles`.
 - `packages/llm-agent/README.md`: list `IProbabilityDecision` (was `IDecisionModel`, kept as a deprecated alias) and `IRelevanceDecision` (+ `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`), and the new contracts (`ICollectionProfile`, `IToolTextComposer`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `ISizeBoundedCut`, `recordId`, `RecordOwner`, `ToolItem`, `SharedItem`, `IRetrievalMetrics`, `IRetrievalEmbedderOwner`, `retrievalEmbedderOf`, `skillNameFromRecord`) and the `./testing/collection-profile-conformance` entry.
-- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`, `fullToolText`, `toolItemFromTool`, `checkRerankOutput`, `wrapProbabilityDecision`, `wrapRelevanceDecision`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`. State that the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and the libs names (`DecisionReranker`, `LlmReranker`, …, `wrapDecisionModel`) are deprecated re-exports until the next major.
+- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`, `fullToolText`, `toolItemFromTool`, `fillToolsBinding`, `checkRerankOutput`, `wrapProbabilityDecision`, `wrapRelevanceDecision`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`. State that the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and the libs names (`DecisionReranker`, `LlmReranker`, …, `wrapDecisionModel`) are deprecated re-exports until the next major.
 - `packages/llm-agent-server-libs/README.md`: `rag.profiles` (key `tools`, `compose.text`), `decision.provider: sap-aicore` (a relevance decision, built by the new optional `BuildAgentDeps.makeRelevanceDecision` seam — a custom composition root that serves Cohere supplies it), the probability seam `BuildAgentDeps.makeProbabilityDecision` (was `makeDecisionModel`, a deprecated alias until the next major; both supplied → startup error), `DECISION_KINDS`, `toolsVariantFactories` / `toolsStrategyFactories` (incl. `texts`), `resolveCollectionProfiles`.
 - `packages/llm-agent-server/README.md`: the binary supplies `makeProbabilityDecision` (TypeSafe, was `makeDecisionModel`) and `makeRelevanceDecision`; `makeRelevanceDecision` builds `SapAiCoreRelevanceDecision` for `decision.provider: sap-aicore` (default credential ref `DECISION` → `DECISION_SERVICE_KEY`, a SAP AI Core service key); it ships `@mcp-abap-adt/sap-aicore-decision` and `@mcp-abap-adt/llm-agent-reranker`.
 - `packages/typesafe-decision/README.md`: `TypeSafeDecisionModel` implements `IProbabilityDecision` (the old name `IDecisionModel` is a deprecated alias of the same type); Jev is the probability decision, Cohere on SAP AI Core (`@mcp-abap-adt/sap-aicore-decision`) the relevance one; the reranker is `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`.
@@ -13863,7 +14528,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 ```markdown
 ### Added
 
-- **Collection profiles** — how one kind of collection is filled AND searched, chosen by the consumer as injected strategies. `@mcp-abap-adt/llm-agent`: `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexReport`, `RecordDraft` / `IndexedRecord`, `RecordOwner`, `ItemRef`, `recordId` (owner-scoped physical ids, `h:`+sha256 above 200 characters), `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator`, `ISizeBoundedCut` (+ `isSizeBoundedCut`), `IIndexNoteSource` (+ `isIndexNoteSource`, `IndexNote`), `IQueryDecomposer`, `ISourceSelector`, `RetrievalSource`, `ToolItem`, `IToolFacet`, `IDiscriminatorSelector`, `IToolIntentSource`, `SharedItem`, `ISharedItemGroups`, `SharedItemsStores`, `IRetrievalMetrics` (+ `isRetrievalMetrics`), `IRetrievalEmbedderOwner` (+ `retrievalEmbedderOf`), `skillNameFromRecord`; conformance kit `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`. `@mcp-abap-adt/llm-agent-libs`: `StagedRetrieval` (an `IRetrievalStrategy`: candidates counted in items → collapse → reranker on provider text → hydration from the canonical record → one cut), `ComposedToolsProfile`, `mcpToolsVariants` (`baseline`, `faceted`, `faceted-cohere`, `faceted-jev`, `small-set-jev`), `SharedItemsProfile`, `bindToolsProfile` / `toolsBindingOf`, the strategies (`ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet` (opt-in), `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`), `checkRerankOutput`, `SmartAgentBuilder.withToolsProfile`, and `evaluateRetrieval` in `/testing`. See README "RAG is a composition", `docs/INTEGRATION.md#collection-profiles`, `docs/PERFORMANCE.md#collection-profiles`.
+- **Collection profiles** — how one kind of collection is filled AND searched, chosen by the consumer as injected strategies. `@mcp-abap-adt/llm-agent`: `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexReport`, `RecordDraft` / `IndexedRecord`, `RecordOwner`, `ItemRef`, `recordId` (owner-scoped physical ids, `h:`+sha256 above 200 characters), `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator`, `ISizeBoundedCut` (+ `isSizeBoundedCut`), `IIndexNoteSource` (+ `isIndexNoteSource`, `IndexNote`), `IQueryDecomposer`, `ISourceSelector`, `RetrievalSource`, `ToolItem`, `IToolFacet`, `IDiscriminatorSelector`, `IToolIntentSource`, `SharedItem`, `ISharedItemGroups`, `SharedItemsStores`, `IRetrievalMetrics` (+ `isRetrievalMetrics`), `IRetrievalEmbedderOwner` (+ `retrievalEmbedderOf`), `skillNameFromRecord`; conformance kit `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`. `@mcp-abap-adt/llm-agent-libs`: `StagedRetrieval` (an `IRetrievalStrategy`: candidates counted in items → collapse → reranker on provider text → hydration from the canonical record → one cut), `ComposedToolsProfile`, `mcpToolsVariants` (`baseline`, `faceted`, `faceted-cohere`, `faceted-jev`, `small-set-jev`), `SharedItemsProfile`, `bindToolsProfile` / `toolsBindingOf`, `fillToolsBinding` (the server fills a bound `rag.profiles.tools` from ready clients too, spec §6.3), the strategies (`ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet` (opt-in), `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`), `checkRerankOutput`, `SmartAgentBuilder.withToolsProfile`, and `evaluateRetrieval` in `/testing`. See README "RAG is a composition", `docs/INTEGRATION.md#collection-profiles`, `docs/PERFORMANCE.md#collection-profiles`.
 - **Probability and relevance decisions** (`@mcp-abap-adt/llm-agent`): `IProbabilityDecision` (the renamed `IDecisionModel` — yes/no, choice and score questions answered with probabilities) and the new `IRelevanceDecision` (`RelevanceRequest` → `RelevanceResult`: one relevance score per passage — **not a probability**; comparable for the same query and model, also across calls; errors are `DecisionError` with the existing codes). Usage-logging wrappers `wrapProbabilityDecision` / `wrapRelevanceDecision` (libs).
 - **New package `@mcp-abap-adt/llm-agent-reranker`** — every reranker, vendor-neutral: `ProbabilityReranker` (was `DecisionReranker`), the new `RelevanceReranker` (batched by default like `ProbabilityReranker` — `maxBatchTokens` 48000, `concurrency` 4 — the batches' scores merged into one order; wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`; `score` = the relevance score), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*`. Peer: `@mcp-abap-adt/llm-agent`. Published right after `llm-agent`.
 - **New package `@mcp-abap-adt/sap-aicore-decision`** — `SapAiCoreRelevanceDecision`, Cohere Rerank on an SAP AI Core deployment as an `IRelevanceDecision`: ONE `/rerank` call per `score`; a wrong / duplicate / out-of-range / non-finite answer is a `DecisionError`, never zero-filled. Credential injected (a SAP AI Core service key via `sap-aicore-auth`), no env, no timeout, no retries. Published at the same version, before the server.
@@ -13912,7 +14577,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 ```markdown
 ## Unreleased
 
-`BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` stays a deprecated alias until the next major, and supplying both fails at startup naming both. New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools`; rerankers from `@mcp-abap-adt/llm-agent-reranker` (new peer). See the root CHANGELOG.
+`BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` stays a deprecated alias until the next major, and supplying both fails at startup naming both. New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools`, filled by the server at startup from the clients it uses (ready clients, injected seam, plugin clients, YAML `mcp:`); rerankers from `@mcp-abap-adt/llm-agent-reranker` (new peer). See the root CHANGELOG.
 ```
 `packages/llm-agent-server/CHANGELOG.md`, above `## 30.1.0`:
 ```markdown
@@ -14026,11 +14691,17 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 | D29 | The second optional seam `makeRelevanceDecision` is approved | Tasks 22, 23, 24 |
 | D30 | `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision` (deprecated alias kept; both supplied → startup error naming both; the missing-seam message names the new seam); the app's `createMakeDecisionModel` → `createMakeProbabilityDecision` (`make-probability-decision.ts`) | Tasks 20A, 22, 23, 24, 25, 33, 34, 35 |
 
+## Decided by the user on 2026-10-05 — the server fills a bound profile (spec §17.8)
+
+| # | Decision | Done in |
+|---|---|---|
+| D31 | The server fills a bound tools profile from the MCP clients it uses (ready clients, injected seam, plugin clients), once per store, before it reports ready, through `fillToolsBinding` (the profile path of `vectorizeMcpTools`); `/health` and the D23 check read its status (`HealthCheckerDeps.toolCatalog`); failures follow the 30.1.0 catalog policy; workers reading the main store are not filled again; no profile → 30.1.0. The builder keeps its `withMcpClients` / `withMcpServers` limit | Tasks 23A, 33, 34 |
+
 ---
 
 ## Self-review (done while writing)
 
-- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 / F3 reserved keys in 2–3); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
+- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 / F3 reserved keys in 2–3); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
 - **Placeholders.** None; no gated step remains.
 - **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15) are what Tasks 19, 20, 23 use; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `CompanionIds` / `listedCompanions` and `storeItems(rag, items, options, companions)` (Task 11) are what Tasks 15 and 17 use; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (the alias `makeDecisionModel` is read only by Task 20A's `probabilityDecisionSeam`); `DecisionSeams` (Task 22) is what Task 23 threads; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
 - **Review Focus.** Each of the eight lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 21, 30).
