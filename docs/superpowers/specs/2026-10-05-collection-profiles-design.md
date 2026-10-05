@@ -47,6 +47,11 @@
 >   2026-10-05 (§17.18):** `ITextLogger` is removed (every use takes `ILogger` of
 >   `@mcp-abap-adt/interfaces-utils`; migration line 70), libs' two dead internal files are deleted,
 >   `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims are kept.
+> - **review findings and a user decision of 2026-10-05 (§17.22, D64–D67):** an injected MCP
+>   connection strategy is owned by the agent it is injected into — `handle.close()` and a failed
+>   `build()` dispose it (D64); a corpus is checked against **every** tools store the server binds
+>   with it, before any store is created (D65); a store is filled **before** skills are vectorized
+>   into it, on every path (D66); orphans never use up the candidate pool (D67).
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -1217,7 +1222,12 @@ creation (D46, below).
   - the binding's `profileName` against the manifest's;
   - the vector dimension against `expect.dimensions` when the server declares one (a store config's
     `dimension`, §6.2); otherwise a backend that fixes its vector length refuses a mismatching write,
-    and the load throws (the store is then empty or partial until the next start — loud, D54);
+    and the load throws (the store is then empty or partial until the next start — loud, D54).
+    **Every store the source is bound to is checked** (D65): the server binds one `corpus` source to
+    the main store and to each worker store it builds, each from its own store config, so it checks
+    the corpus against **each** declared `dimension` — the main one and every worker's — when it
+    resolves `fill`, before any store is created (§6.2). The other checks are the same for every
+    store (one `fill`, one profile) and run at each store's creation, before its clear;
   - the corpus format, and one vector dimension for every record (`parseToolsCorpus`).
 - **Why clear, and why a store without `clearAll` is refused.** The corpus is the store's whole
   content, so the load replaces it: clearing first means no record of an earlier corpus, an earlier
@@ -1313,9 +1323,12 @@ for each source, in parallel:
                                                ← identity filter applied IN the store, before top-N
 merge hits
   → collapse (ICollapseRule)                   ← records → owner-qualified items; filtered hits only
-  → keep the first pool.items(k) items per source
+  → the first pool.items(k) items per source are the pool; the rest of what was
+    fetched is kept, in stage-1 order (the overflow)
   → rerank items on their item text (optional, §4.6); check the result (§4.8)
-  → hydrate in rank order from the CANONICAL record (§4.6); drop + count orphans
+  → hydrate in rank order from the CANONICAL record (§4.6); drop + count orphans;
+    each orphan is replaced by the next overflow item (ranked like the pool, then
+    hydrated) until k items or the overflow is spent — orphans never use up the pool (D67)
   → cut (IItemCut) over hydrated items, once: at most min(k, cut.limit(k)) items
     (with a decomposer this runs per sub-query and the results are merged, §4.5)
 ```
@@ -1343,7 +1356,9 @@ merge hits
   (the generic default, D56). `recordsToFetch(k, m) = items(k) × m`.
   - Every item has at most `m` records, so `items × m` records always hold at least `items`
     distinct items (when the store has that many). One query, no loop.
-  - After collapse, the pool is cut to `items(k)` items per source.
+  - After collapse, the pool is cut to `items(k)` items per source. What was fetched beyond it is
+    kept, in stage-1 order: it replaces the pool's orphans (§4.6, D67), so with the default
+    `ItemPool()` (pool = k) an orphan does not shrink the result.
   - A consumer may inject another `ICandidatePool` (e.g. one that queries deeper).
 - **`maxRecordsPerItem` comes from the indexing strategy** (`IItemIndexer.maxRecordsPerItem`),
   never the consumer's guess:
@@ -1435,9 +1450,22 @@ no record carries generated text any more (D50). For each collapsed item:
   counter and the `orphans` span attribute (§9). A stale secondary record can therefore never
   surface its own text or data.
 - Hydration runs in rank order and the cut sees only hydrated items, so orphans never use up k.
-- **Cost:** at most one `getById` per returned item whose canonical record was not among the
-  candidates (≤ k per sub-query; zero when the canonical record matched). `IRag` has no batch
-  get; the reads run in parallel.
+- **Orphans never use up the pool either (D67).** The pool is cut to `items(k)` per source before
+  any canonical record is read, so an orphan can sit in it — with the default `ItemPool()` (pool =
+  k), a top orphan at k=1 would leave an empty result although a valid item was fetched below it.
+  So `StagedRetrieval` keeps what it fetched beyond the pool (the overflow, stage-1 order). When the
+  ranked pool hydrates to fewer than k items, the next overflow items — as many as are missing —
+  are ranked like the pool (the reranker scores them against the **same** query, so one scale
+  holds, D28; no `keepStage1Top` pins, which are the pool's stage-1 places) and hydrated, appended
+  after the pool's items; this repeats until k items or the overflow is spent. Then the one cut.
+  No new query; the run's rerank outcome is the most severe of its reranker calls.
+  - Why not validate the pool before reranking: that reads the canonical record of every pooled
+    item whose canonical was not among the candidates — the reads the `itemText` shortcut exists
+    to avoid (below). The replacement reads and reranks only when orphans leave the result short.
+- **Cost:** at most one `getById` per hydrated item whose canonical record was not among the
+  candidates (≤ k + the orphans met, per sub-query; zero when the canonical record matched), and
+  one more reranker call per replacement round (only when orphans left the result short). `IRag`
+  has no batch get; the reads run in parallel.
 
 **Why `itemText` stays, but only for ranking.** It lets the reranker score items whose canonical
 record was not among the candidates without a read per candidate (the pool is 30 items; the
@@ -2033,7 +2061,11 @@ rag:
   the file read once at startup, `parseToolsCorpus`, `ToolsCorpusLoader` with `expect = { profile,
   embedder, dimensions: <the tools store config's dimension, when declared> }`; any other name →
   `SmartServerConfig.toolsFillFactories`. Absent → `live`. The server binds the main store and
-  every worker store it builds with it.
+  every worker store it builds with it. **So a corpus is checked against every one of those stores
+  at resolution** (D65): the main tools store config's declared `dimension` and each worker's own
+  (`subagents` with a `rag` whose store declares one) must equal the corpus's vector dimension, or
+  startup fails naming each differing store and both dimensions — before any store is created,
+  so no store is cleared or written. (An empty corpus has no dimension: nothing to compare.)
 
 **Validation** (raw YAML, as in #321 §13.4) → startup error, never a silent drop:
 
@@ -2065,7 +2097,9 @@ rag:
   `prebuilt` (removed, D54 — refused with a message naming `corpus`); `corpus` while a worker
   declares its own `rag` **and** its own `mcpClients` or `mcp:` (the corpus describes the shared
   catalog; bind that worker's store in the composition root). Checked by the server at start too,
-  for a config built in code. A store whose writer has no `clearAll` or no precomputed write is
+  for a config built in code. `corpus` whose vector dimension differs from a declared `dimension`
+  of the main tools store or of any worker's own tools store — refused when `fill` is resolved,
+  naming the store (D65). A store whose writer has no `clearAll` or no precomputed write is
   refused by `ToolsCorpusLoader` at the store's creation (§3.10), naming the store.
 - a leftover `intents` key under `rag.profiles.tools`: refused with a message that intents were
   removed (D50) — never silently ignored.
@@ -2084,7 +2118,8 @@ rag:
    A reconnect that reports `toolsChanged` (`McpToolRegistry.revectorizeTools`) reads the binding
    too: a bound store → **no write** (D46); an unbound store → 30.1.0's re-vectorize.
 2. **Whoever creates a bound store fills it, once (D35, D41).** The server creates the main store in
-   `_buildInfra` and fills it there, before it reports ready. It creates a worker's own store in
+   `_buildInfra` and fills it there, before it reports ready — and before the startup build
+   vectorizes the skills into it (D66, below). It creates a worker's own store in
    the worker's **construction** (`buildSubAgent` without `injected`: the startup primary build, or
    the lazy rebuild after a drain), so that construction fills it. A per-session re-wire reuses the
    cached store and **never fills**. On `yamlBuilderConnect` the shared clients are known only after
@@ -2128,9 +2163,28 @@ there. Under a profile that would leave a bound store empty: the server fills it
   `_configuredSlotCount`; array order otherwise), its `IToolNamespace` and its file logger — the
   same inputs its authoritative tool snapshot is built from, so the record ids match the names
   tool selection reads. It is one more `listTools()` pass at startup on these paths (`live`).
-- **When (main store).** In `_buildInfra`, after the startup agent is built and the shared clients
-  are resolved, before `HealthChecker` is created — so before
-  `start()` listens and before the embeddable `buildAgent(cfg)` returns. Once.
+- **When (main store).** In `_buildInfra`, right after the shared clients are resolved
+  (`buildSharedPipelineInfra`) and **before** the workers' startup builds and the startup
+  `builder.build()` — so before that build vectorizes the server's skills into the store (D66),
+  before `HealthChecker` is created, before `start()` listens and before the embeddable
+  `buildAgent(cfg)` returns. Once.
+
+**A store is filled before skills are vectorized into it — on every path (D66).** Skills coexist
+in the tools store as pass-through records (D4, goal 8, §7.7), and the builder writes them during
+`build()` (`vectorizeSkills`, `builder.ts` ~L1356). The `corpus` source clears the store (§3.10),
+so a fill that ran after them would erase them. The order is fixed where each store is created —
+the least invasive place, with no new builder behaviour:
+
+| Path | The fill | The skills |
+|---|---|---|
+| main store, ready clients / plugin clients / injected seam / no MCP | the server, right after the clients are resolved, **before** the startup `build()` | that `build()` (`withSkillManager(…, { vectorize: true })` on the startup builder) |
+| main store, `yamlBuilderConnect` | the startup builder's own `build()` — `vectorizeMcpTools` runs the store's source first | the same `build()`, after it (`builder.ts` order: tools ~L1220, skills ~L1356) |
+| a worker's own store, its construction | `buildSubAgent`, **before** `subBuilder.build()` (rule 2); a worker on its own `mcp:`: its builder's auto-connect, as the row above | `subBuilder.build()`, after it |
+| a worker on the shared clients, `yamlBuilderConnect`, at startup — the one store filled **after** its build (the shared clients exist only after the harvest, D38) | the pass right after the harvest | **deferred:** that construction's builder gets `withSkillManager(m, { vectorize: false })`, and the pass vectorizes the worker's skills right after the fill (`fillToolsBinding(…, { skills })`) |
+
+A `live` fill never clears, so for it the order changes nothing; it is one rule for every source
+because a consumer's own source may clear too. An unbound store is untouched by this (30.1.0: no
+server fill, the build vectorizes the skills as before).
 
 **Rule 1 in detail — the binding and its fill source are read from the store (D34, D42).**
 
@@ -2188,7 +2242,8 @@ there. Under a profile that would leave a bound store empty: the server fills it
   startup build, so `_buildInfra` makes **one fill pass right after the harvest**: every worker
   with its own bound store, no own `mcpClients` and no own `mcp:` is filled from the harvested
   clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` — before `/health` and
-  listen. That pass completes those workers' creation at startup; it is not a refill.
+  listen — and then the worker's skills are vectorized into that store (their build skipped them,
+  D66). That pass completes those workers' creation at startup; it is not a refill.
   A lazy rebuild later finds the shared clients known and fills in the construction.
 - **`PUT /v1/config` and hot reload** drain the worker cache (`WorkerRegistry.drain`). The next
   session's `WorkerRegistry.build` misses the cache and constructs the worker (`buildSubAgent`
@@ -2202,7 +2257,10 @@ there. Under a profile that would leave a bound store empty: the server fills it
   (an incompatible corpus, a store the corpus source refuses, an invalid `IToolRecordKey`, a binding
   its store does not carry, a failing build), `buildSubAgent` removes that entry and closes the
   handle it built before rethrowing; a `build()` that fails has no handle and disposes its own
-  connection itself. So no later session re-wires a worker whose store was never filled — an empty
+  connection itself — the connection strategy it resolved through, the YAML `mcp:` one it created
+  **or an injected one** (`withMcpConnectionStrategy`): an injected strategy is owned by the agent /
+  pipeline it is injected into, so `handle.close()` disposes it and a failed `build()` does too, and
+  the consumer must not reuse it after either (the user's decision, D64). So no later session re-wires a worker whose store was never filled — an empty
   or partial store, possibly with the parent's clients — and the next session constructs it again
   (a new store, filled again). A configuration error stays loud: that construction throws again.
 - A worker's own **persistent** store (its `rag` on qdrant, …) is bound again on every construction
@@ -2299,12 +2357,12 @@ reconnect calls no source (D46).
 | 1 | Builder `build()`, auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`) | `builder.ts`, `vectorizeMcpTools(…, toolsRag, …)` | `setToolsRag` or the auto-created `InMemoryRag`; bound by `withToolsProfile`, or already bound by the server | creation: `vectorizeMcpTools` runs the store's source (rule 1) | lists + indexes | clears the store, loads the corpus (precomputed) | nothing |
 | 2 | Builder `build()` with `withMcpClients` / `withMcpServers` | `builder.ts`, "skip auto-connect and vectorization" | the same | not the builder (§6.1 limit): the consumer (`fillToolsBinding`, `bound.index`), or the server (rows 4, 5) | — | — | — |
 | 3 | Reconnect: `McpToolRegistry.resolveActiveClients` → `toolsChanged` → `revectorizeTools` (any agent with a connection strategy) | `mcp/tool-registry.ts` | `ragStores.tools` — the projection, possibly a `FallbackRag` over the bound store | **never written** (D46): `revectorizeTools` finds the binding and stops, one `mcp` debug line; no source is called — **finding (a)**. An unbound store: 30.1.0 re-vectorize, unchanged; a tool no longer listed keeps its records (D40) | **no write** | **no write** | **no write** |
-| 4 | Server main store | `_buildInfra`: `makeRag` → `withToolsStore` (bound with the YAML `fill` source) | the main store | creation, once: the server (`fillBoundToolsStore` → `fillToolsBinding`) on ready clients, an injected seam, plugin clients or no MCP; on `yamlBuilderConnect` the builder (row 1) | lists + indexes | clears, loads | nothing |
+| 4 | Server main store | `_buildInfra`: `makeRag` → `withToolsStore` (bound with the YAML `fill` source) | the main store | creation, once: the server (`fillBoundToolsStore` → `fillToolsBinding`) on ready clients, an injected seam, plugin clients or no MCP — before the startup build writes the skills (D66); on `yamlBuilderConnect` the builder (row 1) | lists + indexes | clears, loads | nothing |
 | 5 | Server worker store, created by the worker's **construction**: the startup primary build, or the lazy rebuild after a drain (`PUT /v1/config`, hot reload) | `WorkerRegistry.build` (cache miss) / the startup loop → `buildSubAgent` (no `injected`) → `resolveWorkerLlmSet` → `makeToolsRag` → `withToolsStore` | the worker's own | creation, once: `buildSubAgent` before `subBuilder.build()` (rule 2) — **finding (b)**; on `yamlBuilderConnect`, a worker on the shared clients by the pass right after the harvest (D38); own `mcp:` → row 1; a throwing fill removes the cache entry | lists + indexes | clears, loads | nothing |
 | 5a | Per-session re-wire of a worker | `WorkerRegistry.build` (cache hit) → `buildSubAgent` with `injected` | the cached store, by reference | **never written** (D41) | — | — | — |
 | 6 | Worker without its own `rag` | `buildSubAgent`: `setToolsRag(injected.toolsRag)` | the main store, by reference | row 4; never filled again | — | — | — |
 | 7 | Per-session agents (`buildSessionAgent` → the pipeline builder) | `smart-server.ts` | the main store by reference (`parts.toolsRag`); clients through `withMcpClients` | row 4; their registries reach it only through row 3 | — | — | — |
-| 8 | Builder skills into the tools store | `vectorizeSkills` (`builder.ts`) | the tools store | skill records, 30.1.0 pass-through (§7.7) — not tool items, not a fill source's; unchanged (a writerless store is skipped, as today) | — | — | — |
+| 8 | Builder skills into the tools store | `vectorizeSkills` (`builder.ts`; for the one store filled after its build, `fillToolsBinding`'s `skills`) | the tools store | skill records, 30.1.0 pass-through (§7.7) — not tool items, not a fill source's; always written **after** the store's fill (D66, §6.3), so a `corpus` clear never erases them (a writerless store is skipped, as today) | — | — | — |
 | 9 | A consumer of the builder | §6.1 snippet; `fillToolsBinding`; `bound.index` | the consumer's | the consumer; the binding and its source attached by `bindToolsProfile` | as row 1 | as row 1 | the consumer's `bound.index` |
 | 10 | `scripts/rag-eval` profile arms | `runProfileArm` (§14.3) | the eval store | `vectorizeMcpTools` on a store bound by `bindToolsProfile` (rule 1) with the default `live` source | lists + indexes | — | — |
 | 11 | The consumer's build step | `buildToolsCorpus` (§6.5) | an in-process capture store, never a served one | the profile's own `bind` + `index` over capture stores; nothing is served from it | — | — | — |
@@ -2858,6 +2916,8 @@ This is the main path (§7.1): the consumer chooses each strategy; a named compo
     through as its own item (§4.3). They compete for k as they do today; a reranker on the tools
     store scores them with the tools question, as `rerank` on `tools` already does in 30.1.0.
   - `skill-select` finds them by id as today (with fix F3).
+  - **Written after the store's fill** (D66, §6.3): the `corpus` source clears the store, so every
+    path fills a bound store before skills are vectorized into it.
 - Moving skills to their own store would change their k, ranking and stage layout — a behaviour
   change goal 8 excludes. Decided — D4 (§17).
 
@@ -3808,7 +3868,8 @@ again, written either way.
   item has `maxRecordsPerItem` records still yields `ItemPool(n)`'s `n` items); skill records pass
   through; reranker-text order; **hydration: only a secondary record matches → the full payload
   (canonical text + `data`) is returned**; a missing canonical record → dropped, counted, span
-  `orphans`; orphans do not use up k; **the reranker reads the item text, never a non-canonical
+  `orphans`; orphans do not use up k — **nor the pool** (D67): with the default pool (omitted),
+  k=1, a top orphan and a valid second fetched item → the valid item is returned; **the reranker reads the item text, never a non-canonical
   record's own text**; a non-canonical hit without `itemText` → the canonical record is read for
   its text; `getById`
   result outside the identity filter dropped; user partition skipped without `userId`; both failure
@@ -3956,7 +4017,15 @@ again, written either way.
     throws — the server's, or the builder-driven fill of a worker on its own `mcp:` — or whose
     backfill throws → that session's worker build fails and the cache holds no entry for the
     worker; the next session constructs a fresh store, fills it again and never re-wires the
-    parent's clients into it.
+    parent's clients into it. A `build()` that fails after resolving its connection strategy —
+    an injected one (`withMcpConnectionStrategy`) included — disposes it and rethrows the original
+    error (D47, D64).
+  - **Fill before skills** (D66): `fillToolsBinding` with a `corpus` source and `skills` → the
+    skill records are there after the load; server: `fill: corpus` + a skill manager on the
+    ready-client path → the skill records survive the corpus clear and are searchable, and the
+    corpus is loaded; on `yamlBuilderConnect` a worker on the shared clients with `fill: corpus`
+    and its own skill manager (the deferred fill) → the same in the worker's store; a `live` fill +
+    a skill manager → tools and skills both there, the fill run once.
   - `fillToolsBinding` refuses a binding its store does not carry; `vectorizeMcpTools` has no
     `binding` option (the libs tests bind through `bindToolsProfile`).
 - Fill sources (§3.10, libs):
@@ -4004,7 +4073,9 @@ again, written either way.
   the corpus and the embedder saw no call at startup; the same on a store that already holds other
   records (a persistent store's second start, simulated) → only the corpus remains; a store config
   with a declared `dimension` and a corpus of another length → startup fails naming both, the
-  store untouched; every `fill` validation rule (unknown name, missing fields, a leftover
+  store untouched; **a worker's own store declaring another dimension than the corpus (main 2,
+  worker 3, corpus 2) → startup fails naming the worker's store and both dimensions, before any
+  store is created — zero clears and zero writes in every store** (D65); every `fill` validation rule (unknown name, missing fields, a leftover
   `prebuilt` refused naming `corpus`, `corpus` with a worker that has its own `rag` and own
   clients).
 - YAML: every validation rule of §6.2 through the real `resolveSmartServerConfig` (incl. a
@@ -4484,3 +4555,12 @@ Migration: 18 more lines (§13, lines 52–69; 69 with S12).
 | # | Decision | Where |
 |---|---|---|
 | D63 | **The merge of sub-query results never compares scores across sub-queries; a decomposer never goes with `ScoreFloorCut`.** Scores are comparable only for the same query (§3.9, D28), and each sub-query is reranked against its own text. The previous merge kept a duplicate item's **best** score across sub-queries — a comparison the contract does not allow — and a `ScoreFloorCut` over the merged union would apply one threshold to scores of different queries. Now: (a) the union is built in sub-query order, each sub-query's own ranked list (its own `k`); a duplicate item stays at its **first** occurrence with that occurrence's score; then the one cut runs over the union by position and the result is truncated to `budget` ≤ k. (b) `StagedRetrieval` with a `decompose` and a `ScoreFloorCut` throws at construction (`StagedRetrieval: a decomposer cannot be combined with ScoreFloorCut — …`), like `keepStage1Top` + `ScoreFloorCut` (§4.7); the YAML validator refuses `compose.cut: { score-floor }` with a profile-level `decomposer` or a `compose.decomposer` other than `none`. Tests: two sub-queries with a floor → rejected at construction; the same item in both sub-queries with different scores → kept once at its first position and score; at most `budget` ≤ k items | §4.2, §4.5, §4.9, §6.2, §14.1 |
+
+### 17.22 Review findings and a user decision on 2026-10-05 — per-store corpus checks, fill before skills, orphans and the pool, injected strategy ownership
+
+| # | Decision | Where |
+|---|---|---|
+| D64 | **An injected MCP connection strategy is owned by the agent / pipeline it is injected into** (decided by the user). `handle.close()` disposes it, and so does a `build()` that fails (it has no handle to close it then, §6.3, D47); the consumer must not reuse it after either — it injects a new one into the next builder. Stated in `docs/INTEGRATION.md` (`IMcpConnectionStrategy` → *Builder usage*) and in the `withMcpConnectionStrategy` doc comment. Before, a failed build left an injected strategy alive; no contract changes (`IMcpConnectionStrategy.dispose` is already optional and called by `close()`) | §6.3, §14.1 |
+| D65 | **A corpus is checked against every tools store it is bound to, before any store is created.** One `corpus` source binds the main store and every worker store the server builds, each from its own store config (`_workerRagInput`), but its expectation carried only the main store's `dimension`. Now the server checks the corpus's vector dimension against the main tools store's declared `dimension` **and each worker's own** when it resolves `fill` — before any store exists — and fails startup naming each differing store and both dimensions. Chosen over a per-store check at each store's creation: that keeps each store untouched until its own checks pass, but would clear and load the main store before a worker's mismatch failed the start; at resolution nothing is touched anywhere. The other identity checks (`profile`, `embedder`, the binding's `profileName`) are server-wide — one `fill`, one profile — and still run at each store's creation, before its clear. Test: main dimension 2, a worker store 3, corpus 2 → startup fails naming the worker; zero clears and writes in every store | §3.10, §6.2, §14.1 |
+| D66 | **A store is filled before skills are vectorized into it, on every path.** Skills coexist in the tools store (D4, goal 8, §7.7) and the builder writes them during `build()`; the server's fill ran after the startup `build()` on the ready-client / plugin / injected-seam paths, and the `corpus` source clears the store — erasing them. Least invasive order, no new builder behaviour: the server fills the main store right after the clients are resolved, before the startup build; the builder's own auto-connect already fills before skills; a worker's construction already fills before `subBuilder.build()`; the one store filled after its build (a worker on the shared clients under `yamlBuilderConnect`, D38) is built with `withSkillManager(m, { vectorize: false })` and its skills are vectorized right after the deferred fill (`FillToolsBindingOptions.skills`, libs, new in this PR). Rejected: running the fill inside `build()` on the `withMcpClients` path (changes §6.1's "no vectorization there" for every consumer). Tests: corpus fill + a skill manager on the ready-client path and on the deferred shared-worker path → skill records searchable after start; a live fill unaffected | §6.3, §6.4, §7.7, §14.1 |
+| D67 | **Orphans never use up the candidate pool.** `runOne` cut the collapsed units to `pool.items(k)` before any canonical record was read, so with the default `ItemPool()` (pool = k) a top orphan at k=1 dropped a valid item fetched below it. Now what was fetched beyond the pool is kept (the overflow, stage-1 order); when the ranked pool hydrates to fewer than k items, the next overflow items are ranked like the pool (the reranker on the same query, D28; no `keepStage1Top` pins) and hydrated, until k items or the overflow is spent — before the cut; no new query; the run's rerank outcome is the most severe of its calls. Rejected: validating every pooled item before reranking — a canonical read per pooled candidate, which the `itemText` shortcut exists to avoid. Test: default pool (omitted), k=1, a top orphan + a valid second item → the valid item | §4.3, §4.4, §4.6, §14.1 |
