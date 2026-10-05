@@ -1501,6 +1501,44 @@ Rules (pattern 5, "unsupported is an error"; checked at `build()`):
 
 Type check: `withToolsProfile(sharedItemsProfile)` does not compile (`ICollectionProfile<ToolItem>`).
 
+**Limit — the builder fills a profile only where it vectorizes today.** The builder writes tool
+records only on its auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`). On the
+`withMcpClients` and `withMcpServers` branches it skips vectorization — as in 30.1.0
+(`builder.ts`, "Caller-provided clients: skip auto-connect and vectorization"; the servers branch
+says the same). This spec does not change that: there the profile is **bound** and its retrieval
+applied, but the store is **not filled**. The consumer fills it, with the shipped API:
+
+```ts
+// 1. bind first (the builder reuses a bound store, never binds it twice)
+const bound = bindToolsProfile(profile, { key: 'tools', rag: toolsRag });
+// 2. fill: one ToolItem per tool, itemId = the tool's record key (`tool:` prefix)
+const listed = await client.listTools();                       // per client; Result
+const items = listed.ok
+  ? listed.value.map((t) =>
+      toolItemFromTool(t, {
+        itemId: defaultToolRecordKey.key({ toolName: t.name, clientIndex: 0, clientCount: 1 }),
+        originalName: t.name,
+      }))
+  : [];
+const report = await bound.index(items);                       // Result<IndexReport>; check failedItems
+// 3. build on the bound store
+builder.withMcpClients([client]).setToolsRag(bound.rag).withToolsProfile(profile);
+```
+
+- With several clients, `clientIndex` / `clientCount` follow the client order (or the consumer's
+  own `IToolRecordKey`, the same one given to `withToolRecordKey`), so the ids match what tool
+  selection reads.
+- Filling after `build()` works too: `toolsBindingOf(handle.ragStores.tools)?.index(items)`.
+- Not filled → the tools store stays empty, as on these branches in 30.1.0; nothing errors, and
+  what tool selection does with an empty tools store is unchanged by this spec.
+- **The server (§6.2) inherits the limit.** It fills its `tools` store only on its own YAML
+  `mcp:` connect path (no ready clients, no injected `connectMcp` seam — `yamlBuilderConnect` in
+  `smart-server.ts`). With ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin
+  clients) or the injected seam it hands them to the builder through `withMcpClients` — main
+  and workers — and 30.1.0 does not vectorize there (tool ranking falls back to the MCP
+  catalog). A `rag.profiles.tools` on those paths is bound, not filled; this PR adds no server
+  API to fill it.
+
 ### 6.2 Server YAML (`smart-server.yaml`) — names mapped to instances
 
 **Config is only the builder's.** YAML holds names; the server's resolver maps each name to a
