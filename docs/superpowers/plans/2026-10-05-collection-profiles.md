@@ -4206,6 +4206,23 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 Spec §3.1, §3.3 (incl. `companionRecordIds`, S7, and **cleanup failures kept for retry** — `staleRecordIds` / `staleCompanionRecordIds`, §17.6 F3), §4.4 (refusal), §7.6 (one batch pass), §8.2. Failure handling only — no generations, no locks (D13).
 
+**A replacement replaces the record — on every backend.** Re-indexing writes the same ids again, and the backends differ on what a write to an existing id does with the old metadata (read in the repo, 2026-10-05):
+
+| Backend | Write to an existing id | Code |
+|---|---|---|
+| `InMemoryRag` | **merges**: `metadata = { ...old, ...new }` | `in-memory-rag.ts` `upsert` (in-place branch); `writer().upsertRaw` calls it |
+| `VectorRag` | **merges**: `slot.metadata = { ...slot.metadata, ...metadata }` | `vector-rag.ts` `upsertKnownVector`; `upsertRaw` / `upsertPrecomputedRaw` call it |
+| Qdrant | **replaces**: `PUT /points` with the whole payload `{ text, ...metadata }` (also `upsertManyPrecomputedRaw`) | `qdrant-rag.ts` `upsertKnownVector`, `upsertManyPrecomputedRaw` |
+| pg-vector | **replaces**: `ON CONFLICT (id) DO UPDATE SET … metadata = EXCLUDED.metadata` | `pg-vector-rag.ts` `upsertKnown` |
+| HANA | **replaces**: `UPSERT … WITH PRIMARY KEY` (whole row, metadata as one JSON) | `hana-vector-rag.ts` `upsertKnown` |
+| `FallbackRag` | whatever its primary (and fallback) does — it delegates | `resilience/fallback-rag.ts` |
+
+So on a merging store a key the new record leaves out would **survive** the replacement (an old `data`, `itemText`, `generated`, `companionRecordIds`, a settled stale list…). The writer therefore:
+- writes **every** `ReservedRecordKey` except `id` on **every** record write, absent ones as `undefined` (`UNSET_RESERVED`, compile-checked against `ReservedRecordKey` with `satisfies`, so a new reserved key is a compile error until listed);
+- on the **canonical**, also writes `undefined` for every extra the OLD canonical had and the new one has not (the old record is already read for the stale set; `id`, `text`, `namespace` are the store's own and never cleared).
+
+Correct on both kinds: a merging store overwrites the key with `undefined` (reads see `undefined`); a replacing store gets the whole new payload, and `JSON.stringify` drops `undefined` keys, so the key is simply absent. Limit: a non-canonical record's dropped **extra** (not reserved) can survive on a merging store — its old metadata is not read. Readers never see it: retrieval returns the canonical record (hydration, spec §4.6).
+
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/record-writer.ts`
 - Create: `packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts`
@@ -4276,6 +4293,7 @@ describe('prepareItem', () => {
       recordId(U_A, 'case-42', 'note', 0),
       recordId(U_A, 'case-42', 'note', 1),
     ]);
+    // Every reserved key but `id` is written, absent ones as `undefined` (merging stores).
     assert.deepEqual(canonical?.metadata, {
       data: { n: 1 },
       itemId: 'case-42',
@@ -4283,10 +4301,18 @@ describe('prepareItem', () => {
       profile: 'shared-items',
       visibility: 'user',
       userId: 'A',
+      groupId: undefined,
+      sessionId: undefined,
+      generated: undefined,
+      itemText: undefined,
       ttl: 99,
       recordIds: others.map((r) => r.id),
+      companionRecordIds: undefined,
+      staleRecordIds: undefined,
+      staleCompanionRecordIds: undefined,
     });
     assert.equal(others[0].metadata.itemText, 'canon');
+    assert.ok('companionRecordIds' in others[0].metadata, 'non-canonical records write every reserved key too');
   });
   it('refusals: too many records, missing canonical, mixed owners', () => {
     assert.deepEqual(prep([draft('item', 'c'), draft('n', 'x')], 1), { ok: false, reason: 'too-many-records' });
@@ -4401,6 +4427,67 @@ describe('storeItems / getItem / removeItem', () => {
     const n = await removeItem(rag, recordId(U_A, 'case-42', 'item', 0));
     assert.ok(n.ok && n.value === 1);
   });
+});
+
+describe('replacement replaces the record on a store that merges metadata (spec §3.3)', () => {
+  const stores: [string, () => IRag][] = [
+    ['InMemoryRag', () => new InMemoryRag()],
+    [
+      'VectorRag',
+      () => new VectorRag(symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) })),
+    ],
+  ];
+  for (const [name, make] of stores) {
+    it(`${name}: keys the new item leaves out are gone after replacement`, async () => {
+      const rag = make();
+      const canonId = recordId(U_A, 'case-42', 'item', 0);
+      const noteId = recordId(U_A, 'case-42', 'note', 0);
+      const old = prepareItem(
+        {
+          itemId: 'case-42',
+          // canonical: extra `data` + `itemText`; note: `itemText` (draft helper)
+          drafts: [{ ...draft('item', 'v1'), itemText: 'old text' }, draft('note', 'n0')],
+        },
+        {
+          canonicalKind: 'item',
+          profile: 'p',
+          maxRecordsPerItem: 5,
+          companionRecordIds: { intents: [recordId(U_A, 'case-42', 'intent', 0)] },
+        },
+      );
+      const next = prepareItem(
+        {
+          itemId: 'case-42',
+          drafts: [
+            { text: 'v2', itemId: 'case-42', recordKind: 'item', owner: U_A },
+            { text: 'n0-v2', itemId: 'case-42', recordKind: 'note', owner: U_A },
+          ],
+        },
+        { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 },
+      );
+      assert.ok(old.ok && next.ok);
+      await storeItems(rag, [old.item]);
+      const before = await rag.getById(canonId);
+      assert.ok(before.ok && before.value);
+      assert.deepEqual(before.value.metadata.data, { n: 1 });
+      assert.equal(before.value.metadata.itemText, 'old text');
+      assert.ok(before.value.metadata.companionRecordIds !== undefined);
+
+      const r = await storeItems(rag, [next.item]);
+      assert.deepEqual(r.indexed, [true]);
+      const after = await rag.getById(canonId);
+      assert.ok(after.ok && after.value);
+      assert.equal(after.value.text, 'v2');
+      for (const k of ['data', 'itemText', 'companionRecordIds', 'staleRecordIds', 'staleCompanionRecordIds']) {
+        assert.equal(after.value.metadata[k], undefined, k);
+      }
+      assert.equal(after.value.metadata.itemId, 'case-42', 'the framework keys are rewritten');
+      const note = await rag.getById(noteId);
+      assert.ok(note.ok && note.value);
+      assert.equal(note.value.text, 'n0-v2');
+      assert.equal(note.value.metadata.itemText, undefined, 'reserved keys are rewritten on every record');
+    });
+  }
 });
 
 /** A store whose writer fails deleteByIdRaw for the ids in `failing` (F3 tests). */
@@ -4539,12 +4626,41 @@ import {
   type RagResult,
   type RecordDraft,
   type RecordOwner,
+  type ReservedRecordKey,
   type Result,
   ragIdentityFilter,
   recordId,
   retrievalEmbedderOf,
 } from '@mcp-abap-adt/llm-agent';
 import { ownerMetadata } from './owner.js';
+
+/**
+ * Every reserved key but `id` (the store writes it), explicitly `undefined`, under
+ * every record write. InMemoryRag and VectorRag MERGE metadata on the same id, so a
+ * key left out would survive a replacement; Qdrant, pg-vector and HANA replace the
+ * whole payload and JSON.stringify drops `undefined`, so the same write is right
+ * there too (spec §3.3: a replacement replaces the record). `satisfies` makes a key
+ * added to ReservedRecordKey a compile error here until it is listed.
+ */
+const UNSET_RESERVED = {
+  itemId: undefined,
+  recordKind: undefined,
+  itemText: undefined,
+  profile: undefined,
+  generated: undefined,
+  recordIds: undefined,
+  companionRecordIds: undefined,
+  staleRecordIds: undefined,
+  staleCompanionRecordIds: undefined,
+  visibility: undefined,
+  userId: undefined,
+  groupId: undefined,
+  sessionId: undefined,
+  ttl: undefined,
+} satisfies Record<Exclude<ReservedRecordKey, 'id'>, undefined>;
+
+/** Keys the store itself owns on a read record; never cleared by the writer. */
+const STORE_OWN_KEYS: ReadonlySet<string> = new Set(['id', 'text', 'namespace']);
 
 export interface ItemWrite {
   readonly itemId: string;
@@ -4607,14 +4723,15 @@ export function prepareItem(
       id: recordId(owner, w.itemId, d.recordKind, n),
       text: d.text,
       metadata: {
+        ...UNSET_RESERVED,
         ...(d.metadata ?? {}),
         itemId: w.itemId,
         recordKind: d.recordKind,
         profile: o.profile,
         ...ownerMetadata(owner),
-        ...(d.generated ? { generated: true } : {}),
-        ...(d.itemText !== undefined ? { itemText: d.itemText } : {}),
-        ...(w.ttl !== undefined ? { ttl: w.ttl } : {}),
+        generated: d.generated ? true : undefined,
+        itemText: d.itemText,
+        ttl: w.ttl,
       },
     };
   };
@@ -4628,9 +4745,8 @@ export function prepareItem(
         metadata: {
           ...canonicalBase.metadata,
           recordIds: others.map((r) => r.id),
-          ...(companions && Object.keys(companions).length > 0
-            ? { companionRecordIds: companions }
-            : {}),
+          companionRecordIds:
+            companions && Object.keys(companions).length > 0 ? companions : undefined,
         },
       }
     : undefined;
@@ -4743,7 +4859,24 @@ const pendingCount = (st: Stale): number =>
   st.primary.length +
   Object.values(st.companions).reduce((n, ids) => n + ids.length, 0);
 
-/** The canonical with the stale lists written onto it (keys absent when empty). */
+/**
+ * The new canonical, with `undefined` for every extra the OLD canonical had and the
+ * new one has not — a merging store would otherwise keep it (reserved keys are
+ * already all written, UNSET_RESERVED).
+ */
+function clearingOld(c: PreparedRecord, old: RagMetadata | undefined): PreparedRecord {
+  if (!old) return c;
+  const dropped = Object.keys(old).filter(
+    (k) => !STORE_OWN_KEYS.has(k) && !(k in c.metadata),
+  );
+  if (dropped.length === 0) return c;
+  return {
+    ...c,
+    metadata: { ...Object.fromEntries(dropped.map((k) => [k, undefined])), ...c.metadata },
+  };
+}
+
+/** The canonical with the stale lists written onto it (`undefined` when empty). */
 function withStale(c: PreparedRecord, st: Stale): PreparedRecord {
   const { staleRecordIds: _a, staleCompanionRecordIds: _b, ...rest } = c.metadata;
   const comp = Object.fromEntries(
@@ -4800,6 +4933,7 @@ export async function storeItems(
 }> {
   const failures: (string | undefined)[] = items.map(() => undefined);
   const stale: Stale[] = items.map(() => ({ primary: [], companions: {} }));
+  const olds: (RagMetadata | undefined)[] = items.map(() => undefined);
   await Promise.all(
     items.map(async (it, i) => {
       if (!it.canonical) return;
@@ -4809,6 +4943,7 @@ export async function storeItems(
         return;
       }
       const old = r.value?.metadata;
+      olds[i] = old;
       const keep = new Set([...it.others.map((x) => x.id), it.canonical.id]);
       stale[i].primary = [
         ...new Set([...listed(old), ...listed(old, 'staleRecordIds')]),
@@ -4825,9 +4960,12 @@ export async function storeItems(
       }
     }),
   );
-  // Write ahead (F3): the canonical carries what must still be deleted.
+  // Write ahead (F3): the canonical carries what must still be deleted — and
+  // clears the old extras it no longer has (merging stores).
   const prepared = items.map((it, i) =>
-    it.canonical ? { ...it, canonical: withStale(it.canonical, stale[i]) } : it,
+    it.canonical
+      ? { ...it, canonical: withStale(clearingOld(it.canonical, olds[i]), stale[i]) }
+      : it,
   );
   const live = prepared.filter((_, i) => failures[i] === undefined);
   const all = live.flatMap((it) => [
@@ -5003,7 +5141,7 @@ Run:
 npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts
 ```
-Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.)
+Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.) The replacement test runs on `InMemoryRag` and `VectorRag` — the two stores that merge metadata (table above); a `tsc` error naming `UNSET_RESERVED` means `ReservedRecordKey` gained or lost a key: list it there.
 
 - [ ] **Step 5: Commit**
 
@@ -9022,6 +9160,7 @@ Spec §6.1; §16 principle 6 (one call site).
   withToolsProfile(profile: ICollectionProfile<ToolItem>): this;
   // build(): withToolsProfile + withRetrievalStrategy('tools', …) → Error; withToolsProfile without a tools store → Error;
   // a store that already carries a tools binding (server-bound) is reused, never bound twice.
+  // withMcpClients / withMcpServers: bound, NOT filled (no vectorization there, as in 30.1.0; spec §6.1 limit).
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -9142,6 +9281,9 @@ In `builder.ts`:
    * setToolsRag or auto-created), filled through it at build where the 30.1.0
    * tool records were written, and its retrieval applied like an explicit
    * strategy. A store the server already bound is reused, never bound twice.
+   * Filled ONLY on the auto-connect branch: with withMcpClients / withMcpServers
+   * the builder does not vectorize (as in 30.1.0) — bound, not filled; the
+   * consumer fills it through `bound.index` (spec §6.1 limit).
    */
   withToolsProfile(profile: ICollectionProfile<ToolItem>): this {
     this._toolsProfile = profile;
@@ -10392,13 +10534,38 @@ Everything the replaced closure used goes with it — `noUnusedLocals` (`tsconfi
 - L22–31 `ResolveRetrievalInput`: drop its own `decisionCfg` and `makeProbabilityDecision` members (both now come from `DecisionSeams`);
 - L33–34 `const MISSING_SEAM`: delete — `decision-seams.ts`'s `missing('makeProbabilityDecision')` produces `BuildAgentDeps.makeProbabilityDecision is required: …`, which the Task 20A test (`/BuildAgentDeps\.makeProbabilityDecision is required/`) matches;
 - L50–76 `let decisionModel`, `const decisionRerankers`, `const decisionReranker = async (…)`: replaced as above; the one call site L89 `reranker = await decisionReranker(preset, task);` becomes the cached `decisionRerankerFor(…)` call (with `explicit` from `cfg`);
+- **the 30.1.0 runtime error for a missing `decision:` section is kept, text and place.** 30.1.0 (L60–64) throws `'rag.retrieval: reranker: decision requires a decision: section'` before it looks at the seam; `decisionBuilders` throws the unprefixed `'reranker: decision requires a decision: section'` (the profiles resolver prefixes `rag.profiles.<key>: ` when it rethrows). So the replacement call site checks first, exactly as 30.1.0 did:
+  ```ts
+  if (cfg.reranker === 'decision') {
+    if (!input.decisionCfg) {
+      throw new Error(
+        'rag.retrieval: reranker: decision requires a decision: section',
+      );
+    }
+    // … the cached decisionRerankerFor(decisions, { task, criteria: preset.criteria, explicit }) call
+  }
+  ```
+  (No decision is built for a cached wording, so the check before the cache lookup changes nothing else: with no `decision:` section nothing was ever cached.)
 - the function doc L36–42 ("The decision model is built ONCE and shared; one `DecisionReranker` per distinct question wording") → "The decision of the `decision:` section's kind is built ONCE and shared (`decisionBuilders`); one reranker per distinct question wording (`decisionRerankerFor`)."
 
 Check: `git grep -n "IDecisionModel\|IProbabilityDecision\|SmartServerDecisionConfig\|DecisionReranker\|wrapDecisionModel\|MISSING_SEAM\|decisionModel\b" packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` → empty.
 
-Add to the retrieval tests:
+Add to the retrieval tests (`packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts`, inside its `describe`):
 
 ```ts
+it('reranker: decision without a decision: section → the 30.1.0 error text, unchanged', async () => {
+  await assert.rejects(
+    resolveRetrievalStrategies({
+      retrieval: { tools: { strategy: 'rerank', reranker: 'decision' } },
+      makeProbabilityDecision: async () => {
+        throw new Error('the seam is not reached without a decision: section');
+      },
+      resolveLlm: noLlm,
+    }),
+    { message: 'rag.retrieval: reranker: decision requires a decision: section' },
+  );
+});
+
 it('reranker: decision under a relevance provider builds a RelevanceReranker over makeRelevanceDecision', async () => {
   const out = await resolveRetrievalStrategies({
     retrieval: { tools: { strategy: 'rerank', reranker: 'decision' } },
@@ -10795,10 +10962,10 @@ Run:
 ```bash
 npm install && grep -n '"link": true' package-lock.json
 npx tsc -b packages/llm-agent-server-libs
-node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-*.test.ts
+node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-*.test.ts
 node --import tsx/esm --test --test-reporter=spec 'test/repo/*.test.ts'
 ```
-Expected: PASS; only workspace siblings are linked; `scoped-dependencies` accepts the new peer.
+Expected: PASS (incl. `resolve-retrieval.test.ts`: the 30.1.0 missing-`decision:` text and the relevance reranker); only workspace siblings are linked; `scoped-dependencies` accepts the new peer.
 
 - [ ] **Step 5: Commit**
 
@@ -13388,6 +13555,35 @@ builder.withToolsProfile(myTools);
   `NameTailFacet` assumes verb-first names and is opt-in; `EnumValueToolIndexer` and `TokenBudgetCut`
   are generic strategies in no default (measured worse as defaults).
 - `withToolsProfile` + `withRetrievalStrategy('tools', …)` is refused at build (one owner of a store's ranking).
+- **The builder fills the profile only where it vectorizes** — the auto-connect branch (YAML `mcp:` /
+  `withMcpConnectionStrategy`). With `withMcpClients` or `withMcpServers` it skips vectorization, as
+  before, so the profile is bound but the store stays empty. Fill it yourself (spec §6.1):
+
+  ```ts
+  import { defaultToolRecordKey } from '@mcp-abap-adt/llm-agent';
+  import { bindToolsProfile, toolItemFromTool } from '@mcp-abap-adt/llm-agent-libs';
+
+  const bound = bindToolsProfile(myTools, { key: 'tools', rag: toolsRag });
+  const listed = await client.listTools();
+  if (listed.ok) {
+    const report = await bound.index(
+      listed.value.map((t) =>
+        toolItemFromTool(t, {
+          itemId: defaultToolRecordKey.key({ toolName: t.name, clientIndex: 0, clientCount: 1 }),
+          originalName: t.name,
+        }),
+      ),
+    );
+    // report: Result<IndexReport> — check failedItems
+  }
+  builder.withMcpClients([client]).setToolsRag(bound.rag).withToolsProfile(myTools); // reused, not bound twice
+  ```
+
+  Several clients: `clientIndex` / `clientCount` follow the client order (or use your own
+  `IToolRecordKey`, the one given to `withToolRecordKey`). After `build()`,
+  `toolsBindingOf(handle.ragStores.tools)?.index(items)` works too. The server has the same limit:
+  it fills `rag.profiles.tools` only on its own YAML `mcp:` connect; with ready clients or an injected
+  `connectMcp` seam the profile is bound, not filled.
 
 ### Shared items
 
