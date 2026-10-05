@@ -973,7 +973,7 @@ interface StagedRetrievalOptions {
   rerank?: {
     reranker: IReranker;
     onFailure: 'stage1' | 'error';      // 'stage1' = 30.1.0 behaviour
-    keepStage1Top?: number;             // §4.7, default 0; counted inside k
+    keepStage1Top?: number;             // §4.7, default 0; counted inside k; never with ScoreFloorCut
   };
   decompose?: {                 // §4.5; absent → the query runs as is (one run)
     decomposer: IQueryDecomposer;
@@ -1127,6 +1127,37 @@ overall limit (the previous draft added n on top). It was measured only on top o
 built-in clause split, and chosen after seeing the data: **no measured number backs it now**.
 Default 0. Decided — D7 (§17).
 
+**Scores of pinned items — one scale** (review finding, F5, §17.7):
+
+- A pinned item keeps its stage-1 **place** but carries its **reranked score** — the score the
+  reranker gave that identity. It never carries its embedding / collapse score: a result never
+  mixes the store's scale with the reranker's.
+- The returned order stays **pinned first (in stage-1 order), then the rest by reranked score**.
+  So a result with pinned items is not sorted by score; the cuts that read only rank order
+  (`TopItemsCut`, `FixedItemsCut`, `TokenBudgetCut`) are unaffected.
+- **`keepStage1Top` > 0 with `ScoreFloorCut` is rejected** when `StagedRetrieval` is constructed:
+  `StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is
+  unmeasured (D7); a threshold over a pinned head would let an unmeasured order decide what a
+  calibrated threshold keeps`. `keepStage1Top` has no YAML key (§6.2), so only code reaches it; the
+  constructor is the one check.
+
+**When the reranker failed and `onFailure: 'stage1'` applies** (§9.3):
+
+- The result is the stage-1 result: stage-1 order **and stage-1 scores** (the collapse rule's item
+  score over the store's search scores — hybrid or cosine, §4.2). No reranked score exists, so
+  none is returned; `keepStage1Top` changes nothing (the order is stage-1 already).
+- **No threshold cut is combined with that fallback — the same rejection.** A `ScoreFloorCut`'s
+  `minScore` is calibrated on the reranker's scale; a fallback would apply it to stage-1 scores.
+  `ScoreFloorCut` with a `rerank` whose `onFailure` is `'stage1'` is therefore rejected at
+  construction: `StagedRetrieval: ScoreFloorCut with a reranker needs rerank.onFailure 'error' — a
+  'stage1' fallback returns stage-1 scores, which a threshold calibrated on reranker scores must
+  not cut`. With `onFailure: 'error'` a failed rerank returns the error, so the cut only ever sees
+  reranked scores. Without a reranker, `ScoreFloorCut` cuts stage-1 scores, calibrated on them —
+  allowed.
+- In YAML (`rag.profiles.<key>.compose`), the validator refuses `cut: { score-floor: … }` with a
+  reranker unless `onFailure: error` (§6.2), so the config fails at resolution with its own label,
+  before the constructor would.
+
 ### 4.8 Reranker output check
 
 `StagedRetrieval` checks every reranker result, whichever reranker it is:
@@ -1145,7 +1176,7 @@ including a consumer's own.
 | candidate pool | `ItemPool(n)` | `n` items per items source (§4.4) |
 | collapse | `MaxScoreCollapse` | item score = best record score (measured winner). Count / RRF are **not** shipped. |
 | cut | `TopItemsCut` | first `requestedK` items (default); `limit` = `requestedK` |
-| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)` |
+| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)`. Under a reranker only with `onFailure: 'error'`; never with `keepStage1Top` > 0 — both rejected at construction (§4.7) |
 | cut | `FixedItemsCut(n)` | a **ceiling**: first `min(requestedK, n)` items — for a store whose profile measured its own k; it never raises the caller's k; `limit` = `min(requestedK, n)` |
 | cut | `TokenBudgetCut({ budgetTokens, maxItems?, estimator? })` | rank-order prefix of whole items while their summed size ≤ `budgetTokens`, at most `limit` items; `limit` = `min(requestedK, maxItems ?? requestedK)`; implements `ISizeBoundedCut` (§4.10) |
 | query decomposition | — | **none shipped**; the consumer injects its own `IQueryDecomposer` (§4.5) |
@@ -1525,7 +1556,7 @@ rag:
         question: tool                             # probability decision (typesafe) / llm only — refused for a relevance decision
         decomposer: none                           # none | a registered name (no built-in)
         cut: { fixed-items: 5 }                    # top-items | fixed-items | score-floor {minItems,maxItems,minScore} | token-budget {budgetTokens,maxItems?}
-        onFailure: stage1                          # stage1 | error
+        onFailure: stage1                          # stage1 | error — score-floor with a reranker needs error (§4.7)
 ```
 
 **One `decision:` section; the provider decides the kind** (goal decision 2026-10-05):
@@ -1566,7 +1597,8 @@ rag:
   startup** when the provider is relevance (accepting them would be a silent no-op).
 - **A threshold on relevance scores is the consumer's calibration.** `cut: { score-floor: … }`
   over a `RelevanceReranker` is allowed and documented as provider-specific calibration; no
-  default composition uses it.
+  default composition uses it. With a reranker it needs `onFailure: error` — a `stage1` fallback
+  would cut stage-1 scores with a threshold calibrated on reranked ones (§4.7, F5).
 
 **Resolution.**
 
@@ -1600,6 +1632,8 @@ rag:
   `retrieval` and `profiles`;
 - `intents` or `decomposer` with `baseline`; `companion` without `store`;
 - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
+- `compose.cut: { score-floor: … }` with a reranker and `onFailure` not `error` (absent = `stage1`)
+  (§4.7, F5);
 - `small-set-jev` without `smallSet.poolItems`, or a non-positive one; an `enum-values` indexer
   without `maxValues`; non-positive `budgetTokens`;
 - a decision reranker without a `decision:` section: `faceted-cohere`, `faceted-jev`,
@@ -2226,7 +2260,9 @@ new SharedItemsProfile({
 
 ### 9.3 Failure policy
 
-- `onFailure: 'stage1'` (default) = 30.1.0: stage-1 order, counted as `rerank_fallback`.
+- `onFailure: 'stage1'` (default) = 30.1.0: stage-1 order, counted as `rerank_fallback`. The
+  returned scores are the stage-1 scores (never a mix with reranked ones); a `ScoreFloorCut` is
+  never combined with this fallback — rejected at construction and by the YAML validator (§4.7).
 - `onFailure: 'error'` = the strategy returns the `RagError` (counted as `rerank_error`), so the
   stage reports it — for consumers that prefer no answer to an unranked one.
 
@@ -2455,8 +2491,15 @@ new SharedItemsProfile({
   `k`; union de-duplicated by owner-qualified item; budgets summing to > k, `k < 1`, empty text or
   a decomposer error → `DECOMPOSE_ERROR`, counted, never a silent fall-back; at most `budget`
   items with any decomposer; `keepStage1Top` counted inside k; collapse keys on the owner-qualified item;
-  `keepStage1Top`; every cut; telemetry (span attributes, counter, session
-  step).
+  `keepStage1Top`: pinned items first in stage-1 order, each carrying its **reranked** score (never
+  the embedding score) — under a `ProbabilityReranker` and under a `RelevanceReranker` (scores
+  outside [0, 1]); the rest by reranked score; `keepStage1Top` > 0 with `ScoreFloorCut` throws at
+  construction with its message; `ScoreFloorCut` with `onFailure: 'stage1'` throws with its message
+  (allowed with `'error'` and without a reranker); a failed rerank under `'stage1'` with
+  `keepStage1Top` returns the stage-1 result, ids and scores; every cut; telemetry (span
+  attributes, counter, session step).
+- Config validator: `compose` with `cut: { score-floor: … }` and a reranker refused unless
+  `onFailure: error`.
 - `SapAiCoreRelevanceDecision` (injected `fetch`): URL, `AI-Resource-Group` header (default
   `default`), bearer asked per call, ONE call per `score`, body `{model, query, documents, top_n}`
   with documents in passage order; `results[{index, relevance_score}]` → `scores[{index, score}]`;
@@ -2739,4 +2782,5 @@ them.
 |---|---|---|
 | D28 | **Relevance scores are comparable for the same query and model** — a cross-encoder scores each (query, passage) pair independently. `IRelevanceDecision` says so (replacing "comparable only within one call"); `RelevanceReranker` **batches by default** like `ProbabilityReranker` (`maxBatchTokens` 48000, `concurrency` 4, the same validation) and merges the batches' scores into one order; no single-call default. Closes §17.5's open choice. | §3.9, §5.2, §7.4, §14.1 |
 | D29 | **The second optional seam `makeRelevanceDecision` is approved** (was a §17.5 choice). | §3.8, §6.2 |
+| F5 (review) | **Pinned items carry reranked scores; `keepStage1Top` + `ScoreFloorCut` rejected.** A `keepStage1Top` item keeps its stage-1 place and carries the score the reranker gave it, never the embedding score; order stays pinned first, then the rest by reranked score. `keepStage1Top` > 0 with `ScoreFloorCut` is rejected at construction (keepStage1Top is unmeasured, D7). The `onFailure: 'stage1'` fallback returns stage-1 scores, so `ScoreFloorCut` with a reranker needs `onFailure: 'error'` — the same rejection, in the constructor and the YAML validator. | §4.2, §4.7, §4.9, §6.2, §9.3, §14.1 |
 | D30 | **The released probability seam is renamed symmetric to its contract:** `BuildAgentDeps.makeDecisionModel` → **`makeProbabilityDecision`**; the app's `createMakeDecisionModel` → **`createMakeProbabilityDecision`** (`createMakeRelevanceDecision` stays). `makeDecisionModel` stays a deprecated alias until the next major; **both supplied → startup fails with an explicit error naming both** (never silently pick one); the seam-missing message names `makeProbabilityDecision`. Migration note in §13. | §1, §3.8, §6.2, §11, §13, §14.1 |
