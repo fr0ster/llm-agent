@@ -4,18 +4,19 @@
 
 **Goal:** Give every kind of RAG collection an injected indexing + retrieval pair (a *collection profile*): several owner-scoped records per item, collapse back to items, an optional reranker on provider text, a final cut counted in items — with 30.1.0 behaviour unchanged when no profile is set. **The release is a major** (spec §13, D57–D59): renamed and moved names keep no old name, and no package re-exports another's names.
 
-**Architecture:** `FallbackRag` and the builder's store wrapping are removed first (Task 0A, D68 — the circuit breaker stays on the embedder and fails fast); the RAG implementations (`VectorRag`, `InMemoryRag`, …) then move — files, tests, exports — to `@mcp-abap-adt/llm-agent-rag` (Task 1A; `llm-agent` stops exporting them, no alias, no subpath; `OllamaRag` removed to avoid a cycle — spec S11); contracts land in `@mcp-abap-adt/llm-agent` (`src/interfaces/collection-profile.ts`); generic strategies, `StagedRetrieval` (an `IRetrievalStrategy`), `ComposedToolsProfile`, the named compositions (`mcpToolsVariants`: `baseline`, `faceted`, `faceted-rerank`, no tuned numbers), `SharedItemsProfile`, the fill sources and the corpus API (`buildToolsCorpus` for the consumer's build step, `ToolsCorpusLoader` for the load at start) land in `@mcp-abap-adt/llm-agent-libs` (`src/collections/`); the decision contracts split — `IProbabilityDecision` (today's `IDecisionModel`, renamed; the old name removed) and the new `IRelevanceDecision`; every reranker moves to the new vendor-neutral package `@mcp-abap-adt/llm-agent-reranker` (`ProbabilityReranker` = today's `DecisionReranker`, the new `RelevanceReranker`, `LlmReranker`, `NoopReranker`; libs exports none of them and keeps no old name); a new provider package `@mcp-abap-adt/sap-aicore-decision` ships `SapAiCoreRelevanceDecision` (Cohere Rerank on SAP AI Core as an `IRelevanceDecision`); `SmartAgentBuilder.withToolsProfile` and the server's `rag.profiles` YAML plus `decision.provider: sap-aicore` (server-libs; one `decision:` section, the provider decides the kind) wire them; the released probability seam `BuildAgentDeps.makeDecisionModel` is renamed `makeProbabilityDecision` (no alias) beside the new `makeRelevanceDecision`; the binary's `createMakeDecisionModel` becomes `createMakeProbabilityDecision` and it gains `createMakeRelevanceDecision`.
+**Architecture:** `FallbackRag` and the builder's store wrapping are removed first (Task 0A, D68 — the circuit breaker stays on the embedder and fails fast); after the moves and contracts (through Task 4E) the fail-loud sweep runs (Tasks 4F–4O, D69–D74): pipeline errors reach the consumer, and no component answers a failure with a fake success, an empty result, a skipped part, a stale cache or a substitute; the RAG implementations (`VectorRag`, `InMemoryRag`, …) then move — files, tests, exports — to `@mcp-abap-adt/llm-agent-rag` (Task 1A; `llm-agent` stops exporting them, no alias, no subpath; `OllamaRag` removed to avoid a cycle — spec S11); contracts land in `@mcp-abap-adt/llm-agent` (`src/interfaces/collection-profile.ts`); generic strategies, `StagedRetrieval` (an `IRetrievalStrategy`), `ComposedToolsProfile`, the named compositions (`mcpToolsVariants`: `baseline`, `faceted`, `faceted-rerank`, no tuned numbers), `SharedItemsProfile`, the fill sources and the corpus API (`buildToolsCorpus` for the consumer's build step, `ToolsCorpusLoader` for the load at start) land in `@mcp-abap-adt/llm-agent-libs` (`src/collections/`); the decision contracts split — `IProbabilityDecision` (today's `IDecisionModel`, renamed; the old name removed) and the new `IRelevanceDecision`; every reranker moves to the new vendor-neutral package `@mcp-abap-adt/llm-agent-reranker` (`ProbabilityReranker` = today's `DecisionReranker`, the new `RelevanceReranker`, `LlmReranker`, `NoopReranker`; libs exports none of them and keeps no old name); a new provider package `@mcp-abap-adt/sap-aicore-decision` ships `SapAiCoreRelevanceDecision` (Cohere Rerank on SAP AI Core as an `IRelevanceDecision`); `SmartAgentBuilder.withToolsProfile` and the server's `rag.profiles` YAML plus `decision.provider: sap-aicore` (server-libs; one `decision:` section, the provider decides the kind) wire them; the released probability seam `BuildAgentDeps.makeDecisionModel` is renamed `makeProbabilityDecision` (no alias) beside the new `makeRelevanceDecision`; the binary's `createMakeDecisionModel` becomes `createMakeProbabilityDecision` and it gains `createMakeRelevanceDecision`.
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); the modes a consumer can choose (spec §17.24 U1–U10) are the user's to decide and stay untouched. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
-- **Nothing changes by default.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13).
+- **Nothing changes by default — on the success path.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13). **Failure paths change everywhere** (fail loud, below; spec §13 B1–B11).
 - **A major release — no deprecated aliases, no re-exports** (spec §13, D57–D59). `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `DecisionRerankerOptions` → `ProbabilityRerankerOptions`, `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`, `wrapDecisionModel` → `wrapProbabilityDecision`, `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision`) keep **no old name**; the task that renames a name switches **every in-repo use** of it in the same commit, so each commit builds (no "callers stay on the alias until Task N"). Moved names (the RAG implementations, the rerankers) are exported only by their new owner. **No `export … from '@mcp-abap-adt/…'`** in any file this plan creates or edits: every package imports a name from the package that owns it (D59). **The pre-existing re-exports go too** (S12, decided by the user; spec §11.4): Task 4D drops libs' 15 root names of `llm-agent`, server-libs' `./legacy/flat` subpath and the `legacy/{linear,dag}` re-exports, and the server's unreachable `src/index.ts`; from Task 4D on, `test/repo/no-old-names.test.ts` fails when any public entry point of any package exports a name declared in another package — every later task keeps it green. libs' internal shims that only serve libs' own files stay (spec §11.4 rule (a); kept — the user's decision). **`ITextLogger` is removed** (the user's decision, spec §11.4): Task 4E switches every in-repo use to `ILogger` imported directly from `@mcp-abap-adt/interfaces-utils` (no re-export, no exported alias) in the same commit, declares the dependency where it is used (`llm-agent` already peers on it; libs and mcp get a dev dependency for their tests), and deletes libs' two dead internal files (`adapters/index.ts`, `interfaces/model-resolver.ts`). Removed besides the 72 names of spec §13's migration table: the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3), the binary's unexported `createMakeDecisionModel` (renamed), and libs' two dead internal files (Task 4E). **No version bump in this plan**, but the docs say the release is a major (Task 34).
 - **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag` (Task 1A, D53, D57).** From Task 1A on, every code block outside `llm-agent-rag` (libs, server-libs, server, scripts, tests) imports `VectorRag`, `InMemoryRag`, `SimpleRagRegistry`, `ISearchStrategy` and the other names of spec §11.3's "moves" table from `@mcp-abap-adt/llm-agent-rag` — `@mcp-abap-adt/llm-agent` no longer exports them; contracts and the store kit (`TextOnlyEmbedding`, `QueryEmbedding`, `symmetricEmbedder`, `matchesRagIdentity`, `RagError`, `IQueryExpander`, …) stay on `@mcp-abap-adt/llm-agent`. **Nothing in `packages/llm-agent` — nor in any package `llm-agent-rag` depends on — imports `llm-agent-rag`** (a cycle; `test/repo/rag-implementations-home.test.ts` pins it). The file is at `packages/llm-agent-rag/src/vector-rag.ts` (Tasks 4, 25 edit it there; its tests are in `packages/llm-agent-rag/src/__tests__/`). A test that needs `VectorRag` / `InMemoryRag` lives in `llm-agent-rag` or a package above it — never in `llm-agent`.
 - **No store fallback, no store wrapping (D68, Task 0A).** `FallbackRag` is removed, and so are the builder's circuit-breaker loop over the registry, `isGuardedBy`, `SimpleRagRegistry.replaceRag`, `SmartAgentBuilder.withCircuitBreakers` and the server's call of it. No code block in this plan imports `FallbackRag`, calls `replaceRag` or `withCircuitBreakers`, or wraps a registered store; `withCircuitBreaker(config)` builds the main-LLM breaker only. The circuit breaker stays on the embedder (`withCircuitBreaker(embedder, breaker)`; the server's `_embedderBreaker`): with it open, a store's query fails fast with `CIRCUIT_OPEN`. `IRagDecorator` and every walk through `inner` stay — `StrategyRag` is a decorator, and a consumer's own wrapper relies on them; a test of a walk uses a plain test decorator (`{ inner, query, healthCheck, getById, writer }`). The corpus load checks the writer of the store it writes — there is no resolved-backend check (D52 withdrawn).
+- **Fail loud (D69–D74, spec §10.5; Tasks 4F–4O).** A component that finds another not working returns an **error** — a `Result` error, a thrown typed error, an `{ ok: false }` stream item, a non-200 / `/health` 503 — never a fake success, an empty result, a skipped part, a stale cache or a substitute component. A stage's `OrchestratorError` carries the failing component's code unchanged and names the stage and component; a thrown `OrchestratorError` keeps its code. Existing codes are reused; the only new codes are `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`, `TOOL_ARGUMENTS_JSON_PARSE_FAILED`, Task 4F); **no shared set is widened** (`MCP_UNAVAILABLE_CODES`, `DecisionErrorCode` unchanged). Kept: an optional capability absent by design (no pipeline embedder → `TextOnlyEmbedding`; `ENOENT` of a default skill path; no `SKILL.md`; the implicit `.env`; a worker that declares no clients), an honest empty answer (a query that succeeded with no hits), best-effort cleanup on shutdown / after a request, diagnostics-only catches. **No `onFailure` anywhere** (D71): a failed rerank is `RERANK_ERROR` in `StagedRetrieval`, the 30.1.0 rerank strategies, the `rerank` stage and the legacy orchestrator. **`/health` answers 503 unless every configured component works** (D72). No code block in this plan adds a fallback; **the modes listed for the user (spec §17.24 U1–U10) are not touched** — `FallbackLlmCallStrategy`, `strict: false`, `onFinalizeExhausted: 'best-effort'`, `AutoActivation`, `HybridDispatch`, `lazy`'s `fallback`, the batch → per-tool embedding, the tool availability blacklist, the worker's shared clients — until the user decides.
 - **A probability and a relevance are different decisions.** A relevance score is never read as a probability: no [0, 1] check on it, no default threshold on it (spec §3.9, §5). It is comparable for the same query and model, also across calls, so `RelevanceReranker` batches by default like `ProbabilityReranker` (spec §3.9, §5.2, D28).
 - **Failure handling, not concurrency.** A failed stale delete is kept (`staleRecordIds`) and retried; no generations, no locks for RAG (spec §3.3, D13). Concurrent writes to a persistent store — in one process or across processes — are the backend's responsibility; nothing in this plan serializes them. The corpus load at start (Task 19A) is not a protocol either: it clears the store and writes the corpus; an interrupted load repeats at the next start; replicas that load one persistent store at once are the backend's concern (D54), and the window in which the others read a partial store is **accepted by the user** (D60) — no marker, no coordination. Single-flight worker construction is **not** in this plan (D45: a separate issue, spec §15).
 - **Records are built only from what the provider exports — no generated records, no companion stores (D50).** No intent records, intent sources or companion stores anywhere in this plan; Task 10 (intent sources and indexers) is withdrawn and its number is not reused.
@@ -23,7 +24,7 @@
 - **Nothing that ships carries a tuned number (D55, D56).** No strategy class and no named composition carries a number measured in a consumer; a number it needs is a required argument (`budgetTokens`, `maxValues`, `minScore`, `faceted-rerank`'s `poolItems`) or a generic default: the caller's k for every cut (`TopItemsCut`) and k items for the pool (`ItemPool()`; `ICandidatePool` takes the caller's k). The measurements stay in the consumer; no "measured" text justifies a default (spec §7.1, §7.4).
 - **`k` is the overall limit, in items.** The caller's k caps every cut: a retrieval never returns more than `min(k, cut.limit(k))` ≤ k items, with or without a decomposer; `FixedItemsCut(n)` is a ceiling (spec §4.5, §4.9, §17.6 F1).
 - **Filled once, at instance creation; the source is the consumer's strategy.** Every tools write reads the binding **and its fill source** from the store it writes (`boundToolsOf` / `toolsBindingOf`) — never from an option (spec §6.3 rule 1, D34, D42); whoever creates a bound store fills it, once — the main store in `_buildInfra`, a worker's own store by its construction (`buildSubAgent` without `injected`), so lazy rebuilds after `PUT /v1/config` / hot reload are filled too (rule 2, D35); workers on the shared clients are filled at startup on every path — on `yamlBuilderConnect` right after the harvest (D38). **Never refilled while running** (D41): no refill API, no fill memo, no retry, a per-session re-wire never fills; an incomplete fill is reported and stays. **A bound store is never written on `toolsChanged`** (D46, supersedes D44): `McpToolRegistry.revectorizeTools` finds the binding on the store and stops (one `mcp` debug line, no warning), for every source alike; an unbound store keeps 30.1.0's re-vectorize. `IToolsFillSource` is `fill` only. The three sources: `LiveToolsFill` (default), `ToolsCorpusLoader` (`corpus`, any store: checks the corpus against the server's configured identity and the store's capabilities, **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs it; D54), `ConsumerToolsFill`. **No deploy step, no service record, no `prebuilt` source** (D54): the consumer's build step makes the corpus, the server loads it at every start. Every fill path is listed in spec §6.4; a new one must say which mechanism fills it.
-- **Never silent.** Reranker output errors, decomposer errors, orphans and over-budget cuts are returned or counted (spec §4.8, §4.5, §4.6, §4.10, §9).
+- **Never silent.** Reranker errors (incl. output-check failures — always returned, D71), decomposer errors, orphans and over-budget cuts are returned or counted (spec §4.8, §4.5, §4.6, §4.10, §9).
 - **Shipped tools strategies read only what every MCP server exports** (name, description, input schema); `NameTailFacet` is opt-in and in no variant; `EnumValueToolIndexer` and `TokenBudgetCut` are in no variant (spec §7.0, §7.4). The named compositions are `baseline`, `faceted`, `faceted-rerank`; `faceted-cohere`, `faceted-jev`, `small-set-jev`, `assertSmallSetPool` and the YAML `smallSet` key are withdrawn (D55) — a leftover YAML name is refused naming its replacement.
 - **ESM only**, `.js` extensions in relative imports; Biome style (2 spaces, single quotes, semicolons); no `any` (Biome warns); no per-file licence header; every package `LGPL-3.0-only` (spec §11).
 - **Library packages declare `@mcp-abap-adt/*` as peers** (`test/repo/scoped-dependencies.test.ts`); only `@mcp-abap-adt/llm-agent-server` takes regular deps.
@@ -39,19 +40,20 @@
 
 ## Review Focus
 
-The eleven inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
+The twelve inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
 
 1. **Identical `itemId`s across owners** (users A and B both write `case-42` into one `user` store) — two separate items: A's `get` returns A's text and `data`, B's re-index and `remove` leave A untouched, A's retrieval returns only A's item. → Task 17 (`identical item ids across users stay separate`), Task 12 (`collapse keys on the owner-qualified item`).
 2. **Canonical record missing** (deleted item, interrupted replacement) — the hit is dropped, never returned with its own text, does not use up k — nor the candidate pool: the next fetched item replaces it (D67), merged by descending score so a floor cut never drops a higher-scored replacement — and is counted. → Task 12 (`a hit without its canonical record is an orphan`; `default pool, k=1: a top orphan does not use up the pool`; `replacements merge with the pool by DESCENDING stage-1 score`), Task 13 (`an orphan replacement that outscores a surviving item …`, `keepStage1Top: the pin stays at the head …`), Task 28 (`orphan counted`).
 3. **Decomposer overrunning the budget** (Σk > budget, a `k < 1`, empty text, a thrown error) — `DECOMPOSE_ERROR` returned, never a silent fall-back, never more than `budget` items. → Task 14 (`budgets summing above the budget are a DECOMPOSE_ERROR`).
-4. **Reranker returning the wrong score count** (fewer/more results, a duplicate, a non-finite score) — `RERANK_ERROR`; `stage1` keeps the stage-1 order, `error` returns the error. → Task 13 (`a reranker that drops a candidate is a RERANK_ERROR`), Task 4C (`RelevanceReranker`: wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`), Task 18 (`SapAiCoreRelevanceDecision`: a wrong `/rerank` result is a `DecisionError`, never zero-filled).
+4. **Reranker returning the wrong score count** (fewer/more results, a duplicate, a non-finite score) — `RERANK_ERROR`, returned (no stage-1 fallback, D71). → Task 13 (`a reranker that drops a candidate is a RERANK_ERROR`), Task 4C (`RelevanceReranker`: wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`), Task 18 (`SapAiCoreRelevanceDecision`: a wrong `/rerank` result is a `DecisionError`, never zero-filled).
 5. **A tool definition larger than the token budget** (top item alone over budget) — empty result, never truncated, never replaced by a smaller lower-ranked tool. → Task 6 (`the top item alone over budget gives an empty result`).
 6. **A caller's k below a cut's own ceiling** (k=2 against a consumer's `maxItems` 5 → `FixedItemsCut(5)`) — at most 2 items, also after decomposition. → Task 6 (`FixedItemsCut is a ceiling`), Task 12 (`a consumer cut whose limit ignores k is still capped`), Task 14, Task 30 (`a caller k below the cut's own ceiling caps the result`).
 7. **A stale-record delete that fails** during a replacement — the item is `cleanup-failed`, never indexed; the id stays listed and the next `index` / `remove` deletes it. → Task 11 (`replacement → failed stale delete → … → remove leaves nothing`), Task 15, Task 30.
-8. **Two score scales in one result** (`keepStage1Top` pins stage-1 items beside reranked ones; a failed rerank falls back to stage 1; a decomposer merges sub-queries whose scores are not comparable, D63) — a pinned item carries its reranked score, never its embedding score, under a probability and a relevance reranker; the `stage1` fallback returns stage-1 ids and scores; `keepStage1Top` + `ScoreFloorCut`, `ScoreFloorCut` + `onFailure: 'stage1'` and a decomposer + `ScoreFloorCut` (D63) are refused with their messages. → Task 13 (`a pinned item carries its RERANKED score …`, `a failed rerank under 'stage1' with keepStage1Top …`, the two rejection cases), Task 14 (`the same item from two sub-queries … kept once, at its first position, with its first score`, `a decomposer with ScoreFloorCut is rejected at construction`), Task 21 (`compose: score-floor with a reranker needs onFailure: error`, `compose: score-floor with a decomposer is refused`).
+8. **Two score scales in one result** (`keepStage1Top` pins stage-1 items beside reranked ones; a decomposer merges sub-queries whose scores are not comparable, D63; a failed rerank no longer falls back to stage 1 — D71) — a pinned item carries its reranked score, never its embedding score, under a probability and a relevance reranker; a failed rerank returns `RERANK_ERROR`, never stage-1 ids or scores; `keepStage1Top` + `ScoreFloorCut` and a decomposer + `ScoreFloorCut` (D63) are refused with their messages. → Task 13 (`a pinned item carries its RERANKED score …`, `a failed rerank with keepStage1Top returns the RERANK_ERROR …`, the rejection case), Task 14 (`the same item from two sub-queries … kept once, at its first position, with its first score`, `a decomposer with ScoreFloorCut is rejected at construction`), Task 21 (`compose: score-floor with a reranker is allowed; an onFailure key is refused`, `compose: score-floor with a decomposer is refused`).
 9. **A corpus that does not fit the server, or a store it cannot be loaded into** (another profile / embedder name, another vector length than the store config's `dimension`, a store without `clearAll` or without a precomputed write) — refused with a message naming what differs, **before** the store is cleared; a load interrupted after the clear fails the start, and the next start loads it whole. → Task 19A (`an identity, profileName or dimensions mismatch → throws …; the store is not touched`, the `clearAll` / precomputed cases, the interrupted load), Task 23B (the declared-dimension startup failure, a store holding foreign records keeps only the corpus).
 10. **A 30.1.0 import of a moved or renamed name** (`import { VectorRag } from '@mcp-abap-adt/llm-agent'`, `import { DecisionReranker } from '@mcp-abap-adt/llm-agent-libs'`, `import type { StopReason } from '@mcp-abap-adt/llm-agent-libs'`, a `makeDecisionModel` key) — **fails to compile** (a major release, no alias, no re-export), and every one of them is a line of the CHANGELOG's migration table that names the new import; nothing in the repo still uses an old name or imports a moved name from its old package; nothing below `llm-agent-rag` imports it (no cycle). → Task 1A (`rag-implementations-home.test.ts`, the `@ts-expect-error` typecheck, the clean build), Task 4A / 4B / 20A (each removes its old names and switches every use in the same commit), Task 4D (the pre-existing re-exports removed; the guard over every public entry point), Task 4E (`ITextLogger` removed; its `@ts-expect-error` typecheck), Task 34 (the migration table: 72 lines), Task 35 (the repo-wide greps).
 11. **An embedder outage with the circuit breaker on** (the embedder breaker open) — a store's query returns `CIRCUIT_OPEN` and calls no embedder; no store answers from an in-memory copy, and no build wraps a registered store (D68). → Task 0A (`open-breaker-query.test.ts`; `withCircuitBreaker wraps no store …`; the server's embedder-breaker test: status 200, no embedding call while open).
+12. **A component that is not working, anywhere in the pipeline** (a stage that throws or sets `ctx.error`, a store or embedder that fails, a client that cannot list its tools, a reranker that fails, an LLM step that fails, unreadable state, a degraded `/health`) — the consumer receives an error (an `{ ok: false }` stream item, `process()` `ok: false`, a non-200), never an empty / partial / stale / substituted success; a component that is absent by design and an honest empty answer stay successes. → Task 4F (`pipelineToStream yields PipelineResult.error as the last item`, `SmartAgent.process() returns the error`), Tasks 4G–4O (one `…-fail-loud.test.ts` per component; each pins the kept cases too), Task 13 (`a thrown reranker is a RERANK_ERROR — no stage-1 fallback`).
 
 ## File Structure
 
@@ -63,12 +65,15 @@ The eleven inputs the spec implies, most likely to bite a user, each pinned by a
 - `interfaces/index.ts` — export the above.
 - `interfaces/health.ts`, `interfaces/metrics.ts`, `interfaces/tool-catalog.ts` — additive optional fields (spec §3.8; `ToolCatalogStatus.records` / `.profile` per S3).
 - `interfaces/tool-record-key.ts` — `skillNameFromRecord` (F3).
+- `interfaces/pipeline-failure-codes.ts` — NEW (Task 4F): `PIPELINE_FAILURE_CODES`, `PipelineFailureCode` (spec §10.5.1, D69); `interfaces/skills-rag.ts` — `SkillLoadResult.carried?` (Task 4L); `rag/query-embedding.ts` — `FallbackQueryEmbedding` stands in only for a `TextOnlyEmbedding` (Task 4H, D73).
 - `resilience/fallback-rag.ts`, `resilience/__tests__/fallback-rag.test.ts` — DELETED (Task 0A, D68); `index.ts` and `resilience/index.ts` lose the `FallbackRag` line; `rag/registry/simple-rag-registry.ts` loses `replaceRag`; `resilience/__tests__/open-breaker-query.test.ts` — NEW (Task 0A; moved by Task 1A, it imports `VectorRag`); `interfaces/__tests__/retrieval-strategy.test.ts` — over a plain test decorator (Task 0A).
 - `rag/vector-rag.ts` and the other RAG implementations of spec §11.3 — MOVED to `packages/llm-agent-rag/src/` with their tests (Task 1A); `index.ts`, `rag/index.ts`, `rag/providers/index.ts`, `rag/corrections/index.ts` lose their export lines (no alias, no subpath).
 - `interfaces/query-expander.ts`, `interfaces/query-preprocessor.ts` — NEW (Task 1A): `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` moved out of `rag/query-expander.ts` / `rag/preprocessor.ts`.
 - `rag/tool-indexing-strategy.ts` — DELETED.
 - `testing/collection-profile-conformance.ts` — NEW conformance kit; `package.json` `exports` entry.
 - `logger/text-logger.ts` — DELETED (`ITextLogger`, Task 4E); `index.ts` loses its `ITextLogger` line; `logger/normalise-logger.ts` — `AnyLogger` / `isTextLogger` over `ILogger` of `@mcp-abap-adt/interfaces-utils` (a file-local import name, it also uses the event `ILogger`); `logger/normalise-logger.test.ts`, `resilience/embedder-resilience-text-logger.test.ts`, `interfaces/mcp-connection-strategy.ts` (doc comment) switched; `logger/__tests__/text-logger-removed.typecheck.ts` — NEW (Task 4E).
+
+**Fail loud (Tasks 4F–4O, spec §10.5)** — the files each task lists: libs `pipeline/{executor,default-pipeline,pipeline-to-stream}.ts`, `agent.ts`, `adapters/{parse-tool-arguments (NEW),llm-provider-bridge,llm-adapter}.ts`, `policy/pending-tool-results-registry.ts`, the tool-loop context strategies (4F); `llm-agent-mcp` `client.ts`, `adapter.ts`, `strategies/lazy-connection-strategy.ts`, libs `mcp/tool-registry.ts`, `pipeline/handlers/{tool-select,tool-loop}.ts`, server-libs `tools-rag-handle.ts`, `smart-server.ts` bridge and snapshot (4G); `llm-agent` `rag/query-embedding.ts`, `llm-agent-rag` `vector-rag.ts`, `in-memory-rag.ts`, `preprocessor.ts`, libs `pipeline/handlers/rag-query.ts`, `agent/rag-orchestrator.ts`, `builder.ts`, `subagent/default-context-builder.ts`, `rag/knowledge-rag.ts`, server-libs `jsonl-knowledge-backend.ts`, `qdrant-rag`, `sap-aicore-embedder` `foundation-embedder.ts` (4H); libs `retrieval/reranked-retrieval.ts`, `pipeline/handlers/rerank.ts` (4I); `pipeline/handlers/{translate,expand,summarize,history-upsert}.ts` (4J); `coordinator/stepper/*`, `coordinator/dag/llm-dag-planner.ts` (4K); skills files, `vectorize-mcp-tools.ts` `vectorizeSkills`, server-libs `config-validator.ts` (4L); server-libs session / controller / reload / models-route / stepper-root files, `llm-agent-server` `cli.ts` (4M); `sap-aicore-llm`, `openai-llm`, `anthropic-llm` providers (4N); libs `health/agent-health.ts`, server-libs `http/health-route-handler.ts` (4O). Each task adds its `*-fail-loud.test.ts`.
 
 **`packages/llm-agent-reranker/`** — NEW package (Tasks 4B–4C): `src/probability-reranker.ts` (moved from libs `reranker/decision-reranker.ts`), `src/relevance-reranker.ts`, `src/llm-reranker.ts`, `src/noop-reranker.ts` (moved), `src/assert-positive-integer.ts` (copy), `src/index.ts`, tests; `package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`. libs' `src/reranker/` is removed; libs exports none of the names (D59) and imports `NoopReranker` from the package for its own defaults.
 
@@ -3511,6 +3516,621 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
+## Fail-loud tasks 4F–4O — overview
+
+Spec §10.5 (D69–D74, §17.24), §13 (behaviour table B1–B11). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR". These ten tasks run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
+
+**The same discipline in every task (TDD per item):**
+1. a failing test that shows today's fake success — the empty stream, the `ok: true` with original text, the skipped store, the 200;
+2. the fix, exactly as the spec's row says (code and carrier);
+3. the gate: `npx tsc -b` of the touched packages, the new tests, the touched packages' whole suites;
+4. **existing tests that pin a fallback** are part of the fix, not a regression: each task names the grep that finds them; a test asserting the old fallback is rewritten to assert the error (its name says so). A test that pins something *kept* (§10.5.1: absent by design, an honest empty answer, cleanup, diagnostics) stays as it is.
+
+**Never in these tasks:** a new shared code (only `PIPELINE_FAILURE_CODES`, Task 4F); a widened `MCP_UNAVAILABLE_CODES` / `DecisionErrorCode`; a change to the modes listed for the user (spec §17.24 U1–U10: `FallbackLlmCallStrategy`, `strict: false`, `onFinalizeExhausted: 'best-effort'`, `AutoActivation`, `HybridDispatch`, `lazy`'s `fallback`, the batch → per-tool embedding, the tool availability blacklist, the worker's shared clients) — they stay as they are until the user decides.
+
+---
+
+## Task 4F: Pipeline core — pipeline errors reach the consumer (N1), tool-call arguments, pending results, context state (contracts + libs + server-libs)
+
+Spec §10.5.1 (D69: the rule, the carriers, `PIPELINE_FAILURE_CODES`), §10.5.2 (D70: N1; N2, N3, N13, the context strategies), §13 B1, B7. **Highest priority of the sweep:** until this lands, no stage error of Tasks 4G–4O can reach a consumer.
+
+**Files:**
+- Create: `packages/llm-agent/src/interfaces/pipeline-failure-codes.ts`; export it from `packages/llm-agent/src/interfaces/index.ts` and the package root `index.ts`
+- Modify: `packages/llm-agent-libs/src/pipeline/executor.ts`, `pipeline/default-pipeline.ts`, `pipeline/pipeline-to-stream.ts`, `agent.ts` (`streamProcess` root span; the legacy tool-call parse ~1141), `pipeline/handlers/tool-loop.ts` (~600), `adapters/llm-provider-bridge.ts` (~150), `adapters/llm-adapter.ts` (~88), `policy/pending-tool-results-registry.ts` (~49), `pipeline/context/tool-loop-context/window-context-strategy.ts` (~51), `pipeline/context/tool-loop-context/legacy-accumulate-context-strategy.ts` (~31)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (~1554)
+- Create: `packages/llm-agent-libs/src/adapters/parse-tool-arguments.ts` (`parseToolArguments`, `invalidArgumentsMessage`); export both from libs' `src/index.ts` (libs owns them — server-libs imports them from `@mcp-abap-adt/llm-agent-libs`, no copy)
+- Create: `packages/llm-agent/src/interfaces/__tests__/pipeline-failure-codes.test.ts`, `packages/llm-agent-libs/src/pipeline/__tests__/pipeline-errors-reach-consumer.test.ts`, `packages/llm-agent-libs/src/pipeline/__tests__/tool-arguments-invalid.test.ts`, `packages/llm-agent-libs/src/pipeline/context/tool-loop-context/__tests__/restore-state-corrupt.test.ts`, `packages/llm-agent-libs/src/policy/__tests__/pending-tool-results-reject.test.ts`
+
+**Interfaces:**
+- Produces (contracts, additive — spec §3.8):
+  ```ts
+  // packages/llm-agent/src/interfaces/pipeline-failure-codes.ts
+  /** Codes for failures no component has a code for (spec §10.5.1, D69). A set of its own: no shared set is widened. */
+  export const PIPELINE_FAILURE_CODES = {
+    RAG_STORE_MISSING: 'RAG_STORE_MISSING',
+    STATE_CORRUPT: 'STATE_CORRUPT',
+    TOOL_ARGUMENTS_JSON_PARSE_FAILED: 'TOOL_ARGUMENTS_JSON_PARSE_FAILED',
+  } as const;
+  export type PipelineFailureCode = (typeof PIPELINE_FAILURE_CODES)[keyof typeof PIPELINE_FAILURE_CODES];
+  ```
+- Produces (libs): `PipelineExecutor.executeStages` sets `ctx.error` (`OrchestratorError`, code `PIPELINE_ERROR`, message `stage "<id>" failed: <err>`) on a throwing handler or an unknown stage type, unless a handler already set one; `DefaultPipeline.execute` does the same for anything the executor let through; `pipelineToStream` yields `{ ok: false, error: result.error }` last when `result.error` is set and no `ok: false` chunk was yielded already; `SmartAgent.streamProcess` sets the root span `error` when the stream carried an error.
+- Produces: a tool call whose arguments are not valid JSON is **not run**; its tool result is `Error: arguments of tool "<name>" are not valid JSON (TOOL_ARGUMENTS_JSON_PARSE_FAILED): <parse error>` and the session step `tool_arguments_invalid { tool, code, error }` — the same at all five sites.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// packages/llm-agent-libs/src/pipeline/__tests__/pipeline-errors-reach-consumer.test.ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../../agent.js';
+import type { IPipeline, PipelineResult } from '../../interfaces/pipeline.js';
+import { makeCapturingTracer, makeDefaultDeps } from '../../testing/index.js';
+import type { PipelineContext } from '../context.js';
+import { PipelineExecutor } from '../executor.js';
+import type { IStageHandler } from '../stage-handler.js';
+import { pipelineToStream } from '../pipeline-to-stream.js';
+
+/** A pipeline whose execute resolves with `result`, after yielding `chunks`. */
+function fakePipeline(result: PipelineResult, chunks: Parameters<Parameters<IPipeline['execute']>[3]>[0][] = []): IPipeline {
+  return {
+    initialize: () => {},
+    execute: async (_i, _h, _o, yieldChunk) => {
+      for (const c of chunks) yieldChunk(c);
+      return result;
+    },
+  } as unknown as IPipeline;
+}
+async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const x of it) out.push(x);
+  return out;
+}
+
+describe('N1 — a pipeline error reaches the consumer (spec §10.5.2, D70)', () => {
+  it('pipelineToStream yields PipelineResult.error as the last item — today it is dropped', async () => {
+    const error = new OrchestratorError('classifier failed', 'CLASSIFIER_ERROR');
+    const out = await collect(pipelineToStream(fakePipeline({ timing: [], error }), 'q', [], undefined));
+    assert.equal(out.length, 1);
+    assert.ok(!out[0].ok && out[0].error.code === 'CLASSIFIER_ERROR');
+  });
+
+  it('a handler that yielded its own error is not reported twice', async () => {
+    const error = new OrchestratorError('llm down', 'LLM_ERROR');
+    const out = await collect(pipelineToStream(fakePipeline({ timing: [], error }, [{ ok: false, error }]), 'q', [], undefined));
+    assert.equal(out.filter((c) => !c.ok).length, 1);
+  });
+
+  it('a throwing handler sets ctx.error (PIPELINE_ERROR, naming the stage) — today only a span and a log', async () => {
+    const throwing: IStageHandler = { execute: async () => { throw new Error('boom'); } };
+    const ctx = { timing: [], options: undefined } as unknown as PipelineContext;
+    const tracer = makeCapturingTracer();
+    const ok = await new PipelineExecutor(new Map([['x', throwing]]), tracer).executeStages(
+      [{ id: 's1', type: 'x' }], ctx, tracer.startSpan('root'),
+    );
+    assert.equal(ok, false);
+    assert.ok(ctx.error instanceof OrchestratorError);
+    assert.equal(ctx.error.code, 'PIPELINE_ERROR');
+    assert.match(ctx.error.message, /stage "s1" failed: Error: boom/);
+  });
+
+  it('a thrown OrchestratorError keeps its own code', async () => {
+    const throwing: IStageHandler = { execute: async () => { throw new OrchestratorError('down', 'MCP_UNAVAILABLE'); } };
+    const ctx = { timing: [], options: undefined } as unknown as PipelineContext;
+    const tracer = makeCapturingTracer();
+    await new PipelineExecutor(new Map([['x', throwing]]), tracer).executeStages([{ id: 's1', type: 'x' }], ctx, tracer.startSpan('root'));
+    assert.equal(ctx.error?.code, 'MCP_UNAVAILABLE');
+  });
+
+  it('an unknown stage type is the same error', async () => {
+    const ctx = { timing: [], options: undefined } as unknown as PipelineContext;
+    const tracer = makeCapturingTracer();
+    await new PipelineExecutor(new Map(), tracer).executeStages([{ id: 's1', type: 'nope' }], ctx, tracer.startSpan('root'));
+    assert.equal(ctx.error?.code, 'PIPELINE_ERROR');
+  });
+
+  it('SmartAgent.process() returns the error; the root span is error — today ok: true with empty content', async () => {
+    const { deps } = makeDefaultDeps();
+    const tracer = makeCapturingTracer();
+    const error = new OrchestratorError('classifier failed', 'CLASSIFIER_ERROR');
+    const agent = new SmartAgent({ ...deps, tracer, pipeline: fakePipeline({ timing: [], error }) }, { maxIterations: 5 });
+    const r = await agent.process('hello');
+    assert.ok(!r.ok && r.error.code === 'CLASSIFIER_ERROR');
+    const root = tracer.spans.find((s) => s.name === 'smart_agent.process' || s.parent === undefined);
+    assert.equal(root?.status, 'error');
+  });
+});
+```
+
+(`makeCapturingTracer`'s span fields are `name`, `status`, `parent` — check `testing/index.ts` `CapturedSpan` and use the root span's actual name from `agent.ts` `startSpan(...)`; adjust the `find` to it.)
+
+`tool-arguments-invalid.test.ts` — one case per site, each fed `arguments: '{"a":'` (truncated JSON):
+- `tool-loop` (through `DefaultPipeline` with `makeMcpClient` whose `callTool` records calls, and `makeLlm` answering one tool call with the bad arguments, then a text answer): `callTool` is **never** called; the next LLM request carries a tool message matching `/TOOL_ARGUMENTS_JSON_PARSE_FAILED/`; the session step `tool_arguments_invalid` is logged. Today the tool runs with `{}`.
+- `llm-provider-bridge` and `llm-adapter` (OpenAI format): the parsed call is marked invalid (the bridge returns the parse failure instead of `{}`; the adapter emits the existing diagnostic **and** marks the call) and the tool loop does not run it.
+- the legacy `agent.ts` path (`SmartAgent` without `deps.pipeline`): `callTool` never called, the tool message carries the code.
+- server-libs `controller-coordinator-handler.ts`: in `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-tool-arguments-invalid.test.ts`, a controller step whose LLM emits the bad arguments → the tool is not called; the step's tool result carries the code.
+
+`pending-tool-results-reject.test.ts`: a registry entry whose results promise rejects with `new Error('lost')` → `consume` (the method at ~49) rejects with an `OrchestratorError` code `PIPELINE_ERROR` naming the tool calls — today `results: []`.
+
+`restore-state-corrupt.test.ts`: `WindowContextStrategy.restore({ version: 2, rounds: [] })` and `restore({ version: 1, rounds: 'x' })` throw `OrchestratorError` with code `PIPELINE_FAILURE_CODES.STATE_CORRUPT`; the same for `LegacyAccumulateContextStrategy`; `restore(undefined)` (no saved state — absent by design) still returns the empty state. Today all reset to `[]`.
+
+`pipeline-failure-codes.test.ts`: the three members, their string values, and that `MCP_UNAVAILABLE_CODES` is unchanged (deep-equal against its current list — no shared set widened).
+
+- [ ] **Step 2: Run to see them fail**
+
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/pipeline/__tests__/pipeline-errors-reach-consumer.test.ts packages/llm-agent-libs/src/pipeline/__tests__/tool-arguments-invalid.test.ts
+```
+Expected: FAIL — `PIPELINE_FAILURE_CODES` not exported; the stream ends with no error item; `ctx.error` undefined; `process()` `ok: true`; the tool ran with `{}`.
+
+- [ ] **Step 3: Implement**
+
+`executor.ts`, the `catch` of `executeStages` (and the unknown-type throw lands in it):
+```ts
+      } catch (err) {
+        span.setStatus('error', String(err));
+        span.end();
+        ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, { error: String(err) });
+        // Spec §10.5.2 (D70): a failed stage is an ERROR the consumer receives —
+        // never only a span and a log line.
+        // A thrown OrchestratorError keeps its own code (e.g. MCP_UNAVAILABLE, Task 4G).
+        ctx.error ??= err instanceof OrchestratorError
+          ? err
+          : new OrchestratorError(`stage "${stage.id}" failed: ${String(err)}`, 'PIPELINE_ERROR');
+        return false;
+      }
+```
+(apply the same in `_executeParallel` / `_executeRepeat` where they catch a child stage).
+
+`default-pipeline.ts`, `execute`'s catch: `ctx.error ??= new OrchestratorError(\`pipeline failed: ${String(err)}\`, 'PIPELINE_ERROR');` beside `rootSpan.setStatus('error', …)`; also `rootSpan.setStatus('error', ctx.error.message)` when `ctx.error` is set after `executeStages` returns.
+
+`pipeline-to-stream.ts`: track `let yieldedError = false;` (set in the `yieldChunk` callback when `!chunk.ok`), and in `.then((result) => { … })`:
+```ts
+    .then((result) => {
+      // Spec §10.5.2 (D70): the PipelineResult's error reaches the consumer,
+      // once — a handler that yielded its own error is not reported twice.
+      if (result?.error && !yieldedError) chunkQueue.push({ ok: false, error: result.error });
+      done = true;
+      …
+    })
+```
+
+`agent.ts`, the pipeline branch of `streamProcess`:
+```ts
+        let failed: OrchestratorError | undefined;
+        for await (const chunk of stream) {
+          if (!chunk.ok) failed ??= chunk.error;
+          yield chunk;
+        }
+        if (failed) rootSpan.setStatus('error', `${failed.code}: ${failed.message}`);
+        else rootSpan.setStatus('ok');
+```
+
+N2 / N3 — one helper in libs, `adapters/parse-tool-arguments.ts`:
+```ts
+export type ParsedToolArguments =
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; error: string };
+export function parseToolArguments(raw: string | undefined): ParsedToolArguments {
+  if (raw === undefined || raw.trim() === '') return { ok: true, value: {} }; // no arguments given — a valid empty call
+  try {
+    const v = JSON.parse(raw);
+    return v !== null && typeof v === 'object' && !Array.isArray(v)
+      ? { ok: true, value: v as Record<string, unknown> }
+      : { ok: false, error: 'arguments are not a JSON object' };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+export function invalidArgumentsMessage(tool: string, error: string): string {
+  return `Error: arguments of tool "${tool}" are not valid JSON (${PIPELINE_FAILURE_CODES.TOOL_ARGUMENTS_JSON_PARSE_FAILED}): ${error}`;
+}
+```
+Every site replaces its `catch { args = {} }` with `parseToolArguments`; on `!ok` it logs `tool_arguments_invalid`, does not call the tool, and appends `invalidArgumentsMessage(...)` as that call's tool result (the tool-loop already builds per-call tool messages — `buildBlockedToolMessages` in `tool-loop-core.ts` is the shape to follow). server-libs' controller handler imports the helper from libs (`@mcp-abap-adt/llm-agent-libs` exports it) — no copy. An empty argument string stays `{}`: a tool called with no arguments is valid.
+
+N13 — `pending-tool-results-registry.ts`: the `catch` rethrows `new OrchestratorError(\`pending tool results for ${ids} failed: ${String(err)}\`, 'PIPELINE_ERROR')`; the caller (the stage awaiting it) lets it propagate, so Step 3's executor catch reports it.
+
+Context strategies — `restore`:
+```ts
+    if (state === undefined) return this.empty();          // no saved state: absent by design
+    if (state.version !== 1 || !Array.isArray(state.rounds)) {
+      throw new OrchestratorError(
+        `tool-loop context: saved state of version ${String(state.version)} cannot be restored`,
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
+```
+
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "args = {}\|return {};\|results: \[\]\|rounds : \[\]\|stage_error_" -- packages/llm-agent-libs/src packages/llm-agent-server-libs/src | grep test
+```
+A test that asserted an empty stream / `{}` arguments / `[]` results for a failure is rewritten to assert the error (rename it accordingly). Then:
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
+```
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages/llm-agent/src packages/llm-agent-libs/src packages/llm-agent-server-libs/src
+git add packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
+git commit -m "fix(libs): pipeline errors reach the consumer; invalid tool arguments never run a tool
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4G: MCP — client, adapter, connection strategy, registry, tool selection (mcp + libs + server-libs)
+
+Spec §10.5.3 (M1–M11; M12 is unchanged by decision — D41 — and only reported louder through Task 4O), §13 B5.
+
+**Files:**
+- Modify: `packages/llm-agent-mcp/src/client.ts` (~426), `src/adapter.ts` (~32), `src/strategies/lazy-connection-strategy.ts` (~160)
+- Modify: `packages/llm-agent-libs/src/mcp/tool-registry.ts` (~117), `pipeline/handlers/tool-select.ts` (~40, ~91), `pipeline/handlers/tool-loop.ts` (~229, ~352), `agent.ts` (~966)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/tools-rag-handle.ts` (~40, ~64), `smart-server.ts` (bridge ~740, `resolveAuthoritativeSnapshot` ~2573)
+- Create: `packages/llm-agent-mcp/src/__tests__/fail-loud-list-tools.test.ts`, `packages/llm-agent-libs/src/mcp/__tests__/tool-registry-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-select-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/tools-rag-handle-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-bridge-snapshot-fail-loud.test.ts`
+
+**Interfaces:**
+- Consumes: Task 4F (`ctx.error` reaches the consumer).
+- Produces: no contract change, no signature change. `McpClientAdapter.listTools` → `{ ok: false, error: McpError }` with its existing code (`toMcpError`) when the server is down — never a cached list after a failed probe; `LazyConnectionStrategy._checkHealth` → `result.ok && result.value`; `McpToolRegistry.resolve` **rejects** with an `OrchestratorError('MCP_UNAVAILABLE')` when any client fails `listTools` or when fewer clients resolve than `configuredSlotCount`; the stages fail with it (Task 4F's executor keeps a thrown `OrchestratorError`'s code).
+
+- [ ] **Step 1: Write the failing tests** (one per row)
+
+- M1 `client.ts`: an MCP client whose transport fails `listTools` twice (first call and the reconnect) **after** a successful first listing → `listTools` rejects with an error `toMcpError` maps (assert `isMcpUnavailable(toMcpError(err))`), never the cached tools. Today: the cached list.
+- M2 `adapter.ts`: list once (cache filled); then `healthCheck` fails; `listTools` → `ok: false`, code `MCP_NOT_CONNECTED`. Today: `ok: true` from the cache.
+- M3b `lazy-connection-strategy.ts`: a client whose `healthCheck` answers `{ ok: true, value: false }` is not healthy (`resolve` leaves it out and `isReady()` is false). Today: counted healthy.
+- M4 `tool-registry.ts`: two clients, one `listTools` → `{ ok: false, error: new McpError('down', 'MCP_TRANSPORT') }` → `resolve` rejects with code `MCP_UNAVAILABLE` whose message names the client and `MCP_TRANSPORT`; a client that throws → the same; a strategy returning 1 client with `configuredSlotCount: 2` → the same, naming the missing slot. Today: the failed client dropped, no log.
+- M5 `tool-select`: through `DefaultPipeline` with the same two clients → the consumer receives `{ ok: false }` code `MCP_UNAVAILABLE` (Task 4F's path). Today: the request runs with one client's tools.
+- M6 `tool-loop` (~229): the per-iteration re-list fails for one client → the stage fails with `MCP_UNAVAILABLE`; the tool set was **not** shrunk before the failure (assert no LLM call went out with the shrunk set). Today: that client's tools vanish mid-run.
+- M7 `tool-select` (~91): the discovery store query `ok: false` (`new RagError('open', 'CIRCUIT_OPEN')`) → stage fails with code `CIRCUIT_OPEN`, message naming the store; a store answering `ok: true, []` in smart mode → zero MCP tools and **no** error (an honest empty answer — kept).
+- M8 `tool-loop` (~352) and `agent.ts` (~966): the re-select query fails → stage / request fails with the store's code. Today: the previous set kept, unlogged.
+- M9 `tools-rag-handle`: a client failing `listTools` → `query` returns its `McpError` and nothing is cached (a second `query` with the client healthy lists again); a failed `toolsRag.query` → its `RagError`; **zero hits → `[]`** (today: the first N catalog tools).
+- M10 bridge: a client whose `listTools` fails with a code the classifier calls a tool error → the bridge throws that `McpError` (today: silently the next client); a `callTool` tool error still comes back as a tool result (unchanged).
+- M11 `resolveAuthoritativeSnapshot`: one failing client → the snapshot call rejects with its `McpError`; a second call after the client recovers builds the snapshot (nothing memoized from the failed call).
+
+- [ ] **Step 2: Run to see them fail**
+
+```bash
+npx tsc -b packages/llm-agent-mcp packages/llm-agent-libs packages/llm-agent-server-libs
+node --import tsx/esm --test packages/llm-agent-mcp/src/__tests__/fail-loud-list-tools.test.ts packages/llm-agent-libs/src/mcp/__tests__/tool-registry-fail-loud.test.ts packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-select-fail-loud.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/tools-rag-handle-fail-loud.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-bridge-snapshot-fail-loud.test.ts
+```
+Expected: FAIL — each on the stale / dropped / substituted value named above.
+
+- [ ] **Step 3: Implement** (each as the spec's row says)
+
+- `client.ts`: the reconnect's `catch (retryError)` → `throw retryError` (the adapter's existing catch maps it with `toMcpError`); `this.tools` is updated only on success.
+- `adapter.ts`: keep `lastHealthy` (set by `healthCheck` and by a failed call); answer from `toolsCache` only while `lastHealthy !== false`; otherwise call the client (which fails with the mapped code when the server is down).
+- `lazy-connection-strategy.ts` `_checkHealth`: `return result.ok && result.value;`. `resolve` unchanged (it already returns `configuredSlotCount`).
+- `tool-registry.ts` `resolve`: collect `{ client index, error }` for every rejected or `!ok` entry; when any, or `clients.length < (configuredSlotCount ?? clients.length)`, `throw new OrchestratorError(\`MCP tools unavailable: ${list}\`, 'MCP_UNAVAILABLE')` (its return type is unchanged; a caller outside a stage — `revectorizeTools`, Task 19 — lets it propagate).
+- `tool-select.ts` (~40): the same check as the registry (or call the registry's helper); (~91): `if (!result.ok) { ctx.error = new OrchestratorError(\`tool-select: store "${name}" failed: ${result.error.message}\`, result.error.code); return false; }`.
+- `tool-loop.ts` (~229): compute the new tool set into a local first; on any failed client set `ctx.error` (`MCP_UNAVAILABLE`) and `return false` **before** `ctx.toolClientMap.clear()` / `ctx.mcpTools.length = 0`; (~352) and `agent.ts` (~966): `!ragResult.ok` → `ctx.error` / the request's `ok: false` with the store's code.
+- `tools-rag-handle.ts`: `listTools` failures → return the first `McpError` (no `catalogCache` write); `!query.ok` → return it; zero hits → `[]`.
+- `smart-server.ts` bridge: `if (!listed.ok) throw listed.error;` for every class (the `classify` call stays for `callTool`); `resolveAuthoritativeSnapshot`: any failing client → throw its `McpError` (or a `McpError('…', 'MCP_ERROR')` for a throw), and set `this._toolProvenance` only after a complete snapshot.
+
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "return this.tools\|toolsCache\|slice(0, limit)\|status === 'fulfilled'" -- 'packages/llm-agent-mcp/src/**/*.test.ts' 'packages/llm-agent-libs/src/**/*.test.ts' 'packages/llm-agent-server-libs/src/**/*.test.ts'
+```
+Rewrite each assertion of a stale / partial / unranked result for a failure into the error. Then:
+```bash
+npx tsc -b packages/llm-agent-mcp packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent-mcp --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
+```
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages/llm-agent-mcp/src packages/llm-agent-libs/src packages/llm-agent-server-libs/src
+git add packages/llm-agent-mcp packages/llm-agent-libs packages/llm-agent-server-libs
+git commit -m "fix(mcp): a client that cannot list its tools is an error — no stale cache, no dropped client
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4H: RAG and embedder — `FallbackQueryEmbedding` only for a text-only embedding; stores, preprocessors, stages (llm-agent + llm-agent-rag + libs + server-libs + providers)
+
+Spec §10.5.4 (R1–R12; R13 kept), D73, §13 B2, B3, B11 (the provider rows R11, R12).
+
+**Files:**
+- Modify: `packages/llm-agent/src/rag/query-embedding.ts` (`FallbackQueryEmbedding`)
+- Modify: `packages/llm-agent-rag/src/vector-rag.ts` (~181, ~220), `in-memory-rag.ts` (~103, ~180), `preprocessor.ts` (~96, ~153, ~227)
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/rag-query.ts` (~35, ~115), `agent/rag-orchestrator.ts` (~150), `builder.ts` (~830), `subagent/default-context-builder.ts` (~69, ~88), `rag/knowledge-rag.ts` (~248)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts` (~72, ~108)
+- Modify: `packages/qdrant-rag/src/qdrant-rag.ts` (~141), `packages/sap-aicore-embedder/src/foundation-embedder.ts` (~81, ~120, ~125, ~141, ~146)
+- Create: `packages/llm-agent/src/rag/__tests__/fallback-query-embedding-text-only.test.ts`, `packages/llm-agent-rag/src/__tests__/preprocess-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/rag-query-fail-loud.test.ts`, `packages/llm-agent-libs/src/__tests__/retrieval-sources-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/jsonl-knowledge-fail-loud.test.ts`; extend `packages/qdrant-rag/src/qdrant-rag.test.ts`, `packages/sap-aicore-embedder/src/foundation-embedder.test.ts`
+
+**Interfaces:**
+- Consumes: Task 4F (`RAG_STORE_MISSING`; the stage error path).
+- Produces: `FallbackQueryEmbedding.toVector()` uses the store embedder **only** when `inner instanceof TextOnlyEmbedding`; any other rejection propagates unchanged. No signature changes.
+
+- [ ] **Step 1: Write the failing tests**
+
+- R1: `new FallbackQueryEmbedding(new TextOnlyEmbedding('q'), storeEmbedder).toVector()` → the store embedder's vector (kept); `new FallbackQueryEmbedding(failingQueryEmbedding /* a QueryEmbedding over an embedder that throws RagError('down','CIRCUIT_OPEN') */, storeEmbedder).toVector()` rejects with that `CIRCUIT_OPEN` error and **the store embedder is not called** (assert its call count is 0). Today: the store embedder answers. (This test lives in `llm-agent` and uses only the store kit — no `VectorRag`; a `VectorRag`-level case goes to `llm-agent-rag/src/__tests__/preprocess-fail-loud.test.ts`: a broken pipeline embedder → `query` returns `ok: false` with the code.)
+- R2: `VectorRag` / `InMemoryRag` with a preprocessor answering `{ ok: false, error: new RagError('x', 'QUERY_EXPAND_ERROR') }` → `query` returns that error; with an enricher answering `ok: false` → `upsert` returns it. Today: the raw text is used.
+- R3: `TranslatePreprocessor`, `ExpandPreprocessor`, `IntentEnricher` over an LLM answering `{ ok: false, error: new LlmError('down') }`, over empty content, and over a throw → `ok: false`, code `QUERY_EXPAND_ERROR`, message carrying the LLM error. The `TranslatePreprocessor`'s early return for text that needs no translation stays `ok: true` (a test pins it).
+- R4/R5 `rag-query`: a stage config naming a store the registry lacks → the consumer receives code `RAG_STORE_MISSING` naming it; a store whose `query` answers `ok: false` `CIRCUIT_OPEN` → code `CIRCUIT_OPEN`, message naming the store. Today: skipped, request continues (the D68 continuation).
+- R6 legacy orchestrator: a store `ok: false` → `SmartAgent.process` (no pipeline) returns that code. Today `[]`.
+- R7 builder sub-agent retrieval source and R8 `DefaultContextBuilder`: a failing query / a throwing source → the sub-agent's context build rejects with it (`COORDINATOR_STEP_FAILED` at the coordinator, message carrying the store's code). Today: `[]` / left out.
+- R9 `knowledge-rag` `put`: a semantic index whose `upsert` throws → `put` rejects with `RagError` code `UPSERT_ERROR`; the entry is still listed (it was written). Today: resolves.
+- R10 `jsonl-knowledge-backend`: an embedder that throws → `build()` and `put()` reject with `UPSERT_ERROR`; the session is not marked built.
+- R11 `QdrantRag`: a fake fetch failing `GET /collections/<name>` → the upsert returns `UPSERT_ERROR` and a second upsert reads the collection again (not marked ensured); a `vectors.size` missing → `UPSERT_ERROR`.
+- R12 foundation embedder: a batch answer with fewer items than texts → `EMBED_ERROR`; a gemini prediction without values → `EMBED_ERROR` (never a `[]` vector); an azure answer without `data` → `EMBED_ERROR`; an HTTP 500 → code `EMBED_ERROR` (today `RAG_ERROR`).
+- R13 kept: `rag-query` with no pipeline embedder and a store with its own embedder → results as today (a test pins it).
+
+- [ ] **Step 2: Run to see them fail** — `npx tsc -b` of the packages above, then the new / extended test files. Expected: FAIL on each substituted or skipped value.
+
+- [ ] **Step 3: Implement**
+
+`query-embedding.ts`:
+```ts
+  toVector(): Promise<number[]> {
+    // Spec §10.5.4 R1 (D73): the store's embedder stands in ONLY for a caller with
+    // no embedder (TextOnlyEmbedding — an absent capability). A real embedder that
+    // failed is an error, never re-embedded behind the caller's back.
+    this._vector ??= this.inner instanceof TextOnlyEmbedding
+      ? this.fallback.embedQuery(this.text).then((r) => r.vector)
+      : this.inner.toVector();
+    return this._vector;
+  }
+```
+`vector-rag.ts` / `in-memory-rag.ts`: `if (!ppResult.ok) return ppResult;` (query) and `if (!eResult.ok) return eResult;` (upsert) in place of the `if (x.ok)` guards. `preprocessor.ts`: each failure branch returns `{ ok: false, error: new RagError(\`<class>: ${reason}\`, 'QUERY_EXPAND_ERROR') }`. `rag-query.ts`: (~35) `ctx.error = new OrchestratorError(\`rag-query: store "${storeName}" is not registered\`, PIPELINE_FAILURE_CODES.RAG_STORE_MISSING); return false;` and (~115) `if (!result.ok) { ctx.error = new OrchestratorError(\`rag-query: store "${storeName}" failed: ${result.error.message}\`, result.error.code); return false; }` (span and `logRagQuery` keep their calls). `rag-orchestrator.ts` (~150): return the first failed store as the `orchestrate` error. `builder.ts` (~830): `if (!queryRes.ok) throw queryRes.error;`. `default-context-builder.ts`: remove the two catches. `knowledge-rag.ts`: after the push, `await this.semantic?.upsert(…)` in a `try` whose `catch (e)` throws `new RagError(\`knowledge entry written but not indexed: ${String(e)}\`, 'UPSERT_ERROR')`. `jsonl-knowledge-backend.ts`: rethrow as `UPSERT_ERROR` in both places (drop the `DEBUG_CONTROLLER`-only logging). `qdrant-rag.ts`: the read failure returns `UPSERT_ERROR`; set `collectionEnsured = true` only after the dimension check passed; a non-numeric `vectors.size` → `UPSERT_ERROR`. `foundation-embedder.ts`: `embedBatch` checks `items.length === texts.length`; empty vector, missing `data` and HTTP failures throw `new RagError(…, 'EMBED_ERROR')`.
+
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "FallbackQueryEmbedding\|non-fatal\|ok: true, value: text\|resultCount: 0" -- 'packages/*/src/**/*.test.ts'
+```
+Then:
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-rag packages/qdrant-rag packages/sap-aicore-embedder packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-rag --workspace @mcp-abap-adt/qdrant-rag --workspace @mcp-abap-adt/sap-aicore-embedder --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
+```
+Expected: PASS. (`pg-vector-rag` and `hana-vector-rag` use `FallbackQueryEmbedding` unchanged; their suites run in the full `npm test` of Task 35.)
+
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages
+git add packages
+git commit -m "fix(rag): a failing store, embedder or preprocessor is an error — the store embedder only stands in for a text-only query
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4I: Reranker — the 30.1.0 rerank strategies, the `rerank` stage and the legacy orchestrator return `RERANK_ERROR` (libs)
+
+Spec §10.5.5 (K2–K4; K1 — `StagedRetrieval` without `onFailure` — is written into Tasks 12, 13, 16, 21, 22 directly), D71, §9.2, §9.3, §13 B4. **S4's "no behaviour change" is superseded for the failure path** (spec §17.24); S4's "no output check on these strategies" stays.
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/retrieval/reranked-retrieval.ts` (`rerankOrFallback` → `rerankOrError`), `pipeline/handlers/rerank.ts` (~39), `agent/rag-orchestrator.ts` (~171)
+- Create: `packages/llm-agent-libs/src/retrieval/__tests__/reranked-retrieval-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/rerank-fail-loud.test.ts`
+
+**Interfaces:**
+- Produces: `RerankedRetrieval` / `RerankAllRetrieval` return `{ ok: false, error: RagError(…, 'RERANK_ERROR') }` on a reranker `ok: false` or throw (the session step `retrieval_rerank_error` is still logged); the module-private helper is renamed `rerankOrError` (Task 29 adds its telemetry). The `rerank` stage sets `ctx.error` with `RERANK_ERROR`; the legacy orchestrator returns it.
+
+- [ ] **Step 1: Write the failing tests**
+
+- `RerankedRetrieval` with a reranker answering `ok: false` → `!r.ok && r.error.code === 'RERANK_ERROR'`; a throwing reranker → the same, message capped as today (500 chars); the session step `retrieval_rerank_error` is still logged once; a short successful answer is still accepted (S4 — kept, pinned). Today: `ok: true`, embedding order.
+- `RerankAllRetrieval`: the same two failure cases.
+- the `rerank` stage through `DefaultPipeline` with `makeReranker` answering `ok: false` → the consumer receives code `RERANK_ERROR`; the `rerank_error` session step stays. Today: original order.
+- the legacy orchestrator (a `SmartAgent` without a pipeline, a reranker answering `ok: false`) → `process()` returns `RERANK_ERROR`. Today: unranked results, unlogged.
+
+- [ ] **Step 2: Run to see them fail** (`npx tsc -b packages/llm-agent-libs`, the two files). Expected: FAIL — `ok: true`.
+
+- [ ] **Step 3: Implement** — `reranked-retrieval.ts`: rename the helper to `rerankOrError`; after logging the step, `return { ok: false, error: new RagError(\`rerank failed: ${code}: ${message}\`, 'RERANK_ERROR') };` in place of `return { ok: true, value: candidates.slice(0, k) };`. `rerank.ts`: on `!ok`, keep the span attribute and the `rerank_error` step, then `ctx.error = new OrchestratorError(\`rerank: ${r.error.message}\`, 'RERANK_ERROR'); return false;`. `rag-orchestrator.ts` (~171): `if (!rr.ok) return { ok: false, error: new OrchestratorError(…, 'RERANK_ERROR') };`.
+
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "rerankOrFallback\|embedding order\|original order\|rerank_error" -- 'packages/llm-agent-libs/src/**/*.test.ts'
+npx tsc -b packages/llm-agent-libs
+npm test --workspace @mcp-abap-adt/llm-agent-libs
+```
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages/llm-agent-libs/src
+git add packages/llm-agent-libs
+git commit -m "fix(libs): a failed rerank is a RERANK_ERROR in every rerank strategy and stage — no unranked fallback
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4J: LLM handlers — `translate`, `expand`, `summarize`, `history-upsert` and the legacy orchestrator (libs)
+
+Spec §10.5.6 (L1–L4), §13 B6. The opt-in `FallbackLlmCallStrategy` is **not** touched (spec §17.24 U1).
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/translate.ts` (~54), `expand.ts` (~26), `summarize.ts` (~65), `history-upsert.ts` (~39, ~48, ~65, ~120), `agent/rag-orchestrator.ts` (~69, ~115, ~447)
+- Create: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/llm-stages-fail-loud.test.ts`, `packages/llm-agent-libs/src/agent/__tests__/rag-orchestrator-fail-loud.test.ts`
+
+- [ ] **Step 1: Write the failing tests** — through `DefaultPipeline` with a helper LLM (`makeLlm`) answering `{ ok: false, error: new LlmError('down') }`:
+  - `translate` → the consumer receives `LLM_ERROR` (today: untranslated text, unlogged); empty content from a successful call → the same error (`translate: empty answer`);
+  - `expand` → the expander's code (`QUERY_EXPAND_ERROR`); today the original query;
+  - `summarize` → `LLM_ERROR`; today the full history;
+  - `history-upsert`: the summarizer fails → `LLM_ERROR` and **no** raw `user → assistant` line in the history store (assert the store's upsert calls are 0); the store's upsert fails → its code. Today: a raw line stored / `return true`;
+  - the legacy orchestrator: a failing summarizer / expander → `process()` returns the code.
+- [ ] **Step 2: Run to see them fail** (`npx tsc -b packages/llm-agent-libs`, the two files). Expected: FAIL.
+- [ ] **Step 3: Implement** — each `if (res.ok) …` with no `else` becomes `if (!res.ok) { ctx.error = new OrchestratorError(\`<stage>: ${res.error.message}\`, res.error.code); return false; }`; `history-upsert.ts` drops the raw-string branch and its `catch { … return true }` becomes a `ctx.error` with the store's / LLM's code; the orchestrator returns the same as its `Result` error.
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "keep original history\|history_summarize_failed\|fallback', true\|untranslated" -- 'packages/llm-agent-libs/src'
+npx tsc -b packages/llm-agent-libs
+npm test --workspace @mcp-abap-adt/llm-agent-libs
+```
+- [ ] **Step 5: Commit** — `fix(libs): a failing LLM step is an error — no untranslated, unexpanded or unsummarized substitute` (with the two trailers).
+
+---
+
+## Task 4K: Coordinator and stepper (libs)
+
+Spec §10.5.7 (C1–C8), §13 B6. `AutoActivation` and `HybridDispatch` are **not** touched (spec §17.24 U4, U5).
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/coordinator/stepper/stepper-interpreter.ts` (~194), `llm-stepper-planner.ts` (~77, ~96), `llm-evaluator.ts` (~63), `cyclic-react-executor.ts` (~131, ~342), `need-resolver.ts` (~43, ~49), `llm-task-formalizer.ts` (~37), `coordinator/dag/llm-dag-planner.ts` (~108, ~242)
+- Create: `packages/llm-agent-libs/src/coordinator/stepper/__tests__/stepper-fail-loud.test.ts`, `packages/llm-agent-libs/src/coordinator/dag/__tests__/llm-dag-planner-no-nodes.test.ts`
+
+- [ ] **Step 1: Write the failing tests** — one per row, each with a store / LLM fake that throws or answers `ok: false`:
+  - C1 `knowledgeRag.list` throws → the interpreter's step fails (the dependent step is **not** run — assert its executor was not called); C2 `toolsRag.query` / `listArtifacts` throws → `plan` rejects; C3 the evaluator rejects; C4, C5 the executor's step rejects (C5: the live tool is **not** called in place of the store); C6 the classifier LLM `ok: false`, and malformed JSON → the resolver rejects carrying the `LlmError` / `ClassifierError`; C7 an LLM error / unparseable output → the formalizer rejects;
+  - at the handler level (`DagCoordinatorHandler` / the stepper's handler, through `DefaultPipeline`): the consumer receives `COORDINATOR_PLAN_FAILED` / `COORDINATOR_STEP_FAILED` (Task 4F's path);
+  - C8 `LlmDagPlanner` with an LLM answering `{"nodes":[]}` → the plan rejects; through `DagCoordinatorHandler` the consumer receives `COORDINATOR_PLAN_INVALID`. Today: a one-node plan from the raw prompt (#171).
+- [ ] **Step 2: Run to see them fail.** Expected: FAIL on each omitted section / raw-prompt fallback.
+- [ ] **Step 3: Implement** — remove each swallowing `catch` (C1–C5) or turn `ok: false` / `undefined` into a thrown `OrchestratorError` with the row's code and the component's error in the message (C6, C7); `llm-dag-planner.ts`: `parseDagPlan(res.output, res.usage)` without the fallback goal, and the `fallbackGoal` parameter removed (its throw branch becomes the path: `PlanInvalidError` / `COORDINATOR_PLAN_INVALID` at the handler).
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "omit\|gracefully\|fallbackGoal\|no need\|n1', goal" -- 'packages/llm-agent-libs/src/coordinator'
+npx tsc -b packages/llm-agent-libs
+npm test --workspace @mcp-abap-adt/llm-agent-libs
+```
+- [ ] **Step 5: Commit** — `fix(coordinator): a failing store, classifier or planner fails the step or the plan — no omitted context, no raw-prompt plan` (with the two trailers).
+
+---
+
+## Task 4L: Skills (llm-agent + libs + server-libs)
+
+Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8. **`strict`'s default is not changed** (spec §17.24 U2 — the user's decision); S-8 and S-9 only report.
+
+**Files:**
+- Modify: `packages/llm-agent/src/interfaces/skills-rag.ts` (`SkillLoadResult.carried?`)
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/skill-select.ts` (~51, ~70), `agent/rag-orchestrator.ts` (~262, ~297), `skills/skill-utils.ts` (~27), `skills/filesystem-skill.ts` (~98), `mcp/vectorize-mcp-tools.ts` (`vectorizeSkills` ~443), `builder.ts` (~1335), `skills/plugin-host/compatible-skills-rag.ts` (~89, ~110), `skills/plugin-host/skill-plugin-host.ts` (~236, ~339)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts` (`skills.type`), `smart-server.ts` (`resolveSkillManager` default branch)
+- Create: `packages/llm-agent-libs/src/skills/__tests__/skills-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/skill-select-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/skills-type-validation.test.ts`
+
+**Interfaces:**
+- Produces (contracts, additive): `SkillLoadResult.carried?: readonly { sourceId: string; reason: string }[]`.
+
+- [ ] **Step 1: Write the failing tests**
+  - S-1 `skill-select`: a store `ok: false` → the consumer receives its code; `listSkills` `ok: false` → `SKILL_ERROR`. Today: continue without skills.
+  - S-2 legacy orchestrator: the same → `process()` returns it.
+  - S-3 `skill-utils`: a directory whose `readdir` fails with `EACCES` (a fake `fs`, or a `chmod 000` temp dir skipped on Windows) → `SkillError` naming it; `ENOENT` → skipped (kept, pinned).
+  - S-4 `filesystem-skill`: a `SKILL.md` with broken frontmatter → `listSkills` returns `SkillError` naming the file; a directory without `SKILL.md` → not a skill (kept, pinned).
+  - S-5 `vectorizeSkills`: `listSkills` `ok: false` → throws; `build()` rejects with it. A writerless store → skipped (kept).
+  - S-6 builder: a plugin loader returning `errors: [{ file: 'p.js', error: 'boom' }]` → `build()` rejects naming `p.js`. Today: ignored.
+  - S-7 `CompatibleSkillsRag.query`: an incompatible generation → throws `SkillsIncompatibleError`; an `AbortError` → rethrown. Today: `[]`.
+  - S-8 plugin host: a group whose build fails with a prior generation present → `ok: false`, the group in `omitted` with its reason (the prior generation is still served — `strict` is the user's, U2).
+  - S-9 plugin host, `strict: false`, a source whose `acquire` rejects with `new Error('net')` → `result.carried` = `[{ sourceId, reason: 'Error: net' }]`.
+  - S-10 server: `skills: { type: 'nope' }` → `ConfigValidationError` naming `skills.type` and the three values. Today: no skill manager.
+- [ ] **Step 2: Run to see them fail.** Expected: FAIL.
+- [ ] **Step 3: Implement** — as the rows say; `config-validator.ts` gains the `skills.type` check (`claude | codex | filesystem`), and `resolveSkillManager`'s `default` throws (a config built in code that bypasses the validator still fails).
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "skill_select_error\|continue without skills\|Directory doesn't exist\|return \[\]; // no embed" -- 'packages/llm-agent-libs/src' 'packages/llm-agent-server-libs/src'
+npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
+```
+- [ ] **Step 5: Commit** — `fix(skills): an unreadable skill source, a failed listing or a plugin loader error is an error` (with the two trailers).
+
+---
+
+## Task 4M: Server (server-libs + server)
+
+Spec §10.5.9 (V1–V9), §10.5.6 L7 (models route), §13 B10. M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` (~90), `controller/session-bundle.ts` (~57), `controller/run-scope.ts` (~79), `controller/artifacts.ts` (~261), `smart-server.ts` (~3112 session meta), `config-reload-watcher.ts` (~132), `tools-rag-handle.ts` (~90 eager load), `build-stepper-root.ts` (~97, ~234), `http/models-route-handler.ts` (~17, ~48)
+- Modify: `packages/llm-agent-server/src/smart-agent/cli.ts` (~146)
+- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/models-route-fail-loud.test.ts`; extend `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+  - V1: a session whose persisted collection's `openCollection` answers `ok: false` (`CollectionNotFoundError`) → the session's creation rejects with it. Today: the session without the collection.
+  - V2, V3, V4: a malformed bundle line / terminal entry / an artifact claim without `writeOrdinal` → `OrchestratorError` (or `RagError` where the module already uses one) with code `STATE_CORRUPT` naming the session / entry / claim. Today: an older / empty bundle, a skip, a drop.
+  - V5: a session-meta store whose `recordSessionStart` throws → the chat request answers 500 `jsonError`; `recordSessionEnd` throwing → the response is unaffected and `session_meta_end_failed` is logged.
+  - V6: a reload whose `drainWorkers()` rejects → the reload is reported failed (`config_reload_failed` logged, not counted applied), the previous config stays live. (Task 23A later makes the reload entry point awaitable; its tests then see the rejection too.)
+  - V7: the eager tool catalog load fails at start → the server's `start()` rejects with the `McpError`.
+  - V8 (`cli-flags.test.ts`): `--env /no/such/file` → exit code 1 with the path in stderr; `--secrets-dir /no/such/dir` → exit code 1; no `--env` and no `.env` → starts (kept, pinned).
+  - V9: a stepper role whose LLM config does not resolve → `ConfigValidationError` naming the role. Today: the stub OpenAI model.
+  - L7: `getModels` `ok: false` → `GET /v1/models` answers 502 with `jsonError`; `getEmbeddingModels` `ok: false` → 502. Today: 200 with a placeholder / `[]`.
+- [ ] **Step 2: Run to see them fail.** Expected: FAIL.
+- [ ] **Step 3: Implement** — as the rows say. `STUB_LLM_CFG` is deleted with its use. `gcTerminal`'s catch (cleanup) and the shutdown closes stay (spec §10.5.1).
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "rag_hydration_failed\|emptyBundle\|STUB_LLM_CFG\|smart-agent'\|config_reload_drain_error\|tools_catalog_eager_load_failed\|could not load env file" -- 'packages/llm-agent-server-libs/src' 'packages/llm-agent-server/src'
+npx tsc -b packages/llm-agent-server-libs packages/llm-agent-server
+npm test --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
+```
+- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed reload, an unbuildable config or a failed backend is an error — never a placeholder` (with the two trailers).
+
+---
+
+## Task 4N: LLM providers — `sap-aicore-llm` models, SSE parsing (openai-llm, anthropic-llm, sap-aicore-llm)
+
+Spec §10.5.6 (L5, L6), §13 B11. (R11 Qdrant and R12 the SAP AI Core embedder are Task 4H's: they are store / embedder rows of the RAG table.)
+
+**Files:**
+- Modify: `packages/sap-aicore-llm/src/sap-core-ai-provider.ts` (~529), `packages/openai-llm/src/openai-provider.ts` (~307), `packages/anthropic-llm/src/anthropic-provider.ts` (~333)
+- Extend: `packages/sap-aicore-llm/src/__tests__/sap-core-ai-provider.test.ts`, `packages/openai-llm/src/__tests__/openai-provider.test.ts`, `packages/anthropic-llm/src/__tests__/anthropic-provider.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+  - L5: a catalog fetch that fails (fake fetch → 503, and → a thrown network error) → `getModels()` `ok: false`, `LlmError` code `LLM_ERROR` carrying the status; nothing cached (a later success fills the cache). Today: `[{ id: <configured model> }]`.
+  - L6: an SSE body with a complete `data: {"broken` line between two good chunks → the stream yields the first chunk, then `ok: false` (`LLM_ERROR`, message with the line's first 200 characters); `data: [DONE]` and a chunk split across two reads (no `\n` yet) still parse (kept, pinned). The same for Anthropic (`event: content_block_delta` with a broken `data:` line); its `Anthropic stream error:` rethrow stays.
+- [ ] **Step 2: Run to see them fail.** Expected: FAIL.
+- [ ] **Step 3: Implement** — `getModels`'s catch returns `{ ok: false, error: new LlmError(\`model catalog unavailable: ${String(e)}\`, 'LLM_ERROR') }`; each SSE parser's `catch` yields / throws `LlmError` with the truncated line (the outer catch already maps a throw to the stream's error item).
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "Fallback to configured model\|Ignore parse errors\|incomplete JSON" -- 'packages/*/src'
+npx tsc -b packages/sap-aicore-llm packages/openai-llm packages/anthropic-llm
+npm test --workspace @mcp-abap-adt/sap-aicore-llm --workspace @mcp-abap-adt/openai-llm --workspace @mcp-abap-adt/anthropic-llm
+```
+- [ ] **Step 5: Commit** — `fix(providers): an unreachable model catalog or a malformed stream line is an error` (with the two trailers).
+
+---
+
+## Task 4O: Health — a configured component not working ⇒ `/health` 503 (libs + server-libs)
+
+Spec §10.5.10 (D72: the rule; H1–H4; H5 kept), §13 B9. M12's incomplete startup fill (D41) becomes loud here: `toolCatalog.complete: false` → `degraded` → 503.
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/health/agent-health.ts` (~57, ~70, ~105), `packages/llm-agent-server-libs/src/smart-agent/http/health-route-handler.ts` (~17)
+- Create: `packages/llm-agent-libs/src/health/__tests__/agent-health-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/health-route-503.test.ts`
+
+**Interfaces:**
+- Produces: `/health` HTTP code = `200` iff `ready && status === 'healthy'`, else `503`; the body is unchanged (`{ …status, ready }`). The chat routes keep their gate on `ready` only (`writeNotReady`). `HealthStatus` is unchanged (`'healthy' | 'degraded' | 'unhealthy'`).
+
+- [ ] **Step 1: Write the failing tests**
+  - H1: the route with a checker reporting `degraded` and `ready: true` → **503**, body `status: 'degraded'`; `healthy` + ready → 200; `healthy` + not ready → 503 (unchanged). Today: degraded → 200.
+  - H2: two RAG stores, the second's `healthCheck` `ok: false` → `rag: false` (today only the first is probed); no store → `rag: true` (absent by design, pinned).
+  - H3: an MCP client `healthCheck` `{ ok: true, value: false }` → its entry `ok: false`.
+  - H4: an MCP probe that rejects (timeout) → every unanswered client reported `ok: false` with the error; never `mcp: []`.
+  - H5 kept: an agent whose strategy reports no readiness → `isReady()` true (pinned), its MCP health from the probes.
+- [ ] **Step 2: Run to see them fail.** Expected: FAIL — 200 for degraded; only one store probed; `value: false` ok; `mcp: []`.
+- [ ] **Step 3: Implement** — `health-route-handler.ts`: `const httpCode = rc.ready && status.status === 'healthy' ? 200 : 503;`. `agent-health.ts`: probe `Object.values(ragStores)` with `Promise.all`, `rag = all ok`; MCP `ok: hc.ok && hc.value`; replace the empty-`catch` with per-client results (`Promise.allSettled` over the probes; a rejected probe → `{ ok: false, error: String(reason) }`).
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "firstStore\|status, 200\|mcp: \[\]\|degraded" -- 'packages/llm-agent-libs/src/**/*.test.ts' 'packages/llm-agent-server-libs/src/**/*.test.ts'
+npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
+```
+A test asserting 200 for a degraded body is rewritten to 503 (its name says "degraded → 503").
+- [ ] **Step 5: Commit** — `fix(health): /health answers 503 when a configured component is not working; every store and client is probed` (with the two trailers).
+
+---
+
 ## Task 5: Owner flattening, `ItemPool`, `MaxScoreCollapse` (libs)
 
 Spec §3.1 (flattening), §3.4, §4.4, §4.9; D56 (the pool takes the caller's k; `ItemPool()` defaults to it, spec §17.17).
@@ -6092,13 +6712,13 @@ Spec §4.1–§4.4, §4.6 (hydration), §4.9; D14, D15; D56 (`pool` optional, ab
   export interface StagedRetrievalOptions {
     name: string; storeKey: string; pool?: ICandidatePool /* absent → new ItemPool() (D56) */; maxRecordsPerItem: number; canonicalKind: string;
     sources: ISourceSelector; collapse: ICollapseRule;
-    rerank?: { reranker: IReranker; onFailure: 'stage1' | 'error'; keepStage1Top?: number };
+    rerank?: { reranker: IReranker; keepStage1Top?: number };   // no onFailure: a failed rerank is RERANK_ERROR (D71)
     decompose?: { decomposer: IQueryDecomposer; queryEmbedder: IQueryEmbedder };
     cut?: IItemCut;
     telemetry?: { tracer?: ITracer; metrics?: IRetrievalMetrics };
   }
   export class StagedRetrieval implements IRetrievalStrategy { constructor(o: StagedRetrievalOptions); readonly name: string; readonly options: StagedRetrievalOptions }
-  export interface RunStats { sources: string[]; candidateRecords: number; collapsedItems: number; orphans: number; hydrationReads: number; rerankOutcome: 'none' | 'ok' | 'fallback' | 'error'; rerankError?: string }
+  export interface RunStats { sources: string[]; candidateRecords: number; collapsedItems: number; orphans: number; hydrationReads: number; rerankOutcome: 'none' | 'ok' | 'error'; rerankError?: string }
   // Returned item: text = canonical text; metadata = canonical metadata + { id: itemId, matchedKinds: string[], source: string }; score = rule's or reranker's.
   // A record without itemId passes through as itself.
   ```
@@ -6490,9 +7110,7 @@ export interface StagedRetrievalOptions {
   collapse: ICollapseRule;
   rerank?: {
     reranker: IReranker;
-    /** 'stage1' = 30.1.0 behaviour. */
-    onFailure: 'stage1' | 'error';
-    /** Default 0; counted inside k (spec §4.7). */
+    /** Default 0; counted inside k (spec §4.7). No `onFailure`: a failed rerank returns RERANK_ERROR (D71). */
     keepStage1Top?: number;
   };
   /** Absent → the query runs as is (one run). */
@@ -6511,8 +7129,6 @@ export interface Unit {
   readonly hits: readonly RagResult[];
   /** Set for a collapsed item; absent for a pass-through record. */
   readonly item?: { readonly itemId: string; readonly canonicalId: string };
-  /** Set by the reranker (Task 13): `score` is a reranked score. Absent = a stage-1 score. */
-  readonly reranked?: boolean;
   /** Set by the reranker (Task 13) on a `keepStage1Top` pin: it keeps its head place. */
   readonly pinned?: boolean;
 }
@@ -6530,7 +7146,7 @@ export interface RunStats {
   collapsedItems: number;
   orphans: number;
   hydrationReads: number;
-  rerankOutcome: 'none' | 'ok' | 'fallback' | 'error';
+  rerankOutcome: 'none' | 'ok' | 'error';
   rerankError?: string;
 }
 
@@ -6578,15 +7194,14 @@ function splitPerSource(units: readonly Unit[], n: number): { pooled: Unit[]; ov
  * list by DESCENDING score — appended, a replacement that outscores a surviving
  * item would sit below it, and a ScoreFloorCut (it stops at the first score below
  * its floor) would drop it. Every score is against the same query, so one scale
- * (D28): reranked, or stage-1 without a reranker. `keepStage1Top` pins keep their
- * head places; scores of two scales (one reranker call fell back to stage 1) are
- * never compared — then the rank order stays. The sort is stable: ties keep order.
+ * (D28): reranked, or stage-1 without a reranker — a failed rerank fails the whole
+ * retrieval (D71), so two scales never meet here. `keepStage1Top` pins keep their
+ * head places. The sort is stable: ties keep order.
  */
 function mergeByScore(got: readonly Hydrated[]): RagResult[] {
   const head = got.filter((h) => h.unit.pinned === true);
   const rest = got.filter((h) => h.unit.pinned !== true);
-  const oneScale = new Set(rest.map((h) => h.unit.reranked === true)).size <= 1;
-  if (oneScale) rest.sort((a, b) => b.item.score - a.item.score);
+  rest.sort((a, b) => b.item.score - a.item.score);
   return [...head, ...rest].map((h) => h.item);
 }
 
@@ -6832,11 +7447,11 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 13: `StagedRetrieval` — reranker on provider text, output check, failure policy (libs)
 
-Spec §4.6 (reranker text: a canonical hit's text, else a non-canonical hit's `itemText`, else the canonical record read; D50), §4.7 (incl. F5: pinned items carry reranked scores; `keepStage1Top` / the `stage1` fallback never with `ScoreFloorCut`), §4.8, §9.1 (session step), §9.3.
+Spec §4.6 (reranker text: a canonical hit's text, else a non-canonical hit's `itemText`, else the canonical record read; D50), §4.7 (incl. F5: pinned items carry reranked scores; `keepStage1Top` never with `ScoreFloorCut`), §4.8, §9.1 (session step), §9.3 (one behaviour: a failed rerank is `RERANK_ERROR`, D71 — no `onFailure`).
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/rerank-check.ts`
-- Modify: `packages/llm-agent-libs/src/collections/staged-retrieval.ts` (replace `rank`, add `itemText`, the two `ScoreFloorCut` rejections in the constructor)
+- Modify: `packages/llm-agent-libs/src/collections/staged-retrieval.ts` (replace `rank`, add `itemText`, the `keepStage1Top` + `ScoreFloorCut` rejection in the constructor)
 - Create: `packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts`
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`
 
@@ -6846,11 +7461,11 @@ Spec §4.6 (reranker text: a canonical hit's text, else a non-canonical hit's `i
   ```ts
   export function checkRerankOutput(candidates: readonly RagResult[], out: readonly RagResult[]): string | undefined; // undefined = valid
   // StagedRetrieval: reranker failure → session step 'retrieval_rerank_error' { store, strategy, code, message };
-  //   onFailure 'stage1' → stage-1 order AND stage-1 scores (stats.rerankOutcome 'fallback'); 'error' → RagError code 'RERANK_ERROR' (stats 'error').
+  //   → always RagError code 'RERANK_ERROR' (stats 'error'); no onFailure, no stage-1 fallback (spec §9.3, D71).
   // keepStage1Top n > 0 → the stage-1 top-n first, each with its RERANKED score; the rest by reranked score.
-  // rank() marks reranked units `reranked` and pins `pinned` (Task 12's Unit): the orphans' replacements
+  // rank() marks pins `pinned` (Task 12's Unit): the orphans' replacements
   //   merge with the pool by descending reranked score, pins kept at the head (spec §4.6, D67).
-  // constructor throws: keepStage1Top > 0 with ScoreFloorCut; ScoreFloorCut with rerank.onFailure 'stage1' (spec §4.7, F5).
+  // constructor throws: keepStage1Top > 0 with ScoreFloorCut (spec §4.7, F5). ScoreFloorCut with a reranker is allowed (D71).
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -6960,7 +7575,7 @@ describe('StagedRetrieval — reranker', () => {
   it('reranks items on their provider text — never a non-canonical record\'s own text', async () => {
     const rag = await fixture();
     const { reranker, seen } = spy(reversed);
-    const r = await staged(rag, { reranker, onFailure: 'stage1' }).retrieve(rag, q('needle'), 3);
+    const r = await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
     assert.equal(seen[0].query, 'needle');
     assert.deepEqual(new Set(seen[0].texts), new Set(['alpha provider text', 'bravo needle provider', 'charlie provider']));
     for (const t of seen[0].texts) assert.doesNotMatch(t, /own words/);
@@ -6976,43 +7591,42 @@ describe('StagedRetrieval — reranker', () => {
     });
     const rag = matchesOnly(raw);
     const { reranker, seen } = spy((c) => c);
-    await staged(rag, { reranker, onFailure: 'stage1' }).retrieve(rag, q('needle'), 3);
+    await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
     assert.deepEqual(seen[0].texts, ['tango provider']);
   });
 
-  it('a reranker that drops a candidate is a RERANK_ERROR: stage1 keeps the stage-1 order and logs the step', async () => {
+  it('a reranker that drops a candidate is a RERANK_ERROR: returned, never the stage-1 order, and the step is logged (D71)', async () => {
     const rag = await fixture();
     const { reranker } = spy((c) => c.slice(1));
     const steps: Array<[string, unknown]> = [];
     const opts: CallOptions = { sessionLogger: { logStep: (n, d) => steps.push([n, d]) } };
-    const stage1 = await staged(rag, undefined).retrieve(rag, q('needle'), 3, opts);
-    const r = await staged(rag, { reranker, onFailure: 'stage1' }).retrieve(rag, q('needle'), 3, opts);
-    assert.deepEqual(ids(r), ids(stage1));
+    const r = await staged(rag, { reranker }).retrieve(rag, q('needle'), 3, opts);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
     assert.equal(steps[0][0], 'retrieval_rerank_error');
     assert.deepEqual(Object.keys(steps[0][1] as object).sort(), ['code', 'message', 'store', 'strategy']);
     assert.equal((steps[0][1] as { code: string }).code, 'RERANK_ERROR');
   });
 
-  it("onFailure 'error' returns the RERANK_ERROR", async () => {
+  it('a reranker answering ok: false returns the RERANK_ERROR', async () => {
     const rag = await fixture();
     const { reranker } = spy(() => new Error('bad'));
-    const r = await staged(rag, { reranker, onFailure: 'error' }).retrieve(rag, q('needle'), 3);
+    const r = await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
     assert.equal(r.ok, false);
     assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
   });
 
-  it('a thrown reranker falls back under stage1', async () => {
+  it('a thrown reranker is a RERANK_ERROR — no stage-1 fallback (D71)', async () => {
     const rag = await fixture();
     const { reranker } = spy(() => 'throw');
-    const r = await staged(rag, { reranker, onFailure: 'stage1' }).retrieve(rag, q('needle'), 3);
-    assert.ok(r.ok && r.value.length === 3);
+    const r = await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
   });
 
   it('keepStage1Top: the stage-1 top-n first, reranked items fill the rest, counted inside k', async () => {
     const rag = await fixture();
     const stage1 = await staged(rag, undefined).retrieve(rag, q('needle'), 3);
     const { reranker } = spy(reversed);
-    const r = await staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }).retrieve(rag, q('needle'), 2);
+    const r = await staged(rag, { reranker, keepStage1Top: 1 }).retrieve(rag, q('needle'), 2);
     assert.ok(stage1.ok && r.ok);
     assert.equal(r.value.length, 2);
     assert.equal(r.value[0].metadata.id, stage1.value[0].metadata.id);
@@ -7028,7 +7642,7 @@ describe('StagedRetrieval — reranker', () => {
         kind === 'probability'
           ? new ProbabilityReranker(probabilityDecision(given))
           : new RelevanceReranker(relevanceDecision(given));
-      const r = await staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }).retrieve(rag, q('needle'), 3);
+      const r = await staged(rag, { reranker, keepStage1Top: 1 }).retrieve(rag, q('needle'), 3);
       assert.ok(r.ok && r.value.length === 3);
       assert.equal(r.value[0].metadata.id, stage1.value[0].metadata.id, 'pinned first, though the reranker put it last');
       for (const x of r.value) assert.equal(x.score, given.get(x.text), `${String(x.metadata.id)} carries its reranked score`);
@@ -7041,39 +7655,28 @@ describe('StagedRetrieval — reranker', () => {
     });
   }
 
-  it("a failed rerank under 'stage1' with keepStage1Top returns the stage-1 result — its ids AND its stage-1 scores", async () => {
+  it('a failed rerank with keepStage1Top returns the RERANK_ERROR — never the stage-1 result (D71)', async () => {
     const rag = await fixture();
-    const stage1 = await staged(rag, undefined).retrieve(rag, q('needle'), 3);
     const { reranker } = spy(() => new Error('bad'));
-    const r = await staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }).retrieve(rag, q('needle'), 3);
-    assert.ok(stage1.ok && r.ok);
-    assert.deepEqual(
-      r.value.map((x) => [x.metadata.id, x.score]),
-      stage1.value.map((x) => [x.metadata.id, x.score]),
-    );
+    const r = await staged(rag, { reranker, keepStage1Top: 1 }).retrieve(rag, q('needle'), 3);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
   });
 
   it('keepStage1Top with ScoreFloorCut is rejected at construction (keepStage1Top is unmeasured, D7)', async () => {
     const rag = await fixture();
     const { reranker } = spy(reversed);
-    for (const onFailure of ['stage1', 'error'] as const) {
-      assert.throws(
-        () => staged(rag, { reranker, onFailure, keepStage1Top: 1 }, floor()),
-        /^Error: StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured \(D7\)/,
-      );
-    }
+    assert.throws(
+      () => staged(rag, { reranker, keepStage1Top: 1 }, floor()),
+      /^Error: StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured \(D7\)/,
+    );
     // keepStage1Top with a rank-order cut stays allowed
-    assert.doesNotThrow(() => staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }));
+    assert.doesNotThrow(() => staged(rag, { reranker, keepStage1Top: 1 }));
   });
 
-  it("ScoreFloorCut with a reranker needs onFailure 'error' — a stage1 fallback would cut stage-1 scores", async () => {
+  it('ScoreFloorCut with a reranker is allowed — a failed rerank is an error, never stage-1 scores (D71)', async () => {
     const rag = await fixture();
     const { reranker } = spy(reversed);
-    assert.throws(
-      () => staged(rag, { reranker, onFailure: 'stage1' }, floor()),
-      /^Error: StagedRetrieval: ScoreFloorCut with a reranker needs rerank\.onFailure 'error'/,
-    );
-    assert.doesNotThrow(() => staged(rag, { reranker, onFailure: 'error' }, floor()));
+    assert.doesNotThrow(() => staged(rag, { reranker }, floor()));
     assert.doesNotThrow(() => staged(rag, undefined, floor()), 'without a reranker the floor cuts stage-1 scores, calibrated on them');
   });
 
@@ -7098,7 +7701,7 @@ describe('StagedRetrieval — reranker', () => {
     const rag = await orphanFixture({ O: 0.95, S: 0.5, R: 0.3 });
     const { reranker, seen } = byText({ oscar: 0.95, 'needle sierra': 0.1, 'needle romeo': 0.9 });
     const cut = new ScoreFloorCut({ minItems: 0, maxItems: 2, minScore: 0.5 });
-    const r = await withPool(staged(rag, { reranker, onFailure: 'error' }, cut), 2).retrieve(rag, q('needle'), 2);
+    const r = await withPool(staged(rag, { reranker }, cut), 2).retrieve(rag, q('needle'), 2);
     assert.deepEqual(ids(r), ['R']);
     assert.ok(r.ok);
     assert.equal(r.value[0].score, 0.9);
@@ -7113,7 +7716,7 @@ describe('StagedRetrieval — reranker', () => {
     // Pool of 3: P (stage-1 top, pinned), O (orphan), S; R is the overflow.
     const rag = await orphanFixture({ P: 0.99, O: 0.95, S: 0.5, R: 0.3 }, true);
     const { reranker } = byText({ 'needle papa': 0.05, oscar: 0.95, 'needle sierra': 0.1, 'needle romeo': 0.9 });
-    const r = await withPool(staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }), 3).retrieve(rag, q('needle'), 3);
+    const r = await withPool(staged(rag, { reranker, keepStage1Top: 1 }), 3).retrieve(rag, q('needle'), 3);
     assert.ok(r.ok);
     assert.deepEqual(
       r.value.map((x) => [x.metadata.id, x.score]),
@@ -7144,7 +7747,7 @@ Run:
 npx tsc -b packages/llm-agent-reranker
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts
 ```
-Expected: FAIL — `checkRerankOutput` not exported. (Once it is, the pinned-score cases fail on the pinned item's stage-1 score, the two rejection cases on "Missing expected exception", and the two orphan-merge cases on stage-1 scores until Step 3 is in.)
+Expected: FAIL — `checkRerankOutput` not exported. (Once it is, the pinned-score cases fail on the pinned item's stage-1 score, the rejection case on "Missing expected exception", and the two orphan-merge cases on stage-1 scores until Step 3 is in.)
 
 - [ ] **Step 3: Implement**
 
@@ -7179,10 +7782,10 @@ export function checkRerankOutput(
 }
 ```
 
-In `staged-retrieval.ts`: add `RagError` as a value import (change `type RagError` to `RagError` in the import list), import `checkRerankOutput` from `./rerank-check.js`, change `import { TopItemsCut } from './cuts.js'` to `import { ScoreFloorCut, TopItemsCut } from './cuts.js'`, add `const MAX_THROWN_MESSAGE = 500;` at module level, and, beside it, the outcome recorder — one run can call `rank` more than once (the replacements of orphans, Task 12, D67), so a later call never hides an earlier fallback or error:
+In `staged-retrieval.ts`: add `RagError` as a value import (change `type RagError` to `RagError` in the import list), import `checkRerankOutput` from `./rerank-check.js`, change `import { TopItemsCut } from './cuts.js'` to `import { ScoreFloorCut, TopItemsCut } from './cuts.js'`, add `const MAX_THROWN_MESSAGE = 500;` at module level, and, beside it, the outcome recorder — one run can call `rank` more than once (the replacements of orphans, Task 12, D67), so a later call never hides an earlier error:
 
 ```ts
-const OUTCOME_SEVERITY: Record<RunStats['rerankOutcome'], number> = { none: 0, ok: 1, fallback: 2, error: 3 };
+const OUTCOME_SEVERITY: Record<RunStats['rerankOutcome'], number> = { none: 0, ok: 1, error: 2 };
 /** Keep the run's most severe rerank outcome across its `rank` calls. */
 function recordOutcome(ctx: RunContext, outcome: RunStats['rerankOutcome']): void {
   if (OUTCOME_SEVERITY[outcome] > OUTCOME_SEVERITY[ctx.stats.rerankOutcome]) ctx.stats.rerankOutcome = outcome;
@@ -7192,21 +7795,14 @@ function recordOutcome(ctx: RunContext, outcome: RunStats['rerankOutcome']): voi
 Then append to the end of the constructor (after `this.cut = …`, so a consumer's `cut` is the one checked):
 
 ```ts
-    // Spec §4.7 (F5): pinned items are unmeasured (D7), and a 'stage1' fallback
-    // returns stage-1 scores — a threshold calibrated on reranked scores must
-    // see neither.
+    // Spec §4.7 (F5): pinned items are unmeasured (D7) — a threshold calibrated on
+    // reranked scores must not see them. A failed rerank is an error (D71), so no
+    // stage-1 score ever reaches the cut under a reranker.
     const rr = options.rerank;
-    if (rr && this.cut instanceof ScoreFloorCut) {
-      if ((rr.keepStage1Top ?? 0) > 0) {
-        throw new Error(
-          'StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured (D7); a threshold over a pinned head would let an unmeasured order decide what a calibrated threshold keeps',
-        );
-      }
-      if (rr.onFailure !== 'error') {
-        throw new Error(
-          "StagedRetrieval: ScoreFloorCut with a reranker needs rerank.onFailure 'error' — a 'stage1' fallback returns stage-1 scores, which a threshold calibrated on reranker scores must not cut",
-        );
-      }
+    if (rr && this.cut instanceof ScoreFloorCut && (rr.keepStage1Top ?? 0) > 0) {
+      throw new Error(
+        'StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured (D7); a threshold over a pinned head would let an unmeasured order decide what a calibrated threshold keeps',
+      );
     }
 ```
 
@@ -7279,22 +7875,19 @@ and replace the `rank` method with:
         message: failure.message,
       });
       ctx.stats.rerankError = `${failure.code}: ${failure.message}`;
-      if (rr.onFailure === 'error') {
-        recordOutcome(ctx, 'error');
-        return {
-          ok: false,
-          error: new RagError(`rerank failed: ${failure.message}`, 'RERANK_ERROR'),
-        };
-      }
-      recordOutcome(ctx, 'fallback');
-      return { ok: true, value: live };
+      // One behaviour (spec §9.3, D71): no stage-1 fallback.
+      recordOutcome(ctx, 'error');
+      return {
+        ok: false,
+        error: new RagError(`rerank failed: ${failure.message}`, 'RERANK_ERROR'),
+      };
     }
     recordOutcome(ctx, 'ok');
     const byKey = new Map(live.map((u) => [u.key, u] as const));
     const reranked: Unit[] = [];
     for (const r of out) {
       const u = byKey.get(String(r.metadata.id));
-      if (u) reranked.push({ ...u, score: r.score, reranked: true });
+      if (u) reranked.push({ ...u, score: r.score });
     }
     // Pins are the POOL's stage-1 places; the replacements of orphans (Task 12,
     // `pin` false) are reranked without them (spec §4.6, §4.7, D67).
@@ -7329,7 +7922,7 @@ Run:
 npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts
 ```
-Expected: PASS — incl. the pinned-score cases under both rerankers, the stage1-fallback case and both rejections. After this task the `@mcp-abap-adt/llm-agent` import of `staged-retrieval.ts` is: `type CallOptions, type ICandidatePool, type ICollapseRule, type IItemCut, type IQueryDecomposer, type IQueryEmbedder, type IQueryEmbedding, type IRag, type IReranker, type IRetrievalMetrics, type IRetrievalStrategy, type ISourceSelector, type ITracer, matchesRagIdentity, RagError, type RagResult, type Result, type RetrievalSource, ragIdentityFilter, recordId, type SourcedHit` — every name used.
+Expected: PASS — incl. the pinned-score cases under both rerankers, the failed-rerank cases (`RERANK_ERROR`, D71) and the `keepStage1Top` + `ScoreFloorCut` rejection. After this task the `@mcp-abap-adt/llm-agent` import of `staged-retrieval.ts` is: `type CallOptions, type ICandidatePool, type ICollapseRule, type IItemCut, type IQueryDecomposer, type IQueryEmbedder, type IQueryEmbedding, type IRag, type IReranker, type IRetrievalMetrics, type IRetrievalStrategy, type ISourceSelector, type ITracer, matchesRagIdentity, RagError, type RagResult, type Result, type RetrievalSource, ragIdentityFilter, recordId, type SourcedHit` — every name used.
 
 - [ ] **Step 5: Commit**
 
@@ -7453,7 +8046,7 @@ describe('StagedRetrieval — query decomposition slot', () => {
     };
     const rag = await fixture();
     const r = await staged(rag, {
-      rerank: { reranker, onFailure: 'stage1' },
+      rerank: { reranker },
       decompose: {
         decomposer: decomposer([{ text: 'apple', k: 1 }, { text: 'banana', k: 2 }]),
         queryEmbedder: embedder,
@@ -7527,7 +8120,7 @@ describe('StagedRetrieval — query decomposition slot', () => {
     };
     const rag = await fixture();
     const r = await staged(rag, {
-      rerank: { reranker, onFailure: 'error' },
+      rerank: { reranker },
       decompose: {
         decomposer: decomposer([{ text: 'apple', k: 2 }, { text: 'banana', k: 2 }]),
         queryEmbedder: embedder,
@@ -7553,8 +8146,8 @@ describe('StagedRetrieval — query decomposition slot', () => {
     const reranker: IReranker = { rerank: async (_query, results) => ({ ok: true, value: results }) };
     const rejected: Partial<StagedRetrievalOptions>[] = [
       { cut: floor, decompose },
-      // also where the floor alone is allowed (a reranker with onFailure 'error', spec §4.7)
-      { cut: floor, decompose, rerank: { reranker, onFailure: 'error' } },
+      // also where the floor alone is allowed (with a reranker, spec §4.7, D71)
+      { cut: floor, decompose, rerank: { reranker } },
     ];
     for (const o of rejected) {
       assert.throws(
@@ -8299,8 +8892,7 @@ Spec §7.1 (nothing that ships carries a tuned number; the generic defaults), §
   export interface FacetedRerankOptions extends VariantOptions {
     readonly reranker: IReranker;              // the consumer's: RelevanceReranker, ProbabilityReranker, its own
     readonly poolItems: number;                // required: how deep the reranker looks is the consumer's calibration
-    readonly maxItems?: number;
-    readonly onFailure?: 'stage1' | 'error';   // default 'stage1' (30.1.0)
+    readonly maxItems?: number;                // no onFailure: a failed rerank is RERANK_ERROR (D71)
   }
   export const mcpToolsVariants: {
     baseline(): undefined;
@@ -8347,7 +8939,6 @@ function shape(p: ComposedToolsProfile) {
     collapse: c.collapse instanceof MaxScoreCollapse,
     cut: c.cut instanceof FixedItemsCut ? c.cut.n : c.cut instanceof TopItemsCut ? 'caller-k' : 'other',
     reranker: c.rerank?.reranker,
-    onFailure: c.rerank?.onFailure,
     decompose: c.decompose,
   };
 }
@@ -8359,7 +8950,7 @@ const all = () => [
   mcpToolsVariants.faceted(),
   mcpToolsVariants.faceted({ poolItems: 12, maxItems: 4 }),
   mcpToolsVariants.facetedRerank({ reranker, poolItems: 20 }),
-  mcpToolsVariants.facetedRerank({ reranker, poolItems: 20, maxItems: 3, onFailure: 'error' }),
+  mcpToolsVariants.facetedRerank({ reranker, poolItems: 20, maxItems: 3 }),
 ];
 
 describe('mcpToolsVariants — the §7.4 named compositions, no tuned numbers (D55, D56)', () => {
@@ -8374,11 +8965,11 @@ describe('mcpToolsVariants — the §7.4 named compositions, no tuned numbers (D
   it('faceted(): summary + parameters, ItemPool() = the caller k, max, no reranker, TopItemsCut', () => {
     const p = mcpToolsVariants.faceted();
     assert.deepEqual(facetsOf(p.composition.indexer).map((f) => f.constructor), [SummaryFacet, ParametersFacet]);
-    assert.deepEqual(shape(p), { poolAtK4: 4, collapse: true, cut: 'caller-k', reranker: undefined, onFailure: undefined, decompose: undefined });
+    assert.deepEqual(shape(p), { poolAtK4: 4, collapse: true, cut: 'caller-k', reranker: undefined, decompose: undefined });
   });
   it("faceted({ poolItems, maxItems }): the consumer's numbers → ItemPool(n) + FixedItemsCut(n)", () => {
     assert.deepEqual(shape(mcpToolsVariants.faceted({ poolItems: 12, maxItems: 4 })), {
-      poolAtK4: 12, collapse: true, cut: 4, reranker: undefined, onFailure: undefined, decompose: undefined,
+      poolAtK4: 12, collapse: true, cut: 4, reranker: undefined, decompose: undefined,
     });
   });
   it('faceted-rerank: faceted indexing + ItemPool(poolItems) + max + exactly the given reranker + TopItemsCut', () => {
@@ -8386,11 +8977,13 @@ describe('mcpToolsVariants — the §7.4 named compositions, no tuned numbers (D
     assert.deepEqual(facetsOf(p.composition.indexer).map((f) => f.constructor), [SummaryFacet, ParametersFacet]);
     const s = shape(p);
     assert.equal(s.reranker, reranker, 'the consumer reranker object itself, not a wrapper');
-    assert.deepEqual({ ...s, reranker: undefined }, { poolAtK4: 20, collapse: true, cut: 'caller-k', reranker: undefined, onFailure: 'stage1', decompose: undefined });
+    assert.deepEqual({ ...s, reranker: undefined }, { poolAtK4: 20, collapse: true, cut: 'caller-k', reranker: undefined, decompose: undefined });
   });
-  it('faceted-rerank: maxItems → FixedItemsCut, onFailure passed through', () => {
-    const s = shape(mcpToolsVariants.facetedRerank({ reranker, poolItems: 20, maxItems: 3, onFailure: 'error' }));
-    assert.deepEqual([s.cut, s.onFailure], [3, 'error']);
+  it('faceted-rerank: maxItems → FixedItemsCut; no onFailure option (D71)', () => {
+    const s = shape(mcpToolsVariants.facetedRerank({ reranker, poolItems: 20, maxItems: 3 }));
+    assert.equal(s.cut, 3);
+    // @ts-expect-error — onFailure is not an option: a failed rerank is RERANK_ERROR (spec §9.3, D71)
+    mcpToolsVariants.facetedRerank({ reranker, poolItems: 20, onFailure: 'stage1' });
   });
   it('every cut is the caller k or a ceiling under it (F1)', () => {
     for (const p of all()) assert.ok((p.composition.cut?.limit(2) ?? 2) <= 2);
@@ -8499,8 +9092,6 @@ export interface FacetedRerankOptions extends VariantOptions {
    *  the reranker looks is the consumer's calibration (spec §7.4). */
   readonly poolItems: number;
   readonly maxItems?: number;
-  /** Default 'stage1' (30.1.0). */
-  readonly onFailure?: 'stage1' | 'error';
 }
 
 export const MCP_TOOLS_VARIANT_NAMES = ['baseline', 'faceted', 'faceted-rerank'] as const;
@@ -8549,7 +9140,7 @@ export const mcpToolsVariants = {
       indexer: facetedIndexer(),
       pool: pool('facetedRerank', o.poolItems),
       collapse: new MaxScoreCollapse(),
-      rerank: { reranker: o.reranker, onFailure: o.onFailure ?? 'stage1' },
+      rerank: { reranker: o.reranker },
       cut: cut('facetedRerank', o.maxItems),
       ...passThrough(o),
     });
@@ -9246,7 +9837,7 @@ Messages carry the HTTP status, never the token or the response body.
 ## Rules
 
 - **No env, no timeout, no retries:** the credential is injected and asked for a token on every call;
-  `options.signal` aborts; a failure goes to the reranking strategy's `onFailure`.
+  `options.signal` aborts; a failure is a `DecisionError`, which the reranker turns into `RERANK_ERROR` and the retrieval returns (no fallback).
 - **Data sent:** the query and the candidate texts go to your SAP AI Core deployment.
 - **Deployment id, not a model name** — resolving a deployment by model name is a follow-up.
 
@@ -11583,7 +12174,7 @@ Spec §6.2 (all validation rules; only the key `tools`, S8; one `decision:` sect
   export const DECISION_KINDS: Readonly<Record<SmartServerDecisionConfig['provider'], DecisionKind>>; // { typesafe: 'probability', 'sap-aicore': 'relevance' } — the one place (spec §6.2)
   export type SmartServerIndexerConfig = { faceted: string[] } | { 'enum-values': { inner: { faceted: string[] }; discriminator: string | { named: string }; maxValues: number } };
   export type SmartServerCutConfig = 'top-items' | Readonly<Record<string, unknown>>; // { fixed-items: n } | { score-floor: {…} } | { token-budget: {…} } | { <registered>: args }
-  export interface SmartServerComposeConfig { indexer: SmartServerIndexerConfig; text?: string /* provider text composer name, F4 */; pool?: Readonly<Record<string, unknown>> /* absent → ItemPool(), the caller's k (D56) */; collapse?: string; reranker?: 'none' | 'decision' | 'llm'; question?: 'tool' | 'passage'; llm?: string; decomposer?: string; cut?: SmartServerCutConfig; onFailure?: 'stage1' | 'error' }
+  export interface SmartServerComposeConfig { indexer: SmartServerIndexerConfig; text?: string /* provider text composer name, F4 */; pool?: Readonly<Record<string, unknown>> /* absent → ItemPool(), the caller's k (D56) */; collapse?: string; reranker?: 'none' | 'decision' | 'llm'; question?: 'tool' | 'passage'; llm?: string; decomposer?: string; cut?: SmartServerCutConfig }
   export interface SmartServerProfileConfig { variant?: string; compose?: SmartServerComposeConfig; decomposer?: string; poolItems?: number /* faceted (optional) / faceted-rerank (required) */; maxItems?: number /* faceted / faceted-rerank: → FixedItemsCut */ }
   export const WITHDRAWN_VARIANTS: readonly ['faceted-cohere', 'faceted-jev', 'small-set-jev']; // D55: refused by name
   export const PROFILE_STORE_KEYS: readonly ['tools'];   // S8: the only key bound from YAML in this PR
@@ -11646,7 +12237,7 @@ describe('rag.profiles resolution', () => {
   });
   it('a composition by strategy names', () => {
     const cfg = resolve(
-      'tools:\n  compose:\n    indexer: { faceted: [summary, parameters] }\n    pool: { items: 30 }\n    collapse: max\n    reranker: decision\n    question: tool\n    cut: { fixed-items: 5 }\n    onFailure: stage1',
+      'tools:\n  compose:\n    indexer: { faceted: [summary, parameters] }\n    pool: { items: 30 }\n    collapse: max\n    reranker: decision\n    question: tool\n    cut: { fixed-items: 5 }',
       JEV,
     );
     assert.deepEqual(cfg.rag?.profiles?.tools?.compose, {
@@ -11656,7 +12247,6 @@ describe('rag.profiles resolution', () => {
       reranker: 'decision',
       question: 'tool',
       cut: { 'fixed-items': 5 },
-      onFailure: 'stage1',
     });
   });
   it('absent → absent (30.1.0)', () => {
@@ -11755,13 +12345,12 @@ describe('rag.profiles validation — startup errors, never a silent drop', () =
     refused(`tools: { compose: { ${base}, cut: { token-budget: { budgetTokens: 0 } } } }`, /budgetTokens: required/);
     refused(`tools: { compose: { ${base}, reranker: llm, llm: nope } }`, /"nope" is not a key of the llm: map/);
   });
-  it('compose: score-floor with a reranker needs onFailure: error (a stage1 fallback returns stage-1 scores, spec §4.7 F5)', () => {
+  it('compose: score-floor with a reranker is allowed; an onFailure key is refused (D71 — no stage-1 fallback)', () => {
     const base = 'indexer: { faceted: [] }, pool: { items: 3 }';
     const floor = 'cut: { score-floor: { minItems: 1, maxItems: 3, minScore: 0.5 } }';
-    refused(`tools: { compose: { ${base}, reranker: decision, ${floor} } }`, /compose\.cut: score-floor with a reranker needs onFailure: error/, COHERE);
-    refused(`tools: { compose: { ${base}, reranker: decision, onFailure: stage1, ${floor} } }`, /compose\.cut: score-floor with a reranker needs onFailure: error/, COHERE);
-    assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, reranker: decision, onFailure: error, ${floor} } }`, COHERE));
+    assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, reranker: decision, ${floor} } }`, COHERE));
     assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, ${floor} } }`));
+    refused(`tools: { compose: { ${base}, reranker: decision, onFailure: stage1 } }`, /compose\.onFailure: removed \(D71\)/, COHERE);
   });
   it('compose: score-floor with a decomposer is refused (sub-query scores are not comparable, spec §4.5 D63)', () => {
     const base = 'indexer: { faceted: [] }, pool: { items: 3 }';
@@ -11875,7 +12464,6 @@ export interface SmartServerComposeConfig {
   llm?: string;
   decomposer?: string;
   cut?: SmartServerCutConfig;
-  onFailure?: 'stage1' | 'error';
 }
 
 export interface SmartServerProfileConfig {
@@ -11948,7 +12536,7 @@ const posInt = (v: unknown): boolean => {
 const name = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
 
 const PROFILE_FIELDS = ['variant', 'compose', 'decomposer', 'poolItems', 'maxItems'];
-const COMPOSE_FIELDS = ['indexer', 'text', 'pool', 'collapse', 'reranker', 'question', 'llm', 'decomposer', 'cut', 'onFailure'];
+const COMPOSE_FIELDS = ['indexer', 'text', 'pool', 'collapse', 'reranker', 'question', 'llm', 'decomposer', 'cut'];
 const COMPOSE_RERANKERS = ['none', 'decision', 'llm'];
 /** The named composition that takes the `decision:` section's reranker — of either kind (spec §5.5, D55). */
 const DECISION_VARIANTS: readonly string[] = ['faceted-rerank'];
@@ -12014,7 +12602,7 @@ function checkCompose(label: string, c: unknown, ctx: DecisionCtx, issues: strin
     issues.push(`${label}: must be a mapping`);
     return;
   }
-  for (const f of Object.keys(c)) if (!COMPOSE_FIELDS.includes(f)) issues.push(`${label}.${f}: unknown key`);
+  for (const f of Object.keys(c)) if (!COMPOSE_FIELDS.includes(f) && f !== 'onFailure') issues.push(`${label}.${f}: unknown key`);
   checkIndexer(`${label}.indexer`, c.indexer, issues);
   if (c.text != null && !name(c.text)) issues.push(`${label}.text: must be a name (parameter-names | enum-values | schema | a registered one)`);
   // Absent → ItemPool(), the caller's k (D56); a deeper pool is the consumer's number.
@@ -12041,17 +12629,10 @@ function checkCompose(label: string, c: unknown, ctx: DecisionCtx, issues: strin
   } else if (c.llm != null) {
     issues.push(`${label}.llm: only applies to reranker: llm`);
   }
-  if (c.onFailure != null) {
-    if (c.onFailure !== 'stage1' && c.onFailure !== 'error') issues.push(`${label}.onFailure: must be stage1 | error`);
-    if (rr === 'none') issues.push(`${label}.onFailure: only applies with a reranker`);
-  }
-  // Spec §4.7 (F5): a 'stage1' fallback (the default) returns stage-1 scores; a
-  // threshold calibrated on reranked scores must not cut them. StagedRetrieval's
-  // constructor refuses the same; this names the YAML key first.
-  if (rr !== 'none' && isMap(c.cut) && 'score-floor' in c.cut && (c.onFailure ?? 'stage1') !== 'error') {
-    issues.push(
-      `${label}.cut: score-floor with a reranker needs onFailure: error — a stage1 fallback returns stage-1 scores, which a threshold calibrated on reranker scores must not cut`,
-    );
+  // Spec §9.3 (D71): there is no stage-1 fallback; an onFailure key is refused with
+  // its own message (the unknown-key loop above skips it), never silently ignored.
+  if ('onFailure' in c) {
+    issues.push(`${label}.onFailure: removed (D71) — a failed rerank is a RERANK_ERROR; there is no stage-1 fallback`);
   }
   if (c.decomposer != null && !name(c.decomposer)) issues.push(`${label}.decomposer: must be none or a registered name`);
   checkCut(`${label}.cut`, c.cut, issues);
@@ -12403,7 +12984,6 @@ describe('resolveCollectionProfiles', () => {
             reranker: 'decision',
             question: 'tool',
             cut: { 'fixed-items': 5 },
-            onFailure: 'error',
           },
         },
         v: {
@@ -12420,7 +13000,7 @@ describe('resolveCollectionProfiles', () => {
     assert.deepEqual(w.indexer.facets.map((f) => f.constructor), [SummaryFacet, ParametersFacet]);
     assert.equal((w.pool as ItemPool).items(5), 30);
     assert.ok(w.cut instanceof FixedItemsCut && w.cut.n === 5);
-    assert.equal(w.rerank?.onFailure, 'error');
+    assert.ok(w.rerank && !('onFailure' in w.rerank), 'no onFailure (D71)');
     const v = composed(out.get('v')?.profile);
     assert.ok(v.indexer instanceof EnumValueToolIndexer);
     assert.ok(v.indexer.opts.discriminator instanceof NamedDiscriminator);
@@ -12843,7 +13423,7 @@ export async function resolveCollectionProfiles(
       indexer: base,
       pool,
       collapse: pick(s.collapse, 'collapse rule', c.collapse ?? 'max')(),
-      ...(reranker ? { rerank: { reranker, onFailure: c.onFailure ?? 'stage1' } } : {}),
+      ...(reranker ? { rerank: { reranker } } : {}),
       ...(decompose ? { decompose } : {}),
       ...(cut ? { cut } : {}),
     });
@@ -15919,7 +16499,7 @@ Spec §9.1, §9.3; §4.5 (`decompose_error`), §4.6 (`orphan`), §4.10 (`over_bu
 
 **Interfaces:**
 - Consumes: `IRetrievalMetrics`, `isRetrievalMetrics`, `isSizeBoundedCut` (Task 3); `TokenBudgetCut` (Task 6, an `ISizeBoundedCut`); `ITracer`, `ISpan`; Tasks 12–14.
-- Produces: `InMemoryMetrics` and `NoopMetrics` `implements IMetrics, IRetrievalMetrics` (`retrievalOutcome`); `InMemoryMetrics.snapshot().retrievalOutcome`. One `retrievalOutcome` count per retrieval — `ok` | `rerank_fallback` | `rerank_error` | `decompose_error` | `over_budget` | `empty` — plus `orphan` counted by the number of orphans. Span `retrieval` with `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `decomposer`, `subqueries`, `rerank.outcome`, `rerank.error`, `orphans`, `hydration.reads`, `cut.name`, and for a cut with `ISizeBoundedCut` also `cut.tokens` / `cut.budgetTokens`.
+- Produces: `InMemoryMetrics` and `NoopMetrics` `implements IMetrics, IRetrievalMetrics` (`retrievalOutcome`); `InMemoryMetrics.snapshot().retrievalOutcome`. One `retrievalOutcome` count per retrieval — `ok` | `rerank_error` | `decompose_error` | `over_budget` | `empty` — plus `orphan` counted by the number of orphans. Span `retrieval` with `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `decomposer`, `subqueries`, `rerank.outcome`, `rerank.error`, `orphans`, `hydration.reads`, `cut.name`, and for a cut with `ISizeBoundedCut` also `cut.tokens` / `cut.budgetTokens`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -16001,16 +16581,15 @@ describe('StagedRetrieval telemetry', () => {
     assert.equal(s.ended, true);
   });
 
-  it('a wrong score count is counted rerank_fallback (stage1) or rerank_error (error) — never silent', async () => {
+  it('a wrong score count is returned and counted rerank_error — never silent, no fallback (D71)', async () => {
     const rag = await store();
     const dropping: IReranker = { rerank: async (_q, r) => ({ ok: true, value: r.slice(1) }) };
-    for (const [onFailure, outcome] of [['stage1', 'rerank_fallback'], ['error', 'rerank_error']] as const) {
-      const metrics = new InMemoryMetrics();
-      const { tracer, spans } = spyTracer();
-      await staged(rag, { rerank: { reranker: dropping, onFailure }, telemetry: { tracer, metrics } }).retrieve(rag, q('needle'), 3);
-      assert.equal(outcomes(metrics)[key(outcome)], 1);
-      assert.match(String(spans[0].attrs['rerank.error']), /RERANK_ERROR/);
-    }
+    const metrics = new InMemoryMetrics();
+    const { tracer, spans } = spyTracer();
+    const r = await staged(rag, { rerank: { reranker: dropping }, telemetry: { tracer, metrics } }).retrieve(rag, q('needle'), 3);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.equal(outcomes(metrics)[key('rerank_error')], 1);
+    assert.match(String(spans[0].attrs['rerank.error']), /RERANK_ERROR/);
   });
 
   it('decompose_error is counted and the span status is error', async () => {
@@ -16147,25 +16726,17 @@ Replace the Task 14 `retrieve` method with the private `run` below — the same 
     const sum = (f: (s: RunStats) => number) => runs.reduce((a, s) => a + f(s), 0);
     const orphans = sum((s) => s.orphans);
     const all = runs.map((s) => s.rerankOutcome);
-    const rerank = all.includes('error')
-      ? 'error'
-      : all.includes('fallback')
-        ? 'fallback'
-        : all.includes('ok')
-          ? 'ok'
-          : 'none';
+    const rerank = all.includes('error') ? 'error' : all.includes('ok') ? 'ok' : 'none';
     const rerankError = runs.find((s) => s.rerankError !== undefined)?.rerankError;
     const outcome = !result.ok && result.error.code === 'DECOMPOSE_ERROR'
       ? 'decompose_error'
       : rerank === 'error'
         ? 'rerank_error'
-        : rerank === 'fallback'
-          ? 'rerank_fallback'
-          : result.ok && result.value.length === 0
-            ? 'empty'
-            : result.ok
-              ? 'ok'
-              : undefined;
+        : result.ok && result.value.length === 0
+          ? 'empty'
+          : result.ok
+            ? 'ok'
+            : undefined;
     const metrics = this.options.telemetry?.metrics;
     const attrs = (o: string) => ({ store: this.options.storeKey, strategy: this.name, outcome: o });
     if (metrics) {
@@ -16259,7 +16830,7 @@ In `report`, before computing `outcome`:
       info.firstRanked !== undefined &&
       sized.estimator.estimate(info.firstRanked) > sized.budgetTokens;
 ```
-insert `: overBudget ? 'over_budget'` into the `outcome` chain right before the `empty` branch (`… : rerank === 'fallback' ? 'rerank_fallback' : overBudget ? 'over_budget' : result.ok && result.value.length === 0 ? 'empty' : …`), and after `span.setAttribute('cut.name', this.cut.name);`:
+insert `: overBudget ? 'over_budget'` into the `outcome` chain right before the `empty` branch (`… : rerank === 'error' ? 'rerank_error' : overBudget ? 'over_budget' : result.ok && result.value.length === 0 ? 'empty' : …`), and after `span.setAttribute('cut.name', this.cut.name);`:
 ```ts
     if (sized) {
       span.setAttribute('cut.budgetTokens', sized.budgetTokens);
@@ -16301,7 +16872,7 @@ Spec §9.2 (additive `telemetry` option), §9.1 (`/health`: `toolCatalog.records
 - Create: `packages/llm-agent-libs/src/health/__tests__/health-tool-catalog-profile.test.ts`
 
 **Interfaces:**
-- Produces: `RerankedRetrieval(reranker, { overfetch?, storeName?, telemetry? })`, `RerankAllRetrieval(reranker, { maxCandidates, storeName?, telemetry? })`; a fallback counts `rerank_fallback`, a success `ok`; behaviour otherwise unchanged. **S4, decided (spec §9.2): telemetry only — the §4.8 output check is NOT applied here**, so a short reranker answer is accepted as in 30.1.0 (goal 4). `/health` copies `records` and `profile` (carried by `ToolCatalogStatus`, S3) into `components.toolCatalog` when present.
+- Produces: `RerankedRetrieval(reranker, { overfetch?, storeName?, telemetry? })`, `RerankAllRetrieval(reranker, { maxCandidates, storeName?, telemetry? })`; a failed rerank — already an error since Task 4I (`rerankOrError` returns `RERANK_ERROR`, spec §10.5.5 K2, D71) — counts `rerank_error`, a success `ok`. **S4 (spec §9.2): the §4.8 output check is NOT applied here**, so a short reranker answer is accepted as in 30.1.0 (goal 4). `/health` copies `records` and `profile` (carried by `ToolCatalogStatus`, S3) into `components.toolCatalog` when present.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -16324,20 +16895,20 @@ const passing: IReranker = { rerank: async (_q, r) => ({ ok: true, value: r }) }
 const outcomes = (m: InMemoryMetrics) => Object.fromEntries(m.snapshot().retrievalOutcome?.byAttributes ?? []);
 
 describe('30.1.0 rerank strategies: optional telemetry (spec §9.2)', () => {
-  it('a fallback is counted, not only a session step; results unchanged', async () => {
+  it('a failed rerank is counted rerank_error, not only a session step; the error is returned (D71)', async () => {
     const metrics = new InMemoryMetrics();
     const r = await new RerankedRetrieval(failing, { storeName: 'tools', telemetry: { metrics } }).retrieve(store, new TextOnlyEmbedding('q'), 2);
-    assert.ok(r.ok && r.value.length === 2);
-    assert.deepEqual(outcomes(metrics), { 'outcome=rerank_fallback,store=tools,strategy=rerank': 1 });
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.deepEqual(outcomes(metrics), { 'outcome=rerank_error,store=tools,strategy=rerank': 1 });
   });
   it('a success is counted ok (rerank-all)', async () => {
     const metrics = new InMemoryMetrics();
     await new RerankAllRetrieval(passing, { maxCandidates: 2, storeName: 'tools', telemetry: { metrics } }).retrieve(store, new TextOnlyEmbedding('q'), 1);
     assert.deepEqual(outcomes(metrics), { 'outcome=ok,store=tools,strategy=rerank-all': 1 });
   });
-  it('without telemetry nothing changes', async () => {
+  it('without telemetry the behaviour is the same (the error, Task 4I)', async () => {
     const r = await new RerankedRetrieval(failing).retrieve(store, new TextOnlyEmbedding('q'), 2);
-    assert.ok(r.ok && r.value.length === 2);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
   });
   it('S4: no output check — a short reranker answer is accepted as in 30.1.0, and counted ok', async () => {
     const metrics = new InMemoryMetrics();
@@ -16397,20 +16968,20 @@ Expected: FAIL — no `retrievalOutcome` counts; no `records` / `profile` in `/h
 ```ts
 type Telemetry = { tracer?: ITracer; metrics?: IRetrievalMetrics };
 ```
-give `rerankOrFallback` a trailing `telemetry?: Telemetry` parameter and, at its two exits:
+give `rerankOrError` (Task 4I's name) a trailing `telemetry?: Telemetry` parameter and, at its two exits:
 ```ts
-const count = (outcome: 'ok' | 'rerank_fallback', error?: string) => {
+const count = (outcome: 'ok' | 'rerank_error', error?: string) => {
   telemetry?.metrics?.retrievalOutcome.add(1, { store: storeName ?? '', strategy: name, outcome });
   const span = telemetry?.tracer?.startSpan('retrieval', {
     ...(options?.trace?.traceId ? { traceId: options.trace.traceId } : {}),
-    attributes: { store: storeName ?? '', strategy: name, 'rerank.outcome': outcome === 'ok' ? 'ok' : 'fallback' },
+    attributes: { store: storeName ?? '', strategy: name, 'rerank.outcome': outcome === 'ok' ? 'ok' : 'error' },
   });
   if (error !== undefined) span?.setAttribute('rerank.error', error);
-  span?.setStatus('ok');
+  span?.setStatus(outcome === 'ok' ? 'ok' : 'error', error);
   span?.end();
 };
 ```
-calling `count('ok')` before the success `return`, and `count('rerank_fallback', \`${code}: ${message}\`)` before the fallback `return`. Extend both option types with `telemetry?: Telemetry` (`{ overfetch?: number; storeName?: string; telemetry?: Telemetry }` and `{ maxCandidates: number; storeName?: string; telemetry?: Telemetry }`) and pass `this.opts.telemetry` to `rerankOrFallback`.
+calling `count('ok')` before the success `return`, and `count('rerank_error', \`${code}: ${message}\`)` before the error `return`. Extend both option types with `telemetry?: Telemetry` (`{ overfetch?: number; storeName?: string; telemetry?: Telemetry }` and `{ maxCandidates: number; storeName?: string; telemetry?: Telemetry }`) and pass `this.opts.telemetry` to `rerankOrError`.
 
 `health-checker.ts`, in the `toolCatalog` object:
 ```ts
@@ -17433,7 +18004,7 @@ export async function buildProfileArm(
     indexer: base,
     pool: f.poolItems === undefined ? new ItemPool() : new ItemPool(f.poolItems),
     collapse: new MaxScoreCollapse(),
-    ...(reranker ? { rerank: { reranker, onFailure: 'stage1' as const } } : {}),
+    ...(reranker ? { rerank: { reranker } } : {}),
     ...(cut ? { cut } : {}),
   });
   const label = [
@@ -17736,7 +18307,7 @@ decisions.** Every reranker is in `@mcp-abap-adt/llm-agent-reranker`; the decisi
 | `ProbabilityReranker` (was `DecisionReranker`) | `IProbabilityDecision` (was `IDecisionModel`) | `TypeSafeDecisionModel` (`@mcp-abap-adt/typesafe-decision`, Jev) | P(relevant) in [0, 1] |
 | `RelevanceReranker` | `IRelevanceDecision` | `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`, Cohere; one `/rerank` call per batch) | relevance — **not a probability**; comparable for the same query and model, so batches merge into one order |
 
-- A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no named composition uses one. Under a reranker it needs `onFailure: 'error'` (a `'stage1'` fallback returns stage-1 scores) and never goes with `keepStage1Top`; it never goes with an `IQueryDecomposer` either — the merged sub-query results carry scores of different queries, which are not comparable, so the union is kept in sub-query order (first occurrence of an item wins) and cut by position. All three are refused at construction.
+- A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no named composition uses one. It never goes with `keepStage1Top`, nor with an `IQueryDecomposer` — the merged sub-query results carry scores of different queries, which are not comparable, so the union is kept in sub-query order (first occurrence of an item wins) and cut by position. Both are refused at construction. A failed rerank is a `RERANK_ERROR` — there is no stage-1 fallback, so a threshold only ever cuts reranked scores.
 - `keepStage1Top: n` pins the stage-1 top-n first; each pinned item carries its **reranked** score, the rest follow by reranked score. Unmeasured — default 0.
 - The old names are gone (a major release): `@mcp-abap-adt/llm-agent-libs` exports no reranker, `@mcp-abap-adt/llm-agent` no `IDecisionModel`. The CHANGELOG's migration table lists each old name with its new import.
 
@@ -17752,8 +18323,7 @@ strategies, the preprocessors and query expanders: import them from **`@mcp-abap
 owns — import each name from its owner.
 
 Any reranker composes with any indexing. Under a profile every reranker result is checked: wrong count,
-a duplicate or a non-finite score is a `RERANK_ERROR` (`onFailure: 'stage1'` keeps the stage-1 order,
-`'error'` returns it) — counted, never silent. A size-bounded cut (`ISizeBoundedCut`, e.g.
+a duplicate or a non-finite score is a `RERANK_ERROR`, returned (no stage-1 fallback) — counted, never silent. A size-bounded cut (`ISizeBoundedCut`, e.g.
 `TokenBudgetCut`) adds `cut.tokens` / `cut.budgetTokens` and `outcome=over_budget`.
 
 ### Conformance kit
@@ -17911,7 +18481,6 @@ rag:
         reranker: decision                            # none | decision | llm — decision = the reranker of the decision: kind
         question: tool                                # probability (typesafe) / llm only; refused for relevance (no wording)
         cut: { fixed-items: 5 }                       # optional — top-items (the caller's k) | fixed-items | score-floor | token-budget
-        onFailure: stage1                             # stage1 | error
 ```
 
 - Your own strategies: register them on `SmartServerConfig.toolsVariantFactories` /
@@ -17931,7 +18500,7 @@ rag:
   `faceted-cohere`, `faceted-jev`, `small-set-jev` and `smallSet` were withdrawn before release
   (they only carried one consumer's numbers): a leftover is refused at startup, naming
   `faceted-rerank`.
-- A `score-floor` cut over relevance scores is your calibration for that provider — no named composition uses one. With a reranker it needs `onFailure: error`: a `stage1` fallback returns stage-1 scores, which that threshold must not cut (refused at startup). It is also refused with a `decomposer`: scores of different sub-queries are not comparable (spec D63).
+- A `score-floor` cut over relevance scores is your calibration for that provider — no named composition uses one. A failed rerank is an error (no stage-1 fallback; an `onFailure` key is refused at startup). It is refused with a `decomposer`: scores of different sub-queries are not comparable (spec D63).
 ````
 
 And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facetedRerank({ reranker: new ProbabilityReranker(probabilityDecision, { task: TOOL_QUESTION.task, criteria: TOOL_QUESTION.criteria }), poolItems }))`) next to the existing builder example. In the existing decision-model example (~line 335): `wrapDecisionModel` → `wrapProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker` imported from `@mcp-abap-adt/llm-agent-reranker`, with a one-line note that the old names still work as deprecated aliases.
@@ -17947,12 +18516,12 @@ And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facet
 
 | Signal | Meaning | Fix |
 |---|---|---|
-| `retrievalOutcome{outcome=rerank_fallback}` / session step `retrieval_rerank_error` | the reranker failed or returned a wrong / duplicate / non-finite score set (`RERANK_ERROR`) — stage-1 order kept | check the reranker's credentials, deployment and model; a custom `IReranker` must return exactly its candidates |
+| `retrievalOutcome{outcome=rerank_error}` / session step `retrieval_rerank_error` / the request fails with `RERANK_ERROR` | the reranker failed or returned a wrong / duplicate / non-finite score set — the retrieval returns the error (no stage-1 fallback) | check the reranker's credentials, deployment and model; a custom `IReranker` must return exactly its candidates |
 | `outcome=orphan` | a record matched but its item's canonical record is gone (deleted item, interrupted replacement) | re-index the item; stale records are harmless — they are never returned |
 | `outcome=decompose_error` | your `IQueryDecomposer` failed or its budgets summed above k | fix the decomposer |
 | `outcome=over_budget` (with a `TokenBudgetCut`; span `cut.tokens` / `cut.budgetTokens`) | the top tool alone is larger than `budgetTokens` | size the budget ≥ your largest tool |
 | `IndexReport.notes` / a startup warning `tool <name>: ambiguous-discriminator (a, b)` | `RequiredEnumDiscriminator` found several required enums and picked none | name the parameter: `NamedDiscriminator('<parameter>')` |
-| `rerank_fallback` with `decision.provider: sap-aicore` | the `/rerank` call failed or answered wrongly (`DecisionError` → `RERANK_ERROR`): auth (`DECISION_SERVICE_KEY`), deployment id, resource group | check the service key and the deployment |
+| `rerank_error` with `decision.provider: sap-aicore` | the `/rerank` call failed or answered wrongly (`DecisionError` → `RERANK_ERROR`): auth (`DECISION_SERVICE_KEY`), deployment id, resource group | check the service key and the deployment |
 | `failedItems` reason `cleanup-failed: <n> stale record(s) kept for retry` | a replacement wrote the new records but a stale record's delete failed | re-run `index` (or `remove`) once the store is healthy — the ids are kept on the canonical record and retried |
 
 ### Switching a profile on a persistent tools store
@@ -18014,6 +18583,16 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 #     tools: { variant: faceted-rerank, poolItems: 30 }   # poolItems: your number
 ```
 
+- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B11)**
+
+- `docs/INTEGRATION.md`: a new `## Errors — fail loud` section (TL;DR first): a stage failure is the stream's last item `{ ok: false, error }` and `process()`'s result; the error carries the failing component's code (table of the codes a consumer meets: `PIPELINE_ERROR`, `MCP_UNAVAILABLE`, `CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `QUERY_EXPAND_ERROR`, `RERANK_ERROR`, `LLM_ERROR`, `SKILL_ERROR`, the `COORDINATOR_*` codes, and `PIPELINE_FAILURE_CODES`); **a degraded mode is your injected strategy** — an `IRag` wrapper (implement `IRagDecorator`), an `IReranker` that answers unranked, `agent.llmCallStrategy: fallback` — with one short example of an `IRag` wrapper; `FallbackQueryEmbedding` stands in only for a pipeline without an embedder. Every existing sentence that says a stage "continues", "skips", "falls back" or "keeps the original" on a failure is rewritten.
+- `docs/ARCHITECTURE.md`: the pipeline section states that a stage error reaches the consumer (executor → `ctx.error` → `pipelineToStream` → `{ ok: false }`).
+- `docs/DEPLOYMENT.md` and `README.md` (health): `/health` answers **503** unless every configured component works (`degraded` included); a load balancer then takes the instance out — intended. The chat routes stay gated on readiness only.
+- `docs/TROUBLESHOOTING.md`: a new `## Errors instead of fallbacks` table — code → what failed → what to check (one row per code above); the `## Reranking` rows already say `rerank_error` (Step 5).
+- `docs/PERFORMANCE.md`: the rerank / translate / summarize paragraphs lose any "falls back to …" wording.
+- `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/llm-agent-mcp/README.md`, `packages/llm-agent-server-libs/README.md`: the same rewording where a fallback is described as current.
+- No page describes a U1–U10 mode differently from today (spec §17.24: the user decides them).
+
 - [ ] **Step 9: Verify nothing still describes the deleted contract or the old behaviour as current**
 
 Run:
@@ -18027,8 +18606,9 @@ git grep -n -i "within one call\|one call by default" -- README.md CLAUDE.md doc
 git grep -n "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|StaticIntentSource\|LlmIntentSource\|companionRecordIds\|companionStores\|intents:" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers'
 git grep -n "PrebuiltToolsStore\|deployToolsCorpus\|TOOLS_CORPUS_RECORD_ID\|serviceRecord\|prebuilt:\|faceted-cohere\|faceted-jev\|small-set-jev\|facetedCohere\|facetedJev\|smallSetJev\|smallSet" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
 git grep -n "FallbackRag\|withCircuitBreakers\|replaceRag" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!docs/MIGRATION-v*.md' ':!**/CHANGELOG.md'
+git grep -n -i "onFailure\|rerank_fallback\|falls back to\|non-fatal\|keeps the original\|continues without\|degraded.*200" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
 ```
-Expected: the first prints nothing outside `CHANGELOG.md` history and the `### Migrating from IToolIndexingStrategy` section of `docs/INTEGRATION.md`; the fifth prints nothing (intents and companion stores were removed, spec D50); the second shows the new anchors are linked; the third prints nothing — the old names live only in the CHANGELOGs' migration tables (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28); the sixth prints only the lines that say a name was withdrawn or refused (D54, D55); the ninth prints only `docs/INTEGRATION.md`'s bullet saying they were removed (Task 0A, D68); the seventh and eighth print nothing (doc snippets import RAG implementations from `@mcp-abap-adt/llm-agent-rag` and rerankers from `@mcp-abap-adt/llm-agent-reranker` — check multi-line import blocks by eye in the files the third grep listed before this task). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
+Expected: the first prints nothing outside `CHANGELOG.md` history and the `### Migrating from IToolIndexingStrategy` section of `docs/INTEGRATION.md`; the fifth prints nothing (intents and companion stores were removed, spec D50); the second shows the new anchors are linked; the third prints nothing — the old names live only in the CHANGELOGs' migration tables (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28); the sixth prints only the lines that say a name was withdrawn or refused (D54, D55); the ninth prints only `docs/INTEGRATION.md`'s bullet saying they were removed (Task 0A, D68); the tenth prints only the U1–U10 modes described as the consumer's choice (`agent.llmCallStrategy: fallback`, `strict: false`, …) and the sentences saying a fallback was removed (Step 8b); the seventh and eighth print nothing (doc snippets import RAG implementations from `@mcp-abap-adt/llm-agent-rag` and rerankers from `@mcp-abap-adt/llm-agent-reranker` — check multi-line import blocks by eye in the files the third grep listed before this task). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
 
 - [ ] **Step 10: Commit**
 
@@ -18161,7 +18741,7 @@ lines 71–72, which are removed.
 - **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (the `corpus` source, any store: at start it checks the corpus against the configured identity and the store, **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs one line), `ConsumerToolsFill` (you fill it; the library never writes). A store with a profile bound is filled once and **not re-indexed on `toolsChanged`** — a runtime-plugged MCP server is your pipeline's to fill; without a profile, 30.1.0's re-vectorize is unchanged. The corpus: `buildToolsCorpus` (your build step), `parseToolsCorpus`, `ToolsCorpusExpectation`; no deploy step and nothing about the corpus kept in the store — an interrupted load repeats at the next start. YAML `rag.profiles.tools.fill` (`live | consumer | { corpus: { file, profile, embedder } }`); `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
 - **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag`** — `VectorRag`, `InMemoryRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry`, `ragStoreKey`, the `InMemoryRag` / `VectorRag` providers, `SimpleRagProviderRegistry`, the search strategies and their types, the preprocessors and query expanders, `buildRagCollectionToolEntries` — moved from `@mcp-abap-adt/llm-agent` with their code (see Breaking).
 - **Provider text is a strategy** (`IToolTextComposer`): `ParameterNamesToolText` (the default, unchanged), `EnumValuesToolText`, `SchemaToolText` — the latter two in no named composition.
-- **Observability:** `retrievalOutcome` counter (`ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `over_budget`, `empty`) on `InMemoryMetrics` / `NoopMetrics` and in `/health` metrics; a `retrieval` span per profiled retrieval; `/health` `components.toolCatalog.records` / `.profile` under a profile. `RerankedRetrieval` / `RerankAllRetrieval` accept an optional `telemetry` (additive).
+- **Observability:** `retrievalOutcome` counter (`ok`, `rerank_error`, `decompose_error`, `orphan`, `over_budget`, `empty`) on `InMemoryMetrics` / `NoopMetrics` and in `/health` metrics; a `retrieval` span per profiled retrieval; `/health` `components.toolCatalog.records` / `.profile` under a profile. `RerankedRetrieval` / `RerankAllRetrieval` accept an optional `telemetry` (additive).
 - `scripts/rag-eval`: profile arms (`--variant baseline|faceted|faceted-rerank` with `--pool-items` / `--max-items`, or `--indexer` / `--facets` / `--discriminator` / `--max-values` / `--pool-items` / `--reranker none|decision`, `--decision-provider typesafe|sap-aicore` + `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref` / `--cut` / `--budget-tokens`), required-recall (`required` in the queries file: an AND of OR-groups), average items and prompt tokens.
 
 ### Fixed
@@ -18177,9 +18757,33 @@ lines 71–72, which are removed.
 - `OllamaRag` (`@mcp-abap-adt/ollama-embedder`) — it extended `VectorRag`, which now lives in `llm-agent-rag`, a package that depends on `ollama-embedder` (a cycle). Breaking line 51.
 - `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (`IToolIndexingStrategy`, `OriginalToolIndexing`, `IntentToolIndexing`, `SynonymToolIndexing`) — never exported, never wired. Its docs described it as usable; they now describe collection profiles. Its LLM-generated intents are not ported: measured within noise without a reranker and no better with one, and a weak description is fixed at its source.
 
+### Behaviour — fail loud (breaking)
+
+No import changes, but a failure that 30.1.0 answered as a success — an empty, partial, stale or
+substituted answer — is now an error. Success paths are unchanged. A degraded mode is yours to
+build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call strategy).
+
+| # | What fails | 30.1.0 | Now | What a consumer does |
+|---|---|---|---|---|
+| B1 | any pipeline stage (a handler throws, or sets `ctx.error`) | an empty / truncated stream ending normally; `process()` `ok: true` | the stream's last item is `{ ok: false, error }`; `process()` returns it; root span `error`  | handle `ok: false` from `streamProcess` / `process` (already in the contract — it now happens) |
+| B2 | a RAG store's query in `rag-query`, `tool-select`, `skill-select`, a re-select, the legacy orchestrator, a sub-agent source; a store a stage names but the registry lacks | the store is skipped, the request continues | the request fails with the store's code (`CIRCUIT_OPEN`, `QUERY_ERROR`, …) or `RAG_STORE_MISSING` | for a degraded mode, inject your own `IRag` wrapper that answers what you want while the store is down (D68) |
+| B3 | the pipeline's query embedder (a real one) | the store re-embedded the text with its own embedder | the store returns the error (`FallbackQueryEmbedding` covers only `TextOnlyEmbedding`, D73) | configure a working embedder, or none (the store then embeds) |
+| B4 | a reranker — `RerankedRetrieval`, `RerankAllRetrieval`, the `rerank` stage, the legacy orchestrator (and `StagedRetrieval`, new in this release) | stage-1 / original order, `ok: true` | `RERANK_ERROR` | for unranked results on failure, inject a reranker (`IReranker`) that answers them itself |
+| B5 | an MCP client's `listTools` (client, adapter cache, registry, `tool-select`, `tool-loop`, `tools-rag-handle`, the server's bridge and snapshot); a slot that failed to connect | the client's tools left out (or stale), the request continues | `MCP_UNAVAILABLE` / the client's `McpError` code | make the server reachable; a consumer that wants to run on fewer servers builds that pipeline with those clients only |
+| B6 | an LLM step: `translate`, `expand`, `summarize`, `history-upsert`, the query preprocessors and enricher, the stepper's need-resolver / formalizer / planner sections, the DAG planner's empty plan | the original text / full history / a raw-prompt plan | the step's error (`LLM_ERROR`, `QUERY_EXPAND_ERROR`, `COORDINATOR_*`) | — (a consumer that wants untranslated text on failure injects its own handler / preprocessor) |
+| B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
+| B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type` | the skill (or all skills) left out | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails | fix the skill source; `strict: false` keeps its carry-forward (U2, the user's to decide) |
+| B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK  | a load balancer that treated `degraded` as up now takes the instance out — intended |
+| B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure, the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
+| B11 | providers: `sap-aicore-llm` `getModels`, a malformed SSE line (OpenAI, Anthropic), a short or empty SAP AI Core embedding batch, a Qdrant collection whose info cannot be read | the configured model / a silently truncated stream / short or empty vectors / the dimension check skipped for good | `LLM_ERROR` / `EMBED_ERROR` / `UPSERT_ERROR` | — |
+
+New codes, in a set of their own: `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`,
+`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) from `@mcp-abap-adt/llm-agent`. Every other error carries the
+failing component's existing code.
+
 ### Migration
 
-- **Nothing changes unless you opt in.** No profile → the same records (pinned by a golden test), stages, k and YAML as before.
+- **Nothing changes unless you opt in — on the success path.** No profile → the same records (pinned by a golden test), stages, k and YAML as before. **Failures now fail loud** (the behaviour table above): handle `{ ok: false }` from `streamProcess` / `process()`; treat `/health` 503 as not ready.
 - **First the Breaking table above** — one line per old name, with its new import. Install `@mcp-abap-adt/llm-agent-rag` and `@mcp-abap-adt/llm-agent-reranker` where you use the moved names (`llm-agent-reranker` is also a new peer of `llm-agent-libs` and `llm-agent-server-libs`). No behaviour changes behind the renames and moves.
 - **Opting in on a persistent tools store** (Qdrant, pg-vector, HANA) needs a fresh collection — profile records sit beside 30.1.0 records otherwise. In-memory stores need nothing.
 - **Under a profile, `rag.getById(itemId)` on the raw store finds nothing** — records are addressed by owner-scoped ids; use `bound.get({ itemId, owner })`. Returned items keep `metadata.id = itemId`, so name-based consumers are unaffected.
@@ -18224,6 +18828,8 @@ The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (
   `- No re-exports: every package exports only the names it owns; import each name from its owner (llm-agent-libs exports no reranker and none of llm-agent's names; test/repo/no-old-names.test.ts checks every public entry point). No deprecated aliases are kept across a major.`
   `- No shipped strategy or named composition carries a tuned number: pools and cuts default to the caller's k; measured numbers are the consumer's.`
   `- No store fallback: FallbackRag is removed and the builder wraps no registered store (withCircuitBreaker(config) = the main-LLM breaker). An embedder breaker (withCircuitBreaker(embedder, breaker)) fails fast — a store's query returns CIRCUIT_OPEN. IRagDecorator stays: a wrapper exposes inner so strategies, bindings and store embedders under it stay visible.`
+- `### Key API notes`: add —
+  `- Fail loud: a component that finds another not working returns an error (stream { ok: false }, process() ok: false, a thrown typed error, /health 503) — never a fake success, an empty result, a skipped part, a stale cache or a substitute. A stage's OrchestratorError carries the component's code; PIPELINE_FAILURE_CODES (RAG_STORE_MISSING, STATE_CORRUPT, TOOL_ARGUMENTS_JSON_PARSE_FAILED) are the only new codes. No onFailure: a failed rerank is RERANK_ERROR. FallbackQueryEmbedding stands in only for a TextOnlyEmbedding. A degraded mode is the consumer's injected strategy.`
 - `### Key layers` table, `llm-agent-libs` row: append `, collection profiles (StagedRetrieval, ComposedToolsProfile, mcpToolsVariants, SharedItemsProfile)`; `llm-agent-rag` row: append `, the RAG implementations (VectorRag, InMemoryRag, …)`; `@mcp-abap-adt/llm-agent` row: drop any RAG implementation it lists; the `ollama-embedder` mention: `OllamaEmbedder` only.
 - `## Environment` table: add `| DECISION_SERVICE_KEY | SAP AI Core service key of the decision: section with provider: sap-aicore and no credentialRef (Cohere Rerank, a relevance decision); read only when a decision reranker builds it |`, and widen the `DECISION_API_KEY` row's wording to "provider: typesafe".
 
@@ -18256,6 +18862,12 @@ Expected: all exit 0.
 
 Run: `node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/baseline-tool-records.golden.test.ts`
 Expected: PASS (the golden file is the one committed in Task 1 — `git log --oneline -- packages/llm-agent-libs/src/__tests__/fixtures/baseline-tool-records.golden.json` shows exactly one commit).
+
+Then the fail-loud pins (D69–D74): `node --import tsx/esm --test packages/llm-agent-libs/src/pipeline/__tests__/pipeline-errors-reach-consumer.test.ts` passes, and
+```bash
+git grep -n "onFailure\|rerank_fallback\|rerankOrFallback\|STUB_LLM_CFG\|fallbackGoal\|non-fatal, skip\|Fallback to configured model\|Return cached tools if reconnect fails" -- packages ':!**/CHANGELOG.md'
+```
+prints only the YAML validator's refusal of an `onFailure` key and the `@ts-expect-error` line of Task 16 (D71).
 
 - [ ] **Step 3: Dependencies — workspace siblings only**
 
@@ -18447,7 +19059,7 @@ Recommendations applied to the earlier open choices (the user may still overrule
 
 | # | Decision | Done in |
 |---|---|---|
-| D63 | The merge of sub-query results never compares scores across sub-queries: union in sub-query order (each sub-query's own ranked list, its own k), a duplicate item kept at its **first** occurrence with that occurrence's score, then the one cut by position and the truncation to `budget` ≤ k. `StagedRetrieval` with a `decompose` and a `ScoreFloorCut` throws at construction; the YAML validator refuses `compose.cut: { score-floor }` with a profile-level `decomposer` or a `compose.decomposer` other than `none`. | Task 14 (constructor check; first-occurrence merge; tests: the same item from two sub-queries with different scores → once, at its first position and score, ≤ k; decomposer + floor → rejected at construction, also with `onFailure: 'error'`), Task 28 (the same merge in `run`; its two `runOne` calls now pass the pool's k — `k` and `s.k` — as Task 14 does, which the copy had dropped), Task 21 (validator rule + test), Task 30 (harness note: a floor-cut profile returns `undefined` for `{ decomposer }`) |
+| D63 | The merge of sub-query results never compares scores across sub-queries: union in sub-query order (each sub-query's own ranked list, its own k), a duplicate item kept at its **first** occurrence with that occurrence's score, then the one cut by position and the truncation to `budget` ≤ k. `StagedRetrieval` with a `decompose` and a `ScoreFloorCut` throws at construction; the YAML validator refuses `compose.cut: { score-floor }` with a profile-level `decomposer` or a `compose.decomposer` other than `none`. | Task 14 (constructor check; first-occurrence merge; tests: the same item from two sub-queries with different scores → once, at its first position and score, ≤ k; decomposer + floor → rejected at construction, also with a reranker), Task 28 (the same merge in `run`; its two `runOne` calls now pass the pool's k — `k` and `s.k` — as Task 14 does, which the copy had dropped), Task 21 (validator rule + test), Task 30 (harness note: a floor-cut profile returns `undefined` for `{ decomposer }`) |
 | — (plan only) | `mcp-tools/rag-collection-tools.ts` imports `zod` and moves to `llm-agent-rag`, which did not declare it. `llm-agent-rag` declares `zod` `^4.6.5` (the range `llm-agent` declared); `llm-agent` drops it (no other importer). A scan of every moved file and moved test found no other third-party import (`node:crypto` is built in; `@mcp-abap-adt/llm-agent` is a declared peer). The lockfile is regenerated and checked for links; the packed tarball is installed and its root imported outside the repo, with the unpublished sibling `llm-agent` packed too. | Task 1A (Files, Step 5A, Step 10A, Step 11's `git add` and commit body) |
 
 ## Review findings and a user decision on 2026-10-05 — per-store corpus checks, fill before skills, orphans and the pool, injected strategy ownership (spec §17.22)
@@ -18457,13 +19069,26 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | D64 | An injected MCP connection strategy is owned by the agent / pipeline it is injected into: `handle.close()` disposes it, and so does a failed `build()`; the consumer must not reuse it after either (the user's decision) | Task 23A (the failed-build disposal, its test named for an injected strategy); Task 33 (`docs/INTEGRATION.md` `### Builder usage`, the `withMcpConnectionStrategy` doc comment) |
 | D65 | The corpus is checked against EVERY tools store the server binds with it — the main one and each worker's own — at resolution, before any store is created: `ResolveCollectionProfilesInput.workerToolsStoreDimensions` beside `toolsStoreDimension`; a differing declared dimension → startup error naming the store and both dimensions. Chosen over a per-store check at each store's creation, which would have cleared and loaded the main store before a worker's mismatch failed the start | Task 23B (`resolveFill`, `declaredDimension`, the resolver call; tests: resolver unit case, (16b) main 2 / worker 3 / corpus 2 → zero clears and writes, no store created) |
 | D66 | A store is filled before skills are vectorized into it, on every construction path. The main store: the server fills it right after the clients are resolved, before the startup build (which vectorizes the skills) — ready clients, plugin clients, an injected seam, no MCP; `yamlBuilderConnect`: the builder's own `build()` already fills (`vectorizeMcpTools`) before `vectorizeSkills`. A worker's construction fills before `subBuilder.build()`. The one store filled after its build — a worker on the shared clients under `yamlBuilderConnect` at startup — is built with `withSkillManager(m, { vectorize: false })` (`fillsAfterBuild`), and `fillSharedClientWorkerStores` vectorizes its skills right after the fill (`FillToolsBindingOptions.skills`) | Task 23A (`fillToolsBinding`'s `skills`; `fillsAfterBuild`; the main fill moved; libs test); Task 23B (tests (16c), (16d), the D66 `yamlBuilderConnect` worker test) |
-| D67 | Orphans never use up the candidate pool: `StagedRetrieval` keeps what it fetched beyond the pool (the overflow, stage-1 order); when the ranked pool hydrates to fewer than `keep` items, the next overflow units replace the orphans — ranked like the pool (the reranker on the same query, no `keepStage1Top` pins; the run's rerank outcome is its most severe), then hydrated — and merged with the surviving pool items by descending score (reranked, or stage-1 without a reranker; same query, comparable), never appended, before the cut; pins keep their head places; two scales (one call fell back) are never compared. No new query; the reranker's `itemText` shortcut keeps its zero-read ranking | Task 12 (`splitPerSource`, the replacement loop, `rank(…, pin)`, `Unit.reranked` / `Unit.pinned`, `mergeByScore`; tests: default pool, k=1, top orphan + valid second → the valid item; a 0.9 replacement above a surviving 0.1 item under `ScoreFloorCut` → the 0.9 item); Task 13 (`pin`, `recordOutcome`, the flags set in `rank`; tests: the reranked floor case, a pin kept at the head) |
+| D67 | Orphans never use up the candidate pool: `StagedRetrieval` keeps what it fetched beyond the pool (the overflow, stage-1 order); when the ranked pool hydrates to fewer than `keep` items, the next overflow units replace the orphans — ranked like the pool (the reranker on the same query, no `keepStage1Top` pins; the run's rerank outcome is its most severe), then hydrated — and merged with the surviving pool items by descending score (reranked, or stage-1 without a reranker; same query, comparable), never appended, before the cut; pins keep their head places; *(the two-scales case — one call fell back — is gone with D71: a failed rerank fails the retrieval)*. No new query; the reranker's `itemText` shortcut keeps its zero-read ranking | Task 12 (`splitPerSource`, the replacement loop, `rank(…, pin)`, `Unit.reranked` / `Unit.pinned`, `mergeByScore`; tests: default pool, k=1, top orphan + valid second → the valid item; a 0.9 replacement above a surviving 0.1 item under `ScoreFloorCut` → the 0.9 item); Task 13 (`pin`, `recordOutcome`, the flags set in `rank`; tests: the reranked floor case, a pin kept at the head) |
 
 ## Decided by the goal on 2026-10-05 — `FallbackRag` removed (spec §17.23)
 
 | # | Decision | Done in |
 |---|---|---|
 | D68 | `FallbackRag` is removed, and the builder wraps no store: the circuit-breaker loop, `isGuardedBy`, `SimpleRagRegistry.replaceRag`, `SmartAgentBuilder.withCircuitBreakers` / `_sharedBreakers` and the server's call of it, and the embedder breaker `withCircuitBreaker(config)` built (fed by nothing) go with it. Kept: the main-LLM breaker, the server's embedder breaker (wraps the retrieval embedder, listed in `/health`; with it open a store's query fails fast with `CIRCUIT_OPEN`), `IRagDecorator` and its walks. Withdrawn: D52, D62, the corpus load's resolved-backend check and their tests; the "behind `FallbackRag`" binding-discovery and F1 cases use a plain decorator. Migration lines 5, 71, 72 (72 in all) | Task 0A (removal, rewritten tests, `open-breaker-query.test.ts`, docs); Task 1A (no `FallbackRag` to move; 27 tests incl. `open-breaker-query`; `fakes.ts` = `makeLlm`; codemod 34 files); Task 4 (the walk's decorators); Task 11 (no `FallbackRag` row); Task 19 (a plain decorator over the bound store); Task 19A (Steps 0a–0d gone; `corpusWriter` checks the store's writer; the five D52 cases gone); Task 23A (no wrap to meet); Task 25 (a plain decorator in the F1 test); Tasks 33–35 (docs, CHANGELOG, gates) |
+
+## Decided by the goal on 2026-10-05 — fail loud (spec §17.24)
+
+| # | Decision | Done in |
+|---|---|---|
+| D69 | The rule and its carriers: an error, never a fake success; the stage error carries the component's code; `PIPELINE_FAILURE_CODES` is the only new set; no shared set widened | Task 4F (codes), every task 4G–4O; Global Constraints |
+| D70 | Pipeline errors reach the consumer (N1) — first | Task 4F |
+| D71 | `onFailure` removed; every rerank failure is `RERANK_ERROR` (S4 superseded for the failure path) | Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33 (in place), Task 4I (30.1.0 strategies, stage, orchestrator) |
+| D72 | `/health` 503 unless every configured component works; every store and client probed | Task 4O |
+| D73 | `FallbackQueryEmbedding` only for a `TextOnlyEmbedding` | Task 4H |
+| D74 | The sweep — spec §10.5.3–§10.5.9 | Tasks 4G (MCP), 4H (RAG, embedder, stores), 4J (LLM handlers), 4K (coordinator), 4L (skills), 4M (server), 4N (providers) |
+
+**For the user — not decided, not touched by any task** (spec §17.24): U1 `FallbackLlmCallStrategy` (keep), U2 skill plugin host `strict: false` default (keep as opt-in, default `strict: true`), U3 `onFinalizeExhausted: 'best-effort'` (keep), U4 `AutoActivation` (keep), U5 `HybridDispatch` (keep for no agent named; a named agent missing → error), U6 `lazy`'s `fallback` (remove), U7 batch → per-tool embedding (keep, count it), U8 the tool availability blacklist (an injected policy, default none), U9 D68's removed builder embedder breaker and `withCircuitBreakers` (confirm), U10 a worker on the shared clients (keep, log one line). A decision on any of them comes back as a spec amendment first, then a task.
 
 ## Self-review (done while writing)
 
@@ -18479,3 +19104,4 @@ Recommendations applied to the earlier open choices (the user may still overrule
 - **Rework for spec §11.4's four questions (decided by the user on 2026-10-05).** New Task 4E, right after Task 4D: `ITextLogger` removed — `text-logger.ts` and the root line deleted and all 17 uses in 9 files switched to `ILogger` of `@mcp-abap-adt/interfaces-utils` **in the same commit** (the file that also uses llm-agent's event `ILogger` imports it under a file-local name, nothing exported under it), so the commit builds; the dependency is declared where used (`llm-agent`: existing peer; libs, mcp: dev dependency for their tests, lockfile checked for links); a `@ts-expect-error` typecheck pins the removal, and the four switched tests are already in `tsconfig.typecheck.json`. libs' `adapters/index.ts` and `interfaces/model-resolver.ts` are deleted after a grep that proves no importer and no `exports` path. Task 4D's guard is unaffected (llm-agent's root keeps only its own names); no later code block names `ITextLogger` or the dead files (grep over this plan). Task 34's table grows to 70 lines with one note line and the llm-agent package paragraph; Task 35 greps that `ITextLogger` and the three files are gone. `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims stay (questions 3 and 4: keep).
 - **Review finding on 2026-10-05 — guards vs the intentional negative fixtures.** Task 1A's repo guard (`no file imports a moved name from @mcp-abap-adt/llm-agent`) scans every package source file, `__typechecks__` included, so it would have failed Step 10's `npm test` on Step 9's `rag-implementations-moved.ts`, which imports `VectorRag` / `ISearchStrategy` from `@mcp-abap-adt/llm-agent` on purpose under `@ts-expect-error`. The guard now skips an **exact-path** allow-list `NEGATIVE_IMPORT_FIXTURES` (that one file — no directory or pattern), and gains two tests: an ordinary stale import (built from a string, also in a file beside the fixture) still fails while the listed path passes the same content; each listed fixture exists, still imports a moved name, has `// @ts-expect-error` directly above each such import, and is in `tsconfig.typecheck.json` (so `npm run typecheck` keeps checking it). Steps 2, 8 and 9 state when the fixture test fails (`ENOENT` before Step 9) and passes. Every other guard was checked against every negative fixture the plan creates (`rag-implementations-moved.ts`, `decision-model.typecheck.ts`, `collection-profile.typecheck.ts` of `llm-agent` (Tasks 2–3) and of libs (Task 16), the `@ts-expect-error` cases in the tests of Tasks 17 and 20 (`shared-items-profile.test.ts`, `builder-tools-profile.test.ts`), `text-logger-removed.typecheck.ts`, the `_removedSeam` of `construction-seams.ts`, the `'makeDecisionModel' in deps` assertion, the `REMOVED` table of `no-old-names.test.ts`, the `OllamaRag` test of `rag-implementations-home.test.ts`): Task 1A's "nothing below `llm-agent-rag` imports it" and "`OllamaRag` removed" scans and Task 4B/4D's `no-old-names` tests (runtime namespaces, the re-export scan, the checker over built `exports`) meet no fixture — none imports `llm-agent-rag` from below, names `OllamaRag` under `packages/`, re-exports a package, or reaches `dist/`; the line-exact greps of Tasks 4A, 4E and 20A already list their fixture lines. Fixed besides: Task 4B's reranker-name grep now expects the `REMOVED` literals of `no-old-names.test.ts` (created in the same step); Task 35's old-name grep lists every expected file and line (it missed `rag-implementations-home.test.ts`'s two `OllamaRag` lines, the `REMOVED` literals and the `import type` / `_Removed` lines of `decision-model.typecheck.ts`); Task 35's `ITextLogger` grep expects three lines, as Task 4E does (it said two); Task 35's `rag-implementations` grep excludes exact paths instead of `**/` patterns.
 - **Rework for D68 (spec §17.23 — `FallbackRag` removed).** New Task 0A, right after Task 0 and before Task 1A: it deletes `FallbackRag` and its test, `replaceRag`, `withCircuitBreakers` / `_sharedBreakers` / `isGuardedBy` and the builder's store-wrapping loop (keeping the main-LLM breaker), and the server's `withCircuitBreakers` call; it rewrites every test that built or expected a `FallbackRag` (a plain test decorator where a walk is tested), adds `open-breaker-query.test.ts` (the new behaviour) and fixes the docs that described the fallback — **in one commit, which builds** (`noUnusedLocals` proves the dropped imports: `FallbackRag`, `isRagDecorator` in `builder.ts`; `CircuitBreaker` / `FallbackRag` / `InMemoryRag` and the hydrated-collection test's imports in the tests). Supersedes the D52 / D62 work: Task 19A loses Steps 0a–0d (no `fix(llm-agent-rag)` commit), the five `FallbackRag` / claiming-decorator cases and `resolvedBackend` (its `isRagDecorator` import goes too; `corpusWriter` checks the store's writer); Task 1A moves no `fallback-rag.ts` (its counts: 27 tests, with `open-breaker-query.test.ts` in place of `fallback-rag.test.ts` — the re-check grep matches `../../rag/vector-rag`; 34 codemod files, since `strategy-rag.test.ts` imports no moved name any more; `fakes.ts` copies `makeLlm` only; the stay-target `resilience/circuit-breaker.js` is no longer imported by a moved file); Tasks 19 and 25 replace their `FallbackRag` wrapper with a plain decorator and drop the `CircuitBreaker` / `FallbackRag` / `InMemoryRag` imports they no longer use; Task 11's table loses its `FallbackRag` row. **Kept, checked:** `IRagDecorator` and `isRagDecorator` (`StrategyRag`; `hasRetrievalStrategy`, `ownBuiltInStore`, `retrievalEmbedderOf`, `toolsBindingOf` / `boundToolsOf`, `findWeightedStore` — a consumer's wrapper relies on them; the migration note tells a consumer who wants a degraded mode to write one); `CircuitBreakerEmbedder` / `withCircuitBreaker` and the server's `_embedderBreaker` (fails fast with an error). The Review Focus gains line 11 (an embedder outage with the breaker on); Task 34's table has 72 lines (lines 5, 71, 72 say *removed*, one note line); Task 35 greps that nothing of the removal is left.
+- **Rework for the fail-loud sweep (spec §10.5, §13 B1–B11, §17.24 — D69–D74).** Ten new tasks, 4F–4O, after Task 4E (every file they touch is in its final package: `preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` since Task 1A; the rerankers in `llm-agent-reranker` since Task 4B) and before Task 5, so every later task builds on code that fails loud; 4F (N1) first, because no later stage error reaches a consumer without it. Each item: a failing test showing today's fake success, the fix, the gate; each task names the grep for existing tests that pinned the fallback. `onFailure` is removed **in place** (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33): no task introduces it to remove it later; Task 12's `Unit.reranked` and the two-scales branch of `mergeByScore` go with it (one scale per run); Task 29 counts `rerank_error` from `rerankOrError` (Task 4I's rename). The carriers keep signatures: `McpToolRegistry.resolve` throws (Task 4F's executor keeps a thrown `OrchestratorError`'s code) instead of growing an error branch; the only contract additions are `PIPELINE_FAILURE_CODES` and `SkillLoadResult.carried?` (spec §3.8). U1–U10 untouched (Global Constraints). Review Focus 12 added. Every commit builds: 4F adds the codes before any task uses them; 4G–4O touch disjoint files except `agent.ts` / `rag-orchestrator.ts` / `tool-loop.ts` / `smart-server.ts`, edited in different functions in task order.
