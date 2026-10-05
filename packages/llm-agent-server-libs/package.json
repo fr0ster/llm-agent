@@ -58,7 +58,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "pg": "^8.23.0",
+    "pg": "^8.23.1",
     "yaml": "^2.9.1"
   },
   "peerDependencies": {
