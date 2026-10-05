@@ -23,7 +23,11 @@
 >   offline corpus API, refill and single-flight construction out: decided by the user on
 >   2026-10-05 (§17.11);
 > - intents and companion stores removed, the corpus deploy written in full: decided by the user on
->   2026-10-05 (§17.15).
+>   2026-10-05 (§17.15);
+> - `FallbackRag` exposes a precomputed write only when its primary has one, and the corpus steps
+>   check the capability on the resolved backend: a review finding of 2026-10-05, dispatched by the
+>   user (D52, §10.4, §17.16). The layer map (§11.1) assigns every part of this design to one
+>   layer; its audit lists suspected misplacements for the user's decision (§11.2).
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -263,7 +267,12 @@
 - A reranker that returns a wrong or missing score count is a **reranker error**, counted and
   traced — never silent.
 - In-scope fixes: the store's embedder hidden behind `StrategyRag`; de-duplication in
-  `tools-rag-handle` and `skill-select`; the orphan `IToolIndexingStrategy` is deleted.
+  `tools-rag-handle` and `skill-select`; the orphan `IToolIndexingStrategy` is deleted;
+  `FallbackRag` offers a precomputed write only when its primary has one — it no longer re-embeds
+  silently behind a precomputed call (§10.4, D52).
+- **Every part of this design lives in exactly one layer** — the consumer, the llm-agent framework
+  (contracts; generic implementations), llm-agent-server, or the pipelines in llm-agent. The map
+  is §11.1; suspected misplacements, for the user's decision, are §11.2.
 
 ---
 
@@ -963,6 +972,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `ToolsCorpus*` types, `TOOLS_CORPUS_RECORD_ID`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, `LiveToolsFill`, `ConsumerToolsFill` (D42, D43) — new exports of `llm-agent-libs` | the offline side of the fill sources: the profile's indexer must be usable outside the runtime to produce the corpus, and a deploy step must write it into a persistent store without embedding. Types used only where the functions are (libs + the consumer's scripts) — not contracts, so not in `@mcp-abap-adt/llm-agent` | `llm-agent-libs` (`collections/tools/`) |
 | `SmartServerConfig.toolsFillFactories?` (D42) | YAML `rag.profiles.tools.fill` names a source (§6.2); a consumer's own source is registered by name, like `toolsVariantFactories` | `llm-agent-server-libs` (`smart-server.ts` config type, `resolve-collection-profiles.ts`) |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
+| `FallbackRag.writer()` — `upsertPrecomputedRaw` present **only when the primary's writer has it** (D52, §10.4) — **no contract change**, a behaviour change of one implementation | review finding 2026-10-05: the writer always exposed `upsertPrecomputedRaw` and, when the primary had none, called the primary's `upsertRaw` — the given vector dropped, the text re-embedded silently. A caller that checks the capability (the corpus steps, §6.5; the batch paths of `vectorizeMcpTools` and the record writer) was told a precomputed write exists when it does not. `IRagBackendWriter.upsertPrecomputedRaw` is already optional, so every caller already handles its absence | `@mcp-abap-adt/llm-agent` (`resilience/fallback-rag.ts`), where `FallbackRag` lives |
 
 ### 3.9 Decision contracts — probability and relevance
 
@@ -1081,7 +1091,7 @@ export interface ToolsFillContext {
 | Source | `fill` — at instance creation | Embedding calls in the process | Writes by the process |
 |---|---|---|---|
 | **`LiveToolsFill`** (`live`, the default) | `ctx.indexLiveTools()` — 30.1.0's listing, indexed through the profile | yes | at creation only |
-| **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, the in-memory source) | its only job: checks the corpus's fingerprint against `expect` and the binding (below), writes every record with its precomputed vector into `ctx.target.rag`, reports the status. Nothing else: no service record, no diff, no refill, no memo, no retry, no watching | **none** | at creation only |
+| **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, the in-memory source) | its only job: checks the corpus's fingerprint against `expect` and the binding (below), writes every record with its precomputed vector into `ctx.target.rag` — after the deploy's capability check (§6.5 step 2: the store's writer **and** its resolved backend accept precomputed vectors; else it throws before any write or embedding call) — reports the status. Nothing else: no service record, no diff, no refill, no memo, no retry, no watching | **none** | at creation only |
 | **`PrebuiltToolsStore({ expect })`** (`prebuilt`) | reads the store's service record (§6.5) and checks it as `corpus` does; refuses a record that is not finalized (`state` ≠ `'final'`: a deploy unfinished or running) with a throw naming the deploy step; writes nothing; the status comes from the record | none | **never** |
 | **`ConsumerToolsFill`** (`consumer`) | nothing (`undefined`): the consumer fills through `bound.index` or `fillToolsBinding` | — | **never** (the consumer writes) |
 
@@ -2206,7 +2216,7 @@ holds or may hold from this corpus — and nothing else, so an in-place merge on
 | Step | What |
 |---|---|
 | 1. unchanged? | read the service record; `state: 'final'` **and** its manifest's `corpusHash` and identity equal the corpus's → `{ unchanged: true, written: 0, deleted: 0 }`, **no write of any kind**. A record that is not finalized never answers `unchanged` |
-| 2. capability | the store must accept precomputed vectors (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`) — else throw, nothing written: the step makes no embedding call |
+| 2. capability | the store must accept precomputed vectors (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`), checked **twice** before any write: on the writer of the store it was given, and on the writer of the **resolved backend** — the innermost store under `IRagDecorator.inner` (≤ 16 levels, as `retrievalEmbedderOf`), the one that holds the records. Either lacks it → throw naming the store, nothing written, no embedding call. Why both: a decorator can claim a precomputed write and emulate it through `upsertRaw`, which re-embeds — `FallbackRag` did until D52 (§10.4); the resolved-backend check refuses such a decorator even if one is written again. `ToolsCorpusLoader` runs the same check (§3.10) |
 | 3. write ahead | the service record with `state: 'pending'` and `ids` = the ids the old record lists (final or pending; none when there is no record) ∪ the corpus's ids — every id the store holds or may hold. Any interruption from here on leaves the store marked unfinished, with every id it may hold listed |
 | 4. delete | every id the **old** service record lists (pending ones included), each `deleteByIdRaw` Result checked; a failure or a throw throws — the pending record still lists the id, so a rerun deletes it. `deleted` counts the deletes that returned `true` |
 | 5. write | the **whole** corpus with its precomputed vectors, in batches; `written` = records written. A failed write throws |
@@ -2954,6 +2964,41 @@ new SharedItemsProfile({
   `docs/INTEGRATION.md:1516-1550`, `docs/PERFORMANCE.md:335-355`,
   `docs/ARCHITECTURE.md:584, 608-611`.
 
+### 10.4 `FallbackRag` — no precomputed write it cannot honour (D52)
+
+- **Bug** (review finding 2026-10-05): `FallbackRag.writer()` always returns
+  `upsertPrecomputedRaw`. When the primary's writer has none, it calls the primary's `upsertRaw`:
+  the given vector is dropped and the text is embedded again, silently. Any caller that asks
+  "does this store take precomputed vectors?" gets *yes* from a store that re-embeds. Concretely:
+  - the corpus deploy and `ToolsCorpusLoader` (§6.5) would pass their capability check and then
+    embed every record — the one thing both promise not to do;
+  - `vectorizeMcpTools`' batch path and the record writer batch-embed only when the writer has a
+    precomputed write; through such a `FallbackRag` they would embed each record twice (batch, then
+    `upsertRaw`) and log the usage of the batch only. Reachable once F1 (§10.1) finds the
+    embedder behind the `FallbackRag`.
+- **Fix — minimal, in `FallbackRag` only:** the writer carries `upsertPrecomputedRaw` **only when
+  the primary's writer has it** — the primary is the authoritative store (it answers `query` while
+  the breaker is closed, `getById` first, `healthCheck`). Without it, the member is absent, and
+  callers take their existing path for a raw-only store (the corpus steps refuse; the batch paths
+  go sequential through `upsertRaw`, one embedding per record, as for an unwrapped raw-only store).
+  - Unchanged: `upsertRaw`, `deleteByIdRaw`, `clearAll`; the fallback mirror of a precomputed
+    write (the fallback's own `upsertPrecomputedRaw`, else its `upsertRaw`, best effort, never
+    awaited). The fallback serves only while the embedder breaker is open, so it indexes text its
+    own way; the shipped fallback, `InMemoryRag`, calls no embedder.
+  - Not added: `upsertManyPrecomputedRaw` (`FallbackRag` never exposed it; callers fall back to
+    per-record writes).
+- **Second guard — the corpus steps check the resolved backend too** (§6.5 step 2): the writer
+  they were given and the innermost store's writer must both accept precomputed vectors. So a
+  decorator that emulates the capability again is refused before any write or embedding call.
+- **Observable behaviour:** a `FallbackRag` over a primary without precomputed writes no longer
+  offers them. A caller that called `upsertPrecomputedRaw` unconditionally (it is optional in
+  `IRagBackendWriter`, so none may) would now find it `undefined`. Over the shipped primaries that
+  have the write (`VectorRag`, qdrant, pg-vector, HANA) nothing changes (§13).
+- **Tests** (§14.1): a corpus deploy and a `ToolsCorpusLoader` fill through a `FallbackRag` over a
+  raw-only writer → rejected before any write, the embedder never called; through a `FallbackRag`
+  over a precomputed-capable writer → they work with no embedding call; `FallbackRag` unit tests
+  for both writer shapes.
+
 ---
 
 ## 11. Package placement
@@ -2968,6 +3013,7 @@ new SharedItemsProfile({
 | YAML resolver + validation (`rag.profiles`; `decision.provider: sap-aicore`; the provider → kind table); the `makeRelevanceDecision` seam type; `makeProbabilityDecision` (renamed seam) + its deprecated alias `makeDecisionModel` | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts`, `decision-config.ts` and the probability seam type |
 | `createMakeProbabilityDecision` (renamed from `createMakeDecisionModel`; `make-decision-model.ts` → `make-probability-decision.ts`), `createMakeRelevanceDecision` with the `sap-aicore` arm (builds `SapAiCoreRelevanceDecision`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | `make-relevance-decision.ts`, beside `make-probability-decision.ts` |
 | `IRetrievalEmbedderOwner` implementations | `llm-agent` (`VectorRag`), `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | where the stores are |
+| `FallbackRag`'s precomputed write only over a primary that has one (D52, §10.4) | `llm-agent` (`resilience/fallback-rag.ts`) | where `FallbackRag` lives |
 
 - Decided — D1 (libs, not a new `llm-agent-collections` package), D2 (own provider package
   `sap-aicore-decision`) and D24 (one reranker package) (§17).
@@ -2977,6 +3023,90 @@ new SharedItemsProfile({
   `llm-agent-server`; all at the same version.
 - New files carry no per-file licence header (the repo has none); every package, the new one
   included, is `LGPL-3.0-only` in `package.json`.
+
+### 11.1 Layer map — every part of this design in exactly one layer
+
+**TL;DR.** Four layers. The **consumer** chooses and calibrates; the **framework** defines
+contracts and ships generic implementations; **llm-agent-server** reads YAML and runs the server's
+lifecycle; the **pipelines in llm-agent** use the stores per request. The store backends own
+concurrency (D13) and belong to no layer of this design.
+
+**1. Consumer** — what the consumer decides and does (never shipped by llm-agent):
+
+| What | Where in this spec |
+|---|---|
+| Strategy choice: a default composition or its own `compose` (indexer, facets, provider text, pool, collapse, reranker, cut), the fill source (`live` / `corpus` / `prebuilt` / `consumer` / its own `IToolsFillSource`) | §3.10, §6.1, §6.2, §7.1, §7.5 |
+| Its own strategies: an `IQueryDecomposer` (none ships), facets, composers, discriminators, size estimators, a whole profile for another MCP server; registered by name (`toolsVariantFactories`, `toolsStrategyFactories`, `toolsFillFactories`) | §4.5, §7.9, §6.2 |
+| Calibration: `k`, `smallSet.poolItems` (≥ its tool count), `budgetTokens`, `maxValues`, any threshold on relevance scores (`score-floor`) | §4.10, §6.2, §7.4 |
+| The **build step** (lists its provider's tools, `toolItemFromTool`, `buildToolsCorpus`, serializes) and the names in `ToolsCorpusIdentity` | §6.5 |
+| The **deploy step** (`parseToolsCorpus` → `deployToolsCorpus` into its persistent store; a fresh collection on a profile or embedder change) | §6.5, §7.8 |
+| Filling with the `consumer` source, and filling on the builder's `withMcpClients` / `withMcpServers` branches (`bound.index`, `fillToolsBinding`) | §3.10, §6.1 |
+| Its own pipelines' checks: an MCP server plugged in at runtime, a tool list that changes while running (`bound.index` with the new tools) | §6.3, §15 (D46) |
+| Its own composition root: the decision seams (`makeProbabilityDecision`, `makeRelevanceDecision`), credentials, binding stores beyond `tools` (`profile.bind` + `withRetrievalStrategy`) | §6.1, §6.2, §13 |
+| Shared items: group partitions (`ISharedItemGroups`), retention and redaction policy | §8.3, §8.4, §15 |
+
+**2. llm-agent framework** — contracts and generic implementations:
+
+| Package | What |
+|---|---|
+| **Contracts** — `@mcp-abap-adt/llm-agent` | every contract of §3: records and owners (`IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ReservedRecordKey`), the profile (`IItemIndexer`, `ICollectionProfile`, `IBoundCollection`, `BindTarget`, `CollectionStore`), retrieval parts (`ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `ISourceSelector`, `RetrievalSource`, `IQueryDecomposer`), tool items (`ToolItem`, `IToolFacet`, `IToolTextComposer`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `IIndexNoteSource`), shared items (`SharedItem`, `ISharedItemGroups`, `SharedItemsStores`), `IRetrievalEmbedderOwner` + `retrievalEmbedderOf`, the decision contracts (`IProbabilityDecision` + alias, `IRelevanceDecision`), `IToolsFillSource` + `ToolsFillContext`, `IRetrievalMetrics`, the optional health / catalog fields, `skillNameFromRecord`, the conformance kit (`testing/collection-profile-conformance`) |
+| **Generic implementations** — `@mcp-abap-adt/llm-agent-libs` | `StagedRetrieval`, `ItemPool`, `MaxScoreCollapse`, the cuts and size estimators, the record writer, `ComposedToolsProfile`, `bindToolsProfile` / `toolsBindingOf`, `mcpToolsVariants` (default compositions with their measured numbers), the tools indexers, facets, composers and discriminators, `toolItemFromTool`, `SharedItemsProfile`, the four fill sources, the offline corpus API (`buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, the capture store, the service record), `vectorizeMcpTools` (fill dispatch, the live path), `fillToolsBinding`, `McpToolRegistry.revectorizeTools` (no write into a bound store, D46), `SmartAgentBuilder.withToolsProfile`, `HealthCheckerDeps.toolCatalog`, `IRetrievalMetrics` in `InMemoryMetrics` / `NoopMetrics`, telemetry on the 30.1.0 rerank strategies, the usage-logging wrappers, the deprecated re-exports, `evaluateRetrieval` |
+| **Generic implementations** — `@mcp-abap-adt/llm-agent-reranker` | `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*` |
+| **Provider packages** | `typesafe-decision` (`TypeSafeDecisionModel`, unchanged), `sap-aicore-decision` (`SapAiCoreRelevanceDecision`); the stores `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` (`IRetrievalEmbedderOwner`, F1) |
+| **Generic implementations living in the contracts package** (pre-existing) | `VectorRag` (`IRetrievalEmbedderOwner`), `FallbackRag` (D52), `InMemoryRag` — see §11.2 (1) |
+
+**3. llm-agent-server** — the server's composition and lifecycle:
+
+| Package | What |
+|---|---|
+| `@mcp-abap-adt/llm-agent-server-libs` | YAML types and validation (`rag.profiles.tools`, `fill`, `decision.provider: sap-aicore`), names → instances (`resolve-collection-profiles.ts`), the provider → kind table and `decision-seams.ts`, the seams `makeProbabilityDecision` (+ alias) and `makeRelevanceDecision`, `toolsFillFactories`, reading the corpus file once at startup, binding at store creation (`withToolsStore`), the main store's fill in `_buildInfra`, a worker's fill by its construction and the cache entry dropped on a throwing fill, the pass after the harvest (D38), descriptors and namespace to workers (`connectedMcpServer`), `assertSmallSetPool` (D23), the awaitable reload, publishing the main catalog to `/health`, the refusals (`prebuilt` over `in-memory`; a worker with its own `rag` and clients under `corpus` / `prebuilt`) |
+| `@mcp-abap-adt/llm-agent-server` (the app's composition root) | `createMakeProbabilityDecision`, `createMakeRelevanceDecision` with the `sap-aicore` arm, the AI Core service-key credential (`DECISION_SERVICE_KEY`) |
+
+**4. Pipelines in llm-agent** — the elements that use the stores per request:
+
+| Element | What changes |
+|---|---|
+| `tool-select` (libs `pipeline/handlers/tool-select.ts`) | nothing: a profile reaches it as the tools store's `IRetrievalStrategy`; it keeps only names in the agent's catalog |
+| `tools-rag-handle` (`makeToolsRagHandle`) | F2 de-duplication (§10.2) — its file lives in server-libs, see §11.2 (2) |
+| `skill-select` (libs `pipeline/handlers/skill-select.ts`) | F3 (§10.2) |
+| Shared-items writers | write and remove items through `SharedItemsProfile` `index` / `remove`; what an item holds is theirs (§8.4, §15) |
+| Rerank stage, query preparation (`translate`, #323) | unchanged: `RerankHandler` precedence, `retrieval_rerank_error`; query preparation stays a pipeline stage (§12) |
+
+**Outside the four layers:** the store backends (concurrency, D13); `scripts/rag-eval`, the repo's
+measurement harness (§14.3).
+
+### 11.2 Layer audit — suspected misplacements, for the user's decision
+
+Nothing below is moved by this spec. Each item says what sits where, and why it may be the wrong
+layer.
+
+1. **Generic implementations in the contracts package.** `FallbackRag`, `CircuitBreaker`,
+   `VectorRag`, `InMemoryRag` live in `@mcp-abap-adt/llm-agent`, which this map reserves for
+   contracts; this design changes two of them there (`VectorRag` gains `IRetrievalEmbedderOwner`,
+   `FallbackRag` D52). Pre-existing. Also new here: the conformance kit
+   (`@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`, §14.2) — test code shipped
+   by the contracts package. Smaller: functions with behaviour beside the contracts — `recordId`
+   (the one id function both halves share; probably right where it is), `skillNameFromRecord`
+   (F3; parses ids `vectorizeSkills` in libs writes).
+2. **A pipeline element in the server package.** `tools-rag-handle.ts` (`makeToolsRagHandle`, the
+   `IToolsRagHandle` the pipeline reads) lives in `llm-agent-server-libs`; F2 fixes it there
+   (§10.2). A pipeline built on libs without SmartServer cannot reuse it.
+3. **Server lifecycle in libs.** `HealthChecker` and the new `HealthCheckerDeps.toolCatalog`
+   (`health/health-checker.ts`, §6.3) are in libs, while `/health` is the server's endpoint and
+   only the server publishes into the new reporter. Pre-existing location; the new seam exists
+   only for the server's fill.
+4. **"Fill at creation" is owned by two layers.** The builder (libs) fills a bound store at
+   `build()` on its auto-connect branch (§6.1, §6.4 row 1), and on `yamlBuilderConnect` the server
+   leaves its main store's fill to the builder (§6.3 table). The map puts startup fills in the
+   server; the builder's fill is lifecycle logic in libs. Either accept "`build()` is the
+   creation moment for a builder consumer" or make the server fill on every path.
+5. **Consumer calibration in framework defaults.** `mcpToolsVariants` carries tuned numbers
+   (`ItemPool(15)` / `ItemPool(30)`, `FixedItemsCut(8)` / `(5)` / `(3)`) measured on one server's
+   tools (`mcp-abap-adt`, through cloud-llm-hub). §7.1 decided that defaults carry measured numbers; listed only because the
+   map puts calibration with the consumer.
+6. **A fill-source artifact known to generic retrieval.** `StagedRetrieval` drops hits carrying
+   `serviceRecord` (§4.3) — the retrieval half knows the corpus deploy's service record. Small and
+   generic (a reserved key), but a deploy concern inside retrieval.
 
 ---
 
@@ -3033,6 +3163,14 @@ new SharedItemsProfile({
   new tools in its own pipeline (`bound.index`). Without a profile, 30.1.0's re-vectorize on
   `toolsChanged` is unchanged. **Migration note** (CHANGELOG): none for a 30.1.0 consumer —
   profiles and fill sources are new in this release.
+- **Behaviour note — `FallbackRag` offers a precomputed write only over a primary that has one**
+  (D52, §10.4). Before, its writer always had `upsertPrecomputedRaw` and, over a raw-only primary,
+  re-embedded the text through the primary's `upsertRaw`. Now the member is absent there, so
+  callers take their raw path (one embedding per record) and the corpus steps refuse the store.
+  Over `VectorRag`, qdrant, pg-vector and HANA nothing changes. **Changelog** ("Fixed"): a
+  precomputed write through `FallbackRag` no longer re-embeds silently. **Migration note:** none —
+  `upsertPrecomputedRaw` is optional in `IRagBackendWriter`, so a caller already handles its
+  absence.
 - **Single-flight worker construction is not in this release** (D45): the 30.1.0 race of two
   sessions constructing one worker together after a drain is unchanged here and tracked as a
   separate issue (§15).
@@ -3204,6 +3342,10 @@ new SharedItemsProfile({
   (catalog complete, items retrievable), while a writerless store without a binding is skipped as
   in 30.1.0; F1 regression through `StrategyRag` and `FallbackRag`.
 - F2 / F3.
+- `FallbackRag` writer (D52, §10.4): over a raw-only primary → no `upsertPrecomputedRaw`
+  (`upsertRaw`, `deleteByIdRaw` unchanged); over a precomputed-capable primary → present, the
+  primary receives the given vector (no `upsertRaw` call), the fallback mirrors it; no primary
+  writer → absent.
 - Precedence: a profiled store is skipped by `RerankHandler`; binding is idempotent (server +
   builder).
 - Server fill (§6.3, D31), through `SmartServer.start()`: ready clients (`cfg.mcpClients`) + a YAML
@@ -3267,6 +3409,13 @@ new SharedItemsProfile({
   - `deployToolsCorpus` into a `VectorRag`: **zero embedding calls**; retrieval through the binding
     finds the tools and never returns the service record; a store without precomputed writes →
     throws, nothing written; a failed delete → throws, and a rerun deletes it;
+  - **through `FallbackRag`** (D52, §10.4), with an embedder that counts its calls:
+    `deployToolsCorpus` and a `ToolsCorpusLoader` fill over a `FallbackRag` whose primary writer is
+    raw-only → rejected before any write (a writer spy sees nothing), the embedder never called;
+    over a `FallbackRag` whose primary is a `VectorRag` → both work, zero embedding calls, the
+    records stored as built;
+  - the resolved-backend check: a decorator whose writer claims `upsertPrecomputedRaw` over a
+    raw-only inner store → rejected before any write;
   - **unchanged redeploy writes nothing** (D51): the same corpus over a `final` record →
     `unchanged: true`, a writer spy sees no upsert and no delete;
   - **serialized replacement on `VectorRag`** (D51): A whose record X carries extra metadata `ttl`
@@ -3623,3 +3772,9 @@ to `toolsChanged`*).
 |---|---|---|
 | D50 | **Intents are removed entirely** (goal decision 2026-10-05, which replaces the earlier rows on intents and generated variants). They did not justify themselves: within noise without a reranker, no better with one; the reranker reads the provider text better without them; they cost LLM generation at build, regeneration and audits (one audit found poisoned intents); and they mislead (`CreateDdl`: the generated "create database view" is a different object type). Records are built only from what the provider exports (`FacetedToolIndexer` with `SummaryFacet` / `ParametersFacet`, `NameTailFacet` opt-in, `EnumValueToolIndexer` opt-in, `IToolTextComposer`). Removed with them, since they existed only for intents: the `intent` record kind, `IntentRecordIndexer`, `IntentCompanionIndexer`, `IToolIntentSource`, `StaticIntentSource`, `LlmIntentSource`, the intent placements; **companion stores** — `CollectionStore.companions`, `ComposedToolsProfileOptions.companions`, `RetrievalSource.role` / `itemsOf` (`variants` sources), per-binding companion storage (D33) and its persistent-companion refusal, companion handling in the record writer, `remove` and replacement; the reserved keys `companionRecordIds`, `staleCompanionRecordIds` and `generated` (`IndexedRecord.generated`); the YAML `intents` key (a leftover one is refused at startup); the corpus's companion parts (`ToolsCorpusManifest.companions`, `ToolsCorpusRecord.store`, `buildToolsCorpus`'s `companions`). Supersedes D3, S2, S7, D33, the §17.1 line on intents' home, the §17.9 persistent-companion choice; amends F3 and D47(1) | §1, §2.1, §3.1–§3.5, §3.8, §3.10, §4.4, §4.6, §6.2–§6.5, §7.2–§7.4, §7.6, §7.8, §10.3, §11, §14 |
 | D51 | **The corpus deploy writes the whole corpus — no per-record diffing** (approved by the user). Final record with the same corpus hash and identity → unchanged, no write. Otherwise: write ahead `pending` listing every id the store holds or may hold (old ∪ new); delete every id the old service record lists (pending ones included); write the whole corpus; finalize with the corpus's ids. The service record drops its per-record `hashes`; `ToolsCorpusDeployReport.upserted` → `written`. Deleting first is what makes the replacement whole on a merging store (`InMemoryRag`, `VectorRag` merge metadata on an in-place upsert); verified that `VectorRag.deleteByIdRaw` and `InMemoryRag`'s delete remove the whole slot (§6.5). Empty corpus (D49) unchanged in rule: deletes everything, keeps the store's service-record dimension. Generalizes D48; amends D43 | §6.5, §7.8, §14.1 |
+
+### 17.16 Review finding on 2026-10-05 — `FallbackRag` precomputed capability (dispatched by the user)
+
+| # | Decision | Where |
+|---|---|---|
+| D52 | **`FallbackRag` exposes `upsertPrecomputedRaw` only when its primary (authoritative) writer has it.** Before, it always exposed it and, over a raw-only primary, called the primary's `upsertRaw` — the vector dropped, the text re-embedded silently, so the corpus steps' capability check passed and they then embedded. The fallback mirror is unchanged; `upsertManyPrecomputedRaw` is not added. **The corpus steps also check the resolved backend:** `deployToolsCorpus` and `ToolsCorpusLoader` require a precomputed write on the given store's writer **and** on the innermost store's writer (through `IRagDecorator.inner`, ≤ 16 levels), and throw before any write or embedding call otherwise. No contract change; a behaviour change of one implementation (§13 note, changelog "Fixed"). Tests: deploy and loader through `FallbackRag` over a raw-only writer → rejected, nothing written, no embedder call; over a precomputed-capable writer → work with no embedding call; a decorator claiming the write over a raw-only store → rejected; `FallbackRag` writer shape for both primaries | §3.8, §3.10, §6.5, §10.4, §11, §13, §14.1 |
