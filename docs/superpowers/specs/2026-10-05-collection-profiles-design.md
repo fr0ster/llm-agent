@@ -864,6 +864,8 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `SmartServerDecisionConfig`: `provider` gains `'sap-aicore'`; optional `deploymentId`, `resourceGroup` | goal 10 + the goal decision 2026-10-05 (one `decision:` section; the provider decides the kind): Cohere needs a provider name and its deployment (§6.2). Kept one interface with optional fields — additive, so a consumer's own probability seam still compiles (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`decision-config.ts`), where the section's type already lives |
 | `ReservedRecordKey` gains `staleRecordIds`, `staleCompanionRecordIds` | approved review finding 3: a failed stale-record delete must be retried by the next `index` / `remove`, so its id is kept on the canonical; reserved so no extra can overwrite it. `ReservedRecordKey` is new in this spec | libs (record writer, tools binding) |
 | `IItemCut.limit()` — doc only: never above `requestedK` | approved review finding 1: the caller's k caps every cut (§4.5, §4.9). No signature change | — |
+| `fillToolsBinding(clients, binding, opts)` — new export of `llm-agent-libs` (D31) | the server fills a bound tools store from ready clients (§6.3) and lives in another package; `vectorizeMcpTools` is internal to libs and also carries the 30.1.0 record path. A thin wrapper that requires a binding exposes only the profile path and reuses `vectorizeMcpTools` unchanged — nothing duplicated | `llm-agent-libs` (`src/mcp/fill-tools-binding.ts`), beside `vectorizeMcpTools`; used by server-libs and builder consumers |
+| `HealthCheckerDeps.toolCatalog?: IToolCatalogReporter` (D31) | `/health` must reflect the server's own fill (§6.3); the builder's status holder is private to `build()`, so the server cannot publish into it. An optional reporter the checker reads instead of the agent's; absent → 30.1.0 | `llm-agent-libs` (`health/health-checker.ts`), where `HealthCheckerDeps` lives |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
 
 ### 3.9 Decision contracts — probability and relevance
@@ -1531,13 +1533,12 @@ builder.withMcpClients([client]).setToolsRag(bound.rag).withToolsProfile(profile
 - Filling after `build()` works too: `toolsBindingOf(handle.ragStores.tools)?.index(items)`.
 - Not filled → the tools store stays empty, as on these branches in 30.1.0; nothing errors, and
   what tool selection does with an empty tools store is unchanged by this spec.
-- **The server (§6.2) inherits the limit.** It fills its `tools` store only on its own YAML
-  `mcp:` connect path (no ready clients, no injected `connectMcp` seam — `yamlBuilderConnect` in
-  `smart-server.ts`). With ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin
-  clients) or the injected seam it hands them to the builder through `withMcpClients` — main
-  and workers — and 30.1.0 does not vectorize there (tool ranking falls back to the MCP
-  catalog). A `rag.profiles.tools` on those paths is bound, not filled; this PR adds no server
-  API to fill it.
+- **The limit is the builder's only.** The builder has no startup phase of its own: `build()`
+  cannot know whether the caller fills the store before, after, or never. The server has one, so
+  it does **not** inherit the limit: a bound `rag.profiles.tools` store is filled by the server
+  from whatever clients it uses (§6.3), on every provisioning path. A consumer of the builder can
+  call the same function instead of the snippet (`fillToolsBinding`, §6.3): it lists, namespaces
+  and keys several clients the way the builder does.
 
 ### 6.2 Server YAML (`smart-server.yaml`) — names mapped to instances
 
@@ -1693,6 +1694,75 @@ rag:
 - Server-wide like `rag.retrieval`: worker configs that declare `rag.profiles` are rejected;
   workers' tools stores get the main config's binding.
 - Shared items have **no YAML** in this PR (library API only). Decided — D6 (§17).
+
+### 6.3 The server fills a bound tools store from the clients it uses (D31)
+
+**TL;DR.** Whenever `rag.profiles.tools` binds a store, the server fills it at startup from the
+MCP clients it actually uses — whichever path produced them — once per store, before it reports
+ready. Without a profile nothing changes: 30.1.0 behaviour on every path.
+
+**Where the server gets its clients (`smart-server.ts`, `_buildInfra`):**
+
+| Path | Condition | Who connects | Who fills a bound store |
+|---|---|---|---|
+| ready clients | `BuildAgentDeps.mcpClients` ?? `cfg.mcpClients` ?? plugin `mcpClients` (when the plugins brought any) — presence wins, even `[]` | nobody (handed over) | **the server** (new) |
+| injected seam | YAML `mcp:` + `connectMcpWithDescriptors` or a bare `connectMcp` injected, no ready clients | the seam (`_resolveMcpWithDescriptors`) | **the server** (new) |
+| YAML builder connect (`yamlBuilderConnect`) | YAML `mcp:`, no ready clients, no injected seam | the startup builder | the builder (§6.1, auto-connect branch) — the server does not fill again |
+| no MCP | none of the above | — | **the server**: zero clients → an empty, complete catalog (`total: 0`) |
+
+On the first two paths the server hands the clients to the builder through `withMcpClients`
+(main and workers), which skips vectorization (§6.1), so in 30.1.0 the tools store stays empty
+there. Under a profile that would leave a bound store empty: the server fills it instead.
+
+**How it fills — the shipped path, not a second one.**
+
+- `fillToolsBinding(clients, binding, opts)` (new export of `llm-agent-libs`) is a thin call of
+  `vectorizeMcpTools(clients, binding.rag, …, { binding, … })`: listing, namespacing,
+  `IToolRecordKey` ids, `toolItemFromTool` and `bound.index` are exactly the profile path of §7.6.
+  Nothing is duplicated; the 30.1.0 record path is not reachable through it (a binding is
+  required by its type).
+- The server passes the clients it resolved (`_sharedMcpClients`), their descriptors and
+  configured slot count when the seam produced them (`_sharedMcpClientDescriptors`,
+  `_configuredSlotCount`; array order otherwise), its `IToolNamespace` and its file logger — the
+  same inputs its authoritative tool snapshot is built from, so the record ids match the names
+  tool selection reads. It is one more `listTools()` pass at startup on these paths.
+- **Once per store.** The server keeps the bindings it filled; a binding is never filled twice.
+  On the builder-connect path it marks the main binding as filled by the builder.
+- **When.** In `_buildInfra`, after the startup agent is built and the shared clients are
+  resolved, before the small-set check (D23) and before `HealthChecker` is created — so before
+  `start()` listens and before the embeddable `buildAgent(cfg)` returns.
+
+**Workers (Task 23's binding by key).**
+
+- A worker without its own `rag` reads the main store by reference (the parent's injected
+  `toolsRag` on every per-session re-wire) — it is filled once, as the main store. Never again.
+- A worker with its own `rag` has its own store, bound with the main config's profile (§6.2).
+  It is filled once, from the clients its agents use: its own `mcpClients` when it has them,
+  otherwise the server's shared clients (what its per-session re-wires receive). A worker that
+  connects itself from its own `mcp:` (no own `mcpClients`) is filled by its own builder's
+  auto-connect branch (§6.1); the server does not fill it again.
+
+**Status and failures — the existing tool-catalog policy.**
+
+- The main store's fill returns a `ToolCatalogStatus` (with `records` and `profile`, S3). It is
+  what `/health` reports as `components.toolCatalog` and what the small-set check (D23) reads.
+  On the builder-connect path the startup agent's status is used, as in 30.1.0.
+- `HealthCheckerDeps.toolCatalog?: IToolCatalogReporter` (new, optional) carries it: the builder's
+  status holder is private to `build()`, and the server fills outside it. Absent → the agent's
+  own status, as in 30.1.0.
+- A client whose `listTools()` fails or throws: counted in `clientFailures`, its tools never reach
+  `total`, `complete: false`, the summary line is logged as a warning ("… N client(s) failed to
+  list tools"), and `/health` is `degraded` with `toolCatalog` present. Startup goes on: a partial
+  catalog degrades service, it does not prevent it (30.1.0 policy). Never a silent empty store.
+- `bound.index` failing → every item in `failed`, the error message in the logged line, the same
+  `degraded` status. A tool that fails to index → named in `failed`.
+- An invalid `IToolRecordKey` (an id without `tool:`) or a client set that does not match its
+  descriptors throws, so startup fails — as on the builder's path.
+- A worker's own store reports through the log (the same summary line); `/health` reports the main
+  store, as in 30.1.0.
+
+**Without a bound profile** the server calls nothing new on any path: no listing, no writes, no
+status (`/health` exactly as in 30.1.0).
 
 ---
 
@@ -2091,6 +2161,8 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
   names). The `toolCatalog` health counters keep their meaning (tools), plus `records` and
   `profile` (carried by `ToolCatalogStatus`, S3).
 - Every `IndexReport.notes` entry is logged as a warning naming the tool (S1, §7.3.2).
+- The server reaches this path from outside libs through `fillToolsBinding` (§6.3) — the same
+  function, called with the binding; no second filling path exists.
 - All records of all items are embedded in **one** batch pass (`embedDocuments`, respecting
   `IBatchSizeLimited`) and written with `upsertManyPrecomputedRaw` where available — the existing
   batch path, now fed records instead of tools. Sequential fallback and pacing are unchanged.
@@ -2597,6 +2669,14 @@ new SharedItemsProfile({
 - F2 / F3.
 - Precedence: a profiled store is skipped by `RerankHandler`; binding is idempotent (server +
   builder).
+- Server fill (§6.3, D31), through `SmartServer.start()`: ready clients (`cfg.mcpClients`) + a YAML
+  profile → store filled, items retrievable, `/health` `toolCatalog` complete with `records` and
+  `profile`; an injected `connectMcp` seam → the same; plugin clients → included; no profile +
+  ready clients → no profile record, no 30.1.0 record, no `toolCatalog` on `/health` (30.1.0
+  unchanged); a client whose `listTools()` fails → `clientFailures: 1`, `complete: false`,
+  `/health` `degraded`, the good client's tools filled; main + a worker reading the main store +
+  a worker with its own store and clients → each store's records written exactly once.
+  `fillToolsBinding` and `HealthCheckerDeps.toolCatalog` unit-tested in libs.
 - YAML: every validation rule of §6.2 through the real `resolveSmartServerConfig` (incl. a
   `rag.profiles` key other than `tools` refused, S8; a variant against the wrong kind of decision;
   `question` / `task` refused for a relevance provider; `decision.provider: sap-aicore` fields; an
@@ -2835,3 +2915,9 @@ them.
 | D29 | **The second optional seam `makeRelevanceDecision` is approved** (was a §17.5 choice). | §3.8, §6.2 |
 | F5 (review) | **Pinned items carry reranked scores; `keepStage1Top` + `ScoreFloorCut` rejected.** A `keepStage1Top` item keeps its stage-1 place and carries the score the reranker gave it, never the embedding score; order stays pinned first, then the rest by reranked score. `keepStage1Top` > 0 with `ScoreFloorCut` is rejected at construction (keepStage1Top is unmeasured, D7). The `onFailure: 'stage1'` fallback returns stage-1 scores, so `ScoreFloorCut` with a reranker needs `onFailure: 'error'` — the same rejection, in the constructor and the YAML validator. | §4.2, §4.7, §4.9, §6.2, §9.3, §14.1 |
 | D30 | **The released probability seam is renamed symmetric to its contract:** `BuildAgentDeps.makeDecisionModel` → **`makeProbabilityDecision`**; the app's `createMakeDecisionModel` → **`createMakeProbabilityDecision`** (`createMakeRelevanceDecision` stays). `makeDecisionModel` stays a deprecated alias until the next major; **both supplied → startup fails with an explicit error naming both** (never silently pick one); the seam-missing message names `makeProbabilityDecision`. Migration note in §13. | §1, §3.8, §6.2, §11, §13, §14.1 |
+
+### 17.8 Decided by the user on 2026-10-05 — the server fills a bound profile
+
+| # | Decision | Where |
+|---|---|---|
+| D31 | **The server fills a bound tools profile from the MCP clients it uses, at startup.** Replaces the stated limit "the server inherits the builder's limit". On every path that hands clients to the builder through `withMcpClients` — ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin clients) or an injected `connectMcp` / `connectMcpWithDescriptors` seam — the server lists the clients' tools and fills the bound store through the shipped profile path (`fillToolsBinding` → `vectorizeMcpTools` with `binding` → `toolItemFromTool` + `IToolRecordKey` → `bound.index`), once per store, before it reports ready; `/health` and the small-set check read that status; failures follow the 30.1.0 tool-catalog policy (counted, logged, `degraded` — never a silent empty store). Workers reading the main store are not filled again. Without a bound profile nothing changes. The builder keeps its limit for `withMcpClients` / `withMcpServers` (no startup phase). | §6.1, §6.3, §3.8, §14.1 |
