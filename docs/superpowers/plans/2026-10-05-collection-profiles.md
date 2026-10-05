@@ -2,21 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give every kind of RAG collection an injected indexing + retrieval pair (a *collection profile*): several owner-scoped records per item, collapse back to items, an optional reranker on provider text, a final cut counted in items — with 30.1.0 behaviour unchanged when no profile is set.
+**Goal:** Give every kind of RAG collection an injected indexing + retrieval pair (a *collection profile*): several owner-scoped records per item, collapse back to items, an optional reranker on provider text, a final cut counted in items — with 30.1.0 behaviour unchanged when no profile is set. **The release is a major** (spec §13, D57–D59): renamed and moved names keep no old name, and no package re-exports another's names.
 
-**Architecture:** The RAG implementations (`VectorRag`, `InMemoryRag`, `FallbackRag`, …) get their public home in `@mcp-abap-adt/llm-agent-rag` first (Task 1A; the `llm-agent` root keeps deprecated aliases; the files move in the next major — spec S10); contracts land in `@mcp-abap-adt/llm-agent` (`src/interfaces/collection-profile.ts`); generic strategies, `StagedRetrieval` (an `IRetrievalStrategy`), `ComposedToolsProfile`, the named compositions (`mcpToolsVariants`: `baseline`, `faceted`, `faceted-rerank`, no tuned numbers), `SharedItemsProfile`, the fill sources and the corpus API (`buildToolsCorpus` for the consumer's build step, `ToolsCorpusLoader` for the load at start) land in `@mcp-abap-adt/llm-agent-libs` (`src/collections/`); the decision contracts split — `IProbabilityDecision` (today's `IDecisionModel`, renamed, alias kept) and the new `IRelevanceDecision`; every reranker moves to the new vendor-neutral package `@mcp-abap-adt/llm-agent-reranker` (`ProbabilityReranker` = today's `DecisionReranker`, the new `RelevanceReranker`, `LlmReranker`, `NoopReranker`; libs keeps the old names as deprecated aliases); a new provider package `@mcp-abap-adt/sap-aicore-decision` ships `SapAiCoreRelevanceDecision` (Cohere Rerank on SAP AI Core as an `IRelevanceDecision`); `SmartAgentBuilder.withToolsProfile` and the server's `rag.profiles` YAML plus `decision.provider: sap-aicore` (server-libs; one `decision:` section, the provider decides the kind) wire them; the released probability seam `BuildAgentDeps.makeDecisionModel` is renamed `makeProbabilityDecision` (deprecated alias kept; both supplied → startup error) beside the new `makeRelevanceDecision`; the binary's `createMakeDecisionModel` becomes `createMakeProbabilityDecision` and it gains `createMakeRelevanceDecision`.
+**Architecture:** The RAG implementations (`VectorRag`, `InMemoryRag`, `FallbackRag`, …) move — files, tests, exports — to `@mcp-abap-adt/llm-agent-rag` first (Task 1A; `llm-agent` stops exporting them, no alias, no subpath; `OllamaRag` removed to avoid a cycle — spec S11); contracts land in `@mcp-abap-adt/llm-agent` (`src/interfaces/collection-profile.ts`); generic strategies, `StagedRetrieval` (an `IRetrievalStrategy`), `ComposedToolsProfile`, the named compositions (`mcpToolsVariants`: `baseline`, `faceted`, `faceted-rerank`, no tuned numbers), `SharedItemsProfile`, the fill sources and the corpus API (`buildToolsCorpus` for the consumer's build step, `ToolsCorpusLoader` for the load at start) land in `@mcp-abap-adt/llm-agent-libs` (`src/collections/`); the decision contracts split — `IProbabilityDecision` (today's `IDecisionModel`, renamed; the old name removed) and the new `IRelevanceDecision`; every reranker moves to the new vendor-neutral package `@mcp-abap-adt/llm-agent-reranker` (`ProbabilityReranker` = today's `DecisionReranker`, the new `RelevanceReranker`, `LlmReranker`, `NoopReranker`; libs exports none of them and keeps no old name); a new provider package `@mcp-abap-adt/sap-aicore-decision` ships `SapAiCoreRelevanceDecision` (Cohere Rerank on SAP AI Core as an `IRelevanceDecision`); `SmartAgentBuilder.withToolsProfile` and the server's `rag.profiles` YAML plus `decision.provider: sap-aicore` (server-libs; one `decision:` section, the provider decides the kind) wire them; the released probability seam `BuildAgentDeps.makeDecisionModel` is renamed `makeProbabilityDecision` (no alias) beside the new `makeRelevanceDecision`; the binary's `createMakeDecisionModel` becomes `createMakeProbabilityDecision` and it gains `createMakeRelevanceDecision`.
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; **S10 is open for the user** (spec §17.17): the plan implements the spec's recommendation, the public home now and the files in the next major). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; **S11 and S12 are open for the user** (spec §17.18): the plan removes `OllamaRag` (the recommendation for S11) and leaves the pre-existing re-exports of spec §11.4 untouched (S12)). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
 - **Nothing changes by default.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13).
-- **All contract changes additive or aliased.** `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `wrapDecisionModel` → `wrapProbabilityDecision`, `DECISION_RERANK_DEFAULT_*`, `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision`) keep the old names exported as **deprecated aliases** until the next major (the seam alias: both supplied → startup error naming both, spec §3.8, D30); moved rerankers stay importable from libs (spec §13). The only removal is the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3).
-- **The RAG implementations' home is `@mcp-abap-adt/llm-agent-rag` (Task 1A, D53).** From Task 1A on, every code block above `llm-agent-rag` (libs, server-libs, server, scripts) imports `VectorRag`, `InMemoryRag`, `FallbackRag`, `SimpleRagRegistry` and the other names of spec §11.3's "moves" table from `@mcp-abap-adt/llm-agent-rag`; contracts and the store kit (`TextOnlyEmbedding`, `QueryEmbedding`, `symmetricEmbedder`, `matchesRagIdentity`, `RagError`, …) stay on `@mcp-abap-adt/llm-agent`. **Nothing in `packages/llm-agent` imports `llm-agent-rag`** (a cycle; `test/repo/rag-implementations-home.test.ts` pins it). The files of `VectorRag` and `FallbackRag` stay at `packages/llm-agent/src/rag/vector-rag.ts` and `packages/llm-agent/src/resilience/fallback-rag.ts` in this PR (S10).
+- **A major release — no deprecated aliases, no re-exports** (spec §13, D57–D59). `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `DecisionRerankerOptions` → `ProbabilityRerankerOptions`, `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`, `wrapDecisionModel` → `wrapProbabilityDecision`, `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision`) keep **no old name**; the task that renames a name switches **every in-repo use** of it in the same commit, so each commit builds (no "callers stay on the alias until Task N"). Moved names (the RAG implementations, the rerankers) are exported only by their new owner. **No `export … from '@mcp-abap-adt/…'`** in any file this plan creates or edits: every package imports a name from the package that owns it (D59; the pre-existing re-exports of spec §11.4 are left for the user, S12). Removed besides the 51 names of spec §13's migration table: the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3) and the binary's unexported `createMakeDecisionModel` (renamed). **No version bump in this plan**, but the docs say the release is a major (Task 34).
+- **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag` (Task 1A, D53, D57).** From Task 1A on, every code block outside `llm-agent-rag` (libs, server-libs, server, scripts, tests) imports `VectorRag`, `InMemoryRag`, `FallbackRag`, `SimpleRagRegistry`, `ISearchStrategy` and the other names of spec §11.3's "moves" table from `@mcp-abap-adt/llm-agent-rag` — `@mcp-abap-adt/llm-agent` no longer exports them; contracts and the store kit (`TextOnlyEmbedding`, `QueryEmbedding`, `symmetricEmbedder`, `matchesRagIdentity`, `RagError`, `IQueryExpander`, …) stay on `@mcp-abap-adt/llm-agent`. **Nothing in `packages/llm-agent` — nor in any package `llm-agent-rag` depends on — imports `llm-agent-rag`** (a cycle; `test/repo/rag-implementations-home.test.ts` pins it). The files are at `packages/llm-agent-rag/src/vector-rag.ts` and `packages/llm-agent-rag/src/fallback-rag.ts` (Tasks 4, 19A, 25 edit them there; their tests are in `packages/llm-agent-rag/src/__tests__/`). A test that needs `VectorRag` / `InMemoryRag` lives in `llm-agent-rag` or a package above it — never in `llm-agent`.
 - **A probability and a relevance are different decisions.** A relevance score is never read as a probability: no [0, 1] check on it, no default threshold on it (spec §3.9, §5). It is comparable for the same query and model, also across calls, so `RelevanceReranker` batches by default like `ProbabilityReranker` (spec §3.9, §5.2, D28).
-- **Failure handling, not concurrency.** A failed stale delete is kept (`staleRecordIds`) and retried; no generations, no locks for RAG (spec §3.3, D13). Concurrent writes to a persistent store — in one process or across processes — are the backend's responsibility; nothing in this plan serializes them. The corpus load at start (Task 19A) is not a protocol either: it clears the store and writes the corpus; an interrupted load repeats at the next start; replicas that load one persistent store at once are the backend's concern (D54). Single-flight worker construction is **not** in this plan (D45: a separate issue, spec §15).
+- **Failure handling, not concurrency.** A failed stale delete is kept (`staleRecordIds`) and retried; no generations, no locks for RAG (spec §3.3, D13). Concurrent writes to a persistent store — in one process or across processes — are the backend's responsibility; nothing in this plan serializes them. The corpus load at start (Task 19A) is not a protocol either: it clears the store and writes the corpus; an interrupted load repeats at the next start; replicas that load one persistent store at once are the backend's concern (D54), and the window in which the others read a partial store is **accepted by the user** (D60) — no marker, no coordination. Single-flight worker construction is **not** in this plan (D45: a separate issue, spec §15).
 - **Records are built only from what the provider exports — no generated records, no companion stores (D50).** No intent records, intent sources or companion stores anywhere in this plan; Task 10 (intent sources and indexers) is withdrawn and its number is not reused.
 - **Owner in every physical id.** Every profile record id is `recordId(owner, itemId, kind, n)`; no code path addresses a record by the bare `itemId` (spec §3.1).
 - **Nothing that ships carries a tuned number (D55, D56).** No strategy class and no named composition carries a number measured in a consumer; a number it needs is a required argument (`budgetTokens`, `maxValues`, `minScore`, `faceted-rerank`'s `poolItems`) or a generic default: the caller's k for every cut (`TopItemsCut`) and k items for the pool (`ItemPool()`; `ICandidatePool` takes the caller's k). The measurements stay in the consumer; no "measured" text justifies a default (spec §7.1, §7.4).
@@ -27,9 +27,9 @@
 - **ESM only**, `.js` extensions in relative imports; Biome style (2 spaces, single quotes, semicolons); no `any` (Biome warns); no per-file licence header; every package `LGPL-3.0-only` (spec §11).
 - **Library packages declare `@mcp-abap-adt/*` as peers** (`test/repo/scoped-dependencies.test.ts`); only `@mcp-abap-adt/llm-agent-server` takes regular deps.
 - **Workspace siblings only.** The new packages (`llm-agent-reranker`, `sap-aicore-decision`) are linked as workspace siblings during development; no `file:` / `link:` to anything outside this repo. After any `npm install`, `grep -n '"link": true' package-lock.json` must list only `packages/*` siblings.
-- **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new packages' `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves. Publish order (the release's job, unchanged by Task 1A — no new edge): `llm-agent` → `llm-agent-reranker` → `typesafe-decision`, `sap-aicore-decision`, … → the store and embedder packages → `llm-agent-rag` → `llm-agent-libs` → `llm-agent-server-libs` → `llm-agent-server`; the root `build` / `clean` lists keep their order.
+- **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new packages' `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves. Publish order (the release's job, unchanged by Task 1A — no new edge): `llm-agent` → `llm-agent-reranker` → `typesafe-decision`, `sap-aicore-decision`, … → the store and embedder packages → `llm-agent-rag` → `llm-agent-libs` → `llm-agent-server-libs` → `llm-agent-server`; the root `build` / `clean` lists keep their order. The release is a **major** (the user picks the number).
 - **Imports between packages resolve to `dist/`.** After editing a package another package imports, rebuild it before running the dependent's tests: `npx tsc -b packages/<pkg>` (or `npm run build`).
-- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A, superseded by D46; single-flight construction out — Task 22A deleted, no task depends on it) and D46–D47 (spec §17.12: no `toolsChanged` reaction for a bound store, `IToolsFillSource` is `fill` only — Tasks 19, 19A, 20, 23A, 23B, 33, 34; the corpus fingerprint, the dropped cache entry and the worker refusal approved as written — Tasks 19A, 23A, 23B) and D50–D51 (spec §17.15: intents and companion stores removed entirely — Tasks 2, 3, 9, 11–13, 15, 16, 19, 21–23A, 30, 32–35, Task 10 withdrawn; the corpus deploy deletes the listed ids and writes the whole corpus, no per-record hashes — Task 19A, *withdrawn with the deploy step by D54*) and D52 (spec §17.16: `FallbackRag` offers a precomputed write only over a primary that has one; the corpus source checks the capability on the resolved backend too — Task 19A Steps 0a–0d and its loader steps, Task 34) and D53–D56 (spec §17.17: the RAG implementations' home — Task 1A, Tasks 33–34; the corpus loaded at start, `prebuilt` / `deployToolsCorpus` / the service record removed — Tasks 2, 12, 19, 19A, 21–23B, 33–35; no tuned numbers and the three named compositions — Tasks 16, 21, 22, 23, 30, 32; `ICandidatePool` takes the caller's k — Tasks 3, 5, 12, 14, 15, 17); all are written into the tasks below; no step waits on the user. **S10 (spec §17.17) is open for the user:** Task 1A implements the spec's recommendation (public home now, files in the next major); if the user chooses the physical move with a breaking release instead, Task 1A is replaced and Tasks 4, 19A, 25 change their paths — nothing else depends on the choice. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
+- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A, superseded by D46; single-flight construction out — Task 22A deleted, no task depends on it) and D46–D47 (spec §17.12: no `toolsChanged` reaction for a bound store, `IToolsFillSource` is `fill` only — Tasks 19, 19A, 20, 23A, 23B, 33, 34; the corpus fingerprint, the dropped cache entry and the worker refusal approved as written — Tasks 19A, 23A, 23B) and D50–D51 (spec §17.15: intents and companion stores removed entirely — Tasks 2, 3, 9, 11–13, 15, 16, 19, 21–23A, 30, 32–35, Task 10 withdrawn; the corpus deploy deletes the listed ids and writes the whole corpus, no per-record hashes — Task 19A, *withdrawn with the deploy step by D54*) and D52 (spec §17.16: `FallbackRag` offers a precomputed write only over a primary that has one; the corpus source checks the capability on the resolved backend too — Task 19A Steps 0a–0d and its loader steps, Task 34) and D53–D56 (spec §17.17: the RAG implementations' home — Task 1A, Tasks 33–34; the corpus loaded at start, `prebuilt` / `deployToolsCorpus` / the service record removed — Tasks 2, 12, 19, 19A, 21–23B, 33–35; no tuned numbers and the three named compositions — Tasks 16, 21, 22, 23, 30, 32; `ICandidatePool` takes the caller's k — Tasks 3, 5, 12, 14, 15, 17) and D57–D60 (spec §17.18: the RAG implementations' files move now, S10 decided — Task 1A, Tasks 4, 19A, 25, 33–35; no deprecated aliases — Tasks 4A, 4B, 20A, 22, 33–35; no re-exports — Tasks 4A, 4B, 34; the replicas' reload window accepted — Task 33); all are written into the tasks below; no step waits on the user. **S11 (spec §17.18) is open for the user:** Task 1A Step 4 removes `OllamaRag` (the recommendation); another choice changes only that step. **S12 is open for the user:** the pre-existing re-exports of spec §11.4 are left as they are; no task depends on the choice. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
 - Commits: Conventional Commits, each ending with
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -49,26 +49,24 @@ The ten inputs the spec implies, most likely to bite a user, each pinned by a te
 7. **A stale-record delete that fails** during a replacement — the item is `cleanup-failed`, never indexed; the id stays listed and the next `index` / `remove` deletes it. → Task 11 (`replacement → failed stale delete → … → remove leaves nothing`), Task 15, Task 30.
 8. **Two score scales in one result** (`keepStage1Top` pins stage-1 items beside reranked ones; a failed rerank falls back to stage 1) — a pinned item carries its reranked score, never its embedding score, under a probability and a relevance reranker; the `stage1` fallback returns stage-1 ids and scores; `keepStage1Top` + `ScoreFloorCut` and `ScoreFloorCut` + `onFailure: 'stage1'` are refused with their messages. → Task 13 (`a pinned item carries its RERANKED score …`, `a failed rerank under 'stage1' with keepStage1Top …`, the two rejection cases), Task 21 (`compose: score-floor with a reranker needs onFailure: error`).
 9. **A corpus that does not fit the server, or a store it cannot be loaded into** (another profile / embedder name, another vector length than the store config's `dimension`, a store without `clearAll` or without a precomputed write, a `FallbackRag` over a raw-only primary) — refused with a message naming what differs, **before** the store is cleared; a load interrupted after the clear fails the start, and the next start loads it whole. → Task 19A (`an identity, profileName or dimensions mismatch → throws …; the store is not touched`, the `clearAll` / precomputed / D52 cases, the interrupted load), Task 23B (the declared-dimension startup failure, a store holding foreign records keeps only the corpus).
-10. **A 30.1.0 import of a moved RAG implementation** (`import { VectorRag, InMemoryRag, FallbackRag } from '@mcp-abap-adt/llm-agent'`) — still compiles and gives the **same object** as `@mcp-abap-adt/llm-agent-rag`'s (`instanceof` and subclassing unchanged). → Task 1A (`rag-implementations-home.test.ts`, the alias typecheck).
+10. **A 30.1.0 import of a moved or renamed name** (`import { VectorRag } from '@mcp-abap-adt/llm-agent'`, `import { DecisionReranker } from '@mcp-abap-adt/llm-agent-libs'`, a `makeDecisionModel` key) — **fails to compile** (a major release, no alias, no re-export), and every one of them is a line of the CHANGELOG's migration table that names the new import; nothing in the repo still uses an old name or imports a moved name from its old package; nothing below `llm-agent-rag` imports it (no cycle). → Task 1A (`rag-implementations-home.test.ts`, the `@ts-expect-error` typecheck, the clean build), Task 4A / 4B / 20A (each removes its old names and switches every use in the same commit), Task 34 (the migration table: 51 lines), Task 35 (the repo-wide greps).
 
 ## File Structure
 
 **`packages/llm-agent/src/`** (contracts)
 - `interfaces/collection-profile.ts` — NEW: every contract of spec §3.1–§3.6 + `recordId`, `isRetrievalMetrics`.
-- `interfaces/decision-model.ts` — `IProbabilityDecision` (+ deprecated `IDecisionModel` alias), `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore` (spec §3.9, Task 4A).
+- `interfaces/decision-model.ts` — `IProbabilityDecision` (`IDecisionModel` renamed, the old name removed), `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore` (spec §3.9, Task 4A).
 - `interfaces/retrieval-embedder-owner.ts` — NEW: `IRetrievalEmbedderOwner`, `retrievalEmbedderOf` (spec §3.7).
 - `interfaces/tools-fill-source.ts` — NEW: `IToolsFillSource`, `ToolsFillContext` (spec §3.10, Task 19).
 - `interfaces/index.ts` — export the above.
 - `interfaces/health.ts`, `interfaces/metrics.ts`, `interfaces/tool-catalog.ts` — additive optional fields (spec §3.8; `ToolCatalogStatus.records` / `.profile` per S3).
 - `interfaces/tool-record-key.ts` — `skillNameFromRecord` (F3).
-- `rag/vector-rag.ts` — implements `IRetrievalEmbedderOwner` (the file stays here in this PR; public home `llm-agent-rag`, Task 1A).
-- `resilience/fallback-rag.ts` — `writer().upsertPrecomputedRaw` only when the primary's writer has it (D52, Task 19A Step 0; the file stays here in this PR).
-- `rag-implementations.ts` — NEW (Task 1A): the subpath `@mcp-abap-adt/llm-agent/rag-implementations`, the moved names undeprecated; `rag-implementations-deprecated.ts` — NEW: the root's `@deprecated` aliases; `index.ts`, `rag/index.ts`, `rag/corrections/index.ts`, `package.json` (`exports`).
+- `rag/vector-rag.ts`, `resilience/fallback-rag.ts` and the other RAG implementations of spec §11.3 — MOVED to `packages/llm-agent-rag/src/` with their tests (Task 1A); `index.ts`, `rag/index.ts`, `rag/providers/index.ts`, `rag/corrections/index.ts`, `resilience/index.ts` lose their export lines (no alias, no subpath).
 - `interfaces/query-expander.ts`, `interfaces/query-preprocessor.ts` — NEW (Task 1A): `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` moved out of `rag/query-expander.ts` / `rag/preprocessor.ts`.
 - `rag/tool-indexing-strategy.ts` — DELETED.
 - `testing/collection-profile-conformance.ts` — NEW conformance kit; `package.json` `exports` entry.
 
-**`packages/llm-agent-reranker/`** — NEW package (Tasks 4B–4C): `src/probability-reranker.ts` (moved from libs `reranker/decision-reranker.ts`), `src/relevance-reranker.ts`, `src/llm-reranker.ts`, `src/noop-reranker.ts` (moved), `src/assert-positive-integer.ts` (copy), `src/index.ts`, tests; `package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`. libs' `src/reranker/` is removed; libs re-exports the names (deprecated).
+**`packages/llm-agent-reranker/`** — NEW package (Tasks 4B–4C): `src/probability-reranker.ts` (moved from libs `reranker/decision-reranker.ts`), `src/relevance-reranker.ts`, `src/llm-reranker.ts`, `src/noop-reranker.ts` (moved), `src/assert-positive-integer.ts` (copy), `src/index.ts`, tests; `package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`. libs' `src/reranker/` is removed; libs exports none of the names (D59) and imports `NoopReranker` from the package for its own defaults.
 
 **`packages/llm-agent-libs/src/collections/`** (NEW directory, small modules)
 - `owner.ts` — owner ↔ metadata flattening, item keys.
@@ -83,19 +81,19 @@ The ten inputs the spec implies, most likely to bite a user, each pinned by a te
 - `index.ts` — exports; re-exported from `src/index.ts`.
 - `__tests__/*.test.ts`, `__tests__/collection-profile.typecheck.ts`.
 
-**Other libs files:** `mcp/fill-tools-binding.ts` (NEW, Task 23A: `fillToolsBinding`), `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`), `index.ts` (deprecated reranker re-exports), `mcp/vectorize-mcp-tools.ts` (dispatches to the store's fill source; the live profile path, the binding read from the store — D34, D42, Task 19; F1), `mcp/tool-registry.ts` (`revectorizeTools` writes nothing into a bound store, D46; `mcp/tool-registry-revectorize-profile.test.ts` NEW, Task 19), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts` (`HealthCheckerDeps.toolCatalog`, Task 23A; records/profile, Task 29), `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
+**Other libs files:** `mcp/fill-tools-binding.ts` (NEW, Task 23A: `fillToolsBinding`), `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`; `wrapDecisionModel` removed), `index.ts` (the reranker block deleted — no re-exports), `mcp/vectorize-mcp-tools.ts` (dispatches to the store's fill source; the live profile path, the binding read from the store — D34, D42, Task 19; F1), `mcp/tool-registry.ts` (`revectorizeTools` writes nothing into a bound store, D46; `mcp/tool-registry-revectorize-profile.test.ts` NEW, Task 19), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts` (`HealthCheckerDeps.toolCatalog`, Task 23A; records/profile, Task 29), `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
 
 **`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`).
 
-**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam + its deprecated alias `makeDecisionModel`, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable, Task 23A), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a throwing fill leaves no cached worker; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2); `package.json` (peer `llm-agent-reranker`).
+**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam — `makeDecisionModel` removed, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable, Task 23A), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a throwing fill leaves no cached worker; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2); `package.json` (peer `llm-agent-reranker`).
 
 **`packages/llm-agent-server/src/composition/`** — `make-relevance-decision.ts` (NEW: `createMakeRelevanceDecision`, the `sap-aicore` arm), `make-probability-decision.ts` (RENAMED from `make-decision-model.ts`, Task 20A: `createMakeProbabilityDecision`; names the other seam for `sap-aicore`, Task 24), `index.ts`, `__tests__/make-relevance-decision.test.ts` (NEW), `__tests__/make-probability-decision.test.ts` (RENAMED).
 
-**Provider stores:** `packages/{qdrant-rag,pg-vector-rag,hana-vector-rag}/src/*-rag.ts` — implement `IRetrievalEmbedderOwner` (F1). `packages/ollama-embedder/src/ollama.ts` — `VectorRag` from the `rag-implementations` subpath (Task 1A).
+**Provider stores:** `packages/{qdrant-rag,pg-vector-rag,hana-vector-rag}/src/*-rag.ts` — implement `IRetrievalEmbedderOwner` (F1). `packages/ollama-embedder/src/{ollama,index}.ts`, `package.json`, `README.md` — `OllamaRag` removed (Task 1A Step 4, spec S11). `packages/typesafe-decision/src/typesafe-decision-model.ts` — implements `IProbabilityDecision` (Task 4A).
 
-**`packages/llm-agent-rag/src/`** — `rag-implementations.ts` (NEW, Task 1A: re-exports the moved names), `index.ts`, `rag-factories.ts` (imports its stores from `./rag-implementations.js`), `__tests__/rag-implementations-home.test.ts`, `__typechecks__/rag-implementations-alias.ts` (NEW). Importers in libs / server-libs / server switch to it (Task 1A Step 6).
+**`packages/llm-agent-rag/src/`** — the moved files (Task 1A): `vector-rag.ts` (implements `IRetrievalEmbedderOwner`, Task 4), `in-memory-rag.ts`, `fallback-rag.ts` (D52, Task 19A Step 0), `active-filtering-rag.ts`, `search-strategy.ts`, `preprocessor.ts`, `query-expander.ts`, `inverted-index.ts`, `tokenizer.ts`, `overlays/`, `registry/`, `providers/`, `mcp-tools/`; `index.ts` (exports its own files only), `rag-factories.ts` (imports its stores by relative path); `__tests__/` (the 27 moved tests, `fakes.ts`, `rag-implementations-home.test.ts`, `vector-rag-embedder-owner.test.ts` — Task 4), `__typechecks__/` (`embedder-roles.ts`, `rag-tool-identity.ts` moved; `rag-implementations-moved.ts` NEW). Importers in libs / server-libs / server switch to it (Task 1A Step 6).
 
-**Repo:** `test/repo/rag-implementations-home.test.ts` (NEW, Task 1A), root `package.json` (build/clean lists), `scripts/publish-all.sh` (package list — not a publish), `tsconfig.typecheck.json`, `scripts/rag-eval/*`, docs.
+**Repo:** `test/repo/rag-implementations-home.test.ts` (NEW, Task 1A), `test/repo/no-old-names.test.ts` (NEW, Task 4B: no package exports a removed name; no file this plan adds or edits re-exports another package), `test/integration/typesafe-decision/typesafe-decision.integration.test.ts` (Task 4B), root `package.json` (build/clean lists), `scripts/publish-all.sh` (package list — not a publish), `tsconfig.typecheck.json`, `scripts/rag-eval/*`, docs.
 
 ---
 
@@ -239,26 +237,35 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 ---
 
 
-## Task 1A: The RAG implementations' public home — `@mcp-abap-adt/llm-agent-rag` (llm-agent + llm-agent-rag + importers)
+## Task 1A: The RAG implementations move to `@mcp-abap-adt/llm-agent-rag` — files, tests, exports; no aliases (llm-agent + llm-agent-rag + ollama-embedder + importers)
 
-Spec §11.3 (the contract-vs-implementation table, "How the public home moves without a cycle"), D53, §13 (migration note), §14.1 (the RAG implementations' home tests), §17.17 S10. Runs **before** every task that edits `VectorRag` (Task 4, Task 25) or `FallbackRag` (Task 19A Step 0), so their tests already import from the new home.
+Spec §11.3 (the moves table, "Why there is no cycle", "Importers switch"), §11.4, §13 (migration lines 1–39 and 51), §14.1 (the tests of the move), D53, D57, D59, S11 (§17.18). Runs **before** every task that edits `VectorRag` (Task 4, Task 25) or `FallbackRag` (Task 19A Step 0), so those tasks edit the files at their new paths.
 
-**What moves in this PR is the public home, not the files** (S10, open for the user): `llm-agent-rag` depends on `llm-agent`, so `llm-agent` cannot re-export from `llm-agent-rag` without a package cycle. The files stay in `packages/llm-agent/src/` (paths of Tasks 4, 19A, 25 unchanged) and move in the next major, together with the removal of the aliases.
+**This is a real move and it is breaking** (a major release, D57): the files go to `packages/llm-agent-rag/src/`, `@mcp-abap-adt/llm-agent` stops exporting them, and there is **no** `rag-implementations` subpath, **no** alias and **no** re-export. No cycle: once the three contract types move to `interfaces/` (Step 3), nothing that stays in `llm-agent` imports a moved file (spec §11.3, verified 2026-10-05). The one cycle the move would create — `ollama-embedder`'s `OllamaRag extends VectorRag`, while `llm-agent-rag` depends on `ollama-embedder` — is removed with `OllamaRag` (Step 4; spec S11, open for the user: if the user picks another option, only Step 4 changes).
 
 **Files:**
 - Create: `packages/llm-agent/src/interfaces/query-expander.ts` (`IQueryExpander`), `packages/llm-agent/src/interfaces/query-preprocessor.ts` (`IQueryPreprocessor`, `IDocumentEnricher`)
-- Modify: `packages/llm-agent/src/rag/query-expander.ts`, `rag/preprocessor.ts` (import the contracts instead of declaring them), `interfaces/index.ts`, `interfaces/plugin.ts`, `rag/index.ts`
-- Create: `packages/llm-agent/src/rag-implementations.ts` (the moved exports, undeprecated — the subpath), `packages/llm-agent/src/rag-implementations-deprecated.ts` (the root's `@deprecated` aliases)
-- Modify: `packages/llm-agent/src/index.ts` (`FallbackRag` line; the aliases), `packages/llm-agent/package.json` (`exports` → `./rag-implementations`)
-- Create: `packages/llm-agent-rag/src/rag-implementations.ts`, `packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts`
-- Modify: `packages/llm-agent-rag/src/index.ts`, `packages/llm-agent-rag/src/rag-factories.ts`
-- Modify: `packages/ollama-embedder/src/ollama.ts` (`VectorRag`, `VectorRagConfig` from the subpath — it sits below `llm-agent-rag`)
-- Modify (codemod, Step 6): the 35 files under `packages/llm-agent-libs/src`, `packages/llm-agent-server-libs/src`, `packages/llm-agent-server/src` that import a moved name from `@mcp-abap-adt/llm-agent`
-- Create: `test/repo/rag-implementations-home.test.ts`
+- Modify: `packages/llm-agent/src/interfaces/index.ts`, `interfaces/plugin.ts`, `src/index.ts`, `rag/index.ts`, `rag/providers/index.ts`, `rag/corrections/index.ts`, `resilience/index.ts` (export lines of moved names deleted)
+- Move (`git mv`, Step 5) — `packages/llm-agent/src/` → `packages/llm-agent-rag/src/`:
+  - `rag/vector-rag.ts` → `vector-rag.ts`; `rag/in-memory-rag.ts` → `in-memory-rag.ts`; `resilience/fallback-rag.ts` → `fallback-rag.ts`
+  - `rag/overlays/{index,overlay-rag,session-scoped-rag}.ts` → `overlays/`
+  - `rag/corrections/active-filtering-rag.ts` → `active-filtering-rag.ts`
+  - `rag/registry/{index,simple-rag-registry,store-key}.ts` → `registry/`
+  - `rag/providers/{in-memory-rag-provider,vector-rag-provider,simple-provider-registry}.ts` → `providers/` (`base-provider.ts` and `providers/index.ts` stay)
+  - `rag/search-strategy.ts` → `search-strategy.ts`; `rag/preprocessor.ts` → `preprocessor.ts`; `rag/query-expander.ts` → `query-expander.ts`
+  - `rag/mcp-tools/{index,rag-collection-tools}.ts` → `mcp-tools/`
+  - `rag/inverted-index.ts` → `inverted-index.ts`; `rag/tokenizer.ts` → `tokenizer.ts` (private, not exported)
+- Move (`git mv`, Step 6) — the 27 tests and 2 typecheck files that import a moved file → `packages/llm-agent-rag/src/__tests__/` and `src/__typechecks__/` (list in Step 6); the 11 that do not (`base-provider`, `corrections-errors`, `corrections-metadata`, `edit-strategies-basic`, `edit-strategies-overlay`, `id-strategies`, `query-embedding` tests, `rag-collection-owner.typecheck.ts`, `caller-cancellation`, `circuit-breaker-llm`, `circuit-breaker` tests) stay
+- Create: `packages/llm-agent-rag/src/__tests__/fakes.ts` (test-only copies of `makeLlm`, `makeRag` from `llm-agent`'s unexported `testing/index.ts`)
+- Modify: `packages/llm-agent-rag/src/index.ts`, `src/rag-factories.ts`, `README.md`
+- Modify: `packages/ollama-embedder/src/ollama.ts`, `src/index.ts`, `package.json` (`description`), `README.md`, root `README.md` — `OllamaRag` removed (Step 4)
+- Modify (codemod, Step 7): the 35 files under `packages/llm-agent-libs/src`, `packages/llm-agent-server-libs/src`, `packages/llm-agent-server/src` that import a moved name from `@mcp-abap-adt/llm-agent`
+- Modify: `tsconfig.typecheck.json` (the two moved typecheck files' paths; the new typecheck file)
+- Create: `test/repo/rag-implementations-home.test.ts`, `packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts`, `packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts`
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `@mcp-abap-adt/llm-agent-rag` exports, unchanged in name and identity: `VectorRag`, `VectorRagConfig`, `InMemoryRag`, `InMemoryRagConfig`, `FallbackRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry`, `ragStoreKey`, `InMemoryRagProvider`, `InMemoryRagProviderConfig`, `VectorRagProvider`, `VectorRagProviderConfig`, `SimpleRagProviderRegistry`, `WeightedFusionStrategy`, `RrfStrategy`, `VectorOnlyStrategy`, `Bm25OnlyStrategy`, `CompositeStrategy`, `CompositeStrategyEntry`, `NoopQueryPreprocessor`, `NoopDocumentEnricher`, `TranslatePreprocessor`, `ExpandPreprocessor`, `IntentEnricher`, `PreprocessorChain`, `LlmQueryExpander`, `NoopQueryExpander`, `buildRagCollectionToolEntries`, `RagCallerIdentity`, `RagCollectionToolOptions`, `RagToolContext`, `RagToolEntry`. From here on, every task's code above `llm-agent-rag` imports these names from `@mcp-abap-adt/llm-agent-rag`; the store kit (`QueryEmbedding`, `TextOnlyEmbedding`, `FallbackQueryEmbedding`, `symmetricEmbedder`, `matchesRagIdentity`, `AbstractRagProvider`, …) and every contract still come from `@mcp-abap-adt/llm-agent`.
+- Produces: `@mcp-abap-adt/llm-agent-rag` exports, from its own files, unchanged in name and behaviour: `VectorRag`, `VectorRagConfig`, `InMemoryRag`, `InMemoryRagConfig`, `FallbackRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry`, `ragStoreKey`, `InMemoryRagProvider`, `InMemoryRagProviderConfig`, `VectorRagProvider`, `VectorRagProviderConfig`, `SimpleRagProviderRegistry`, `WeightedFusionStrategy`, `RrfStrategy`, `VectorOnlyStrategy`, `Bm25OnlyStrategy`, `CompositeStrategy`, `CompositeStrategyEntry`, `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext`, `NoopQueryPreprocessor`, `NoopDocumentEnricher`, `TranslatePreprocessor`, `ExpandPreprocessor`, `IntentEnricher`, `PreprocessorChain`, `LlmQueryExpander`, `NoopQueryExpander`, `buildRagCollectionToolEntries`, `RagCallerIdentity`, `RagCollectionToolOptions`, `RagToolContext`, `RagToolEntry`. **`@mcp-abap-adt/llm-agent` exports none of them any more.** From here on, every task's code imports these names from `@mcp-abap-adt/llm-agent-rag` (or, inside `llm-agent-rag`, by relative path); the store kit (`QueryEmbedding`, `TextOnlyEmbedding`, `FallbackQueryEmbedding`, `symmetricEmbedder`, `matchesRagIdentity`, `AbstractRagProvider`, …) and every contract — `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` included — still come from `@mcp-abap-adt/llm-agent`. `OllamaRag` no longer exists.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -269,7 +276,7 @@ import { describe, it } from 'node:test';
 import * as core from '@mcp-abap-adt/llm-agent';
 import * as rag from '../index.js';
 
-/** Spec §11.3 "moves" — every runtime name (types are checked in Step 9's typecheck). */
+/** Spec §11.3 "moves" — every runtime name (types: Step 9's typecheck). */
 const MOVED_VALUES = [
   'VectorRag', 'InMemoryRag', 'FallbackRag', 'OverlayRag', 'SessionScopedRag',
   'ActiveFilteringRag', 'SimpleRagRegistry', 'ragStoreKey', 'InMemoryRagProvider',
@@ -279,19 +286,16 @@ const MOVED_VALUES = [
   'PreprocessorChain', 'LlmQueryExpander', 'NoopQueryExpander', 'buildRagCollectionToolEntries',
 ] as const;
 
-describe('the RAG implementations\' home (spec §11.3, D53)', () => {
+describe('the RAG implementations live in llm-agent-rag (spec §11.3, D57)', () => {
   for (const name of MOVED_VALUES) {
-    it(`${name}: llm-agent-rag exports the same object as the deprecated llm-agent alias`, () => {
-      const fromRag = (rag as Record<string, unknown>)[name];
-      const fromCore = (core as Record<string, unknown>)[name];
-      assert.equal(typeof fromRag, 'function', `${name} missing from llm-agent-rag`);
-      assert.equal(fromRag, fromCore);
+    it(`${name}: exported by llm-agent-rag, not by llm-agent`, () => {
+      assert.equal(typeof (rag as Record<string, unknown>)[name], 'function', `${name} missing from llm-agent-rag`);
+      assert.equal(name in core, false, `${name} still exported by @mcp-abap-adt/llm-agent`);
     });
   }
-
-  it('an instance made from one path is an instance of the other', () => {
-    const r = new rag.InMemoryRag();
-    assert.ok(r instanceof core.InMemoryRag);
+  it('the private helpers stay private', () => {
+    assert.equal('InvertedIndex' in rag, false);
+    assert.equal('tokenizeSearchText' in rag, false);
   });
 });
 ```
@@ -299,9 +303,11 @@ describe('the RAG implementations\' home (spec §11.3, D53)', () => {
 ```ts
 // test/repo/rag-implementations-home.test.ts
 /**
- * Spec §11.3, D53: the RAG implementations' public home is @mcp-abap-adt/llm-agent-rag.
- * - nothing in @mcp-abap-adt/llm-agent imports llm-agent-rag (it would be a package cycle);
- * - no package above llm-agent-rag imports a moved name from the deprecated root path.
+ * Spec §11.3, D57: the RAG implementations live in @mcp-abap-adt/llm-agent-rag.
+ * - no cycle: nothing in @mcp-abap-adt/llm-agent, and nothing llm-agent-rag depends on,
+ *   imports or declares llm-agent-rag;
+ * - no file imports a moved name from @mcp-abap-adt/llm-agent (it no longer exports them);
+ * - OllamaRag is gone (spec S11).
  */
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -316,33 +322,51 @@ const MOVED = new Set([
   'InMemoryRagProvider', 'InMemoryRagProviderConfig', 'VectorRagProvider',
   'VectorRagProviderConfig', 'SimpleRagProviderRegistry', 'WeightedFusionStrategy',
   'RrfStrategy', 'VectorOnlyStrategy', 'Bm25OnlyStrategy', 'CompositeStrategy',
-  'CompositeStrategyEntry', 'NoopQueryPreprocessor', 'NoopDocumentEnricher',
+  'CompositeStrategyEntry', 'ISearchStrategy', 'ISearchCandidate', 'ISearchQuery',
+  'IScoredResult', 'ISearchContext', 'NoopQueryPreprocessor', 'NoopDocumentEnricher',
   'TranslatePreprocessor', 'ExpandPreprocessor', 'IntentEnricher', 'PreprocessorChain',
   'LlmQueryExpander', 'NoopQueryExpander', 'buildRagCollectionToolEntries',
   'RagCallerIdentity', 'RagCollectionToolOptions', 'RagToolContext', 'RagToolEntry',
 ]);
+/** What llm-agent-rag depends on (peers + tsconfig references): none may import it. */
+const BELOW_RAG = [
+  'llm-agent', 'qdrant-rag', 'pg-vector-rag', 'hana-vector-rag',
+  'ollama-embedder', 'openai-embedder', 'sap-aicore-embedder',
+];
 
 function* tsFiles(dir: string): Generator<string> {
   for (const e of readdirSync(dir)) {
     const p = join(dir, e);
     if (e === 'node_modules' || e === 'dist') continue;
     if (statSync(p).isDirectory()) yield* tsFiles(p);
-    else if (e.endsWith('.ts')) yield p;
+    else if (/\.(ts|mts)$/.test(e)) yield p;
   }
 }
 
-test('nothing in @mcp-abap-adt/llm-agent imports @mcp-abap-adt/llm-agent-rag', () => {
-  const offenders = [...tsFiles(join(ROOT, 'packages/llm-agent/src'))].filter((f) =>
-    /['"]@mcp-abap-adt\/llm-agent-rag['"/]/.test(readFileSync(f, 'utf8')),
-  );
+test('nothing llm-agent-rag depends on imports or declares @mcp-abap-adt/llm-agent-rag', () => {
+  const offenders: string[] = [];
+  for (const pkg of BELOW_RAG) {
+    const dir = join(ROOT, 'packages', pkg);
+    if (readFileSync(join(dir, 'package.json'), 'utf8').includes('"@mcp-abap-adt/llm-agent-rag"')) {
+      offenders.push(`${pkg}/package.json`);
+    }
+    for (const f of tsFiles(join(dir, 'src'))) {
+      if (/['"]@mcp-abap-adt\/llm-agent-rag['"/]/.test(readFileSync(f, 'utf8'))) offenders.push(f);
+    }
+  }
   assert.deepEqual(offenders, []);
 });
 
-test('packages above llm-agent-rag import no moved name from the llm-agent root', () => {
+test('no file imports a moved name from @mcp-abap-adt/llm-agent', () => {
   const STMT = /(?:import|export)(?:\s+type)?\s*\{([^}]*)\}\s*from\s*'@mcp-abap-adt\/llm-agent';/g;
   const offenders: string[] = [];
-  for (const pkg of ['llm-agent-libs', 'llm-agent-server-libs', 'llm-agent-server', 'llm-agent-rag']) {
-    for (const f of tsFiles(join(ROOT, 'packages', pkg, 'src'))) {
+  const dirs = [
+    ...readdirSync(join(ROOT, 'packages')).map((p) => join(ROOT, 'packages', p, 'src')),
+    join(ROOT, 'scripts'),
+    join(ROOT, 'test'),
+  ];
+  for (const dir of dirs) {
+    for (const f of tsFiles(dir)) {
       for (const m of readFileSync(f, 'utf8').matchAll(STMT)) {
         for (const spec of m[1].split(',')) {
           const name = spec.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
@@ -353,12 +377,19 @@ test('packages above llm-agent-rag import no moved name from the llm-agent root'
   }
   assert.deepEqual(offenders, []);
 });
+
+test('OllamaRag is removed (spec S11)', () => {
+  const offenders = [...tsFiles(join(ROOT, 'packages'))].filter((f) =>
+    /\bOllamaRag\b/.test(readFileSync(f, 'utf8')),
+  );
+  assert.deepEqual(offenders, []);
+});
 ```
 
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `node --import tsx/esm --test test/repo/rag-implementations-home.test.ts`
-Expected: the first test PASSES (nothing imports llm-agent-rag yet); the second FAILS listing the 35 importers of Step 6 (e.g. `packages/llm-agent-libs/src/builder.ts: InMemoryRag`) and `packages/llm-agent-rag/src/rag-factories.ts: VectorRag`.
+Expected: the first test PASSES (nothing imports `llm-agent-rag` from below yet); the second FAILS listing the 35 importers of Step 7 (e.g. `packages/llm-agent-libs/src/builder.ts: InMemoryRag`), `packages/llm-agent-rag/src/rag-factories.ts: VectorRag`, `…: ISearchStrategy` and `packages/ollama-embedder/src/ollama.ts: VectorRag`; the third FAILS listing `packages/ollama-embedder/src/ollama.ts` and `src/index.ts`.
 
 Run: `npm run build && node --import tsx/esm --test packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts`
 Expected: FAIL — `VectorRag missing from llm-agent-rag` (and the same for every name).
@@ -410,35 +441,75 @@ export interface IDocumentEnricher {
 }
 ```
 
-- In `rag/query-expander.ts`: delete the `IQueryExpander` declaration (lines 9–14 today) and add `import type { IQueryExpander } from '../interfaces/query-expander.js';`.
+- In `rag/query-expander.ts`: delete the `IQueryExpander` declaration (lines 9–14 today) and add `import type { IQueryExpander } from '../interfaces/query-expander.js';` (the file moves in Step 5; Step 5's import rewrite turns this into the `@mcp-abap-adt/llm-agent` import).
 - In `rag/preprocessor.ts`: delete the two interface declarations (lines 5–29 today) and add `import type { IDocumentEnricher, IQueryPreprocessor } from '../interfaces/query-preprocessor.js';`.
 - `interfaces/index.ts` line 1: `export type { IQueryExpander } from '../rag/query-expander.js';` → `export type { IQueryExpander } from './query-expander.js';` and add `export type { IDocumentEnricher, IQueryPreprocessor } from './query-preprocessor.js';`.
 - `interfaces/plugin.ts` line 8: `from '../rag/query-expander.js'` → `from './query-expander.js'`.
-- `rag/index.ts` line 9: `export type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';` → delete (the root now gets them from `interfaces/index.ts`); `in-memory-rag.ts` and `vector-rag.ts` import the two types from `'../interfaces/query-preprocessor.js'` instead of `'./preprocessor.js'`.
+- `rag/index.ts` line 9: delete `export type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';` (the root gets them from `interfaces/index.ts`); `in-memory-rag.ts` and `vector-rag.ts` import the two types from `'../interfaces/query-preprocessor.js'` instead of `'./preprocessor.js'`.
 
-- [ ] **Step 4: The subpath with the originals, and the root's deprecated aliases**
+Run: `npx tsc -b packages/llm-agent`
+Expected: clean — nothing has moved yet; the contracts are now in `interfaces/`.
+
+- [ ] **Step 4: Remove `OllamaRag` first (spec S11 — the cycle)**
+
+`OllamaRag extends VectorRag`; once Step 5 moves `VectorRag` into `llm-agent-rag` — which peers on `ollama-embedder` and references it in `tsconfig.json` — `ollama-embedder` could only reach it by importing `llm-agent-rag`: a package and `tsc -b` reference cycle. So `OllamaRag` goes (migration line 51), **before** the move: `tsc -b packages/llm-agent-rag` in Step 5 builds `ollama-embedder` as a reference and would fail on its `VectorRag` import otherwise.
+
+- `packages/ollama-embedder/src/ollama.ts`: delete the `OllamaRag` class (its doc comment and the class, lines 122–131 today); drop `symmetricEmbedder`, `VectorRag` and `type VectorRagConfig` from the L2–8 `@mcp-abap-adt/llm-agent` import — `OllamaRag` was their only user (verified 2026-10-05); `type CallOptions` and `RagError` stay.
+- `packages/ollama-embedder/src/index.ts`: `export { OllamaEmbedder, OllamaRag } from './ollama.js';` → `export { OllamaEmbedder } from './ollama.js';`.
+- The package's tests (`ollama.test.ts`, `ollama-timeout.test.ts`) do not build `OllamaRag` (verified 2026-10-05) — unchanged.
+- `packages/ollama-embedder/package.json` `description`: drop "and OllamaRag convenience class"; `README.md` (package and root `README.md` line 140): `OllamaRag` removed — "build `new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)` with `VectorRag` from `@mcp-abap-adt/llm-agent-rag`".
+
+Run: `npx tsc -b packages/ollama-embedder && npm test --workspace @mcp-abap-adt/ollama-embedder && grep -rn "OllamaRag" packages --include='*.ts'`
+Expected: build and tests PASS; the grep prints nothing.
+
+- [ ] **Step 5: Move the files and cut `llm-agent`'s exports**
+
+```bash
+L=packages/llm-agent/src; R=packages/llm-agent-rag/src
+mkdir -p $R/overlays $R/registry $R/providers $R/mcp-tools
+git mv $L/rag/vector-rag.ts $R/vector-rag.ts
+git mv $L/rag/in-memory-rag.ts $R/in-memory-rag.ts
+git mv $L/resilience/fallback-rag.ts $R/fallback-rag.ts
+git mv $L/rag/overlays/index.ts $L/rag/overlays/overlay-rag.ts $L/rag/overlays/session-scoped-rag.ts $R/overlays/
+git mv $L/rag/corrections/active-filtering-rag.ts $R/active-filtering-rag.ts
+git mv $L/rag/registry/index.ts $L/rag/registry/simple-rag-registry.ts $L/rag/registry/store-key.ts $R/registry/
+git mv $L/rag/providers/in-memory-rag-provider.ts $L/rag/providers/vector-rag-provider.ts $L/rag/providers/simple-provider-registry.ts $R/providers/
+git mv $L/rag/search-strategy.ts $R/search-strategy.ts
+git mv $L/rag/preprocessor.ts $R/preprocessor.ts
+git mv $L/rag/query-expander.ts $R/query-expander.ts
+git mv $L/rag/mcp-tools/index.ts $L/rag/mcp-tools/rag-collection-tools.ts $R/mcp-tools/
+git mv $L/rag/inverted-index.ts $R/inverted-index.ts
+git mv $L/rag/tokenizer.ts $R/tokenizer.ts
+```
+
+**Import rewrite inside the moved files** (one rule, applied by hand — the Step 7 codemod handles only package imports): a relative import whose target is a **moved** file keeps a relative path to its new place (e.g. `providers/vector-rag-provider.ts`: `'../vector-rag.js'` stays `'../vector-rag.js'`; `vector-rag.ts`: `'./search-strategy.js'`, `'./inverted-index.js'`, `'./tokenizer.js'` stay; `registry/simple-rag-registry.ts`: `'./store-key.js'` stays); a relative import whose target **stays** in `llm-agent` becomes an import from `'@mcp-abap-adt/llm-agent'` (types with `import type`). The stay-targets and the names taken from them — all already root exports of `@mcp-abap-adt/llm-agent` (spec §11.3):
+- `interfaces/*` (`IRag`, `IRagBackendWriter`, `IQueryEmbedding`, `RagResult`, `RagError`, `Result`, `CallOptions`, `ILlm`, `IRequestLogger`, `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher`, the other `rag.ts` / `types.ts` names);
+- `rag/identity-filter.js` (`matchesRagIdentity`, `ragIdentityFilter`), `rag/query-embedding.js` (`QueryEmbedding`, `FallbackQueryEmbedding`), `rag/catalog/validation.js` (`ragOwnerKeys`, `validateRagAttributes`, `validateRagOwner`), `rag/corrections/errors.js` (the error classes), `rag/corrections/metadata.js` (`CorrectionMetadata`, `filterActive`, `buildCorrectionMetadata`, `deprecateMetadata`), `rag/strategies/edit/immutable.js` (`ImmutableEditStrategy`), `rag/providers/base-provider.js` (`AbstractRagProvider`), `resilience/circuit-breaker.js` (`CircuitBreaker`, type).
+
+Verify: `grep -rnE "from '\.\.?/" packages/llm-agent-rag/src --include='*.ts' | grep -vE "__tests__|__typechecks__" | grep -E "interfaces/|identity-filter|query-embedding|catalog/|corrections/|metadata\.js|errors\.js|strategies/|base-provider|circuit-breaker"` → empty (`active-filtering-rag.ts` imported `./metadata.js` from its old directory — that target stays, so it becomes the package import too); the build below catches anything the grep misses.
+
+**`llm-agent`'s exports of the moved names are deleted** — no alias, no subpath:
+- `src/index.ts`: delete `export { FallbackRag } from './resilience/fallback-rag.js';` (line 111 today).
+- `resilience/index.ts`: delete `export { FallbackRag } from './fallback-rag.js';` (line 25 today).
+- `rag/corrections/index.ts`: delete line 1 (`export { ActiveFilteringRag } from './active-filtering-rag.js';`).
+- `rag/providers/index.ts`: keep only `export { AbstractRagProvider } from './base-provider.js';` (and whatever else it exports from `base-provider.ts`); delete the three lines of the moved providers.
+- `rag/index.ts`: delete `InMemoryRagConfig` / `InMemoryRag` (lines 5–6), `export * from './mcp-tools/index.js';`, `export * from './overlays/index.js';`, the `./preprocessor.js` class block, the `LlmQueryExpander, NoopQueryExpander` line, `export * from './registry/index.js';`, **both** `./search-strategy.js` blocks (the `export type { IScoredResult, … ISearchStrategy }` block too — the types move with the file, spec §11.3), and the `VectorRagConfig` / `VectorRag` lines. `catalog`, `corrections`, `identity-filter`, `providers` (now only `AbstractRagProvider`), `query-embedding`, `retrieval-embedder`, `strategies/edit`, `strategies/id` stay.
+
+`packages/llm-agent-rag/src/index.ts` — append (each name from the file that owns it; nothing from another package, D59):
 
 ```ts
-// packages/llm-agent/src/rag-implementations.ts
-/**
- * The RAG implementations, undeprecated (spec §11.3, D53). Their public home is
- * `@mcp-abap-adt/llm-agent-rag`, which re-exports this module; the store and embedder packages
- * below `llm-agent-rag` import from here. INTERNAL to the llm-agent family: this subpath and the
- * files behind it move into `llm-agent-rag` in the next major.
- */
-export {
-  ActiveFilteringRag,
-} from './rag/corrections/active-filtering-rag.js';
-export { InMemoryRag, type InMemoryRagConfig } from './rag/in-memory-rag.js';
+// The RAG implementations (spec §11.3, D57) — this package's own files.
+export { ActiveFilteringRag } from './active-filtering-rag.js';
+export { FallbackRag } from './fallback-rag.js';
+export { InMemoryRag, type InMemoryRagConfig } from './in-memory-rag.js';
 export {
   buildRagCollectionToolEntries,
   type RagCallerIdentity,
   type RagCollectionToolOptions,
   type RagToolContext,
   type RagToolEntry,
-} from './rag/mcp-tools/rag-collection-tools.js';
-export { OverlayRag } from './rag/overlays/overlay-rag.js';
-export { SessionScopedRag } from './rag/overlays/session-scoped-rag.js';
+} from './mcp-tools/index.js';
+export { OverlayRag, SessionScopedRag } from './overlays/index.js';
 export {
   ExpandPreprocessor,
   IntentEnricher,
@@ -446,122 +517,78 @@ export {
   NoopQueryPreprocessor,
   PreprocessorChain,
   TranslatePreprocessor,
-} from './rag/preprocessor.js';
+} from './preprocessor.js';
 export {
   InMemoryRagProvider,
   type InMemoryRagProviderConfig,
-} from './rag/providers/in-memory-rag-provider.js';
-export { SimpleRagProviderRegistry } from './rag/providers/simple-provider-registry.js';
+} from './providers/in-memory-rag-provider.js';
+export { SimpleRagProviderRegistry } from './providers/simple-provider-registry.js';
 export {
   VectorRagProvider,
   type VectorRagProviderConfig,
-} from './rag/providers/vector-rag-provider.js';
-export { LlmQueryExpander, NoopQueryExpander } from './rag/query-expander.js';
-export { SimpleRagRegistry } from './rag/registry/simple-rag-registry.js';
-export { ragStoreKey } from './rag/registry/store-key.js';
+} from './providers/vector-rag-provider.js';
+export { LlmQueryExpander, NoopQueryExpander } from './query-expander.js';
+export { ragStoreKey, SimpleRagRegistry } from './registry/index.js';
 export {
   Bm25OnlyStrategy,
   CompositeStrategy,
   type CompositeStrategyEntry,
+  type IScoredResult,
+  type ISearchCandidate,
+  type ISearchContext,
+  type ISearchQuery,
+  type ISearchStrategy,
   RrfStrategy,
   VectorOnlyStrategy,
   WeightedFusionStrategy,
-} from './rag/search-strategy.js';
-export { VectorRag, type VectorRagConfig } from './rag/vector-rag.js';
-export { FallbackRag } from './resilience/fallback-rag.js';
+} from './search-strategy.js';
+export { VectorRag, type VectorRagConfig } from './vector-rag.js';
 ```
+
+(Check `mcp-tools/index.ts` exports the four `Rag*` types; if it does not, export them from `./mcp-tools/rag-collection-tools.js` instead.) `packages/llm-agent-rag/src/rag-factories.ts`: move `InMemoryRag`, `VectorRag` and `type ISearchStrategy` out of its `'@mcp-abap-adt/llm-agent'` import into `import { InMemoryRag } from './in-memory-rag.js';`, `import type { ISearchStrategy } from './search-strategy.js';`, `import { VectorRag } from './vector-rag.js';` (`asymmetricEmbedder`, `symmetricEmbedder` stay on the llm-agent import).
+
+Run: `npx tsc -b packages/llm-agent packages/llm-agent-rag`
+Expected: both build. `llm-agent` fails here only if a stay-file still imports a moved file — fix the import, never by importing `llm-agent-rag`. `llm-agent-rag` fails here only on a missed import rewrite.
+
+- [ ] **Step 6: Move the tests that test the moved files**
+
+```bash
+L=packages/llm-agent/src; R=packages/llm-agent-rag/src
+for t in active-filtering-rag catalog-validation dedup-distinct-ids fusion-normalisation \
+  in-memory-rag-provider in-memory-rag inverted-index keyword-statistics-scope \
+  mcp-tools-evaluation overlay-rag preprocessor query-expander rag-collection-tools-identity \
+  rag-collection-tools rag-evaluation rag-filter-conformance search-strategy \
+  simple-provider-registry simple-rag-registry-adopt simple-rag-registry-lifecycle \
+  simple-rag-registry-scope simple-rag-registry store-query-embedder tokenizer \
+  vector-rag-provider vector-rag-writer; do
+  git mv $L/rag/__tests__/$t.test.ts $R/__tests__/$t.test.ts
+done
+git mv $L/resilience/__tests__/fallback-rag.test.ts $R/__tests__/fallback-rag.test.ts
+git mv $L/rag/__tests__/embedder-roles.typecheck.ts $R/__typechecks__/embedder-roles.ts
+git mv $L/rag/__tests__/rag-tool-identity.typecheck.ts $R/__typechecks__/rag-tool-identity.ts
+```
+
+(27 tests + 2 typecheck files: exactly those under `rag/__tests__/` and `resilience/__tests__/` that import a moved file — re-check with `grep -lE "from '\.\./(vector-rag|in-memory-rag|fallback-rag|overlays|corrections/active-filtering-rag|registry|providers/(in-memory-rag-provider|vector-rag-provider|simple-provider-registry)|search-strategy|preprocessor|query-expander|mcp-tools|inverted-index|tokenizer)" packages/llm-agent/src/rag/__tests__/* packages/llm-agent/src/resilience/__tests__/*` → empty after the move.)
+
+In the moved tests and typecheck files, apply the same import rule as Step 5, from their new place: a moved target → `'../<new path>.js'` (e.g. `'../overlays/overlay-rag.js'` → `'../overlays/overlay-rag.js'`, `'../../resilience/circuit-breaker.js'` → `@mcp-abap-adt/llm-agent`, `'../fallback-rag.js'` → `'../fallback-rag.js'`); a stay target → `'@mcp-abap-adt/llm-agent'`; `'../../testing/rag-filter-conformance.js'` → `'@mcp-abap-adt/llm-agent/testing/rag-filter-conformance'` (the public subpath); `'../../testing/index.js'` (`makeLlm` in `preprocessor`, `query-expander`; `makeRag` in `fallback-rag`) → `'./fakes.js'`:
 
 ```ts
-// packages/llm-agent/src/rag-implementations-deprecated.ts
-/**
- * Deprecated root aliases of the RAG implementations (spec §11.3, D53, §13). Each is the SAME
- * object as `@mcp-abap-adt/llm-agent-rag`'s export (instanceof, subclassing and statics unchanged);
- * only the import path is deprecated. Removed in the next major.
- */
-import * as impl from './rag-implementations.js';
-
-/** @deprecated Import from `@mcp-abap-adt/llm-agent-rag`; removed from this package in the next major. */
-export const VectorRag = impl.VectorRag;
-/** @deprecated Import from `@mcp-abap-adt/llm-agent-rag`; removed from this package in the next major. */
-export type VectorRag = impl.VectorRag;
-/** @deprecated Import from `@mcp-abap-adt/llm-agent-rag`; removed from this package in the next major. */
-export type VectorRagConfig = impl.VectorRagConfig;
-// … the same two-line pattern (const + type) for every CLASS of the list:
-//   InMemoryRag, FallbackRag, OverlayRag, SessionScopedRag, ActiveFilteringRag, SimpleRagRegistry,
-//   InMemoryRagProvider, VectorRagProvider, SimpleRagProviderRegistry, WeightedFusionStrategy,
-//   RrfStrategy, VectorOnlyStrategy, Bm25OnlyStrategy, CompositeStrategy, NoopQueryPreprocessor,
-//   NoopDocumentEnricher, TranslatePreprocessor, ExpandPreprocessor, IntentEnricher,
-//   PreprocessorChain, LlmQueryExpander, NoopQueryExpander;
-// the `type` line only for every TYPE: InMemoryRagConfig, InMemoryRagProviderConfig,
-//   VectorRagProviderConfig, CompositeStrategyEntry, RagCallerIdentity, RagCollectionToolOptions,
-//   RagToolContext, RagToolEntry;
-// the `const` line only for every FUNCTION: ragStoreKey, buildRagCollectionToolEntries.
+// packages/llm-agent-rag/src/__tests__/fakes.ts
+// Test-only copies of `makeLlm` and `makeRag` from @mcp-abap-adt/llm-agent's src/testing/index.ts,
+// which is not a public entry point (spec §11.3).
 ```
 
-Write the file out in full (no `// …` left): 23 classes × 2 lines, 9 types, 2 functions, each with the same `@deprecated` JSDoc line. Biome accepts a `const` and a `type` of one name (the reranker aliases of Task 4B use the same pattern).
+Write `fakes.ts` out in full (no placeholder left): `makeLlm` (lines 24–92 of `packages/llm-agent/src/testing/index.ts` today) and `makeRag` (lines 95–133) copied verbatim, with the file's import block (lines 8–18) rewritten to one `@mcp-abap-adt/llm-agent` import: `import { type ILlm, type IQueryEmbedding, type IRag, LlmError, type LlmFinishReason, type LlmResponse, type LlmStreamChunk, type LlmToolCall, type RagError, type RagResult, type Result } from '@mcp-abap-adt/llm-agent';` — keep only the names the two functions use (`noUnusedLocals` does not apply to tests, but Biome's `noUnusedImports` does). `tsconfig.typecheck.json` `include`: replace `packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts` with `packages/llm-agent-rag/src/__typechecks__/rag-tool-identity.ts` and `packages/llm-agent/src/rag/__tests__/embedder-roles.typecheck.ts` with `packages/llm-agent-rag/src/__typechecks__/embedder-roles.ts`.
 
-- `rag/index.ts`: delete the export lines of every moved name — `InMemoryRagConfig`/`InMemoryRag` (lines 5–6), `export * from './mcp-tools/index.js'`, `export * from './overlays/index.js'`, the `preprocessor.js` class block, `export * from './providers/index.js'` → replace with `export { AbstractRagProvider } from './providers/base-provider.js';` (the store kit stays), the `LlmQueryExpander, NoopQueryExpander` line, `export * from './registry/index.js'`, the search-strategy **class** block (keep the `export type { IScoredResult, ISearchCandidate, ISearchContext, ISearchQuery, ISearchStrategy }` block), and the `VectorRagConfig`/`VectorRag` lines. `catalog`, `corrections` (errors, metadata — but not `ActiveFilteringRag`: change `corrections/index.ts` line 1 to nothing and export it only from `rag-implementations.ts`), `identity-filter`, `query-embedding`, `retrieval-embedder`, `strategies/edit`, `strategies/id` stay.
-- `src/index.ts`: delete `export { FallbackRag } from './resilience/fallback-rag.js';` and add `export * from './rag-implementations-deprecated.js';`.
-- `packages/llm-agent/package.json` `exports`, after `"."`:
-  ```json
-  "./rag-implementations": {
-    "types": "./dist/rag-implementations.d.ts",
-    "import": "./dist/rag-implementations.js",
-    "default": "./dist/rag-implementations.js"
-  },
-  ```
-
-- [ ] **Step 5: `llm-agent-rag` re-exports them**
-
-```ts
-// packages/llm-agent-rag/src/rag-implementations.ts
-/**
- * The public home of the RAG implementations (spec §11.3, D53). Same objects as before; their files
- * move into this package in the next major (S10).
- */
-export {
-  ActiveFilteringRag,
-  Bm25OnlyStrategy,
-  buildRagCollectionToolEntries,
-  CompositeStrategy,
-  type CompositeStrategyEntry,
-  ExpandPreprocessor,
-  FallbackRag,
-  InMemoryRag,
-  type InMemoryRagConfig,
-  InMemoryRagProvider,
-  type InMemoryRagProviderConfig,
-  IntentEnricher,
-  LlmQueryExpander,
-  NoopDocumentEnricher,
-  NoopQueryExpander,
-  NoopQueryPreprocessor,
-  OverlayRag,
-  PreprocessorChain,
-  type RagCallerIdentity,
-  type RagCollectionToolOptions,
-  type RagToolContext,
-  type RagToolEntry,
-  RrfStrategy,
-  ragStoreKey,
-  SessionScopedRag,
-  SimpleRagProviderRegistry,
-  SimpleRagRegistry,
-  TranslatePreprocessor,
-  VectorOnlyStrategy,
-  VectorRag,
-  type VectorRagConfig,
-  VectorRagProvider,
-  type VectorRagProviderConfig,
-  WeightedFusionStrategy,
-} from '@mcp-abap-adt/llm-agent/rag-implementations';
+Run:
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-rag
+npm test --workspace @mcp-abap-adt/llm-agent
+npm test --workspace @mcp-abap-adt/llm-agent-rag
 ```
+Expected: PASS — every moved test passes in `llm-agent-rag` with the same outcome as before; `llm-agent`'s remaining tests pass. Compare the test counts: `llm-agent` before (Task 0 baseline) = `llm-agent` now + the moved tests' cases.
 
-- `packages/llm-agent-rag/src/index.ts`: append `export * from './rag-implementations.js';`.
-- `packages/llm-agent-rag/src/rag-factories.ts`: move `InMemoryRag` and `VectorRag` out of its `'@mcp-abap-adt/llm-agent'` import into `import { InMemoryRag, VectorRag } from './rag-implementations.js';` (`asymmetricEmbedder`, `symmetricEmbedder` stay on the llm-agent import).
-- `packages/ollama-embedder/src/ollama.ts` lines 2–8: keep `type CallOptions`, `RagError`, `symmetricEmbedder` on `'@mcp-abap-adt/llm-agent'`; import `VectorRag, type VectorRagConfig` from `'@mcp-abap-adt/llm-agent/rag-implementations'` (it sits below `llm-agent-rag`, which peers on it, so it cannot import `llm-agent-rag`; the subpath is undeprecated). `OllamaRag` is unchanged; spec S10 records what the next major does with it.
-
-- [ ] **Step 6: Switch the importers above `llm-agent-rag` (one-off codemod, not committed)**
+- [ ] **Step 7: Switch the importers (one-off codemod, not committed)**
 
 ```bash
 cat > /tmp/move-imports.mjs <<'MJS'
@@ -577,7 +604,8 @@ const MOVED = new Set([
   'InMemoryRagProvider', 'InMemoryRagProviderConfig', 'VectorRagProvider',
   'VectorRagProviderConfig', 'SimpleRagProviderRegistry', 'WeightedFusionStrategy',
   'RrfStrategy', 'VectorOnlyStrategy', 'Bm25OnlyStrategy', 'CompositeStrategy',
-  'CompositeStrategyEntry', 'NoopQueryPreprocessor', 'NoopDocumentEnricher',
+  'CompositeStrategyEntry', 'ISearchStrategy', 'ISearchCandidate', 'ISearchQuery',
+  'IScoredResult', 'ISearchContext', 'NoopQueryPreprocessor', 'NoopDocumentEnricher',
   'TranslatePreprocessor', 'ExpandPreprocessor', 'IntentEnricher', 'PreprocessorChain',
   'LlmQueryExpander', 'NoopQueryExpander', 'buildRagCollectionToolEntries',
   'RagCallerIdentity', 'RagCollectionToolOptions', 'RagToolContext', 'RagToolEntry',
@@ -619,61 +647,61 @@ for (const dir of dirs) {
 }
 console.log(`${changed} file(s) ${write ? 'rewritten' : 'would change'}`);
 MJS
-node /tmp/move-imports.mjs packages/llm-agent-libs/src packages/llm-agent-server-libs/src packages/llm-agent-server/src scripts
+node /tmp/move-imports.mjs packages/llm-agent-libs/src packages/llm-agent-server-libs/src packages/llm-agent-server/src scripts test
 ```
-Expected (dry run): `35 file(s) would change` — e.g. `packages/llm-agent-libs/src/builder.ts`, `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`, `packages/llm-agent-server/src/composition/make-rag.ts` (`llm-agent-rag`'s own `rag-factories.ts` was done by hand in Step 5).
+Expected (dry run): `35 file(s) would change` — e.g. `packages/llm-agent-libs/src/builder.ts`, `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`, `packages/llm-agent-server/src/composition/make-rag.ts` (`llm-agent-rag`'s own `rag-factories.ts` was done by hand in Step 5; `ollama-embedder` is Step 4). A different count → stop and compare with spec §11.3 before writing.
 
-Run: `node /tmp/move-imports.mjs --write packages/llm-agent-libs/src packages/llm-agent-server-libs/src packages/llm-agent-server/src scripts && npx biome check --write packages scripts`
+Run: `node /tmp/move-imports.mjs --write packages/llm-agent-libs/src packages/llm-agent-server-libs/src packages/llm-agent-server/src scripts test && npx biome check --write packages scripts test`
 Expected: `35 file(s) rewritten`; Biome merges and sorts the new import lines; `git diff --stat` shows only import lines changed in those files. `llm-agent-libs`, `llm-agent-server-libs` and `llm-agent-server` already declare `@mcp-abap-adt/llm-agent-rag` (peer / dependency) — no `package.json` change.
 
-- [ ] **Step 7: Run the tests to see them pass**
+- [ ] **Step 8: Run the tests to see them pass**
 
 Run: `npm run build && node --import tsx/esm --test test/repo/rag-implementations-home.test.ts test/repo/scoped-dependencies.test.ts packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts`
-Expected: PASS (both repo tests; every name identical across the two paths).
+Expected: PASS — no cycle, no importer of a moved name from the old path, `OllamaRag` gone, every moved name exported by `llm-agent-rag` and none by `llm-agent`.
 
-- [ ] **Step 8: Typecheck that a 30.1.0-style import still compiles**
-
-Add `packages/llm-agent-rag/src/__typechecks__/rag-implementations-alias.ts` to `tsconfig.typecheck.json` `include`:
+- [ ] **Step 9: Typecheck that the old path no longer compiles**
 
 ```ts
-// packages/llm-agent-rag/src/__typechecks__/rag-implementations-alias.ts
-// Spec §14.1: a 30.1.0-style import of the moved names from the llm-agent root still compiles,
-// and the types are mutually assignable with the new home's.
-import {
-  FallbackRag as OldFallbackRag,
-  InMemoryRag as OldInMemoryRag,
-  type VectorRagConfig as OldVectorRagConfig,
-  VectorRag as OldVectorRag,
-} from '@mcp-abap-adt/llm-agent';
-import { FallbackRag, InMemoryRag, type VectorRagConfig, VectorRag } from '../index.js';
+// packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts
+// Spec §14.1, D57: the moved names are not exported by @mcp-abap-adt/llm-agent any more
+// (a major release, no alias), and are by @mcp-abap-adt/llm-agent-rag.
+// @ts-expect-error VectorRag lives in @mcp-abap-adt/llm-agent-rag (migration line 1)
+import { VectorRag as OldVectorRag } from '@mcp-abap-adt/llm-agent';
+// @ts-expect-error ISearchStrategy moved with VectorRag (migration line 22)
+import type { ISearchStrategy as OldISearchStrategy } from '@mcp-abap-adt/llm-agent';
+import type { IDocumentEnricher, IQueryExpander, IQueryPreprocessor } from '@mcp-abap-adt/llm-agent';
+import { FallbackRag, InMemoryRag, type ISearchStrategy, VectorRag } from '../index.js';
 
-const a: InMemoryRag = new OldInMemoryRag();
-const b: OldInMemoryRag = new InMemoryRag();
-const c: (cfg: VectorRagConfig) => OldVectorRagConfig = (cfg) => cfg;
-const d: typeof VectorRag = OldVectorRag;
-const e: typeof OldFallbackRag = FallbackRag;
-void [a, b, c, d, e];
+void [OldVectorRag, FallbackRag, InMemoryRag, VectorRag];
+export type _Checked = [OldISearchStrategy, ISearchStrategy, IDocumentEnricher, IQueryExpander, IQueryPreprocessor];
 ```
 
+Add `packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts` to `tsconfig.typecheck.json` `include`.
+
 Run: `npm run typecheck`
-Expected: no errors.
+Expected: no errors — each `@ts-expect-error` is used (the old imports fail), the contracts still import from the root.
 
-- [ ] **Step 9: Full gate**
+- [ ] **Step 10: Full gate**
 
-Run: `npm run build && npm run lint:check && npm run typecheck && npm test`
-Expected: PASS — every package's existing tests unchanged in outcome (the moved names are the same objects).
+Run: `npm run build && npm run lint:check && npm run typecheck && npm test && npm run clean && npm run build`
+Expected: PASS — every package's tests unchanged in outcome; the clean build proves the `tsc -b` order has no reference cycle (`llm-agent` → … → `ollama-embedder` → … → `llm-agent-rag`).
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add packages/llm-agent packages/llm-agent-rag packages/ollama-embedder packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server scripts test/repo/rag-implementations-home.test.ts tsconfig.typecheck.json
-git commit -m "refactor(rag): RAG implementations' public home is llm-agent-rag; llm-agent keeps deprecated aliases
+git add -A packages/llm-agent packages/llm-agent-rag packages/ollama-embedder packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server scripts test README.md tsconfig.typecheck.json
+git commit -m "refactor(rag)!: the RAG implementations move to llm-agent-rag; OllamaRag removed
+
+BREAKING CHANGE: VectorRag, InMemoryRag, FallbackRag and the other RAG implementations
+(spec §11.3) are no longer exported by @mcp-abap-adt/llm-agent; import them from
+@mcp-abap-adt/llm-agent-rag. OllamaRag is removed from @mcp-abap-adt/ollama-embedder.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 ```
 
 ---
+
 ## Task 2: Record contracts and `recordId` (llm-agent)
 
 Spec §3.1 (incl. the reserved key `staleRecordIds` — F3). No `generated`, `companionRecordIds` or `staleCompanionRecordIds` key: generated records and companion stores are removed (D50, spec §17.15). No `serviceRecord` key: the corpus load keeps no record of itself in the store (D54, spec §17.17).
@@ -1504,15 +1532,16 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 4: `IRetrievalEmbedderOwner` and `retrievalEmbedderOf` (llm-agent)
+## Task 4: `IRetrievalEmbedderOwner` and `retrievalEmbedderOf` (llm-agent; `VectorRag` in llm-agent-rag)
 
-Spec §3.7, §10.1. The provider packages follow in Task 25.
+Spec §3.7, §10.1. The provider packages follow in Task 25. `VectorRag` lives in `llm-agent-rag` since Task 1A, so the contract's test in `llm-agent` uses fake stores, and `VectorRag`'s own test lives in `llm-agent-rag` (a test in `llm-agent` cannot import `llm-agent-rag` — the cycle `rag-implementations-home.test.ts` forbids).
 
 **Files:**
 - Create: `packages/llm-agent/src/interfaces/retrieval-embedder-owner.ts`
 - Create: `packages/llm-agent/src/interfaces/__tests__/retrieval-embedder-owner.test.ts`
 - Modify: `packages/llm-agent/src/interfaces/index.ts`
-- Modify: `packages/llm-agent/src/rag/vector-rag.ts:51-70`
+- Modify: `packages/llm-agent-rag/src/vector-rag.ts` (the constructor region, lines 51–70 before the move)
+- Create: `packages/llm-agent-rag/src/__tests__/vector-rag-embedder-owner.test.ts`
 
 **Interfaces:**
 - Consumes: `IRag`, `IRetrievalEmbedder` (`rag.ts`); `isRagDecorator` (`retrieval-strategy.ts`).
@@ -1530,13 +1559,20 @@ Spec §3.7, §10.1. The provider packages follow in Task 25.
 // packages/llm-agent/src/interfaces/__tests__/retrieval-embedder-owner.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { InMemoryRag } from '../../rag/in-memory-rag.js';
 import { symmetricEmbedder } from '../../rag/retrieval-embedder.js';
-import { VectorRag } from '../../rag/vector-rag.js';
 import type { IRag } from '../rag.js';
 import { retrievalEmbedderOf } from '../retrieval-embedder-owner.js';
 
 const embedder = symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) });
+/** A bare store: no embedder, no decorator. */
+const plain = (): IRag =>
+  ({
+    query: async () => ({ ok: true, value: [] }),
+    healthCheck: async () => ({ ok: true, value: undefined }),
+    getById: async () => ({ ok: true, value: null }),
+  }) as unknown as IRag;
+/** A store that owns an embedder (what VectorRag and the provider stores declare). */
+const owner = (): IRag => Object.assign(plain(), { retrievalEmbedder: embedder });
 const decorate = (inner: IRag): IRag => ({
   inner,
   query: (q, k, o) => inner.query(q, k, o),
@@ -1545,20 +1581,43 @@ const decorate = (inner: IRag): IRag => ({
 }) as IRag;
 
 describe('retrievalEmbedderOf', () => {
+  it('an owner exposes its embedder', () => {
+    assert.equal(retrievalEmbedderOf(owner()), embedder);
+  });
+  it('walks decorators to the owner', () => {
+    assert.equal(retrievalEmbedderOf(decorate(decorate(owner()))), embedder);
+  });
+  it('a store without one → undefined', () => {
+    assert.equal(retrievalEmbedderOf(plain()), undefined);
+    assert.equal(retrievalEmbedderOf(decorate(plain())), undefined);
+  });
+  it('a field that is not an embedder is not one', () => {
+    assert.equal(retrievalEmbedderOf(Object.assign(plain(), { retrievalEmbedder: {} })), undefined);
+  });
+  it('stops after 16 levels', () => {
+    let rag: IRag = owner();
+    for (let i = 0; i < 16; i++) rag = decorate(rag);
+    assert.equal(retrievalEmbedderOf(rag), undefined);
+  });
+});
+```
+
+```ts
+// packages/llm-agent-rag/src/__tests__/vector-rag-embedder-owner.test.ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { retrievalEmbedderOf, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '../in-memory-rag.js';
+import { VectorRag } from '../vector-rag.js';
+
+const embedder = symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) });
+
+describe('VectorRag is an IRetrievalEmbedderOwner (spec §3.7)', () => {
   it('VectorRag exposes its embedder', () => {
     assert.equal(retrievalEmbedderOf(new VectorRag(embedder)), embedder);
   });
-  it('walks decorators to the owner', () => {
-    assert.equal(retrievalEmbedderOf(decorate(decorate(new VectorRag(embedder)))), embedder);
-  });
-  it('a store without one → undefined', () => {
+  it('InMemoryRag has none', () => {
     assert.equal(retrievalEmbedderOf(new InMemoryRag()), undefined);
-    assert.equal(retrievalEmbedderOf(decorate(new InMemoryRag())), undefined);
-  });
-  it('stops after 16 levels', () => {
-    let rag: IRag = new VectorRag(embedder);
-    for (let i = 0; i < 16; i++) rag = decorate(rag);
-    assert.equal(retrievalEmbedderOf(rag), undefined);
   });
 });
 ```
@@ -1566,7 +1625,7 @@ describe('retrievalEmbedderOf', () => {
 - [ ] **Step 2: Run to see it fail**
 
 Run: `node --import tsx/esm --test packages/llm-agent/src/interfaces/__tests__/retrieval-embedder-owner.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL — module not found. (The `llm-agent-rag` test fails too once `llm-agent` is rebuilt in Step 4 — `VectorRag` has no `retrievalEmbedder` yet.)
 
 - [ ] **Step 3: Implement**
 
@@ -1603,10 +1662,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined {
 }
 ```
 
-In `vector-rag.ts`: change the import to also bring `IRetrievalEmbedderOwner`:
-```ts
-import type { IRetrievalEmbedderOwner } from '../interfaces/retrieval-embedder-owner.js';
-```
+In `packages/llm-agent-rag/src/vector-rag.ts`: add `type IRetrievalEmbedderOwner` to its `@mcp-abap-adt/llm-agent` type import (Task 1A turned its relative `interfaces/` imports into that import; `IRetrievalEmbedder` is already there);
 change the class line to `export class VectorRag implements IRag, IRetrievalEmbedderOwner {`, and add after the constructor:
 ```ts
   /** IRetrievalEmbedderOwner: the embedder this store writes and searches with. */
@@ -1628,17 +1684,18 @@ export {
 
 Run:
 ```bash
-node --import tsx/esm --test packages/llm-agent/src/interfaces/__tests__/retrieval-embedder-owner.test.ts
+npx tsc -b packages/llm-agent packages/llm-agent-rag
+node --import tsx/esm --test packages/llm-agent/src/interfaces/__tests__/retrieval-embedder-owner.test.ts packages/llm-agent-rag/src/__tests__/vector-rag-embedder-owner.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent
-npx tsc -b packages/llm-agent
+npm test --workspace @mcp-abap-adt/llm-agent-rag
 ```
 Expected: all PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-npx biome check --write packages/llm-agent/src
-git add packages/llm-agent/src
+npx biome check --write packages/llm-agent/src packages/llm-agent-rag/src
+git add packages/llm-agent/src packages/llm-agent-rag/src
 git commit -m "feat(llm-agent): IRetrievalEmbedderOwner capability and retrievalEmbedderOf
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -1647,24 +1704,24 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 4A: Decision contracts — `IProbabilityDecision` (rename + alias) and `IRelevanceDecision` (llm-agent); usage-logging wrappers (libs)
+## Task 4A: Decision contracts — `IProbabilityDecision` (rename, old name removed) and `IRelevanceDecision` (llm-agent); usage-logging wrappers (libs)
 
-Spec §3.9, §3.8 (rows for the rename, `IRelevanceDecision`, reused `DecisionError`), §5.4 (`wrap*` stay in libs), §13 (aliases); D24.
+Spec §3.9, §3.8 (rows for the rename, `IRelevanceDecision`, reused `DecisionError`), §5.4 (`wrap*` stay in libs), §13 (migration lines 40 and 49); D24, D58. **No alias:** `IDecisionModel` and `wrapDecisionModel` are removed, so this task switches **every** in-repo use of them in the same commit (found with `git grep -n -w "IDecisionModel\|wrapDecisionModel" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'`).
 
 **Files:**
-- Modify: `packages/llm-agent/src/interfaces/decision-model.ts` (rename, alias, relevance types)
-- Modify: `packages/llm-agent/src/interfaces/index.ts` (export the new names; keep `IDecisionModel`)
+- Modify: `packages/llm-agent/src/interfaces/decision-model.ts` (rename, relevance types)
+- Modify: `packages/llm-agent/src/interfaces/index.ts` (export the new names; `IDecisionModel` removed)
 - Create: `packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts`
-- Modify: `packages/llm-agent-libs/src/adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`)
+- Modify: `packages/llm-agent/src/interfaces/__tests__/decision-model.test.ts`
+- Modify: `packages/llm-agent-libs/src/adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`; `wrapDecisionModel` removed)
 - Modify: `packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts`
 - Modify: `packages/llm-agent-libs/src/index.ts`, `tsconfig.typecheck.json`
+- Modify (every other use, Step 3b): `packages/typesafe-decision/src/typesafe-decision-model.ts`; `packages/llm-agent-server-libs/src/smart-agent/{resolve-retrieval,smart-server}.ts`; `packages/llm-agent-server-libs/src/smart-agent/__tests__/{resolve-retrieval,retrieval-wiring,session-history}.test.ts`; `packages/llm-agent-server/src/composition/make-decision-model.ts`
 
 **Interfaces:**
 - Produces (llm-agent):
   ```ts
-  export interface IProbabilityDecision { readonly model?: string; decide(request: DecisionRequest, options?: CallOptions): Promise<Result<DecisionResult, DecisionError>> }
-  /** @deprecated Use IProbabilityDecision. Kept as an alias until the next major. */
-  export type IDecisionModel = IProbabilityDecision;
+  export interface IProbabilityDecision { readonly model?: string; decide(request: DecisionRequest, options?: CallOptions): Promise<Result<DecisionResult, DecisionError>> } // ex-IDecisionModel; the old name is removed
   export interface RelevanceRequest { query: string; passages: readonly string[] }
   export interface RelevanceScore { index: number; score: number }          // NOT a probability
   export interface RelevanceResult { scores: readonly RelevanceScore[]; model: string; usage?: { inputTokens: number; outputTokens?: number } }
@@ -1675,8 +1732,7 @@ Spec §3.9, §3.8 (rows for the rename, `IRelevanceDecision`, reused `DecisionEr
   ```ts
   export function wrapProbabilityDecision(inner: IProbabilityDecision): IProbabilityDecision; // ex-wrapDecisionModel, same behaviour
   export function wrapRelevanceDecision(inner: IRelevanceDecision): IRelevanceDecision;       // component: 'decision'; idempotent
-  /** @deprecated Use wrapProbabilityDecision. */
-  export const wrapDecisionModel: typeof wrapProbabilityDecision;
+  // wrapDecisionModel: removed (migration line 49)
   ```
 
 - [ ] **Step 1: Write the failing checks**
@@ -1684,18 +1740,16 @@ Spec §3.9, §3.8 (rows for the rename, `IRelevanceDecision`, reused `DecisionEr
 ```ts
 // packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts
 // Compile-time only (tsconfig.typecheck.json → `npm run typecheck`).
+// @ts-expect-error IDecisionModel is removed — a major release, no alias (spec §13 line 40, D58)
+import type { IDecisionModel } from '../decision-model.js';
 import type {
-  IDecisionModel,
   IProbabilityDecision,
   IRelevanceDecision,
   RelevanceResult,
 } from '../decision-model.js';
 
-declare const oldName: IDecisionModel;
+export type _Removed = IDecisionModel;
 declare const newName: IProbabilityDecision;
-// The alias is the same type both ways: no 30.1.0 implementation or caller breaks.
-export const _a: IProbabilityDecision = oldName;
-export const _b: IDecisionModel = newName;
 declare const relevance: IRelevanceDecision;
 // @ts-expect-error a relevance decision is not a probability decision (no decide)
 export const _c: IProbabilityDecision = relevance;
@@ -1707,24 +1761,23 @@ export const _e: RelevanceResult = { answers: {}, model: 'm' };
 
 Add `"packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts"` to `tsconfig.typecheck.json` `include`.
 
-In `usage-logging-decision-model.test.ts`, keep every existing case, rename `describe('wrapDecisionModel'` to `describe('wrapProbabilityDecision'` and every `wrapDecisionModel(` call in it to `wrapProbabilityDecision(`, and replace the file's two import statements (lines 3–9 today) with this complete block:
+In `usage-logging-decision-model.test.ts`, keep every existing case, rename `describe('wrapDecisionModel'` (L35) to `describe('wrapProbabilityDecision'` and every `wrapDecisionModel(` call in it (L38, L58, L70, L79, L86, L87) to `wrapProbabilityDecision(`, retype the fixtures `function model(withUsage: boolean): IDecisionModel` (L21) and `const failing: IDecisionModel` (L76) as `IProbabilityDecision`, and replace the file's two import statements (lines 3–9 today) with this complete block:
 
 ```ts
 import {
   DecisionError,
-  type IDecisionModel,
+  type IProbabilityDecision,
   type IRelevanceDecision,
   type IRequestLogger,
   type LlmCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  wrapDecisionModel,
   wrapProbabilityDecision,
   wrapRelevanceDecision,
 } from '../usage-logging-decision-model.js';
 ```
 
-(`IDecisionModel` stays: the existing `model()` / `failing` fixtures are typed with it, which also pins the alias.) Then append:
+Then append:
 
 ```ts
 describe('wrapRelevanceDecision', () => {
@@ -1752,9 +1805,6 @@ describe('wrapRelevanceDecision', () => {
     const r = await once.score({ query: 'q', passages: ['a'] });
     assert.equal(r.ok, false);
   });
-  it('wrapDecisionModel is the deprecated alias of wrapProbabilityDecision', () => {
-    assert.equal(wrapDecisionModel, wrapProbabilityDecision);
-  });
 });
 ```
 
@@ -1768,7 +1818,8 @@ In `decision-model.ts`, replace the `IDecisionModel` interface (keep its doc com
 ```ts
 /**
  * A model that answers typed questions about a state with probabilities, not text
- * (spec §3.9; 30.1.0's `IDecisionModel`, renamed — same members, same rules).
+ * (spec §3.9; 30.1.0's `IDecisionModel`, renamed — same members, same rules; the old
+ * name is removed, D58).
  *
  * - Returns `Result`; never throws for provider failures.
  * - A question type the implementation cannot answer fails the whole request
@@ -1785,9 +1836,6 @@ export interface IProbabilityDecision {
     options?: CallOptions,
   ): Promise<Result<DecisionResult, DecisionError>>;
 }
-
-/** @deprecated Use `IProbabilityDecision`. Kept as an alias until the next major. */
-export type IDecisionModel = IProbabilityDecision;
 
 /** What a relevance decision judges: passages against one query. */
 export interface RelevanceRequest {
@@ -1839,7 +1887,9 @@ export interface IRelevanceDecision {
 }
 ```
 
-In `interfaces/index.ts`, add to the `./decision-model.js` type export list: `IProbabilityDecision`, `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore` (keep `IDecisionModel`).
+In `interfaces/index.ts`, in the `./decision-model.js` type export list (L40 today) replace `IDecisionModel` with `IProbabilityDecision` and add `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`.
+
+In `interfaces/__tests__/decision-model.test.ts`: L5 `type IDecisionModel` → `type IProbabilityDecision`, L24 `describe('IDecisionModel'` → `describe('IProbabilityDecision'`, L26 `const m: IDecisionModel` → `const m: IProbabilityDecision`.
 
 - [ ] **Step 3: Implement the wrappers**
 
@@ -1944,41 +1994,50 @@ export function wrapRelevanceDecision(inner: IRelevanceDecision): IRelevanceDeci
   if ((inner as { [RELEVANCE_BRAND]?: boolean })[RELEVANCE_BRAND]) return inner;
   return new UsageLoggingRelevanceDecision(inner);
 }
-
-/** @deprecated Use `wrapProbabilityDecision`. Kept as an alias until the next major. */
-export const wrapDecisionModel = wrapProbabilityDecision;
 ```
 
-The probability brand symbol keeps its 30.1.0 key (`usage-logging-decision-model`), so a model wrapped by a 30.1.0 `wrapDecisionModel` is still recognised and not wrapped twice. `UsageLoggingDecisionModel` was not exported, so the class rename touches no other file (`grep -rn UsageLoggingDecisionModel packages --include='*.ts'` → only this file before the edit, nothing after).
+The probability brand symbol keeps its 30.1.0 key (`usage-logging-decision-model`): a `Symbol.for` key is a runtime identity, not a name, so keeping it costs nothing and a decision wrapped twice across packages is still recognised. `UsageLoggingDecisionModel` was not exported, so the class rename touches no other file (`grep -rn UsageLoggingDecisionModel packages --include='*.ts'` → only this file before the edit, nothing after).
 
 In `packages/llm-agent-libs/src/index.ts`, replace the `wrapDecisionModel` export line (line 19 today) with:
 ```ts
 export {
-  wrapDecisionModel,
   wrapProbabilityDecision,
   wrapRelevanceDecision,
 } from './adapters/usage-logging-decision-model.js';
 ```
 
-Callers stay on the alias until their own task switches them (server-libs: Task 22).
+- [ ] **Step 3b: Switch every other use of the removed names (no alias — each commit builds)**
+
+- `packages/typesafe-decision/src/typesafe-decision-model.ts`: L9 `IDecisionModel,` → `IProbabilityDecision,` (keep the import's sort order — Biome sorts it); L56 doc "`IDecisionModel` over TypeSafe AI's Jev" → "`IProbabilityDecision` over TypeSafe AI's Jev"; L62 `implements IDecisionModel` → `implements IProbabilityDecision`. The class name `TypeSafeDecisionModel` is unchanged (spec §1).
+- `packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts`: L2 `IDecisionModel,` → `IProbabilityDecision,`; L28 `=> Promise<IDecisionModel>;` → `=> Promise<IProbabilityDecision>;`; L50 `let decisionModel: IDecisionModel | undefined;` → `let decisionModel: IProbabilityDecision | undefined;`; L15 `wrapDecisionModel,` → `wrapProbabilityDecision,` and L66 `decisionModel = wrapDecisionModel(` → `decisionModel = wrapProbabilityDecision(`. (The rerankers in its libs import are switched in Task 4B, the seam key in Task 20A, the whole closure replaced in Task 22.)
+- `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`: L55 `type IDecisionModel,` → `type IProbabilityDecision,`; L383 `) => Promise<IDecisionModel>;` → `) => Promise<IProbabilityDecision>;`.
+- `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts` (L5, L38), `retrieval-wiring.test.ts` (L10, L113), `session-history.test.ts` (L7, L217): `IDecisionModel` → `IProbabilityDecision` in the import and the fixture's type.
+- `packages/llm-agent-server/src/composition/make-decision-model.ts`: L1, L12, L27 `IDecisionModel` → `IProbabilityDecision` (the file and function rename is Task 20A's).
+
+Verify: `git grep -n -w "IDecisionModel\|wrapDecisionModel" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'` prints only the `@ts-expect-error` line of `decision-model.typecheck.ts` (the docs are Task 33's).
 
 - [ ] **Step 4: Run**
 
 Run:
 ```bash
-npx tsc -b packages/llm-agent packages/llm-agent-libs packages/typesafe-decision
+npm run build
 npm run typecheck
-node --import tsx/esm --test packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts
+node --import tsx/esm --test packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts packages/llm-agent/src/interfaces/__tests__/decision-model.test.ts
 npm test --workspace @mcp-abap-adt/typesafe-decision
+npm test --workspace @mcp-abap-adt/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent-server
 ```
-Expected: PASS; the `tsc -b` line builds both edited packages (`llm-agent`: `decision-model.ts`, `interfaces/index.ts`; `llm-agent-libs`: the wrapper and `src/index.ts`) and `typesafe-decision`, whose `TypeSafeDecisionModel` (typed `IDecisionModel`) still compiles — the alias is the same type. The test file is not in any `tsc -b` project (`**/__tests__/**` is excluded); tsx runs it without type-checking.
+Expected: PASS; the full build proves no package still names `IDecisionModel` or `wrapDecisionModel` (`TypeSafeDecisionModel` implements `IProbabilityDecision`); the typecheck's `@ts-expect-error` is used. The test files are not in any `tsc -b` project (`**/__tests__/**` is excluded); tsx runs them without type-checking, so the grep of Step 3b is what proves the tests switched.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-npx biome check --write packages/llm-agent/src/interfaces packages/llm-agent-libs/src/adapters packages/llm-agent-libs/src/index.ts
-git add packages/llm-agent/src/interfaces packages/llm-agent-libs/src/adapters packages/llm-agent-libs/src/index.ts tsconfig.typecheck.json
-git commit -m "feat(llm-agent): IProbabilityDecision (IDecisionModel renamed, alias kept) and IRelevanceDecision
+npx biome check --write packages/llm-agent/src/interfaces packages/llm-agent-libs/src packages/typesafe-decision/src packages/llm-agent-server-libs/src packages/llm-agent-server/src
+git add packages/llm-agent/src/interfaces packages/llm-agent-libs/src packages/typesafe-decision/src packages/llm-agent-server-libs/src packages/llm-agent-server/src tsconfig.typecheck.json
+git commit -m "feat(llm-agent)!: IProbabilityDecision (IDecisionModel renamed, no alias) and IRelevanceDecision
+
+BREAKING CHANGE: IDecisionModel is renamed IProbabilityDecision and wrapDecisionModel
+wrapProbabilityDecision; the old names are removed.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -1986,17 +2045,18 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 4B: New package `@mcp-abap-adt/llm-agent-reranker` — the rerankers move; `ProbabilityReranker` (rename + aliases)
+## Task 4B: New package `@mcp-abap-adt/llm-agent-reranker` — the rerankers move; `ProbabilityReranker` (rename; no alias, no re-export)
 
-Spec §5.1, §5.4, §11, §13; D26 (goal decision 2026-10-05: one vendor-neutral reranker package). Retrieval strategies (`RerankedRetrieval`, `RerankAllRetrieval`, later `StagedRetrieval`) stay in libs and see rerankers only through `IReranker`.
+Spec §5.1, §5.4, §11, §11.4, §13 (migration lines 41–48); D26, D58, D59 (one vendor-neutral reranker package; no old names; libs re-exports nothing). Retrieval strategies (`RerankedRetrieval`, `RerankAllRetrieval`, later `StagedRetrieval`) stay in libs and see rerankers only through `IReranker`. **Every in-repo importer of a reranker name switches to `@mcp-abap-adt/llm-agent-reranker` in this task** (found with a scan of named imports from `@mcp-abap-adt/llm-agent-libs`, 2026-10-05): `llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts`, its tests `resolve-retrieval.test.ts` and `retrieval-wiring.test.ts`, `test/integration/typesafe-decision/typesafe-decision.integration.test.ts`, and `scripts/rag-eval/rag-eval.ts` (by source path).
 
 **Files:**
 - Create: `packages/llm-agent-reranker/package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt` (copies from `packages/typesafe-decision/`)
 - Move (`git mv`): `packages/llm-agent-libs/src/reranker/decision-reranker.ts` → `packages/llm-agent-reranker/src/probability-reranker.ts`; `llm-reranker.ts`, `noop-reranker.ts` → `packages/llm-agent-reranker/src/`; `__tests__/decision-reranker.test.ts` → `src/__tests__/probability-reranker.test.ts`; `__tests__/decision-reranker-batching.test.ts` → `src/__tests__/probability-reranker-batching.test.ts`; `__tests__/reranker.test.ts` → `src/__tests__/reranker.test.ts`
-- Create: `packages/llm-agent-reranker/src/index.ts`, `src/assert-positive-integer.ts` (copy), `src/__tests__/fake-llm.ts`, `src/__tests__/aliases.test.ts` (in libs: `packages/llm-agent-libs/src/__tests__/reranker-aliases.test.ts`)
+- Create: `packages/llm-agent-reranker/src/index.ts`, `src/assert-positive-integer.ts` (copy), `src/__tests__/fake-llm.ts`; `test/repo/no-old-names.test.ts` (repo: no package exports a removed name, no file this plan adds or edits re-exports another package)
 - Delete: `packages/llm-agent-libs/src/reranker/` (`index.ts`, `types.ts` and the moved files)
-- Modify (libs): `src/index.ts` (re-exports + deprecated aliases), every internal `./reranker/…` import (`agent.ts`, `agent/rag-orchestrator-types.ts`, `builder.ts`, `interfaces/pipeline.ts`, `pipeline/context.ts`, `pipeline/default-pipeline.ts`, `testing/index.ts`), `package.json` (`peerDependencies`), `tsconfig.json` (`references`), `README.md`
-- Modify (repo): root `package.json` (`build`, `clean` — right after `packages/llm-agent`), `scripts/publish-all.sh` (`PACKAGES` — right after `llm-agent`), `packages/llm-agent-server/package.json` (`dependencies`), `packages/llm-agent-server/tsconfig.json` (`references`), `package-lock.json` (via `npm install`)
+- Modify (libs): `src/index.ts` (the Reranker block deleted — no re-export, no alias), every internal `./reranker/…` import (`agent.ts`, `agent/rag-orchestrator-types.ts`, `builder.ts`, `interfaces/pipeline.ts`, `pipeline/context.ts`, `pipeline/default-pipeline.ts`, `testing/index.ts`), `package.json` (`peerDependencies`), `tsconfig.json` (`references`), `README.md`
+- Modify (server-libs): `src/smart-agent/resolve-retrieval.ts`, `src/smart-agent/__tests__/resolve-retrieval.test.ts`, `src/smart-agent/__tests__/retrieval-wiring.test.ts` (reranker names from `@mcp-abap-adt/llm-agent-reranker`), `package.json` (peer `@mcp-abap-adt/llm-agent-reranker`), `tsconfig.json` (`references`)
+- Modify (repo): root `package.json` (`build`, `clean` — right after `packages/llm-agent`), `scripts/publish-all.sh` (`PACKAGES` — right after `llm-agent`), `scripts/rag-eval/rag-eval.ts`, `test/integration/typesafe-decision/typesafe-decision.integration.test.ts`, `packages/llm-agent-server/package.json` (`dependencies`), `packages/llm-agent-server/tsconfig.json` (`references`), `package-lock.json` (via `npm install`)
 
 **Interfaces:**
 - Produces (`@mcp-abap-adt/llm-agent-reranker`):
@@ -2007,7 +2067,7 @@ Spec §5.1, §5.4, §11, §13; D26 (goal decision 2026-10-05: one vendor-neutral
   export const TOOL_QUESTION; export const PASSAGE_QUESTION;
   export class LlmReranker; export class NoopReranker;          // moved, unchanged
   ```
-- Produces (libs root, deprecated until the next major): `DecisionReranker` (= `ProbabilityReranker`, value + type), `DecisionRerankerOptions` (= `ProbabilityRerankerOptions`), `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA`; re-exports of `ProbabilityReranker`, `ProbabilityRerankerOptions`, `PROBABILITY_RERANK_DEFAULT_*`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` (deprecated path — import from `@mcp-abap-adt/llm-agent-reranker`).
+- Removes (libs root): `DecisionReranker`, `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` — no alias, no re-export (migration lines 41–48).
 
 - [ ] **Step 1: Scaffold the package**
 
@@ -2076,7 +2136,7 @@ git mv packages/llm-agent-libs/src/reranker/__tests__/decision-reranker.test.ts 
 git mv packages/llm-agent-libs/src/reranker/__tests__/decision-reranker-batching.test.ts packages/llm-agent-reranker/src/__tests__/probability-reranker-batching.test.ts
 git mv packages/llm-agent-libs/src/reranker/__tests__/reranker.test.ts packages/llm-agent-reranker/src/__tests__/reranker.test.ts
 git rm packages/llm-agent-libs/src/reranker/index.ts packages/llm-agent-libs/src/reranker/types.ts
-printf '# Changelog\n\n## [Unreleased]\n\n- New package: every reranker of the llm-agent family, vendor-neutral. `ProbabilityReranker` (was `DecisionReranker` in `llm-agent-libs`), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` moved here; `RelevanceReranker` is new. `llm-agent-libs` re-exports the old names as deprecated aliases until the next major.\n' > packages/llm-agent-reranker/CHANGELOG.md
+printf '# Changelog\n\n## [Unreleased]\n\n- New package: every reranker of the llm-agent family, vendor-neutral. `ProbabilityReranker` (was `DecisionReranker` in `llm-agent-libs`), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` moved here; `RelevanceReranker` is new. `llm-agent-libs` no longer exports any of them and keeps no old name (a major release).\n' > packages/llm-agent-reranker/CHANGELOG.md
 ```
 (The copy of `assertPositiveInteger` is deliberate, spec §5.4: libs keeps its own for `RerankedRetrieval`; the reranker package cannot import libs — libs depends on it — and a non-contract helper does not belong in `llm-agent`.)
 
@@ -2096,9 +2156,10 @@ decision**; the decision comes from a provider package you inject.
 
 - Wording presets for the probability reranker: `TOOL_QUESTION`, `PASSAGE_QUESTION`.
 - A relevance score is comparable for the same query and model (also across calls — `RelevanceReranker` batches); never a probability; a threshold on it is your calibration.
-- **Moved from `@mcp-abap-adt/llm-agent-libs`** — the old imports still work there as deprecated
-  aliases until the next major. Migrate: `DecisionReranker` → `ProbabilityReranker`,
-  `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`, import from this package.
+- **Moved from `@mcp-abap-adt/llm-agent-libs`** — libs no longer exports them, under any name.
+  Migrate: `DecisionReranker` → `ProbabilityReranker`, `DecisionRerankerOptions` →
+  `ProbabilityRerankerOptions`, `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`;
+  import every reranker from this package.
 ````
 
 - [ ] **Step 2: Rename inside the moved files**
@@ -2172,7 +2233,7 @@ grep -rn "this\.model\|IDecisionModel\|DecisionReranker\|DECISION_RERANK\|decisi
 ```
 Expected: the build is clean (a renamed parameter with a leftover `this.model` is `TS2339: Property 'model' does not exist`); every moved test PASSES under the new names, the option-validation cases with the `ProbabilityReranker:` message; the grep prints nothing.
 
-- [ ] **Step 3: libs depends on the package and keeps the old names (deprecated)**
+- [ ] **Step 3: libs depends on the package for its own use only; every importer switches**
 
 `packages/llm-agent-libs/package.json` `peerDependencies`: add `"@mcp-abap-adt/llm-agent-reranker": "^30.1.0"` (a workspace sibling — the repo's standing exception; no `file:` / `link:`). `tsconfig.json` `references`: add `{ "path": "../llm-agent-reranker" }`.
 
@@ -2188,91 +2249,103 @@ import {
 ```
 and `new DecisionReranker(` (line 537) becomes `new ProbabilityReranker(` (same arguments). Verify: `grep -rn "reranker/" scripts test/repo` → empty.
 
-In `packages/llm-agent-libs/src/index.ts`, replace the Reranker block with:
+In `packages/llm-agent-libs/src/index.ts`, **delete** the Reranker block (the `// Reranker` banner and the three export statements, lines 181–192 today). Nothing replaces it: libs exports no reranker under any name (D59). libs' own files keep using `NoopReranker` through the direct `@mcp-abap-adt/llm-agent-reranker` import above.
+
+**Every importer of a libs-root reranker name switches** (no alias — this commit must build):
+
+- `packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` — L7–16 `@mcp-abap-adt/llm-agent-libs` import: move `DecisionReranker`, `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` out of it into
+  ```ts
+  import {
+    LlmReranker,
+    PASSAGE_QUESTION,
+    ProbabilityReranker,
+    TOOL_QUESTION,
+  } from '@mcp-abap-adt/llm-agent-reranker';
+  ```
+  and `new DecisionReranker(` (L70) → `new ProbabilityReranker(` (same arguments); the doc comment's "one `DecisionReranker` per" (L40) → "one `ProbabilityReranker` per". `wrapProbabilityDecision` (Task 4A) and the retrieval classes stay on the libs import.
+- `packages/llm-agent-server-libs/package.json` `peerDependencies`: add `"@mcp-abap-adt/llm-agent-reranker": "^30.1.0"`; `tsconfig.json` `references`: add `{ "path": "../llm-agent-reranker" }`.
+- `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts` (L11–17) and `retrieval-wiring.test.ts` (L25–26): move `PASSAGE_QUESTION`, `TOOL_QUESTION` out of the `@mcp-abap-adt/llm-agent-libs` import into `import { PASSAGE_QUESTION, TOOL_QUESTION } from '@mcp-abap-adt/llm-agent-reranker';`.
+- `test/integration/typesafe-decision/typesafe-decision.integration.test.ts`: L4 `import { DecisionReranker } from '@mcp-abap-adt/llm-agent-libs';` → `import { ProbabilityReranker } from '@mcp-abap-adt/llm-agent-reranker';`, L66 `new DecisionReranker(model)` → `new ProbabilityReranker(model)`.
+
+Verify: `git grep -n -w "DecisionReranker\|DecisionRerankerOptions\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'` → empty, and the scan below lists no reranker name imported from `@mcp-abap-adt/llm-agent-libs`.
 
 ```ts
-// ---------------------------------------------------------------------------
-// Reranker — moved to @mcp-abap-adt/llm-agent-reranker (spec §5.4). Re-exported
-// here for 30.1.0 imports; the whole block is deprecated until the next major.
-// ---------------------------------------------------------------------------
-import {
-  PROBABILITY_RERANK_DEFAULT_CRITERIA,
-  PROBABILITY_RERANK_DEFAULT_TASK,
-  ProbabilityReranker,
-  type ProbabilityRerankerOptions,
-} from '@mcp-abap-adt/llm-agent-reranker';
-
-export {
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  LlmReranker,
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  NoopReranker,
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  PASSAGE_QUESTION,
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  PROBABILITY_RERANK_DEFAULT_CRITERIA,
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  PROBABILITY_RERANK_DEFAULT_TASK,
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  ProbabilityReranker,
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  type ProbabilityRerankerOptions,
-  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
-  TOOL_QUESTION,
-} from '@mcp-abap-adt/llm-agent-reranker';
-
-/** @deprecated Use `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`. */
-export const DecisionReranker = ProbabilityReranker;
-/** @deprecated Use `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`. */
-export type DecisionReranker = ProbabilityReranker;
-/** @deprecated Use `ProbabilityRerankerOptions` from `@mcp-abap-adt/llm-agent-reranker`. */
-export type DecisionRerankerOptions = ProbabilityRerankerOptions;
-/** @deprecated Use `PROBABILITY_RERANK_DEFAULT_TASK` from `@mcp-abap-adt/llm-agent-reranker`. */
-export const DECISION_RERANK_DEFAULT_TASK = PROBABILITY_RERANK_DEFAULT_TASK;
-/** @deprecated Use `PROBABILITY_RERANK_DEFAULT_CRITERIA` from `@mcp-abap-adt/llm-agent-reranker`. */
-export const DECISION_RERANK_DEFAULT_CRITERIA = PROBABILITY_RERANK_DEFAULT_CRITERIA;
-```
-
-```ts
-// packages/llm-agent-libs/src/__tests__/reranker-aliases.test.ts
+// test/repo/no-old-names.test.ts
+/**
+ * Spec §13, §11.4, D58, D59: a major release — removed names are exported by no package,
+ * and no file this plan adds or edits re-exports another package's names.
+ * Reads the BUILT module namespaces (run after `npm run build`).
+ */
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import * as reranker from '@mcp-abap-adt/llm-agent-reranker';
-import {
-  DECISION_RERANK_DEFAULT_CRITERIA,
-  DECISION_RERANK_DEFAULT_TASK,
-  DecisionReranker,
-  type DecisionRerankerOptions,
-  LlmReranker,
-  NoopReranker,
-  PASSAGE_QUESTION,
-  TOOL_QUESTION,
-} from '../index.js';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-describe('30.1.0 reranker names stay available from libs (deprecated aliases, spec §13)', () => {
-  it('the aliases are the reranker package objects', () => {
-    assert.equal(DecisionReranker, reranker.ProbabilityReranker);
-    assert.equal(DECISION_RERANK_DEFAULT_TASK, reranker.PROBABILITY_RERANK_DEFAULT_TASK);
-    assert.equal(DECISION_RERANK_DEFAULT_CRITERIA, reranker.PROBABILITY_RERANK_DEFAULT_CRITERIA);
-    assert.equal(LlmReranker, reranker.LlmReranker);
-    assert.equal(NoopReranker, reranker.NoopReranker);
-    assert.equal(TOOL_QUESTION, reranker.TOOL_QUESTION);
-    assert.equal(PASSAGE_QUESTION, reranker.PASSAGE_QUESTION);
-  });
-  it('a 30.1.0-style construction still compiles and works', () => {
-    const opts: DecisionRerankerOptions = { maxBatchTokens: 1000 };
-    const r = new DecisionReranker({ decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) }, opts);
-    assert.ok(r instanceof reranker.ProbabilityReranker);
-  });
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** Runtime names removed by spec §13's migration table (types are covered by the typechecks). */
+const REMOVED: Record<string, string[]> = {
+  '@mcp-abap-adt/llm-agent-libs': [
+    'DecisionReranker', 'DECISION_RERANK_DEFAULT_TASK', 'DECISION_RERANK_DEFAULT_CRITERIA',
+    'LlmReranker', 'NoopReranker', 'TOOL_QUESTION', 'PASSAGE_QUESTION', 'wrapDecisionModel',
+    'ProbabilityReranker', 'RelevanceReranker',
+  ],
+  '@mcp-abap-adt/ollama-embedder': ['OllamaRag'],
+};
+
+test('no package exports a removed or moved name', async () => {
+  const offenders: string[] = [];
+  for (const [pkg, names] of Object.entries(REMOVED)) {
+    const ns = (await import(pkg)) as Record<string, unknown>;
+    for (const n of names) if (n in ns) offenders.push(`${pkg}: ${n}`);
+  }
+  assert.deepEqual(offenders, []);
+});
+
+function* tsFiles(dir: string): Generator<string> {
+  for (const e of readdirSync(dir)) {
+    const p = join(dir, e);
+    if (e === 'node_modules' || e === 'dist' || e === '__tests__' || e === '__typechecks__') continue;
+    if (statSync(p).isDirectory()) yield* tsFiles(p);
+    else if (/\.ts$/.test(e) && !/\.test\.ts$/.test(e)) yield p;
+  }
+}
+
+/** Packages this plan creates, or whose root it edits: none may re-export another package. */
+const NO_REEXPORT = [
+  'packages/llm-agent-reranker/src',
+  'packages/sap-aicore-decision/src',
+  'packages/llm-agent-rag/src',
+  'packages/llm-agent-libs/src/index.ts',
+  'packages/llm-agent-libs/src/collections',
+];
+
+test('no re-export of another package in the files this plan owns (D59)', () => {
+  const RE = /export\s+(?:type\s+)?(?:\*|\{[^}]*\})\s*from\s*'@mcp-abap-adt\//;
+  const offenders: string[] = [];
+  for (const rel of NO_REEXPORT) {
+    const p = join(ROOT, rel);
+    let files: string[];
+    try {
+      files = statSync(p).isDirectory() ? [...tsFiles(p)] : [p];
+    } catch {
+      continue; // a package created by a later task
+    }
+    for (const f of files) if (RE.test(readFileSync(f, 'utf8'))) offenders.push(f);
+  }
+  assert.deepEqual(offenders, []);
 });
 ```
+
+(`ProbabilityReranker` / `RelevanceReranker` are listed for libs too: neither may ever reach the libs root. `packages/sap-aicore-decision/src` and `packages/llm-agent-libs/src/collections` do not exist yet — the test skips a missing path, and covers them from Tasks 5 and 18 on.)
 
 - [ ] **Step 4: Wire the package into the repo**
 
 - root `package.json`: in `build` and `clean`, insert ` packages/llm-agent-reranker` right after `packages/llm-agent` (before `packages/typesafe-decision`).
 - `scripts/publish-all.sh` `PACKAGES`: add `  llm-agent-reranker` right after `  llm-agent` — publish order `llm-agent` → `llm-agent-reranker` → … → `llm-agent-libs` (libs peers on it). The list only; nothing is published here.
 - `packages/llm-agent-server/package.json` `dependencies`: `"@mcp-abap-adt/llm-agent-reranker": "^30.1.0"` (the binary provides every peer of the libraries it ships, `scoped-dependencies.test.ts`). `tsconfig.json` `references`: `{ "path": "../llm-agent-reranker" }`.
-- `packages/llm-agent-libs/README.md`: in the export list, replace `LlmReranker`, `NoopReranker`, `DecisionReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `wrapDecisionModel` with "`wrapProbabilityDecision`, `wrapRelevanceDecision`; the rerankers (`LlmReranker`, `NoopReranker`, `DecisionReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`) are deprecated re-exports of `@mcp-abap-adt/llm-agent-reranker`".
+- `packages/llm-agent-libs/README.md`: in the export list, replace `LlmReranker`, `NoopReranker`, `DecisionReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `wrapDecisionModel` with "`wrapProbabilityDecision`, `wrapRelevanceDecision`. Rerankers are not exported here — import them from `@mcp-abap-adt/llm-agent-reranker`".
 
 Run:
 ```bash
@@ -2287,20 +2360,24 @@ Run:
 ```bash
 npm run build
 npm test --workspace @mcp-abap-adt/llm-agent-reranker
-node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/reranker-aliases.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs
 node --import tsx/esm --test --test-reporter=spec 'test/repo/*.test.ts'
 npm run typecheck
 ```
-Expected: PASS — the moved tests pass under the new names; server-libs still compiles against the libs aliases (it switches in Task 22); `scoped-dependencies`, `licensing`, `readme-badges` accept the new package.
+Expected: PASS — the moved tests pass under the new names; server-libs builds against `llm-agent-reranker` directly; `no-old-names` finds no removed name in libs' namespace and no re-export; `scoped-dependencies`, `licensing`, `readme-badges` accept the new package and server-libs' new peer.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 npx biome check --write packages/llm-agent-reranker packages/llm-agent-libs/src
-git add -A packages/llm-agent-reranker packages/llm-agent-libs package.json package-lock.json scripts/publish-all.sh scripts/rag-eval/rag-eval.ts packages/llm-agent-server/package.json packages/llm-agent-server/tsconfig.json
-git commit -m "feat(llm-agent-reranker): new vendor-neutral reranker package; DecisionReranker → ProbabilityReranker (aliases kept in libs)
+git add -A packages/llm-agent-reranker packages/llm-agent-libs packages/llm-agent-server-libs package.json package-lock.json scripts/publish-all.sh scripts/rag-eval/rag-eval.ts test/integration/typesafe-decision test/repo/no-old-names.test.ts packages/llm-agent-server/package.json packages/llm-agent-server/tsconfig.json
+git commit -m "feat(llm-agent-reranker)!: new vendor-neutral reranker package; DecisionReranker → ProbabilityReranker
+
+BREAKING CHANGE: the rerankers move from @mcp-abap-adt/llm-agent-libs to
+@mcp-abap-adt/llm-agent-reranker; libs no longer exports them. DecisionReranker,
+DecisionRerankerOptions and DECISION_RERANK_DEFAULT_* are renamed
+ProbabilityReranker, ProbabilityRerankerOptions and PROBABILITY_RERANK_DEFAULT_*.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -4279,7 +4356,7 @@ Spec §3.1, §3.3 (incl. **cleanup failures kept for retry** — `staleRecordIds
 | Qdrant | **replaces**: `PUT /points` with the whole payload `{ text, ...metadata }` (also `upsertManyPrecomputedRaw`) | `qdrant-rag.ts` `upsertKnownVector`, `upsertManyPrecomputedRaw` |
 | pg-vector | **replaces**: `ON CONFLICT (id) DO UPDATE SET … metadata = EXCLUDED.metadata` | `pg-vector-rag.ts` `upsertKnown` |
 | HANA | **replaces**: `UPSERT … WITH PRIMARY KEY` (whole row, metadata as one JSON) | `hana-vector-rag.ts` `upsertKnown` |
-| `FallbackRag` | whatever its primary (and fallback) does — it delegates; a precomputed write only when the primary has one (D52, Task 19A Step 0) | `resilience/fallback-rag.ts` |
+| `FallbackRag` | whatever its primary (and fallback) does — it delegates; a precomputed write only when the primary has one (D52, Task 19A Step 0) | `llm-agent-rag/src/fallback-rag.ts` (moved in Task 1A) |
 
 So on a merging store a key the new record leaves out would **survive** the replacement (an old `data`, `itemText`, a settled stale list…). The writer therefore:
 - writes **every** `ReservedRecordKey` except `id` on **every** record write, absent ones as `undefined` (`UNSET_RESERVED`, compile-checked against `ReservedRecordKey` with `satisfies`, so a new reserved key is a compile error until listed);
@@ -9164,11 +9241,11 @@ Spec §6.5 (D43 as amended by D54, D49's build half — §17.17), §3.10 (`Tools
 
 **Why.** A tools store is filled once at instance creation (D41). The corpus flow has two layers (D54, spec §6.5): the consumer's **build step** runs the profile's own indexer outside the process and produces a corpus (records + vectors) with an embedder — `buildToolsCorpus`; the **server, at start**, loads that ready corpus into the store through the `corpus` fill source — `ToolsCorpusLoader`, in-memory and persistent stores alike. **There is no deploy step and nothing about the corpus is kept in the store**: no service record, no pending / final state, no id list, no hash in the store. The load: (1) the corpus's identity against what the server is configured with (`ToolsCorpusExpectation`: the consumer-named profile and embedder, the store's declared `dimensions` when there is one) and the manifest's `profileName` against the binding's; (2) the store's capabilities — a precomputed write on the given writer **and** on the resolved backend (D52), and `clearAll`; steps 1–2 touch nothing, so an incompatible corpus or store leaves the store as it was; (3) **clear the store** — the corpus is the store's whole content: no record of an earlier corpus, profile or embedder survives, and every write lands in an empty slot, so no old metadata key merges in (`InMemoryRag.upsert` and `VectorRag`'s `upsertKnownVector` set `metadata = { ...old, ...new }` on an in-place write); (4) write every record with its precomputed vector — **no embedding call**; (5) one log line; (6) the catalog status. A store without `clearAll` is refused rather than loaded by deleting the corpus's own ids: the store may hold records the corpus does not list (spec §3.10). An interrupted load repeats at the next start (a new instance clears and writes again); a failure in steps 3–4 throws, so the start (main store) or that worker's construction fails loudly — never a silent empty store. A reconnect calls no source (D46: `IToolsFillSource` is `fill` only). The fingerprint is the consumer-named identity plus the library's own checks (D47: the binding's `profileName`, the corpus format, one vector dimension; D54: the declared `dimensions`). There are no companion stores (D50): a corpus is one store's records. **An empty corpus is valid** (D49, its build half): no items → zero records, no `dimensions`; its load clears the store and writes nothing — a complete catalog of 0 tools.
 
-**No embedding call means checking the store that holds the records (D52, spec §10.4, §6.5 load step 2).** The load writes only through a precomputed write. `FallbackRag` — the circuit breaker's wrapper, which the builder puts around every registered store — exposed `upsertPrecomputedRaw` always and, over a raw-only primary, called the primary's `upsertRaw`: the vector dropped, the text re-embedded, silently. So Steps 0a–0d first make `FallbackRag` expose the write only when its primary (authoritative) writer has it (minimal: the fallback mirror unchanged, no `upsertManyPrecomputedRaw` added), and `corpusWriter` then checks the capability twice — on the given store's writer and on the **resolved backend** (the innermost store under `IRagDecorator.inner`, ≤ 16 levels, as `retrievalEmbedderOf`) — and throws before the clear, any write or any embedding call. The second check refuses any decorator that emulates the write again. (`FallbackRag`'s file stays at `packages/llm-agent/src/resilience/fallback-rag.ts` in this PR; its public home is `@mcp-abap-adt/llm-agent-rag`, Task 1A.)
+**No embedding call means checking the store that holds the records (D52, spec §10.4, §6.5 load step 2).** The load writes only through a precomputed write. `FallbackRag` — the circuit breaker's wrapper, which the builder puts around every registered store — exposed `upsertPrecomputedRaw` always and, over a raw-only primary, called the primary's `upsertRaw`: the vector dropped, the text re-embedded, silently. So Steps 0a–0d first make `FallbackRag` expose the write only when its primary (authoritative) writer has it (minimal: the fallback mirror unchanged, no `upsertManyPrecomputedRaw` added), and `corpusWriter` then checks the capability twice — on the given store's writer and on the **resolved backend** (the innermost store under `IRagDecorator.inner`, ≤ 16 levels, as `retrievalEmbedderOf`) — and throws before the clear, any write or any embedding call. The second check refuses any decorator that emulates the write again. (`FallbackRag`'s file stays at `packages/llm-agent-rag/src/fallback-rag.ts` in this PR; its public home is `@mcp-abap-adt/llm-agent-rag`, Task 1A.)
 
 **Files:**
-- Modify: `packages/llm-agent/src/resilience/fallback-rag.ts` (D52: the precomputed write only over a primary that has one)
-- Modify: `packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts`
+- Modify: `packages/llm-agent-rag/src/fallback-rag.ts` (D52: the precomputed write only over a primary that has one)
+- Modify: `packages/llm-agent-rag/src/__tests__/fallback-rag.test.ts`
 - Create: `packages/llm-agent-libs/src/collections/tools/corpus-capture-rag.ts` (internal: the build step's capture store — private to libs, exported from no entry point, `testing` included)
 - Create: `packages/llm-agent-libs/src/collections/tools/tools-corpus.ts` (types incl. `ToolsCorpusExpectation`, `buildToolsCorpus`, `parseToolsCorpus`; internal `corpusWriter`, `writeCorpusRecords`)
 - Modify: `packages/llm-agent-libs/src/collections/tools/tools-fill-sources.ts` (append `ToolsCorpusLoader`)
@@ -9198,7 +9275,7 @@ Spec §6.5 (D43 as amended by D54, D49's build half — §17.17), §3.10 (`Tools
 
 - [ ] **Step 0a: `FallbackRag` — write the failing test (D52)**
 
-Append to `packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts` (add `import type { IRag } from '@mcp-abap-adt/llm-agent';`):
+Append to `packages/llm-agent-rag/src/__tests__/fallback-rag.test.ts` (add `import type { IRag } from '@mcp-abap-adt/llm-agent';`):
 ```ts
 /** A store whose writer takes precomputed vectors; records every write. */
 function precomputedRag() {
@@ -9255,12 +9332,12 @@ describe('FallbackRag — a precomputed write only over a primary that has one (
 
 - [ ] **Step 0b: Run to see it fail**
 
-Run: `node --import tsx/esm --test packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts`
+Run: `node --import tsx/esm --test packages/llm-agent-rag/src/__tests__/fallback-rag.test.ts`
 Expected: FAIL — over a raw-only primary (and with no primary writer) `upsertPrecomputedRaw` is still a function.
 
 - [ ] **Step 0c: Implement**
 
-In `packages/llm-agent/src/resilience/fallback-rag.ts`, the header's write bullet becomes `- **write** — writes go through writer(); fans out to both stores (best-effort for fallback). A precomputed write is offered only when the primary's writer has one (D52).`, and `writer()` becomes:
+In `packages/llm-agent-rag/src/fallback-rag.ts`, the header's write bullet becomes `- **write** — writes go through writer(); fans out to both stores (best-effort for fallback). A precomputed write is offered only when the primary's writer has one (D52).`, and `writer()` becomes:
 ```ts
   writer(): IRagBackendWriter | undefined {
     const pw = this.primary.writer?.();
@@ -9316,16 +9393,16 @@ In `packages/llm-agent/src/resilience/fallback-rag.ts`, the header's write bulle
 
 Run:
 ```bash
-npx tsc -b packages/llm-agent
-node --import tsx/esm --test packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts
-npm test --workspace @mcp-abap-adt/llm-agent
+npx tsc -b packages/llm-agent-rag
+node --import tsx/esm --test packages/llm-agent-rag/src/__tests__/fallback-rag.test.ts
+npm test --workspace @mcp-abap-adt/llm-agent-rag
 ```
 Expected: PASS — the six earlier `FallbackRag` tests unchanged, the three new ones green.
 
 ```bash
-npx biome check --write packages/llm-agent/src/resilience
-git add packages/llm-agent/src/resilience
-git commit -m "fix(llm-agent): FallbackRag offers a precomputed write only when its primary has one
+npx biome check --write packages/llm-agent-rag/src/fallback-rag.ts packages/llm-agent-rag/src/__tests__/fallback-rag.test.ts
+git add packages/llm-agent-rag/src/fallback-rag.ts packages/llm-agent-rag/src/__tests__/fallback-rag.test.ts
+git commit -m "fix(llm-agent-rag): FallbackRag offers a precomputed write only when its primary has one
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -10269,11 +10346,11 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 20A: Rename the probability seam — `makeProbabilityDecision` (alias `makeDecisionModel`) and `createMakeProbabilityDecision` (server-libs + server)
+## Task 20A: Rename the probability seam — `makeProbabilityDecision` (`makeDecisionModel` removed) and `createMakeProbabilityDecision` (server-libs + server)
 
-Spec §3.8 (the seam rows), §6.2 (the probability seam's alias; the seam-missing message), §11, §13 (migration), §14.1; D30 (§17.7). The released seam `BuildAgentDeps.makeDecisionModel` is renamed symmetric to its contract (`IProbabilityDecision`) and to `makeRelevanceDecision`. `makeDecisionModel` stays a `@deprecated` alias until the next major; **both supplied → the SmartServer constructor throws naming both** (never silently pick one); the seam-missing message names `makeProbabilityDecision`. Done before Tasks 21–24, so they use the new name only. The app's `createMakeDecisionModel` is internal to `@mcp-abap-adt/llm-agent-server` (not exported from its root), so it is renamed without an alias.
+Spec §3.8 (the seam rows), §6.2 ("No alias for the probability seam"; the seam-missing message), §11, §13 (migration line 50), §14.1; D30 (§17.7) as amended by D58 (§17.18). The released seam `BuildAgentDeps.makeDecisionModel` is renamed symmetric to its contract (`IProbabilityDecision`) and to `makeRelevanceDecision`. **No alias** (a major release): `makeDecisionModel` is no longer a member of `BuildAgentDeps`, so there is no "both supplied" case and no check for it; the seam-missing message names `makeProbabilityDecision`. Done before Tasks 21–24, so they use the new name only. The app's `createMakeDecisionModel` is internal to `@mcp-abap-adt/llm-agent-server` (not exported from its root), so it is renamed outright.
 
-Every 30.1.0 use of the old seam, found with `git grep -n "makeDecisionModel\|createMakeDecisionModel\|make-decision-model" -- ':!docs/superpowers'`:
+Every 30.1.0 use of the old seam, found with `git grep -n "makeDecisionModel\|createMakeDecisionModel\|make-decision-model" -- ':!docs/superpowers'` — **all of them switch in this task**:
 - server-libs: `smart-agent/smart-server.ts` (`BuildAgentDeps` ~381; the `_deps` `Pick<…>` ~1061; the conditional spread ~1106; the `resolveRetrievalStrategies` call ~1320), `smart-agent/resolve-retrieval.ts` (`ResolveRetrievalInput.makeDecisionModel` ~26 — internal, not exported from the package root; `MISSING_SEAM` ~34; the call ~65–67);
 - server-libs tests: `__tests__/resolve-retrieval.test.ts` (~82, ~112, ~159), `__tests__/retrieval-wiring.test.ts` (~284, ~307, ~331, ~473, ~496, ~538, ~597), `__tests__/session-history.test.ts` (~237);
 - server (the binary's composition root): `composition/make-decision-model.ts` (`createMakeDecisionModel`, `DecisionProviderCtors`, `SHIPPED_DECISION_PROVIDERS`), `composition/index.ts` (`CompositionDeps.makeDecisionModel`, `buildCompositionDeps`), `composition/__tests__/make-decision-model.test.ts`; `smart-agent/cli.ts` passes `buildCompositionDeps(process.env)` whole (no change there);
@@ -10288,74 +10365,40 @@ Every 30.1.0 use of the old seam, found with `git grep -n "makeDecisionModel\|cr
 - Modify: `packages/llm-agent-server/src/composition/index.ts`, `composition/__tests__/model-resolver.test.ts`
 
 **Interfaces:**
-- Consumes: `IProbabilityDecision` (Task 4A). `resolve-retrieval.ts` keeps its 30.1.0 imports from libs (deprecated aliases since Task 4B) until Task 22 moves them.
+- Consumes: `IProbabilityDecision` (Task 4A; `resolve-retrieval.ts` and `smart-server.ts` already use it since Task 4A, and import the rerankers from `@mcp-abap-adt/llm-agent-reranker` since Task 4B).
 - Produces:
   ```ts
   // smart-server.ts — BuildAgentDeps
-  makeProbabilityDecision?: (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>;
-  /** @deprecated Use `makeProbabilityDecision` (same type). Kept until the next major; supplying both is an error. */
-  makeDecisionModel?: (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>;
+  makeProbabilityDecision?: (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>;   // makeDecisionModel removed
   // resolve-retrieval.ts (internal)
   ResolveRetrievalInput.makeProbabilityDecision?  // was makeDecisionModel; MISSING_SEAM names BuildAgentDeps.makeProbabilityDecision
   // server composition (internal)
   export function createMakeProbabilityDecision(lookup: Lookup, ctors?: ProbabilityProviderCtors): (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>;
   export interface ProbabilityProviderCtors { typesafe: new (cfg: TypeSafeDecisionConfig) => IProbabilityDecision }  // was DecisionProviderCtors
   export const SHIPPED_PROBABILITY_PROVIDERS: ProbabilityProviderCtors;                                             // was SHIPPED_DECISION_PROVIDERS
-  CompositionDeps.makeProbabilityDecision  // was makeDecisionModel; the binary supplies only the new key
+  CompositionDeps.makeProbabilityDecision  // was makeDecisionModel
   ```
 
 - [ ] **Step 1: Write the failing tests**
 
-In `retrieval-wiring.test.ts`, rename every `makeDecisionModel:` key to `makeProbabilityDecision:` (seven places), then append to the `describe('retrieval strategy wiring (§13.4)'` block:
-
-```ts
-  it('the deprecated alias makeDecisionModel still builds the probability decision (D30)', async () => {
-    const { model, seen } = recordingModel();
-    const { makeRag } = labelledStores();
-    const server = new SmartServer(
-      { ...configFrom(TOOLS_DECISION_YAML), pluginLoader: noPlugins },
-      { ...constructionSeams, makeRag, embedder: stubEmbedder, makeDecisionModel: async () => model },
-    );
-    await chatOnce(server);
-    assert.equal(seen.length, 1, 'the alias reaches the same seam');
-    assert.ok(tasksOf(seen[0].req).every((t) => t === TOOL_QUESTION.task));
-  });
-
-  it('makeDecisionModel AND makeProbabilityDecision both supplied → the constructor throws naming both (D30)', async () => {
-    const { model } = recordingModel();
-    const deps: BuildAgentDeps = {
-      ...constructionSeams,
-      embedder: stubEmbedder,
-      makeDecisionModel: async () => model,
-      makeProbabilityDecision: async () => model,
-    };
-    const both =
-      /BuildAgentDeps\.makeDecisionModel and BuildAgentDeps\.makeProbabilityDecision are both supplied/;
-    assert.throws(() => new SmartServer({ ...configFrom(TOOLS_DECISION_YAML), pluginLoader: noPlugins }, deps), both);
-    // the embedded entry point constructs a SmartServer too
-    await assert.rejects(buildAgent({ ...configFrom(TOOLS_DECISION_YAML), pluginLoader: noPlugins }, deps), both);
-    // never silently picked: even a config that asks for no decision is refused
-    assert.throws(() => new SmartServer({ ...configFrom(BASE_YAML), pluginLoader: noPlugins }, deps), both);
-  });
-```
-
-In `resolve-retrieval.test.ts`: rename `makeDecisionModel:` → `makeProbabilityDecision:` (~82, ~112) and change the expected message (~159) to `/BuildAgentDeps\.makeProbabilityDecision is required/`. In `session-history.test.ts` (~237): `makeDecisionModel:` → `makeProbabilityDecision:`.
+In `retrieval-wiring.test.ts`, rename every `makeDecisionModel:` key to `makeProbabilityDecision:` (seven places). In `resolve-retrieval.test.ts`: rename `makeDecisionModel:` → `makeProbabilityDecision:` (~82, ~112) and change the expected message (~159) to `/BuildAgentDeps\.makeProbabilityDecision is required/`. In `session-history.test.ts` (~237): `makeDecisionModel:` → `makeProbabilityDecision:`.
 
 In `__typechecks__/construction-seams.ts` (in `tsconfig.typecheck.json`, so `npm run typecheck` checks it under `noUnusedLocals`): add `IProbabilityDecision` to the file's first line, `import type { IEmbedder, ILlm, IRag } from '@mcp-abap-adt/llm-agent';` → `import type { IEmbedder, ILlm, IProbabilityDecision, IRag } from '@mcp-abap-adt/llm-agent';`, then append at the end of the file (after its `void _embedders;`):
 ```ts
 declare const decision: IProbabilityDecision;
-// D30: the new seam, and the deprecated alias of the same type, both compile on their own.
+// D30, D58: the renamed seam compiles; the old key is no member any more (a major release, no alias).
 const _probabilitySeam: BuildAgentDeps = { ..._allSeams, makeProbabilityDecision: async () => decision };
-const _aliasSeam: BuildAgentDeps = { ..._allSeams, makeDecisionModel: async () => decision };
+// @ts-expect-error makeDecisionModel was removed — rename the key to makeProbabilityDecision (spec §13 line 50)
+const _removedSeam: BuildAgentDeps = { ..._allSeams, makeDecisionModel: async () => decision };
 
 // referenced, like the fixtures above, so noUnusedLocals (TS6133) stays quiet
 void _probabilitySeam;
-void _aliasSeam;
+void _removedSeam;
 ```
 
 In the server package: `git mv packages/llm-agent-server/src/composition/__tests__/make-decision-model.test.ts packages/llm-agent-server/src/composition/__tests__/make-probability-decision.test.ts`; in it, import `createMakeProbabilityDecision`, `type ProbabilityProviderCtors` from `'../make-probability-decision.js'`, use them in `harness`, and rename `describe('makeDecisionModel'` → `describe('makeProbabilityDecision'`. In `model-resolver.test.ts`, the "hands out all four seams" case becomes "all five": add `'makeProbabilityDecision'` to the list, and add:
 ```ts
-  it('the binary supplies the new seam only — never the deprecated alias (D30)', () => {
+  it('the binary supplies the renamed seam; the old key is gone (D30, D58)', () => {
     const deps = buildCompositionDeps({}) as Record<string, unknown>;
     assert.equal(typeof deps.makeProbabilityDecision, 'function');
     assert.equal('makeDecisionModel' in deps, false);
@@ -10367,58 +10410,34 @@ Run:
 npx tsc -b packages/llm-agent-reranker packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-wiring.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts
 node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-probability-decision.test.ts packages/llm-agent-server/src/composition/__tests__/model-resolver.test.ts
+npm run typecheck
 ```
-Expected: FAIL — `makeProbabilityDecision` is not a member of `BuildAgentDeps` / `ResolveRetrievalInput` (the seam is never called, so the rerank count is 0), the both-supplied server constructs without error, the missing-seam message names `makeDecisionModel`, and `'../make-probability-decision.js'` is not found.
+Expected: FAIL — `makeProbabilityDecision` is not a member of `BuildAgentDeps` / `ResolveRetrievalInput` (the seam is never called, so the rerank count is 0), the missing-seam message names `makeDecisionModel`, `'../make-probability-decision.js'` is not found, and the typecheck reports the `@ts-expect-error` as unused (`makeDecisionModel` is still a member).
 
 - [ ] **Step 2: Implement — server-libs**
 
-`smart-server.ts`, `BuildAgentDeps` — replace the `makeDecisionModel?` member with:
+`smart-server.ts`, `BuildAgentDeps` — replace the `makeDecisionModel?` member with (no alias kept):
 ```ts
   /**
    * Builds the probability decision (`IProbabilityDecision`) from the `decision:`
    * section when its provider is of kind probability (typesafe); the root resolves
    * its credentialRef. Optional: required only when the config asks for one
    * (a `reranker: decision` under such a provider). Spec §3.8, §6.2.
+   * Renamed from `makeDecisionModel` (removed — spec §13).
    */
   makeProbabilityDecision?: (
     cfg: SmartServerDecisionConfig,
   ) => Promise<IProbabilityDecision>;
-  /**
-   * @deprecated Use `makeProbabilityDecision` — the same seam under its old name,
-   * kept until the next major. Supplying BOTH is a startup error (spec §13, D30).
-   */
-  makeDecisionModel?: (
-    cfg: SmartServerDecisionConfig,
-  ) => Promise<IProbabilityDecision>;
 ```
-(import: in the `@mcp-abap-adt/llm-agent` VALUE import (L49–66), replace `type IDecisionModel,` (L55) with `type IProbabilityDecision,` — `IDecisionModel` has no other use in the file (L383 was this member), so leaving it is a TS6133 under `noUnusedLocals`.)
-
-Beside `assertConstructionSeams`:
+(`IProbabilityDecision` is already in the `@mcp-abap-adt/llm-agent` import since Task 4A.) In the `_deps` type's `Pick<BuildAgentDeps, …>` list replace `'makeDecisionModel'` with `'makeProbabilityDecision'`; replace the conditional spread with
 ```ts
-/**
- * The probability seam under its new name or its deprecated alias (D30). Both
- * supplied is a consumer bug — which one was meant is unknowable — so it fails,
- * whatever the config asks for; never silently pick one.
- */
-function probabilityDecisionSeam(
-  deps: BuildAgentDeps | undefined,
-): BuildAgentDeps['makeProbabilityDecision'] {
-  if (deps?.makeProbabilityDecision && deps.makeDecisionModel) {
-    throw new Error(
-      'BuildAgentDeps.makeDecisionModel and BuildAgentDeps.makeProbabilityDecision are both supplied: ' +
-        'makeDecisionModel is the deprecated alias of makeProbabilityDecision — supply only makeProbabilityDecision.',
-    );
-  }
-  return deps?.makeProbabilityDecision ?? deps?.makeDecisionModel;
-}
+      ...(deps.makeProbabilityDecision
+        ? { makeProbabilityDecision: deps.makeProbabilityDecision }
+        : {}),
 ```
-In the constructor, right after `assertConstructionSeams(deps);`: `const makeProbabilityDecision = probabilityDecisionSeam(deps);`. In the `_deps` type's `Pick<BuildAgentDeps, …>` list replace `'makeDecisionModel'` with `'makeProbabilityDecision'`; replace the conditional spread with
-```ts
-      ...(makeProbabilityDecision ? { makeProbabilityDecision } : {}),
-```
-and in `start()` pass `makeProbabilityDecision: this._deps.makeProbabilityDecision,` to `resolveRetrievalStrategies`. Nothing else reads the alias: the server holds the one resolved seam.
+and in `start()` pass `makeProbabilityDecision: this._deps.makeProbabilityDecision,` to `resolveRetrievalStrategies`. No resolver function, no both-supplied check: the old key is not a member.
 
-`resolve-retrieval.ts`: add `IProbabilityDecision` to the L1–6 `import type { … } from '@mcp-abap-adt/llm-agent'` — keep `IDecisionModel` there: the 30.1.0 closure's `let decisionModel: IDecisionModel | undefined` (L50) still uses it until Task 22 replaces the closure (the same type — `IDecisionModel` is the deprecated alias since Task 4A — so `wrapDecisionModel(await input.makeProbabilityDecision(…))` assigns cleanly). Rename the input field `makeDecisionModel` → `makeProbabilityDecision` (typed `(cfg) => Promise<IProbabilityDecision>`), its two uses (`if (!input.makeProbabilityDecision) …`, `await input.makeProbabilityDecision(input.decisionCfg)`), and
+`resolve-retrieval.ts`: rename the input field `makeDecisionModel` → `makeProbabilityDecision` (typed `(cfg) => Promise<IProbabilityDecision>` since Task 4A), its two uses (`if (!input.makeProbabilityDecision) …`, `await input.makeProbabilityDecision(input.decisionCfg)`), and
 ```ts
 const MISSING_SEAM =
   'BuildAgentDeps.makeProbabilityDecision is required: the config asks for a probability decision, and the library constructs none from configuration. Supply it from your composition root.';
@@ -10429,7 +10448,7 @@ const MISSING_SEAM =
 ```bash
 git mv packages/llm-agent-server/src/composition/make-decision-model.ts packages/llm-agent-server/src/composition/make-probability-decision.ts
 ```
-In it: `DecisionProviderCtors` → `ProbabilityProviderCtors`, `SHIPPED_DECISION_PROVIDERS` → `SHIPPED_PROBABILITY_PROVIDERS`, `createMakeDecisionModel` → `createMakeProbabilityDecision`, `IDecisionModel` → `IProbabilityDecision` (the same type), and the doc line `` `BuildAgentDeps.makeDecisionModel` `` → `` `BuildAgentDeps.makeProbabilityDecision` ``. Behaviour unchanged.
+In it: `DecisionProviderCtors` → `ProbabilityProviderCtors`, `SHIPPED_DECISION_PROVIDERS` → `SHIPPED_PROBABILITY_PROVIDERS`, `createMakeDecisionModel` → `createMakeProbabilityDecision` (`IProbabilityDecision` since Task 4A), and the doc line `` `BuildAgentDeps.makeDecisionModel` `` → `` `BuildAgentDeps.makeProbabilityDecision` ``. Behaviour unchanged.
 
 `composition/index.ts`:
 ```ts
@@ -10449,18 +10468,20 @@ npx tsc -b packages/llm-agent-server-libs packages/llm-agent-server
 node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-wiring.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/session-history.test.ts
 node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-probability-decision.test.ts packages/llm-agent-server/src/composition/__tests__/model-resolver.test.ts
 npm run typecheck
-git grep -n "makeDecisionModel\|createMakeDecisionModel\|make-decision-model" -- packages ':!**/CHANGELOG.md'
+git grep -n "makeDecisionModel\|createMakeDecisionModel\|make-decision-model" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'
 ```
-Expected: PASS; typecheck clean (`_aliasSeam` compiles — `@deprecated` is not an error); the grep prints only the `@deprecated` member and `probabilityDecisionSeam` in `smart-server.ts`, `_aliasSeam` in `__typechecks__/construction-seams.ts`, and the alias / both-supplied / binary-supplies-only-the-new-seam tests.
+Expected: PASS; typecheck clean (the `@ts-expect-error` on `_removedSeam` is used); the grep prints only that `@ts-expect-error` line and `_removedSeam` in `__typechecks__/construction-seams.ts`, and the `'makeDecisionModel' in deps` assertion in `model-resolver.test.ts`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 npx biome check --write packages/llm-agent-server-libs/src packages/llm-agent-server/src
 git add packages/llm-agent-server-libs/src packages/llm-agent-server/src
-git commit -m "refactor(server-libs): makeDecisionModel → makeProbabilityDecision (deprecated alias kept; both supplied is an error)
+git commit -m "refactor(server-libs)!: makeDecisionModel → makeProbabilityDecision (no alias)
 
-The binary's createMakeDecisionModel becomes createMakeProbabilityDecision.
+BREAKING CHANGE: BuildAgentDeps.makeDecisionModel is renamed makeProbabilityDecision;
+the old key is removed. The binary's createMakeDecisionModel becomes
+createMakeProbabilityDecision.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -10487,7 +10508,7 @@ Spec §6.2 (all validation rules; only the key `tools`, S8; one `decision:` sect
 - Consumes: `parseIntegerField` (`decision-config.ts`); `get` (`yaml-loader.ts`).
 - Produces:
   ```ts
-  // decision-config.ts — one interface, additive (spec §17.5): a consumer's own probability seam (makeProbabilityDecision, or the deprecated makeDecisionModel) still compiles
+  // decision-config.ts — one interface, additive (spec §17.5): a consumer's own probability seam function (under the key makeProbabilityDecision, Task 20A) still compiles
   export interface SmartServerDecisionConfig { provider: 'typesafe' | 'sap-aicore'; model?: string; credentialRef?: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number; deploymentId?: string; resourceGroup?: string }
   export type DecisionKind = 'probability' | 'relevance';
   export const DECISION_KINDS: Readonly<Record<SmartServerDecisionConfig['provider'], DecisionKind>>; // { typesafe: 'probability', 'sap-aicore': 'relevance' } — the one place (spec §6.2)
@@ -11139,7 +11160,7 @@ Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind 
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` (`reranker: decision` by kind through `decisionRerankerFor`; `makeRelevanceDecision?` input; imports from `@mcp-abap-adt/llm-agent-reranker`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-*.test.ts` (the relevance arm)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerConfig.toolsVariantFactories?`, `.toolsStrategyFactories?`; `BuildAgentDeps.makeRelevanceDecision?` beside `makeProbabilityDecision`, threaded wherever `makeProbabilityDecision` is (Task 20A) — the `Pick<…>` at ~1061, the spread at ~1106, the `resolveRetrievalStrategies` call at ~1320)
-- Modify: `packages/llm-agent-server-libs/package.json` (`peerDependencies`: `"@mcp-abap-adt/llm-agent-reranker": "^30.1.0"`), `tsconfig.json` (`references`: `../llm-agent-reranker`)
+- (`packages/llm-agent-server-libs/package.json` already peers on `@mcp-abap-adt/llm-agent-reranker`, with the `tsconfig.json` reference — Task 4B.)
 - Modify: `packages/llm-agent-server-libs/src/index.ts` (export the registry types and `BUILT_IN_TOOLS_VARIANTS`, `BUILT_IN_TOOLS_STRATEGIES`)
 
 **Interfaces:**
@@ -11366,7 +11387,7 @@ import { DECISION_KINDS, type DecisionKind, type SmartServerDecisionConfig } fro
 
 export interface DecisionSeams {
   decisionCfg?: SmartServerDecisionConfig;
-  /** Probability providers (typesafe). The renamed 30.1.0 seam (Task 20A); SmartServer has already resolved its deprecated alias. */
+  /** Probability providers (typesafe). The renamed 30.1.0 seam (Task 20A; `makeDecisionModel` removed). */
   makeProbabilityDecision?: (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>;
   /** Relevance providers (sap-aicore). New, optional (spec §3.8). */
   makeRelevanceDecision?: (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision>;
@@ -11422,13 +11443,14 @@ export async function decisionRerankerFor(
 }
 ```
 
-In `resolve-retrieval.ts` (the 30.1.0 `rag.retrieval` resolver): `ResolveRetrievalInput` extends `DecisionSeams` (drops its own `decisionCfg` / `makeProbabilityDecision` fields — same names, same types as after Task 20A, so `smart-server.ts` call sites compile; the missing-seam message stays `BuildAgentDeps.makeProbabilityDecision is required: …`, so the Task 20A test keeps passing); replace the `decisionModel` / `decisionReranker` closure with `const decisions = decisionBuilders(input);` and a cache keyed by `JSON.stringify([preset.criteria, task])` over `decisionRerankerFor(decisions, { task, criteria: preset.criteria, explicit: cfg.question !== undefined || cfg.task !== undefined })`; import `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `@mcp-abap-adt/llm-agent-reranker` (libs keeps `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`). Under `typesafe` nothing changes (golden: the existing `retrieval-*` tests pass untouched).
+In `resolve-retrieval.ts` (the 30.1.0 `rag.retrieval` resolver): `ResolveRetrievalInput` extends `DecisionSeams` (drops its own `decisionCfg` / `makeProbabilityDecision` fields — same names, same types as after Task 20A, so `smart-server.ts` call sites compile; the missing-seam message stays `BuildAgentDeps.makeProbabilityDecision is required: …`, so the Task 20A test keeps passing); replace the `decisionModel` / `decisionReranker` closure with `const decisions = decisionBuilders(input);` and a cache keyed by `JSON.stringify([preset.criteria, task])` over `decisionRerankerFor(decisions, { task, criteria: preset.criteria, explicit: cfg.question !== undefined || cfg.task !== undefined })`; `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` stay on the `@mcp-abap-adt/llm-agent-reranker` import Task 4B gave it (libs keeps `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`). Under `typesafe` nothing changes (golden: the existing `retrieval-*` tests pass untouched).
 
 Everything the replaced closure used goes with it — `noUnusedLocals` (`tsconfig.base.json`) fails the build on any leftover. In today's `resolve-retrieval.ts` (read it):
-- L1–6 `@mcp-abap-adt/llm-agent` type import: drop `IDecisionModel` (L2; its only use was the closure's `let decisionModel` at L50) and `IProbabilityDecision` (added in Task 20A for the `makeProbabilityDecision` field, which now comes from `DecisionSeams`; nothing else in the file names it); keep `ILlm` (`resolveLlm`), `IReranker` (the reranker cache and `let reranker`), `IRetrievalStrategy`;
-- L7–16 `@mcp-abap-adt/llm-agent-libs` import: keep only `EmbeddingRetrieval`, `RerankAllRetrieval`, `RerankedRetrieval`; drop `DecisionReranker` (L8) and `wrapDecisionModel` (L15) — `decisionRerankerFor` / `decisionBuilders` build and wrap now; `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` move to the `@mcp-abap-adt/llm-agent-reranker` import;
+- L1–6 `@mcp-abap-adt/llm-agent` type import: drop `IProbabilityDecision` (it replaced `IDecisionModel` in Task 4A; its uses were the closure's `let decisionModel` at L50 and the `makeProbabilityDecision` field, which now comes from `DecisionSeams`; nothing else in the file names it); keep `ILlm` (`resolveLlm`), `IReranker` (the reranker cache and `let reranker`), `IRetrievalStrategy`;
+- L7–16 `@mcp-abap-adt/llm-agent-libs` import: keep only `EmbeddingRetrieval`, `RerankAllRetrieval`, `RerankedRetrieval`; drop `wrapProbabilityDecision` (Task 4A's name for L15) — `decisionBuilders` wraps now;
+- the `@mcp-abap-adt/llm-agent-reranker` import (Task 4B): drop `ProbabilityReranker` — `decisionRerankerFor` builds it now; keep `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION`;
 - L17–20 `./decision-config.js` type import: drop `SmartServerDecisionConfig` (its only uses were the two dropped members below); keep `SmartServerRetrievalConfig` (`retrieval?`) — the import becomes `import type { SmartServerRetrievalConfig } from './decision-config.js';`;
-- add `import { type DecisionSeams, decisionBuilders, decisionRerankerFor } from './decision-seams.js';` and `import { LlmReranker, PASSAGE_QUESTION, TOOL_QUESTION } from '@mcp-abap-adt/llm-agent-reranker';` (all used: `extends DecisionSeams`, `decisionBuilders(input)`, `decisionRerankerFor(…)`, `new LlmReranker`, the L84 preset);
+- add `import { type DecisionSeams, decisionBuilders, decisionRerankerFor } from './decision-seams.js';` (all used: `extends DecisionSeams`, `decisionBuilders(input)`, `decisionRerankerFor(…)`; the reranker import keeps `new LlmReranker` and the L84 preset);
 - L22–31 `ResolveRetrievalInput`: drop its own `decisionCfg` and `makeProbabilityDecision` members (both now come from `DecisionSeams`);
 - L33–34 `const MISSING_SEAM`: delete — `decision-seams.ts`'s `missing('makeProbabilityDecision')` produces `BuildAgentDeps.makeProbabilityDecision is required: …`, which the Task 20A test (`/BuildAgentDeps\.makeProbabilityDecision is required/`) matches;
 - L50–76 `let decisionModel`, `const decisionRerankers`, `const decisionReranker = async (…)`: replaced as above; the one call site L89 `reranker = await decisionReranker(preset, task);` becomes the cached `decisionRerankerFor(…)` call (with `explicit` from `cfg`);
@@ -11444,9 +11466,9 @@ Everything the replaced closure used goes with it — `noUnusedLocals` (`tsconfi
   }
   ```
   (No decision is built for a cached wording, so the check before the cache lookup changes nothing else: with no `decision:` section nothing was ever cached.)
-- the function doc L36–42 ("The decision model is built ONCE and shared; one `DecisionReranker` per distinct question wording") → "The decision of the `decision:` section's kind is built ONCE and shared (`decisionBuilders`); one reranker per distinct question wording (`decisionRerankerFor`)."
+- the function doc L36–42 ("The decision model is built ONCE and shared; one `ProbabilityReranker` per distinct question wording" since Task 4B) → "The decision of the `decision:` section's kind is built ONCE and shared (`decisionBuilders`); one reranker per distinct question wording (`decisionRerankerFor`)."
 
-Check: `git grep -n "IDecisionModel\|IProbabilityDecision\|SmartServerDecisionConfig\|DecisionReranker\|wrapDecisionModel\|MISSING_SEAM\|decisionModel\b" packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` → empty.
+Check: `git grep -n "IProbabilityDecision\|SmartServerDecisionConfig\|ProbabilityReranker\|wrapProbabilityDecision\|MISSING_SEAM\|decisionModel\b" packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` → empty.
 
 Add to the retrieval tests (`packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts`, inside its `describe`):
 
@@ -11476,13 +11498,13 @@ it('reranker: decision under a relevance provider builds a RelevanceReranker ove
 ```
 (Assert the reranker class through whatever accessor the existing retrieval tests use; add `rerankerOf` to the test helper if none exists.)
 
-`smart-server.ts` `BuildAgentDeps`, beside `makeProbabilityDecision` (Task 20A; its deprecated alias `makeDecisionModel` stays where Task 20A put it):
+`smart-server.ts` `BuildAgentDeps`, beside `makeProbabilityDecision` (Task 20A):
 ```ts
   /** Builds the relevance decision for a `decision:` provider of kind relevance (sap-aicore).
    *  Optional: a config that never asks for one needs none (spec §3.8, §6.2). */
   makeRelevanceDecision?: (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision>;
 ```
-and thread it exactly where `makeProbabilityDecision` is threaded (the `Pick<…>` list, the conditional spread `...(deps?.makeRelevanceDecision ? { makeRelevanceDecision: deps.makeRelevanceDecision } : {})`, the `resolveRetrievalStrategies` input; Task 23 adds it to the `resolveCollectionProfiles` input it introduces). The relevance seam has no alias, so it is read straight from `deps`. Import: add `type IRelevanceDecision,` to the `@mcp-abap-adt/llm-agent` value import (L49–66, beside `type IProbabilityDecision` from Task 20A).
+and thread it exactly where `makeProbabilityDecision` is threaded (the `Pick<…>` list, the conditional spread `...(deps?.makeRelevanceDecision ? { makeRelevanceDecision: deps.makeRelevanceDecision } : {})`, the `resolveRetrievalStrategies` input; Task 23 adds it to the `resolveCollectionProfiles` input it introduces). Both seams are read straight from `deps` (no alias anywhere). Import: add `type IRelevanceDecision,` to the `@mcp-abap-adt/llm-agent` value import (L49–66, beside `type IProbabilityDecision` from Task 4A).
 
 ```ts
 // packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts
@@ -13343,7 +13365,7 @@ describe('fill → the fill source (spec §6.2, D54)', () => {
 });
 ```
 
-Append to `profile-fill-ready-clients.test.ts` (imports: `buildToolsCorpus` into the `@mcp-abap-adt/llm-agent-libs` import; `VectorRag` from `@mcp-abap-adt/llm-agent-rag` (its public home, D53 — Task 1A); `type IRetrievalEmbedder`, `recordId` into the `@mcp-abap-adt/llm-agent` import):
+Append to `profile-fill-ready-clients.test.ts` (imports: `buildToolsCorpus` into the `@mcp-abap-adt/llm-agent-libs` import; `VectorRag` from `@mcp-abap-adt/llm-agent-rag` (where it lives since Task 1A, D57); `type IRetrievalEmbedder`, `recordId` into the `@mcp-abap-adt/llm-agent` import):
 ```ts
 // ---- D42, D54: the fill source from config — corpus, loaded at start into any store ----
 
@@ -14225,7 +14247,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 ```
 
-(The `!` marks the removal for readers; it removes nothing a consumer could import — the release stays a minor, spec §13.)
+(The `!` marks the removal for readers; it removes nothing a consumer could import. The release is a major for other reasons — spec §13, D57–D59.)
 
 ---
 
@@ -15829,14 +15851,14 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 33: Reference docs — every page the change touches
 
-Spec §13 (docs updated in the same PR), §10.3 (rewrite the `IToolIndexingStrategy` pages), §11.3 (the RAG implementations' home), §6.5 (the corpus: build step + load at start), §7.4 (named compositions, no tuned numbers). The user's rule: a release updates **all** documentation the change touches, not only the changelog. ADHD-friendly: TL;DR first, short chunks.
+Spec §13 (docs updated in the same PR; **a major release** — every page names the new import, the old name appears only in the CHANGELOG's migration table), §10.3 (rewrite the `IToolIndexingStrategy` pages), §11.3 (the RAG implementations in `llm-agent-rag`), §11.4 (no re-exports), §6.5 (the corpus: build step + load at start; the replicas' reload window accepted, D60), §7.4 (named compositions, no tuned numbers). The user's rule: a release updates **all** documentation the change touches, not only the changelog; a breaking release adds a migration note. ADHD-friendly: TL;DR first, short chunks.
 
 **Files:**
 - Modify: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`, `docs/PERFORMANCE.md`, `docs/EXAMPLES.md`, `docs/TROUBLESHOOTING.md`, `docs/DEPLOYMENT.md`, `docs/SECURITY_THREAT_MODEL.md`, `docs/QUICK_START.md`
-- Modify: `packages/llm-agent/README.md`, `packages/llm-agent-rag/README.md` (the RAG implementations' home, D53), `packages/llm-agent-libs/README.md`, `packages/llm-agent-server-libs/README.md`, `packages/llm-agent-server/README.md`, `packages/typesafe-decision/README.md` (`IProbabilityDecision`; one of two decision kinds), `scripts/rag-eval/README.md` (already in Task 32 — check it)
+- Modify: `packages/llm-agent/README.md`, `packages/llm-agent-rag/README.md` (the RAG implementations, D53, D57), `packages/ollama-embedder/README.md` (checked: `OllamaRag` removed in Task 1A), `packages/llm-agent-libs/README.md`, `packages/llm-agent-server-libs/README.md`, `packages/llm-agent-server/README.md`, `packages/typesafe-decision/README.md` (`IProbabilityDecision`; one of two decision kinds), `scripts/rag-eval/README.md` (already in Task 32 — check it)
 - Modify: `examples/docker-sap-ai-core/smart-server.yaml` (a commented `decision: { provider: sap-aicore … }` + `rag.profiles` block)
 - (`packages/sap-aicore-decision/README.md` was written in Task 18; `packages/llm-agent-reranker/README.md` in Tasks 4B–4C.)
-- Every page that names a renamed or moved symbol (`IDecisionModel`, `DecisionReranker`, `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_*`, `wrapDecisionModel`, `makeDecisionModel` / `createMakeDecisionModel`, rerankers imported from libs) uses the new name / package and says the old one is a deprecated alias (spec §13). Found today: `README.md`, `CLAUDE.md`, `docs/ARCHITECTURE.md` (~207, ~1026), `docs/EXAMPLES.md` (~335–353), `docs/INTEGRATION.md` (~1044, ~1165, ~1221), `docs/PERFORMANCE.md`, `docs/TROUBLESHOOTING.md` (~295: the seam-missing message is now `BuildAgentDeps.makeProbabilityDecision is required: …`; add the both-supplied error `BuildAgentDeps.makeDecisionModel and BuildAgentDeps.makeProbabilityDecision are both supplied` → remove `makeDecisionModel`), `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/typesafe-decision/README.md`, `scripts/rag-eval/README.md` — re-run the Step 9 grep for the full list.
+- Every page that names a renamed or moved symbol (`IDecisionModel`, `DecisionReranker`, `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_*`, `wrapDecisionModel`, `makeDecisionModel` / `createMakeDecisionModel`, rerankers imported from libs, RAG implementations imported from `@mcp-abap-adt/llm-agent`, `OllamaRag`) uses the new name and the package it is imported from now; the old name is not described as working (no aliases — spec §13, D58). Found today: `README.md`, `CLAUDE.md`, `docs/ARCHITECTURE.md` (~207, ~1026), `docs/EXAMPLES.md` (~335–353), `docs/INTEGRATION.md` (~1044, ~1165, ~1221), `docs/PERFORMANCE.md`, `docs/TROUBLESHOOTING.md` (~295: the seam-missing message is now `BuildAgentDeps.makeProbabilityDecision is required: …`; a consumer still passing `makeDecisionModel` gets a compile error — rename the key), `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/typesafe-decision/README.md`, `scripts/rag-eval/README.md` — re-run the Step 9 grep for the full list.
 
 - [ ] **Step 1: `docs/INTEGRATION.md` — replace the whole `## IToolIndexingStrategy` section (heading through the line before the next `## `) with:**
 
@@ -16006,7 +16028,7 @@ builder.withToolsProfile(myTools);
   `expect`. A mismatch (or a vector length other than `expect.dimensions`) fails at instance
   creation, naming what differs, **before** the store is touched. Every start clears and reloads the
   store — an interrupted load simply repeats at the next start; replicas over one persistent store
-  each reload it at their start (others read a partial store meanwhile).
+  each reload it at their start (others read a partial store meanwhile — accepted, no coordination).
 - **The server fills `rag.profiles.tools` itself, on every path** (spec §6.3), with the configured
   `fill` source (`rag.profiles.tools.fill`, default `live`): with ready clients
   (`BuildAgentDeps.mcpClients`, `mcpClients`, plugin clients) or an injected `connectMcp` seam it
@@ -16056,16 +16078,18 @@ decisions.** Every reranker is in `@mcp-abap-adt/llm-agent-reranker`; the decisi
 
 - A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no named composition uses one. Under a reranker it needs `onFailure: 'error'` (a `'stage1'` fallback returns stage-1 scores) and never goes with `keepStage1Top` — both refused at construction.
 - `keepStage1Top: n` pins the stage-1 top-n first; each pinned item carries its **reranked** score, the rest follow by reranked score. Unmeasured — default 0.
-- The old names still import from `@mcp-abap-adt/llm-agent-libs` / `@mcp-abap-adt/llm-agent` as deprecated aliases until the next major.
+- The old names are gone (a major release): `@mcp-abap-adt/llm-agent-libs` exports no reranker, `@mcp-abap-adt/llm-agent` no `IDecisionModel`. The CHANGELOG's migration table lists each old name with its new import.
 
 ### Where the RAG implementations live
 
 `VectorRag`, `InMemoryRag`, `FallbackRag`, the overlays, the registry and providers, the search
 strategies, the preprocessors and query expanders: import them from **`@mcp-abap-adt/llm-agent-rag`**
-(spec §11.3). The same names from `@mcp-abap-adt/llm-agent` still work — the same objects — as
-deprecated aliases until the next major, when the files move. Contracts and the store kit
+(spec §11.3) — their code lives there. `@mcp-abap-adt/llm-agent` no longer exports them. Contracts
+(`IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` included) and the store kit
 (`QueryEmbedding`, `symmetricEmbedder`, `AbstractRagProvider`, `matchesRagIdentity`, …) stay in
-`@mcp-abap-adt/llm-agent`.
+`@mcp-abap-adt/llm-agent`. `OllamaRag` is removed: build
+`new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)`. Every package exports only what it
+owns — import each name from its owner.
 
 Any reranker composes with any indexing. Under a profile every reranker result is checked: wrong count,
 a duplicate or a non-finite score is a `RERANK_ERROR` (`onFailure: 'stage1'` keeps the stage-1 order,
@@ -16094,7 +16118,7 @@ The unexported, unwired `IToolIndexingStrategy` is deleted:
 
 Also in `docs/INTEGRATION.md`:
 - `## IReranker` (line ~1044): add one line under its intro — `Shipped implementations (@mcp-abap-adt/llm-agent-reranker): ProbabilityReranker (over an IProbabilityDecision — TypeSafe Jev), RelevanceReranker (over an IRelevanceDecision — Cohere on SAP AI Core), LlmReranker, NoopReranker.`; under `### Example: Cross-encoder reranker via external API` add one sentence: a cross-encoder is a relevance decision — implement `IRelevanceDecision` and use `RelevanceReranker`; for Cohere on SAP AI Core use the shipped `SapAiCoreRelevanceDecision`.
-- `## IDecisionModel` (~1165): rename the section `## IProbabilityDecision (was IDecisionModel)` — the old name is a deprecated alias; add a sibling section `## IRelevanceDecision` (spec §3.9): request (query + passages), result (`{index, score}` per passage + `model`), errors (`DecisionError`, existing codes), "not a probability; comparable for the same query and model — a cross-encoder scores each (query, passage) pair independently, so `RelevanceReranker` batches (48000 tokens / call by default) and merges", the shipped `SapAiCoreRelevanceDecision`. At ~1221: `wrapDecisionModel` → `wrapProbabilityDecision` (+ `wrapRelevanceDecision`); at ~1222 the seam paragraph: "supply the model through the optional `BuildAgentDeps.makeProbabilityDecision` seam (`makeDecisionModel` is its deprecated alias until the next major; supplying both is a startup error) … returns an `IProbabilityDecision`", plus one sentence for the relevance seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`).
+- `## IDecisionModel` (~1165): rename the section `## IProbabilityDecision (was IDecisionModel)` — the old name is removed (a major release); add a sibling section `## IRelevanceDecision` (spec §3.9): request (query + passages), result (`{index, score}` per passage + `model`), errors (`DecisionError`, existing codes), "not a probability; comparable for the same query and model — a cross-encoder scores each (query, passage) pair independently, so `RelevanceReranker` batches (48000 tokens / call by default) and merges", the shipped `SapAiCoreRelevanceDecision`. At ~1221: `wrapDecisionModel` → `wrapProbabilityDecision` (+ `wrapRelevanceDecision`); at ~1222 the seam paragraph: "supply the model through the optional `BuildAgentDeps.makeProbabilityDecision` seam (renamed from `makeDecisionModel`, which is removed) … returns an `IProbabilityDecision`", plus one sentence for the relevance seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`).
 - `## IRetrievalStrategy` (~1096): add `StagedRetrieval` to the built-ins list with a link to `#collection-profiles`, plus the additive `telemetry` option of `RerankedRetrieval` / `RerankAllRetrieval` (telemetry only, no output check there).
 
 - [ ] **Step 2: `docs/PERFORMANCE.md` — replace the `## Tool Indexing Strategies` section with `## Collection profiles`:**
@@ -16136,7 +16160,7 @@ Also in `docs/PERFORMANCE.md` `### Retrieval strategy per store (rag.retrieval)`
 - In `### 4. RAG Layer` core contracts, replace the `IToolIndexingStrategy` bullet with:
   `- ICollectionProfile, IBoundCollection, IItemIndexer, ICandidatePool, ICollapseRule, IItemCut, IItemSizeEstimator, IQueryDecomposer, ISourceSelector, IRetrievalMetrics, IRetrievalEmbedderOwner — collection profiles: how one kind of collection is filled and searched (see INTEGRATION.md#collection-profiles)`.
 - Replace the `Tool indexing strategies (IToolIndexingStrategy):` list with a `Collection profiles (llm-agent-libs, src/collections/):` list: `StagedRetrieval`, `ComposedToolsProfile` + `mcpToolsVariants` (baseline / faceted / faceted-rerank — no tuned numbers), `SharedItemsProfile`, the generic strategies (`ItemPool`, `MaxScoreCollapse`, the four cuts, size estimators, facets, discriminators), the fill sources (`LiveToolsFill`, `ToolsCorpusLoader`, `ConsumerToolsFill`) and the corpus build (`buildToolsCorpus`).
-- In the RAG-layer package list: `@mcp-abap-adt/llm-agent-rag` is the home of the RAG implementations (`VectorRag`, `InMemoryRag`, `FallbackRag`, …; spec §11.3) next to its backend / embedder factories; `@mcp-abap-adt/llm-agent` keeps the contracts and the store kit, with deprecated aliases of the moved names until the next major.
+- In the RAG-layer package list: `@mcp-abap-adt/llm-agent-rag` holds the RAG implementations (`VectorRag`, `InMemoryRag`, `FallbackRag`, …; spec §11.3) next to its backend / embedder factories; `@mcp-abap-adt/llm-agent` keeps the contracts and the store kit and exports no implementation it moved; `ollama-embedder` is `OllamaEmbedder` only. In the source tree listing (~1026, ~1034): `reranker/` leaves libs (→ `packages/llm-agent-reranker/src/`), the moved `rag/` files leave `llm-agent` (→ `packages/llm-agent-rag/src/`).
 - In the retrieval-strategy section (~lines 228–275): one paragraph — a profiled `tools` store is a `StrategyRag` like any explicit strategy, so `RerankHandler` skips it; `rag.profiles` is server-wide like `rag.retrieval`, rejected in worker configs, not hot-reloadable; the server binds at store creation and the builder reuses the binding.
 - In `## Architecture Principles` check (if the page keeps a per-feature compliance list): add the §16 summary of the spec in five lines (built on `IRetrievalStrategy`/`StrategyRag`; app is the example via YAML; interfaces; small new interfaces; everything a strategy; small modules).
 
@@ -16275,7 +16299,7 @@ was removed before release — use `fill: { corpus: … }`.
 
 - [ ] **Step 6: `docs/DEPLOYMENT.md`, `docs/SECURITY_THREAT_MODEL.md`, `docs/QUICK_START.md`**
 
-- `DEPLOYMENT.md` `## Per-store reranking (rag.retrieval)` (~line 400): next to the TypeSafe paragraph, add Cohere on SAP AI Core — `decision.provider: sap-aicore` (a relevance decision; `reranker: decision` then builds a `RelevanceReranker`) with `deploymentId`, `model`, `resourceGroup?`; the credential is a SAP AI Core **service key** in `DECISION_SERVICE_KEY` (or `<REF>_SERVICE_KEY` with `decision.credentialRef`, e.g. `AICORE` to share the LLM's account), exchanged for a bearer token by `sap-aicore-auth`; one `/rerank` call per batch (48000 estimated tokens by default); `question` / `task` are refused with it. Then a sub-section `### Collection profiles (rag.profiles)` — only the key `tools`, server-wide, not hot-reloadable, worker configs rejected, `faceted-rerank` takes the decision of either kind and requires `poolItems` (your number), no shipped number is tuned, the fresh-collection rule for persistent stores filled `live`. A custom composition root that serves Cohere supplies `BuildAgentDeps.makeRelevanceDecision`. Then `### The tools corpus — your build step, the server's load at start`: TL;DR table (build → `buildToolsCorpus` in your CI, the file shipped with the deployment; start → `fill: { corpus: { file, profile, embedder } }`: the server checks the identity (and the store config's `dimension`), **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs one line; in-memory and persistent stores alike; no deploy step, nothing about the corpus kept in the store), the build sketch of spec §6.5, the rule that the `profile` / `embedder` names match across the build and the YAML, that an interrupted load repeats at the next start, and that **replicas over one persistent store each reload it at their start** — the others read an empty or partial store meanwhile, so start them accordingly or give each its own collection.
+- `DEPLOYMENT.md` `## Per-store reranking (rag.retrieval)` (~line 400): next to the TypeSafe paragraph, add Cohere on SAP AI Core — `decision.provider: sap-aicore` (a relevance decision; `reranker: decision` then builds a `RelevanceReranker`) with `deploymentId`, `model`, `resourceGroup?`; the credential is a SAP AI Core **service key** in `DECISION_SERVICE_KEY` (or `<REF>_SERVICE_KEY` with `decision.credentialRef`, e.g. `AICORE` to share the LLM's account), exchanged for a bearer token by `sap-aicore-auth`; one `/rerank` call per batch (48000 estimated tokens by default); `question` / `task` are refused with it. Then a sub-section `### Collection profiles (rag.profiles)` — only the key `tools`, server-wide, not hot-reloadable, worker configs rejected, `faceted-rerank` takes the decision of either kind and requires `poolItems` (your number), no shipped number is tuned, the fresh-collection rule for persistent stores filled `live`. A custom composition root that serves Cohere supplies `BuildAgentDeps.makeRelevanceDecision`. Then `### The tools corpus — your build step, the server's load at start`: TL;DR table (build → `buildToolsCorpus` in your CI, the file shipped with the deployment; start → `fill: { corpus: { file, profile, embedder } }`: the server checks the identity (and the store config's `dimension`), **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs one line; in-memory and persistent stores alike; no deploy step, nothing about the corpus kept in the store), the build sketch of spec §6.5, the rule that the `profile` / `embedder` names match across the build and the YAML, that an interrupted load repeats at the next start, and that **replicas over one persistent store each reload it at their start** — the others read an empty or partial store meanwhile; this is the accepted price of the simple corpus flow (D60: no marker, no coordination), so start them accordingly or give each its own collection.
 - `SECURITY_THREAT_MODEL.md`, AS-7 (external rerankers): add Cohere on SAP AI Core — `decision.provider: sap-aicore` (for `faceted-rerank`, `compose` with `reranker: decision`, or `rag.retrieval` with `reranker: decision`) sends the query and the candidate tool texts to the SAP AI Core deployment named in `decision:`; opt-in. Add: shared items store whatever the writer puts in `text` / `data`; redaction is the writer's; user partitions are read with the request's `userId` and skipped without one.
 - `QUICK_START.md` "Optional: per-store reranking": one short paragraph + link to EXAMPLES `#collection-profiles-ragprofiles` for multi-record tools stores.
 
@@ -16289,12 +16313,12 @@ was removed before release — use `fill: { corpus: … }`.
   `| [`@mcp-abap-adt/sap-aicore-decision`](packages/sap-aicore-decision/README.md) | Relevance decision provider — Cohere Rerank on SAP AI Core (`SapAiCoreRelevanceDecision`, an `IRelevanceDecision`). |`
   and reword the `typesafe-decision` row: "Probability decision provider — TypeSafe Jev (`IProbabilityDecision`)".
 - `README.md` `### Decision models` (~line 148): two sentences + the YAML lines — a probability and a relevance are different decisions; ONE `decision:` section, the provider decides the kind: `typesafe` (Jev, probability → `ProbabilityReranker`) or `sap-aicore` (Cohere Rerank on SAP AI Core, relevance → `RelevanceReranker`; `deploymentId`, `model`, `resourceGroup?`; default ref `DECISION` → `DECISION_SERVICE_KEY`). Either serves `reranker: decision` in `rag.retrieval` and `faceted-rerank` / `compose` in `rag.profiles`.
-- `packages/llm-agent/README.md`: say the RAG implementations' home is `@mcp-abap-adt/llm-agent-rag` (the names here are deprecated aliases until the next major; the `./rag-implementations` subpath is internal to the family); list `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` among the contracts; list `IProbabilityDecision` (was `IDecisionModel`, kept as a deprecated alias) and `IRelevanceDecision` (+ `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`), and the new contracts (`ICollectionProfile`, `IToolTextComposer`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `ISizeBoundedCut`, `recordId`, `RecordOwner`, `ToolItem`, `SharedItem`, `IRetrievalMetrics`, `IRetrievalEmbedderOwner`, `retrievalEmbedderOf`, `skillNameFromRecord`) and the `./testing/collection-profile-conformance` entry.
-- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`, `fullToolText`, `toolItemFromTool`, `fillToolsBinding`, `LiveToolsFill`, `ToolsCorpusLoader`, `ConsumerToolsFill`, `buildToolsCorpus`, `parseToolsCorpus`, the corpus types (incl. `ToolsCorpusExpectation`), `FacetedOptions`, `FacetedRerankOptions`, `checkRerankOutput`, `wrapProbabilityDecision`, `wrapRelevanceDecision`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`. State that the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and the libs names (`DecisionReranker`, `LlmReranker`, …, `wrapDecisionModel`) are deprecated re-exports until the next major, and that the RAG implementations are imported from `@mcp-abap-adt/llm-agent-rag`.
-- `packages/llm-agent-rag/README.md`: a section "RAG implementations" — this package is their home (`VectorRag`, `InMemoryRag`, `FallbackRag`, the overlays, `SimpleRagRegistry`, the providers, the search strategies, the preprocessors and query expanders, the RAG collection tools; spec §11.3); the same objects as the deprecated `@mcp-abap-adt/llm-agent` aliases; the files move here in the next major.
-- `packages/llm-agent-server-libs/README.md`: `rag.profiles` (key `tools`, `variant: baseline | faceted | faceted-rerank` with `poolItems` / `maxItems`, `compose.text`, `fill: live | consumer | { corpus: … }`), `decision.provider: sap-aicore` (a relevance decision, built by the new optional `BuildAgentDeps.makeRelevanceDecision` seam — a custom composition root that serves Cohere supplies it), the probability seam `BuildAgentDeps.makeProbabilityDecision` (was `makeDecisionModel`, a deprecated alias until the next major; both supplied → startup error), `DECISION_KINDS`, `toolsVariantFactories` / `toolsStrategyFactories` (incl. `texts`), `resolveCollectionProfiles`.
+- `packages/llm-agent/README.md`: say the RAG implementations moved to `@mcp-abap-adt/llm-agent-rag` and this package no longer exports them (a major release); list `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` among the contracts; list `IProbabilityDecision` (was `IDecisionModel`, removed) and `IRelevanceDecision` (+ `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`), and the new contracts (`ICollectionProfile`, `IToolTextComposer`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `ISizeBoundedCut`, `recordId`, `RecordOwner`, `ToolItem`, `SharedItem`, `IRetrievalMetrics`, `IRetrievalEmbedderOwner`, `retrievalEmbedderOf`, `skillNameFromRecord`) and the `./testing/collection-profile-conformance` entry.
+- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`, `fullToolText`, `toolItemFromTool`, `fillToolsBinding`, `LiveToolsFill`, `ToolsCorpusLoader`, `ConsumerToolsFill`, `buildToolsCorpus`, `parseToolsCorpus`, the corpus types (incl. `ToolsCorpusExpectation`), `FacetedOptions`, `FacetedRerankOptions`, `checkRerankOutput`, `wrapProbabilityDecision`, `wrapRelevanceDecision`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`. State that the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and libs no longer exports them under any name (`DecisionReranker`, `LlmReranker`, …, and `wrapDecisionModel` are gone — see the CHANGELOG's migration table), and that the RAG implementations are imported from `@mcp-abap-adt/llm-agent-rag`.
+- `packages/llm-agent-rag/README.md`: a section "RAG implementations" — they live in this package (`VectorRag`, `InMemoryRag`, `FallbackRag`, the overlays, `SimpleRagRegistry`, the providers, the search strategies and their types, the preprocessors and query expanders, the RAG collection tools; spec §11.3), moved from `@mcp-abap-adt/llm-agent` in this major; the package exports only its own files.
+- `packages/llm-agent-server-libs/README.md`: `rag.profiles` (key `tools`, `variant: baseline | faceted | faceted-rerank` with `poolItems` / `maxItems`, `compose.text`, `fill: live | consumer | { corpus: … }`), `decision.provider: sap-aicore` (a relevance decision, built by the new optional `BuildAgentDeps.makeRelevanceDecision` seam — a custom composition root that serves Cohere supplies it), the probability seam `BuildAgentDeps.makeProbabilityDecision` (was `makeDecisionModel`, removed), the rerankers imported from `@mcp-abap-adt/llm-agent-reranker` (a peer), `DECISION_KINDS`, `toolsVariantFactories` / `toolsStrategyFactories` (incl. `texts`), `resolveCollectionProfiles`.
 - `packages/llm-agent-server/README.md`: the binary supplies `makeProbabilityDecision` (TypeSafe, was `makeDecisionModel`) and `makeRelevanceDecision`; `makeRelevanceDecision` builds `SapAiCoreRelevanceDecision` for `decision.provider: sap-aicore` (default credential ref `DECISION` → `DECISION_SERVICE_KEY`, a SAP AI Core service key); it ships `@mcp-abap-adt/sap-aicore-decision` and `@mcp-abap-adt/llm-agent-reranker`.
-- `packages/typesafe-decision/README.md`: `TypeSafeDecisionModel` implements `IProbabilityDecision` (the old name `IDecisionModel` is a deprecated alias of the same type); Jev is the probability decision, Cohere on SAP AI Core (`@mcp-abap-adt/sap-aicore-decision`) the relevance one; the reranker is `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`.
+- `packages/typesafe-decision/README.md` and its `package.json` `description`: `TypeSafeDecisionModel` implements `IProbabilityDecision` (was `IDecisionModel`, removed); Jev is the probability decision, Cohere on SAP AI Core (`@mcp-abap-adt/sap-aicore-decision`) the relevance one; the reranker is `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`.
 
 - [ ] **Step 8: Example config**
 
@@ -16317,12 +16341,14 @@ Run:
 ```bash
 git grep -n "IToolIndexingStrategy\|OriginalToolIndexing\|SynonymToolIndexing\|IntentToolIndexing" -- README.md docs packages examples ':!docs/superpowers'
 git grep -n "collection-profiles\|#collection-profiles" -- README.md docs | head
-git grep -n -w "IDecisionModel\|DecisionReranker\|DecisionRerankerOptions\|wrapDecisionModel\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA\|SapAiCoreDecisionModel\|makeDecisionModel\|createMakeDecisionModel" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
+git grep -n -w "IDecisionModel\|DecisionReranker\|DecisionRerankerOptions\|wrapDecisionModel\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA\|SapAiCoreDecisionModel\|makeDecisionModel\|createMakeDecisionModel\|OllamaRag\|rag-implementations" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
+git grep -n "from '@mcp-abap-adt/llm-agent'" -- README.md docs examples 'packages/*/README.md' ':!docs/superpowers' | grep -wE "VectorRag|InMemoryRag|FallbackRag|OverlayRag|SessionScopedRag|ActiveFilteringRag|SimpleRagRegistry|InMemoryRagProvider|VectorRagProvider|SimpleRagProviderRegistry|WeightedFusionStrategy|RrfStrategy|ISearchStrategy|LlmQueryExpander|NoopQueryExpander|PreprocessorChain|buildRagCollectionToolEntries"
+git grep -n "from '@mcp-abap-adt/llm-agent-libs'" -- README.md docs examples 'packages/*/README.md' ':!docs/superpowers' | grep -wE "ProbabilityReranker|RelevanceReranker|LlmReranker|NoopReranker|TOOL_QUESTION|PASSAGE_QUESTION"
 git grep -n -i "within one call\|one call by default" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers'
 git grep -n "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|StaticIntentSource\|LlmIntentSource\|companionRecordIds\|companionStores\|intents:" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers'
 git grep -n "PrebuiltToolsStore\|deployToolsCorpus\|TOOLS_CORPUS_RECORD_ID\|serviceRecord\|prebuilt:\|faceted-cohere\|faceted-jev\|small-set-jev\|facetedCohere\|facetedJev\|smallSetJev\|smallSet" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
 ```
-Expected: the first prints nothing outside `CHANGELOG.md` history and the `### Migrating from IToolIndexingStrategy` section of `docs/INTEGRATION.md`; the fifth prints nothing (intents and companion stores were removed, spec D50); the second shows the new anchors are linked; the third prints only lines that say the name is a deprecated alias (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28); the sixth prints only the lines that say a name was withdrawn or refused (D54, D55). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
+Expected: the first prints nothing outside `CHANGELOG.md` history and the `### Migrating from IToolIndexingStrategy` section of `docs/INTEGRATION.md`; the fifth prints nothing (intents and companion stores were removed, spec D50); the second shows the new anchors are linked; the third prints nothing — the old names live only in the CHANGELOGs' migration tables (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28); the sixth prints only the lines that say a name was withdrawn or refused (D54, D55); the seventh and eighth print nothing (doc snippets import RAG implementations from `@mcp-abap-adt/llm-agent-rag` and rerankers from `@mcp-abap-adt/llm-agent-reranker` — check multi-line import blocks by eye in the files the third grep listed before this task). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
 
 - [ ] **Step 10: Commit**
 
@@ -16338,16 +16364,85 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 34: CHANGELOG, migration notes, `CLAUDE.md`
 
-Spec §13 (incl. the migration note for the RAG implementations' home, D53, and the corpus flow, D54). No version heading and no bump — the entry goes under `## [Unreleased]`; the release step turns it into a version.
+Spec §13 (**a major release**: the Breaking section with the 51-line migration table, D57–D59; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
 
 **Files:**
 - Modify: `CHANGELOG.md` (`## [Unreleased]`)
-- Modify: `packages/llm-agent-server-libs/CHANGELOG.md`, `packages/llm-agent-server/CHANGELOG.md` (an `## Unreleased` section above `## 30.1.0`; the released 30.1.0 entries stay as written)
+- Modify: `packages/llm-agent-server-libs/CHANGELOG.md`, `packages/llm-agent-server/CHANGELOG.md`, `packages/llm-agent/CHANGELOG.md`, `packages/llm-agent-libs/CHANGELOG.md`, `packages/llm-agent-rag/CHANGELOG.md`, `packages/ollama-embedder/CHANGELOG.md`, `packages/typesafe-decision/CHANGELOG.md` (an `## Unreleased` section above `## 30.1.0`; the released 30.1.0 entries stay as written)
 - Modify: `CLAUDE.md` (architecture list, key API notes, key layers, environment)
 
 - [ ] **Step 1: `CHANGELOG.md` — under `## [Unreleased]`:**
 
 ```markdown
+> **Major release — breaking.** Names are renamed and moved without aliases, and no package
+> re-exports another package's names any more. See **Breaking** below: one line per name, with
+> where to import it from now.
+
+### Breaking
+
+Every line is one removed or moved name. Members and behaviour are unchanged; only the name or the
+package changes — except `OllamaRag` (line 51), which is removed.
+
+| # | Old name | Old import | New name | Import it from |
+|---|---|---|---|---|
+| 1 | `VectorRag` | `@mcp-abap-adt/llm-agent` | `VectorRag` | `@mcp-abap-adt/llm-agent-rag` |
+| 2 | `VectorRagConfig` | `@mcp-abap-adt/llm-agent` | `VectorRagConfig` | `@mcp-abap-adt/llm-agent-rag` |
+| 3 | `InMemoryRag` | `@mcp-abap-adt/llm-agent` | `InMemoryRag` | `@mcp-abap-adt/llm-agent-rag` |
+| 4 | `InMemoryRagConfig` | `@mcp-abap-adt/llm-agent` | `InMemoryRagConfig` | `@mcp-abap-adt/llm-agent-rag` |
+| 5 | `FallbackRag` | `@mcp-abap-adt/llm-agent` | `FallbackRag` | `@mcp-abap-adt/llm-agent-rag` |
+| 6 | `OverlayRag` | `@mcp-abap-adt/llm-agent` | `OverlayRag` | `@mcp-abap-adt/llm-agent-rag` |
+| 7 | `SessionScopedRag` | `@mcp-abap-adt/llm-agent` | `SessionScopedRag` | `@mcp-abap-adt/llm-agent-rag` |
+| 8 | `ActiveFilteringRag` | `@mcp-abap-adt/llm-agent` | `ActiveFilteringRag` | `@mcp-abap-adt/llm-agent-rag` |
+| 9 | `SimpleRagRegistry` | `@mcp-abap-adt/llm-agent` | `SimpleRagRegistry` | `@mcp-abap-adt/llm-agent-rag` |
+| 10 | `ragStoreKey` | `@mcp-abap-adt/llm-agent` | `ragStoreKey` | `@mcp-abap-adt/llm-agent-rag` |
+| 11 | `InMemoryRagProvider` | `@mcp-abap-adt/llm-agent` | `InMemoryRagProvider` | `@mcp-abap-adt/llm-agent-rag` |
+| 12 | `InMemoryRagProviderConfig` | `@mcp-abap-adt/llm-agent` | `InMemoryRagProviderConfig` | `@mcp-abap-adt/llm-agent-rag` |
+| 13 | `VectorRagProvider` | `@mcp-abap-adt/llm-agent` | `VectorRagProvider` | `@mcp-abap-adt/llm-agent-rag` |
+| 14 | `VectorRagProviderConfig` | `@mcp-abap-adt/llm-agent` | `VectorRagProviderConfig` | `@mcp-abap-adt/llm-agent-rag` |
+| 15 | `SimpleRagProviderRegistry` | `@mcp-abap-adt/llm-agent` | `SimpleRagProviderRegistry` | `@mcp-abap-adt/llm-agent-rag` |
+| 16 | `WeightedFusionStrategy` | `@mcp-abap-adt/llm-agent` | `WeightedFusionStrategy` | `@mcp-abap-adt/llm-agent-rag` |
+| 17 | `RrfStrategy` | `@mcp-abap-adt/llm-agent` | `RrfStrategy` | `@mcp-abap-adt/llm-agent-rag` |
+| 18 | `VectorOnlyStrategy` | `@mcp-abap-adt/llm-agent` | `VectorOnlyStrategy` | `@mcp-abap-adt/llm-agent-rag` |
+| 19 | `Bm25OnlyStrategy` | `@mcp-abap-adt/llm-agent` | `Bm25OnlyStrategy` | `@mcp-abap-adt/llm-agent-rag` |
+| 20 | `CompositeStrategy` | `@mcp-abap-adt/llm-agent` | `CompositeStrategy` | `@mcp-abap-adt/llm-agent-rag` |
+| 21 | `CompositeStrategyEntry` | `@mcp-abap-adt/llm-agent` | `CompositeStrategyEntry` | `@mcp-abap-adt/llm-agent-rag` |
+| 22 | `ISearchStrategy` | `@mcp-abap-adt/llm-agent` | `ISearchStrategy` | `@mcp-abap-adt/llm-agent-rag` |
+| 23 | `ISearchCandidate` | `@mcp-abap-adt/llm-agent` | `ISearchCandidate` | `@mcp-abap-adt/llm-agent-rag` |
+| 24 | `ISearchQuery` | `@mcp-abap-adt/llm-agent` | `ISearchQuery` | `@mcp-abap-adt/llm-agent-rag` |
+| 25 | `IScoredResult` | `@mcp-abap-adt/llm-agent` | `IScoredResult` | `@mcp-abap-adt/llm-agent-rag` |
+| 26 | `ISearchContext` | `@mcp-abap-adt/llm-agent` | `ISearchContext` | `@mcp-abap-adt/llm-agent-rag` |
+| 27 | `NoopQueryPreprocessor` | `@mcp-abap-adt/llm-agent` | `NoopQueryPreprocessor` | `@mcp-abap-adt/llm-agent-rag` |
+| 28 | `NoopDocumentEnricher` | `@mcp-abap-adt/llm-agent` | `NoopDocumentEnricher` | `@mcp-abap-adt/llm-agent-rag` |
+| 29 | `TranslatePreprocessor` | `@mcp-abap-adt/llm-agent` | `TranslatePreprocessor` | `@mcp-abap-adt/llm-agent-rag` |
+| 30 | `ExpandPreprocessor` | `@mcp-abap-adt/llm-agent` | `ExpandPreprocessor` | `@mcp-abap-adt/llm-agent-rag` |
+| 31 | `IntentEnricher` | `@mcp-abap-adt/llm-agent` | `IntentEnricher` | `@mcp-abap-adt/llm-agent-rag` |
+| 32 | `PreprocessorChain` | `@mcp-abap-adt/llm-agent` | `PreprocessorChain` | `@mcp-abap-adt/llm-agent-rag` |
+| 33 | `LlmQueryExpander` | `@mcp-abap-adt/llm-agent` | `LlmQueryExpander` | `@mcp-abap-adt/llm-agent-rag` |
+| 34 | `NoopQueryExpander` | `@mcp-abap-adt/llm-agent` | `NoopQueryExpander` | `@mcp-abap-adt/llm-agent-rag` |
+| 35 | `buildRagCollectionToolEntries` | `@mcp-abap-adt/llm-agent` | `buildRagCollectionToolEntries` | `@mcp-abap-adt/llm-agent-rag` |
+| 36 | `RagCallerIdentity` | `@mcp-abap-adt/llm-agent` | `RagCallerIdentity` | `@mcp-abap-adt/llm-agent-rag` |
+| 37 | `RagCollectionToolOptions` | `@mcp-abap-adt/llm-agent` | `RagCollectionToolOptions` | `@mcp-abap-adt/llm-agent-rag` |
+| 38 | `RagToolContext` | `@mcp-abap-adt/llm-agent` | `RagToolContext` | `@mcp-abap-adt/llm-agent-rag` |
+| 39 | `RagToolEntry` | `@mcp-abap-adt/llm-agent` | `RagToolEntry` | `@mcp-abap-adt/llm-agent-rag` |
+| 40 | `IDecisionModel` | `@mcp-abap-adt/llm-agent` | `IProbabilityDecision` | `@mcp-abap-adt/llm-agent` |
+| 41 | `DecisionReranker` | `@mcp-abap-adt/llm-agent-libs` | `ProbabilityReranker` | `@mcp-abap-adt/llm-agent-reranker` |
+| 42 | `DecisionRerankerOptions` | `@mcp-abap-adt/llm-agent-libs` | `ProbabilityRerankerOptions` | `@mcp-abap-adt/llm-agent-reranker` |
+| 43 | `DECISION_RERANK_DEFAULT_TASK` | `@mcp-abap-adt/llm-agent-libs` | `PROBABILITY_RERANK_DEFAULT_TASK` | `@mcp-abap-adt/llm-agent-reranker` |
+| 44 | `DECISION_RERANK_DEFAULT_CRITERIA` | `@mcp-abap-adt/llm-agent-libs` | `PROBABILITY_RERANK_DEFAULT_CRITERIA` | `@mcp-abap-adt/llm-agent-reranker` |
+| 45 | `LlmReranker` | `@mcp-abap-adt/llm-agent-libs` | `LlmReranker` | `@mcp-abap-adt/llm-agent-reranker` |
+| 46 | `NoopReranker` | `@mcp-abap-adt/llm-agent-libs` | `NoopReranker` | `@mcp-abap-adt/llm-agent-reranker` |
+| 47 | `TOOL_QUESTION` | `@mcp-abap-adt/llm-agent-libs` | `TOOL_QUESTION` | `@mcp-abap-adt/llm-agent-reranker` |
+| 48 | `PASSAGE_QUESTION` | `@mcp-abap-adt/llm-agent-libs` | `PASSAGE_QUESTION` | `@mcp-abap-adt/llm-agent-reranker` |
+| 49 | `wrapDecisionModel` | `@mcp-abap-adt/llm-agent-libs` | `wrapProbabilityDecision` | `@mcp-abap-adt/llm-agent-libs` |
+| 50 | `BuildAgentDeps.makeDecisionModel` | `@mcp-abap-adt/llm-agent-server-libs` (the key in your `BuildAgentDeps`) | `BuildAgentDeps.makeProbabilityDecision` | `@mcp-abap-adt/llm-agent-server-libs` (same function, same signature — rename the key) |
+| 51 | `OllamaRag` | `@mcp-abap-adt/ollama-embedder` | removed — `new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)` | `VectorRag` from `@mcp-abap-adt/llm-agent-rag`, `symmetricEmbedder` from `@mcp-abap-adt/llm-agent`, `OllamaEmbedder` from `@mcp-abap-adt/ollama-embedder` (S11) |
+
+- Lines 1–39: add `@mcp-abap-adt/llm-agent-rag` as a dependency. Lines 41–48: add `@mcp-abap-adt/llm-agent-reranker`.
+- Line 40: a class implementing `IDecisionModel` changes only the name it implements (same members).
+- Line 50: a composition root that still passes `makeDecisionModel` fails to compile — rename the key (same function, same signature). A missing seam reads `BuildAgentDeps.makeProbabilityDecision is required: …`.
+- `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` moved to the contracts' `interfaces/` — same names, same root exports; nothing to change.
+- No package re-exports another's names: `@mcp-abap-adt/llm-agent-libs` exports no reranker, `@mcp-abap-adt/llm-agent-rag` only its own implementations.
+
 ### Added
 
 - **Collection profiles** — how one kind of collection is filled AND searched, chosen by the consumer as injected strategies. `@mcp-abap-adt/llm-agent`: `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexReport`, `RecordDraft` / `IndexedRecord`, `RecordOwner`, `ItemRef`, `recordId` (owner-scoped physical ids, `h:`+sha256 above 200 characters), `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator`, `ISizeBoundedCut` (+ `isSizeBoundedCut`), `IIndexNoteSource` (+ `isIndexNoteSource`, `IndexNote`), `IQueryDecomposer`, `ISourceSelector`, `RetrievalSource`, `ToolItem`, `IToolFacet`, `IDiscriminatorSelector`, `SharedItem`, `ISharedItemGroups`, `SharedItemsStores`, `IRetrievalMetrics` (+ `isRetrievalMetrics`), `IRetrievalEmbedderOwner` (+ `retrievalEmbedderOf`), `skillNameFromRecord`; conformance kit `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`. `@mcp-abap-adt/llm-agent-libs`: `StagedRetrieval` (an `IRetrievalStrategy`: candidates counted in items → collapse → reranker on provider text → hydration from the canonical record → one cut), `ComposedToolsProfile`, `mcpToolsVariants` (`baseline`, `faceted`, `faceted-rerank` — named compositions with **no tuned numbers**: pool and cut default to the caller's k, `faceted-rerank` takes your `IReranker` and your `poolItems`), `SharedItemsProfile`, `bindToolsProfile` / `toolsBindingOf`, `fillToolsBinding` (the server fills a bound `rag.profiles.tools` from ready clients too, spec §6.3; a tools store is filled **once, when it is created** — at startup, or a worker's new store after `PUT /v1/config` or hot reload — and never refilled while running; every write reads the binding and its fill source from the store), the strategies (`ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet` (opt-in), `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`), `checkRerankOutput`, `SmartAgentBuilder.withToolsProfile`, and `evaluateRetrieval` in `/testing`. See README "RAG is a composition", `docs/INTEGRATION.md#collection-profiles`, `docs/PERFORMANCE.md#collection-profiles`.
@@ -16356,7 +16451,7 @@ Spec §13 (incl. the migration note for the RAG implementations' home, D53, and 
 - **New package `@mcp-abap-adt/sap-aicore-decision`** — `SapAiCoreRelevanceDecision`, Cohere Rerank on an SAP AI Core deployment as an `IRelevanceDecision`: ONE `/rerank` call per `score`; a wrong / duplicate / out-of-range / non-finite answer is a `DecisionError`, never zero-filled. Credential injected (a SAP AI Core service key via `sap-aicore-auth`), no env, no timeout, no retries. Published at the same version, before the server.
 - **SmartServer:** `rag.profiles.tools` (`variant` with `poolItems` / `maxItems`, or `compose` incl. `text`; `decomposer`; `fill`; only the key `tools` in this release) and `decision.provider: sap-aicore` (`deploymentId`, `model`, `resourceGroup?`; default credential ref `DECISION` → `DECISION_SERVICE_KEY`). ONE `decision:` section — the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance) and `reranker: decision` builds `ProbabilityReranker` or `RelevanceReranker` (in `rag.profiles` and `rag.retrieval`); the relevance decision is built by the new optional seam `BuildAgentDeps.makeRelevanceDecision`, the probability decision by `BuildAgentDeps.makeProbabilityDecision` (renamed from `makeDecisionModel`, see Migration). `SmartServerConfig.toolsVariantFactories` / `toolsStrategyFactories` for your own names. Startup refuses a `rag.profiles` key other than `tools`, a key under both `rag.retrieval` and `rag.profiles`, unknown names, `faceted-rerank` without `poolItems` or without a `decision:` section, and a question / task for a relevance decision.
 - **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (the `corpus` source, any store: at start it checks the corpus against the configured identity and the store, **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs one line), `ConsumerToolsFill` (you fill it; the library never writes). A store with a profile bound is filled once and **not re-indexed on `toolsChanged`** — a runtime-plugged MCP server is your pipeline's to fill; without a profile, 30.1.0's re-vectorize is unchanged. The corpus: `buildToolsCorpus` (your build step), `parseToolsCorpus`, `ToolsCorpusExpectation`; no deploy step and nothing about the corpus kept in the store — an interrupted load repeats at the next start. YAML `rag.profiles.tools.fill` (`live | consumer | { corpus: { file, profile, embedder } }`); `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
-- **The RAG implementations' home is `@mcp-abap-adt/llm-agent-rag`** — `VectorRag`, `InMemoryRag`, `FallbackRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry`, `ragStoreKey`, the `InMemoryRag` / `VectorRag` providers, `SimpleRagProviderRegistry`, the search strategies, the preprocessors and query expanders, `buildRagCollectionToolEntries` (the same objects; see Migration). Subpath `@mcp-abap-adt/llm-agent/rag-implementations` for the packages below `llm-agent-rag` (internal to the family; removed in the next major).
+- **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag`** — `VectorRag`, `InMemoryRag`, `FallbackRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry`, `ragStoreKey`, the `InMemoryRag` / `VectorRag` providers, `SimpleRagProviderRegistry`, the search strategies and their types, the preprocessors and query expanders, `buildRagCollectionToolEntries` — moved from `@mcp-abap-adt/llm-agent` with their code (see Breaking).
 - **Provider text is a strategy** (`IToolTextComposer`): `ParameterNamesToolText` (the default, unchanged), `EnumValuesToolText`, `SchemaToolText` — the latter two in no named composition.
 - **Observability:** `retrievalOutcome` counter (`ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `over_budget`, `empty`) on `InMemoryMetrics` / `NoopMetrics` and in `/health` metrics; a `retrieval` span per profiled retrieval; `/health` `components.toolCatalog.records` / `.profile` under a profile. `RerankedRetrieval` / `RerankAllRetrieval` accept an optional `telemetry` (additive).
 - `scripts/rag-eval`: profile arms (`--variant baseline|faceted|faceted-rerank` with `--pool-items` / `--max-items`, or `--indexer` / `--facets` / `--discriminator` / `--max-values` / `--pool-items` / `--reranker none|decision`, `--decision-provider typesafe|sap-aicore` + `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref` / `--cut` / `--budget-tokens`), required-recall (`required` in the queries file: an AND of OR-groups), average items and prompt tokens.
@@ -16370,31 +16465,21 @@ Spec §13 (incl. the migration note for the RAG implementations' home, D53, and 
 
 ### Removed
 
+- Every old name of the Breaking table — no alias is kept.
+- `OllamaRag` (`@mcp-abap-adt/ollama-embedder`) — it extended `VectorRag`, which now lives in `llm-agent-rag`, a package that depends on `ollama-embedder` (a cycle). Breaking line 51.
 - `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (`IToolIndexingStrategy`, `OriginalToolIndexing`, `IntentToolIndexing`, `SynonymToolIndexing`) — never exported, never wired. Its docs described it as usable; they now describe collection profiles. Its LLM-generated intents are not ported: measured within noise without a reranker and no better with one, and a weak description is fixed at its source.
 
 ### Migration
 
 - **Nothing changes unless you opt in.** No profile → the same records (pinned by a golden test), stages, k and YAML as before.
-- **Import the RAG implementations from `@mcp-abap-adt/llm-agent-rag`.** `VectorRag`, `InMemoryRag`, `FallbackRag` and the other moved names (see Added) are still exported from `@mcp-abap-adt/llm-agent` as `@deprecated` aliases of the **same objects** until the next major — nothing breaks; switch the import and add `@mcp-abap-adt/llm-agent-rag` as a dependency at your pace. A store or embedder package that `llm-agent-rag` itself depends on imports them from `@mcp-abap-adt/llm-agent/rag-implementations`. In the next major the files move, the aliases and the subpath are removed, and `OllamaRag` (`ollama-embedder`) is removed or moved (spec S10). `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` moved to the contracts' `interfaces/` — same names, same root exports, no change for you.
-- **Renamed — old names kept as deprecated aliases until the next major:**
-
-  | Old (30.1.0) | New | Import from |
-  |---|---|---|
-  | `IDecisionModel` | `IProbabilityDecision` | `@mcp-abap-adt/llm-agent` |
-  | `DecisionReranker`, `DecisionRerankerOptions` | `ProbabilityReranker`, `ProbabilityRerankerOptions` | `@mcp-abap-adt/llm-agent-reranker` |
-  | `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA` | `PROBABILITY_RERANK_DEFAULT_TASK`, `PROBABILITY_RERANK_DEFAULT_CRITERIA` | `@mcp-abap-adt/llm-agent-reranker` |
-  | `wrapDecisionModel` | `wrapProbabilityDecision` | `@mcp-abap-adt/llm-agent-libs` |
-  | `BuildAgentDeps.makeDecisionModel` | `BuildAgentDeps.makeProbabilityDecision` | `@mcp-abap-adt/llm-agent-server-libs` |
-  | `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` from libs | same names | `@mcp-abap-adt/llm-agent-reranker` |
-
-  What to do: switch imports and names at your pace; a class implementing `IDecisionModel` needs no change (same type). **Your own composition root:** rename the `BuildAgentDeps` key `makeDecisionModel` → `makeProbabilityDecision` (same function, same signature); until then `makeDecisionModel` keeps working, deprecated. Supplying **both** keys fails at startup with `BuildAgentDeps.makeDecisionModel and BuildAgentDeps.makeProbabilityDecision are both supplied` — remove `makeDecisionModel`. A missing seam now reads `BuildAgentDeps.makeProbabilityDecision is required`. Install `@mcp-abap-adt/llm-agent-reranker` next to `llm-agent-libs` (a new peer of libs). No behaviour changes.
+- **First the Breaking table above** — one line per old name, with its new import. Install `@mcp-abap-adt/llm-agent-rag` and `@mcp-abap-adt/llm-agent-reranker` where you use the moved names (`llm-agent-reranker` is also a new peer of `llm-agent-libs` and `llm-agent-server-libs`). No behaviour changes behind the renames and moves.
 - **Opting in on a persistent tools store** (Qdrant, pg-vector, HANA) needs a fresh collection — profile records sit beside 30.1.0 records otherwise. In-memory stores need nothing.
 - **Under a profile, `rag.getById(itemId)` on the raw store finds nothing** — records are addressed by owner-scoped ids; use `bound.get({ itemId, owner })`. Returned items keep `metadata.id = itemId`, so name-based consumers are unaffected.
 - **k counts items under a profile, and the caller's k caps every cut:** a `FixedItemsCut(n)` (`maxItems`) is a ceiling — a larger caller's k does not raise it, a smaller one still wins. No shipped composition carries a tuned number: measure your catalog (`scripts/rag-eval`) and pass `poolItems` / `maxItems`.
 - **A failed stale-record cleanup is reported** (`failedItems` reason `cleanup-failed: …`) and retried by the next `index` / `remove` — not reported as indexed.
-- **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`) and ship the file; the server loads it at every start (YAML `fill: { corpus: … }`, or `ToolsCorpusLoader` in your composition root) — the store, in-memory or persistent, is **cleared** and the corpus written, so it must be a store with `clearAll` and precomputed writes (every shipped one is). There is no deploy step. The `profile` / `embedder` names must be the same in the build step and in the configuration — a mismatch fails at startup before the store is touched. Replicas over one persistent store each reload it at their start. A store is filled once; a changed tool list waits for the next instance (`live`) or the next build (`corpus`). **With a profile bound, `toolsChanged` re-indexes nothing**, whatever the source: if you plug an MCP server in at runtime, fill its tools in your own pipeline (`bound.index`). Without a profile, nothing changes.
+- **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`) and ship the file; the server loads it at every start (YAML `fill: { corpus: … }`, or `ToolsCorpusLoader` in your composition root) — the store, in-memory or persistent, is **cleared** and the corpus written, so it must be a store with `clearAll` and precomputed writes (every shipped one is). There is no deploy step. The `profile` / `embedder` names must be the same in the build step and in the configuration — a mismatch fails at startup before the store is touched. Replicas over one persistent store each reload it at their start, and the others read a partial store meanwhile — accepted as the price of the simple flow (no marker, no coordination). A store is filled once; a changed tool list waits for the next instance (`live`) or the next build (`corpus`). **With a profile bound, `toolsChanged` re-indexes nothing**, whatever the source: if you plug an MCP server in at runtime, fill its tools in your own pipeline (`bound.index`). Without a profile, nothing changes.
 - **`ToolCatalogStatus` gains optional `records` / `profile`**, `MetricsSnapshot` optional `retrievalOutcome`, `HealthComponentStatus.toolCatalog` optional `records` / `profile` — an exhaustive object literal of these types needs no change.
-- **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's probability seam compiles unchanged (under either name); to serve Cohere, supply the new `BuildAgentDeps.makeRelevanceDecision` that builds `SapAiCoreRelevanceDecision` from a bearer credential and `apiBaseUrl` (the shipped binary does).
+- **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's probability seam function compiles unchanged under the key `makeProbabilityDecision` (Breaking line 50); to serve Cohere, supply the new `BuildAgentDeps.makeRelevanceDecision` that builds `SapAiCoreRelevanceDecision` from a bearer credential and `apiBaseUrl` (the shipped binary does).
 - If you imported `tool-indexing-strategy.ts` by deep path: use `FacetedToolIndexer` (`full` record) instead; generated intents have no replacement — fix a weak tool description at its source.
 ```
 
@@ -16404,32 +16489,40 @@ Spec §13 (incl. the migration note for the RAG implementations' home, D53, and 
 ```markdown
 ## Unreleased
 
-`BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` stays a deprecated alias until the next major, and supplying both fails at startup naming both. New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix); rerankers from `@mcp-abap-adt/llm-agent-reranker` (new peer). See the root CHANGELOG.
+**Breaking (major):** `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). See the root CHANGELOG's Breaking table.
 ```
+The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (major)** paragraph naming its lines of the root Breaking table):
+- `packages/llm-agent/CHANGELOG.md`: "**Breaking (major):** the RAG implementations (`VectorRag`, `InMemoryRag`, `FallbackRag`, … — root CHANGELOG lines 1–39) moved to `@mcp-abap-adt/llm-agent-rag` and are no longer exported here; `IDecisionModel` is renamed `IProbabilityDecision` (line 40). New: the collection-profile contracts, `IRelevanceDecision`, `IToolsFillSource`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` now live in `interfaces/` (same exports)."
+- `packages/llm-agent-libs/CHANGELOG.md`: "**Breaking (major):** the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and are not exported here (lines 41–48); `wrapDecisionModel` → `wrapProbabilityDecision` (line 49). New peer `@mcp-abap-adt/llm-agent-reranker`. New: collection profiles (`src/collections/`), the fill sources and the corpus API."
+- `packages/llm-agent-rag/CHANGELOG.md`: "**Breaking (major):** now holds the RAG implementations moved from `@mcp-abap-adt/llm-agent` (lines 1–39) — import them from here; it exports only its own code."
+- `packages/ollama-embedder/CHANGELOG.md`: "**Breaking (major):** `OllamaRag` removed (line 51) — use `new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)` with `VectorRag` from `@mcp-abap-adt/llm-agent-rag`."
+- `packages/typesafe-decision/CHANGELOG.md`: "**Breaking (major):** `TypeSafeDecisionModel` implements `IProbabilityDecision` (was `IDecisionModel`, line 40); behaviour unchanged."
+
 `packages/llm-agent-server/CHANGELOG.md`, above `## 30.1.0`:
 ```markdown
 ## Unreleased
 
-Supplies `makeProbabilityDecision` (was `makeDecisionModel`; TypeSafe, default credential ref `DECISION`) and the new `makeRelevanceDecision` (`SapAiCoreRelevanceDecision`, default ref `DECISION` → `DECISION_SERVICE_KEY`); bundles `@mcp-abap-adt/sap-aicore-decision` and `@mcp-abap-adt/llm-agent-reranker`.
+**Breaking (major):** the composition root supplies `makeProbabilityDecision` (was `makeDecisionModel`, removed; TypeSafe, default credential ref `DECISION`) and the new `makeRelevanceDecision` (`SapAiCoreRelevanceDecision`, default ref `DECISION` → `DECISION_SERVICE_KEY`); bundles `@mcp-abap-adt/sap-aicore-decision` and `@mcp-abap-adt/llm-agent-reranker`.
 ```
 
 - [ ] **Step 2: `CLAUDE.md`**
 
-- `## Architecture` provider paragraph: reword the `typesafe-decision` paragraph to `IProbabilityDecision` and add — `@mcp-abap-adt/sap-aicore-decision` is a provider package (`SapAiCoreRelevanceDecision`, Cohere Rerank on SAP AI Core as an `IRelevanceDecision`, adapted by `RelevanceReranker`): peers on `llm-agent` and `interfaces-auth`, a regular dependency of `llm-agent-server`; the binary's `makeRelevanceDecision` builds it for `decision.provider: sap-aicore`. And — `@mcp-abap-adt/llm-agent-reranker` holds every reranker (vendor-neutral; peer `llm-agent`); libs depends on it and re-exports the 30.1.0 names as deprecated aliases; retrieval strategies stay in libs and use rerankers through `IReranker`. Publish order: `llm-agent` → `llm-agent-reranker` → providers → … → `llm-agent-libs`.
+- `## Architecture` provider paragraph: reword the `typesafe-decision` paragraph to `IProbabilityDecision` and add — `@mcp-abap-adt/sap-aicore-decision` is a provider package (`SapAiCoreRelevanceDecision`, Cohere Rerank on SAP AI Core as an `IRelevanceDecision`, adapted by `RelevanceReranker`): peers on `llm-agent` and `interfaces-auth`, a regular dependency of `llm-agent-server`; the binary's `makeRelevanceDecision` builds it for `decision.provider: sap-aicore`. And — `@mcp-abap-adt/llm-agent-reranker` holds every reranker (vendor-neutral; peer `llm-agent`); libs depends on it for its own default (`NoopReranker`) and exports none of its names; retrieval strategies stay in libs and use rerankers through `IReranker`. Publish order: `llm-agent` → `llm-agent-reranker` → providers → … → `llm-agent-libs`.
 - `### Key API notes`: add — `A probability and a relevance are different decisions: IProbabilityDecision (was IDecisionModel) vs IRelevanceDecision (scores, not probabilities). One decision: section; its provider decides the kind and reranker: decision builds ProbabilityReranker or RelevanceReranker.`
 - `### Key API notes`: add —
   `- Collection profiles: builder.withToolsProfile(profile) or YAML rag.profiles.<key> (variant | compose); a key is under rag.retrieval OR rag.profiles. Under a profile k counts items, every returned item is its canonical record, and records are addressed by recordId(owner, itemId, kind, n) — never by the bare itemId`.
   `- A tools store is filled ONCE, when it is created (never refilled while running); where its records come from is an IToolsFillSource (live default | ToolsCorpusLoader: clears the store and loads a corpus the consumer's build step made with buildToolsCorpus — any store, no embedding call, no deploy step | ConsumerToolsFill), attached with the binding (bindToolsProfile(profile, target, source)); IToolsFillSource is fill-only — a bound store is never written on toolsChanged (McpToolRegistry stops), an unbound one keeps the 30.1.0 re-vectorize.`
-  `- RAG implementations (VectorRag, InMemoryRag, FallbackRag, …) are imported from @mcp-abap-adt/llm-agent-rag; the @mcp-abap-adt/llm-agent names are deprecated aliases (files move in the next major). Nothing in packages/llm-agent may import llm-agent-rag (cycle).`
+  `- RAG implementations (VectorRag, InMemoryRag, FallbackRag, …) live in and are imported from @mcp-abap-adt/llm-agent-rag; @mcp-abap-adt/llm-agent exports none of them. Nothing in packages/llm-agent, nor in a package llm-agent-rag depends on (the store and embedder packages), may import llm-agent-rag (cycle).`
+  `- No re-exports: every package exports only the names it owns; import each name from its owner (llm-agent-libs exports no reranker). No deprecated aliases are kept across a major.`
   `- No shipped strategy or named composition carries a tuned number: pools and cuts default to the caller's k; measured numbers are the consumer's.`
-- `### Key layers` table, `llm-agent-libs` row: append `, collection profiles (StagedRetrieval, ComposedToolsProfile, mcpToolsVariants, SharedItemsProfile)`; `llm-agent-rag` row: append `, the RAG implementations' home (VectorRag, InMemoryRag, FallbackRag, …)`.
+- `### Key layers` table, `llm-agent-libs` row: append `, collection profiles (StagedRetrieval, ComposedToolsProfile, mcpToolsVariants, SharedItemsProfile)`; `llm-agent-rag` row: append `, the RAG implementations (VectorRag, InMemoryRag, FallbackRag, …)`; `@mcp-abap-adt/llm-agent` row: drop any RAG implementation it lists; the `ollama-embedder` mention: `OllamaEmbedder` only.
 - `## Environment` table: add `| DECISION_SERVICE_KEY | SAP AI Core service key of the decision: section with provider: sap-aicore and no credentialRef (Cohere Rerank, a relevance decision); read only when a decision reranker builds it |`, and widen the `DECISION_API_KEY` row's wording to "provider: typesafe".
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add CHANGELOG.md CLAUDE.md packages/llm-agent-server-libs/CHANGELOG.md packages/llm-agent-server/CHANGELOG.md
-git commit -m "docs: changelog and migration notes for collection profiles; CLAUDE.md key API notes
+git add CHANGELOG.md CLAUDE.md packages/*/CHANGELOG.md
+git commit -m "docs: changelog (major: Breaking table, 51 lines) and migration notes for collection profiles; CLAUDE.md key API notes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -16466,12 +16559,13 @@ Expected: `"link": true` only for `node_modules/@mcp-abap-adt/<sibling>` entries
 
 - [ ] **Step 4: Gates and spec coverage**
 
-- Spec issues S1–S9 are decided (spec §17.4) and done in their tasks (Tasks 3, 6, 9, 11, 15, 19, 21, 23, 28, 29, 30; S2 and S7 superseded by D50, spec §17.15); D24–D27, F1, F3, F4 (spec §17.6) in Tasks 4A–4C, 6, 8, 11, 12, 14, 15, 16, 18, 21–24, 30, 32–34; D28–D30 (spec §17.7) in Tasks 4A, 4C, 20A, 22–24, 33, 34; D31–D35 (spec §17.8, §17.9) in Tasks 19, 20, 22, 23, 23A, 32–34; D38–D40 (spec §17.10) in Task 23A (D36 superseded, D37 moved out); D41–D45 (spec §17.11) in Tasks 2, 11, 12, 19, 19A, 20, 23A, 23B, 33, 34; D46–D47 (spec §17.12) in Tasks 19, 19A, 20, 23A, 23B, 33, 34; D48–D49 (spec §17.13, §17.14) in Task 19A; D50–D51 (spec §17.15) in Tasks 2, 3, 9, 11–13, 15, 16, 19, 19A, 21–23A, 30, 32–35 (Task 10 withdrawn; D51 withdrawn by D54); D53–D56 (spec §17.17) in Tasks 1A, 2, 3, 5, 12, 14–17, 19, 19A, 21–23B, 30, 32–34; S10 (spec §17.17) is the user's open choice, implemented as the spec recommends (Task 1A); a new gap found while executing was taken to the user before any code (fix the spec before the plan).
-- The renames left the old names as aliases only: `git grep -n -w "IDecisionModel\|DecisionReranker\|wrapDecisionModel\|makeDecisionModel" -- packages/*/src ':!**/__tests__/**'` prints only the alias declarations (`decision-model.ts`, libs `index.ts`, `usage-logging-decision-model.ts`, the `@deprecated` `BuildAgentDeps.makeDecisionModel` and `probabilityDecisionSeam` in `smart-server.ts`) and `typesafe-decision` (unchanged, it implements the same type); `git grep -n "createMakeDecisionModel\|make-decision-model" -- packages` prints nothing; `git grep -n "SapAiCoreDecisionModel" -- packages docs` prints nothing.
-- Intents and companion stores are gone (D50): `git grep -n -w "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|StaticIntentSource\|LlmIntentSource\|companionRecordIds\|staleCompanionRecordIds\|companionStores\|CompanionIds\|listedCompanions" -- packages scripts` prints nothing; `git grep -n -i "companion" -- packages scripts` and `git grep -n "recordKind: 'intent'\|kind: 'intent'\|generated: true" -- packages scripts` print nothing (the existing query preprocessor's `name = 'intent'` in `rag/preprocessor.ts` is unrelated and stays); `git grep -n -i "intent" -- packages/*/src scripts` prints only unrelated words (e.g. a classifier's intent), never an indexer, a source or a record kind; `git grep -n -i "IntentRecordIndexer\|IntentCompanionIndexer\|StaticIntentSource\|LlmIntentSource\|IToolIntentSource\|companion store\|intents:" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers'` prints nothing — no doc describes them as usable (the only allowed mention is `IntentToolIndexing` in the `IToolIndexingStrategy` migration notes, marked not ported).
+- Spec issues S1–S9 are decided (spec §17.4) and done in their tasks (Tasks 3, 6, 9, 11, 15, 19, 21, 23, 28, 29, 30; S2 and S7 superseded by D50, spec §17.15); D24–D27, F1, F3, F4 (spec §17.6) in Tasks 4A–4C, 6, 8, 11, 12, 14, 15, 16, 18, 21–24, 30, 32–34; D28–D30 (spec §17.7) in Tasks 4A, 4C, 20A, 22–24, 33, 34; D31–D35 (spec §17.8, §17.9) in Tasks 19, 20, 22, 23, 23A, 32–34; D38–D40 (spec §17.10) in Task 23A (D36 superseded, D37 moved out); D41–D45 (spec §17.11) in Tasks 2, 11, 12, 19, 19A, 20, 23A, 23B, 33, 34; D46–D47 (spec §17.12) in Tasks 19, 19A, 20, 23A, 23B, 33, 34; D48–D49 (spec §17.13, §17.14) in Task 19A; D50–D51 (spec §17.15) in Tasks 2, 3, 9, 11–13, 15, 16, 19, 19A, 21–23A, 30, 32–35 (Task 10 withdrawn; D51 withdrawn by D54); D53–D56 (spec §17.17) in Tasks 1A, 2, 3, 5, 12, 14–17, 19, 19A, 21–23B, 30, 32–34; D57–D60 (spec §17.18) in Tasks 1A, 4, 4A, 4B, 19A, 20A, 22, 25, 33–35 (S10 decided); S11 is the user's open choice, implemented as the spec recommends (`OllamaRag` removed, Task 1A Step 4); S12 leaves the pre-existing re-exports of spec §11.4 for the user; a new gap found while executing was taken to the user before any code (fix the spec before the plan).
+- No old name is left (a major release, D58): `git grep -n -w "IDecisionModel\|DecisionReranker\|DecisionRerankerOptions\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA\|wrapDecisionModel\|makeDecisionModel\|OllamaRag" -- packages scripts test ':!**/CHANGELOG.md'` prints only the `@ts-expect-error` lines of `decision-model.typecheck.ts` and `construction-seams.ts`, `_removedSeam`, and the `'makeDecisionModel' in deps` / `no-old-names` assertions; `git grep -n "createMakeDecisionModel\|make-decision-model" -- packages` prints nothing; `git grep -n "SapAiCoreDecisionModel" -- packages docs` prints nothing; `node --import tsx/esm --test test/repo/no-old-names.test.ts` passes.
+- Intents and companion stores are gone (D50): `git grep -n -w "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|StaticIntentSource\|LlmIntentSource\|companionRecordIds\|staleCompanionRecordIds\|companionStores\|CompanionIds\|listedCompanions" -- packages scripts` prints nothing; `git grep -n -i "companion" -- packages scripts` and `git grep -n "recordKind: 'intent'\|kind: 'intent'\|generated: true" -- packages scripts` print nothing (the existing query preprocessor's `name = 'intent'` in `packages/llm-agent-rag/src/preprocessor.ts` — moved there in Task 1A — is unrelated and stays); `git grep -n -i "intent" -- packages/*/src scripts` prints only unrelated words (e.g. a classifier's intent), never an indexer, a source or a record kind; `git grep -n -i "IntentRecordIndexer\|IntentCompanionIndexer\|StaticIntentSource\|LlmIntentSource\|IToolIntentSource\|companion store\|intents:" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers'` prints nothing — no doc describes them as usable (the only allowed mention is `IntentToolIndexing` in the `IToolIndexingStrategy` migration notes, marked not ported).
 - No deploy step, no service record, no `prebuilt` source (D54): `git grep -n "deployToolsCorpus\|ToolsCorpusDeployReport\|PrebuiltToolsStore\|TOOLS_CORPUS_RECORD_ID\|serviceRecord\|readToolsCorpusService" -- packages scripts` prints nothing; `git grep -n "'prebuilt'\|prebuilt:" -- packages/*/src` prints only the refusal of a leftover YAML key (and its test).
 - No tuned numbers, three named compositions (D55, D56): `git grep -n "facetedCohere\|facetedJev\|smallSetJev\|assertSmallSetPool\|smallSet" -- packages scripts` prints only the refusals of leftover YAML names (and their tests); `git grep -nE "new (ItemPool|FixedItemsCut|TopItemsCut|ScoreFloorCut|TokenBudgetCut)\(\s*[0-9]" -- 'packages/*/src' ':!**/__tests__/**' ':!**/*.test.ts'` prints nothing.
-- The RAG implementations' home (D53): `node --import tsx/esm --test test/repo/rag-implementations-home.test.ts` passes (nothing in `packages/llm-agent` imports `llm-agent-rag`; nothing above it imports a moved name from the `llm-agent` root); `git grep -n "@mcp-abap-adt/llm-agent/rag-implementations" -- packages` prints only `packages/llm-agent-rag/src/rag-implementations.ts`, `packages/ollama-embedder/src/ollama.ts` and `packages/llm-agent/package.json`.
+- The RAG implementations live in `llm-agent-rag` (D53, D57): `node --import tsx/esm --test test/repo/rag-implementations-home.test.ts` passes (nothing in `packages/llm-agent` or a package `llm-agent-rag` depends on imports or declares `llm-agent-rag`; no file imports a moved name from `@mcp-abap-adt/llm-agent`; `OllamaRag` gone); `git grep -n "rag-implementations" -- packages ':!**/rag-implementations-home.test.ts' ':!**/rag-implementations-moved.ts'` prints nothing (no subpath); `ls packages/llm-agent/src/rag/vector-rag.ts packages/llm-agent/src/resilience/fallback-rag.ts` fails (moved); `npm run clean && npm run build` passes (no `tsc -b` reference cycle).
+- No re-exports (D59): `test/repo/no-old-names.test.ts` passes; `git grep -nE "export (type )?(\*|\{[^}]*\}) from '@mcp-abap-adt/" -- packages/llm-agent-reranker/src packages/sap-aicore-decision/src packages/llm-agent-rag/src packages/llm-agent-libs/src/index.ts packages/llm-agent-libs/src/collections` prints nothing (multi-line `export {` blocks: also run the test). The pre-existing re-exports of spec §11.4 are untouched (S12) — list them in the PR description for the user.
 - No reference to the withdrawn design is left: `git grep -n -i "crossEncoder\|cross-encoder\|sap-aicore-reranker\|SapAiCoreReranker\|makeCrossEncoder\|CROSS_ENCODER" -- packages docs README.md CLAUDE.md examples scripts ':!docs/superpowers'` prints nothing (the pre-existing `### Example: Cross-encoder reranker via external API` heading in `docs/INTEGRATION.md` is the one allowed hit).
 - The spec's §14.3 acceptance runs are the consumer check (env-gated, not `npm test`); list them in the PR description as the next stage. Do **not** delete the spec or this plan: they stay until the work, consumer check included, is fully implemented (CLAUDE.md "Plans and Specs").
 - No version bump, no tag, no publish.
@@ -16505,9 +16599,9 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 
 | # | Decision | Done in |
 |---|---|---|
-| D24 | Probability vs relevance: `IProbabilityDecision` (rename + alias), `IRelevanceDecision`; `ProbabilityReranker` (rename + aliases), `RelevanceReranker` | Tasks 4A, 4B, 4C |
+| D24 | Probability vs relevance: `IProbabilityDecision` (rename), `IRelevanceDecision`; `ProbabilityReranker` (rename), `RelevanceReranker` — *the aliases first planned here are withdrawn by D58* | Tasks 4A, 4B, 4C |
 | D25 | Packages by role: `typesafe-decision` unchanged; `sap-aicore-decision` = `SapAiCoreRelevanceDecision` (`IRelevanceDecision`); `SapAiCoreDecisionModel` withdrawn | Task 18, 24 |
-| D26 | All rerankers in the new `@mcp-abap-adt/llm-agent-reranker`; libs re-exports old names as deprecated aliases | Task 4B (4C adds `RelevanceReranker`) |
+| D26 | All rerankers in the new `@mcp-abap-adt/llm-agent-reranker` — *libs' re-exports and aliases withdrawn by D58, D59: libs exports no reranker* | Task 4B (4C adds `RelevanceReranker`) |
 | D27 | One `decision:` section; the provider decides the kind (`DECISION_KINDS`); `reranker: decision` builds the matching reranker; wording refused for relevance (*the variant-to-kind part withdrawn by D55: `faceted-rerank` takes either kind*) | Tasks 21, 22, 23, 24, 32 |
 | F1 | The caller's k caps every cut (`FixedItemsCut` is a ceiling), also after decomposition; the kit calls a profile with k below its cut's own ceiling | Tasks 6, 12, 14, 16, 30 |
 | F3 | Cleanup failures kept: every stale delete checked; `cleanup-failed`; `staleRecordIds` retried by `index` / `remove` (*the companion part, `staleCompanionRecordIds`, superseded by D50*) | Tasks 2–3 (reserved keys), 11, 15, 30 |
@@ -16523,7 +16617,7 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 |---|---|---|
 | D28 | Relevance scores are comparable for the same query and model (a cross-encoder scores each pair independently) — written into the `IRelevanceDecision` docs; `RelevanceReranker` batches by default like `ProbabilityReranker` (`maxBatchTokens` 48000, `concurrency` 4, same validation), the batches' scores merged into one order by score; no single-call default | Tasks 4A, 4C, 16, 18, 24, 33, 34 |
 | D29 | The second optional seam `makeRelevanceDecision` is approved | Tasks 22, 23, 24 |
-| D30 | `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision` (deprecated alias kept; both supplied → startup error naming both; the missing-seam message names the new seam); the app's `createMakeDecisionModel` → `createMakeProbabilityDecision` (`make-probability-decision.ts`) | Tasks 20A, 22, 23, 24, 25, 33, 34, 35 |
+| D30 | `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision` (*the alias and the both-supplied error are withdrawn by D58: `makeDecisionModel` is removed*; the missing-seam message names the new seam); the app's `createMakeDecisionModel` → `createMakeProbabilityDecision` (`make-probability-decision.ts`) | Tasks 20A, 22, 23, 24, 25, 33, 34, 35 |
 
 ## Decided by the user on 2026-10-05 — the server fills a bound profile (spec §17.8)
 
@@ -16594,21 +16688,35 @@ Recommendations applied to the earlier open choices (the user may still overrule
 
 | # | Decision | Done in |
 |---|---|---|
-| D53 | The RAG implementations' public home is `@mcp-abap-adt/llm-agent-rag` (spec §11.3): `llm-agent-rag` re-exports them from the new subpath `@mcp-abap-adt/llm-agent/rag-implementations`; the `llm-agent` root keeps `@deprecated` aliases (same objects); `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to `interfaces/`; 35 importers above `llm-agent-rag` switch (codemod); `ollama-embedder` uses the subpath; a repo test pins that nothing in `llm-agent` imports `llm-agent-rag`. The store kit, the identity filter, the errors and the non-RAG resilience decorators stay. Runs before every task that edits `VectorRag` / `FallbackRag`; their file paths are unchanged (S10) | Task 1A; Tasks 33, 34 (docs, migration note); Task 35 (gate) |
+| D53 | *As amended by D57 (below): the files move now, no subpath, no aliases.* Originally: the RAG implementations' public home is `@mcp-abap-adt/llm-agent-rag` (spec §11.3): `llm-agent-rag` re-exports them from the new subpath `@mcp-abap-adt/llm-agent/rag-implementations`; the `llm-agent` root keeps `@deprecated` aliases (same objects); `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to `interfaces/`; 35 importers above `llm-agent-rag` switch (codemod); `ollama-embedder` uses the subpath; a repo test pins that nothing in `llm-agent` imports `llm-agent-rag`. The store kit, the identity filter, the errors and the non-RAG resilience decorators stay. Runs before every task that edits `VectorRag` / `FallbackRag`; their file paths are unchanged (S10) | Task 1A; Tasks 33, 34 (docs, migration note); Task 35 (gate) |
 | D54 | The server loads the ready corpus at start: `ToolsCorpusLoader` checks identity / `profileName` / declared `dimensions` and the store (precomputed writes on the writer and the resolved backend; `clearAll`) before touching it, then clears, writes, logs one line, reports; an interrupted load repeats at the next start; an empty corpus clears. Removed: `deployToolsCorpus`, `ToolsCorpusDeployReport`, `PrebuiltToolsStore`, the `prebuilt` YAML source (a leftover is refused), the service record, `TOOLS_CORPUS_RECORD_ID`, `serviceRecord` and its drop in `StagedRetrieval` | Tasks 2, 11, 12, 19, 19A, 21, 23A, 23B, 33–35 |
 | D55 | No tuned numbers in what ships; named compositions `baseline`, `faceted`, `faceted-rerank` (the consumer's `IReranker`, required `poolItems`); `faceted-cohere`, `faceted-jev`, `small-set-jev`, `assertSmallSetPool`, `smallSet` and the variant-to-kind check withdrawn (leftover YAML names refused); "measured" justifications removed from defaults | Tasks 5, 8, 9, 16, 17, 18, 21, 22, 23, 23A, 30, 32–35 |
 | D56 | Generic defaults: the caller's k. `ICandidatePool.items(requestedK)` / `recordsToFetch(requestedK, maxRecordsPerItem)`; `ItemPool(n?)` (no `n` → k items); `pool?` optional in `StagedRetrieval`, `ComposedToolsProfile`, `SharedItemsProfile`; each sub-query's pool from its own k | Tasks 3, 5, 12, 14, 15, 17, 22 |
 
-**S10 — open for the user (spec §17.17).** The goal's "deprecated re-exports from the old place" and a physical move of the files in this PR exclude each other: `llm-agent` re-exporting from `llm-agent-rag` (which depends on `llm-agent`) is a package cycle. Task 1A implements the spec's recommendation — the public home now, the files in the next major. If the user chooses the physical move with a breaking release instead, only Task 1A is rewritten (files moved, names removed from `llm-agent`, `OllamaRag` removed or moved) and Tasks 4, 19A Step 0, 25 change their paths; no other task depends on the choice.
+**S10 — decided by the user on 2026-10-05 (spec §17.18, D57):** the physical move with a breaking release. Task 1A is rewritten as the real move, Tasks 4, 19A Step 0 and 25 use the new paths.
+
+## Decided by the user on 2026-10-05 — a major release without aliases or re-exports (spec §17.18)
+
+| # | Decision | Done in |
+|---|---|---|
+| D57 | The RAG implementations' files, tests and exports move to `packages/llm-agent-rag/src/` (spec §11.3); `@mcp-abap-adt/llm-agent` stops exporting them; no subpath, no alias; the search-strategy types move with `VectorRag`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to `interfaces/`; every importer switches (35 by codemod + `rag-factories.ts`); a repo test pins that nothing below `llm-agent-rag` imports it; `OllamaRag` removed (S11) | Task 1A; Tasks 4, 19A Step 0, 25 (new paths); Tasks 33–35 |
+| D58 | No deprecated aliases: `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_*`, `wrapDecisionModel`, `BuildAgentDeps.makeDecisionModel` (and the "both supplied" error and its tests) are removed; each task that renames switches every in-repo use in the same commit; the CHANGELOG's Breaking table (51 lines); the docs say the release is a major (no bump in this plan) | Tasks 4A, 4B, 20A, 22; Tasks 33–35 |
+| D59 | No re-exports: libs exports no reranker (`NoopReranker` imported for its own defaults only), `llm-agent-rag` only its own files; every importer imports from the owner; `test/repo/no-old-names.test.ts` | Tasks 1A, 4A, 4B; Task 35 |
+| D60 | Replicas over one persistent store each clear and reload it at their start, the others read a partial store meanwhile — accepted; no marker, no coordination | Global Constraints; Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (Migration) |
+
+**S11 — open for the user (spec §17.18):** `OllamaRag` and the `ollama-embedder` ↔ `llm-agent-rag` cycle. Task 1A Step 4 removes `OllamaRag` (the spec's recommendation); another option changes only that step (and migration line 51).
+
+**S12 — open for the user (spec §17.18, §11.4):** the pre-existing re-exports this plan does not touch — libs' root `OrchestratorError`, `SmartAgentResponse`, `StopReason`, `StageDefinition`, `StageType` (from `llm-agent`), server-libs' `legacy/{flat,linear,dag}` subpaths (libs classes), `llm-agent-server`'s `export * from '@mcp-abap-adt/llm-agent-server-libs'`, libs' internal type-only shims. No task depends on the choice.
 
 ---
 
 ## Self-review (done while writing)
 
-- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
+- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename without an alias (§3.8, §13, D30, D58) → 20A; the RAG implementations' move (§11.3, D57) → 1A; no re-exports (§11.4, D59) → 1A, 4B, 35; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
 - **Placeholders.** None; no gated step remains.
-- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `prepareItem(w, { canonicalKind, profile, maxRecordsPerItem })`, `storeItems(rag, items, options?)` and `removeItem(rag, canonicalId, options?)` (Task 11 — no companion parameters, D50) are what Tasks 15 and 17 use; `ToolsCorpusDeployReport { unchanged, written, deleted }` (Task 19A, D51) is what Tasks 33–34 document; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (the alias `makeDecisionModel` is read only by Task 20A's `probabilityDecisionSeam`); `DecisionSeams` (Task 22) is what Task 23 threads; Task 23's `withToolsStore(store): IRag` is synchronous and binds the primary only (`bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill)` after 23B) — no companion stores, no `makeRag` for them; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
-- **Review Focus.** Each of the eight lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 21, 30).
+- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `prepareItem(w, { canonicalKind, profile, maxRecordsPerItem })`, `storeItems(rag, items, options?)` and `removeItem(rag, canonicalId, options?)` (Task 11 — no companion parameters, D50) are what Tasks 15 and 17 use; `ToolsCorpusDeployReport { unchanged, written, deleted }` (Task 19A, D51) is what Tasks 33–34 document; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (`makeDecisionModel` exists nowhere after Task 20A); `DecisionSeams` (Task 22) is what Task 23 threads; Task 23's `withToolsStore(store): IRag` is synchronous and binds the primary only (`bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill)` after 23B) — no companion stores, no `makeRag` for them; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
+- **Review Focus.** Each of the ten lines has its test in the named task (Tasks 1A, 4A, 4B, 4C, 6, 11, 12, 13, 14, 17, 18, 19A, 20A, 21, 23B, 30, 34, 35).
 - **Rework for D50 / D51 (spec §17.15).** Task 10 withdrawn with no heading left, numbers kept stable (as Task 22A earlier); no remaining task imports an intent or companion symbol, every "Tasks 8–10" reference reads "8–9"; each changed task drops the imports, types and parameters it no longer uses (`strict` + `noUnusedLocals`) and keeps its gate; Task 35 Step 4 greps that no intent / companion symbol remains in `packages/` or `scripts/`, that no doc describes them as usable, and that the deploy report has `written` and no `hashes`; the trailing decision tables mark S2, S7, D33, the companion parts of F3 / D47 and the hash-skip of D43 / D48 as superseded.
 - **Rework for D52 (spec §17.16).** `FallbackRag` is fixed first in Task 19A (Steps 0a–0d, its own `fix(llm-agent)` commit, `packages/llm-agent` rebuilt before the libs tests run against `dist/`); the libs commit then adds the resolved-backend check and the three `FallbackRag` / claiming-decorator cases. No other task changes: Task 25 (F1) wraps stores that have the precomputed write (`QdrantRag`, `PgVectorRag`, `HanaVectorRag`) in `FallbackRag`, so its batch path is unaffected; Task 19's binding-through-`FallbackRag` test writes through the binding into the store under the `FallbackRag`, never through `FallbackRag`'s writer.
 - **Rework for D53–D56 (spec §17.17, amendment 12).** Task 1A is new, right after Task 1 and before every task that edits `VectorRag` (Tasks 4, 25) or `FallbackRag` (Task 19A Step 0); it changes no file path those tasks use, so their steps stand. Every code block above `llm-agent-rag` imports the moved names from `@mcp-abap-adt/llm-agent-rag` (a codemod over this plan's code blocks; contracts and the store kit stay on `@mcp-abap-adt/llm-agent`); no code block in `packages/llm-agent`, `llm-agent-reranker`, `sap-aicore-decision` or a store package imports `llm-agent-rag`. `ICandidatePool`'s new signature (Task 3) is implemented in Task 5 and used with the (sub-)query's k in Tasks 12 and 14; `pool?` defaults in 12, 15, 17; Task 16's three compositions are what Tasks 22, 30, 32 build and inspect (`composition.pool.items(k)`, `cut instanceof TopItemsCut | FixedItemsCut`, `rerank`). The corpus API of Task 19A (`buildToolsCorpus`, `parseToolsCorpus`, `ToolsCorpusLoader({ corpus, expect })`, `ToolsCorpusExpectation`) is exactly what Task 23B builds from YAML (`expect.dimensions` from the tools store config's `dimension`). The summary log line uses `LogEvent` `type: 'warning'` like the live fill's summary — `ILogger` has no info event, and no contract change is made for it. Task 35 Step 4 greps that no deploy / prebuilt / service-record / withdrawn-variant code and no numeric pool or cut literal in shipped code is left. Build, clean and publish order are unchanged (no new package edge).
+- **Rework for D57–D60 (spec §17.18, amendment 13).** Task 1A is now the real move (git mv of the files and of the 27 tests + 2 typecheck files that test them, the import rule for moved files, `llm-agent`'s export lines deleted, `llm-agent-rag/src/index.ts` exporting its own files, the importer codemod, `OllamaRag` removed, a `@ts-expect-error` typecheck and a clean build proving no cycle). Tasks 4 (the contract test on fake stores in `llm-agent`, `VectorRag`'s test in `llm-agent-rag`), 19A Step 0 (`packages/llm-agent-rag/src/fallback-rag.ts`, its own `fix(llm-agent-rag)` commit) and 25 (already importing from `llm-agent-rag`) use the new paths. **Cumulative compile without aliases:** Task 4A switches every `IDecisionModel` / `wrapDecisionModel` use (llm-agent test, typesafe-decision, server-libs, server) in its commit; Task 4B switches every libs-root reranker import (server-libs `resolve-retrieval.ts` + two tests, `test/integration`, `scripts/rag-eval`) and gives server-libs its `llm-agent-reranker` peer in its commit (Task 22 no longer adds it); Task 20A removes `makeDecisionModel` and switches every key in its commit; Task 22's import edits start from the post-4A/4B names (`IProbabilityDecision`, `wrapProbabilityDecision`, `ProbabilityReranker`). No code block this plan adds re-exports another package (`no-old-names.test.ts` from Task 4B on). Task 34's CHANGELOG has the Breaking table (51 lines = spec §13) and package CHANGELOG paragraphs; it says the release is a major and bumps nothing.
