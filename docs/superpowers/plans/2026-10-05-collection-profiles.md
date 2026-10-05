@@ -9589,9 +9589,9 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 19A: Offline tools corpus — `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`; the `corpus` and `prebuilt` fill sources (libs)
 
-Spec §6.5 (D43, D48), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47, D48), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
+Spec §6.5 (D43, D48, D49), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47, D48), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
 
-**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, record hashes, `state: 'pending' | 'final'`). A deploy after an unfinished one does not trust the record's hashes and rewrites the whole corpus; `PrebuiltToolsStore` refuses a store whose record is not `final` (D48). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47).
+**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, record hashes, `state: 'pending' | 'final'`). A deploy after an unfinished one does not trust the record's hashes and rewrites the whole corpus; `PrebuiltToolsStore` refuses a store whose record is not `final` (D48). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47). **An empty corpus is valid** (D49): no items → zero records, no `dimensions`; its deploy deletes every listed and pending record and finalizes a zero-item manifest through the same pending → final protocol; both sources start from it with a complete catalog of 0 tools — so a consumer that removes every tool can replace the old corpus.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/tools/corpus-capture-rag.ts` (internal: the build step's capture store)
@@ -9605,7 +9605,7 @@ Spec §6.5 (D43, D48), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compat
 - Produces (all exported from `@mcp-abap-adt/llm-agent-libs`):
   ```ts
   export interface ToolsCorpusIdentity { readonly profile: string; readonly embedder: string }
-  export interface ToolsCorpusManifest { readonly format: 1; readonly identity: ToolsCorpusIdentity; readonly profileName: string; readonly companions: readonly string[]; readonly dimensions: number; readonly items: number; readonly records: number; readonly corpusHash: string }
+  export interface ToolsCorpusManifest { readonly format: 1; readonly identity: ToolsCorpusIdentity; readonly profileName: string; readonly companions: readonly string[]; readonly dimensions?: number; readonly items: number; readonly records: number; readonly corpusHash: string }
   export interface ToolsCorpusRecord { readonly store: string; readonly id: string; readonly text: string; readonly vector: readonly number[]; readonly metadata: RagMetadata }
   export interface ToolsCorpus { readonly manifest: ToolsCorpusManifest; readonly records: readonly ToolsCorpusRecord[] }
   export interface ToolsCorpusDeployReport { readonly unchanged: boolean; readonly upserted: number; readonly deleted: number }
@@ -9716,13 +9716,15 @@ function target() {
 }
 
 /**
- * A store whose writer is spied. An interrupted deploy: the delete can fail once; the
- * `failUpsertAt`-th upsert (1-based) fails; `failFinal` fails the final service-record write.
+ * A store whose writer is spied. An interrupted deploy: the delete can fail once, or the
+ * `failDeleteAt`-th delete (1-based) fails; the `failUpsertAt`-th upsert (1-based) fails;
+ * `failFinal` fails the final service-record write.
  */
-function spied(inner: IRag, opts: { failDeleteOnce?: boolean; failUpsertAt?: number; failFinal?: boolean } = {}) {
+function spied(inner: IRag, opts: { failDeleteOnce?: boolean; failDeleteAt?: number; failUpsertAt?: number; failFinal?: boolean } = {}) {
   const writes: string[] = [];
   let failDelete = opts.failDeleteOnce ?? false;
   let upserts = 0;
+  let deletes = 0;
   const w = inner.writer?.() as IRagBackendWriter;
   const writer: IRagBackendWriter = {
     upsertRaw: (id, t, m, o) => {
@@ -9737,7 +9739,7 @@ function spied(inner: IRag, opts: { failDeleteOnce?: boolean; failUpsertAt?: num
     },
     deleteByIdRaw: async (id, o) => {
       writes.push(`delete:${id}`);
-      if (failDelete) {
+      if (failDelete || ++deletes === opts.failDeleteAt) {
         failDelete = false;
         return { ok: false as const, error: new RagError('delete down') };
       }
@@ -9769,7 +9771,7 @@ describe('buildToolsCorpus (build step)', () => {
     assert.ok(corpus.records.every((r) => r.vector.length === 8));
   });
 
-  it('a tool that fails to index → throws naming it; no tools → throws', async () => {
+  it('a tool that fails to index → throws naming it', async () => {
     const coarse: McpTool = { name: 'make', description: 'Make', inputSchema: { properties: { kind: { enum: ['A', 'B', 'C'] } }, required: ['kind'] } };
     const strict = new ComposedToolsProfile({
       indexer: new EnumValueToolIndexer(new FacetedToolIndexer([]), { discriminator: new RequiredEnumDiscriminator(), maxValues: 2 }),
@@ -9778,7 +9780,18 @@ describe('buildToolsCorpus (build step)', () => {
     });
     const { embedder } = countingEmbedder();
     await assert.rejects(buildToolsCorpus({ profile: strict, embedder, identity: ID, items: items([coarse]) }), /make/);
-    await assert.rejects(buildToolsCorpus({ profile: profile(), embedder, identity: ID, items: [], companions: ['intents'] }), /no tools/);
+  });
+
+  it('no tools → a valid empty corpus: zero records, no dimensions; parse round-trips it (D49)', async () => {
+    const { corpus } = await build([]);
+    assert.deepEqual(corpus.records, []);
+    const m = corpus.manifest;
+    assert.deepEqual(
+      { items: m.items, records: m.records, companions: m.companions, hasDimensions: 'dimensions' in m },
+      { items: 0, records: 0, companions: ['intents'], hasDimensions: false },
+    );
+    const json = JSON.stringify(corpus);
+    assert.deepEqual(parseToolsCorpus(json), JSON.parse(json));
   });
 });
 
@@ -9794,6 +9807,10 @@ describe('parseToolsCorpus', () => {
     const mixed = JSON.parse(json);
     mixed.records[0].vector = [1, 2];
     assert.throws(() => parseToolsCorpus(JSON.stringify(mixed)), /dimension/);
+    const noDims = { ...corpus.manifest, dimensions: undefined }; // JSON.stringify drops the key
+    assert.throws(() => parseToolsCorpus(JSON.stringify({ ...corpus, manifest: noDims })), /dimensions/, 'records without dimensions');
+    const { corpus: empty } = await build([]);
+    assert.throws(() => parseToolsCorpus(JSON.stringify({ ...empty, manifest: { ...empty.manifest, dimensions: 8 } })), /dimensions/, 'dimensions without records');
   });
 });
 
@@ -9906,6 +9923,59 @@ describe('deployToolsCorpus (deploy step)', () => {
     assert.ok(back.ok && back.value, 'the redeploy recreated it');
     await assertHolds(a, store);
   });
+
+  /** None of `gone`'s records is stored, and the service record is final with `empty`'s zero-item manifest. */
+  async function assertEmptied(gone: ToolsCorpus, empty: ToolsCorpus, store: Store): Promise<void> {
+    for (const r of gone.records) {
+      const got = await (r.store === '' ? store.rag : store.companions.intents).getById(r.id);
+      assert.ok(got.ok && got.value === null, `${r.store || 'primary'}:${r.id} is deleted`);
+    }
+    const svc = await store.rag.getById(TOOLS_CORPUS_RECORD_ID);
+    assert.ok(svc.ok && svc.value);
+    const rec = svc.value.metadata.serviceRecord as unknown as { state: string; pending?: unknown; hashes: unknown; manifest: { corpusHash: string; items: number; records: number } };
+    assert.equal(rec.state, 'final');
+    assert.equal(rec.pending, undefined);
+    assert.deepEqual(rec.hashes, {});
+    assert.deepEqual([rec.manifest.items, rec.manifest.records, rec.manifest.corpusHash], [0, 0, empty.manifest.corpusHash]);
+  }
+
+  it('A ok → an empty corpus: every record deleted (primary and companion), a zero-item manifest finalized (D49)', async () => {
+    const { corpus: a } = await build();
+    const { corpus: empty } = await build([]);
+    const { store, calls } = target();
+    await deployToolsCorpus(a, store);
+    const r = await deployToolsCorpus(empty, store);
+    assert.deepEqual(r, { unchanged: false, upserted: 0, deleted: a.records.length });
+    assert.equal(calls.documents, 0, 'precomputed vectors only');
+    await assertEmptied(a, empty, store);
+    assert.deepEqual(await deployToolsCorpus(empty, store), { unchanged: true, upserted: 0, deleted: 0 });
+  });
+
+  it('A ok → an empty deploy interrupted after some deletions → prebuilt refuses; a rerun finishes clean (D49)', async () => {
+    const { corpus: a } = await build();
+    const { corpus: empty } = await build([]);
+    const { store } = target();
+    await deployToolsCorpus(a, store);
+    const flaky = spied(store.rag, { failDeleteAt: 2 }); // the first primary delete passes, the second fails
+    await assert.rejects(deployToolsCorpus(empty, { key: 'tools', rag: flaky.rag, companions: store.companions }), /delete/);
+    const primary = a.records.filter((x) => x.store === '');
+    const held = await Promise.all(primary.map((x) => holds(store, x)));
+    assert.ok(held.includes(false) && held.includes(true), 'some records deleted, some left');
+    const bound = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: ID }));
+    await assert.rejects(vectorizeMcpTools([], bound.rag, new NoopRequestLogger(), undefined), /interrupted.*deployToolsCorpus/);
+    const r = await deployToolsCorpus(empty, store);
+    assert.equal(r.unchanged, false);
+    assert.equal(r.upserted, 0);
+    await assertEmptied(a, empty, store);
+  });
+
+  it('an empty corpus into a store never deployed → throws naming the missing dimension; nothing written (D49)', async () => {
+    const { corpus: empty } = await build([]);
+    const { store } = target();
+    const spy = spied(store.rag);
+    await assert.rejects(deployToolsCorpus(empty, { key: 'tools', rag: spy.rag, companions: store.companions }), /dimension/);
+    assert.deepEqual(spy.writes, []);
+  });
 });
 
 describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
@@ -9967,6 +10037,22 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag, companions: store.companions }), /write/);
     const bound = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: ID }));
     await assert.rejects(vectorizeMcpTools([], bound.rag, new NoopRequestLogger(), undefined), /interrupted.*deployToolsCorpus/);
+  });
+
+  it('an empty corpus: the loader and a prebuilt store start with a complete catalog of 0 tools (D49)', async () => {
+    const { corpus: empty } = await build([]);
+    const zero = { total: 0, vectorized: 0, failed: [], clientFailures: 0, complete: true, records: 0, profile: 'mcp-tools' };
+    const { embedder } = countingEmbedder();
+    const loaded = bindToolsProfile(profile(), { key: 'tools', rag: new VectorRag(embedder), companions: { intents: new VectorRag(embedder) } }, new ToolsCorpusLoader({ corpus: empty, expect: ID }));
+    assert.deepEqual(await vectorizeMcpTools([], loaded.rag, new NoopRequestLogger(), undefined), zero);
+    const { corpus: a } = await build();
+    const { store } = target();
+    await deployToolsCorpus(a, store);
+    await deployToolsCorpus(empty, store);
+    const spy = spied(store.rag);
+    const pre = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag, companions: store.companions }, new PrebuiltToolsStore({ expect: ID }));
+    assert.deepEqual(await vectorizeMcpTools([], pre.rag, new NoopRequestLogger(), undefined), zero);
+    assert.deepEqual(spy.writes, [], 'the process never writes a prebuilt store');
   });
 
   it(`the service record lives under ${TOOLS_CORPUS_RECORD_ID}`, async () => {
@@ -10080,7 +10166,8 @@ export interface ToolsCorpusManifest {
   readonly identity: ToolsCorpusIdentity;
   readonly profileName: string;
   readonly companions: readonly string[];
-  readonly dimensions: number;
+  /** Every vector's length; absent exactly when the corpus has no records (D49). */
+  readonly dimensions?: number;
   readonly items: number;
   readonly records: number;
   readonly corpusHash: string;
@@ -10116,6 +10203,11 @@ export interface ToolsCorpusService {
   readonly state: 'pending' | 'final';
   /** Absent while a first deploy is in progress. */
   readonly manifest?: ToolsCorpusManifest;
+  /**
+   * This record's own vector length: the corpus's dimension, or — for an empty corpus, which has
+   * none — the dimension of the service record already in the store (D49).
+   */
+  readonly dimensions: number;
   /** Per store ('' = primary): record id → record hash. */
   readonly hashes: Readonly<Record<string, Readonly<Record<string, string>>>>;
   /** Write-ahead: ids an unfinished run may have written, per store. Absent on a 'final' record. */
@@ -10140,9 +10232,7 @@ export async function buildToolsCorpus(
   },
   options?: CallOptions,
 ): Promise<ToolsCorpus> {
-  if (input.items.length === 0) {
-    throw new Error('buildToolsCorpus: no tools — a corpus is built from at least one tool');
-  }
+  // No items is a valid, empty corpus (D49): zero records, no dimensions.
   const names = [...new Set(input.companions ?? [])].sort();
   const primary = new CorpusCaptureRag(input.embedder);
   const companions: Record<string, CorpusCaptureRag> = {};
@@ -10159,14 +10249,16 @@ export async function buildToolsCorpus(
     ...names.flatMap((n) => companions[n].records().map((x) => ({ store: n, ...x }))),
   ];
   const dims = new Set(records.map((x) => x.vector.length));
-  if (dims.size !== 1) throw new Error(`buildToolsCorpus: vectors of ${dims.size} dimensions — one embedder, one dimension`);
+  if (records.length > 0 && dims.size !== 1) {
+    throw new Error(`buildToolsCorpus: vectors of ${dims.size} dimensions — one embedder, one dimension`);
+  }
   return {
     manifest: {
       format: 1,
       identity: input.identity,
       profileName: bound.profileName,
       companions: names,
-      dimensions: [...dims][0],
+      ...(records.length > 0 ? { dimensions: [...dims][0] } : {}), // none to infer from an empty corpus
       items: input.items.length,
       records: records.length,
       corpusHash: corpusHashOf(input.identity, records),
@@ -10175,7 +10267,7 @@ export async function buildToolsCorpus(
   };
 }
 
-/** The serialized corpus back (`JSON.stringify(corpus)`), checked: shape, format, one dimension, the hash. */
+/** The serialized corpus back (`JSON.stringify(corpus)`), checked: shape, format, one dimension (none when empty), the hash. */
 export function parseToolsCorpus(json: string): ToolsCorpus {
   const c = JSON.parse(json) as ToolsCorpus;
   const m = c?.manifest;
@@ -10185,6 +10277,13 @@ export function parseToolsCorpus(json: string): ToolsCorpus {
   }
   if (!Array.isArray(c.records) || c.records.length !== m.records) {
     throw new Error(`tools corpus: ${String(c.records?.length)} records, manifest says ${m.records}`);
+  }
+  // Dimensions only when there are records: an empty corpus has none to check (D49).
+  const dimsOk = c.records.length === 0
+    ? m.dimensions === undefined
+    : typeof m.dimensions === 'number' && Number.isInteger(m.dimensions) && m.dimensions > 0;
+  if (!dimsOk) {
+    throw new Error(`tools corpus: manifest.dimensions ${String(m.dimensions)} — a positive integer with records, absent without`);
   }
   for (const r of c.records) {
     if (typeof r.store !== 'string' || typeof r.id !== 'string' || typeof r.text !== 'string') {
@@ -10258,8 +10357,8 @@ export async function writeToolsCorpusRecords(
   }
 }
 
-async function writeService(w: IRagBackendWriter, dims: number, svc: ToolsCorpusService, options?: CallOptions): Promise<void> {
-  const unit = new Array<number>(dims).fill(0);
+async function writeService(w: IRagBackendWriter, svc: ToolsCorpusService, options?: CallOptions): Promise<void> {
+  const unit = new Array<number>(svc.dimensions).fill(0);
   unit[0] = 1;
   const row: ToolsCorpusRecord = {
     store: '',
@@ -10294,6 +10393,12 @@ export async function deployToolsCorpus(
   ) {
     return { unchanged: true, upserted: 0, deleted: 0 };
   }
+  // The service record's vector: the corpus's dimension; an empty corpus has none, so the
+  // record already in the store gives it (D49). Neither → throw before any write.
+  const dimensions = m.dimensions ?? old?.dimensions;
+  if (dimensions === undefined) {
+    throw new Error('deployToolsCorpus: an empty corpus into a store with no service record — no vector dimension is known for the service record; deploy a corpus with tools first');
+  }
   const stores = storesOf(corpus, target);
   const writers = new Map([...stores].map(([n, rag]) => [n, precomputedWriter(n, rag)] as const));
   const hashes: Record<string, Record<string, string>> = {};
@@ -10315,14 +10420,15 @@ export async function deployToolsCorpus(
   const carried: Record<string, string[]> = {};
   for (const [n, ids] of Object.entries(old?.pending ?? {})) carried[n] = [...ids];
   for (const [n, ids] of Object.entries(pending)) carried[n] = [...new Set([...(carried[n] ?? []), ...ids])];
-  await writeService(primaryWriter, m.dimensions, { kind: 'tools-corpus', state: 'pending', manifest: old?.manifest, hashes: old?.hashes ?? {}, pending: carried }, options);
+  await writeService(primaryWriter, { kind: 'tools-corpus', state: 'pending', manifest: old?.manifest, dimensions, hashes: old?.hashes ?? {}, pending: carried }, options);
   // 2. upsert the new and changed records — every record when the old one was not final
   let upserted = 0;
   for (const [n, rows] of changed) {
     await upsertAll(writers.get(n) as IRagBackendWriter, rows, options);
     upserted += rows.length;
   }
-  // 3. delete what the corpus no longer holds (listed or pending), every Result checked
+  // 3. delete what the corpus no longer holds (listed or pending), every Result checked —
+  //    for an empty corpus, everything listed or pending (D49)
   let deleted = 0;
   for (const [n, w] of writers) {
     const before = new Set([...Object.keys(old?.hashes[n] ?? {}), ...(carried[n] ?? [])]);
@@ -10334,7 +10440,7 @@ export async function deployToolsCorpus(
     }
   }
   // 4. the final service record: one current state
-  await writeService(primaryWriter, m.dimensions, { kind: 'tools-corpus', state: 'final', manifest: m, hashes }, options);
+  await writeService(primaryWriter, { kind: 'tools-corpus', state: 'final', manifest: m, dimensions, hashes }, options);
   return { unchanged: false, upserted, deleted };
 }
 ```
@@ -10422,7 +10528,7 @@ npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/tools-corpus.test.ts packages/llm-agent-libs/src/collections/__tests__/tools-fill-source.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 ```
-Expected: PASS. `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types; `ToolsFillContext` by the two `fill` methods and `checkCompatible`) and that no `warnUnchanged` / `toolsChanged` member is left (D46). The Task 12 suite passes with its service-record case.
+Expected: PASS. `tsc -b` proves the optional `manifest.dimensions` is never read as a number without its check (`writeService` takes the narrowed `dimensions`; `parseToolsCorpus` compares each vector only after the presence check). `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types; `ToolsFillContext` by the two `fill` methods and `checkCompatible`) and that no `warnUnchanged` / `toolsChanged` member is left (D46). The Task 12 suite passes with its service-record case.
 
 - [ ] **Step 5: Commit**
 
