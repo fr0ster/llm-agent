@@ -27,7 +27,13 @@
 > - `FallbackRag` exposes a precomputed write only when its primary has one, and the corpus steps
 >   check the capability on the resolved backend: a review finding of 2026-10-05, dispatched by the
 >   user (D52, §10.4, §17.16). The layer map (§11.1) assigns every part of this design to one
->   layer; its audit lists suspected misplacements for the user's decision (§11.2).
+>   layer; its audit lists suspected misplacements for the user's decision (§11.2);
+> - the RAG implementations' home is `@mcp-abap-adt/llm-agent-rag`; the server loads a ready corpus
+>   at start (no deploy step, no service record); shipped compositions carry no tuned numbers:
+>   the goal's three decisions of 2026-10-05, written in as D53–D56 (§17.17). **One spec issue is
+>   open for the user (S10, §17.17):** the goal's "deprecated re-exports from the old place" cannot
+>   be done for a physical move in this PR without a package cycle; this spec moves the public home
+>   now and the files in the next major.
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -37,7 +43,8 @@
 > **consumer** makes the main behaviour choices by choosing the strategies it injects; components
 > are generic; tuned numbers live only in default compositions, each citing its measurement
 > (§7.1). The coarse-set (`compact`) measurement is in (§2.5.1): the coarse default is now one record
-> per tool + rerank-all + 3 tools.
+> per tool + rerank-all + 3 tools. *Tuned numbers in defaults and the coarse default are withdrawn by
+> (12): nothing that ships carries a number measured in a consumer.*
 >
 > **Amended 2026-10-05 (3)** — *replaced by (4).* It had made Cohere one more `IDecisionModel`
 > behind the existing `DecisionReranker`. The plan's spec issues S1–S9 written in then still hold
@@ -114,7 +121,9 @@
 >   → records + vectors with the profile's indexer and an embedder), `parseToolsCorpus`, and
 >   `deployToolsCorpus` (deploy step: a built corpus written into any store through its writer,
 >   with precomputed vectors, in place, idempotent, with a service record carrying the fingerprint
->   and the corpus hash; *how it writes is amended by (11), D51*). Recommended: in-memory store → `corpus`; persistent store → `prebuilt`;
+>   and the corpus hash; *how it writes is amended by (11), D51*). Recommended: in-memory store → `corpus`; persistent store → `prebuilt`.
+>   *Amended by (12), D54: `prebuilt`, `deployToolsCorpus` and the service record are removed; the
+>   `corpus` source loads the corpus at start into any store;*
 > - *(superseded by (10), D46)* **`toolsChanged` by source** (D44): `live` and `consumer` re-index
 >   what is listed through the profile, as 30.1.0 does; `corpus` and `prebuilt` write nothing (a
 >   store built ahead is not refilled while running; the next build / deploy brings the new list);
@@ -148,7 +157,31 @@
 >   parts. Intents stay only as evidence, measured and dropped (§2.1);
 > - **the corpus deploy writes the whole corpus** (D51): unchanged → no write; otherwise write
 >   ahead `pending` (old ∪ new ids), delete every id the old service record lists, write the whole
->   corpus, finalize. No per-record hashes, no diff (§6.5).
+>   corpus, finalize. No per-record hashes, no diff (§6.5). *Withdrawn by (12): there is no deploy
+>   step any more.*
+>
+> **Amended 2026-10-05 (12)** for the goal's three decisions of the same day (layers, corpus flow,
+> measurements) — D53–D56 (§17.17):
+> - **the RAG implementations' home is `@mcp-abap-adt/llm-agent-rag`** (D53, §11.3): `VectorRag`,
+>   `InMemoryRag`, `FallbackRag` and every other RAG implementation listed in §11.3 are imported
+>   from `llm-agent-rag`; the old names in `@mcp-abap-adt/llm-agent` stay as deprecated aliases
+>   until the next major. A physical file move in this PR would need `llm-agent` to re-export from
+>   `llm-agent-rag`, which depends on `llm-agent` — a package cycle. So the **files** move in the
+>   next major, together with the removal of the aliases (**S10, open for the user**, §17.17);
+> - **the server loads the ready corpus at start** (D54, §3.10, §6.5): the consumer's build step
+>   makes the corpus (`buildToolsCorpus`, libs); at start the `corpus` fill source
+>   (`ToolsCorpusLoader`) checks it, **clears the store and writes the corpus** with its
+>   precomputed vectors, in-memory and persistent stores alike, and logs it. An interrupted load
+>   repeats at the next start. **Removed:** `deployToolsCorpus`, `PrebuiltToolsStore` (the
+>   `prebuilt` source), the service record, `TOOLS_CORPUS_RECORD_ID`, the `serviceRecord` reserved
+>   key and its drop in `StagedRetrieval`, D48, D51 and D49's deploy half. Fill sources: `live`,
+>   `corpus`, `consumer`;
+> - **no tuned numbers in what ships** (D55, D56, §7.1, §7.4): a shipped composition carries no
+>   number measured in a consumer; a number it needs is a required argument or a generic default
+>   (the caller's k; a pool of k items). The named compositions are `baseline`, `faceted` and
+>   `faceted-rerank`; `faceted-cohere`, `faceted-jev` and `small-set-jev` are withdrawn (they
+>   differed only by measured numbers and a vendor). The evidence (§2) stays as motivation, with a
+>   pointer to the consumer's research. `ICandidatePool` takes the caller's k (D56, §3.4).
 >
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
@@ -159,11 +192,13 @@
   injects**: indexing, candidate pool, collapse, reranker, final cut, query decomposition. The
   consumer makes the main behaviour choices by choosing those strategies (goal decision
   2026-10-05).
-- **Shipped "variants" are default compositions, not the centre of the design.** A default only
-  fills in what the consumer did not choose. Taking one whole is one choice among many.
-- **Components are generic.** A strategy class carries no number tuned to a server or a consumer.
-  Tuned numbers (pool size, k) appear **only inside default compositions**, each with the
-  measurement that justifies it (§7.1).
+- **Shipped "variants" are named compositions, not the centre of the design.** A named composition
+  only fills in what the consumer did not choose. Taking one whole is one choice among many.
+- **Nothing that ships carries a tuned number** (goal decision 2026-10-05, D55). The measurements
+  behind this design were made in a consumer (cloud-llm-hub, on mcp-abap-adt) and are not in this
+  repository, so they justify no default. A number a strategy or a named composition needs is a
+  **required argument** from the consumer or a **generic default**: the caller's k for every cut,
+  a pool of k items (`ItemPool()`, D56). The evidence (§2) stays as motivation only.
 - A **collection profile** is one object with two halves for one **kind** of store:
   - **indexing**: one source item → several **records**, each carrying `itemId`, `recordKind`,
     **owner keys** and a **visibility**;
@@ -188,7 +223,7 @@
   decomposition. `FixedItemsCut(n)` is a ceiling, not an override.
 - **Query decomposition is an injected strategy slot (§4.5).** `StagedRetrieval` calls the
   consumer's `IQueryDecomposer` (query + budget k → sub-queries whose budgets sum to ≤ k). None
-  injected → the query runs as is. No shipped variant uses it; no implementation ships.
+  injected → the query runs as is. No named composition uses it; no implementation ships.
 - A profile is **bound** to each store of its kind (`profile.bind(...)`), so one profile serves
   several stores (e.g. reader and writer tool stores).
 - **A tools store is filled once, when its instance is created** — never refilled while running
@@ -198,23 +233,21 @@
   its tool list cannot change under a working pipeline; an MCP server plugged in at runtime is the
   consumer's pipeline's concern (§15). Without a profile, 30.1.0's re-vectorize is unchanged.
 - **Where the records come from is a strategy the consumer injects** — `IToolsFillSource` (§3.10),
-  attached to the store with its binding (D42):
+  attached to the store with its binding (D42). Three ship:
   1. **`live`** (default) — the MCP tool list, indexed through the profile at creation (30.1.0);
-  2. **`corpus`** (`ToolsCorpusLoader`, for in-memory stores) — a corpus built **at build time** by
-     the same profile's indexer (records + vectors); at instance creation one small class checks
-     its fingerprint, writes the records with their precomputed vectors (**no embedding call**) and
-     reports the status — nothing else; an incompatible corpus fails loudly at creation;
-  3. **`prebuilt`** — a persistent store filled by the consumer's build/deploy step; the process
-     binds it for retrieval only, checks the fingerprint at creation and **never writes**;
-  4. **`consumer`** — the library never writes; the consumer fills through `bound.index` /
+  2. **`corpus`** (`ToolsCorpusLoader`, any store — in-memory or persistent) — a corpus the
+     consumer's **build step** made with the same profile's indexer (records + vectors). At start
+     the source checks the corpus's identity against what the server is configured with, **clears
+     the store**, writes the corpus with its precomputed vectors (**no embedding call**) and logs
+     it (D54). An interrupted load repeats at the next start; an incompatible corpus, or a store it
+     cannot clear, fails loudly before any write;
+  3. **`consumer`** — the library never writes; the consumer fills through `bound.index` /
      `fillToolsBinding`.
-  - Recommended: in-memory store → `corpus`; persistent store (Qdrant, HANA, pg-vector) →
-    `prebuilt`. Both work for any store; the consumer chooses.
-- **Offline corpus API (§6.5):** `buildToolsCorpus` (build step) → `parseToolsCorpus` →
-  `deployToolsCorpus` (deploy step: in place, one current state, idempotent, a service record with
-  the fingerprint and the corpus hash; anything but an unchanged corpus is deleted and written in
-  full — no per-record diff, D51). Collections that change while running (session, history,
-  user collections, shared items) are not filled by these strategies (§6.6).
+- **The corpus flow has two layers (§6.5, D54):** the **build step** is the consumer's (with the
+  libs API `buildToolsCorpus`); the **load at start** is the server's (or a builder consumer's
+  composition root), through the `corpus` source in libs. There is no deploy step and no record of
+  the corpus in the store. Collections that change while running (session, history, user
+  collections, shared items) are not filled by these strategies (§6.6).
 - The retrieval half **is** a 30.1.0 `IRetrievalStrategy`, so every path that already honours
   per-store strategies gets it with no new wiring.
 - **Nothing changes by default.** No profile set → 30.1.0 behaviour, byte for byte (golden test).
@@ -225,25 +258,26 @@
   - The **shipped** tools strategies read only what any MCP server exports: name, description,
     input schema (property names, descriptions, enum values). None parses one server's naming
     convention (§7.0).
-  - Where no shipped profile fits a server, the **consumer builds its own** from the contracts and
+  - Fine-grained and coarse tool sets are both served by the same strategies (records per item,
+    a pool counted in items, a reranker, a count cut or a token-budget guard); which fits a set is
+    the consumer's choice and measurement (§7.4, §14.3).
+  - Where no shipped strategy fits a server, the **consumer builds its own** from the contracts and
     uses it in the pipeline; the contracts are sufficient for that (§7.9).
 - Default profiles ship:
-  1. **MCP tools — several default compositions ("variants")** to start from (§7):
+  1. **MCP tools — three named compositions** (§7.4), no tuned numbers:
      - `baseline` = 30.1.0 (one record per tool, top-k) — what a consumer gets by choosing nothing;
-     - `faceted` = `full` + `summary` + `parameters` records (all schema-derived), item pool,
-       collapse by max — for **fine-grained** tool sets;
-     - `faceted-cohere` = faceted + `RelevanceReranker` over Cohere on SAP AI Core
-       (`SapAiCoreRelevanceDecision`, an `IRelevanceDecision`);
-     - `faceted-jev` = faceted + `ProbabilityReranker` over TypeSafe Jev (`TypeSafeDecisionModel`,
-       an `IProbabilityDecision`);
-     - `small-set-jev` = one record per tool + `ProbabilityReranker` (Jev) over the **whole** set
-       (rerank-all) + at most **3 tools** — for **coarse / small** tool sets. Measured on mcp-abap-adt `compact`: 0.970
-       required-recall at ~1.6k tokens, against ~7.9k for the whole set (§2.5).
+     - `faceted` = `full` + `summary` + `parameters` records (all schema-derived), an item pool of
+       the caller's k (or the consumer's `poolItems`), collapse by max, the caller's k (or the
+       consumer's `maxItems`);
+     - `faceted-rerank` = faceted + the reranker the consumer gives (in YAML: the one `decision:`
+       provider's — `ProbabilityReranker` over Jev or `RelevanceReranker` over Cohere on SAP AI
+       Core) over a pool of **`poolItems`, required**: a reranker over a pool of k items could only
+       reorder what stage 1 already returned.
      **Records come only from what the provider exports** — no LLM-generated intents, no companion
      stores: intents were measured and dropped (§2.1, D50).
-  - **Generic strategies in no default, the consumer's to inject** — each documented with what was
-    measured:
-    - `EnumValueToolIndexer` (one record per enum value): measured **worse** on `compact`
+  - **Generic strategies in no named composition, the consumer's to inject** — each documented with
+    what the consumer's measurement showed:
+    - `EnumValueToolIndexer` (one record per enum value): measured **worse** on one coarse set
       (§7.3.2);
     - `TokenBudgetCut` (whole items while they fit a token budget): a **prompt-size guard**;
       measured worse than a count as the main cut (§4.10).
@@ -270,9 +304,16 @@
   `tools-rag-handle` and `skill-select`; the orphan `IToolIndexingStrategy` is deleted;
   `FallbackRag` offers a precomputed write only when its primary has one — it no longer re-embeds
   silently behind a precomputed call (§10.4, D52).
+- **The RAG implementations' home is `@mcp-abap-adt/llm-agent-rag`** (D53, §11.3). `VectorRag`,
+  `InMemoryRag`, `FallbackRag` and the other RAG implementations are imported from there; the old
+  names in `@mcp-abap-adt/llm-agent` are deprecated aliases until the next major. The files move
+  in that major: moving them now would need `llm-agent` to import `llm-agent-rag`, which imports
+  `llm-agent` — a cycle (**S10, open for the user**, §17.17). Store helpers the store packages
+  below `llm-agent-rag` need (`AbstractRagProvider`, the query embeddings, the identity filter)
+  stay in `llm-agent` (§11.3).
 - **Every part of this design lives in exactly one layer** — the consumer, the llm-agent framework
   (contracts; generic implementations), llm-agent-server, or the pipelines in llm-agent. The map
-  is §11.1; suspected misplacements, for the user's decision, are §11.2.
+  is §11.1; the audit of suspected misplacements and how each is resolved is §11.2.
 
 ---
 
@@ -297,7 +338,7 @@
 | **Partition** | A store that holds the shared items of one visibility | the `user` store, the `global` store, one group's store |
 | **Collection kind** | The kind of items a store holds | MCP tools, shared items, skills, user collections, history |
 | **Profile** | The indexing + retrieval pair for one collection kind (`ICollectionProfile`) — a composition of strategies | `ComposedToolsProfile` |
-| **Variant** | A **default composition**: a named, shipped set of strategy instances for one kind. It fills in what the consumer did not choose; its tuned numbers cite a measurement (§7.1) | `faceted-cohere`, `small-set-jev` |
+| **Variant** | A **named composition**: a shipped set of strategy instances for one kind. It fills in what the consumer did not choose and carries no tuned number — a number it needs is a required argument or the generic default (§7.1, D55) | `faceted`, `faceted-rerank` |
 | **Binding** | A profile applied to one concrete store set (`IBoundCollection`) | `mcpTools.bind({ key: 'tools', rag })` |
 | **Probability decision** | A model's answer to a typed question, as a probability (yes/no, choice, score) — `IProbabilityDecision` | TypeSafe Jev: P(this tool helps) = 0.93 |
 | **Relevance decision** | A model's relevance score for each passage against one query — `IRelevanceDecision`. **Not a probability**: comparable among passages scored against the same query by the same model — also across calls (a cross-encoder scores each (query, passage) pair independently); never across queries, across models or with a probability | Cohere Rerank on SAP AI Core: `relevance_score` per document |
@@ -331,10 +372,13 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 | `createMakeDecisionModel` (app, `make-decision-model.ts`) | the app's probability seam | **renamed `createMakeProbabilityDecision`** in `make-probability-decision.ts` — internal to the app (not exported from `@mcp-abap-adt/llm-agent-server`), so no alias |
 | — | new | `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`, `RelevanceReranker`, `RelevanceRerankerOptions`, `wrapRelevanceDecision`, `BuildAgentDeps.makeProbabilityDecision`, `BuildAgentDeps.makeRelevanceDecision`, package `@mcp-abap-adt/llm-agent-reranker`; in `sap-aicore-decision`: `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike`; reserved record key `staleRecordIds` |
 | — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `IndexNote`, `isIndexNoteSource`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `isSizeBoundedCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `CharsPerTokenEstimator`, `ToolDefinitionSizeEstimator`, `SharedItemsProfile` |
-| — | new (fill sources, §3.10, §6.5) | `IToolsFillSource`, `ToolsFillContext`, `LiveToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, `ConsumerToolsFill`, `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `ToolsCorpus`, `ToolsCorpusRecord`, `ToolsCorpusManifest`, `ToolsCorpusIdentity`, `ToolsCorpusDeployReport`, `TOOLS_CORPUS_RECORD_ID`, `SmartServerConfig.toolsFillFactories`; reserved record key `serviceRecord` |
+| — | new (fill sources, §3.10, §6.5) | `IToolsFillSource`, `ToolsFillContext`, `LiveToolsFill`, `ToolsCorpusLoader`, `ConsumerToolsFill`, `buildToolsCorpus`, `parseToolsCorpus`, `ToolsCorpus`, `ToolsCorpusRecord`, `ToolsCorpusManifest`, `ToolsCorpusIdentity`, `ToolsCorpusExpectation`, `SmartServerConfig.toolsFillFactories` |
+| `VectorRag`, `InMemoryRag`, `FallbackRag` and the other RAG implementations of §11.3 | RAG implementations in the contracts package | **public home moved** to `@mcp-abap-adt/llm-agent-rag`, names unchanged; the `@mcp-abap-adt/llm-agent` exports become deprecated aliases until the next major; new subpath `@mcp-abap-adt/llm-agent/rag-implementations` (for `llm-agent-rag` only, removed in that major) (§11.3, D53) |
 
 Every new name above was checked with `git grep -w` over `packages/`: 0 hits (2026-10-05; the
-fill-source names of the last row re-checked the same way on the same day).
+fill-source names re-checked the same way on the same day; `ToolsCorpusExpectation`,
+`facetedRerank` / `faceted-rerank` and the subpath `rag-implementations` checked on 2026-10-05 for
+amendment 12).
 
 ---
 
@@ -342,19 +386,26 @@ fill-source names of the last row re-checked the same way on the same day).
 
 ### 2.0 Scope of the evidence
 
+- **Motivation only — it sets no default** (goal decision 2026-10-05, D55). The measurements were
+  made in a consumer (cloud-llm-hub, on mcp-abap-adt) and are **not in this repository**: the full
+  reports are in the cloud-llm-hub repository, branch `research/tool-rag-accuracy`, under
+  `docs/research/2026-09-30-tool-rag-accuracy/`. They explain why the design has its parts
+  (records per item, collapse, a pool in items, rerankers on provider text, a token-budget guard);
+  no number below is shipped in a strategy or a named composition (§7.1). The "design
+  consequence" columns name the **mechanism** a figure motivates, never a default value.
 - **One consumer, one server, two tool sets.** Every figure below comes from cloud-llm-hub over
   **one** MCP server (`mcp-abap-adt`): its fine-grained set (§2.1–§2.3) and its coarse `compact`
   set (§2.5). It is evidence for the design, **not** the target platform (goal *Purpose*).
 - **What carries over to any server:** the retrieval mechanics — items vs records, collapse by max,
   the pool in items, rerankers on provider text. They do not depend on what the tools are called.
 - **What does not carry over:** any record whose text came from parsing **this** server's tool
-  names. The measured `object` record did (§2.1, last row); it is not in any shipped default.
-- **Coarse tool sets are measured on one example** (`compact`, §2.5). Its results set the coarse
-  default composition (`small-set-jev`, §7.4) and document the two strategies it rejected
-  (`EnumValueToolIndexer`, `TokenBudgetCut` as the main cut).
-- **The schema-derived `ParametersFacet` is not measured yet** on the fine-grained set. The
-  `faceted*` defaults cite the closest measured layouts (§2.1); the consumer check measures the
-  schema-derived one (§14.3).
+  names. The measured `object` record did (§2.1, last row); it is not in any named composition.
+- **Coarse tool sets are measured on one example** (`compact`, §2.5). Its results document why two
+  generic strategies are in no named composition (`EnumValueToolIndexer`, `TokenBudgetCut` as the
+  main cut); they set no number.
+- **The schema-derived `ParametersFacet` is not measured yet** on the fine-grained set. The closest
+  measured layouts are in §2.1; a consumer measures the schema-derived one on its own catalog
+  (§14.3).
 
 Source: cloud-llm-hub, 237 tools, labelled queries, **required-recall** (every needed tool
 returned). EN-ext = 87 rows (73 single-step + 14 multi-step); non-English = 26 rows.
@@ -414,14 +465,14 @@ Figures as in the goal's *Evidence* table; the misses below are the goal's accou
 
 ### 2.4 Query decomposition — a slot, not a shipped behaviour
 
-- With the corrected labels, **no shipped variant needs splitting.** The earlier measured gain came
+- With the corrected labels, **no named composition needs splitting.** The earlier measured gain came
   mostly from the mislabelled queries above and from Cohere's ranking.
 - Cutting the split's union back to k was measured **worse than no split at all**.
 - A genuinely dependent second step is a separate step for the planner anyway.
 - **Design consequence (§4.5, goal decision 2026-10-05):**
   - the framework provides the component: an injected `IQueryDecomposer` that `StagedRetrieval`
     calls;
-  - no shipped variant uses it and no implementation ships;
+  - no named composition uses it and no implementation ships;
   - `k` stays the overall limit, as in 30.1.0;
   - a consumer's strategy is measured by the consumer (§14.3).
 
@@ -459,23 +510,25 @@ Sizes of one server's two sets (mcp-abap-adt, exported definitions — **example
 | C0 | + Jev, token budget 2k (at the same ~1.6k tokens as k=3) | 0.910 — vs **0.970** for k=3 |
 | *for comparison:* fine-grained set, one record per tool (V0) | + Jev, k=5 per collection | 0.969 (2.1k) |
 
-**Design consequences:**
+**What it motivates** (mechanisms, not defaults — D55):
 
 - **One record per tool is enough for a small coarse set — when a reranker reads it.** Stage 1
   alone needs k=5 (0.955) or a 4k budget (0.985). Jev with k=3 reaches 0.970 at **1.6k tokens**,
   about a fifth of sending the whole set.
 - **Stage 1 adds nothing for a set this small.** Jev over the whole role set equals Jev over a
-  stage-1 pool (both 0.970 at k=3). The default reranks the whole set: no pool depth to tune
-  below the set size.
+  stage-1 pool (both 0.970 at k=3). A consumer with a small set can rerank the whole set: 30.1.0's
+  `rerank-all` (`maxCandidates` = its tool count), or `faceted-rerank` / `compose` with
+  `poolItems` ≥ its tool count (§7.4, §7.5).
 - **Per-value records hurt here.** C1 is worse on stage 1 alone, and with Jev it loses non-English
   queries (0.857 vs 1.000). → `EnumValueToolIndexer` stays a generic strategy a consumer may inject
-  (another server's coarse set may differ), documented with this result, and is in **no** default
-  (§7.3.2).
+  (another server's coarse set may differ), documented with this result, and is in **no** named
+  composition (§7.3.2).
 - **A token budget is worse than a count as the main cut.** At equal tokens (~1.6k) the 2k budget
   gives 0.910 and k=3 gives 0.970: the cut stops at the first tool that does not fit (§4.10). →
-  `TokenBudgetCut` stays a generic **prompt-size guard** a consumer may inject, in **no** default.
-- **The coarse default ships with measured numbers** (`small-set-jev`, §7.4): k=3 from the table;
-  the pool = the whole set, as measured.
+  `TokenBudgetCut` stays a generic **prompt-size guard** a consumer may inject, in **no** named
+  composition.
+- **The k=3 knee is this consumer's calibration**, not a default: no shipped composition cuts at a
+  measured k (§7.4, D55). The earlier `small-set-jev` composition that shipped it is withdrawn.
 - **The coarse set reaches the fine-grained set's recall** (0.970 vs 0.969) at fewer tokens
   (1.6k vs 2.1k) — on one server's example; another server measures its own (§14.3).
 
@@ -505,8 +558,7 @@ export type RecordOwner =
  *  delete succeeds (§3.3). */
 export type ReservedRecordKey =
   | 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'recordIds' | 'staleRecordIds'
-  | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl'
-  | 'serviceRecord';   // a store's service record (§6.5): never an item, dropped by retrieval (§4.3)
+  | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl';
 
 /** What an indexer produces. The physical id is not the indexer's to choose. */
 export type RecordDraft = Omit<IndexedRecord, 'id'>;
@@ -743,13 +795,14 @@ export interface CollapsedItem {
   readonly hits: readonly RagResult[];     // the item's records among the candidates, best first
 }
 
-/** The candidate strategy: how many items stage 1 hands on, and how deep to query for them. */
+/** The candidate strategy: how many items stage 1 hands on, and how deep to query for them.
+ *  Both take the caller's k of the (sub-)query, so a pool can default to it (D56). */
 export interface ICandidatePool {
   readonly name: string;
-  /** Items kept per source after collapse. */
-  readonly items: number;
-  /** Records to ask one source for, given the indexer's bound on records per item. */
-  recordsToFetch(maxRecordsPerItem: number): number;
+  /** Items kept per source after collapse, for a (sub-)query whose k is `requestedK`. */
+  items(requestedK: number): number;
+  /** Records to ask one source for, given that k and the indexer's bound on records per item. */
+  recordsToFetch(requestedK: number, maxRecordsPerItem: number): number;
 }
 
 /** Records → items. Key = (source, owner scope, owner key, itemId) — the owner-qualified
@@ -944,7 +997,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISourceSelector`, `RetrievalSource` | goal 1's new steps, each a consumer-swappable strategy (principle 5) | same users as above |
 | `IQueryDecomposer`, `SubQuery` | goal decision 2026-10-05: query splitting is a strategy the consumer injects and the default retrieval uses | libs (`StagedRetrieval` calls it), server-libs (YAML name → instance), consumers (implementations) |
 | `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet` | typed input of the tools indexers; facets are indexing strategies a consumer may write. `parameters` replaces the earlier `parameterNames`: goal 9 requires records from the whole input schema (descriptions, enum values), and names alone cannot carry them. The raw `inputSchema` is there so a consumer can build a profile for **any** server from the contracts (goal 9, §7.9). `definitionChars` is what a token budget measures (§4.10) | builder (libs) + indexers + consumers that bring their own facets |
-| `IToolTextComposer` | review finding 4 (schema text in the provider record), measured within noise (§7.3.1): how much of the schema the provider text carries is a choice the consumer may inject, not a rule fixed inside `FacetedToolIndexer`. The default composition is unchanged (C0, measured) | libs (`FacetedToolIndexer` and the three shipped composers), server-libs (YAML name → instance), consumers |
+| `IToolTextComposer` | review finding 4 (schema text in the provider record), measured within noise (§7.3.1): how much of the schema the provider text carries is a choice the consumer may inject, not a rule fixed inside `FacetedToolIndexer`. The default text is unchanged (C0, 30.1.0's text plus parameter names) | libs (`FacetedToolIndexer` and the three shipped composers), server-libs (YAML name → instance), consumers |
 | `IDiscriminatorSelector` | goal 9, coarse tool sets: which parameter's values become records is a choice the consumer may inject, not a rule fixed inside the indexer (§7.3.2). Serves `EnumValueToolIndexer`, a generic strategy in no default | libs (`EnumValueToolIndexer`), server-libs (YAML), consumers |
 | `IItemSizeEstimator` | goal 9, token-budget cut (a prompt-size guard in no default): how an item's size is counted is injected, so a consumer can bring its model's tokenizer (§4.10) | libs (`TokenBudgetCut`), consumers |
 | `ISizeBoundedCut` + `isSizeBoundedCut` (S6) | "never silent" for a size guard: `over_budget` and `cut.tokens` / `cut.budgetTokens` (§4.10, §9.1) need the cut's budget and estimator, which `IItemCut` does not carry. An optional capability, so count cuts stay as they are | libs (`TokenBudgetCut` implements it, `StagedRetrieval` reads it), consumers' own size cuts |
@@ -966,13 +1019,15 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `fillToolsBinding(clients, binding, opts)` — new export of `llm-agent-libs` (D31, amended by D42) | the server fills a bound tools store at its creation (§6.3) and lives in another package; `vectorizeMcpTools` is internal to libs and also carries the 30.1.0 record path. A thin wrapper that requires a binding: it runs the **fill source** the store carries (§3.10) at instance creation — for `live`, the listing and `bound.index` of `vectorizeMcpTools`' profile path, reused, nothing duplicated. It refuses a binding its store does not carry (D34): such a store would carry no fill source either, and a later reconnect's `toolsChanged` would take it for unbound and write 30.1.0 records into it | `llm-agent-libs` (`src/mcp/fill-tools-binding.ts`), beside `vectorizeMcpTools`; used by server-libs and builder consumers |
 | `HealthCheckerDeps.toolCatalog?: IToolCatalogReporter` (D31) | `/health` must reflect the server's own fill (§6.3); the builder's status holder is private to `build()`, so the server cannot publish into it. An optional reporter the checker reads instead of the agent's; absent → 30.1.0 | `llm-agent-libs` (`health/health-checker.ts`), where `HealthCheckerDeps` lives |
 | Worker builders receive the shared clients **with** their descriptors and the server's `IToolNamespace` (D32, §6.3) — **no contract change** | a worker's store must hold the names its agent dispatches by; the existing `withMcpServers` (+ `IMcpServer.descriptor`) already carries descriptors to the pipeline, and `withToolNamespace` already exists. An optional `descriptors` parameter on `withMcpClients` was the alternative — a public builder change this does not need | `llm-agent-server-libs` (`smart-server.ts` `buildSubAgent`, `workers/worker-registry.ts`), internal |
-| **`IToolsFillSource`**, **`ToolsFillContext`** (D42, §3.10) | the goal decision 2026-10-05: *where the records come from is a strategy the consumer injects*. One source per bound store answers the one moment a bound tools store is written — its creation (`fill`); a reconnect never writes a bound store (D46) — so `prebuilt` can promise that the process never writes, and `corpus` that creation makes no embedding call. The context hands a source the binding, the raw store it was made over (a corpus is written into it with precomputed vectors through its writer) and the live path as a function (`indexLiveTools`), so a source never needs MCP clients, namespaces or record keys. The minimum: one name, one method, a four-field context. No existing contract changes | `@mcp-abap-adt/llm-agent` (`interfaces/tools-fill-source.ts`): implemented in libs (the four shipped sources) and by consumers; resolved by name in server-libs; called by libs (`vectorizeMcpTools`) |
+| **`IToolsFillSource`**, **`ToolsFillContext`** (D42, §3.10) | the goal decision 2026-10-05: *where the records come from is a strategy the consumer injects*. One source per bound store answers the one moment a bound tools store is written — its creation (`fill`); a reconnect never writes a bound store (D46) — so `corpus` can promise that creation makes no embedding call. The context hands a source the binding, the raw store it was made over (a corpus is written into it with precomputed vectors through its writer) and the live path as a function (`indexLiveTools`), so a source never needs MCP clients, namespaces or record keys. The minimum: one name, one method, a four-field context. No existing contract changes | `@mcp-abap-adt/llm-agent` (`interfaces/tools-fill-source.ts`): implemented in libs (the three shipped sources) and by consumers; resolved by name in server-libs; called by libs (`vectorizeMcpTools`) |
 | `bindToolsProfile(profile, target, source?)` — third parameter (libs, new in this spec) | the fill source travels with the store like its binding (D34, D42): whatever fills the store — the builder, `fillToolsBinding` — reads both from the store, never from an option; a reconnect reads the binding only to leave the store unwritten (D46). Absent → `LiveToolsFill` (30.1.0's behaviour) | `llm-agent-libs` (`collections/tools-binding.ts`) |
-| `ReservedRecordKey` gains `serviceRecord` (D43) | `deployToolsCorpus` keeps one service record in the store (fingerprint, corpus hash, the ids it wrote, §6.5); `StagedRetrieval` drops a hit that carries the key (§4.3), so the record is never an item; reserved so no extra can set it on an item record. `ReservedRecordKey` is new in this spec | libs (record writer clears it; `StagedRetrieval` drops it; `deployToolsCorpus` writes it) |
-| `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `ToolsCorpus*` types, `TOOLS_CORPUS_RECORD_ID`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, `LiveToolsFill`, `ConsumerToolsFill` (D42, D43) — new exports of `llm-agent-libs` | the offline side of the fill sources: the profile's indexer must be usable outside the runtime to produce the corpus, and a deploy step must write it into a persistent store without embedding. Types used only where the functions are (libs + the consumer's scripts) — not contracts, so not in `@mcp-abap-adt/llm-agent` | `llm-agent-libs` (`collections/tools/`) |
+| `buildToolsCorpus`, `parseToolsCorpus`, `ToolsCorpus*` types (incl. `ToolsCorpusExpectation`), `ToolsCorpusLoader`, `LiveToolsFill`, `ConsumerToolsFill` (D42, D54) — new exports of `llm-agent-libs` | the two halves of the corpus flow: the consumer's build step runs the profile's indexer outside the runtime to produce the corpus (`buildToolsCorpus`); the server reads the file (`parseToolsCorpus`) and its `corpus` source loads it at start without embedding (`ToolsCorpusLoader`). Types used only where the functions are (libs, the server, the consumer's build script) — not contracts, so not in `@mcp-abap-adt/llm-agent` | `llm-agent-libs` (`collections/tools/`) |
+| `ICandidatePool.items(requestedK)` / `recordsToFetch(requestedK, maxRecordsPerItem)` — the pool takes the caller's k (D56) | goal decision 2026-10-05 (no tuned numbers): the generic default pool is **k items** of the (sub-)query, which a pool can only compute when it is given k. `ICandidatePool` is new in this spec, so nothing released changes | libs (`ItemPool`, `StagedRetrieval`), consumers' own pools |
+| The RAG implementations' public home: `@mcp-abap-adt/llm-agent-rag` re-exports them; the `@mcp-abap-adt/llm-agent` exports become `@deprecated` aliases; new subpath `@mcp-abap-adt/llm-agent/rag-implementations` (D53, §11.3) — **no contract change** | goal decision 2026-10-05 (layers): the contracts package holds contracts, the implementations live in `llm-agent-rag`. The aliases keep every 30.1.0 import compiling (goal: nothing changes for current consumers). The subpath carries the undeprecated originals for `llm-agent-rag` to re-export, so only the old root path is marked deprecated; it is documented as internal to the family and goes with the aliases in the next major | `@mcp-abap-adt/llm-agent` (aliases, subpath), `@mcp-abap-adt/llm-agent-rag` (`src/rag-implementations.ts`) |
+| The contract types defined inside implementation files move into `interfaces/` — `IQueryExpander` (`rag/query-expander.ts`), `IQueryPreprocessor`, `IDocumentEnricher` (`rag/preprocessor.ts`) — same names, same root exports, **no contract change** | the contracts must not live in files that move in the next major: `interfaces/plugin.ts` and `interfaces/index.ts` import `IQueryExpander` from `rag/query-expander.ts` today, an import of an implementation file by the contracts (D53) | `@mcp-abap-adt/llm-agent` (`interfaces/query-expander.ts`, `interfaces/query-preprocessor.ts`) |
 | `SmartServerConfig.toolsFillFactories?` (D42) | YAML `rag.profiles.tools.fill` names a source (§6.2); a consumer's own source is registered by name, like `toolsVariantFactories` | `llm-agent-server-libs` (`smart-server.ts` config type, `resolve-collection-profiles.ts`) |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
-| `FallbackRag.writer()` — `upsertPrecomputedRaw` present **only when the primary's writer has it** (D52, §10.4) — **no contract change**, a behaviour change of one implementation | review finding 2026-10-05: the writer always exposed `upsertPrecomputedRaw` and, when the primary had none, called the primary's `upsertRaw` — the given vector dropped, the text re-embedded silently. A caller that checks the capability (the corpus steps, §6.5; the batch paths of `vectorizeMcpTools` and the record writer) was told a precomputed write exists when it does not. `IRagBackendWriter.upsertPrecomputedRaw` is already optional, so every caller already handles its absence | `@mcp-abap-adt/llm-agent` (`resilience/fallback-rag.ts`), where `FallbackRag` lives |
+| `FallbackRag.writer()` — `upsertPrecomputedRaw` present **only when the primary's writer has it** (D52, §10.4) — **no contract change**, a behaviour change of one implementation | review finding 2026-10-05: the writer always exposed `upsertPrecomputedRaw` and, when the primary had none, called the primary's `upsertRaw` — the given vector dropped, the text re-embedded silently. A caller that checks the capability (the `corpus` source, §6.5; the batch paths of `vectorizeMcpTools` and the record writer) was told a precomputed write exists when it does not. `IRagBackendWriter.upsertPrecomputedRaw` is already optional, so every caller already handles its absence | `@mcp-abap-adt/llm-agent` (`resilience/fallback-rag.ts`), where `FallbackRag`'s file stays until the next major; imported from `llm-agent-rag` (D53, §11.3) |
 
 ### 3.9 Decision contracts — probability and relevance
 
@@ -1057,7 +1112,7 @@ consumers, so they belong in `@mcp-abap-adt/llm-agent` (the YAML config type sta
 server-libs, where the server's config types live), not in the cross-family
 `@mcp-abap-adt/interfaces-*` packages.
 
-### 3.10 Where a tools store's records come from — `IToolsFillSource` (D41, D42)
+### 3.10 Where a tools store's records come from — `IToolsFillSource` (D41, D42, D54)
 
 **TL;DR.** A tools store is filled **once, when its instance is created**, and never refilled while
 it runs (goal decision 2026-10-05). *Where the records come from* is a strategy the consumer
@@ -1068,7 +1123,7 @@ a reconnect's `toolsChanged` writes nothing into a bound store, whatever its sou
 /** Where a bound tools store's records come from. Attached with the binding
  *  (`bindToolsProfile(profile, target, source)`); read from the store by whatever fills it. */
 export interface IToolsFillSource {
-  /** 'live' | 'corpus' | 'prebuilt' | 'consumer' | a consumer's own — named in the fill's log line. */
+  /** 'live' | 'corpus' | 'consumer' | a consumer's own — named in the fill's log line. */
   readonly name: string;
   /** Once, when the store's instance is created. `undefined` = nothing attempted (status unknown).
    *  Throws on an incompatible corpus or store — never a silent empty store. */
@@ -1086,25 +1141,41 @@ export interface ToolsFillContext {
 }
 ```
 
-**The four shipped sources** (`llm-agent-libs`):
+**The three shipped sources** (`llm-agent-libs`):
 
 | Source | `fill` — at instance creation | Embedding calls in the process | Writes by the process |
 |---|---|---|---|
 | **`LiveToolsFill`** (`live`, the default) | `ctx.indexLiveTools()` — 30.1.0's listing, indexed through the profile | yes | at creation only |
-| **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, the in-memory source) | its only job: checks the corpus's fingerprint against `expect` and the binding (below), writes every record with its precomputed vector into `ctx.target.rag` — after the deploy's capability check (§6.5 step 2: the store's writer **and** its resolved backend accept precomputed vectors; else it throws before any write or embedding call) — reports the status. Nothing else: no service record, no diff, no refill, no memo, no retry, no watching | **none** | at creation only |
-| **`PrebuiltToolsStore({ expect })`** (`prebuilt`) | reads the store's service record (§6.5) and checks it as `corpus` does; refuses a record that is not finalized (`state` ≠ `'final'`: a deploy unfinished or running) with a throw naming the deploy step; writes nothing; the status comes from the record | none | **never** |
+| **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, any store — in-memory or persistent) | checks the corpus against `expect` and the binding (below) and the store's capabilities (precomputed writes on the writer **and** the resolved backend, D52; `clearAll` on the writer), then **clears the store**, writes every record with its precomputed vector into `ctx.target.rag` in batches, logs one summary line (source, identity, items, records, `corpusHash`) and reports the status. Every check runs **before** the clear: an incompatible corpus or store throws with the store untouched. Nothing else: no record of the load in the store, no diff, no refill, no memo, no retry, no watching | **none** | at creation only |
 | **`ConsumerToolsFill`** (`consumer`) | nothing (`undefined`): the consumer fills through `bound.index` or `fillToolsBinding` | — | **never** (the consumer writes) |
 
 A reconnect that reports `toolsChanged` calls no source: a bound store is not written after its
 creation (D46, below).
 
-- **Compatibility is checked at instance creation and fails loudly** (`corpus`, `prebuilt`): a
-  throw names what differs. Checked:
-  - `identity.profile` and `identity.embedder` against `expect` (`ToolsCorpusIdentity`, §6.5) —
-    the consumer's own names for the profile composition and the document embedder, the same
-    strings at build time and at instance creation;
-  - the binding's `profileName`;
+- **Compatibility is checked at instance creation, against what the server is configured with, and
+  fails loudly** (`corpus`): a throw names what differs, before the store is cleared. Checked:
+  - `identity.profile` and `identity.embedder` in the corpus file against `expect`
+    (`ToolsCorpusExpectation`, §6.5) — the consumer's own names for the profile composition and
+    the document embedder, the same strings in its build step and in the server's configuration;
+  - the binding's `profileName` against the manifest's;
+  - the vector dimension against `expect.dimensions` when the server declares one (a store config's
+    `dimension`, §6.2); otherwise a backend that fixes its vector length refuses a mismatching write,
+    and the load throws (the store is then empty or partial until the next start — loud, D54);
   - the corpus format, and one vector dimension for every record (`parseToolsCorpus`).
+- **Why clear, and why a store without `clearAll` is refused.** The corpus is the store's whole
+  content, so the load replaces it: clearing first means no record of an earlier corpus, an earlier
+  profile or an earlier embedder survives, and a write never merges into an old slot (`InMemoryRag`
+  and `VectorRag` merge metadata on an in-place upsert, §6.5). Deleting only the corpus's own ids
+  instead is not an option: the store may hold records the corpus does not list (an earlier
+  corpus's, a removed tool's), and the library cannot know them without a record of its own in the
+  store, which D54 removes. So `IRagBackendWriter.clearAll` is required; a store whose writer lacks
+  it is refused at creation, naming the store. Every shipped store has it (`InMemoryRag`,
+  `VectorRag`, `FallbackRag`, qdrant, pg-vector, HANA).
+- **An interrupted load repeats at the next start** (D54): there is no state to resume; the next
+  instance clears and writes again. A process that fails its load does not start (main store) or
+  fails that worker's construction (§6.3).
+- **An empty corpus is valid** (D49, its build half): the load clears the store and writes nothing;
+  the status is a complete catalog of 0 tools.
 - **Why the fingerprint is the consumer's string.** No contract carries a fingerprint of an injected
   strategy (a consumer's own indexer or facet) or of an embedder (`IEmbedder` has no
   identity), and the library cannot derive one without calling them. The consumer chose both, so
@@ -1120,11 +1191,12 @@ creation (D46, below).
   source on a new store). So `McpToolRegistry.revectorizeTools` finds the binding on the store
   (`toolsBindingOf`, through decorators) and writes nothing — one debug line under the `mcp` debug
   area, no warning — for every source alike. An unbound store keeps 30.1.0's re-vectorize.
-- **Recommended mapping** (both work for any store; the consumer chooses):
-  - an **in-memory** store is empty at every start → `corpus` (or `live`);
-  - a **persistent** store (Qdrant, HANA vector, pg-vector) is shared by every instance → `prebuilt`
-    with the consumer's deploy step (§6.5); writing a shared persistent collection from every
-    instance at startup is redundant.
+- **A persistent store loaded by every instance** (D54, the goal's decision — a consequence stated
+  for the operator, not a protocol): each server instance that starts clears the shared collection
+  and writes the corpus again. While one instance loads, the others read an empty or partial
+  store. Concurrent loads from several instances are the backend's concern (§3.3, D13); the library
+  coordinates nothing across processes. A consumer who runs replicas over one persistent store
+  starts them so that this window is acceptable to it, or uses one collection per instance.
 
 ---
 
@@ -1146,7 +1218,7 @@ creation (D46, below).
 interface StagedRetrievalOptions {
   name: string;                 // reported as `strategy`
   storeKey: string;             // reported as `store`
-  pool: ICandidatePool;         // candidate strategy, counted in ITEMS — required, never derived
+  pool?: ICandidatePool;        // candidate strategy, counted in ITEMS; absent → ItemPool() = the caller's k (D56)
   maxRecordsPerItem: number;    // from the indexing strategy (§4.4), not set by the consumer
   canonicalKind: string;        // from the indexing strategy; locates the canonical record (§4.6)
   sources: ISourceSelector;     // from the profile's bind()
@@ -1165,8 +1237,10 @@ interface StagedRetrievalOptions {
 }
 ```
 
-- `pool` is required for the same reason as `RerankAllRetrieval.maxCandidates` in 30.1.0:
-  "configured, never derived from an assumed catalog size".
+- `pool` absent → **`ItemPool()`: k items of the (sub-)query** (D56). That is the generic default
+  the goal names: it guesses no catalog size and no depth, and without a reranker it returns what
+  30.1.0 returns for k (k items instead of k records). A deeper pool is the consumer's number — it
+  matters only under a reranker, which can then bring in items stage 1 ranked below k (§7.4).
 - **Scoring inside the store** (hybrid vs cosine) is the store's existing `ISearchStrategy`, set on
   the store, not here. The measurements used hybrid (0.7·cos + 0.3·BM25).
 
@@ -1175,11 +1249,11 @@ interface StagedRetrievalOptions {
 ```
 sources = selector.sources(options)            ← identity filters chosen per source
 for each source, in parallel:
-  source.rag.query(query, pool.recordsToFetch(maxRecordsPerItem), source.options)
+  source.rag.query(query, pool.recordsToFetch(k, maxRecordsPerItem), source.options)
                                                ← identity filter applied IN the store, before top-N
 merge hits
   → collapse (ICollapseRule)                   ← records → owner-qualified items; filtered hits only
-  → keep the first pool.items items per source
+  → keep the first pool.items(k) items per source
   → rerank items on their item text (optional, §4.6); check the result (§4.8)
   → hydrate in rank order from the CANONICAL record (§4.6); drop + count orphans
   → cut (IItemCut) over hydrated items, once: at most min(k, cut.limit(k)) items
@@ -1190,9 +1264,6 @@ merge hits
   identity filter, so it is always *after* the owner filter. The only extra read, `getById` of the
   canonical record, is checked with `matchesRagIdentity` against the same filter; a record that
   fails it is dropped as an orphan.
-- **A store's service record is never an item.** A hit whose metadata carries `serviceRecord` (the
-  record `deployToolsCorpus` keeps, §6.5) is dropped before collapse — not passed through, not
-  counted as an orphan, not reranked.
 - **Records without `itemId`** (e.g. today's `skill:*` records in the tools store) pass through as
   their own item, keyed by `metadata.id`, and are returned as the record itself (they are not
   profile records, so there is no canonical record to hydrate from). That is how skills keep 30.1.0
@@ -1205,12 +1276,14 @@ merge hits
 
 ### 4.4 Candidate pool counted in items
 
-- **Measured:** 30 records with several records per tool show only ~26–34 tools; non-English
-  recall drops to 0.846–0.885. 30 **items** restore 0.962 (Cohere) / 1.000 (Jev).
-- **Built-in candidate strategy `ItemPool(n)`:** `items = n`, `recordsToFetch(m) = n × m`.
-  - Every item has at most `m` records, so `n × m` records always hold at least `n` distinct items
-    (when the store has that many). One query, no loop.
-  - After collapse, the pool is cut to `n` items per source.
+- **Why items, not records** (evidence, §2.2): with several records per tool, a pool of 30 records
+  showed only ~26–34 tools in the consumer's measurement, and non-English recall dropped; a pool of
+  30 items did not. The number is the consumer's; the unit is the design.
+- **Built-in candidate strategy `ItemPool(n?)`:** with `n`, `items(k) = n`; without, `items(k) = k`
+  (the generic default, D56). `recordsToFetch(k, m) = items(k) × m`.
+  - Every item has at most `m` records, so `items × m` records always hold at least `items`
+    distinct items (when the store has that many). One query, no loop.
+  - After collapse, the pool is cut to `items(k)` items per source.
   - A consumer may inject another `ICandidatePool` (e.g. one that queries deeper).
 - **`maxRecordsPerItem` comes from the indexing strategy** (`IItemIndexer.maxRecordsPerItem`),
   never the consumer's guess:
@@ -1225,7 +1298,7 @@ merge hits
 
 - `StagedRetrieval` calls the injected `IQueryDecomposer` (§3.4) when `decompose` is set.
 - **None injected → the query runs as is** (one run, today's behaviour). There is no shipped
-  implementation and no shipped variant uses one (§2.4).
+  implementation and no named composition uses one (§2.4).
 
 **The k contract.** `k` stays the overall limit of a retrieval, as in 30.1.0 — with or without a
 decomposer.
@@ -1352,11 +1425,11 @@ including a consumer's own.
 
 | Strategy | Class | Behaviour |
 |---|---|---|
-| candidate pool | `ItemPool(n)` | `n` items per source (§4.4) |
+| candidate pool | `ItemPool(n?)` | `n` items per source; no `n` → the caller's k (§4.4, D56) |
 | collapse | `MaxScoreCollapse` | item score = best record score (measured winner). Count / RRF are **not** shipped. |
 | cut | `TopItemsCut` | first `requestedK` items (default); `limit` = `requestedK` |
 | cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)`. Under a reranker only with `onFailure: 'error'`; never with `keepStage1Top` > 0 — both rejected at construction (§4.7) |
-| cut | `FixedItemsCut(n)` | a **ceiling**: first `min(requestedK, n)` items — for a store whose profile measured its own k; it never raises the caller's k; `limit` = `min(requestedK, n)` |
+| cut | `FixedItemsCut(n)` | a **ceiling**: first `min(requestedK, n)` items — for a consumer that wants fewer than the caller's k (its own calibration); it never raises the caller's k; `limit` = `min(requestedK, n)` |
 | cut | `TokenBudgetCut({ budgetTokens, maxItems?, estimator? })` | rank-order prefix of whole items while their summed size ≤ `budgetTokens`, at most `limit` items; `limit` = `min(requestedK, maxItems ?? requestedK)`; implements `ISizeBoundedCut` (§4.10) |
 | query decomposition | — | **none shipped**; the consumer injects its own `IQueryDecomposer` (§4.5) |
 
@@ -1365,9 +1438,9 @@ including a consumer's own.
   overall limit of the retrieval, with or without a decomposer. **Every cut is capped by it**
   (approved review finding 1): the effective limit is `min(requestedK, the cut's own limit)`. A
   consumer that wants fewer than the caller's k uses `FixedItemsCut(n)`; nothing returns more than
-  the caller asked for. The cut classes carry no number of their own; a default
-  composition carries its measured cut in its definition (§7.1), and the consumer chooses it or
-  another cut.
+  the caller asked for. The cut classes carry no number of their own, and neither does a named
+  composition (§7.1, D55): its default cut is the caller's k, and a lower one (`maxItems` →
+  `FixedItemsCut`) is the consumer's argument.
 - **Score scales.** After a reranker, scores are the reranker's; the global
   `IToolSelectionStrategy` still runs on the flattened results of all stores, as in 30.1.0. A
   per-store threshold therefore belongs in the profile's cut.
@@ -1380,7 +1453,7 @@ composition.
 **Why it exists:** tools differ in size by an order of magnitude (§2.5). A count bounds the prompt
 only when tools are alike; a budget bounds it always (goal 9).
 
-**Measured as the main cut — worse than a count** (mcp-abap-adt `compact`, §2.5.1):
+**Measured as the main cut — worse than a count** (evidence from the consumer, mcp-abap-adt `compact`, §2.5.1):
 
 | Cut | Required-recall | Tokens |
 |---|---|---|
@@ -1524,13 +1597,15 @@ export class RelevanceReranker implements IReranker {
 
 - **Not a probability — documented on the class and in the docs.** Scores are the provider's
   scale. A `ScoreFloorCut` threshold on them, or a global `IToolSelectionStrategy` threshold after
-  them, is the **consumer's calibration** for its provider; **no default composition uses one**.
+  them, is the **consumer's calibration** for its provider; **no named composition uses one**.
 - `StagedRetrieval` checks the result again (§4.8), whichever reranker it is.
 
 **Batches — by default, as the probability reranker** (decided by the user, D28, §17.7).
 
 - Same defaults and validation as `ProbabilityReranker`: `maxBatchTokens` 48000, `concurrency` 4,
-  each a positive integer (a non-positive or non-integer value throws in the constructor).
+  each a positive integer (a non-positive or non-integer value throws in the constructor). These
+  are 30.1.0's `DecisionReranker` defaults — request-size and fan-out limits, not tuned to a
+  catalog or measured in a consumer (D55 concerns retrieval numbers).
 - A batch closes when the next passage's estimate (`ceil(text.length / 4)`) would take it past
   the budget; the query's estimate counts once per batch; a single passage larger than the budget
   is a batch of its own (never dropped).
@@ -1538,8 +1613,8 @@ export class RelevanceReranker implements IReranker {
   also across calls (§3.9), and every batch of one `rerank` has the same query and decision.
 - There is no single-call mode: a consumer that wants one call per rerank sets a budget large
   enough for its candidates.
-- The default compositions rerank ≤ 30 tools (`faceted-cohere`, §7.4): one call under the default
-  budget.
+- How many candidates one rerank reads is the consumer's `poolItems` (§7.4); a pool that fits the
+  default budget is one call.
 
 ### 5.3 `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`)
 
@@ -1646,13 +1721,14 @@ alias.
   name needs the deployment listing that lives privately in `sap-aicore-embedder`
   (`resolveDeploymentId`). Decided — D10 (§17).
 
-### 5.5 Rerankers in the default tools compositions
+### 5.5 Rerankers in the named tools compositions
 
-- Cohere: `faceted-cohere` = `RelevanceReranker(IRelevanceDecision)`.
-- Jev: `faceted-jev`, `small-set-jev` = `ProbabilityReranker(IProbabilityDecision, TOOL_QUESTION)`.
-- The type says which: a `faceted-cohere` factory takes an `IRelevanceDecision`, the Jev ones an
-  `IProbabilityDecision`. In YAML the variant is checked against the kind `decision.provider`
-  gives (§6.2).
+- `faceted-rerank` takes **an `IReranker`** (D55): the consumer builds the one it chose —
+  `RelevanceReranker(IRelevanceDecision)` over Cohere, or `ProbabilityReranker(IProbabilityDecision)`
+  with the `TOOL_QUESTION` wording over Jev, or its own. The composition names no vendor.
+- In YAML, `variant: faceted-rerank` takes the reranker of the one `decision:` section, by its kind
+  (§6.2): `typesafe` → `ProbabilityReranker` with `TOOL_QUESTION`, `sap-aicore` →
+  `RelevanceReranker`. There is no variant-to-kind check any more: the variant accepts either.
 - Which reranker runs is the consumer's choice: any reranker composes with any indexing and
   candidate strategy (§7.5).
 
@@ -1711,9 +1787,9 @@ builder.withMcpClients([client]).setToolsRag(bound.rag).withToolsProfile(profile
   `profile.bind()` alone: a binding the store does not carry is invisible to those paths (a
   reconnect would take the store for unbound and write 30.1.0 records), and `fillToolsBinding`
   refuses it.
-- With a `corpus` or `prebuilt` source the snippet's listing is not needed:
-  `await fillToolsBinding([], bound)` runs the store's source at creation (it loads or checks; no
-  client is read).
+- With a `corpus` source the snippet's listing is not needed: `await fillToolsBinding([], bound)`
+  runs the store's source at creation (it clears the store and loads the corpus; no client is
+  read). For a builder consumer, its composition root's start is that moment (§11.2 item 4).
 - Not filled → the tools store stays empty, as on these branches in 30.1.0; nothing errors, and
   what tool selection does with an empty tools store is unchanged by this spec.
 - **The limit is the builder's only.** The builder has no startup phase of its own: `build()`
@@ -1747,10 +1823,15 @@ rag:
     history: { strategy: embedding }
   profiles:               # new; absent → 30.1.0 behaviour (= variant baseline). Only `tools` (S8).
     tools:
-      variant: faceted-cohere                    # baseline | faceted | faceted-cohere | faceted-jev | small-set-jev | a registered name
+      variant: faceted-rerank                    # baseline | faceted | faceted-rerank | a registered name
+      poolItems: <n>                             # faceted-rerank: required — items the reranker reads per query (the consumer's number); faceted: optional (absent → the caller's k)
+      # maxItems: <n>                            # optional, faceted / faceted-rerank: a ceiling below the caller's k (→ FixedItemsCut)
       decomposer: my-splitter                    # optional; a NAME the consumer registered (§4.5); not with baseline
-      fill: live                                 # optional (§3.10): live (default) | consumer | a registered name | { corpus: … } | { prebuilt: … }
+      fill: live                                 # optional (§3.10): live (default) | consumer | a registered name | { corpus: … }
 ```
+
+No number in this section has a default the library chose: `poolItems` and `maxItems` are the
+consumer's (D55); absent where optional → the caller's k (D56).
 
 Where the tools store's records come from (§3.10, D42):
 
@@ -1759,25 +1840,32 @@ rag:
   profiles:
     tools:
       variant: faceted
-      # an in-memory store: load a corpus built at build time (no embedding call at start)
+      # any store (in-memory or persistent): at start, clear it and load the corpus the build step made
+      # (no embedding call at start)
       fill: { corpus: { file: ./tools-corpus.json, profile: faceted@1, embedder: aicore-te3-small } }
-      # a persistent store filled by the deploy step (deployToolsCorpus): bind, check, never write
-      # fill: { prebuilt: { profile: faceted@1, embedder: aicore-te3-small } }
 ```
 
 `profile` and `embedder` are the consumer's names for the composition and the document embedder,
-the same strings its build step passed to `buildToolsCorpus` (§6.5).
+the same strings its build step passed to `buildToolsCorpus` (§6.5). The expected vector dimension
+is the tools store's own `dimension` when its config declares one (pg-vector, HANA); there is no
+separate key.
 
-A coarse / small tool set (Jev over the whole set):
+A small tool set reranked as a whole (the consumer's choice; `poolItems` ≥ its tool count):
 
 ```yaml
 decision: { provider: typesafe }
 rag:
   profiles:
     tools:
-      variant: small-set-jev
-      smallSet: { poolItems: <n> }               # required: ≥ the store's tool count (§7.4)
+      compose:
+        indexer: { faceted: [] }                 # one `full` record per tool
+        pool: { items: <tool count> }
+        collapse: max
+        reranker: decision
 ```
+
+(30.1.0's `rag.retrieval.tools: { strategy: rerank-all, reranker: decision, maxCandidates: <tool
+count> }` reranks the whole set too, without a profile.)
 
 The consumer's own composition, every value a NAME of a strategy:
 
@@ -1788,15 +1876,15 @@ rag:
       compose:
         indexer: { faceted: [summary, parameters] }  # facet names → IToolFacet instances; name-tail is opt-in
         # text: parameter-names                    # provider text composer (§7.3.1): parameter-names (default, C0) | enum-values | schema | a registered name
-        # or (generic, in no default; measured worse on `compact`, §7.3.2):
+        # or (generic, in no named composition; measured worse on `compact` in the consumer, §7.3.2):
         #   indexer: { enum-values: { inner: { faceted: [] }, discriminator: required-enum, maxValues: <n> } }
         # discriminator: required-enum | { named: <parameter> } | a registered name
-        pool: { items: 30 }                        # → ItemPool(30)
+        pool: { items: <n> }                       # → ItemPool(n); absent → ItemPool() = the caller's k (D56)
         collapse: max                              # → MaxScoreCollapse
         reranker: decision                         # none | decision | llm — decision = ProbabilityReranker (typesafe) or RelevanceReranker (sap-aicore)
         question: tool                             # probability decision (typesafe) / llm only — refused for a relevance decision
         decomposer: none                           # none | a registered name (no built-in)
-        cut: { fixed-items: 5 }                    # top-items | fixed-items | score-floor {minItems,maxItems,minScore} | token-budget {budgetTokens,maxItems?}
+        cut: { fixed-items: <n> }                  # top-items (default: the caller's k) | fixed-items | score-floor {minItems,maxItems,minScore} | token-budget {budgetTokens,maxItems?}
         onFailure: stage1                          # stage1 | error — score-floor with a reranker needs error (§4.7)
 ```
 
@@ -1838,7 +1926,7 @@ rag:
   startup** when the provider is relevance (accepting them would be a silent no-op).
 - **A threshold on relevance scores is the consumer's calibration.** `cut: { score-floor: … }`
   over a `RelevanceReranker` is allowed and documented as provider-specific calibration; no
-  default composition uses it. With a reranker it needs `onFailure: error` — a `stage1` fallback
+  named composition uses it. With a reranker it needs `onFailure: error` — a `stage1` fallback
   would cut stage-1 scores with a threshold calibrated on reranked ones (§4.7, F5).
 
 **Resolution.**
@@ -1846,7 +1934,7 @@ rag:
 - Parsed **only** by the server (`resolve-collection-profiles.ts` in server-libs, beside
   `resolve-retrieval.ts`).
 - Names resolve through registries in the composition deps (like `embedderFactories`):
-  `toolsVariantFactories` (built-ins: the five default compositions of §7.4) and
+  `toolsVariantFactories` (built-ins: the three named compositions of §7.4) and
   `toolsStrategyFactories` (built-in facets, discriminators, pools, collapse, cuts, size
   estimators). A consumer registers its own, including its decomposers (none is built in). Unknown
   name → startup error.
@@ -1862,11 +1950,15 @@ rag:
 - Provider text composers resolve through `toolsStrategyFactories` like facets: built-ins
   `parameter-names` (default), `enum-values`, `schema` (§7.3.1).
 - Stores are built through the existing `makeRag` seam; a profile adds no store of its own (D50).
+- `variant: faceted-rerank`: the reranker is the `decision` reranker above, by the provider's kind
+  (`ProbabilityReranker` with `TOOL_QUESTION`, or `RelevanceReranker`); `poolItems` → `ItemPool(n)`;
+  `maxItems` → `FixedItemsCut(n)` (absent → `TopItemsCut`, the caller's k).
 - `fill` resolves to ONE `IToolsFillSource` instance, server-wide (§3.10): `live` →
   `LiveToolsFill`, `consumer` → `ConsumerToolsFill`, `{ corpus: { file, profile, embedder } }` →
-  the file read once at startup, `parseToolsCorpus`, `ToolsCorpusLoader`; `{ prebuilt: { profile,
-  embedder } }` → `PrebuiltToolsStore`; any other name → `SmartServerConfig.toolsFillFactories`.
-  Absent → `live`. The server binds the main store and every worker store it builds with it.
+  the file read once at startup, `parseToolsCorpus`, `ToolsCorpusLoader` with `expect = { profile,
+  embedder, dimensions: <the tools store config's dimension, when declared> }`; any other name →
+  `SmartServerConfig.toolsFillFactories`. Absent → `live`. The server binds the main store and
+  every worker store it builds with it.
 
 **Validation** (raw YAML, as in #321 §13.4) → startup error, never a silent drop:
 
@@ -1877,12 +1969,14 @@ rag:
 - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
 - `compose.cut: { score-floor: … }` with a reranker and `onFailure` not `error` (absent = `stage1`)
   (§4.7, F5);
-- `small-set-jev` without `smallSet.poolItems`, or a non-positive one; an `enum-values` indexer
-  without `maxValues`; non-positive `budgetTokens`;
-- a decision reranker without a `decision:` section: `faceted-cohere`, `faceted-jev`,
-  `small-set-jev`, or `compose.reranker: decision`;
-- a named variant whose decision is of the other kind: `faceted-cohere` needs a relevance provider
-  (`sap-aicore`); `faceted-jev` and `small-set-jev` need a probability provider (`typesafe`);
+- `faceted-rerank` without `poolItems`; a non-positive `poolItems` or `maxItems`; `poolItems` or
+  `maxItems` with `baseline` or with `compose` (there they are `compose.pool` / `compose.cut`); an
+  `enum-values` indexer without `maxValues`; non-positive `budgetTokens`;
+- a decision reranker without a `decision:` section: `faceted-rerank`, or
+  `compose.reranker: decision`;
+- a leftover key of a withdrawn composition (D55): `variant: faceted-cohere | faceted-jev |
+  small-set-jev`, or `smallSet` — refused with a message naming `faceted-rerank` / `compose`, never
+  silently mapped;
 - `decision:`: `provider` not `typesafe` | `sap-aicore`; with `sap-aicore`, a missing `deploymentId`
   or `model`, or a typesafe-only field (`baseUrl`, `timeoutMs`, `maxRetries`); with `typesafe`, a
   sap-aicore-only field (`deploymentId`, `resourceGroup`); a secret (`apiKey`) as today;
@@ -1890,11 +1984,12 @@ rag:
   for a decision reranker when the provider's kind is relevance — a relevance decision reads no wording (§3.9);
 - an unknown `text` composer name;
 - a tools key whose variant is not a tools profile;
-- `fill`: an unknown name; `corpus` without `file`, `profile` or `embedder`; `prebuilt` without
-  `profile` or `embedder`; `prebuilt` over an `in-memory` tools store (empty at every start — use
-  `corpus`); `corpus` or `prebuilt` while a worker declares its own `rag` **and** its own
-  `mcpClients` or `mcp:` (the corpus describes the shared catalog; bind that worker's store in the
-  composition root). Checked by the server at start too, for a config built in code.
+- `fill`: an unknown name; `corpus` without `file`, `profile` or `embedder`; a leftover
+  `prebuilt` (removed, D54 — refused with a message naming `corpus`); `corpus` while a worker
+  declares its own `rag` **and** its own `mcpClients` or `mcp:` (the corpus describes the shared
+  catalog; bind that worker's store in the composition root). Checked by the server at start too,
+  for a config built in code. A store whose writer has no `clearAll` or no precomputed write is
+  refused by `ToolsCorpusLoader` at the store's creation (§3.10), naming the store.
 - a leftover `intents` key under `rag.profiles.tools`: refused with a message that intents were
   removed (D50) — never silently ignored.
 
@@ -1933,7 +2028,7 @@ Without a bound profile nothing changes: 30.1.0 behaviour on every path.
 | ready clients | `BuildAgentDeps.mcpClients` ?? `cfg.mcpClients` ?? plugin `mcpClients` (when the plugins brought any) — presence wins, even `[]` | nobody (handed over) | **the server** (new) |
 | injected seam | YAML `mcp:` + `connectMcpWithDescriptors` or a bare `connectMcp` injected, no ready clients | the seam (`_resolveMcpWithDescriptors`) | **the server** (new) |
 | YAML builder connect (`yamlBuilderConnect`) | YAML `mcp:`, no ready clients, no injected seam | the startup builder | the builder (§6.1, auto-connect branch) — its `build()` creates the store's agent and runs the store's fill source; the server does not fill again |
-| no MCP | none of the above | — | **the server**: zero clients → `live` gives an empty, complete catalog (`total: 0`); `corpus` / `prebuilt` need no client |
+| no MCP | none of the above | — | **the server**: zero clients → `live` gives an empty, complete catalog (`total: 0`); `corpus` needs no client |
 
 On the first two paths the server hands the clients to the builder through `withMcpClients`
 (main and workers), which skips vectorization (§6.1), so in 30.1.0 the tools store stays empty
@@ -1945,7 +2040,7 @@ there. Under a profile that would leave a bound store empty: the server fills it
   `vectorizeMcpTools(clients, binding.rag, …)`, which reads the binding **and its fill source** from
   `binding.rag` (rule 1) and runs the source's `fill`. For `live` that is exactly the profile path
   of §7.6 (listing, namespacing, `IToolRecordKey` ids, `toolItemFromTool`, `bound.index`); for
-  `corpus` / `prebuilt` no client is read. Nothing is duplicated. Its type requires a binding, so it
+  `corpus` no client is read. Nothing is duplicated. Its type requires a binding, so it
   never starts the 30.1.0 record path. It **throws** when the store does not carry that binding
   (`toolsBindingOf(binding.rag) !== binding`, i.e. a binding made by calling `profile.bind()`
   directly instead of `bindToolsProfile`): such a store carries no fill source, and the next
@@ -1957,7 +2052,7 @@ there. Under a profile that would leave a bound store empty: the server fills it
   same inputs its authoritative tool snapshot is built from, so the record ids match the names
   tool selection reads. It is one more `listTools()` pass at startup on these paths (`live`).
 - **When (main store).** In `_buildInfra`, after the startup agent is built and the shared clients
-  are resolved, before the small-set check (D23) and before `HealthChecker` is created — so before
+  are resolved, before `HealthChecker` is created — so before
   `start()` listens and before the embeddable `buildAgent(cfg)` returns. Once.
 
 **Rule 1 in detail — the binding and its fill source are read from the store (D34, D42).**
@@ -2006,8 +2101,8 @@ there. Under a profile that would leave a bound store empty: the server fills it
 
 - `buildSubAgent` fills on the **construction** (no `injected`) **right before `subBuilder.build()`**,
   from the clients it would hand a re-wire, so the records carry the names the worker's agent
-  dispatches by — by construction (D32). It runs the store's fill source: `corpus` / `prebuilt`
-  read no client.
+  dispatches by — by construction (D32). It runs the store's fill source: `corpus` reads no
+  client.
 - **A per-session re-wire never fills** (D41): it receives the cached store by reference.
 - **When the shared clients are known — always at startup (D38).** On every path except
   `yamlBuilderConnect`, they are resolved before the startup primary builds of the workers, so the
@@ -2015,8 +2110,8 @@ there. Under a profile that would leave a bound store empty: the server fills it
   `yamlBuilderConnect` the shared clients are taken from the main builder after the workers'
   startup build, so `_buildInfra` makes **one fill pass right after the harvest**: every worker
   with its own bound store, no own `mcpClients` and no own `mcp:` is filled from the harvested
-  clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` — before the small-set check,
-  `/health` and listen. That pass completes those workers' creation at startup; it is not a refill.
+  clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` — before `/health` and
+  listen. That pass completes those workers' creation at startup; it is not a refill.
   A lazy rebuild later finds the shared clients known and fills in the construction.
 - **`PUT /v1/config` and hot reload** drain the worker cache (`WorkerRegistry.drain`). The next
   session's `WorkerRegistry.build` misses the cache and constructs the worker (`buildSubAgent`
@@ -2024,13 +2119,13 @@ there. Under a profile that would leave a bound store empty: the server fills it
   source, and that construction fills it. In the earlier design
   (`fillWorkerToolsStores`, startup only) these rebuilds left the new bound stores empty.
 - **A construction whose fill throws leaves no cached worker.** `resolveWorkerLlmSet` caches the
-  worker's set before the build; when the fill throws (an incompatible corpus, a store not deployed,
-  an invalid `IToolRecordKey`, a binding its store does not carry), `buildSubAgent` removes that
+  worker's set before the build; when the fill throws (an incompatible corpus, a store the corpus
+  source refuses, an invalid `IToolRecordKey`, a binding its store does not carry), `buildSubAgent` removes that
   entry before rethrowing, so no later session re-wires a worker whose store was never filled. A
   configuration error stays loud: the next session's construction throws again.
 - A worker's own **persistent** store (its `rag` on qdrant, …) is bound again on every construction
-  and its source runs again: `live` replaces each record in place; `prebuilt` (the recommended
-  source for a persistent store) only checks it. Several server processes writing one persistent
+  and its source runs again: `live` replaces each record in place; `corpus` clears the store and
+  loads the corpus again (D54). Several server processes writing one persistent
   store at the same time is the backend's concern (§3.3, D13); the library coordinates nothing
   across processes.
 - **Two sessions arriving together after a drain** can both construct the same worker in 30.1.0,
@@ -2075,7 +2170,7 @@ are in the agent's catalog.
 **Status and failures — the existing tool-catalog policy.**
 
 - The main store's fill returns a `ToolCatalogStatus` (with `records` and `profile`, S3). It is
-  what `/health` reports as `components.toolCatalog` and what the small-set check (D23) reads.
+  what `/health` reports as `components.toolCatalog`.
   On the builder-connect path the startup agent's status is used, as in 30.1.0.
 - `HealthCheckerDeps.toolCatalog?: IToolCatalogReporter` (new, optional) carries it: the builder's
   status holder is private to `build()`, and the server fills outside it. Absent → the agent's
@@ -2094,8 +2189,8 @@ are in the agent's catalog.
 - `bound.index` failing → every item in `failed`, the error message in the logged line, the same
   `degraded` status (main). A tool that fails to index → named in `failed`.
 - An invalid `IToolRecordKey` (an id without `tool:`), a client set that does not match its
-  descriptors, a binding its store does not carry, an incompatible corpus or a prebuilt store that
-  was not deployed (or differs, §3.10) **throws**:
+  descriptors, a binding its store does not carry, an incompatible corpus or a store the `corpus`
+  source refuses (no `clearAll`, no precomputed write, §3.10) **throws**:
   - main store → startup fails, as on the builder's path;
   - a worker's startup build → startup fails;
   - a worker's lazy rebuild → that session's worker build fails, like any worker build error; its
@@ -2116,36 +2211,37 @@ themselves. Each path is listed with what writes it under a profile and what eac
 there, so a reviewer can check that none is missed. "Creation" = the source's `fill` (§3.10); a
 reconnect calls no source (D46).
 
-| # | Path | Code | Store | Under a profile | `live` | `corpus` | `prebuilt` | `consumer` |
-|---|---|---|---|---|---|---|---|---|
-| 1 | Builder `build()`, auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`) | `builder.ts`, `vectorizeMcpTools(…, toolsRag, …)` | `setToolsRag` or the auto-created `InMemoryRag`; bound by `withToolsProfile`, or already bound by the server | creation: `vectorizeMcpTools` runs the store's source (rule 1) | lists + indexes | loads the corpus (precomputed) | checks; no write | nothing |
-| 2 | Builder `build()` with `withMcpClients` / `withMcpServers` | `builder.ts`, "skip auto-connect and vectorization" | the same | not the builder (§6.1 limit): the consumer (`fillToolsBinding`, `bound.index`), or the server (rows 4, 5) | — | — | — | — |
-| 3 | Reconnect: `McpToolRegistry.resolveActiveClients` → `toolsChanged` → `revectorizeTools` (any agent with a connection strategy) | `mcp/tool-registry.ts` | `ragStores.tools` — the projection, possibly a `FallbackRag` over the bound store | **never written** (D46): `revectorizeTools` finds the binding and stops, one `mcp` debug line; no source is called — **finding (a)**. An unbound store: 30.1.0 re-vectorize, unchanged; a tool no longer listed keeps its records (D40) | **no write** | **no write** | **no write** | **no write** |
-| 4 | Server main store | `_buildInfra`: `makeRag` → `withToolsStore` (bound with the YAML `fill` source) | the main store | creation, once: the server (`fillBoundToolsStore` → `fillToolsBinding`) on ready clients, an injected seam, plugin clients or no MCP; on `yamlBuilderConnect` the builder (row 1) | lists + indexes | loads | checks | nothing |
-| 5 | Server worker store, created by the worker's **construction**: the startup primary build, or the lazy rebuild after a drain (`PUT /v1/config`, hot reload) | `WorkerRegistry.build` (cache miss) / the startup loop → `buildSubAgent` (no `injected`) → `resolveWorkerLlmSet` → `makeToolsRag` → `withToolsStore` | the worker's own | creation, once: `buildSubAgent` before `subBuilder.build()` (rule 2) — **finding (b)**; on `yamlBuilderConnect`, a worker on the shared clients by the pass right after the harvest (D38); own `mcp:` → row 1; a throwing fill removes the cache entry | lists + indexes | loads | checks | nothing |
-| 5a | Per-session re-wire of a worker | `WorkerRegistry.build` (cache hit) → `buildSubAgent` with `injected` | the cached store, by reference | **never written** (D41) | — | — | — | — |
-| 6 | Worker without its own `rag` | `buildSubAgent`: `setToolsRag(injected.toolsRag)` | the main store, by reference | row 4; never filled again | — | — | — | — |
-| 7 | Per-session agents (`buildSessionAgent` → the pipeline builder) | `smart-server.ts` | the main store by reference (`parts.toolsRag`); clients through `withMcpClients` | row 4; their registries reach it only through row 3 | — | — | — | — |
-| 8 | Builder skills into the tools store | `vectorizeSkills` (`builder.ts`) | the tools store | skill records, 30.1.0 pass-through (§7.7) — not tool items, not a fill source's; unchanged (a writerless store is skipped, as today) | — | — | — | — |
-| 9 | A consumer of the builder | §6.1 snippet; `fillToolsBinding`; `bound.index` | the consumer's | the consumer; the binding and its source attached by `bindToolsProfile` | as row 1 | as row 1 | as row 1 | the consumer's `bound.index` |
-| 10 | `scripts/rag-eval` profile arms | `runProfileArm` (§14.3) | the eval store | `vectorizeMcpTools` on a store bound by `bindToolsProfile` (rule 1) with the default `live` source | lists + indexes | — | — | — |
-| 11 | The consumer's build step | `buildToolsCorpus` (§6.5) | an in-process capture store, never a served one | the profile's own `bind` + `index` over capture stores; nothing is served from it | — | — | — | — |
-| 12 | The consumer's deploy step | `deployToolsCorpus` (§6.5) | the persistent store a `prebuilt` source will bind | precomputed vectors through the store's writer, in place, idempotent: the listed ids deleted, the whole corpus written (D51) | — | — | writes it | — |
-| 13 | `SmartAgent.addRagStore('tools', …)` | `agent.ts` | — | refused (a built-in store), as in 30.1.0 | — | — | — | — |
-| 14 | RAG editing tools (`rag_add`, …) | registry editors | — | the `tools` entry is registered without an editor: not reachable | — | — | — | — |
-| 15 | Hot reload of weights | `config-reload-watcher.ts` | any store | not a fill — weights only | — | — | — | — |
+| # | Path | Code | Store | Under a profile | `live` | `corpus` | `consumer` |
+|---|---|---|---|---|---|---|---|
+| 1 | Builder `build()`, auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`) | `builder.ts`, `vectorizeMcpTools(…, toolsRag, …)` | `setToolsRag` or the auto-created `InMemoryRag`; bound by `withToolsProfile`, or already bound by the server | creation: `vectorizeMcpTools` runs the store's source (rule 1) | lists + indexes | clears the store, loads the corpus (precomputed) | nothing |
+| 2 | Builder `build()` with `withMcpClients` / `withMcpServers` | `builder.ts`, "skip auto-connect and vectorization" | the same | not the builder (§6.1 limit): the consumer (`fillToolsBinding`, `bound.index`), or the server (rows 4, 5) | — | — | — |
+| 3 | Reconnect: `McpToolRegistry.resolveActiveClients` → `toolsChanged` → `revectorizeTools` (any agent with a connection strategy) | `mcp/tool-registry.ts` | `ragStores.tools` — the projection, possibly a `FallbackRag` over the bound store | **never written** (D46): `revectorizeTools` finds the binding and stops, one `mcp` debug line; no source is called — **finding (a)**. An unbound store: 30.1.0 re-vectorize, unchanged; a tool no longer listed keeps its records (D40) | **no write** | **no write** | **no write** |
+| 4 | Server main store | `_buildInfra`: `makeRag` → `withToolsStore` (bound with the YAML `fill` source) | the main store | creation, once: the server (`fillBoundToolsStore` → `fillToolsBinding`) on ready clients, an injected seam, plugin clients or no MCP; on `yamlBuilderConnect` the builder (row 1) | lists + indexes | clears, loads | nothing |
+| 5 | Server worker store, created by the worker's **construction**: the startup primary build, or the lazy rebuild after a drain (`PUT /v1/config`, hot reload) | `WorkerRegistry.build` (cache miss) / the startup loop → `buildSubAgent` (no `injected`) → `resolveWorkerLlmSet` → `makeToolsRag` → `withToolsStore` | the worker's own | creation, once: `buildSubAgent` before `subBuilder.build()` (rule 2) — **finding (b)**; on `yamlBuilderConnect`, a worker on the shared clients by the pass right after the harvest (D38); own `mcp:` → row 1; a throwing fill removes the cache entry | lists + indexes | clears, loads | nothing |
+| 5a | Per-session re-wire of a worker | `WorkerRegistry.build` (cache hit) → `buildSubAgent` with `injected` | the cached store, by reference | **never written** (D41) | — | — | — |
+| 6 | Worker without its own `rag` | `buildSubAgent`: `setToolsRag(injected.toolsRag)` | the main store, by reference | row 4; never filled again | — | — | — |
+| 7 | Per-session agents (`buildSessionAgent` → the pipeline builder) | `smart-server.ts` | the main store by reference (`parts.toolsRag`); clients through `withMcpClients` | row 4; their registries reach it only through row 3 | — | — | — |
+| 8 | Builder skills into the tools store | `vectorizeSkills` (`builder.ts`) | the tools store | skill records, 30.1.0 pass-through (§7.7) — not tool items, not a fill source's; unchanged (a writerless store is skipped, as today) | — | — | — |
+| 9 | A consumer of the builder | §6.1 snippet; `fillToolsBinding`; `bound.index` | the consumer's | the consumer; the binding and its source attached by `bindToolsProfile` | as row 1 | as row 1 | the consumer's `bound.index` |
+| 10 | `scripts/rag-eval` profile arms | `runProfileArm` (§14.3) | the eval store | `vectorizeMcpTools` on a store bound by `bindToolsProfile` (rule 1) with the default `live` source | lists + indexes | — | — |
+| 11 | The consumer's build step | `buildToolsCorpus` (§6.5) | an in-process capture store, never a served one | the profile's own `bind` + `index` over capture stores; nothing is served from it | — | — | — |
+| 12 | `SmartAgent.addRagStore('tools', …)` | `agent.ts` | — | refused (a built-in store), as in 30.1.0 | — | — | — |
+| 13 | RAG editing tools (`rag_add`, …) | registry editors | — | the `tools` entry is registered without an editor: not reachable | — | — | — |
+| 14 | Hot reload of weights | `config-reload-watcher.ts` | any store | not a fill — weights only | — | — | — |
 
-### 6.5 Offline corpus — built at build time, deployed by the consumer's deploy step (D43)
+### 6.5 The tools corpus — made by the consumer's build step, loaded by the server at start (D43, D54)
 
-**TL;DR.** The profile's indexer runs outside the server to produce a corpus. Two steps, both the
-consumer's scripts:
+**TL;DR.** The profile's indexer runs outside the server to produce a corpus. Two steps, two layers
+(goal decision 2026-10-05, D54):
 
-| Step | When | Function | Embedding calls | Result |
-|---|---|---|---|---|
-| **build** | the consumer's build (CI) | `buildToolsCorpus` | yes — the document embedder, once | a `ToolsCorpus` (records + vectors), serialized as JSON |
-| **deploy** (persistent store) | the consumer's deploy | `parseToolsCorpus` → `deployToolsCorpus` | **none** — precomputed vectors | the store holds the corpus in place, plus one service record |
-| instance creation, in-memory store | the process starts | `ToolsCorpusLoader` (fingerprint check, precomputed writes into the fresh store) | **none** | the store holds the corpus |
-| instance creation, persistent store | the process starts | `PrebuiltToolsStore` | **none** | bound, fingerprint checked, **never written** |
+| Step | Layer | When | Function | Embedding calls | Result |
+|---|---|---|---|---|---|
+| **build** | the consumer (its build script, with the libs API) | the consumer's build (CI) | `buildToolsCorpus` | yes — the document embedder, once | a `ToolsCorpus` (records + vectors), serialized as JSON |
+| **load** | the server (its start; or a builder consumer's composition root) | the store's instance creation — part of the deploy, since a deploy starts the server | `parseToolsCorpus` → `ToolsCorpusLoader` (the `corpus` fill source, libs) | **none** — precomputed vectors | the store cleared and holding exactly the corpus; one log line |
+
+There is **no deploy step and nothing about the corpus is kept in the store**: no service record, no
+pending / final state, no id list, no hash. In-memory and persistent stores are loaded the same
+way. An interrupted load repeats at the next start.
 
 ```ts
 export interface ToolsCorpusIdentity {
@@ -2154,6 +2250,12 @@ export interface ToolsCorpusIdentity {
   /** The consumer's name for the document embedder, e.g. 'aicore-te3-small'. */
   readonly embedder: string;
 }
+/** What the server is configured with — checked against the corpus file before the store is touched. */
+export interface ToolsCorpusExpectation extends ToolsCorpusIdentity {
+  /** The vector length the store is configured for, when declared (e.g. a pg-vector / HANA store's
+   *  `dimension`). Absent → not checked by the library (a backend that fixes it refuses the write). */
+  readonly dimensions?: number;
+}
 export interface ToolsCorpusManifest {
   readonly format: 1;
   readonly identity: ToolsCorpusIdentity;
@@ -2161,7 +2263,7 @@ export interface ToolsCorpusManifest {
   readonly dimensions?: number;              // every vector's length; absent exactly when there are no records
   readonly items: number;                    // tools
   readonly records: number;
-  readonly corpusHash: string;               // sha256 over the identity and every record's hash (record hashes are internal, never stored)
+  readonly corpusHash: string;               // sha256 over the identity and every record — the file's integrity check and the log's label
 }
 export interface ToolsCorpusRecord {
   readonly id: string;                       // the physical id the profile assigned (§3.1)
@@ -2170,7 +2272,6 @@ export interface ToolsCorpusRecord {
   readonly metadata: RagMetadata;
 }
 export interface ToolsCorpus { readonly manifest: ToolsCorpusManifest; readonly records: readonly ToolsCorpusRecord[] }
-export interface ToolsCorpusDeployReport { readonly unchanged: boolean; readonly written: number; readonly deleted: number }
 
 /** Build step: provider tool definitions → records + vectors, with the profile's own indexer. */
 export function buildToolsCorpus(input: {
@@ -2181,88 +2282,62 @@ export function buildToolsCorpus(input: {
 }, options?: CallOptions): Promise<ToolsCorpus>;
 /** The serialized corpus back: shape, format, one dimension (none when empty), the hash recomputed. Throws on any mismatch. */
 export function parseToolsCorpus(json: string): ToolsCorpus;
-/** Deploy step: write a built corpus into a store, in place, idempotent — deleted and written in full unless unchanged (D51). */
-export function deployToolsCorpus(corpus: ToolsCorpus, target: CollectionStore, options?: CallOptions): Promise<ToolsCorpusDeployReport>;
-export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';   // the service record's id (no `recordId` output has this form)
+/** The `corpus` fill source (§3.10): at instance creation, check, clear the store, write, log. */
+export class ToolsCorpusLoader implements IToolsFillSource {
+  constructor(options: { readonly corpus: ToolsCorpus; readonly expect: ToolsCorpusExpectation });
+}
 ```
 
-**Build (`buildToolsCorpus`).**
+**Build (`buildToolsCorpus`) — the consumer's layer.**
 
-- Binds the profile to a **capture store** (an internal in-memory `IRag` that owns the given
-  embedder through `IRetrievalEmbedderOwner` and keeps every precomputed write) and calls
-  `bound.index(items)`. So the records are exactly what the same profile's indexer and record
-  writer produce at run time: same ids (§3.1), texts, metadata; only the store differs.
+- Binds the profile to a **capture store** (an internal in-memory `IRag`, private to libs — not a
+  shipped store, not in any `testing` entry point — that owns the given embedder through
+  `IRetrievalEmbedderOwner` and keeps every precomputed write) and calls `bound.index(items)`. So
+  the records are exactly what the same profile's indexer and record writer produce at run time:
+  same ids (§3.1), texts, metadata; only the store differs.
 - Any `failedItems` → throws naming them: a corpus is complete or not built.
 - **An empty corpus is valid** (D49). No items → a corpus with zero records and a manifest with
   `items: 0`, `records: 0` and **no `dimensions`** (nothing to infer it from). `parseToolsCorpus`
   accepts it: `dimensions` must be absent when there are no records and a positive integer when
   there are, and the per-record dimension check runs over the records there are. A consumer that
-  removes every tool deploys this corpus and the store follows (below). The dimension checks are
-  skipped only for an empty corpus.
+  removes every tool ships this corpus, and the next start empties the store (below).
 - Item ids must be what tool selection reads at run time: `toolItemFromTool(tool, { itemId:
   toolRecordKey.key(…), originalName })` with the same `IToolRecordKey`, client order and namespace
   as the server (§6.1 snippet). The consumer's build reads the tool definitions from its provider
   (an MCP server it starts in CI, or the definitions the provider exports).
 - Serialization is `JSON.stringify(corpus)`; `parseToolsCorpus` is its checked inverse.
 
-**Deploy (`deployToolsCorpus`) — one current state, in place, idempotent, written in full (D51).**
-
-The service record (id `TOOLS_CORPUS_RECORD_ID`) carries `{ serviceRecord: { kind: 'tools-corpus',
-state: 'pending' | 'final', manifest, dimensions, ids } }` — `ids` = every record id the store
-holds or may hold from this corpus — and nothing else, so an in-place merge on a merging store
-(below) leaves no stale key on it. Text `tools corpus <corpusHash>`, vector = a unit vector of
-`dimensions`. Retrieval drops it (§4.3); `ReservedRecordKey` keeps extras from setting it.
+**Load (`ToolsCorpusLoader.fill`) — the server's layer, at the store's instance creation.**
 
 | Step | What |
 |---|---|
-| 1. unchanged? | read the service record; `state: 'final'` **and** its manifest's `corpusHash` and identity equal the corpus's → `{ unchanged: true, written: 0, deleted: 0 }`, **no write of any kind**. A record that is not finalized never answers `unchanged` |
-| 2. capability | the store must accept precomputed vectors (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`), checked **twice** before any write: on the writer of the store it was given, and on the writer of the **resolved backend** — the innermost store under `IRagDecorator.inner` (≤ 16 levels, as `retrievalEmbedderOf`), the one that holds the records. Either lacks it → throw naming the store, nothing written, no embedding call. Why both: a decorator can claim a precomputed write and emulate it through `upsertRaw`, which re-embeds — `FallbackRag` did until D52 (§10.4); the resolved-backend check refuses such a decorator even if one is written again. `ToolsCorpusLoader` runs the same check (§3.10) |
-| 3. write ahead | the service record with `state: 'pending'` and `ids` = the ids the old record lists (final or pending; none when there is no record) ∪ the corpus's ids — every id the store holds or may hold. Any interruption from here on leaves the store marked unfinished, with every id it may hold listed |
-| 4. delete | every id the **old** service record lists (pending ones included), each `deleteByIdRaw` Result checked; a failure or a throw throws — the pending record still lists the id, so a rerun deletes it. `deleted` counts the deletes that returned `true` |
-| 5. write | the **whole** corpus with its precomputed vectors, in batches; `written` = records written. A failed write throws |
-| 6. finalize | the service record with `state: 'final'`, the corpus's manifest and `ids` = the corpus's ids |
+| 1. identity | `identity.profile` / `identity.embedder` equal `expect`'s; the manifest's `profileName` equals the binding's; `manifest.dimensions` equals `expect.dimensions` when both are present. Any difference → throw naming it |
+| 2. capability | the store must accept precomputed vectors (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`) — checked **twice**: on the writer of the store it was given and on the writer of the **resolved backend** (the innermost store under `IRagDecorator.inner`, ≤ 16 levels, as `retrievalEmbedderOf`); and its writer must have `clearAll`. Either missing → throw naming the store. Why both precomputed checks: a decorator can claim a precomputed write and emulate it through `upsertRaw`, which re-embeds — `FallbackRag` did until D52 (§10.4) |
+| 3. clear | `writer().clearAll()`; a failure throws |
+| 4. write | every record with its precomputed vector, in batches (`upsertManyPrecomputedRaw` when present, else one `upsertPrecomputedRaw` per record); a failed write throws |
+| 5. log | one summary line through `ctx.logger`: the source (`corpus`), the identity, `items`, `records`, `corpusHash` — on the same channel as the live fill's summary line (`LogEvent` `type: 'warning'`, `traceId: 'builder'`: the only free-text event `ILogger` has; no contract change) |
+| 6. status | `{ total: items, vectorized: items, records, profile: profileName, complete: true }` |
 
-- **No per-record diffing, no hash-skip** (D51, approved by the user). Anything but an unchanged
-  final record deletes what the old record lists and writes the whole corpus. One rule for every
-  case — a first deploy, a changed corpus, a rerun after an interruption: an interrupted run leaves
-  the record `pending`, listing every id it may have written, and the rerun deletes them all and
-  writes again. No journal, no generations — one current state, rewritten in full.
-- **Why delete before write — a replacement must not merge.** On a merging store a write to an
-  existing id keeps the old metadata keys the new record leaves out: `InMemoryRag.upsert` and
-  `VectorRag`'s `upsertKnownVector` (`upsertRaw` / `upsertPrecomputedRaw` call it) set
-  `metadata = { ...old, ...new }` in place. Deleting first makes every write land in an empty slot,
-  so no old key (`ttl`, `data`, a dropped extra) survives. Verified in the repo (2026-10-05):
-  `VectorRag.writer().deleteByIdRaw` sets the whole slot to `null` (`vector-rag.ts`), and the next
-  write fills a free slot with a fresh `{ text, vector, metadata }`; `InMemoryRag`'s splices the
-  record out (`in-memory-rag.ts`); qdrant (`points/delete`), pg-vector and HANA (`DELETE … WHERE id`)
-  delete the whole point / row.
-- **While a deploy runs** the store is incomplete (between steps 4 and 6). A process already running
-  reads it as it is; an instance created meanwhile refuses it (`PrebuiltToolsStore` accepts only a
-  `final` record, §3.10). A deploy runs once per release, in the consumer's deploy step.
+- **Steps 1–2 run before the store is touched**, so an incompatible corpus or store leaves it as it
+  was. A failure in steps 3–4 leaves the store empty or partial; the throw fails the start (main
+  store) or that worker's construction (§6.3) — loud, never a silent empty store — and the next
+  start repeats the load from step 1.
+- **Why clear and not a per-record replacement:** the corpus is the store's whole content.
+  Clearing first means no record of an earlier corpus, profile or embedder survives (the store
+  holds no list of what an earlier load wrote, D54), and every write lands in an empty slot, so no
+  old metadata key merges in (`InMemoryRag.upsert` and `VectorRag`'s `upsertKnownVector` set
+  `metadata = { ...old, ...new }` on an in-place write).
+- **A store without `clearAll` is refused** (step 2) rather than loaded by deleting the corpus's own
+  ids: the store may hold records the corpus does not list, and only a clear removes them (§3.10).
+- **An empty corpus** (D49): step 3 clears the store, step 4 writes nothing; the status is a
+  complete catalog of 0 tools (`total: 0`, `vectorized: 0`, `records: 0`, `complete: true`).
+- **Several instances over one persistent store** each clear and load it at their start; the
+  window in which others read a partial store is the consumer's to accept (§3.10, D13).
 
-**The service record's own vector** has `dimensions` entries: the corpus's dimension, or — for an
-empty corpus, which has none — the dimension of the service record already in the store (a store
-accepts one vector length). The pending and the final record carry it alike.
-
-**An empty corpus deploys like any other** (D49): step 3 lists the old ids, step 4 deletes them
-all, step 5 writes nothing, step 6 finalizes a manifest with `items: 0`, `records: 0` and
-`ids: []`. Interrupted, it leaves the record `pending`, and a rerun deletes what is still listed and
-finalizes. An empty corpus into a store that holds no service record has no dimension for that
-record → throws before any write, naming it (there is also nothing to delete).
-
-- A failed write throws; nothing is reported as deployed that is not.
-- **An empty corpus at instance creation** (D49): `ToolsCorpusLoader` writes nothing and
-  `PrebuiltToolsStore` reads a finalized zero-item manifest; both report a complete catalog of
-  0 tools (`total: 0`, `vectorized: 0`, `records: 0`, `complete: true`).
-- The service record holds one id per record (a few hundred tools with several records each fit a
-  Qdrant payload, a pg-vector `jsonb` and a HANA `NCLOB`).
-- Concurrent deploy steps against one store are the backend's concern (§3.3, D13); a deploy runs
-  once per release.
-
-**How a consumer's scripts use it** (a sketch; the names are the consumer's):
+**How a consumer uses it** (a sketch; the names are the consumer's):
 
 ```ts
-// build step (CI) — scripts/build-tools-corpus.ts
+// build step (CI) — the consumer's scripts/build-tools-corpus.ts
 const profile = mcpToolsVariants.faceted();
 const tools = await listProviderTools();                 // the consumer's: McpTool[] from its server
 const items = tools.map((t) => toolItemFromTool(t, {
@@ -2272,27 +2347,21 @@ const items = tools.map((t) => toolItemFromTool(t, {
 const corpus = await buildToolsCorpus({ profile, embedder, identity: { profile: 'faceted@1', embedder: 'aicore-te3-small' }, items });
 writeFileSync('dist/tools-corpus.json', JSON.stringify(corpus));
 
-// deploy step — scripts/deploy-tools-corpus.ts (persistent store)
-const corpus = parseToolsCorpus(readFileSync('dist/tools-corpus.json', 'utf8'));
-const report = await deployToolsCorpus(corpus, { key: 'tools', rag: new QdrantRag(/* … */) });
-console.log(report.unchanged ? 'tools corpus up to date' : `written ${report.written}, deleted ${report.deleted}`);
-
-// run time — in-memory store: load the built corpus
-bindToolsProfile(profile, { key: 'tools', rag: new VectorRag(embedder) },
-  new ToolsCorpusLoader({ corpus, expect: { profile: 'faceted@1', embedder: 'aicore-te3-small' } }));
-// run time — persistent store: bind for retrieval, check, never write
-bindToolsProfile(profile, { key: 'tools', rag: qdrantRag },
-  new PrebuiltToolsStore({ expect: { profile: 'faceted@1', embedder: 'aicore-te3-small' } }));
+// at start — the SmartServer: YAML `fill: { corpus: { file, profile, embedder } }` (§6.2) does this.
+// A builder consumer's composition root does the same itself:
+const loaded = parseToolsCorpus(readFileSync('dist/tools-corpus.json', 'utf8'));
+bindToolsProfile(profile, { key: 'tools', rag: qdrantRag /* or new VectorRag(embedder) */ },
+  new ToolsCorpusLoader({ corpus: loaded, expect: { profile: 'faceted@1', embedder: 'aicore-te3-small' } }));
+// the store's creation (the builder's build(), or fillToolsBinding([], bound)) clears it and loads the corpus
 ```
 
-- The SmartServer reads the same through YAML `fill` (§6.2). This mirrors cloud-llm-hub's flow (a
-  bundle for an in-process vector store; Qdrant role stores replaced in place with a fingerprint
-  and corpus-hash record), generalised to any `IRag` with precomputed writes.
+- This mirrors cloud-llm-hub's flow (a bundle built at build time and loaded into the store at
+  start), generalised to any `IRag` with precomputed writes and `clearAll`.
 
 ### 6.6 What is filled at instance creation — the tools store only
 
-- Filling at instance creation (§3.10, §6.3) and the fill sources (`live`, `corpus`, `prebuilt`,
-  `consumer`) concern **only the `tools` store**: profiles exist only for `tools` in this PR (S8),
+- Filling at instance creation (§3.10, §6.3) and the fill sources (`live`, `corpus`, `consumer`)
+  concern **only the `tools` store**: profiles exist only for `tools` in this PR (S8),
   and a tools store's content is fixed by its provider.
 - Collections that change while the server runs are **not** filled at creation and get no fill
   source:
@@ -2304,7 +2373,7 @@ bindToolsProfile(profile, { key: 'tools', rag: qdrantRag },
 
 ---
 
-## 7. MCP tools — strategies the consumer chooses, and default compositions
+## 7. MCP tools — strategies the consumer chooses, and named compositions
 
 ### 7.0 Shipped strategies carry no one server's conventions (goal 9)
 
@@ -2321,7 +2390,7 @@ bindToolsProfile(profile, { key: 'tools', rag: qdrantRag },
   one domain's object words, a server's exposition groups (e.g. mcp-abap-adt's `readonly` / `high`
   sets) or role names. Those belong to a consumer's own strategy.
 - **Convention-dependent strategies may ship only as opt-ins**, documented as such, and in **no**
-  named variant: `NameTailFacet` (§7.3.1) is the one.
+  named composition: `NameTailFacet` (§7.3.1) is the one.
 - **mcp-abap-adt names in this section are examples**, marked as such.
 - **Not a promise that a shipped variant fits every server.** It is a promise that the shipped
   ones assume nothing server-specific, and that the contracts let a consumer build the rest (§7.9).
@@ -2336,11 +2405,12 @@ bindToolsProfile(profile, { key: 'tools', rag: qdrantRag },
 | first-clause rule drops "tags such as `[read-only]`" | one server's description tags | generic: any leading `[...]` tag; `[read-only]` is the labelled example |
 | name rule "drop a namespace prefix (`server__`)" | — | removed: facets read `originalName`, which is already pre-namespace |
 | examples `GetWhereUsed`, `GetATCFindings` as the design | ABAP tools as the reference | generic examples first; ABAP ones labelled (§14.1) |
-| only fine-grained tool sets considered | one tool per operation **and** object | coarse sets are measured (§2.5.1) and get the `small-set-jev` default; `EnumValueToolIndexer` and `TokenBudgetCut` stay generic strategies in no default |
+| only fine-grained tool sets considered | one tool per operation **and** object | coarse sets are covered by the same strategies (one record per tool, a pool up to the whole set, a reranker, a token-budget guard) — which fits is the consumer's measurement (§2.5.1, §7.4); `EnumValueToolIndexer` and `TokenBudgetCut` stay generic strategies in no named composition |
 
 ### 7.1 Principle — the consumer chooses the strategies
 
-(Goal decisions 2026-10-05: where tuning lives; the main behaviour choices are the consumer's.)
+(Goal decisions 2026-10-05: where tuning lives; the main behaviour choices are the consumer's;
+measurements made in a consumer justify no framework default.)
 
 **1. The consumer decides the behaviour.**
 
@@ -2350,25 +2420,38 @@ bindToolsProfile(profile, { key: 'tools', rag: qdrantRag },
   to guard the prompt size — are made by **choosing those strategies**. No flag inside a component
   makes them.
 
-**2. A default composition only fills in what the consumer did not choose.**
+**2. A named composition only fills in what the consumer did not choose.**
 
-- llm-agent ships the **contracts** and **generic strategies**, plus a few **default
-  compositions** ("variants", §7.4) to start from.
-- A default is not the centre of the design: it is a ready-made answer for the choices the
-  consumer leaves open. Taking it whole is one choice; replacing any part of it is another (§7.5).
-- No default relies on one server's conventions (§7.0). Each names the **shape** of tool set it
-  was measured on (fine-grained or coarse / small, §2.5). Where none fits a server, the consumer
-  composes its own from the contracts (§7.9).
+- llm-agent ships the **contracts** and **generic strategies**, plus a few **named compositions**
+  ("variants", §7.4) to start from.
+- A named composition is not the centre of the design: it is a ready-made answer for the choices
+  the consumer leaves open. Taking it whole is one choice; replacing any part of it is another
+  (§7.5).
+- No named composition relies on one server's conventions (§7.0). Where none fits a server, the
+  consumer composes its own from the contracts (§7.9).
 
-**3. Components are generic; tuning lives only in default compositions.**
+**3. Nothing that ships carries a tuned number (D55).**
 
-- A strategy class (`ItemPool`, `FixedItemsCut`, `TokenBudgetCut`, `EnumValueToolIndexer`, …)
-  carries **no number tuned to a server or a consumer**. Every such number is a required
-  constructor argument.
-- Tuned numbers (pool size, k) appear **only inside a default composition**, each next to the
-  measurement that justifies it (the table in §7.4). A number without a measurement is not
-  shipped.
-- Nothing is guessed (goal 3): the consumer picks a default explicitly, or its own strategies.
+- The measurements behind this design were made in a consumer (cloud-llm-hub, on mcp-abap-adt) and
+  are **not in this repository** (§2.0). So they justify no number in a strategy class or a named
+  composition.
+- A number a strategy or a named composition needs is either:
+  - a **required argument** from the consumer, where no generic value can be right — a reranker's
+    pool depth (`poolItems` of `faceted-rerank`), a token budget (`budgetTokens`), a value-record
+    bound (`maxValues`), a score floor (`minScore`); or
+  - a **generic default** that guesses nothing about a catalog or a model (D56):
+
+    | Number | Generic default | Why it guesses nothing |
+    |---|---|---|
+    | the final cut | the caller's k (`TopItemsCut`) | the caller already chose it; 30.1.0 returns k too |
+    | the candidate pool | k items of the (sub-)query (`ItemPool()`), i.e. `k × maxRecordsPerItem` records | the fewest items that can fill the cut; without a reranker it is exactly what the cut keeps |
+    | a size estimate | ~4 characters per token (`ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`) | the unit convention the probability reranker already uses (§4.10), not tuned to a catalog |
+    | rerank batching | `maxBatchTokens` 48000, `concurrency` 4 | 30.1.0's `DecisionReranker` request limits (§5.2), not a retrieval number |
+
+- A lower cut (`maxItems` → `FixedItemsCut`) or a deeper pool is the consumer's argument, from its
+  own measurement (§14.3).
+- Nothing is guessed (goal 3): the consumer picks a named composition explicitly, or its own
+  strategies.
 
 ### 7.2 The strategies
 
@@ -2379,12 +2462,12 @@ bindToolsProfile(profile, { key: 'tools', rag: qdrantRag },
 | facet (inside faceted indexing) | `IToolFacet` | `SummaryFacet`, `ParametersFacet`; opt-in, convention-dependent: `NameTailFacet` |
 | discriminator (inside per-value indexing) | `IDiscriminatorSelector` | `RequiredEnumDiscriminator`, `NamedDiscriminator(parameter)` |
 | in-store scoring | `ISearchStrategy` (existing, on the store) | the store's own (hybrid or cosine) |
-| candidate pool | `ICandidatePool` | `ItemPool(n)` |
+| candidate pool | `ICandidatePool` | `ItemPool(n?)` (no `n` → the caller's k) |
 | collapse | `ICollapseRule` | `MaxScoreCollapse` |
 | reranker | `IReranker` (existing) | none; `ProbabilityReranker` + `TOOL_QUESTION` over an `IProbabilityDecision`; `RelevanceReranker` over an `IRelevanceDecision`; `LlmReranker` (all in `llm-agent-reranker`) |
 | decision (inside a reranker) | `IProbabilityDecision` / `IRelevanceDecision` (§3.9) | `TypeSafeDecisionModel` (Jev, probability, existing); `SapAiCoreRelevanceDecision` (Cohere on SAP AI Core, relevance, new) |
 | query decomposition | `IQueryDecomposer` (optional, §4.5) | **none** — the consumer's own |
-| final cut | `IItemCut` | `TopItemsCut`, `FixedItemsCut(k)`, `ScoreFloorCut(...)`, `TokenBudgetCut(...)` |
+| final cut | `IItemCut` | `TopItemsCut` (the caller's k), `FixedItemsCut(n)`, `ScoreFloorCut(...)`, `TokenBudgetCut(...)` |
 | size estimate (inside a token cut) | `IItemSizeEstimator` | `ToolDefinitionSizeEstimator` (default), `CharsPerTokenEstimator(n)` |
 
 The composing class is `ComposedToolsProfile` (an `ICollectionProfile<ToolItem>`):
@@ -2392,7 +2475,7 @@ The composing class is `ComposedToolsProfile` (an `ICollectionProfile<ToolItem>`
 ```ts
 new ComposedToolsProfile({
   indexer: IItemIndexer<ToolItem>,
-  pool: ICandidatePool,
+  pool?: ICandidatePool,          // absent → ItemPool() (the caller's k)
   collapse: ICollapseRule,
   rerank?: StagedRetrievalOptions['rerank'],
   decompose?: StagedRetrievalOptions['decompose'],
@@ -2437,12 +2520,12 @@ provider text composer (below); absent → `ParameterNamesToolText` (C0):
 
   | Composer | `full` text | Default? |
   |---|---|---|
-  | `ParameterNamesToolText` (**C0**) | `Tool: <name> — <description>` + `\nParameters: <names>` | **yes** — measured |
+  | `ParameterNamesToolText` (**C0**) | `Tool: <name> — <description>` + `\nParameters: <names>` | **yes** — the least schema text: 30.1.0's record text plus the parameter names |
   | `EnumValuesToolText` (**C0e**) | C0 + per parameter with string values: `<name>: <values>` | no |
   | `SchemaToolText` (**C0s**) | C0 + per parameter: its description's first clause and its string values | no |
 
-  **Measured** (mcp-abap-adt `compact`, Jev over the whole role set, required-recall; EN 67 rows,
-  non-ASCII 21 rows; ~1.6k tokens at k=3 for all three):
+  **Measured in the consumer** (evidence, §2.0 — mcp-abap-adt `compact`, Jev over the whole role
+  set, required-recall; EN 67 rows, non-ASCII 21 rows; ~1.6k tokens at k=3 for all three):
 
   | Text | EN k=3 | EN k=5 | non-ASCII k=3 |
   |---|---|---|---|
@@ -2455,23 +2538,25 @@ provider text composer (below); absent → `ParameterNamesToolText` (C0):
   - **Net: within noise, no winner** (1 row ≈ 1.5 points EN, ≈ 4.8 points non-ASCII). `compact`
     already lists its object types in the descriptions, so the case the review raised — objects
     named **only** in an enum — is neither confirmed nor refuted here.
-  - **So the default stays C0** (measured, no change), and C0e / C0s are strategies a consumer may
-    inject and measure on its own server (§14.3), documented with these numbers as the caveat.
+  - **So the default stays C0** — not because of a figure (D55) but because it adds the least
+    schema text to 30.1.0's record and no measurement showed a winner; C0e / C0s are strategies a
+    consumer may inject and measure on its own server (§14.3).
 - **Why `parameters` replaces the measured `object` record in the default:** it carries the same
   kind of signal — what the tool acts on — from the **schema** (e.g. a `path` or `class_name`
-  parameter) instead of from a naming convention. **Not measured yet**; the faceted variants' rows
-  in §7.4 say so and cite the closest measured layouts.
+  parameter) instead of from a naming convention. **Not measured yet**; a consumer measures it on
+  its own catalog (§14.3).
 - **`NameTailFacet` — convention-dependent, documented as such.** It assumes verb-first names
   (`GetClass`, `create_issue`): the tail is then the object. On object-first names (`class_get`)
   it yields the operation; on single-word names, nothing. It reproduces the measured `object`
-  record exactly, so a consumer on a verb-first server may add it (§7.5). It is in no variant.
+  record exactly, so a consumer on a verb-first server may add it (§7.5). It is in no named
+  composition.
 - The goal's rule holds: nothing is written over provider text. A weak description is fixed at its
   source.
 
-#### 7.3.2 Per-value records — a generic strategy in no default (`EnumValueToolIndexer`)
+#### 7.3.2 Per-value records — a generic strategy in no named composition (`EnumValueToolIndexer`)
 
-**Status: a strategy the consumer may inject; in no default composition.** Measured **worse** on
-the one coarse example (mcp-abap-adt `compact`, §2.5.1):
+**Status: a strategy the consumer may inject; in no named composition.** Measured **worse** in the
+consumer on its one coarse example (mcp-abap-adt `compact`, §2.5.1, evidence):
 
 | Layout | Stage 1 only, k=3 / k=5 / budget 2k | With Jev |
 |---|---|---|
@@ -2481,8 +2566,8 @@ the one coarse example (mcp-abap-adt `compact`, §2.5.1):
 - **Why it stays:** the hypothesis below is generic and may hold for another server's coarse set
   (more tools, no reranker, values with descriptions). A consumer that wants it injects it and
   measures it on its own set (§14.3).
-- **Why no default uses it:** on the only measured set it lowered recall with and without a
-  reranker.
+- **Why no named composition uses it:** it needs `maxValues`, a number only the consumer knows, and
+  the only evidence (a consumer's) showed it lowering recall with and without a reranker.
 
 **The hypothesis it serves.** A coarse tool takes the object in a parameter (§2.5). Its one record
 must stand for every object at once, so a query about one object might not match it well.
@@ -2560,78 +2645,62 @@ everything that existed only for them: companion stores, `variants` sources, the
 consumer that still wants extra records writes its own `IToolFacet` or `IItemIndexer` (§7.9);
 they go into the same store, under the same item id.
 
-### 7.4 Default compositions (`mcpToolsVariants`)
+### 7.4 Named compositions (`mcpToolsVariants`)
 
 **What they are:** ready-made compositions that fill in what the consumer did not choose (§7.1).
-Each is a factory that takes only what cannot be shipped (the decision model, which holds the
-credential; the pool size of a whole-set rerank) and returns a `ComposedToolsProfile` — or, for `baseline`,
-nothing to bind. None relies on one server's conventions (§7.0). Every tuned number in a row cites
-its measurement.
+Each is a factory that takes only what cannot be shipped and returns a `ComposedToolsProfile` — or,
+for `baseline`, nothing to bind. **None carries a tuned number** (D55): a number it needs is a
+required argument or the generic default of §7.1. None relies on one server's conventions (§7.0).
 
-| Variant | Tool-set shape | Composition | Measured (required-recall, hybrid in-store scoring, mcp-abap-adt examples) |
+| Variant | Composition | Required from the consumer | Generic defaults |
 |---|---|---|---|
-| **`baseline`** — no choice made | any | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | Fine-grained read-only set: EN-ext 0.943 at k=5 (8.3 tools); 0.977 at k=15 (~25 tools). Multi-step 0.714, non-English 0.692 (k=5). |
-| **`faceted`** | fine-grained | `FacetedToolIndexer([SummaryFacet, ParametersFacet])` + `ItemPool(15)` + `MaxScoreCollapse` + no reranker + `FixedItemsCut(8)` | **Schema-derived layout not yet measured.** Closest measured layouts, both 0.966 at k=5 (hub spike `spike-facets`): LLM-generated `operation` / `object` facets, and name-derived facets (`full` + `operation`=`summary` + `object`=`NameTailFacet`); the latter 0.977 at k=8 with ~13 tools. Pool 15 and cut 8 are that layout's (without a reranker `ItemPool(15)` = 30, §7.5). |
-| **`faceted-cohere`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `RelevanceReranker(IRelevanceDecision)` (Cohere: `SapAiCoreRelevanceDecision`) + `FixedItemsCut(5)` | **Not measured as one composition.** Closest: one record per tool + Cohere, pool 30 items, k=5 (§2.3): EN-ext 0.931 with 8.3 tools; single 0.973, multi 0.714, non-English 0.962. At most 5 tools. |
-| **`faceted-jev`** | fine-grained | faceted indexing + `ItemPool(30)` + `MaxScoreCollapse` + `ProbabilityReranker(IProbabilityDecision, TOOL_QUESTION)` (Jev: `TypeSafeDecisionModel`) + `FixedItemsCut(5)` | **To be measured as one composition on fresh consumer queries before promotion** (D11). Closest: one record per tool + Jev, pool 30 items, k=5 (§2.3): EN-ext 0.977 with 8.3 tools; single 1.000, multi 0.857, non-English 1.000. At most 5 tools. |
-| **`small-set-jev`** | coarse / small (the whole set fits one rerank) | `FacetedToolIndexer([])` (one `full` record per tool) + `ItemPool(poolItems)` with `poolItems` ≥ the tool count (= rerank-all) + `MaxScoreCollapse` + `ProbabilityReranker(IProbabilityDecision, TOOL_QUESTION)` (Jev) + `FixedItemsCut(3)` | `compact`, writer set (25 tools), §2.5.1: **0.970 at ~1.6k tokens** (whole set ≈ 7.9k); multi-step 1.000, non-English 1.000. k=3 is the measured knee (C0 + Jev: k=2 0.925, k=3 0.970, k=5 0.970). Rerank-all = Jev over a stage-1 pool (0.970 both): stage 1 adds nothing at this size. |
+| **`baseline`** — no choice made | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | — | 30.1.0 |
+| **`faceted`** | `FacetedToolIndexer([SummaryFacet, ParametersFacet])` (`full` + `summary` + `parameters`, all from provider text) + `ItemPool` + `MaxScoreCollapse` + no reranker + cut | — | pool = the caller's k items; cut = the caller's k (`TopItemsCut`). Optional `poolItems`, `maxItems` (→ `FixedItemsCut`) |
+| **`faceted-rerank`** | faceted indexing + `ItemPool(poolItems)` + `MaxScoreCollapse` + **the consumer's `IReranker`** (e.g. `RelevanceReranker` over Cohere, `ProbabilityReranker` with `TOOL_QUESTION` over Jev) + cut | `reranker`, `poolItems` | cut = the caller's k. Optional `maxItems` (→ `FixedItemsCut`), `onFailure` (default `'stage1'`, 30.1.0's) |
 
 ```ts
-mcpToolsVariants.faceted();
-mcpToolsVariants.facetedCohere({ relevanceDecision: new SapAiCoreRelevanceDecision({ … }) });
-mcpToolsVariants.facetedJev({ probabilityDecision: new TypeSafeDecisionModel({ … }) });
-mcpToolsVariants.smallSetJev({ probabilityDecision, poolItems });   // Jev; poolItems ≥ the store's tool count
+mcpToolsVariants.faceted();                                         // pool and cut: the caller's k
+mcpToolsVariants.faceted({ poolItems, maxItems });                   // the consumer's numbers
+mcpToolsVariants.facetedRerank({ reranker: new RelevanceReranker(new SapAiCoreRelevanceDecision({ … })), poolItems });
+mcpToolsVariants.facetedRerank({ reranker: new ProbabilityReranker(new TypeSafeDecisionModel({ … }), { task: TOOL_QUESTION.task, criteria: TOOL_QUESTION.criteria }), poolItems, maxItems });
 // the consumer's own decomposer on top of any variant except baseline (none shipped):
-mcpToolsVariants.facetedJev({ …, decompose: { decomposer: myDecomposer, queryEmbedder } });
+mcpToolsVariants.facetedRerank({ …, decompose: { decomposer: myDecomposer, queryEmbedder } });
 ```
 
-- **Why these five:** baseline (no change); faceted (fewer tools for the same recall, no external
-  service); one per reranker the goal names (goal 10); `small-set-jev` (the second tool-set shape
-  of goal 9, with measured numbers).
-- **`faceted*` numbers are a proxy, honestly marked:** the schema-derived `ParametersFacet` is not
-  yet measured on the fine-grained set. The rows cite the closest measured layouts; the
-  name-derived one used `NameTailFacet`'s record, which no default may use (§7.0). The consumer
-  check (§14.3) measures the schema-derived layout; a consumer on a verb-first server may compose
-  the measured name-derived layout itself (§7.5).
-- **`faceted-cohere`:** V0 + Cohere (one record per tool), not the faceted composition.
-- **`faceted-cohere` and `faceted-jev` share indexing, pool, collapse and cut**; they differ in the
-  reranker and the kind of decision (§5.5). Each cites the measurement of its own model. The
-  factory's argument type says which decision it takes; YAML checks the variant against the
-  provider's kind (§6.2).
-- **Cohere's rerank calls:** ≤ 30 tools per query → one `/rerank` call (they fit in
-  `RelevanceReranker`'s default 48000-token batch, §5.2).
-- **Every `FixedItemsCut` here is a ceiling** under the caller's k (§4.9): a caller asking for 2
-  gets at most 2.
-- **`faceted-jev` caveat:** faceted + Jev was never run as one composition on an item pool. It ships
-  marked **"to be measured as one composition on fresh consumer queries before promotion"** and is
-  not recommended over the others until the consumer check (§14.3) runs it (D11, decided).
-- **`small-set-jev` — what is tuned and what is not:**
-  - **tuned, measured:** `FixedItemsCut(3)` (the table above);
-  - **not a tuned number:** `poolItems` is the consumer's tool count (rerank-all means the pool
-    holds the whole set). It is a required argument because only the composition root knows the
-    count (after `tools/list`). A pool below the count makes it stage-1 + rerank, which is not
-    the composition this row names, so the composition root checks `poolItems` ≥ the count at
-    startup;
-  - **record text:** the measured C0 was one record per tool; the default uses the `full` record
-    (§7.3.1). The consumer check confirms the figure on it (§14.3);
-  - **when it fits:** the reranker reads every tool on every query, so its cost grows with the
-    set. It is the default for **small** sets; a large coarse set is the consumer's own
-    composition (e.g. `ItemPool(n)` below the count, or no reranker).
-  - Equivalent in 30.1.0 terms: `rag.retrieval.tools: { strategy: rerank-all, reranker: decision,
-    maxCandidates: <tool count> }` with the caller's k = 3. The variant caps at 3 inside the
-    profile, so a larger caller's k (20 in `IToolsRagHandle`) does not undo the measured cut; a
-    smaller one still wins (`min(k, 3)`, §4.9).
-- **On a fine-grained set** `small-set-jev` is the wrong default: hundreds of tools in every rerank.
-  Use `faceted-jev` or the 30.1.0 `rerank` strategy there.
-- One record + Jev on a stage-1 pool (the best measured fine-grained Jev composition) is already
-  30.1.0's `rag.retrieval.tools: { strategy: rerank, reranker: decision }`; it is not repeated as a
-  variant.
-- **Not in any default, by measurement:** `EnumValueToolIndexer` (§7.3.2) and `TokenBudgetCut`
-  (§4.10). Both remain generic strategies the consumer may inject.
+- **Why `poolItems` is required for `faceted-rerank`:** with the generic pool (k items) and the
+  generic cut (k), the reranker could only reorder what stage 1 already returned — it could never
+  bring in an item stage 1 ranked below k, which is what a reranker is for (§2.2, evidence). How
+  deep to look is the consumer's calibration (its catalog, its model, its cost), so it has no
+  default. `poolItems` ≥ the tool count reranks the whole set — the small-coarse-set case of
+  §2.5.1.
+- **Why these three** (D55):
+  - `baseline`: no change (goal 4);
+  - `faceted`: several records per item and collapse — the mechanism the evidence motivates
+    (§2.1), not expressible in 30.1.0;
+  - `faceted-rerank`: the same with a reranker on provider text (goal 10). It takes **an
+    `IReranker`**, so it names no vendor; Cohere and Jev are the consumer's choice of reranker
+    (§5.5).
+- **Withdrawn** (D55), each because without its measured numbers nothing distinguishes it:
+  - `faceted-cohere` and `faceted-jev`: they differed from each other only in the reranker's vendor
+    and from `faceted-rerank` only in their measured pool (30) and cut (5);
+  - `small-set-jev`: without its measured cut (3) it is one record per tool + a pool of the whole
+    set + Jev — exactly 30.1.0's `rerank-all` (`maxCandidates` = the tool count) or a `compose`
+    with `FacetedToolIndexer([])` and `poolItems` ≥ the tool count. With it go its startup check
+    (`assertSmallSetPool`, D23) and the YAML `smallSet` key;
+  - the variant-to-decision-kind check of YAML (D27's part): `faceted-rerank` takes either kind.
+- **Every cut here is the caller's k or a ceiling under it** (§4.9): a caller asking for 2 gets at
+  most 2.
+- **What the consumer's evidence says about these compositions** (§2, motivation only): the
+  schema-derived `parameters` record of `faceted` is not measured yet; the closest measured
+  layouts (name-derived facets) reached 0.966 at k=5 in the consumer, and a reranker over a pool
+  of 30 items restored non-English recall (§2.2, §2.3). A consumer measures its own composition
+  with the harness (§14.3) and sets `poolItems` / `maxItems` from that.
+- **Not in any named composition:** `EnumValueToolIndexer` (§7.3.2), `TokenBudgetCut` (§4.10),
+  `NameTailFacet` (§7.3.1). All remain strategies the consumer may inject.
 
 ### 7.5 Composing your own
 
-This is the main path (§7.1): the consumer chooses each strategy; a default fills only the rest.
+This is the main path (§7.1): the consumer chooses each strategy; a named composition fills only the rest.
 
 - Any shipped strategy combines with any other; a consumer's own strategy implements the same
   contract (e.g. its own `IToolFacet`, `IDiscriminatorSelector`, `ICandidatePool`,
@@ -2641,25 +2710,23 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
   - the **measured** name-derived fine-grained layout, for a verb-first server:
     `FacetedToolIndexer([new SummaryFacet(), new NameTailFacet()])` — convention-dependent, the
     consumer's choice;
-  - a prompt-size guard on top of a count: `TokenBudgetCut({ budgetTokens, maxItems: 5 })` in
-    place of `FixedItemsCut(5)` — the count stays the main cut, the budget only caps it (§4.10);
-  - the `small-set-jev` composition with Cohere instead of Jev: a `ComposedToolsProfile` with
-    `FacetedToolIndexer([])`, `ItemPool(poolItems)`, `MaxScoreCollapse`,
-    `RelevanceReranker(new SapAiCoreRelevanceDecision({ … }))` and `FixedItemsCut(3)` in code, or
-    `compose` with `reranker: decision` under `decision.provider: sap-aicore` in YAML (not measured
-    on `compact`; the consumer measures it, §14.3). `smallSetJev` itself takes only an
-    `IProbabilityDecision`;
+  - a prompt-size guard on top of a count: `TokenBudgetCut({ budgetTokens, maxItems })` in
+    place of `FixedItemsCut(maxItems)` — the count stays the main cut, the budget only caps it
+    (§4.10);
+  - a small set reranked as a whole: a `ComposedToolsProfile` with `FacetedToolIndexer([])` (one
+    `full` record per tool), `ItemPool(<tool count>)`, `MaxScoreCollapse` and the consumer's
+    reranker in code, or `compose` with `reranker: decision` in YAML (§6.2) — or, without a
+    profile, 30.1.0's `rerank-all`;
   - schema-enriched provider text: `FacetedToolIndexer([...], { text: new EnumValuesToolText() })`
     (C0e) or `SchemaToolText` (C0s) — within noise on `compact` (§7.3.1);
   - per-value records for a coarse set where the consumer expects them to help:
     `EnumValueToolIndexer(new FacetedToolIndexer([]), { discriminator, maxValues })` (measured
     worse on `compact`, §7.3.2).
-- Measured guidance for one's own compositions:
-  - fine-grained, with any reranker: size the pool in **items** (30 items: non-English 0.962 /
-    1.000; 30 records: 0.846–0.885);
-  - fine-grained, without a reranker: `ItemPool(15)` gives the same recall as 30;
-  - small coarse set (`compact`): a reranker over the whole set beats stage-1 tuning; k is the
-    main cut, a token budget only a guard (§2.5.1).
+- What one consumer's measurements showed (evidence, §2 — calibrate on your own catalog, §14.3):
+  - with several records per item, count the pool in **items**, not records (§2.2);
+  - under a reranker, a pool deeper than k is what lets it bring in better items (§2.2, §2.3);
+  - on a small coarse set, a reranker over the whole set did as well as stage-1 tuning; a count
+    was the better main cut and a token budget only a guard (§2.5.1).
 
 ### 7.6 Filling — `vectorizeMcpTools`
 
@@ -2716,13 +2783,13 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
 - Turning a variant on adds records next to the 30.1.0 ones (profile ids are owner-scoped, §3.1,
   so they never overwrite the 30.1.0 records); turning it off leaves profile records behind that
   the 30.1.0 path would rank as records.
-- So switching variants on a persistent store = a fresh collection
+- So switching variants on a persistent store filled by `live` = a fresh collection
   (redeploy), like an embedder change. Every record carries `profile` in metadata for diagnosis.
-- A store filled by the deploy step (`prebuilt`, §6.5) is kept current by that step: a new corpus of
-  the **same** profile and embedder deletes every listed record and writes the corpus in full, in
-  place (D51); a different profile or embedder still needs a fresh collection (the deploy step does
-  not remove records it never listed, and a running process refuses a mismatching store at
-  creation).
+- A store loaded by the `corpus` source (§6.5) needs no migration: every start clears it and loads
+  the corpus, so a new corpus — of the same or another profile or embedder — replaces its whole
+  content (D54). A change of vector length on a backend that fixes it per collection (qdrant,
+  pg-vector, HANA) still needs a fresh collection; when the store config declares its `dimension`,
+  the load refuses a mismatching corpus before clearing (§3.10).
 - In-memory tool stores (rebuilt every boot) need nothing.
 
 ### 7.9 A profile for any other MCP server — built by the consumer (goal 9)
@@ -2860,7 +2927,7 @@ builder.withToolsProfile(myServerTools);                   // or register a name
   `MaxScoreCollapse`; the same `itemId` in two partitions, or from two owners, is two items.
 - Optional reranker, e.g. `ProbabilityReranker` with `PASSAGE_QUESTION` over Jev, or
   `RelevanceReranker` over `SapAiCoreRelevanceDecision` (Cohere); it reads the item's `text`.
-- Cut: the consumer's `IItemCut`; `FixedItemsCut(3)` recommended (a ceiling under the caller's k).
+- Cut: the consumer's `IItemCut`; absent → the caller's k (`TopItemsCut`). No number is recommended (D55).
 - Each returned `RagResult` is the item **whole**, hydrated from its canonical record whichever
   record matched (§4.6): `text`, `metadata.data`, `metadata.visibility`, owner keys,
   `matchedKinds`, `source`. A hit whose canonical record is missing is dropped and counted.
@@ -2872,7 +2939,7 @@ builder.withToolsProfile(myServerTools);                   // or register a name
 ```ts
 new SharedItemsProfile({
   maxRecordsPerItem: number,      // required (§4.4)
-  pool: ICandidatePool,           // required, e.g. new ItemPool(30)
+  pool?: ICandidatePool,          // absent → ItemPool() (the caller's k, D56); deeper only with a reranker
   collapse: ICollapseRule,        // e.g. new MaxScoreCollapse()
   rerank?: StagedRetrievalOptions['rerank'],
   decompose?: StagedRetrievalOptions['decompose'],
@@ -2966,12 +3033,15 @@ new SharedItemsProfile({
 
 ### 10.4 `FallbackRag` — no precomputed write it cannot honour (D52)
 
+*File:* `packages/llm-agent/src/resilience/fallback-rag.ts` — it stays there until the next major;
+its public home is `@mcp-abap-adt/llm-agent-rag` (D53, §11.3).
+
 - **Bug** (review finding 2026-10-05): `FallbackRag.writer()` always returns
   `upsertPrecomputedRaw`. When the primary's writer has none, it calls the primary's `upsertRaw`:
   the given vector is dropped and the text is embedded again, silently. Any caller that asks
   "does this store take precomputed vectors?" gets *yes* from a store that re-embeds. Concretely:
-  - the corpus deploy and `ToolsCorpusLoader` (§6.5) would pass their capability check and then
-    embed every record — the one thing both promise not to do;
+  - `ToolsCorpusLoader` (§6.5) would pass its capability check and then embed every record — the
+    one thing it promises not to do;
   - `vectorizeMcpTools`' batch path and the record writer batch-embed only when the writer has a
     precomputed write; through such a `FallbackRag` they would embed each record twice (batch, then
     `upsertRaw`) and log the usage of the batch only. Reachable once F1 (§10.1) finds the
@@ -2979,7 +3049,7 @@ new SharedItemsProfile({
 - **Fix — minimal, in `FallbackRag` only:** the writer carries `upsertPrecomputedRaw` **only when
   the primary's writer has it** — the primary is the authoritative store (it answers `query` while
   the breaker is closed, `getById` first, `healthCheck`). Without it, the member is absent, and
-  callers take their existing path for a raw-only store (the corpus steps refuse; the batch paths
+  callers take their existing path for a raw-only store (the `corpus` source refuses; the batch paths
   go sequential through `upsertRaw`, one embedding per record, as for an unwrapped raw-only store).
   - Unchanged: `upsertRaw`, `deleteByIdRaw`, `clearAll`; the fallback mirror of a precomputed
     write (the fallback's own `upsertPrecomputedRaw`, else its `upsertRaw`, best effort, never
@@ -2987,16 +3057,16 @@ new SharedItemsProfile({
     own way; the shipped fallback, `InMemoryRag`, calls no embedder.
   - Not added: `upsertManyPrecomputedRaw` (`FallbackRag` never exposed it; callers fall back to
     per-record writes).
-- **Second guard — the corpus steps check the resolved backend too** (§6.5 step 2): the writer
-  they were given and the innermost store's writer must both accept precomputed vectors. So a
+- **Second guard — the `corpus` source checks the resolved backend too** (§6.5, load step 2): the
+  writer it was given and the innermost store's writer must both accept precomputed vectors. So a
   decorator that emulates the capability again is refused before any write or embedding call.
 - **Observable behaviour:** a `FallbackRag` over a primary without precomputed writes no longer
   offers them. A caller that called `upsertPrecomputedRaw` unconditionally (it is optional in
   `IRagBackendWriter`, so none may) would now find it `undefined`. Over the shipped primaries that
   have the write (`VectorRag`, qdrant, pg-vector, HANA) nothing changes (§13).
-- **Tests** (§14.1): a corpus deploy and a `ToolsCorpusLoader` fill through a `FallbackRag` over a
-  raw-only writer → rejected before any write, the embedder never called; through a `FallbackRag`
-  over a precomputed-capable writer → they work with no embedding call; `FallbackRag` unit tests
+- **Tests** (§14.1): a `ToolsCorpusLoader` fill through a `FallbackRag` over a raw-only writer →
+  rejected before any write (and before the clear), the embedder never called; through a
+  `FallbackRag` over a precomputed-capable writer → it works with no embedding call; `FallbackRag` unit tests
   for both writer shapes.
 
 ---
@@ -3008,19 +3078,23 @@ new SharedItemsProfile({
 | All contracts of §3 (incl. `IProbabilityDecision`, `IRelevanceDecision`, §3.9) | `@mcp-abap-adt/llm-agent` | shared by libs, the reranker package, server-libs, provider packages and consumers |
 | `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*` | **new** `@mcp-abap-adt/llm-agent-reranker` | §5.4 — rerankers carry no vendor specifics; one vendor-neutral package (goal decision 2026-10-05) |
 | deprecated re-exports of every moved / renamed reranker name; `wrapProbabilityDecision`, `wrapRelevanceDecision` (+ `wrapDecisionModel` alias) | `@mcp-abap-adt/llm-agent-libs` | §5.4, §13 |
-| `StagedRetrieval`, `ItemPool`, cuts (incl. `TokenBudgetCut`), size estimators, `MaxScoreCollapse`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `SharedItemsProfile` | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | the retrieval built-ins, rerankers and the builder that uses them already live here; `llm-agent-rag` is the backend/embedder factory layer **below** libs and has no rerankers or LLM steps |
+| `StagedRetrieval`, `ItemPool`, cuts (incl. `TokenBudgetCut`), size estimators, `MaxScoreCollapse`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `SharedItemsProfile`, the fill sources and the corpus API | `@mcp-abap-adt/llm-agent-libs`, `src/collections/` (small modules) | D1: the retrieval built-ins and the builder that uses them already live here; they compose rerankers (`llm-agent-reranker`) and stores (`llm-agent-rag`), both below libs |
+| **The RAG implementations of §11.3** (`VectorRag`, `InMemoryRag`, `FallbackRag`, …) | **public home `@mcp-abap-adt/llm-agent-rag`**; files stay in `llm-agent` until the next major (S10) | D53 — the goal's layering: the contracts package holds contracts; RAG implementations are imported from `llm-agent-rag` |
 | `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike` | **new** `@mcp-abap-adt/sap-aicore-decision` | §5.4 — one package per vendor and role, like `typesafe-decision` |
 | YAML resolver + validation (`rag.profiles`; `decision.provider: sap-aicore`; the provider → kind table); the `makeRelevanceDecision` seam type; `makeProbabilityDecision` (renamed seam) + its deprecated alias `makeDecisionModel` | `@mcp-abap-adt/llm-agent-server-libs` | beside `resolve-retrieval.ts`, `decision-config.ts` and the probability seam type |
 | `createMakeProbabilityDecision` (renamed from `createMakeDecisionModel`; `make-decision-model.ts` → `make-probability-decision.ts`), `createMakeRelevanceDecision` with the `sap-aicore` arm (builds `SapAiCoreRelevanceDecision`, resolves `credentialRef`) | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | `make-relevance-decision.ts`, beside `make-probability-decision.ts` |
-| `IRetrievalEmbedderOwner` implementations | `llm-agent` (`VectorRag`), `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | where the stores are |
-| `FallbackRag`'s precomputed write only over a primary that has one (D52, §10.4) | `llm-agent` (`resilience/fallback-rag.ts`) | where `FallbackRag` lives |
+| `IRetrievalEmbedderOwner` implementations | `VectorRag` (file in `llm-agent`, public home `llm-agent-rag`), `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` | where the stores are |
+| `FallbackRag`'s precomputed write only over a primary that has one (D52, §10.4) | `FallbackRag` (file `llm-agent/src/resilience/fallback-rag.ts`, public home `llm-agent-rag`) | where `FallbackRag`'s code is |
 
 - Decided — D1 (libs, not a new `llm-agent-collections` package), D2 (own provider package
-  `sap-aicore-decision`) and D24 (one reranker package) (§17).
-- **Build and publish order:** `llm-agent` → `llm-agent-reranker` → `typesafe-decision`,
-  `sap-aicore-decision` (each depends only on `llm-agent` and the `interfaces-auth` peer) → … →
-  `llm-agent-libs` (depends on `llm-agent-reranker`) → `llm-agent-server-libs` →
-  `llm-agent-server`; all at the same version.
+  `sap-aicore-decision`), D24 (one reranker package) and D53 (RAG implementations' home) (§17).
+- **Build and publish order — unchanged by D53, no new edge:** `llm-agent` → `llm-agent-reranker`
+  → `typesafe-decision`, `sap-aicore-decision` (each depends only on `llm-agent` and the
+  `interfaces-auth` peer) → the store and embedder packages → `llm-agent-rag` (already depends on
+  `llm-agent`; its new re-export module imports `@mcp-abap-adt/llm-agent/rag-implementations`) →
+  `llm-agent-libs` (depends on `llm-agent-reranker` and `llm-agent-rag`) → `llm-agent-server-libs`
+  → `llm-agent-server`; all at the same version. `tsc -b` and `--clean` keep the root list's order;
+  nothing in `llm-agent` imports `llm-agent-rag` (§11.3).
 - New files carry no per-file licence header (the repo has none); every package, the new one
   included, is `LGPL-3.0-only` in `package.json`.
 
@@ -3035,31 +3109,31 @@ concurrency (D13) and belong to no layer of this design.
 
 | What | Where in this spec |
 |---|---|
-| Strategy choice: a default composition or its own `compose` (indexer, facets, provider text, pool, collapse, reranker, cut), the fill source (`live` / `corpus` / `prebuilt` / `consumer` / its own `IToolsFillSource`) | §3.10, §6.1, §6.2, §7.1, §7.5 |
+| Strategy choice: a named composition or its own `compose` (indexer, facets, provider text, pool, collapse, reranker, cut), the fill source (`live` / `corpus` / `consumer` / its own `IToolsFillSource`) | §3.10, §6.1, §6.2, §7.1, §7.5 |
 | Its own strategies: an `IQueryDecomposer` (none ships), facets, composers, discriminators, size estimators, a whole profile for another MCP server; registered by name (`toolsVariantFactories`, `toolsStrategyFactories`, `toolsFillFactories`) | §4.5, §7.9, §6.2 |
-| Calibration: `k`, `smallSet.poolItems` (≥ its tool count), `budgetTokens`, `maxValues`, any threshold on relevance scores (`score-floor`) | §4.10, §6.2, §7.4 |
-| The **build step** (lists its provider's tools, `toolItemFromTool`, `buildToolsCorpus`, serializes) and the names in `ToolsCorpusIdentity` | §6.5 |
-| The **deploy step** (`parseToolsCorpus` → `deployToolsCorpus` into its persistent store; a fresh collection on a profile or embedder change) | §6.5, §7.8 |
+| **All calibration** (D55): `poolItems`, `maxItems`, `budgetTokens`, `maxValues`, any threshold on relevance scores (`score-floor`) — measured on its own catalog with the harness | §4.10, §6.2, §7.1, §7.4, §14.3 |
+| The **build step**: lists its provider's tools, `toolItemFromTool`, `buildToolsCorpus` (the libs API), serializes the corpus, ships the file with its deployment; the names in `ToolsCorpusIdentity` | §6.5 |
 | Filling with the `consumer` source, and filling on the builder's `withMcpClients` / `withMcpServers` branches (`bound.index`, `fillToolsBinding`) | §3.10, §6.1 |
 | Its own pipelines' checks: an MCP server plugged in at runtime, a tool list that changes while running (`bound.index` with the new tools) | §6.3, §15 (D46) |
-| Its own composition root: the decision seams (`makeProbabilityDecision`, `makeRelevanceDecision`), credentials, binding stores beyond `tools` (`profile.bind` + `withRetrievalStrategy`) | §6.1, §6.2, §13 |
+| Its own composition root: the decision seams (`makeProbabilityDecision`, `makeRelevanceDecision`), credentials, binding stores beyond `tools` (`profile.bind` + `withRetrievalStrategy`); for a builder consumer, the start at which its stores are created and filled | §6.1, §6.2, §13 |
+| Replicas over one persistent tools store: whether the reload window at each start is acceptable (§3.10) | §3.10, §6.5 |
 | Shared items: group partitions (`ISharedItemGroups`), retention and redaction policy | §8.3, §8.4, §15 |
 
 **2. llm-agent framework** — contracts and generic implementations:
 
 | Package | What |
 |---|---|
-| **Contracts** — `@mcp-abap-adt/llm-agent` | every contract of §3: records and owners (`IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ReservedRecordKey`), the profile (`IItemIndexer`, `ICollectionProfile`, `IBoundCollection`, `BindTarget`, `CollectionStore`), retrieval parts (`ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `ISourceSelector`, `RetrievalSource`, `IQueryDecomposer`), tool items (`ToolItem`, `IToolFacet`, `IToolTextComposer`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `IIndexNoteSource`), shared items (`SharedItem`, `ISharedItemGroups`, `SharedItemsStores`), `IRetrievalEmbedderOwner` + `retrievalEmbedderOf`, the decision contracts (`IProbabilityDecision` + alias, `IRelevanceDecision`), `IToolsFillSource` + `ToolsFillContext`, `IRetrievalMetrics`, the optional health / catalog fields, `skillNameFromRecord`, the conformance kit (`testing/collection-profile-conformance`) |
-| **Generic implementations** — `@mcp-abap-adt/llm-agent-libs` | `StagedRetrieval`, `ItemPool`, `MaxScoreCollapse`, the cuts and size estimators, the record writer, `ComposedToolsProfile`, `bindToolsProfile` / `toolsBindingOf`, `mcpToolsVariants` (default compositions with their measured numbers), the tools indexers, facets, composers and discriminators, `toolItemFromTool`, `SharedItemsProfile`, the four fill sources, the offline corpus API (`buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, the capture store, the service record), `vectorizeMcpTools` (fill dispatch, the live path), `fillToolsBinding`, `McpToolRegistry.revectorizeTools` (no write into a bound store, D46), `SmartAgentBuilder.withToolsProfile`, `HealthCheckerDeps.toolCatalog`, `IRetrievalMetrics` in `InMemoryMetrics` / `NoopMetrics`, telemetry on the 30.1.0 rerank strategies, the usage-logging wrappers, the deprecated re-exports, `evaluateRetrieval` |
+| **Contracts** — `@mcp-abap-adt/llm-agent` | every contract of §3: records and owners (`IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ReservedRecordKey`), the profile (`IItemIndexer`, `ICollectionProfile`, `IBoundCollection`, `BindTarget`, `CollectionStore`), retrieval parts (`ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `ISourceSelector`, `RetrievalSource`, `IQueryDecomposer`), tool items (`ToolItem`, `IToolFacet`, `IToolTextComposer`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `IIndexNoteSource`), shared items (`SharedItem`, `ISharedItemGroups`, `SharedItemsStores`), `IRetrievalEmbedderOwner` + `retrievalEmbedderOf`, the decision contracts (`IProbabilityDecision` + alias, `IRelevanceDecision`), `IToolsFillSource` + `ToolsFillContext`, `IRetrievalMetrics`, the optional health / catalog fields, `skillNameFromRecord`, the contract types moved out of implementation files (`IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher`), the conformance kit (`testing/collection-profile-conformance` — test code over the contracts only, beside `rag-filter-conformance`; it imports no implementation: the consumer's harness hands it its own stores); plus the store kit of §11.3 that the store packages below `llm-agent-rag` need |
+| **RAG implementations** — `@mcp-abap-adt/llm-agent-rag` | the public home of every RAG implementation of §11.3 (`VectorRag` with `IRetrievalEmbedderOwner`, `InMemoryRag`, `FallbackRag` with D52, the overlays, the registry, the providers, the search strategies, the preprocessors and query expanders, the RAG collection tools), beside its existing backend / embedder factories |
+| **Generic implementations** — `@mcp-abap-adt/llm-agent-libs` | `StagedRetrieval`, `ItemPool`, `MaxScoreCollapse`, the cuts and size estimators, the record writer, `ComposedToolsProfile`, `bindToolsProfile` / `toolsBindingOf`, `mcpToolsVariants` (named compositions, no tuned numbers), the tools indexers, facets, composers and discriminators, `toolItemFromTool`, `SharedItemsProfile`, the three fill sources, the corpus API (`buildToolsCorpus` for the consumer's build step, `parseToolsCorpus`, `ToolsCorpusLoader` for the load at start, the private capture store), `vectorizeMcpTools` (fill dispatch, the live path), `fillToolsBinding`, `McpToolRegistry.revectorizeTools` (no write into a bound store, D46), `SmartAgentBuilder.withToolsProfile`, `HealthCheckerDeps.toolCatalog`, `IRetrievalMetrics` in `InMemoryMetrics` / `NoopMetrics`, telemetry on the 30.1.0 rerank strategies, the usage-logging wrappers, the deprecated re-exports, `evaluateRetrieval` (a measurement harness in `libs/testing`, not a store) |
 | **Generic implementations** — `@mcp-abap-adt/llm-agent-reranker` | `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*` |
 | **Provider packages** | `typesafe-decision` (`TypeSafeDecisionModel`, unchanged), `sap-aicore-decision` (`SapAiCoreRelevanceDecision`); the stores `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` (`IRetrievalEmbedderOwner`, F1) |
-| **Generic implementations living in the contracts package** (pre-existing) | `VectorRag` (`IRetrievalEmbedderOwner`), `FallbackRag` (D52), `InMemoryRag` — see §11.2 (1) |
 
 **3. llm-agent-server** — the server's composition and lifecycle:
 
 | Package | What |
 |---|---|
-| `@mcp-abap-adt/llm-agent-server-libs` | YAML types and validation (`rag.profiles.tools`, `fill`, `decision.provider: sap-aicore`), names → instances (`resolve-collection-profiles.ts`), the provider → kind table and `decision-seams.ts`, the seams `makeProbabilityDecision` (+ alias) and `makeRelevanceDecision`, `toolsFillFactories`, reading the corpus file once at startup, binding at store creation (`withToolsStore`), the main store's fill in `_buildInfra`, a worker's fill by its construction and the cache entry dropped on a throwing fill, the pass after the harvest (D38), descriptors and namespace to workers (`connectedMcpServer`), `assertSmallSetPool` (D23), the awaitable reload, publishing the main catalog to `/health`, the refusals (`prebuilt` over `in-memory`; a worker with its own `rag` and clients under `corpus` / `prebuilt`) |
+| `@mcp-abap-adt/llm-agent-server-libs` | YAML types and validation (`rag.profiles.tools`, `fill`, `decision.provider: sap-aicore`), names → instances (`resolve-collection-profiles.ts`), the provider → kind table and `decision-seams.ts`, the seams `makeProbabilityDecision` (+ alias) and `makeRelevanceDecision`, `toolsFillFactories`, **the corpus load at start**: reading the corpus file once and building the `corpus` source with what the server is configured with (`expect`, incl. the store config's `dimension`), binding at store creation (`withToolsStore`), the main store's fill in `_buildInfra`, a worker's fill by its construction and the cache entry dropped on a throwing fill, the pass after the harvest (D38), descriptors and namespace to workers (`connectedMcpServer`), the awaitable reload, publishing the main catalog to `/health`, the refusal of `corpus` for a worker with its own `rag` and clients |
 | `@mcp-abap-adt/llm-agent-server` (the app's composition root) | `createMakeProbabilityDecision`, `createMakeRelevanceDecision` with the `sap-aicore` arm, the AI Core service-key credential (`DECISION_SERVICE_KEY`) |
 
 **4. Pipelines in llm-agent** — the elements that use the stores per request:
@@ -3067,7 +3141,7 @@ concurrency (D13) and belong to no layer of this design.
 | Element | What changes |
 |---|---|
 | `tool-select` (libs `pipeline/handlers/tool-select.ts`) | nothing: a profile reaches it as the tools store's `IRetrievalStrategy`; it keeps only names in the agent's catalog |
-| `tools-rag-handle` (`makeToolsRagHandle`) | F2 de-duplication (§10.2) — its file lives in server-libs, see §11.2 (2) |
+| `tools-rag-handle` (`makeToolsRagHandle`) | F2 de-duplication (§10.2); its file stays in server-libs (goal decision 2026-10-05, §11.2 item 2) |
 | `skill-select` (libs `pipeline/handlers/skill-select.ts`) | F3 (§10.2) |
 | Shared-items writers | write and remove items through `SharedItemsProfile` `index` / `remove`; what an item holds is theirs (§8.4, §15) |
 | Rerank stage, query preparation (`translate`, #323) | unchanged: `RerankHandler` precedence, `retrieval_rerank_error`; query preparation stays a pipeline stage (§12) |
@@ -3075,38 +3149,110 @@ concurrency (D13) and belong to no layer of this design.
 **Outside the four layers:** the store backends (concurrency, D13); `scripts/rag-eval`, the repo's
 measurement harness (§14.3).
 
-### 11.2 Layer audit — suspected misplacements, for the user's decision
+### 11.2 Layer audit — suspected misplacements and how each is resolved
 
-Nothing below is moved by this spec. Each item says what sits where, and why it may be the wrong
-layer.
+Each item says what sits where, and how the goal's decisions of 2026-10-05 settle it.
 
-1. **Generic implementations in the contracts package.** `FallbackRag`, `CircuitBreaker`,
-   `VectorRag`, `InMemoryRag` live in `@mcp-abap-adt/llm-agent`, which this map reserves for
-   contracts; this design changes two of them there (`VectorRag` gains `IRetrievalEmbedderOwner`,
-   `FallbackRag` D52). Pre-existing. Also new here: the conformance kit
-   (`@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`, §14.2) — test code shipped
-   by the contracts package. Smaller: functions with behaviour beside the contracts — `recordId`
-   (the one id function both halves share; probably right where it is), `skillNameFromRecord`
-   (F3; parses ids `vectorizeSkills` in libs writes).
-2. **A pipeline element in the server package.** `tools-rag-handle.ts` (`makeToolsRagHandle`, the
-   `IToolsRagHandle` the pipeline reads) lives in `llm-agent-server-libs`; F2 fixes it there
-   (§10.2). A pipeline built on libs without SmartServer cannot reuse it.
-3. **Server lifecycle in libs.** `HealthChecker` and the new `HealthCheckerDeps.toolCatalog`
-   (`health/health-checker.ts`, §6.3) are in libs, while `/health` is the server's endpoint and
-   only the server publishes into the new reporter. Pre-existing location; the new seam exists
-   only for the server's fill.
-4. **"Fill at creation" is owned by two layers.** The builder (libs) fills a bound store at
-   `build()` on its auto-connect branch (§6.1, §6.4 row 1), and on `yamlBuilderConnect` the server
-   leaves its main store's fill to the builder (§6.3 table). The map puts startup fills in the
-   server; the builder's fill is lifecycle logic in libs. Either accept "`build()` is the
-   creation moment for a builder consumer" or make the server fill on every path.
-5. **Consumer calibration in framework defaults.** `mcpToolsVariants` carries tuned numbers
-   (`ItemPool(15)` / `ItemPool(30)`, `FixedItemsCut(8)` / `(5)` / `(3)`) measured on one server's
-   tools (`mcp-abap-adt`, through cloud-llm-hub). §7.1 decided that defaults carry measured numbers; listed only because the
-   map puts calibration with the consumer.
-6. **A fill-source artifact known to generic retrieval.** `StagedRetrieval` drops hits carrying
-   `serviceRecord` (§4.3) — the retrieval half knows the corpus deploy's service record. Small and
-   generic (a reserved key), but a deploy concern inside retrieval.
+1. **Generic implementations in the contracts package — resolved by D53, with S10 open.** The RAG
+   implementations (`VectorRag`, `InMemoryRag`, `FallbackRag`, … — §11.3) get their public home in
+   `llm-agent-rag` in this PR; the old names are deprecated aliases. Their **files** move in the
+   next major (S10: a move now would need `llm-agent` to re-export from `llm-agent-rag` — a
+   cycle). **Still in the contracts package after this PR, by necessity** (reported, not
+   resolved here): the store kit the store packages below `llm-agent-rag` import —
+   `AbstractRagProvider` with its edit / id strategies and catalog helpers, `QueryEmbedding` /
+   `FallbackQueryEmbedding` / `TextOnlyEmbedding`, `symmetricEmbedder` / `asymmetricEmbedder`
+   (§11.3, "stays"). `llm-agent-rag` depends on those packages (optional peers), so they cannot
+   depend on it; moving the kit needs a package below both, a decision for later. And the
+   embedder / LLM resilience decorators (`CircuitBreaker*`, `RetryEmbedder`, …) are not RAG
+   implementations, so the goal's move does not cover them. The conformance kit stays with the
+   contracts (it is test code **over** contracts and imports no implementation); `recordId` and
+   `skillNameFromRecord` are id conventions shared by both halves, and stay.
+2. **A pipeline element in the server package — stays, decided by the goal** (2026-10-05, layers):
+   `tools-rag-handle.ts` stays in `llm-agent-server-libs`; F2 is fixed there.
+3. **Server lifecycle in libs — stays, decided by the goal:** `HealthChecker` and
+   `HealthCheckerDeps.toolCatalog` stay in libs.
+4. **"Fill at creation" owned by two layers — resolved by D54.** The *mechanism* is one, in libs:
+   the store's fill source (`LiveToolsFill`, `ToolsCorpusLoader`, …) run by `vectorizeMcpTools` /
+   `fillToolsBinding`. The *moment* belongs to whoever creates the store, i.e. the composition
+   root's start: the server's start for its stores — on `yamlBuilderConnect` the server's own
+   `_buildInfra` calls the builder's `build()`, so that fill is still the server's start (load at
+   start → server, via the corpus source in libs); a builder consumer's own start for its stores.
+   The build step (making the corpus) is the consumer's. No fill logic is duplicated between the
+   layers.
+5. **Consumer calibration in framework defaults — resolved by D55.** No strategy and no named
+   composition carries a measured number; `mcpToolsVariants` is three named compositions whose
+   numbers are the consumer's arguments or the generic defaults of §7.1.
+6. **A fill-source artifact known to generic retrieval — resolved by D54.** There is no service
+   record any more; `StagedRetrieval` knows nothing about how a store was filled, and the
+   reserved key `serviceRecord` is gone.
+
+### 11.3 The RAG implementations — contract or implementation, one by one (D53)
+
+**Rule:** a contract (an interface, a type, a function that defines a contract's semantics) stays
+in `@mcp-abap-adt/llm-agent`; a RAG implementation gets its public home in
+`@mcp-abap-adt/llm-agent-rag`. One constraint decides the rest: `llm-agent-rag` depends on
+`llm-agent` and on the store and embedder packages (`qdrant-rag`, `pg-vector-rag`,
+`hana-vector-rag`, `ollama-embedder`, `openai-embedder`, `sap-aicore-embedder` — optional peers),
+so **nothing in `llm-agent` and nothing those packages import may come from `llm-agent-rag`** — a
+cycle (verified 2026-10-05: their imports from `@mcp-abap-adt/llm-agent`).
+
+**Moves** (public home `llm-agent-rag` in this PR; the file in the next major):
+
+| Export(s) | File today | Why an implementation | Users below `llm-agent-rag` |
+|---|---|---|---|
+| `VectorRag`, `VectorRagConfig` | `rag/vector-rag.ts` | an `IRag` store | `ollama-embedder` (`OllamaRag extends VectorRag`) — see S10 |
+| `InMemoryRag`, `InMemoryRagConfig` | `rag/in-memory-rag.ts` | an `IRag` store | none |
+| `FallbackRag` | `resilience/fallback-rag.ts` | an `IRag` decorator (primary + fallback) | none |
+| `OverlayRag`, `SessionScopedRag` | `rag/overlays/` | `IRag` decorators | none |
+| `ActiveFilteringRag` | `rag/corrections/active-filtering-rag.ts` | an `IRag` decorator | none |
+| `SimpleRagRegistry`, `ragStoreKey` | `rag/registry/` | the `IRagRegistry` implementation and its key helper | none |
+| `InMemoryRagProvider`, `InMemoryRagProviderConfig`, `VectorRagProvider`, `VectorRagProviderConfig`, `SimpleRagProviderRegistry` | `rag/providers/` | `IRagProvider` implementations over the stores above, and a registry | none |
+| `WeightedFusionStrategy`, `RrfStrategy`, `VectorOnlyStrategy`, `Bm25OnlyStrategy`, `CompositeStrategy`, `CompositeStrategyEntry` | `rag/search-strategy.ts` | `ISearchStrategy` implementations | none |
+| `NoopQueryPreprocessor`, `NoopDocumentEnricher`, `TranslatePreprocessor`, `ExpandPreprocessor`, `IntentEnricher`, `PreprocessorChain` | `rag/preprocessor.ts` | `IQueryPreprocessor` / `IDocumentEnricher` implementations | none |
+| `LlmQueryExpander`, `NoopQueryExpander` | `rag/query-expander.ts` | `IQueryExpander` implementations | none |
+| `buildRagCollectionToolEntries`, `RagCallerIdentity`, `RagCollectionToolOptions`, `RagToolContext`, `RagToolEntry` | `rag/mcp-tools/` | the RAG-collection MCP tools and their options | none |
+
+Not exported today and moving with their users in the next major: `InvertedIndex`
+(`rag/inverted-index.ts`), `tokenizeSearchText` (`rag/tokenizer.ts`). `ISearchContext` (a contract)
+names the `InvertedIndex` class; the next major gives it an interface before the file moves.
+
+**Contract types inside implementation files — extracted to `interfaces/` in this PR** (same names,
+same root exports): `IQueryExpander` (from `rag/query-expander.ts`; `interfaces/plugin.ts` and
+`interfaces/index.ts` import it today), `IQueryPreprocessor`, `IDocumentEnricher` (from
+`rag/preprocessor.ts`). `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`,
+`ISearchContext` stay in `rag/search-strategy.ts` until the next major (above).
+
+**Stays in `@mcp-abap-adt/llm-agent`:**
+
+| Export(s) | Why |
+|---|---|
+| everything under `interfaces/`, `RagError` and the other contract types | contracts |
+| `matchesRagIdentity`, `ragIdentityFilter`, `RagIdentityFilter` | they define the identity semantics of `IRag.query` that every backend applies (the conformance kit checks them); `qdrant-rag`, `pg-vector-rag`, `hana-vector-rag` import them |
+| the error classes of `rag/corrections/errors.ts`; the correction-metadata convention of `rag/corrections/metadata.ts` (`CorrectionMetadata`, `validateCorrectionMetadata`, `buildCorrectionMetadata`, `deprecateMetadata`, `filterActive`) | the contracts' error vocabulary and a metadata convention (types + pure validators) shared by implementations in several packages; the store packages import the errors |
+| **store kit** — `AbstractRagProvider`; the catalog helpers (`describeRagCatalogRows`, `encodeRagAttributes`, `parseRagCollectionRecord`, `ragOwnerKeys`, `validateRagAttributes`, `validateRagOwner`, `RagCatalogRow`, `RagCatalogRowParse`); the edit strategies (`DirectEditStrategy`, `ImmutableEditStrategy`, `OverlayEditStrategy`, `SessionScopedEditStrategy`) and id strategies (`CallerProvidedIdStrategy`, `CanonicalKeyIdStrategy`, `GlobalUniqueIdStrategy`, `SessionScopedIdStrategy`) it builds on | implementations, but `qdrant-rag`, `pg-vector-rag` and `hana-vector-rag` extend `AbstractRagProvider` and use the helpers; they sit below `llm-agent-rag`, so the kit cannot move there (§11.2 item 1) |
+| `QueryEmbedding`, `FallbackQueryEmbedding`, `TextOnlyEmbedding`; `symmetricEmbedder`, `asymmetricEmbedder` | implementations of the query-embedding contract and adapters that build an `IRetrievalEmbedder`; the store and embedder packages below `llm-agent-rag` import them (same reason) |
+| the resilience decorators (`CircuitBreaker` — referenced by `interfaces/builder.ts` and `interfaces/health.ts` —, `CircuitBreakerEmbedder`, `CircuitBreakerLlm`, `RetryEmbedder`, `RetryBatchEmbedder`, `BatchChunkingEmbedder`, `composeResilientEmbedder`, …) and `isCallerCancellation` | embedder / LLM implementations, not RAG implementations: outside the goal's move (§11.2 item 1) |
+| `rag/tool-indexing-strategy.ts` | deleted (§10.3) |
+
+**How the public home moves without a cycle (this PR):**
+
+- `@mcp-abap-adt/llm-agent` gains the subpath **`./rag-implementations`**
+  (`src/rag-implementations.ts`): the moved exports, undeprecated. Documented as internal to the
+  llm-agent family (for `llm-agent-rag` and the packages below it); it goes in the next major.
+- **`@mcp-abap-adt/llm-agent-rag`** re-exports every moved name from that subpath
+  (`src/rag-implementations.ts`) and from its root. It already depends on `llm-agent`: no new edge.
+- **The `@mcp-abap-adt/llm-agent` root** exports each moved name as a **`@deprecated` alias**
+  (`const` + `type` for a class, `type` for a type), naming `@mcp-abap-adt/llm-agent-rag`. Every
+  30.1.0 import compiles and behaves the same (the alias is the same class object: `instanceof`,
+  subclassing and statics unchanged).
+- **In-repo importers switch** to `@mcp-abap-adt/llm-agent-rag`: `llm-agent-libs`,
+  `llm-agent-server-libs`, `llm-agent-server`, `llm-agent-rag`'s own factories and `scripts/`.
+  The packages below `llm-agent-rag` cannot: `ollama-embedder` imports `VectorRag` from the
+  subpath (undeprecated); the store packages use only the "stays" list.
+- **Next major:** the files of the "moves" table go to `packages/llm-agent-rag/src/`; the subpath
+  and the aliases are removed; `OllamaRag` (an `IRag` in an embedder package, extending
+  `VectorRag`) can no longer extend it from below `llm-agent-rag` — it is removed or moved then
+  (S10).
 
 ---
 
@@ -3130,6 +3276,16 @@ layer.
 - **No profile configured → no change.** Same records (golden test), same stages, same k
   semantics, same `RerankHandler` precedence, same YAML.
 - Removed: only the unexported `IToolIndexingStrategy` file.
+- **The RAG implementations' public home moves to `@mcp-abap-adt/llm-agent-rag`** (D53, §11.3).
+  The names in `@mcp-abap-adt/llm-agent` stay as `@deprecated` aliases of the same objects until
+  the next major. **Migration note** (CHANGELOG): import `VectorRag`, `InMemoryRag`, `FallbackRag`
+  and the other names of §11.3's "moves" table from `@mcp-abap-adt/llm-agent-rag` (add it as a
+  dependency); nothing else changes — same classes, same behaviour. A package that
+  `llm-agent-rag` itself depends on (a store or embedder package) imports them from
+  `@mcp-abap-adt/llm-agent/rag-implementations` instead. In the next major the files move, the
+  aliases and the subpath are removed, and `OllamaRag` is removed or moved (S10).
+- **Contract types moved out of implementation files** (`IQueryExpander`, `IQueryPreprocessor`,
+  `IDocumentEnricher` → `interfaces/`): same names, same root exports — no migration.
 - **Renamed, old names kept as deprecated aliases until the next major** (goal decision
   2026-10-05) — nothing a 30.1.0 consumer imports stops compiling:
 
@@ -3154,9 +3310,11 @@ layer.
   consumer's fill source** (§3.10, §6.3, §6.5). Without a profile nothing changes. With one and no
   source chosen, `live` is 30.1.0's behaviour through the profile. **Migration note** (CHANGELOG):
   a consumer that ships a tools corpus builds it in its build step with `buildToolsCorpus` and
-  either loads it at start (`ToolsCorpusLoader`, in-memory store) or writes it in its deploy step
-  with `deployToolsCorpus` and binds the store with `PrebuiltToolsStore` (persistent store); the
-  `profile` / `embedder` names must be the same in the build step and at run time.
+  ships the file; the server loads it at every start with the `corpus` source
+  (`fill: { corpus: … }`, or `ToolsCorpusLoader` in a builder consumer's composition root) — the
+  store, in-memory or persistent, is **cleared** and the corpus written; the `profile` /
+  `embedder` names must be the same in the build step and in the server's configuration. There is
+  no deploy step.
 - **Behaviour note — a bound profile is not re-indexed on `toolsChanged`** (D46). With a profile
   bound, a reconnect that reports `toolsChanged` writes nothing into the tools store, whatever its
   fill source (one `mcp` debug line). A consumer who plugs an MCP server in at runtime fills the
@@ -3171,13 +3329,18 @@ layer.
   precomputed write through `FallbackRag` no longer re-embeds silently. **Migration note:** none —
   `upsertPrecomputedRaw` is optional in `IRagBackendWriter`, so a caller already handles its
   absence.
+- **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
+  `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
+  requires `poolItems`. New in this release, so nothing released changes.
 - **Single-flight worker construction is not in this release** (D45): the 30.1.0 race of two
   sessions constructing one worker together after a drain is unchanged here and tracked as a
   separate issue (§15).
 - **The caller's k caps every cut** (approved review finding 1). 30.1.0 has no item cuts, so
   nothing released changes; `FixedItemsCut` is new in this spec and is a ceiling from the start.
 - Added, all optional: the contracts of §3 (incl. `IToolsFillSource`, §3.10), one builder method,
-  the offline corpus API and the four fill sources (libs, §6.5), the YAML section `rag.profiles`
+  the corpus API (`buildToolsCorpus`, `parseToolsCorpus`, `ToolsCorpusLoader`) and the three fill
+  sources (libs, §6.5), the RAG implementations' exports in `llm-agent-rag` and the subpath
+  `@mcp-abap-adt/llm-agent/rag-implementations` (§11.3), the YAML section `rag.profiles`
   (key `tools` only, S8; its `fill` key), the value `sap-aicore` for the existing `decision.provider` (with
   `deploymentId`, `model`, `resourceGroup`), optional health fields, the embedder capability,
   telemetry options on the 30.1.0 rerank strategies, the optional seam
@@ -3189,23 +3352,26 @@ layer.
   probability seam (`makeDecisionModel`, or `makeProbabilityDecision` after the rename) compiles
   unchanged, since `SmartServerDecisionConfig` only gains a provider value and optional fields
   (§17.5).
-- Release: a **minor** version. The new packages are published at the same version, in the order
-  of §11.
-- Opting in on a persistent tools store = a fresh collection (§7.8).
+- Release: a **minor** version (D53 keeps every 30.1.0 import working; a physical move now would
+  make it a major — S10). The new packages are published at the same version, in the order of §11.
+- Opting in on a persistent tools store filled by `live` = a fresh collection; the `corpus` source
+  clears the store at every start (§7.8).
 - **k is unchanged:** the overall limit of a retrieval, now counted in items under a profile, with
   or without a decomposer. `docs/INTEGRATION.md` documents the `IQueryDecomposer` slot and its
   budget contract (§4.5).
-- **Tool-set shapes:** `small-set-jev`, `EnumValueToolIndexer` and `TokenBudgetCut` are opt-in
-  like every profile and strategy; nothing about the default changes.
+- **Tool-set shapes:** `EnumValueToolIndexer` and `TokenBudgetCut` are opt-in like every profile
+  and strategy; nothing about the default changes.
 - **Profile records are addressed by owner-scoped ids** (§3.1): `rag.getById(itemId)` on a profiled
   store finds nothing; use `bound.get(ref)`. Documented in `docs/INTEGRATION.md`.
 - Docs updated in the same PR: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`,
   `docs/PERFORMANCE.md`, `docs/EXAMPLES.md` (YAML, both decision providers),
   `docs/TROUBLESHOOTING.md` (rerank error metric; switching profiles needs a fresh collection),
-  `docs/DEPLOYMENT.md` (`DECISION_SERVICE_KEY`; the tools corpus build and deploy steps, §6.5), `docs/SECURITY_THREAT_MODEL.md` (Cohere receives
+  `docs/DEPLOYMENT.md` (`DECISION_SERVICE_KEY`; the tools corpus build step and the load at start,
+  §6.5 — incl. the reload window of replicas over one persistent store), `docs/SECURITY_THREAT_MODEL.md` (Cohere receives
   the query and the candidate texts), `CLAUDE.md` key API notes, both new packages' `README.md`,
   the `typesafe-decision` README (`IProbabilityDecision`; one of two decision kinds), the
-  `llm-agent` and `llm-agent-libs` READMEs (renames, reranker package), `scripts/rag-eval/README.md`;
+  `llm-agent`, `llm-agent-rag` and `llm-agent-libs` READMEs (renames, reranker package, the RAG
+  implementations' home), `scripts/rag-eval/README.md`;
   every page that names a renamed or moved symbol uses the new name and says the old one is a
   deprecated alias.
 
@@ -3246,16 +3412,20 @@ layer.
   indexer's `maxRecordsPerItem` bounds what it writes.
 - Variants: each `mcpToolsVariants` factory returns exactly the strategy instances of §7.4 (pool,
   collapse, reranker, cut), with no decomposer unless the consumer passes one; `baseline` binds
-  nothing; a decomposer refused on `baseline`; **no variant contains `NameTailFacet`**;
-  `small-set-jev` = `FacetedToolIndexer([])` + `ItemPool(poolItems)` + `MaxScoreCollapse` +
-  `ProbabilityReranker` + `FixedItemsCut(3)`, and refuses a missing `poolItems` /
-  `probabilityDecision` (type-level); `facetedCohere` builds a `RelevanceReranker` and does not
-  accept an `IProbabilityDecision` (type-level); **no variant contains `EnumValueToolIndexer` or `TokenBudgetCut`**.
-- Generic strategies carry no tuned number: the counts and sizes of `ItemPool`, `FixedItemsCut`,
-  `ScoreFloorCut`, `TokenBudgetCut` (`budgetTokens`) and `EnumValueToolIndexer` (`maxValues`) are
-  required constructor arguments (type-level); an optional one (`TokenBudgetCut.maxItems`) falls
-  back to the caller's k, never to a library number. Tuned numbers appear only in
-  `mcpToolsVariants` (§7.1).
+  nothing; a decomposer refused on `baseline`; **no variant contains `NameTailFacet`,
+  `EnumValueToolIndexer` or `TokenBudgetCut`**; `faceted()` = `ItemPool()` (the caller's k) +
+  `TopItemsCut`; `faceted({ poolItems, maxItems })` = `ItemPool(poolItems)` +
+  `FixedItemsCut(maxItems)`; `facetedRerank` uses exactly the `IReranker` it is given, requires
+  `reranker` and `poolItems` (type-level), and refuses a non-positive `poolItems` / `maxItems`;
+  `MCP_TOOLS_VARIANT_NAMES` is `baseline`, `faceted`, `faceted-rerank` (no `faceted-cohere`,
+  `faceted-jev`, `small-set-jev`).
+- Generic strategies and named compositions carry no tuned number (D55): the counts and sizes of
+  `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut` (`budgetTokens`) and `EnumValueToolIndexer`
+  (`maxValues`) are required constructor arguments (type-level); `ItemPool()` and
+  `TokenBudgetCut.maxItems` fall back to the caller's k, never to a library number (D56): with k=4
+  and `maxRecordsPerItem` 3, `ItemPool()` keeps 4 items per source and asks each source for 12
+  records; with a decomposer, each sub-query's own k. A `grep` over `src/collections/` finds no
+  numeric literal used as a pool or cut size outside tests.
 - Consumer-built profile: the §7.9 example compiles against the public exports only and passes the
   conformance kit.
 - Shared items: owner flattening for user / group / global; `reserved-kind`;
@@ -3316,6 +3486,14 @@ layer.
   `maxBatchTokens` / `concurrency` throws. Over `SapAiCoreRelevanceDecision` + fake fetch: one
   `/rerank` call per batch.
 - `ProbabilityReranker`: the 30.1.0 `DecisionReranker` tests, moved unchanged with the class.
+- The RAG implementations' home (D53, §11.3): for every name of the "moves" table,
+  `@mcp-abap-adt/llm-agent-rag`'s export **is the same object** as `@mcp-abap-adt/llm-agent`'s
+  (`===`, and a type check that the types are mutually assignable); a 30.1.0-style import file of
+  those names from `@mcp-abap-adt/llm-agent` compiles unchanged; `IQueryExpander`,
+  `IQueryPreprocessor`, `IDocumentEnricher` still export from the `llm-agent` root; nothing under
+  `packages/llm-agent/src` imports `@mcp-abap-adt/llm-agent-rag` (a repo test, like
+  `scoped-dependencies.test.ts`); no file under `packages/llm-agent-{libs,server-libs,server}/src`
+  or `packages/llm-agent-rag/src` imports a moved name from `@mcp-abap-adt/llm-agent`.
 - Renames and aliases: `IDecisionModel` is assignable both ways with `IProbabilityDecision`
   (type check); libs' `DecisionReranker === ProbabilityReranker`, `DECISION_RERANK_DEFAULT_TASK ===
   PROBABILITY_RERANK_DEFAULT_TASK`, `wrapDecisionModel === wrapProbabilityDecision`, and libs'
@@ -3400,49 +3578,48 @@ layer.
   - a consumer's own source receives the binding, the target and `indexLiveTools`, and its status
     is the catalog status;
   - `bindToolsProfile` on a store already bound with a different explicit source → throws.
-- Offline corpus (§6.5, libs), with an embedder that counts its calls:
+- The corpus (§6.5, libs), with an embedder that counts its calls:
   - `buildToolsCorpus` → one record per profile record (ids, texts, metadata equal to what
-    `bound.index` writes into a live store), every vector of one dimension; a failing item → throws naming it; no items → a valid empty corpus (zero
-    records, `items: 0`, no `dimensions`) that `parseToolsCorpus` round-trips;
+    `bound.index` writes into a live store), every vector of one dimension; a failing item →
+    throws naming it; no items → a valid empty corpus (zero records, `items: 0`, no
+    `dimensions`) that `parseToolsCorpus` round-trips;
   - `parseToolsCorpus(JSON.stringify(corpus))` round-trips; a changed record (hash mismatch), a
     wrong format, a mixed dimension, `dimensions` missing with records or present without → throws;
-  - `deployToolsCorpus` into a `VectorRag`: **zero embedding calls**; retrieval through the binding
-    finds the tools and never returns the service record; a store without precomputed writes →
-    throws, nothing written; a failed delete → throws, and a rerun deletes it;
-  - **through `FallbackRag`** (D52, §10.4), with an embedder that counts its calls:
-    `deployToolsCorpus` and a `ToolsCorpusLoader` fill over a `FallbackRag` whose primary writer is
-    raw-only → rejected before any write (a writer spy sees nothing), the embedder never called;
-    over a `FallbackRag` whose primary is a `VectorRag` → both work, zero embedding calls, the
-    records stored as built;
+  - `ToolsCorpusLoader` into a `VectorRag` holding records of an earlier load **and** a record
+    the corpus does not list: **zero embedding calls**; afterwards the store holds exactly the
+    corpus (the foreign record is gone — cleared); retrieval through the binding finds the tools;
+    the catalog status is complete with `records`; one summary log line naming `corpus`, the identity,
+    the counts and `corpusHash`;
+  - **replacement leaves no merged metadata** (`VectorRag`, `InMemoryRag`): a store loaded with A
+    whose record X carries extra metadata `ttl` and `data` → a new instance loads B whose X carries
+    neither → X has no `ttl` and no `data`;
+  - **checks before the store is touched:** a mismatching `profile` / `embedder` / `profileName` /
+    `dimensions` → throws naming it, and a writer spy sees no `clearAll` and no write; a store
+    whose writer has no `clearAll` → throws naming the store, nothing cleared or written; a store
+    without precomputed writes → the same;
+  - **through `FallbackRag`** (D52, §10.4): a `ToolsCorpusLoader` fill over a `FallbackRag` whose
+    primary writer is raw-only → rejected before the clear (a writer spy sees nothing), the
+    embedder never called; over a `FallbackRag` whose primary is a `VectorRag` → works, zero
+    embedding calls, the records stored as built;
   - the resolved-backend check: a decorator whose writer claims `upsertPrecomputedRaw` over a
-    raw-only inner store → rejected before any write;
-  - **unchanged redeploy writes nothing** (D51): the same corpus over a `final` record →
-    `unchanged: true`, a writer spy sees no upsert and no delete;
-  - **serialized replacement on `VectorRag`** (D51): A whose record X carries extra metadata `ttl`
-    and `data` → B whose X carries neither → after B, X has no `ttl` and no `data` (an in-place
-    upsert would have merged them); a tool dropped in B has no record left; `written` = B's record
-    count;
-  - **interrupted, then restored** (D51): a writer that throws after n record writes → the record
-    is `pending` and `PrebuiltToolsStore` refuses the store → a redeploy restores every record to
-    the corpus and finalizes; the same after an interruption among the deletes;
-  - empty corpus (D49): a deployed corpus → an empty deploy deletes every record and finalizes a
-    zero-item manifest (`ids: []`); an empty deploy interrupted after some deletions
-    → `prebuilt` refuses the store, a rerun deletes the rest and finalizes; an empty corpus into a
-    never-deployed store → throws naming the missing dimension, nothing written; `ToolsCorpusLoader`
-    with an empty corpus and `PrebuiltToolsStore` over the empty deploy → complete, `total: 0`;
-  - `ToolsCorpusLoader`: loads with zero embedding calls, the catalog status complete with `records`;
-    a mismatching `profile` / `embedder` / `profileName` → throws naming it;
-  - `PrebuiltToolsStore`: a deployed store → status from the service record, **no write** (a writer
-    spy sees none); a store never deployed → throws "not deployed"; a store whose service record is
-    not finalized (an interrupted deploy) → throws naming the deploy step; a mismatching identity →
-    throws.
-- `StagedRetrieval`: a hit carrying `serviceRecord` is dropped — not an item, not an orphan.
+    raw-only inner store → rejected before the clear;
+  - **an interrupted load repeats at the next start** (D54): a writer that throws after n record
+    writes → `fill` throws (the store partial); a new `ToolsCorpusLoader` fill on the same store
+    (the next start) → the store holds exactly the corpus;
+  - **empty corpus** (D49): a store holding records → the load clears it and writes nothing; the
+    status is complete, `total: 0`, `records: 0`.
 - Server `fill` (§6.2): `{ corpus: … }` on an in-memory store with ready clients → the store holds
-  the corpus and the embedder saw no call at startup; `{ prebuilt: … }` over a store the test
-  deployed → `/health` complete, no write; every `fill` validation rule (unknown name, missing
-  fields, `prebuilt` over `in-memory`, `corpus` with a worker that has its own `rag` and own clients).
+  the corpus and the embedder saw no call at startup; the same on a store that already holds other
+  records (a persistent store's second start, simulated) → only the corpus remains; a store config
+  with a declared `dimension` and a corpus of another length → startup fails naming both, the
+  store untouched; every `fill` validation rule (unknown name, missing fields, a leftover
+  `prebuilt` refused naming `corpus`, `corpus` with a worker that has its own `rag` and own
+  clients).
 - YAML: every validation rule of §6.2 through the real `resolveSmartServerConfig` (incl. a
-  `rag.profiles` key other than `tools` refused, S8; a variant against the wrong kind of decision;
+  `rag.profiles` key other than `tools` refused, S8; `faceted-rerank` without `poolItems`; a
+  leftover `faceted-cohere` / `faceted-jev` / `small-set-jev` / `smallSet` refused naming
+  `faceted-rerank`; `faceted-rerank` builds `ProbabilityReranker` (with `TOOL_QUESTION`) under
+  `typesafe` and `RelevanceReranker` under `sap-aicore`;
   `question` / `task` refused for a relevance provider; `decision.provider: sap-aicore` fields; an
   unknown `text` composer); `reranker: decision` builds `ProbabilityReranker` under `typesafe` and
   `RelevanceReranker` under `sap-aicore`, in `rag.profiles` and `rag.retrieval`; a missing seam of
@@ -3462,17 +3639,24 @@ record; deterministic, owner-scoped ids (`recordId`; the same `itemId` under two
 ids); every returned item hydrated from its canonical record; **at most `min(k, cut.limit(k))` ≤
 k distinct items returned, with or without a decomposer** (S9 as amended by review finding 1: the
 §4.5 budget — `k` for `TopItemsCut`, `min(k, n)` for `FixedItemsCut(n)`; the kit also runs an
-adversarial decomposer whose budgets overrun the budget and expects `DECOMPOSE_ERROR`); **every
-shipped profile is called with a k smaller than its default cut** (e.g. k=2 for `faceted*` and
-`small-set-jev`) and returns ≤ k; a stale delete that fails is reported as `cleanup-failed` and
+adversarial decomposer whose budgets overrun the budget and expects `DECOMPOSE_ERROR`); **a
+profile whose cut has a ceiling of its own is called with a k smaller than that ceiling** (e.g.
+k=2 against a consumer's `maxItems` 5 on `faceted` / `faceted-rerank`) and returns ≤ k; a stale delete that fails is reported as `cleanup-failed` and
 retried by the next `index`;
 no record outside the caller's identity filter returned;
 **with a size-bounded cut, the summed size of the returned items ≤ the budget** (by the cut's own
 estimator) and no item is truncated. A consumer runs it against its own profile.
 
+- **Where it lives, and why there:** with the contracts (`@mcp-abap-adt/llm-agent/testing`), not
+  with the implementations. It is test code **over the contracts** — it imports only
+  `interfaces/` types and `node:assert`; the stores, the profile and the query embedding come from
+  the consumer's harness. It ships no RAG implementation and none is added to any `testing` entry
+  point by this design (the corpus build's capture store is private to libs, §6.5).
+
 ### 14.3 Measurement harness
 
-- `scripts/rag-eval` gains `--variant baseline|faceted|faceted-cohere|faceted-jev|small-set-jev`, or a
+- `scripts/rag-eval` gains `--variant baseline|faceted|faceted-rerank` (with `--pool-items`,
+  `--max-items`), or a
   composition by strategy name (`--indexer`, `--facets`, `--discriminator`, `--pool-items`, `--reranker none|decision`, `--cut`,
   `--budget-tokens`, `--text parameter-names|enum-values|schema`; `--decision-provider
   typesafe|sap-aicore` with `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref`
@@ -3485,16 +3669,15 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
   `@mcp-abap-adt/llm-agent-libs/testing`, so a consumer runs its own catalog and labels against a
   build of this branch (the PR's "consumer check" stage). A consumer measures its own
   `IQueryDecomposer` the same way, as part of its strategy (§2.4).
-- Acceptance (env-gated, not part of `npm test`):
-  - on the committed mcp-abap-adt 16.0.0 snapshot (an example server's fine-grained set),
-    `faceted` with the **schema-derived** `ParametersFacet` (not yet measured, §2.0) is not worse
-    than `baseline` at equal items — its §7.4 row is replaced by that run, and compared with the
-    two closest measured layouts (LLM-generated facets and name-derived facets, both 0.966 at k=5);
-  - on a `compact` snapshot, `small-set-jev` (with the `full` record) reproduces, within ±1 row,
-    the measured 0.970 at k=3 and ~1.6k tokens (§2.5.1);
-  - the hub's consumer check reproduces, within ±1 row, `baseline`'s numbers in §7.4;
-  - `faceted-cohere` and `faceted-jev` are measured there for the first time as one composition;
-    their rows in §7.4 are replaced by that run, and only then is `faceted-jev` promoted (D11).
+- **Measurements stay in the consumer** (D55). The harness is the framework's; the labelled
+  queries, the catalog and the figures are the consumer's, and none of them is committed here or
+  turned into a default. The PR's consumer check (cloud-llm-hub, env-gated, not part of `npm
+  test`) uses the harness to:
+  - reproduce, within ±1 row, `baseline`'s figures of §2.1 on its own catalog (the harness counts
+    what the consumer counted);
+  - measure `faceted` with the **schema-derived** `ParametersFacet` (not yet measured, §2.0) and
+    `faceted-rerank` with its own rerankers and `poolItems` — results reported in the PR and kept in
+    the consumer's research branch, not in §7.4.
 
 ---
 
@@ -3516,6 +3699,10 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 | Shared items in the server YAML | D6 |
 | A query-decomposition **implementation** (splitting multi-step queries) | the consumer: it injects its own `IQueryDecomposer` into the slot `StagedRetrieval` provides (§4.5); the framework ships none and no variant uses one (goal decision 2026-10-05) |
 | BM25 identifier tokenization (`ZDEMO_D_TEST` → `test`) | separate change to the in-store scoring (`ISearchStrategy` / tokenizer) |
+| **The physical move of the RAG implementations' files** to `packages/llm-agent-rag/src/`, the removal of the deprecated aliases and the `rag-implementations` subpath, an interface for `InvertedIndex` in `ISearchContext`, and `OllamaRag` | the next major (D53, S10, §11.3) |
+| A package for the store kit (`AbstractRagProvider`, the query embeddings, …) below both `llm-agent-rag` and the store packages | a later decision (§11.2 item 1); the kit stays in `llm-agent` |
+| A deploy-time corpus step, a record of the load in the store, resuming an interrupted load | not built (D54): the server loads the corpus at every start, from the start |
+| Tuned numbers for any shipped strategy or composition | the consumer's calibration (D55); measured with the harness in the consumer (§14.3) |
 
 ---
 
@@ -3537,12 +3724,14 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
    partitions, indexing, provider text, facets, candidate pool, the tools fill source — all
    injected. A variant is a
    named set of instances, never flags; the library picks no k, no pool and no reranker by guessing.
-   The consumer makes the main behaviour choices by choosing strategies; a default composition
-   fills only what it left open, and is the only place a tuned number lives, next to its
-   measurement (§7.1).
+   The consumer makes the main behaviour choices by choosing strategies; a named composition
+   fills only what it left open and carries no tuned number — the consumer's arguments or the
+   generic defaults (the caller's k) fill its numbers (§7.1, D55, D56).
 6. **File size:** new logic in `src/collections/*` and the new packages; `builder.ts` and
    `smart-server.ts` get one call site each per binding.
-7. **Additive:** the only removal is an unexported, unwired file.
+7. **Additive:** the only removal is an unexported, unwired file. The RAG implementations' new home
+   (D53) adds exports and keeps the old ones as deprecated aliases; no new package edge, no cycle
+   (§11.3).
 8. **Any MCP server (goal 9):** shipped strategies read only what every server exports; the one
    convention-dependent facet is opt-in and in no variant; a consumer builds a profile for any
    other server from the contracts (§7.9), with the raw `inputSchema` available to its strategies.
@@ -3558,7 +3747,7 @@ No longer asked:
 - experience as a schema in the framework → shared items (§8);
 - ~~intents' home → an indexing strategy of the tools profiles, default placement `record`~~ —
   superseded by the goal's later decision: intents are removed entirely (D50, §7.3.3);
-- one profile with flags → strategies the consumer injects, plus default compositions (§7);
+- one profile with flags → strategies the consumer injects, plus named compositions (§7);
 - the reranker text → provider text (§4.6); the pool unit → items (§4.4);
 - the Cohere reranker in this PR (§5) — as an `IRelevanceDecision` (`SapAiCoreRelevanceDecision`)
   in its own package `sap-aicore-decision`, adapted by the new `RelevanceReranker`; Jev stays the
@@ -3570,8 +3759,10 @@ No longer asked:
   only what any server exports; coarse tool sets and a token-budget cut are in scope; a consumer
   builds its own profile for any other server from the contracts (§7.0, §7.9);
 - where tuning lives and who chooses (goal decisions 2026-10-05): the consumer makes the main
-  behaviour choices by choosing the strategies it injects; components are generic; tuned numbers
-  live only in default compositions, each citing its measurement (§7.1).
+  behaviour choices by choosing the strategies it injects; components are generic; ~~tuned numbers
+  live only in default compositions, each citing its measurement~~ — refined by the goal's later
+  decision of the same day: nothing that ships carries a tuned number (D55, §7.1);
+- the layers, the corpus flow and the measurements (goal decisions 2026-10-05): D53–D56 (§17.17).
 
 ### 17.2 Decided by the user
 
@@ -3597,7 +3788,7 @@ Recommendations approved by the user on 2026-10-05:
 | D8 | Replace the private embedder read with **`IRetrievalEmbedderOwner`** (3 provider packages) in this PR. | §10.1 |
 | D9 | Query preparation stays **outside** profiles; #323 is a pipeline fix. | §12 |
 | D10 | `SapAiCoreRelevanceDecision` takes **`deploymentId`** in this PR; resolving by model name is a follow-up. | §5.3, §5.4 |
-| D11 | Ship `faceted-jev`, marked **"to be measured as one composition on fresh consumer queries before promotion"**. | §7.4 |
+| D11 | *Withdrawn by D55 (§17.17): `faceted-jev` is withdrawn.* Ship `faceted-jev`, marked **"to be measured as one composition on fresh consumer queries before promotion"**. | §7.4 |
 | `limit()` | `IItemCut.limit(requestedK)` — the most items a cut returns; the retrieval's budget for a decomposer. Stated as an **upper bound** in items, so `ScoreFloorCut` and `TokenBudgetCut` fit with no signature change (§4.10). | §3.4, §4.5 |
 
 ### 17.3 Raised by the server-agnostic amendment
@@ -3610,17 +3801,17 @@ The `compact` measurement (§2.5.1) settles four of them; the user decided the o
 |---|---|---|---|
 | D17 | `TokenBudgetCut` when the top item alone exceeds the budget: empty, or keep the first item? | **Empty + counted** (`over_budget`), as recommended (§4.10). | `TokenBudgetCut` is in no default: it is a guard the consumer injects and sizes (≥ its largest tool). A guard that breaks its own bound is no guard; the conformance kit checks the bound. |
 | D19 | `TokenBudgetCut`: stop at the first item that does not fit, or skip ahead to smaller ones? | **Stop**, as recommended; documented as the reason it is not a main cut (§4.10). | Measured: as the main cut a 2k budget gives 0.910 vs 0.970 for k=3 at the same ~1.6k tokens, because it stops early. As a guard it must not reorder the consumer's ranking. Skip-ahead = the consumer's own `IItemCut`. |
-| D20 | `coarse` ships with no numbers until the `compact` measurement lands? | **Superseded.** The `coarse` variant (per-value records + token budget) is **withdrawn**; the coarse default is `small-set-jev` with measured numbers: one record per tool + rerank-all + `FixedItemsCut(3)` (§7.4). | Per-value records measured worse (§7.3.2); the token budget measured worse than k (§4.10); one record + Jev over the whole set: 0.970 at ~1.6k tokens. The only required argument left, `poolItems`, is the consumer's tool count, not a tuned number. |
+| D20 | `coarse` ships with no numbers until the `compact` measurement lands? | *Superseded again by D55 (§17.17): `small-set-jev` is withdrawn; nothing ships a measured cut.* **Superseded.** The `coarse` variant (per-value records + token budget) is **withdrawn**; the coarse default is `small-set-jev` with measured numbers: one record per tool + rerank-all + `FixedItemsCut(3)` (§7.4). | Per-value records measured worse (§7.3.2); the token budget measured worse than k (§4.10); one record + Jev over the whole set: 0.970 at ~1.6k tokens. The only required argument left, `poolItems`, is the consumer's tool count, not a tuned number. |
 | D21 | Return which enum values matched with a coarse tool (`metadata.matchedValues`)? | **No** — not in this PR. | No default writes per-value records any more, so no default has values to report. A consumer that injects `EnumValueToolIndexer` and wants the hint justifies a new output contract with its own measurement. |
 
 **Decided by the user on 2026-10-05** (each with the recommended option):
 
 | # | Question | Decision |
 |---|---|---|
-| D16 | The `faceted*` defaults use schema-derived records (`summary` + `parameters`); `ParametersFacet` is **not yet measured** on the fine-grained set. Accept shipping them on the closest measured layouts' figures (LLM-generated `operation` / `object` facets and name-derived facets, both 0.966 at k=5 hybrid, hub spike `spike-facets`) until the consumer check runs? | **Yes** — the name-derived `object` record depends on one server's naming; a default may not. The measured layout stays one line away for a verb-first server (`NameTailFacet`, §7.5). If the check shows `parameters` worse, the fix is a better schema-derived facet, not the convention. Not settled by `compact`: that set has no fine-grained facets. |
+| D16 | *Read with D55 (§17.17): the schema-derived records stay; no figure is cited as their justification — the consumer measures them.* The `faceted*` defaults use schema-derived records (`summary` + `parameters`); `ParametersFacet` is **not yet measured** on the fine-grained set. Accept shipping them on the closest measured layouts' figures (LLM-generated `operation` / `object` facets and name-derived facets, both 0.966 at k=5 hybrid, hub spike `spike-facets`) until the consumer check runs? | **Yes** — the name-derived `object` record depends on one server's naming; a default may not. The measured layout stays one line away for a verb-first server (`NameTailFacet`, §7.5). If the check shows `parameters` worse, the fix is a better schema-derived facet, not the convention. Not settled by `compact`: that set has no fine-grained facets. |
 | D18 | `RequiredEnumDiscriminator` with several qualifying parameters: no fan-out + `IndexReport.notes`, or fan out over all of them? | **No fan-out + note** — goal 3, never guess; `NamedDiscriminator` or the consumer's selector resolves it. Lower stakes now: it only serves `EnumValueToolIndexer`, which is in no default. |
 | D22 | `ToolItem` carries the raw `inputSchema` (for consumer strategies) and `parameters` replaces `parameterNames`. | **Yes** — without the raw schema a consumer cannot build a profile for a server whose signal sits elsewhere in the schema (goal 9); `ToolItem` is new in this spec, so nothing breaks. |
-| D23 | `small-set-jev` takes `poolItems` (≥ the tool count) as a required argument and the composition root checks it at startup. Alternative: a new `ICandidatePool` that always takes the whole store (no number at all). | **Required `poolItems` + startup check** — no new strategy class, same shape as 30.1.0's `RerankAllRetrieval.maxCandidates` ("configured, never derived"). A whole-store pool can be added later if consumers ask. |
+| D23 | *Withdrawn by D55 (§17.17), with `small-set-jev` and `assertSmallSetPool`; `faceted-rerank` takes a required `poolItems`, unchecked against the tool count (any depth is a valid choice).* `small-set-jev` takes `poolItems` (≥ the tool count) as a required argument and the composition root checks it at startup. Alternative: a new `ICandidatePool` that always takes the whole store (no number at all). | **Required `poolItems` + startup check** — no new strategy class, same shape as 30.1.0's `RerankAllRetrieval.maxCandidates` ("configured, never derived"). A whole-store pool can be added later if consumers ask. |
 
 ### 17.4 Decided by the user on 2026-10-05 — S1–S9
 
@@ -3658,7 +3849,7 @@ them.
 | The probability reranker's wording constants are renamed too (`PROBABILITY_RERANK_DEFAULT_*`, aliases kept); the decision vocabulary (`DecisionRequest`, answers, `DecisionError`) is **not** renamed | the constants belong to the renamed reranker; the vocabulary is shared by both decisions (`DecisionError`) or still exactly the probability decision's request/answers — renaming it would churn every implementer for nothing | §1, §13 |
 | `wrapDecisionModel` → `wrapProbabilityDecision` stays in libs; new `wrapRelevanceDecision` beside it | decided by its imports: only `llm-agent`; it wraps a decision, not an `IReranker`; its caller is server-libs. It is a usage-logging adapter like `usage-logging-embedder`, not a reranker | §5.4 |
 | `assertPositiveInteger` copied into `llm-agent-reranker` | no cycle (libs depends on the reranker package) and no non-contract export in `llm-agent` | §5.4 |
-| A named variant is checked against the provider's **kind**: `faceted-cohere` ↔ relevance; `faceted-jev`, `small-set-jev` ↔ probability. `compose` with `reranker: decision` takes either | a name that cites one model's measurement must not silently run the other; the factories' argument types say the same in code | §6.2, §7.4, §7.5 |
+| *Withdrawn by D55 (§17.17): `faceted-rerank` takes either kind.* A named variant is checked against the provider's **kind**: `faceted-cohere` ↔ relevance; `faceted-jev`, `small-set-jev` ↔ probability. `compose` with `reranker: decision` takes either | a name that cites one model's measurement must not silently run the other; the factories' argument types say the same in code | §6.2, §7.4, §7.5 |
 | An explicit `question` / `task` is refused when the provider's kind is relevance | a relevance decision reads no wording; accepting it would be a silent no-op | §6.2 |
 | `RelevanceReranker` / `SapAiCoreRelevanceDecision` do **no** [0, 1] check | the score is not a probability (§3.9); only finiteness is checked | §5.2, §5.3 |
 | Cleanup failures: the stale ids are written **ahead** on the canonical, then settled | a crash between delete and list-update cannot lose an id; retrying a deleted id is a no-op. The cost is one extra canonical write when an item had stale records | §3.3 |
@@ -3672,7 +3863,7 @@ them.
 | D24 | **A decision and a reranker are different; a probability and a relevance are different decisions** (goal decision 2026-10-05). `IDecisionModel` → `IProbabilityDecision`; new `IRelevanceDecision`; `DecisionReranker` → `ProbabilityReranker`; new `RelevanceReranker`. Old names are deprecated aliases until the next major, with a migration note. | §3.9, §5, §13 |
 | D25 | **Packages by role:** `typesafe-decision` unchanged (`IProbabilityDecision`); new `@mcp-abap-adt/sap-aicore-decision` implements `IRelevanceDecision` through AI Core `/v2/inference/deployments/<deploymentId>/rerank`. `SapAiCoreDecisionModel` is withdrawn. | §5.3, §5.4 |
 | D26 | **All rerankers in ONE new package `@mcp-abap-adt/llm-agent-reranker`** (goal decision 2026-10-05) — they carry no vendor specifics: `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`. libs re-exports the old names and paths as deprecated aliases; retrieval strategies stay in libs and use rerankers only through `IReranker`. | §5.4, §11, §13 |
-| D27 | **One `decision:` section;** the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance); `reranker: decision` builds the matching reranker. Wording options apply only to probability and are refused for relevance at startup. `faceted-cohere` = relevance; `faceted-jev`, `small-set-jev` = probability. A threshold on relevance scores is the consumer's calibration; no default uses one. | §6.2, §7.4 |
+| D27 | **One `decision:` section;** the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance); `reranker: decision` builds the matching reranker. Wording options apply only to probability and are refused for relevance at startup. *(The variant-to-kind part is withdrawn by D55, §17.17.)* A threshold on relevance scores is the consumer's calibration; no default uses one. | §6.2, §7.4 |
 | F1 (review) | **The caller's k caps every cut:** effective limit `min(requestedK, the cut's own limit)`, also after decomposition; `FixedItemsCut(n)` is a ceiling. The kit calls each shipped profile with k below its default and asserts ≤ k. | §3.4, §4.5, §4.9, §14.2 |
 | F3 (review) | *Companion parts superseded by D50 (§17.15): one store, `staleRecordIds` only.* **Cleanup failures are kept:** every stale delete's `Result` is checked (primary and companion); an item with a failed cleanup is never reported indexed; the ids not yet deleted stay on the canonical (`staleRecordIds`, `staleCompanionRecordIds`) and the next `index` / `remove` retries them. Failure handling, not a concurrency protocol (D13 stands). | §3.1, §3.3, §14 |
 | F4 (review, measured) | The default provider text stays **C0** (measured). How the provider text is composed becomes an injected strategy (`IToolTextComposer`); the schema-enriched C0e / C0s ship as strategies in no default, documented with the `compact` numbers (within noise, no winner). | §3.5, §7.3.1 |
@@ -3690,7 +3881,7 @@ them.
 
 | # | Decision | Where |
 |---|---|---|
-| D31 | **The server fills a bound tools profile from the MCP clients it uses, at startup.** Replaces the stated limit "the server inherits the builder's limit". On every path that hands clients to the builder through `withMcpClients` — ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin clients) or an injected `connectMcp` / `connectMcpWithDescriptors` seam — the server lists the clients' tools and fills the bound store through the shipped profile path (`fillToolsBinding` → `vectorizeMcpTools`, binding read from the store (D34) → `toolItemFromTool` + `IToolRecordKey` → `bound.index`), once per store, before it reports ready; `/health` and the small-set check read that status; failures follow the 30.1.0 tool-catalog policy (counted, logged, `degraded` — never a silent empty store). Workers reading the main store are not filled again. Without a bound profile nothing changes. The builder keeps its limit for `withMcpClients` / `withMcpServers` (no startup phase). *When a worker's store is filled is amended by D35 (§17.9).* | §6.1, §6.3, §3.8, §14.1 |
+| D31 | **The server fills a bound tools profile from the MCP clients it uses, at startup.** Replaces the stated limit "the server inherits the builder's limit". On every path that hands clients to the builder through `withMcpClients` — ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin clients) or an injected `connectMcp` / `connectMcpWithDescriptors` seam — the server lists the clients' tools and fills the bound store through the shipped profile path (`fillToolsBinding` → `vectorizeMcpTools`, binding read from the store (D34) → `toolItemFromTool` + `IToolRecordKey` → `bound.index`), once per store, before it reports ready; `/health` reads that status (the small-set check went with D55); failures follow the 30.1.0 tool-catalog policy (counted, logged, `degraded` — never a silent empty store). Workers reading the main store are not filled again. Without a bound profile nothing changes. The builder keeps its limit for `withMcpClients` / `withMcpServers` (no startup phase). *When a worker's store is filled is amended by D35 (§17.9).* | §6.1, §6.3, §3.8, §14.1 |
 | D32 | **A worker's fill keeps the identity its agent dispatches by** (review finding on D31). Filled from the shared clients → the same `_sharedMcpClientDescriptors`, `_configuredSlotCount` and `IToolNamespace` as the main fill, and the worker's builder receives those clients with the same descriptors (existing `withMcpServers`, one already-connected `IMcpServer` per client) and the server's namespace (`withToolNamespace`), so the stored names are the names it can call. Own `mcpClients` → no descriptors exist: array order on both sides. Own `mcp:` → its own builder fills and dispatches from one connection. No contract change. Also fixes 30.1.0 workers on the shared clients exposing `s<i>__<tool>` where the main catalog has `<label>__<tool>`. *For the user's review:* the `withMcpServers` adapter over an optional `descriptors` parameter on `withMcpClients` (a public builder change) — recommendation applied, §17.9 | §6.3, §3.8, §14.1 |
 | D33 | *Superseded by D50 (§17.15): intents and companion stores are removed.* **Companion storage per primary binding** (review finding on Tasks 22–23). The profile instance may be shared; each primary binding (main, each worker with its own `rag`) gets companion stores of its own, built by the server through `makeRag` with that primary's embedder; a binding that reads another's primary shares its companions. Separate stores, not a binding segment in `recordId`: they isolate reads as well as writes, with no contract change. *For the user's review:* a persistent (non-in-memory) companion store with a worker that has its own `rag` is refused at start, rather than deriving a second collection name — recommendation applied, §17.9 | §6.2, §7.3.3, §3.8, §14.1 |
 
@@ -3739,8 +3930,8 @@ persistent store is written by the consumer's deploy step).
 | # | Decision | Where |
 |---|---|---|
 | D41 | **A tools store is filled once, when its instance is created, and never refilled while running.** The main store: `_buildInfra`, once. A worker's own store: its construction (`buildSubAgent` without `injected`: the startup primary build or the lazy rebuild after a drain); a per-session re-wire never fills. No refill API, no fill memo, no retry: an incomplete fill is reported (`complete: false`; `/health` `degraded` for the main store; the summary line logged for a worker) and stays. A construction whose fill throws leaves no cached worker. Supersedes D36; amends D35 | §3.10, §6.3, §6.4, §14.1 |
-| D42 | *Amended by D46 (§17.12): `IToolsFillSource` has `fill` only.* **The fill source is a strategy the consumer injects**: `IToolsFillSource` (`fill` at creation, `toolsChanged` on a reconnect) with `ToolsFillContext` (binding, target, `indexLiveTools`, logger), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store like it (D34). Shipped: `live`, `corpus` (`ToolsCorpusLoader`), `prebuilt` (`PrebuiltToolsStore`), `consumer` (`ConsumerToolsFill`). YAML `rag.profiles.tools.fill`; a consumer's own through `toolsFillFactories`. Compatibility (`corpus`, `prebuilt`) is checked at creation and fails loudly; the profile and embedder fingerprints are the consumer's names (`ToolsCorpusIdentity`), because no contract carries one | §3.8, §3.10, §6.1, §6.2, §6.3 |
-| D43 | *Amended by D48 (§17.13): a deploy after an unfinished one rewrites the whole corpus; `prebuilt` refuses an unfinished store. Amended by D51 (§17.15): every deploy that is not unchanged deletes and rewrites in full; the service record lists ids, no record hashes; no companion stores (D50).* **Offline corpus API**: `buildToolsCorpus` (build step: provider tool definitions → records + vectors with the profile's own indexer and record writer over capture stores, and an embedder), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: any store with precomputed writes, in place, one current state, idempotent, write-ahead, a service record with the fingerprint, the corpus hash and record hashes). Reserved record key `serviceRecord`; `StagedRetrieval` drops a hit that carries it. Recommended: in-memory → `corpus`; persistent → `prebuilt` | §3.1, §4.3, §6.5, §7.8, §13 |
+| D42 | *Amended by D46 (§17.12): `IToolsFillSource` has `fill` only. Amended by D54 (§17.17): `prebuilt` is removed; three sources.* **The fill source is a strategy the consumer injects**: `IToolsFillSource` (`fill` at creation, `toolsChanged` on a reconnect) with `ToolsFillContext` (binding, target, `indexLiveTools`, logger), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store like it (D34). Shipped: `live`, `corpus` (`ToolsCorpusLoader`), `prebuilt` (`PrebuiltToolsStore`), `consumer` (`ConsumerToolsFill`). YAML `rag.profiles.tools.fill`; a consumer's own through `toolsFillFactories`. Compatibility (`corpus`, `prebuilt`) is checked at creation and fails loudly; the profile and embedder fingerprints are the consumer's names (`ToolsCorpusIdentity`), because no contract carries one | §3.8, §3.10, §6.1, §6.2, §6.3 |
+| D43 | *Amended by D54 (§17.17): `deployToolsCorpus`, the service record and `serviceRecord` are removed; `buildToolsCorpus` and `parseToolsCorpus` stay; the server loads the corpus at start.* *Amended by D48 (§17.13): a deploy after an unfinished one rewrites the whole corpus; `prebuilt` refuses an unfinished store. Amended by D51 (§17.15): every deploy that is not unchanged deletes and rewrites in full; the service record lists ids, no record hashes; no companion stores (D50).* **Offline corpus API**: `buildToolsCorpus` (build step: provider tool definitions → records + vectors with the profile's own indexer and record writer over capture stores, and an embedder), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: any store with precomputed writes, in place, one current state, idempotent, write-ahead, a service record with the fingerprint, the corpus hash and record hashes). Reserved record key `serviceRecord`; `StagedRetrieval` drops a hit that carries it. Recommended: in-memory → `corpus`; persistent → `prebuilt` | §3.1, §4.3, §6.5, §7.8, §13 |
 | D44 | *Superseded by D46 (§17.12): no source answers `toolsChanged`; a bound store is not written on a reconnect.* **`toolsChanged` is the source's answer**: `live` and `consumer` re-index what is listed through the profile, as 30.1.0; `corpus` and `prebuilt` write nothing and log a warning (the user's decision: `ToolsCorpusLoader` fills the in-memory store at creation and does nothing else; the process never writes a prebuilt store). D40 stands: a tool no longer listed keeps its records | §3.10, §6.3, §6.4 |
 | D45 | **Single-flight worker construction and the drain ordering move out of this PR** — a pre-existing 30.1.0 race unrelated to profiles, described in §15 for a separate issue. D37 and its plan task are withdrawn here; no remaining task depends on them | §6.3, §13, §15 |
 
@@ -3751,30 +3942,66 @@ to `toolsChanged`*).
 
 | # | Decision | Where |
 |---|---|---|
-| D46 | **No reaction to `toolsChanged` for a bound store.** Until its collections are filled the pipeline and its MCP do not work, so the tool list cannot change under a working pipeline; the only case is an MCP server plugged in at runtime, and a consumer who builds such a pipeline does its own checks and filling in it. So: `IToolsFillSource` loses `toolsChanged` — the contract is `fill`, once at instance creation; `McpToolRegistry.revectorizeTools` with a bound store (found through decorators) writes nothing, calls no source, lists nothing, and logs one line under the `mcp` debug area (no warning); `vectorizeMcpTools` is reached for a bound store only from creation paths. `corpus` / `prebuilt` never write on `toolsChanged` by construction; `ConsumerToolsFill`: the library never writes. **Without a profile, 30.1.0 behaviour is unchanged** (the legacy re-vectorize stays). Supersedes D44; amends D34, D40, D42 | §3.8, §3.10, §6.1, §6.3, §6.4, §7.6, §13, §14.1, §15 |
-| D47 | *(1) amended by D50 (§17.15): no companion set to check.* **Approved as proposed:** (1) the corpus / prebuilt fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks (the binding's `profileName`, the companion set, the corpus format and one vector dimension); (2) a worker construction whose fill throws drops that worker's cache entry before rethrowing; (3) a worker with its own `rag` and its own clients is refused when the fill source is `corpus` or `prebuilt` | §3.10, §6.2, §6.3, §14.1 |
+| D46 | **No reaction to `toolsChanged` for a bound store.** Until its collections are filled the pipeline and its MCP do not work, so the tool list cannot change under a working pipeline; the only case is an MCP server plugged in at runtime, and a consumer who builds such a pipeline does its own checks and filling in it. So: `IToolsFillSource` loses `toolsChanged` — the contract is `fill`, once at instance creation; `McpToolRegistry.revectorizeTools` with a bound store (found through decorators) writes nothing, calls no source, lists nothing, and logs one line under the `mcp` debug area (no warning); `vectorizeMcpTools` is reached for a bound store only from creation paths. `corpus` never writes on `toolsChanged` by construction (`prebuilt` removed by D54); `ConsumerToolsFill`: the library never writes. **Without a profile, 30.1.0 behaviour is unchanged** (the legacy re-vectorize stays). Supersedes D44; amends D34, D40, D42 | §3.8, §3.10, §6.1, §6.3, §6.4, §7.6, §13, §14.1, §15 |
+| D47 | *(1) amended by D50 (§17.15): no companion set to check. (1), (3) amended by D54 (§17.17): `prebuilt` is removed; `corpus` also checks `dimensions` against the store's declared one.* **Approved as proposed:** (1) the corpus / prebuilt fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks (the binding's `profileName`, the companion set, the corpus format and one vector dimension); (2) a worker construction whose fill throws drops that worker's cache entry before rethrowing; (3) a worker with its own `rag` and its own clients is refused when the fill source is `corpus` or `prebuilt` | §3.10, §6.2, §6.3, §14.1 |
 
 ### 17.13 Review finding on 2026-10-05 — an unfinished corpus deploy is rewritten in full
 
 | # | Decision | Where |
 |---|---|---|
-| D48 | *Generalized by D51 (§17.15): every deploy that is not unchanged rewrites in full; the hash-skip for a `final` record is withdrawn.* **A deploy after an unfinished one rewrites the whole corpus.** The service record carries `state: 'pending' \| 'final'`; the write-ahead record (`pending`) is written before the first record write, so any interruption leaves it set. When the record read at the start is not `final` (or absent), `deployToolsCorpus` does not trust its per-record hashes — the unfinished run may have overwritten or deleted any record they describe — and writes every record of the requested corpus, deletes the listed and pending ids the corpus does not hold, then finalizes. When it is `final`, the hash-skip optimisation stays (and a matching `corpusHash` answers `unchanged`). `PrebuiltToolsStore` refuses a store whose record is not `final`, loudly at instance creation. One current state: no journals, no generations (the user's principle). Amends D43 | §3.10, §6.5, §14.1 |
+| D48 | *Withdrawn by D54 (§17.17): no deploy step, no service record.* *Generalized by D51 (§17.15): every deploy that is not unchanged rewrites in full; the hash-skip for a `final` record is withdrawn.* **A deploy after an unfinished one rewrites the whole corpus.** The service record carries `state: 'pending' \| 'final'`; the write-ahead record (`pending`) is written before the first record write, so any interruption leaves it set. When the record read at the start is not `final` (or absent), `deployToolsCorpus` does not trust its per-record hashes — the unfinished run may have overwritten or deleted any record they describe — and writes every record of the requested corpus, deletes the listed and pending ids the corpus does not hold, then finalizes. When it is `final`, the hash-skip optimisation stays (and a matching `corpusHash` answers `unchanged`). `PrebuiltToolsStore` refuses a store whose record is not `final`, loudly at instance creation. One current state: no journals, no generations (the user's principle). Amends D43 | §3.10, §6.5, §14.1 |
 
 ### 17.14 Review finding on 2026-10-05 — an empty corpus is valid
 
 | # | Decision | Where |
 |---|---|---|
-| D49 | **An empty tools corpus is valid.** `buildToolsCorpus` with no items builds a corpus of zero records whose manifest has `items: 0`, `records: 0` and no `dimensions`; `parseToolsCorpus` accepts it and checks dimensions only when there are records. `deployToolsCorpus` of an empty corpus runs the same pending → final protocol: deletes every listed and pending record and finalizes a zero-item manifest (the service record's vector keeps the store's previous service-record dimension; an empty corpus into a store with no service record throws before any write). `ToolsCorpusLoader` and `PrebuiltToolsStore` with an empty corpus report a complete catalog of 0 tools. So a consumer that removes every tool can deploy the replacement corpus instead of keeping the old one. Amends D43, D48 | §6.5, §14.1 |
+| D49 | *Amended by D54 (§17.17): the build half stands; the deploy half is withdrawn — at start an empty corpus clears the store and writes nothing.* **An empty tools corpus is valid.** `buildToolsCorpus` with no items builds a corpus of zero records whose manifest has `items: 0`, `records: 0` and no `dimensions`; `parseToolsCorpus` accepts it and checks dimensions only when there are records. `deployToolsCorpus` of an empty corpus runs the same pending → final protocol: deletes every listed and pending record and finalizes a zero-item manifest (the service record's vector keeps the store's previous service-record dimension; an empty corpus into a store with no service record throws before any write). `ToolsCorpusLoader` and `PrebuiltToolsStore` with an empty corpus report a complete catalog of 0 tools. So a consumer that removes every tool can deploy the replacement corpus instead of keeping the old one. Amends D43, D48 | §6.5, §14.1 |
 
 ### 17.15 Decided by the user on 2026-10-05 — intents and companion stores removed; the corpus deploy written in full
 
 | # | Decision | Where |
 |---|---|---|
 | D50 | **Intents are removed entirely** (goal decision 2026-10-05, which replaces the earlier rows on intents and generated variants). They did not justify themselves: within noise without a reranker, no better with one; the reranker reads the provider text better without them; they cost LLM generation at build, regeneration and audits (one audit found poisoned intents); and they mislead (`CreateDdl`: the generated "create database view" is a different object type). Records are built only from what the provider exports (`FacetedToolIndexer` with `SummaryFacet` / `ParametersFacet`, `NameTailFacet` opt-in, `EnumValueToolIndexer` opt-in, `IToolTextComposer`). Removed with them, since they existed only for intents: the `intent` record kind, `IntentRecordIndexer`, `IntentCompanionIndexer`, `IToolIntentSource`, `StaticIntentSource`, `LlmIntentSource`, the intent placements; **companion stores** — `CollectionStore.companions`, `ComposedToolsProfileOptions.companions`, `RetrievalSource.role` / `itemsOf` (`variants` sources), per-binding companion storage (D33) and its persistent-companion refusal, companion handling in the record writer, `remove` and replacement; the reserved keys `companionRecordIds`, `staleCompanionRecordIds` and `generated` (`IndexedRecord.generated`); the YAML `intents` key (a leftover one is refused at startup); the corpus's companion parts (`ToolsCorpusManifest.companions`, `ToolsCorpusRecord.store`, `buildToolsCorpus`'s `companions`). Supersedes D3, S2, S7, D33, the §17.1 line on intents' home, the §17.9 persistent-companion choice; amends F3 and D47(1) | §1, §2.1, §3.1–§3.5, §3.8, §3.10, §4.4, §4.6, §6.2–§6.5, §7.2–§7.4, §7.6, §7.8, §10.3, §11, §14 |
-| D51 | **The corpus deploy writes the whole corpus — no per-record diffing** (approved by the user). Final record with the same corpus hash and identity → unchanged, no write. Otherwise: write ahead `pending` listing every id the store holds or may hold (old ∪ new); delete every id the old service record lists (pending ones included); write the whole corpus; finalize with the corpus's ids. The service record drops its per-record `hashes`; `ToolsCorpusDeployReport.upserted` → `written`. Deleting first is what makes the replacement whole on a merging store (`InMemoryRag`, `VectorRag` merge metadata on an in-place upsert); verified that `VectorRag.deleteByIdRaw` and `InMemoryRag`'s delete remove the whole slot (§6.5). Empty corpus (D49) unchanged in rule: deletes everything, keeps the store's service-record dimension. Generalizes D48; amends D43 | §6.5, §7.8, §14.1 |
+| D51 | *Withdrawn by D54 (§17.17): no deploy step; the load at start clears the store and writes the corpus.* **The corpus deploy writes the whole corpus — no per-record diffing** (approved by the user). Final record with the same corpus hash and identity → unchanged, no write. Otherwise: write ahead `pending` listing every id the store holds or may hold (old ∪ new); delete every id the old service record lists (pending ones included); write the whole corpus; finalize with the corpus's ids. The service record drops its per-record `hashes`; `ToolsCorpusDeployReport.upserted` → `written`. Deleting first is what makes the replacement whole on a merging store (`InMemoryRag`, `VectorRag` merge metadata on an in-place upsert); verified that `VectorRag.deleteByIdRaw` and `InMemoryRag`'s delete remove the whole slot (§6.5). Empty corpus (D49) unchanged in rule: deletes everything, keeps the store's service-record dimension. Generalizes D48; amends D43 | §6.5, §7.8, §14.1 |
 
 ### 17.16 Review finding on 2026-10-05 — `FallbackRag` precomputed capability (dispatched by the user)
 
 | # | Decision | Where |
 |---|---|---|
-| D52 | **`FallbackRag` exposes `upsertPrecomputedRaw` only when its primary (authoritative) writer has it.** Before, it always exposed it and, over a raw-only primary, called the primary's `upsertRaw` — the vector dropped, the text re-embedded silently, so the corpus steps' capability check passed and they then embedded. The fallback mirror is unchanged; `upsertManyPrecomputedRaw` is not added. **The corpus steps also check the resolved backend:** `deployToolsCorpus` and `ToolsCorpusLoader` require a precomputed write on the given store's writer **and** on the innermost store's writer (through `IRagDecorator.inner`, ≤ 16 levels), and throw before any write or embedding call otherwise. No contract change; a behaviour change of one implementation (§13 note, changelog "Fixed"). Tests: deploy and loader through `FallbackRag` over a raw-only writer → rejected, nothing written, no embedder call; over a precomputed-capable writer → work with no embedding call; a decorator claiming the write over a raw-only store → rejected; `FallbackRag` writer shape for both primaries | §3.8, §3.10, §6.5, §10.4, §11, §13, §14.1 |
+| D52 | *Read with D54 (§17.17): the corpus step is `ToolsCorpusLoader` only.* **`FallbackRag` exposes `upsertPrecomputedRaw` only when its primary (authoritative) writer has it.** Before, it always exposed it and, over a raw-only primary, called the primary's `upsertRaw` — the vector dropped, the text re-embedded silently, so the corpus steps' capability check passed and they then embedded. The fallback mirror is unchanged; `upsertManyPrecomputedRaw` is not added. **The corpus steps also check the resolved backend:** `deployToolsCorpus` and `ToolsCorpusLoader` require a precomputed write on the given store's writer **and** on the innermost store's writer (through `IRagDecorator.inner`, ≤ 16 levels), and throw before any write or embedding call otherwise. No contract change; a behaviour change of one implementation (§13 note, changelog "Fixed"). Tests: deploy and loader through `FallbackRag` over a raw-only writer → rejected, nothing written, no embedder call; over a precomputed-capable writer → work with no embedding call; a decorator claiming the write over a raw-only store → rejected; `FallbackRag` writer shape for both primaries | §3.8, §3.10, §6.5, §10.4, §11, §13, §14.1 |
+
+### 17.17 Decided by the goal on 2026-10-05 — layers, corpus flow, no tuned numbers (D53–D56); S10 open
+
+From the goal's three newest decisions of 2026-10-05 (layers; corpus flow; measurements).
+
+| # | Decision | Where |
+|---|---|---|
+| D53 | **The RAG implementations' home is `@mcp-abap-adt/llm-agent-rag`.** Every RAG implementation in `@mcp-abap-adt/llm-agent` (`rag/`, `resilience/fallback-rag.ts`) is classified contract vs implementation (§11.3): the implementations — `VectorRag`, `InMemoryRag`, `FallbackRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry` + `ragStoreKey`, the `InMemoryRag` / `VectorRag` providers and `SimpleRagProviderRegistry`, the five search strategies, the six preprocessors / enrichers, the two query expanders, the RAG collection tools — are exported from `llm-agent-rag`; the `llm-agent` root keeps them as `@deprecated` aliases until the next major; `llm-agent-rag` re-exports them from the new subpath `@mcp-abap-adt/llm-agent/rag-implementations`; every in-repo importer above `llm-agent-rag` switches. The contract types inside implementation files (`IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher`) move to `interfaces/`. Stays, with the reason in §11.3: the identity filter, the error classes and correction-metadata convention, the store kit the store packages below `llm-agent-rag` need (`AbstractRagProvider` + its edit / id strategies and catalog helpers, the query embeddings, the retrieval-embedder adapters), the non-RAG resilience decorators. `tools-rag-handle` stays in server-libs, `HealthChecker` in libs (the goal). The conformance kit stays with the contracts (§14.2) | §3.8, §10.4, §11, §11.2, §11.3, §13, §14.1, §15 |
+| D54 | **The server loads the ready corpus at start.** The consumer's build step makes the corpus (`buildToolsCorpus`, libs); the server's `corpus` source (`ToolsCorpusLoader`, libs) checks it against the server's configured identity (profile, embedder, the store's declared `dimension`) and the store's capabilities (precomputed writes on the writer and the resolved backend; `clearAll`), then clears the store, writes the corpus with its precomputed vectors and logs one line — in-memory and persistent stores alike. A store without `clearAll` is refused, not loaded by deleting the corpus's ids (the store may hold others). An interrupted load repeats at the next start. **Removed:** `deployToolsCorpus`, `ToolsCorpusDeployReport`, `PrebuiltToolsStore` and the `prebuilt` source / YAML key (a leftover is refused), the service record (pending / final, ids, hashes), `TOOLS_CORPUS_RECORD_ID`, the reserved key `serviceRecord` and `StagedRetrieval`'s drop of it, the `prebuilt`-over-`in-memory` refusal; D48 and D51 withdrawn; D49 keeps its build half (an empty corpus clears the store at start). Fill sources: `live`, `corpus`, `consumer`. Layers: build step → the consumer (+ the libs API); load at start → the server, through the corpus source in libs (§11.2 item 4). Supersedes D43's deploy and service-record parts; amends D42, D46, D47, D52 | §3.1, §3.8, §3.10, §4.3, §6.2–§6.6, §7.8, §10.4, §11, §13, §14.1, §15 |
+| D55 | **Nothing that ships carries a tuned number.** The measurements were made in a consumer and are not in this repository, so they justify no default: no strategy class and no named composition carries a measured number; a number it needs is a required argument from the consumer or a generic default (§7.1). The evidence (§2) stays as motivation, pointing to cloud-llm-hub's `research/tool-rag-accuracy` branch. Named compositions: `baseline`, `faceted` (pool and cut: the caller's k, or the consumer's `poolItems` / `maxItems`), `faceted-rerank` (the consumer's `IReranker`, a required `poolItems`, cut: the caller's k or `maxItems`). **Withdrawn**, because without their measured numbers nothing distinguished them: `faceted-cohere`, `faceted-jev` (vendor names over `faceted-rerank`), `small-set-jev` (= 30.1.0's `rerank-all`, or `compose` with `poolItems` ≥ the tool count) with `assertSmallSetPool` and the YAML `smallSet` key, and the variant-to-decision-kind check. Leftover YAML names are refused, naming the replacement. Supersedes D11, D20's composition, D23, the variant part of D27 and §17.5's variant-kind choice; D16 read with it | §2, §4.9, §5.2, §5.5, §6.2, §7.1, §7.4, §7.5, §8.5, §8.6, §11.2, §13, §14 |
+| D56 | **Generic defaults: the caller's k.** The final cut defaults to the caller's k (`TopItemsCut`, as before); the candidate pool defaults to **k items** of the (sub-)query (`ItemPool()`, i.e. `k × maxRecordsPerItem` records) — the fewest that can fill the cut, guessing no catalog size. So `ICandidatePool` takes k: `items(requestedK)`, `recordsToFetch(requestedK, maxRecordsPerItem)` (new in this spec — no released contract changes); `pool` is optional in `StagedRetrieval`, `ComposedToolsProfile` and `SharedItemsProfile`. Kept as they were, not retrieval tuning: the ~4 chars/token size estimate, `RelevanceReranker`'s 30.1.0 batching limits | §3.4, §3.8, §4.2, §4.4, §4.9, §7.1, §7.2, §8.6, §14.1 |
+
+**S10 — open for the user: the goal's "deprecated re-exports from the old place" and a move of
+the files in this PR exclude each other.**
+
+- **The conflict.** `@mcp-abap-adt/llm-agent-rag` depends on `@mcp-abap-adt/llm-agent` (it
+  imports the contracts). For `llm-agent` to keep exporting a class whose file is in
+  `llm-agent-rag`, it would have to import `llm-agent-rag` — a package cycle: `tsc -b` cannot
+  order the two, a clean build fails, and at run time each package's module graph would load the
+  other. The store and embedder packages are in the same position: `llm-agent-rag` depends on them
+  (optional peers), so they cannot import it either.
+- **What this spec does (recommended, D53):** the **public home** moves now — `llm-agent-rag`
+  exports every implementation, every in-repo importer above it uses that path, the old path is a
+  deprecated alias, and the contract types leave the implementation files; the **files** move in
+  the next major, when the aliases are removed anyway. Every goal statement holds except the
+  physical location of the source in this release: nothing breaks for a 30.1.0 consumer (goal:
+  "nothing changes for current consumers"), the release stays minor, no cycle. The code edits of
+  this PR to `VectorRag` (F1) and `FallbackRag` (D52) therefore land in `packages/llm-agent/src/`.
+- **The alternative:** move the files now and remove the names from `@mcp-abap-adt/llm-agent`
+  without aliases — a breaking change (a major release; every consumer importing `VectorRag`,
+  `InMemoryRag`, `FallbackRag` from `llm-agent` changes its imports; `OllamaRag` in
+  `ollama-embedder` is removed or moved in the same release, since it extends `VectorRag` from
+  below `llm-agent-rag`).
+- **Also reported, not resolved here:** the store kit (`AbstractRagProvider` and what it builds on,
+  the query embeddings, the retrieval-embedder adapters) stays in `llm-agent` in either option —
+  moving it needs a package below both `llm-agent-rag` and the store packages (§11.2 item 1).
