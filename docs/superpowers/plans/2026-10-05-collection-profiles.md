@@ -9009,13 +9009,16 @@ In `retrieval-wiring.test.ts`, rename every `makeDecisionModel:` key to `makePro
 
 In `resolve-retrieval.test.ts`: rename `makeDecisionModel:` → `makeProbabilityDecision:` (~82, ~112) and change the expected message (~159) to `/BuildAgentDeps\.makeProbabilityDecision is required/`. In `session-history.test.ts` (~237): `makeDecisionModel:` → `makeProbabilityDecision:`.
 
-In `__typechecks__/construction-seams.ts`, append:
+In `__typechecks__/construction-seams.ts` (in `tsconfig.typecheck.json`, so `npm run typecheck` checks it under `noUnusedLocals`): add `IProbabilityDecision` to the file's first line, `import type { IEmbedder, ILlm, IRag } from '@mcp-abap-adt/llm-agent';` → `import type { IEmbedder, ILlm, IProbabilityDecision, IRag } from '@mcp-abap-adt/llm-agent';`, then append at the end of the file (after its `void _embedders;`):
 ```ts
-// add IProbabilityDecision to the file's existing `import type { … } from '@mcp-abap-adt/llm-agent'`
 declare const decision: IProbabilityDecision;
 // D30: the new seam, and the deprecated alias of the same type, both compile on their own.
 const _probabilitySeam: BuildAgentDeps = { ..._allSeams, makeProbabilityDecision: async () => decision };
 const _aliasSeam: BuildAgentDeps = { ..._allSeams, makeDecisionModel: async () => decision };
+
+// referenced, like the fixtures above, so noUnusedLocals (TS6133) stays quiet
+void _probabilitySeam;
+void _aliasSeam;
 ```
 
 In the server package: `git mv packages/llm-agent-server/src/composition/__tests__/make-decision-model.test.ts packages/llm-agent-server/src/composition/__tests__/make-probability-decision.test.ts`; in it, import `createMakeProbabilityDecision`, `type ProbabilityProviderCtors` from `'../make-probability-decision.js'`, use them in `harness`, and rename `describe('makeDecisionModel'` → `describe('makeProbabilityDecision'`. In `model-resolver.test.ts`, the "hands out all four seams" case becomes "all five": add `'makeProbabilityDecision'` to the list, and add:
@@ -9056,7 +9059,7 @@ Expected: FAIL — `makeProbabilityDecision` is not a member of `BuildAgentDeps`
     cfg: SmartServerDecisionConfig,
   ) => Promise<IProbabilityDecision>;
 ```
-(import `IProbabilityDecision` from `@mcp-abap-adt/llm-agent` in place of `IDecisionModel` there.)
+(import: in the `@mcp-abap-adt/llm-agent` VALUE import (L49–66), replace `type IDecisionModel,` (L55) with `type IProbabilityDecision,` — `IDecisionModel` has no other use in the file (L383 was this member), so leaving it is a TS6133 under `noUnusedLocals`.)
 
 Beside `assertConstructionSeams`:
 ```ts
@@ -9083,7 +9086,7 @@ In the constructor, right after `assertConstructionSeams(deps);`: `const makePro
 ```
 and in `start()` pass `makeProbabilityDecision: this._deps.makeProbabilityDecision,` to `resolveRetrievalStrategies`. Nothing else reads the alias: the server holds the one resolved seam.
 
-`resolve-retrieval.ts`: rename the input field `makeDecisionModel` → `makeProbabilityDecision` (typed `(cfg) => Promise<IProbabilityDecision>`), its two uses (`if (!input.makeProbabilityDecision) …`, `await input.makeProbabilityDecision(input.decisionCfg)`), and
+`resolve-retrieval.ts`: add `IProbabilityDecision` to the L1–6 `import type { … } from '@mcp-abap-adt/llm-agent'` — keep `IDecisionModel` there: the 30.1.0 closure's `let decisionModel: IDecisionModel | undefined` (L50) still uses it until Task 22 replaces the closure (the same type — `IDecisionModel` is the deprecated alias since Task 4A — so `wrapDecisionModel(await input.makeProbabilityDecision(…))` assigns cleanly). Rename the input field `makeDecisionModel` → `makeProbabilityDecision` (typed `(cfg) => Promise<IProbabilityDecision>`), its two uses (`if (!input.makeProbabilityDecision) …`, `await input.makeProbabilityDecision(input.decisionCfg)`), and
 ```ts
 const MISSING_SEAM =
   'BuildAgentDeps.makeProbabilityDecision is required: the config asks for a probability decision, and the library constructs none from configuration. Supply it from your composition root.';
@@ -9116,7 +9119,7 @@ node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__
 npm run typecheck
 git grep -n "makeDecisionModel\|createMakeDecisionModel\|make-decision-model" -- packages ':!**/CHANGELOG.md'
 ```
-Expected: PASS; typecheck clean (`_aliasSeam` compiles — `@deprecated` is not an error); the grep prints only the `@deprecated` member and `probabilityDecisionSeam` in `smart-server.ts` and the alias / both-supplied tests.
+Expected: PASS; typecheck clean (`_aliasSeam` compiles — `@deprecated` is not an error); the grep prints only the `@deprecated` member and `probabilityDecisionSeam` in `smart-server.ts`, `_aliasSeam` in `__typechecks__/construction-seams.ts`, and the alias / both-supplied / binary-supplies-only-the-new-seam tests.
 
 - [ ] **Step 5: Commit**
 
@@ -10113,14 +10116,16 @@ export async function decisionRerankerFor(
 In `resolve-retrieval.ts` (the 30.1.0 `rag.retrieval` resolver): `ResolveRetrievalInput` extends `DecisionSeams` (drops its own `decisionCfg` / `makeProbabilityDecision` fields — same names, same types as after Task 20A, so `smart-server.ts` call sites compile; the missing-seam message stays `BuildAgentDeps.makeProbabilityDecision is required: …`, so the Task 20A test keeps passing); replace the `decisionModel` / `decisionReranker` closure with `const decisions = decisionBuilders(input);` and a cache keyed by `JSON.stringify([preset.criteria, task])` over `decisionRerankerFor(decisions, { task, criteria: preset.criteria, explicit: cfg.question !== undefined || cfg.task !== undefined })`; import `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `@mcp-abap-adt/llm-agent-reranker` (libs keeps `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`). Under `typesafe` nothing changes (golden: the existing `retrieval-*` tests pass untouched).
 
 Everything the replaced closure used goes with it — `noUnusedLocals` (`tsconfig.base.json`) fails the build on any leftover. In today's `resolve-retrieval.ts` (read it):
-- L1–6 `@mcp-abap-adt/llm-agent` type import: drop `IDecisionModel` (L2; its only use was the closure's `let decisionModel` at L50); keep `ILlm`, `IReranker`, `IRetrievalStrategy`;
+- L1–6 `@mcp-abap-adt/llm-agent` type import: drop `IDecisionModel` (L2; its only use was the closure's `let decisionModel` at L50) and `IProbabilityDecision` (added in Task 20A for the `makeProbabilityDecision` field, which now comes from `DecisionSeams`; nothing else in the file names it); keep `ILlm` (`resolveLlm`), `IReranker` (the reranker cache and `let reranker`), `IRetrievalStrategy`;
 - L7–16 `@mcp-abap-adt/llm-agent-libs` import: keep only `EmbeddingRetrieval`, `RerankAllRetrieval`, `RerankedRetrieval`; drop `DecisionReranker` (L8) and `wrapDecisionModel` (L15) — `decisionRerankerFor` / `decisionBuilders` build and wrap now; `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` move to the `@mcp-abap-adt/llm-agent-reranker` import;
+- L17–20 `./decision-config.js` type import: drop `SmartServerDecisionConfig` (its only uses were the two dropped members below); keep `SmartServerRetrievalConfig` (`retrieval?`) — the import becomes `import type { SmartServerRetrievalConfig } from './decision-config.js';`;
+- add `import { type DecisionSeams, decisionBuilders, decisionRerankerFor } from './decision-seams.js';` and `import { LlmReranker, PASSAGE_QUESTION, TOOL_QUESTION } from '@mcp-abap-adt/llm-agent-reranker';` (all used: `extends DecisionSeams`, `decisionBuilders(input)`, `decisionRerankerFor(…)`, `new LlmReranker`, the L84 preset);
 - L22–31 `ResolveRetrievalInput`: drop its own `decisionCfg` and `makeProbabilityDecision` members (both now come from `DecisionSeams`);
 - L33–34 `const MISSING_SEAM`: delete — `decision-seams.ts`'s `missing('makeProbabilityDecision')` produces `BuildAgentDeps.makeProbabilityDecision is required: …`, which the Task 20A test (`/BuildAgentDeps\.makeProbabilityDecision is required/`) matches;
 - L50–76 `let decisionModel`, `const decisionRerankers`, `const decisionReranker = async (…)`: replaced as above; the one call site L89 `reranker = await decisionReranker(preset, task);` becomes the cached `decisionRerankerFor(…)` call (with `explicit` from `cfg`);
 - the function doc L36–42 ("The decision model is built ONCE and shared; one `DecisionReranker` per distinct question wording") → "The decision of the `decision:` section's kind is built ONCE and shared (`decisionBuilders`); one reranker per distinct question wording (`decisionRerankerFor`)."
 
-Check: `git grep -n "IDecisionModel\|DecisionReranker\|wrapDecisionModel\|MISSING_SEAM\|decisionModel\b" packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` → empty.
+Check: `git grep -n "IDecisionModel\|IProbabilityDecision\|SmartServerDecisionConfig\|DecisionReranker\|wrapDecisionModel\|MISSING_SEAM\|decisionModel\b" packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` → empty.
 
 Add to the retrieval tests:
 
@@ -10143,7 +10148,7 @@ it('reranker: decision under a relevance provider builds a RelevanceReranker ove
    *  Optional: a config that never asks for one needs none (spec §3.8, §6.2). */
   makeRelevanceDecision?: (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision>;
 ```
-and thread it exactly where `makeProbabilityDecision` is threaded (the `Pick<…>` list, the conditional spread, the `resolveRetrievalStrategies` and `resolveCollectionProfiles` inputs). The relevance seam has no alias, so it is read straight from `deps`.
+and thread it exactly where `makeProbabilityDecision` is threaded (the `Pick<…>` list, the conditional spread `...(deps?.makeRelevanceDecision ? { makeRelevanceDecision: deps.makeRelevanceDecision } : {})`, the `resolveRetrievalStrategies` input; Task 23 adds it to the `resolveCollectionProfiles` input it introduces). The relevance seam has no alias, so it is read straight from `deps`. Import: add `type IRelevanceDecision,` to the `@mcp-abap-adt/llm-agent` value import (L49–66, beside `type IProbabilityDecision` from Task 20A).
 
 ```ts
 // packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts
@@ -10508,6 +10513,7 @@ export function assertSmallSetPool(
   /** Named strategies for `rag.profiles.<key>.compose` / `decomposer` (merged over the built-ins). */
   toolsStrategyFactories?: ToolsStrategyFactories;
 ```
+with, beside the `./resolve-retrieval.js` import (L139–142): `import type { ToolsStrategyFactories, ToolsVariantFactory } from './resolve-collection-profiles.js';` (type-only — `resolve-collection-profiles.ts` does not import `smart-server.ts`, and a type import emits nothing either way). Task 23 turns this into the one value import from that module.
 
 Export from `src/index.ts`: `assertSmallSetPool`, `BUILT_IN_TOOLS_STRATEGIES`, `BUILT_IN_TOOLS_VARIANTS`, `resolveCollectionProfiles`, `decisionBuilders`, `decisionRerankerFor`, and types `DecisionSeams`, `ResolvedToolsProfile`, `ToolsStrategyFactories`, `ToolsVariantFactory`, `ToolsVariantInput`.
 
@@ -10631,7 +10637,17 @@ Expected: FAIL — the store carries no binding; startup does not refuse.
 - [ ] **Step 3: Implement**
 
 In `smart-server.ts`:
-- imports: `bindToolsProfile` from `@mcp-abap-adt/llm-agent-libs`; `isToolCatalogReporter` from `@mcp-abap-adt/llm-agent` (if not already imported); `assertSmallSetPool`, `type ResolvedToolsProfile`, `resolveCollectionProfiles` from `./resolve-collection-profiles.js`.
+- imports: `bindToolsProfile` into the `@mcp-abap-adt/llm-agent-libs` value import (L74–91); `isToolCatalogReporter` into the `@mcp-abap-adt/llm-agent` value import (L49–66 — not imported today); replace Task 22's `import type { ToolsStrategyFactories, ToolsVariantFactory } from './resolve-collection-profiles.js';` with ONE import from that module:
+  ```ts
+  import {
+    assertSmallSetPool,
+    type ResolvedToolsProfile,
+    resolveCollectionProfiles,
+    type ToolsStrategyFactories,
+    type ToolsVariantFactory,
+  } from './resolve-collection-profiles.js';
+  ```
+  (`IRag`, `toMakeRagInput` and `withStrategy` are already there; `withStrategy` keeps its `history` callers, so nothing becomes unused.)
 - field, after `private _retrievalStrategies …`:
   ```ts
   /** `rag.profiles`, resolved once, server-wide (spec §6.2). */
