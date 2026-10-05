@@ -28,7 +28,7 @@
 - **Workspace siblings only.** The new packages (`llm-agent-reranker`, `sap-aicore-decision`) are linked as workspace siblings during development; no `file:` / `link:` to anything outside this repo. After any `npm install`, `grep -n '"link": true' package-lock.json` must list only `packages/*` siblings.
 - **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new packages' `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves. Publish order (the release's job): `llm-agent` → `llm-agent-reranker` → `typesafe-decision`, `sap-aicore-decision`, … → `llm-agent-libs` → `llm-agent-server-libs` → `llm-agent-server`.
 - **Imports between packages resolve to `dist/`.** After editing a package another package imports, rebuild it before running the dependent's tests: `npx tsc -b packages/<pkg>` (or `npm run build`).
-- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A, superseded by D46; single-flight construction out — Task 22A deleted, no task depends on it) and D46–D47 (spec §17.12: no `toolsChanged` reaction for a bound store, `IToolsFillSource` is `fill` only — Tasks 19, 19A, 20, 23A, 23B, 33, 34; the corpus fingerprint, the dropped cache entry and the worker refusal approved as written — Tasks 19A, 23A, 23B) and D50–D51 (spec §17.15: intents and companion stores removed entirely — Tasks 2, 3, 9, 11–13, 15, 16, 19, 21–23A, 30, 32–35, Task 10 withdrawn; the corpus deploy deletes the listed ids and writes the whole corpus, no per-record hashes — Task 19A); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
+- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A, superseded by D46; single-flight construction out — Task 22A deleted, no task depends on it) and D46–D47 (spec §17.12: no `toolsChanged` reaction for a bound store, `IToolsFillSource` is `fill` only — Tasks 19, 19A, 20, 23A, 23B, 33, 34; the corpus fingerprint, the dropped cache entry and the worker refusal approved as written — Tasks 19A, 23A, 23B) and D50–D51 (spec §17.15: intents and companion stores removed entirely — Tasks 2, 3, 9, 11–13, 15, 16, 19, 21–23A, 30, 32–35, Task 10 withdrawn; the corpus deploy deletes the listed ids and writes the whole corpus, no per-record hashes — Task 19A) and D52 (spec §17.16: `FallbackRag` offers a precomputed write only over a primary that has one; the corpus steps check the capability on the resolved backend too — Task 19A Steps 0a–0d and 1–4, Task 34); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
 - Commits: Conventional Commits, each ending with
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -59,6 +59,7 @@ The eight inputs the spec implies, most likely to bite a user, each pinned by a 
 - `interfaces/health.ts`, `interfaces/metrics.ts`, `interfaces/tool-catalog.ts` — additive optional fields (spec §3.8; `ToolCatalogStatus.records` / `.profile` per S3).
 - `interfaces/tool-record-key.ts` — `skillNameFromRecord` (F3).
 - `rag/vector-rag.ts` — implements `IRetrievalEmbedderOwner`.
+- `resilience/fallback-rag.ts` — `writer().upsertPrecomputedRaw` only when the primary's writer has it (D52, Task 19A Step 0).
 - `rag/tool-indexing-strategy.ts` — DELETED.
 - `testing/collection-profile-conformance.ts` — NEW conformance kit; `package.json` `exports` entry.
 
@@ -3824,7 +3825,7 @@ Spec §3.1, §3.3 (incl. **cleanup failures kept for retry** — `staleRecordIds
 | Qdrant | **replaces**: `PUT /points` with the whole payload `{ text, ...metadata }` (also `upsertManyPrecomputedRaw`) | `qdrant-rag.ts` `upsertKnownVector`, `upsertManyPrecomputedRaw` |
 | pg-vector | **replaces**: `ON CONFLICT (id) DO UPDATE SET … metadata = EXCLUDED.metadata` | `pg-vector-rag.ts` `upsertKnown` |
 | HANA | **replaces**: `UPSERT … WITH PRIMARY KEY` (whole row, metadata as one JSON) | `hana-vector-rag.ts` `upsertKnown` |
-| `FallbackRag` | whatever its primary (and fallback) does — it delegates | `resilience/fallback-rag.ts` |
+| `FallbackRag` | whatever its primary (and fallback) does — it delegates; a precomputed write only when the primary has one (D52, Task 19A Step 0) | `resilience/fallback-rag.ts` |
 
 So on a merging store a key the new record leaves out would **survive** the replacement (an old `data`, `itemText`, a settled stale list…). The writer therefore:
 - writes **every** `ReservedRecordKey` except `id` on **every** record write, absent ones as `undefined` (`UNSET_RESERVED`, compile-checked against `ReservedRecordKey` with `satisfies`, so a new reserved key is a compile error until listed);
@@ -8689,11 +8690,15 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 19A: Offline tools corpus — `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`; the `corpus` and `prebuilt` fill sources (libs)
 
-Spec §6.5 (D43, D49, D51 — §17.15), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47, D48), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
+Spec §6.5 (D43, D49, D51 — §17.15), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47, D48), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §10.4 (D52 — §17.16: `FallbackRag` precomputed capability; the resolved-backend check), §14.1 (offline corpus, fill sources, through `FallbackRag`).
 
 **Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, the ids it lists, `state: 'pending' | 'final'`). **The deploy does no per-record diffing** (D51, spec §17.15): a final service record with the same corpus hash and identity → unchanged, nothing written; anything else → write ahead a `pending` record listing every id the store holds or may hold (the old record's ids ∪ the corpus's), **delete** every id the old record lists, **write** the whole corpus, finalize. Deleting first means every write lands in an empty slot, so on a merging store (`InMemoryRag`, `VectorRag`: an in-place upsert merges `{ ...old, ...new }`) no old metadata key (`ttl`, `data`, …) survives — verified in the repo: `VectorRag.writer().deleteByIdRaw` nulls the whole slot and a later write fills a free slot with a fresh `{ text, vector, metadata }`; `InMemoryRag`'s splices the record out; qdrant / pg-vector / HANA delete the whole point / row. An interruption anywhere after the write-ahead leaves `pending`, and a rerun restores the store; `PrebuiltToolsStore` refuses a store whose record is not `final` (D48). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47: the binding's `profileName`, the corpus format, one vector dimension). There are no companion stores (D50): a corpus is one store's records. **An empty corpus is valid** (D49): no items → zero records, no `dimensions`; its deploy deletes every listed record and finalizes a zero-item manifest through the same pending → final protocol; both sources start from it with a complete catalog of 0 tools — so a consumer that removes every tool can replace the old corpus.
 
+**No embedding call means checking the store that holds the records (D52, spec §10.4, §6.5 step 2).** Both corpus steps write only through a precomputed write. `FallbackRag` — the circuit breaker's wrapper, which the builder puts around every registered store — exposed `upsertPrecomputedRaw` always and, over a raw-only primary, called the primary's `upsertRaw`: the vector dropped, the text re-embedded, silently. So Steps 0a–0d first make `FallbackRag` expose the write only when its primary (authoritative) writer has it (minimal: the fallback mirror unchanged, no `upsertManyPrecomputedRaw` added), and `precomputedWriter` then checks the capability twice — on the given store's writer and on the **resolved backend** (the innermost store under `IRagDecorator.inner`, ≤ 16 levels, as `retrievalEmbedderOf`) — and throws before any write or embedding call. The second check refuses any decorator that emulates the write again.
+
 **Files:**
+- Modify: `packages/llm-agent/src/resilience/fallback-rag.ts` (D52: the precomputed write only over a primary that has one)
+- Modify: `packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts`
 - Create: `packages/llm-agent-libs/src/collections/tools/corpus-capture-rag.ts` (internal: the build step's capture store)
 - Create: `packages/llm-agent-libs/src/collections/tools/tools-corpus.ts` (types, `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `readToolsCorpusService`, `TOOLS_CORPUS_RECORD_ID`)
 - Modify: `packages/llm-agent-libs/src/collections/tools/tools-fill-sources.ts` (append `ToolsCorpusLoader`, `PrebuiltToolsStore`)
@@ -8701,7 +8706,7 @@ Spec §6.5 (D43, D49, D51 — §17.15), §3.10 (`ToolsCorpusLoader`, `PrebuiltTo
 - Create: `packages/llm-agent-libs/src/collections/__tests__/tools-corpus.test.ts`
 
 **Interfaces:**
-- Consumes: `bindToolsProfile`, `boundToolsOf` (Tasks 15, 19); `LiveToolsFill`'s module (Task 19); `vectorizeMcpTools` (Task 19, tests); `mcpToolsVariants` (Task 16, tests); `toolItemFromTool` (Task 7); `recordId`, `VectorRag`, `IRetrievalEmbedderOwner` (Tasks 2, 4); `CollectionStore` = `{ key, rag }` (Task 3, no companions — D50); `StagedRetrieval` dropping `serviceRecord` hits (Task 12).
+- Consumes: `bindToolsProfile`, `boundToolsOf` (Tasks 15, 19); `LiveToolsFill`'s module (Task 19); `vectorizeMcpTools` (Task 19, tests); `isRagDecorator`, `FallbackRag`, `CircuitBreaker` (`@mcp-abap-adt/llm-agent`, existing; `FallbackRag` amended in Step 0c); `mcpToolsVariants` (Task 16, tests); `toolItemFromTool` (Task 7); `recordId`, `VectorRag`, `IRetrievalEmbedderOwner` (Tasks 2, 4); `CollectionStore` = `{ key, rag }` (Task 3, no companions — D50); `StagedRetrieval` dropping `serviceRecord` hits (Task 12).
 - Produces (all exported from `@mcp-abap-adt/llm-agent-libs`):
   ```ts
   export interface ToolsCorpusIdentity { readonly profile: string; readonly embedder: string }
@@ -8718,6 +8723,141 @@ Spec §6.5 (D43, D49, D51 — §17.15), §3.10 (`ToolsCorpusLoader`, `PrebuiltTo
   ```
   `ToolsCorpusDeployReport.written` = corpus records written (the service record not counted); `deleted` = deletes that returned `true` (the record existed).
 
+- [ ] **Step 0a: `FallbackRag` — write the failing test (D52)**
+
+Append to `packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts` (add `import type { IRag } from '@mcp-abap-adt/llm-agent';`):
+```ts
+/** A store whose writer takes precomputed vectors; records every write. */
+function precomputedRag() {
+  const calls: string[] = [];
+  const rag: IRag = {
+    ...makeRag(),
+    writer: () => ({
+      upsertRaw: async (id) => {
+        calls.push(`raw:${id}`);
+        return { ok: true, value: undefined };
+      },
+      upsertPrecomputedRaw: async (id, _text, vector) => {
+        calls.push(`precomputed:${id}:${vector.join(',')}`);
+        return { ok: true, value: undefined };
+      },
+      deleteByIdRaw: async () => ({ ok: true, value: false }),
+    }),
+  };
+  return { rag, calls };
+}
+
+describe('FallbackRag — a precomputed write only over a primary that has one (D52)', () => {
+  it('a raw-only primary → no upsertPrecomputedRaw (never a silent re-embed); upsertRaw / deleteByIdRaw unchanged', async () => {
+    const primary = makeRag(); // its writer has upsertRaw and deleteByIdRaw only
+    const w = new FallbackRag(primary, precomputedRag().rag, new CircuitBreaker()).writer();
+    assert.ok(w);
+    assert.equal(w.upsertPrecomputedRaw, undefined);
+    assert.equal(w.upsertManyPrecomputedRaw, undefined);
+    await w.upsertRaw('x', 'text', {});
+    assert.deepEqual(primary.upsertCalls, ['text']);
+  });
+
+  it('no primary writer → no upsertPrecomputedRaw, even when the fallback has one', () => {
+    const primary = makeRag();
+    (primary as { writer?: () => undefined }).writer = () => undefined;
+    const w = new FallbackRag(primary, precomputedRag().rag, new CircuitBreaker()).writer();
+    assert.ok(w);
+    assert.equal(w.upsertPrecomputedRaw, undefined);
+  });
+
+  it('a precomputed-capable primary → the vector reaches the primary (no upsertRaw); the fallback mirrors it', async () => {
+    const p = precomputedRag();
+    const f = precomputedRag();
+    const w = new FallbackRag(p.rag, f.rag, new CircuitBreaker()).writer();
+    assert.ok(w?.upsertPrecomputedRaw);
+    const res = await w.upsertPrecomputedRaw('x', 'text', [1, 0], {});
+    assert.ok(res.ok);
+    assert.deepEqual(p.calls, ['precomputed:x:1,0']);
+    await new Promise((r) => setImmediate(r)); // the fallback mirror is not awaited
+    assert.deepEqual(f.calls, ['precomputed:x:1,0']);
+  });
+});
+```
+
+- [ ] **Step 0b: Run to see it fail**
+
+Run: `node --import tsx/esm --test packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts`
+Expected: FAIL — over a raw-only primary (and with no primary writer) `upsertPrecomputedRaw` is still a function.
+
+- [ ] **Step 0c: Implement**
+
+In `packages/llm-agent/src/resilience/fallback-rag.ts`, the header's write bullet becomes `- **write** — writes go through writer(); fans out to both stores (best-effort for fallback). A precomputed write is offered only when the primary's writer has one (D52).`, and `writer()` becomes:
+```ts
+  writer(): IRagBackendWriter | undefined {
+    const pw = this.primary.writer?.();
+    const fw = this.fallback.writer?.();
+    if (!pw && !fw) return undefined;
+    const base: IRagBackendWriter = {
+      upsertRaw: async (id, text, metadata, options) => {
+        const pres = pw
+          ? await pw.upsertRaw(id, text, metadata, options)
+          : ({ ok: true, value: undefined } as const);
+        if (fw) fw.upsertRaw(id, text, metadata, options).catch(() => {});
+        return pres;
+      },
+      deleteByIdRaw: async (id, options) => {
+        const pres = pw
+          ? await pw.deleteByIdRaw(id, options)
+          : ({ ok: true, value: false } as const);
+        if (fw) fw.deleteByIdRaw(id, options).catch(() => {});
+        return pres;
+      },
+      clearAll: async () => {
+        const pres = pw?.clearAll
+          ? await pw.clearAll()
+          : ({ ok: true, value: undefined } as const);
+        if (fw?.clearAll) fw.clearAll().catch(() => {});
+        return pres;
+      },
+    };
+    // D52: a precomputed write only when the authoritative (primary) store has one. Emulating it
+    // through the primary's upsertRaw dropped the vector and re-embedded the text silently, so a
+    // caller that checks the capability (the corpus steps, the batch paths) was told a lie.
+    const primaryPrecomputed = pw?.upsertPrecomputedRaw?.bind(pw);
+    if (!primaryPrecomputed) return base;
+    return {
+      ...base,
+      upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
+        const pres = await primaryPrecomputed(id, text, vector, metadata, options);
+        // The fallback mirror is unchanged: best effort, never awaited. The fallback serves only
+        // while the embedder breaker is open, so a raw-only fallback indexes the text its own way.
+        if (fw?.upsertPrecomputedRaw) {
+          fw.upsertPrecomputedRaw(id, text, vector, metadata, options).catch(() => {});
+        } else if (fw) {
+          fw.upsertRaw(id, text, metadata, options).catch(() => {});
+        }
+        return pres;
+      },
+    };
+  }
+```
+`bind` keeps the method's signature (`strictBindCallApply`), so no cast; `upsertManyPrecomputedRaw` stays absent, as before.
+
+- [ ] **Step 0d: Run and commit**
+
+Run:
+```bash
+npx tsc -b packages/llm-agent
+node --import tsx/esm --test packages/llm-agent/src/resilience/__tests__/fallback-rag.test.ts
+npm test --workspace @mcp-abap-adt/llm-agent
+```
+Expected: PASS — the six earlier `FallbackRag` tests unchanged, the three new ones green.
+
+```bash
+npx biome check --write packages/llm-agent/src/resilience
+git add packages/llm-agent/src/resilience
+git commit -m "fix(llm-agent): FallbackRag offers a precomputed write only when its primary has one
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -8726,6 +8866,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  CircuitBreaker,
+  FallbackRag,
   type IEmbedResult,
   InMemoryRag,
   type IRag,
@@ -9177,6 +9319,84 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     assert.ok(svc.ok && svc.value?.metadata.serviceRecord);
   });
 });
+
+describe('the precomputed capability is the resolved backend\'s (D52, spec §6.5 step 2, §10.4)', () => {
+  /** `inner` behind a writer with no precomputed write — its `upsertRaw` embeds (VectorRag). Spied. */
+  function rawOnly(inner: IRag) {
+    const writes: string[] = [];
+    const w = inner.writer?.() as IRagBackendWriter;
+    const rag: IRag = {
+      query: (e, k, o) => inner.query(e, k, o),
+      healthCheck: (o) => inner.healthCheck(o),
+      getById: (id, o) => inner.getById(id, o),
+      writer: () => ({
+        upsertRaw: (id, t, m, o) => {
+          writes.push(`upsert:${id}`);
+          return w.upsertRaw(id, t, m, o);
+        },
+        deleteByIdRaw: (id, o) => {
+          writes.push(`delete:${id}`);
+          return w.deleteByIdRaw(id, o);
+        },
+      }),
+    };
+    return { rag, writes };
+  }
+  /** The circuit breaker's wrapper, as the builder puts it around a registered store. */
+  const guarded = (primary: IRag): IRag => new FallbackRag(primary, new InMemoryRag(), new CircuitBreaker());
+  async function holdsAll(corpus: ToolsCorpus, rag: IRag): Promise<void> {
+    for (const r of corpus.records) {
+      const got = await rag.getById(r.id);
+      assert.ok(got.ok && got.value?.text === r.text, `${r.id} stored as built`);
+    }
+  }
+
+  it('FallbackRag over a raw-only writer: deploy and the loader are refused before any write; the embedder is never called', async () => {
+    const { corpus } = await build();
+    const { store, calls } = target();
+    const raw = rawOnly(store.rag);
+    await assert.rejects(deployToolsCorpus(corpus, { key: 'tools', rag: guarded(raw.rag) }), /precomputed/);
+    const b = bindToolsProfile(profile(), { key: 'tools', rag: guarded(raw.rag) }, new ToolsCorpusLoader({ corpus, expect: ID }));
+    await assert.rejects(vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined), /precomputed/);
+    assert.deepEqual(raw.writes, [], 'nothing written');
+    assert.equal(calls.documents, 0, 'no embedding call');
+  });
+
+  it('FallbackRag over a precomputed-capable writer (VectorRag): deploy and the loader work with no embedding call', async () => {
+    const { corpus } = await build();
+    const deployed = target();
+    const r = await deployToolsCorpus(corpus, { key: 'tools', rag: guarded(deployed.store.rag) });
+    assert.deepEqual(r, { unchanged: false, written: corpus.records.length, deleted: 0 });
+    await holdsAll(corpus, deployed.store.rag);
+    assert.equal((await serviceOf(deployed.store.rag)).state, 'final');
+    const loaded = target();
+    const b = bindToolsProfile(profile(), { key: 'tools', rag: guarded(loaded.store.rag) }, new ToolsCorpusLoader({ corpus, expect: ID }));
+    const s = await vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined);
+    assert.equal(s?.complete, true);
+    await holdsAll(corpus, loaded.store.rag);
+    assert.equal(deployed.calls.documents + loaded.calls.documents, 0, 'precomputed vectors only');
+  });
+
+  it('a decorator that claims the precomputed write over a raw-only store → refused before any write (the resolved-backend check)', async () => {
+    const { corpus } = await build();
+    const { store, calls } = target();
+    const raw = rawOnly(store.rag);
+    const rw = raw.rag.writer?.() as IRagBackendWriter;
+    // The shape FallbackRag had before D52: the write claimed, emulated through upsertRaw.
+    const claiming: IRag & { readonly inner: IRag } = {
+      inner: raw.rag,
+      query: (e, k, o) => raw.rag.query(e, k, o),
+      healthCheck: (o) => raw.rag.healthCheck(o),
+      getById: (id, o) => raw.rag.getById(id, o),
+      writer: () => ({ ...rw, upsertPrecomputedRaw: (id, t, _v, m, o) => rw.upsertRaw(id, t, m, o) }),
+    };
+    await assert.rejects(deployToolsCorpus(corpus, { key: 'tools', rag: claiming }), /behind its decorators/);
+    const b = bindToolsProfile(profile(), { key: 'tools', rag: claiming }, new ToolsCorpusLoader({ corpus, expect: ID }));
+    await assert.rejects(vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined), /behind its decorators/);
+    assert.deepEqual(raw.writes, [], 'nothing written');
+    assert.equal(calls.documents, 0, 'no embedding call');
+  });
+});
 ```
 
 - [ ] **Step 2: Run to see it fail**
@@ -9257,15 +9477,16 @@ export class CorpusCaptureRag implements IRag, IRetrievalEmbedderOwner {
 ```ts
 // packages/llm-agent-libs/src/collections/tools/tools-corpus.ts
 import { createHash } from 'node:crypto';
-import type {
-  CallOptions,
-  CollectionStore,
-  ICollectionProfile,
-  IRag,
-  IRagBackendWriter,
-  IRetrievalEmbedder,
-  RagMetadata,
-  ToolItem,
+import {
+  type CallOptions,
+  type CollectionStore,
+  type ICollectionProfile,
+  type IRag,
+  type IRagBackendWriter,
+  type IRetrievalEmbedder,
+  isRagDecorator,
+  type RagMetadata,
+  type ToolItem,
 } from '@mcp-abap-adt/llm-agent';
 import { CorpusCaptureRag } from './corpus-capture-rag.js';
 
@@ -9414,10 +9635,31 @@ export async function readToolsCorpusService(rag: IRag, options?: CallOptions): 
   return v?.kind === 'tools-corpus' ? v : undefined;
 }
 
+/** A writer with a precomputed write (`upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`). */
+function takesPrecomputed(w: IRagBackendWriter | undefined): w is IRagBackendWriter {
+  return w !== undefined && (w.upsertManyPrecomputedRaw !== undefined || w.upsertPrecomputedRaw !== undefined);
+}
+
+/** The store that holds the records: the innermost under `IRagDecorator.inner` (≤ 16 levels, as `retrievalEmbedderOf`). */
+function resolvedBackend(rag: IRag): IRag {
+  let cur = rag;
+  for (let depth = 0; depth < 16 && isRagDecorator(cur); depth++) cur = cur.inner;
+  return cur;
+}
+
+/**
+ * The precomputed writer, checked on the given store AND on the backend it resolves to (spec §6.5
+ * step 2, D52): a decorator that claims the write and emulates it through `upsertRaw` would
+ * re-embed. Throws before any write or embedding call.
+ */
 function precomputedWriter(rag: IRag): IRagBackendWriter {
   const w = rag.writer?.();
-  if (!w || !(w.upsertManyPrecomputedRaw || w.upsertPrecomputedRaw)) {
+  if (!takesPrecomputed(w)) {
     throw new Error('tools corpus: the store accepts no precomputed vectors — loading or deploying a corpus makes no embedding call');
+  }
+  const backend = resolvedBackend(rag);
+  if (backend !== rag && !takesPrecomputed(backend.writer?.())) {
+    throw new Error('tools corpus: the store behind its decorators accepts no precomputed vectors — a precomputed write through them would re-embed; loading or deploying a corpus makes no embedding call');
   }
   return w;
 }
@@ -9590,7 +9832,7 @@ npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/tools-corpus.test.ts packages/llm-agent-libs/src/collections/__tests__/tools-fill-source.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 ```
-Expected: PASS. `tsc -b` proves the optional `manifest.dimensions` is never read as a number without its check (`writeService` takes the narrowed `dimensions`; `parseToolsCorpus` compares each vector only after the presence check). `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types; `ToolsFillContext` by the two `fill` methods and `checkCompatible`), that no companion code is left (`CollectionStore` has no `companions`, D50) and that no `warnUnchanged` / `toolsChanged` member is left (D46). The Task 12 suite passes with its service-record case.
+Expected: PASS — including the three D52 cases (a raw-only writer behind `FallbackRag` refused with no write and no embedding call; a precomputed-capable one works with none; a claiming decorator refused by the resolved-backend check; Step 0 already committed `FallbackRag`'s side). `tsc -b` proves the optional `manifest.dimensions` is never read as a number without its check (`writeService` takes the narrowed `dimensions`; `parseToolsCorpus` compares each vector only after the presence check). `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types; `ToolsFillContext` by the two `fill` methods and `checkCompatible`), that no companion code is left (`CollectionStore` has no `companions`, D50) and that no `warnUnchanged` / `toolsChanged` member is left (D46). The Task 12 suite passes with its service-record case.
 
 - [ ] **Step 5: Commit**
 
@@ -15856,6 +16098,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 
 - `vectorizeMcpTools` found no batch embedder behind `StrategyRag` (any `rag.retrieval.tools` entry) or `FallbackRag` and wrote the catalog one tool at a time; stores now declare `IRetrievalEmbedderOwner` (`VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag`) and the private-field read is gone (F1).
 - `tools-rag-handle` returned a tool twice when two of its records matched (F2); `skill-select` read `skill:<name>:<suffix>` as the name `<name>:<suffix>` (F3).
+- `FallbackRag` (the circuit breaker's store wrapper) always offered `upsertPrecomputedRaw` and, over a primary without one, called the primary's `upsertRaw` — the vector dropped, the text re-embedded silently. It now offers the write only when its primary has one; callers take their raw path otherwise (one embedding per record). Over `VectorRag`, Qdrant, pg-vector and HANA nothing changes. `upsertPrecomputedRaw` is optional in `IRagBackendWriter`, so no caller needs a change (D52).
 - **SmartServer workers on the shared MCP clients** named colliding tools by array position (`s<i>__<tool>`, default namespace) while the main tools store — which a worker without its own `rag` searches — holds `<label>__<tool>` / `s<slotIndex>__<tool>`, so those hits were dropped. A worker's builder now gets the clients with their slot descriptors (and a worker's own `mcp:` connection keeps its descriptors across per-session re-wires) and the server's `IToolNamespace`: it exposes what the main catalog exposes. No collision and no custom namespace → names unchanged.
 
 ### Removed
@@ -16069,6 +16312,12 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | D50 | **Intents and companion stores removed entirely** (goal row "Intents are removed entirely"). Measured and dropped (spec §2.1): within noise without a reranker, no better with one; the reranker reads provider text better without them; LLM generation at build, regeneration and audits (one audit found poisoned intents); misleading (`CreateDdl`'s generated "create database view" names a different object type). Gone: the `intent` record kind, `IntentRecordIndexer`, `IntentCompanionIndexer`, `IToolIntentSource`, `StaticIntentSource`, `LlmIntentSource`, `IndexedRecord.generated` and the reserved keys `generated`, `companionRecordIds`, `staleCompanionRecordIds`; `CollectionStore.companions`; `RetrievalSource.role` / `itemsOf` (every source holds items); companion handling in the record writer (`CompanionIds`, `listedCompanions`, the `companions` parameters), in `ComposedToolsProfile`, `StagedRetrieval` and `ItemPool`; YAML `rag.profiles.tools.intents` (a leftover key refused), `ResolvedToolsProfile.companionStores`, the companion stores the server built and the persistent-companion refusal; the companion parts of the corpus (manifest `companions`, record `store`, `buildToolsCorpus`'s `companions`, the loader's companion-set check); rag-eval `--intents`; every intent / companion test, doc and CHANGELOG line. Records come only from what the provider exports. Supersedes S2, S7, D3, D33, the companion parts of F3 and D47 | Tasks 2, 3, 9, 11, 12, 13, 15, 16, 19, 19A, 21, 22, 23, 23A, 30, 32, 33, 34, 35; **Task 10 withdrawn** (numbers kept stable) |
 | D51 | **The corpus deploy writes the whole corpus — no per-record diffing.** A `final` service record with the same corpus hash and identity → `unchanged`, no write of any kind. Otherwise: write `pending` listing every id the store holds or may hold (the old record's ids ∪ the corpus's), delete every id the old record lists (pending ones included, each Result checked), write the whole corpus with its precomputed vectors, finalize with the corpus's ids. The service record drops per-record `hashes` (it lists `ids`); `ToolsCorpusDeployReport.upserted` → `written`. Delete-before-write means no old metadata survives on a merging store (`InMemoryRag`, `VectorRag` merge on an in-place upsert; their deletes remove the whole slot). Tests: a serialized replacement on `VectorRag` leaves no old `ttl` / `data`; an unchanged redeploy writes nothing; an interruption mid-write (or mid-delete) → redeploy restores; an empty corpus deletes everything (D49's dimension rule kept). Supersedes the hash-skip of D43 / D48 | Tasks 19A, 33, 34, 35 |
 
+## Review finding on 2026-10-05 — `FallbackRag` precomputed capability (spec §17.16)
+
+| # | Decision | Done in |
+|---|---|---|
+| D52 | `FallbackRag.writer()` carries `upsertPrecomputedRaw` only when the primary's writer has it (the fallback mirror unchanged, `upsertManyPrecomputedRaw` not added); `precomputedWriter` (deploy and `ToolsCorpusLoader`) checks the capability on the given store's writer and on the resolved backend's (innermost under `IRagDecorator.inner`, ≤ 16), throwing before any write or embedding call. Tests: `FallbackRag` writer shapes (raw-only primary, no primary writer, capable primary); deploy and loader through `FallbackRag` over a raw-only writer → rejected, nothing written, no embedder call; over a `VectorRag` → work with no embedding call; a claiming decorator → rejected by the resolved-backend check. Changelog "Fixed" | Task 19A (Steps 0a–0d, 1, 3, 4), Task 34 |
+
 ---
 
 ## Self-review (done while writing)
@@ -16078,3 +16327,4 @@ Recommendations applied to the earlier open choices (the user may still overrule
 - **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `prepareItem(w, { canonicalKind, profile, maxRecordsPerItem })`, `storeItems(rag, items, options?)` and `removeItem(rag, canonicalId, options?)` (Task 11 — no companion parameters, D50) are what Tasks 15 and 17 use; `ToolsCorpusDeployReport { unchanged, written, deleted }` (Task 19A, D51) is what Tasks 33–34 document; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (the alias `makeDecisionModel` is read only by Task 20A's `probabilityDecisionSeam`); `DecisionSeams` (Task 22) is what Task 23 threads; Task 23's `withToolsStore(store): IRag` is synchronous and binds the primary only (`bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill)` after 23B) — no companion stores, no `makeRag` for them; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
 - **Review Focus.** Each of the eight lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 21, 30).
 - **Rework for D50 / D51 (spec §17.15).** Task 10 withdrawn with no heading left, numbers kept stable (as Task 22A earlier); no remaining task imports an intent or companion symbol, every "Tasks 8–10" reference reads "8–9"; each changed task drops the imports, types and parameters it no longer uses (`strict` + `noUnusedLocals`) and keeps its gate; Task 35 Step 4 greps that no intent / companion symbol remains in `packages/` or `scripts/`, that no doc describes them as usable, and that the deploy report has `written` and no `hashes`; the trailing decision tables mark S2, S7, D33, the companion parts of F3 / D47 and the hash-skip of D43 / D48 as superseded.
+- **Rework for D52 (spec §17.16).** `FallbackRag` is fixed first in Task 19A (Steps 0a–0d, its own `fix(llm-agent)` commit, `packages/llm-agent` rebuilt before the libs tests run against `dist/`); the libs commit then adds the resolved-backend check and the three `FallbackRag` / claiming-decorator cases. No other task changes: Task 25 (F1) wraps stores that have the precomputed write (`QdrantRag`, `PgVectorRag`, `HanaVectorRag`) in `FallbackRag`, so its batch path is unaffected; Task 19's binding-through-`FallbackRag` test writes through the binding into the store under the `FallbackRag`, never through `FallbackRag`'s writer.
