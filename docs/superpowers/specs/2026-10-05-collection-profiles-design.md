@@ -51,7 +51,12 @@
 >   connection strategy is owned by the agent it is injected into — `handle.close()` and a failed
 >   `build()` dispose it (D64); a corpus is checked against **every** tools store the server binds
 >   with it, before any store is created (D65); a store is filled **before** skills are vectorized
->   into it, on every path (D66); orphans never use up the candidate pool (D67).
+>   into it, on every path (D66); orphans never use up the candidate pool (D67);
+> - **fail loud** (the goal's decisions of 2026-10-05, D69–D74, §10.5, §17.24): no fallback or silent
+>   degradation anywhere in the pipeline; pipeline errors reach the consumer (D70); `onFailure`
+>   removed (D71); `/health` 503 on a configured component not working (D72). **Open for the
+>   user:** U1–U10 (§17.24) — modes a consumer can choose, each with a recommendation; unchanged
+>   until decided.
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -261,6 +266,26 @@
 >   `retrievalEmbedderOf`, `toolsBindingOf` / `boundToolsOf`, `findWeightedStore`) — `StrategyRag`
 >   is a decorator, and the contract promises a consumer's own decorator the same visibility.
 >
+>
+> **Amended 2026-10-05 (15)** for the goal's decisions "No fallbacks anywhere in the pipeline" and
+> "the fail-loud sweep is part of this PR" — D69–D74 (§10.5, §17.24):
+> - **the rule** (§10.5.1): a component that finds another not working returns a typed, observable
+>   error; the stage's `OrchestratorError` carries the component's code; three codes no component
+>   has form the new set `PIPELINE_FAILURE_CODES`; no shared set is widened;
+> - **pipeline errors reach the consumer** (D70, a bug fix, first): today a stage failure ends the
+>   stream normally and `process()` returns `ok: true`;
+> - **`onFailure` is removed** (D71): `StagedRetrieval`, the YAML `compose.onFailure` key and
+>   `facetedRerank` have no stage-1 fallback; with it go the `ScoreFloorCut` + `stage1` rejection,
+>   the two-scales case of D67 and the `rerank_fallback` outcome; the 30.1.0 rerank strategies, the
+>   `rerank` stage and the legacy orchestrator return `RERANK_ERROR` too (S4 superseded for the
+>   failure path);
+> - **health** (D72): `degraded` answers 503; every store probed; **`FallbackQueryEmbedding`** only
+>   for a `TextOnlyEmbedding` (D73); **the sweep** over MCP, RAG, LLM handlers and providers,
+>   coordinator, skills and server (D74); a behaviour table in §13 (B1–B11);
+> - **for the user** (§17.24): ten modes a consumer can choose (U1–U10), each with a
+>   recommendation, unchanged until decided — incl. U9, the confirmation of D68's removed builder
+>   breaker.
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -328,7 +353,8 @@
   collections, shared items) are not filled by these strategies (§6.6).
 - The retrieval half **is** a 30.1.0 `IRetrievalStrategy`, so every path that already honours
   per-store strategies gets it with no new wiring.
-- **Nothing changes by default.** No profile set → 30.1.0 behaviour, byte for byte (golden test).
+- **Nothing changes by default** on the success path. No profile set → 30.1.0 behaviour, byte for
+  byte (golden test). Failure paths change everywhere: they fail loud (§10.5, §13 B1–B11).
 - **Everything is a strategy (DI).** A profile is a **composition** of injected strategy
   instances: indexing, candidate pool, collapse, query decomposition (optional), reranker,
   final cut. No booleans where a strategy is the choice. YAML only maps names to instances, in the builder.
@@ -384,6 +410,12 @@
   **`FallbackRag` is removed** and the builder no longer wraps registered stores: with the
   embedder circuit breaker open, a store's query fails fast with an error instead of answering
   from an in-memory copy (§10.4, D68).
+- **Fail loud (§10.5, D69–D74).** A component that finds another not working returns an error —
+  never a fake success, an empty result, a skipped part, a stale cache or a substitute. Pipeline
+  errors now reach the consumer at all (D70, a bug fix); the reranker's `onFailure: 'stage1'` is
+  removed (D71); `/health` answers 503 when a configured component is not working (D72); the
+  store embedder stands in only for a pipeline without an embedder (D73). Modes a consumer chose
+  are listed for the user (§17.24, U1–U10), not decided.
 - **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag`** (D53, D57, §11.3). `VectorRag`,
   `InMemoryRag` and the other RAG implementations — their files — move there in
   this PR; `@mcp-abap-adt/llm-agent` stops exporting them (no aliases, no subpath). Nothing left in
@@ -1118,6 +1150,8 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `SmartServerConfig.toolsFillFactories?` (D42) | YAML `rag.profiles.tools.fill` names a source (§6.2); a consumer's own source is registered by name, like `toolsVariantFactories` | `llm-agent-server-libs` (`smart-server.ts` config type, `resolve-collection-profiles.ts`) |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
 | **`FallbackRag` removed; `SimpleRagRegistry.replaceRag` and `SmartAgentBuilder.withCircuitBreakers` removed; the builder wraps no store** (D68, §10.4) — **breaking** (migration lines 5, 71, 72) | the goal's decision of 2026-10-05: a fallback to an in-memory copy hides a deeper RAG failure behind empty or partial results, which llm-agent cannot solve. `replaceRag` had one caller (the builder's wrapping loop) and `withCircuitBreakers` one purpose (putting that wrap on a shared breaker); the embedder breaker `withCircuitBreaker(config)` built guarded nothing else (the builder wraps no embedder). Nothing is added: `IRag`, `IRagDecorator`, `IRagBackendWriter` and the breaker classes are unchanged. *Replaces the row on `FallbackRag.writer()` (D52, D62), withdrawn* | `@mcp-abap-adt/llm-agent` (`resilience/fallback-rag.ts` deleted; `rag/registry/simple-rag-registry.ts`), `@mcp-abap-adt/llm-agent-libs` (`builder.ts`), `@mcp-abap-adt/llm-agent-server-libs` (`smart-server.ts`) |
+| **`PIPELINE_FAILURE_CODES`** (`interfaces/pipeline-failure-codes.ts`: `RAG_STORE_MISSING`, `STATE_CORRUPT`, `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) — new, additive | the goal's fail-loud decision (D69): three failures no component has a code for; a consumer matches on them. A set of their own, so no shared set (`MCP_UNAVAILABLE_CODES`, `DecisionErrorCode`) is widened; `TOOL_ARGUMENTS_JSON_PARSE_FAILED` is the string the OpenAI adapter already emits | `@mcp-abap-adt/llm-agent` — libs, server-libs and consumers read it |
+| **`SkillLoadResult.carried?: { sourceId, reason }[]`** — new optional field | D74 S-9: a source whose `acquire` failed and whose prior data was carried forward (`strict: false`) is reported with its reason instead of discarded | `@mcp-abap-adt/llm-agent` (`interfaces/skills-rag.ts`, beside `SkillLoadResult`) |
 
 ### 3.9 Decision contracts — probability and relevance
 
@@ -1319,8 +1353,8 @@ interface StagedRetrievalOptions {
   collapse: ICollapseRule;
   rerank?: {
     reranker: IReranker;
-    onFailure: 'stage1' | 'error';      // 'stage1' = 30.1.0 behaviour
     keepStage1Top?: number;             // §4.7, default 0; counted inside k; never with ScoreFloorCut
+    // no onFailure: a failed rerank returns RERANK_ERROR (D71, §9.3)
   };
   decompose?: {                 // §4.5; absent → the query runs as is (one run); never with ScoreFloorCut (D63)
     decomposer: IQueryDecomposer;
@@ -1495,9 +1529,8 @@ no record carries generated text any more (D50). For each collapsed item:
     are comparable (§3.9, D28); without one: the stage-1 scores — the same query, comparable too;
   - `keepStage1Top` pins (when configured) keep their pinned head places, in stage-1 order; the
     merge orders only the rest (pins + `ScoreFloorCut` is rejected anyway, §4.7);
-  - scores of different scales are never compared: if one reranker call of the run fell back to
-    stage 1 (`onFailure: 'stage1'`) and another did not, the replacements stay after the pool's
-    items in rank order (never with `ScoreFloorCut`, which needs `onFailure: 'error'`, §4.7);
+  - the merged scores are always one scale: a reranker call either succeeds or fails the whole
+    retrieval with `RERANK_ERROR` (D71) — there is no stage-1 fallback that could mix scales;
   - ties keep their order (a stable sort: the pool's item first). Then the one cut.
   - Why not validate the pool before reranking: that reads the canonical record of every pooled
     item whose canonical was not among the candidates — the reads the `itemText` shortcut exists
@@ -1536,22 +1569,11 @@ Default 0. Decided — D7 (§17).
   calibrated threshold keeps`. `keepStage1Top` has no YAML key (§6.2), so only code reaches it; the
   constructor is the one check.
 
-**When the reranker failed and `onFailure: 'stage1'` applies** (§9.3):
-
-- The result is the stage-1 result: stage-1 order **and stage-1 scores** (the collapse rule's item
-  score over the store's search scores — hybrid or cosine, §4.2). No reranked score exists, so
-  none is returned; `keepStage1Top` changes nothing (the order is stage-1 already).
-- **No threshold cut is combined with that fallback — the same rejection.** A `ScoreFloorCut`'s
-  `minScore` is calibrated on the reranker's scale; a fallback would apply it to stage-1 scores.
-  `ScoreFloorCut` with a `rerank` whose `onFailure` is `'stage1'` is therefore rejected at
-  construction: `StagedRetrieval: ScoreFloorCut with a reranker needs rerank.onFailure 'error' — a
-  'stage1' fallback returns stage-1 scores, which a threshold calibrated on reranker scores must
-  not cut`. With `onFailure: 'error'` a failed rerank returns the error, so the cut only ever sees
-  reranked scores. Without a reranker, `ScoreFloorCut` cuts stage-1 scores, calibrated on them —
-  allowed.
-- In YAML (`rag.profiles.<key>.compose`), the validator refuses `cut: { score-floor: … }` with a
-  reranker unless `onFailure: error` (§6.2), so the config fails at resolution with its own label,
-  before the constructor would.
+**When the reranker fails** (§9.3): the retrieval returns `RagError('…', 'RERANK_ERROR')` (D71).
+No stage-1 result is returned, so a threshold calibrated on reranked scores never sees stage-1
+scores, and `ScoreFloorCut` under a reranker needs no extra condition. *(Until D71 a `'stage1'`
+fallback existed, and `ScoreFloorCut` with a reranker was refused unless `onFailure: 'error'`; both
+are gone.)* Without a reranker, `ScoreFloorCut` cuts stage-1 scores, calibrated on them — allowed.
 
 ### 4.8 Reranker output check
 
@@ -1560,7 +1582,7 @@ Default 0. Decided — D7 (§17).
 - the result must hold **exactly** the candidates it was given — same count, each once;
 - every `score` must be a finite number.
 
-Anything else is a `RagError('…', 'RERANK_ERROR')` handled by `onFailure` and **counted** (§9).
+Anything else is a `RagError('…', 'RERANK_ERROR')`, **returned** (D71) and **counted** (§9).
 This closes the evidence item "a wrong score count falls back silently" for every reranker,
 including a consumer's own.
 
@@ -1571,7 +1593,7 @@ including a consumer's own.
 | candidate pool | `ItemPool(n?)` | `n` items per source; no `n` → the caller's k (§4.4, D56) |
 | collapse | `MaxScoreCollapse` | item score = best record score (measured winner). Count / RRF are **not** shipped. |
 | cut | `TopItemsCut` | first `requestedK` items (default); `limit` = `requestedK` |
-| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)`. Under a reranker only with `onFailure: 'error'`; never with `keepStage1Top` > 0 (§4.7); never with a decomposer (§4.5, D63) — all rejected at construction |
+| cut | `ScoreFloorCut({ minItems, maxItems, minScore })` | first `min(minItems, limit)`, then more up to `limit` while `score ≥ minScore`; `limit` = `min(requestedK, maxItems)`. Never with `keepStage1Top` > 0 (§4.7); never with a decomposer (§4.5, D63) — both rejected at construction |
 | cut | `FixedItemsCut(n)` | a **ceiling**: first `min(requestedK, n)` items — for a consumer that wants fewer than the caller's k (its own calibration); it never raises the caller's k; `limit` = `min(requestedK, n)` |
 | cut | `TokenBudgetCut({ budgetTokens, maxItems?, estimator? })` | rank-order prefix of whole items while their summed size ≤ `budgetTokens`, at most `limit` items; `limit` = `min(requestedK, maxItems ?? requestedK)`; implements `ISizeBoundedCut` (§4.10) |
 | query decomposition | — | **none shipped**; the consumer injects its own `IQueryDecomposer` (§4.5) |
@@ -2029,7 +2051,6 @@ rag:
         question: tool                             # probability decision (typesafe) / llm only — refused for a relevance decision
         decomposer: none                           # none | a registered name (no built-in)
         cut: { fixed-items: <n> }                  # top-items (default: the caller's k) | fixed-items | score-floor {minItems,maxItems,minScore} | token-budget {budgetTokens,maxItems?}
-        onFailure: stage1                          # stage1 | error — score-floor with a reranker needs error (§4.7)
 ```
 
 **One `decision:` section; the provider decides the kind** (goal decision 2026-10-05):
@@ -2069,8 +2090,8 @@ rag:
   startup** when the provider is relevance (accepting them would be a silent no-op).
 - **A threshold on relevance scores is the consumer's calibration.** `cut: { score-floor: … }`
   over a `RelevanceReranker` is allowed and documented as provider-specific calibration; no
-  named composition uses it. With a reranker it needs `onFailure: error` — a `stage1` fallback
-  would cut stage-1 scores with a threshold calibrated on reranked ones (§4.7, F5).
+  named composition uses it. A failed rerank is an error (D71), so the threshold only ever cuts
+  reranked scores.
 
 **Resolution.**
 
@@ -2114,8 +2135,8 @@ rag:
   `retrieval` and `profiles`;
 - `decomposer` with `baseline`;
 - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
-- `compose.cut: { score-floor: … }` with a reranker and `onFailure` not `error` (absent = `stage1`)
-  (§4.7, F5);
+- an `onFailure` key under `compose` (D71 — there is no stage-1 fallback; refused with a message
+  naming D71, never silently ignored);
 - `compose.cut: { score-floor: … }` with a decomposer — `rag.profiles.tools.decomposer`, or
   `compose.decomposer` other than `none` (§4.5, D63);
 - `faceted-rerank` without `poolItems`; a non-positive `poolItems` or `maxItems`; `poolItems` or
@@ -2838,7 +2859,7 @@ required argument or the generic default of §7.1. None relies on one server's c
 |---|---|---|---|
 | **`baseline`** — no choice made | 30.1.0 single record per tool + `EmbeddingRetrieval` (top-k records = tools). Selected by binding **no** profile. | — | 30.1.0 |
 | **`faceted`** | `FacetedToolIndexer([SummaryFacet, ParametersFacet])` (`full` + `summary` + `parameters`, all from provider text) + `ItemPool` + `MaxScoreCollapse` + no reranker + cut | — | pool = the caller's k items; cut = the caller's k (`TopItemsCut`). Optional `poolItems`, `maxItems` (→ `FixedItemsCut`) |
-| **`faceted-rerank`** | faceted indexing + `ItemPool(poolItems)` + `MaxScoreCollapse` + **the consumer's `IReranker`** (e.g. `RelevanceReranker` over Cohere, `ProbabilityReranker` with `TOOL_QUESTION` over Jev) + cut | `reranker`, `poolItems` | cut = the caller's k. Optional `maxItems` (→ `FixedItemsCut`), `onFailure` (default `'stage1'`, 30.1.0's) |
+| **`faceted-rerank`** | faceted indexing + `ItemPool(poolItems)` + `MaxScoreCollapse` + **the consumer's `IReranker`** (e.g. `RelevanceReranker` over Cohere, `ProbabilityReranker` with `TOOL_QUESTION` over Jev) + cut | `reranker`, `poolItems` | cut = the caller's k. Optional `maxItems` (→ `FixedItemsCut`). A failed rerank is `RERANK_ERROR` (D71) |
 
 ```ts
 mcpToolsVariants.faceted();                                         // pool and cut: the caller's k
@@ -3140,15 +3161,15 @@ new SharedItemsProfile({
 
 | Channel | Existing? | What |
 |---|---|---|
-| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `decomposer`, `subqueries`, `rerank.outcome` (`none\|ok\|fallback\|error`), `rerank.error` (message), `orphans`, `hydration.reads` (canonical records read by `getById`, §4.6), `cut.name`, `cut.tokens` / `cut.budgetTokens` (cuts with `ISizeBoundedCut`, §4.10) |
-| `IRetrievalMetrics.retrievalOutcome` counter | new small interface on the same metrics backend | attrs `store`, `strategy`, `outcome` ∈ `ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `over_budget` (§4.10; replaces `empty` when the top item alone is over the budget), `empty` |
+| span `retrieval` (child of the request trace, via injected `ITracer`) | tracer: yes | attrs `store`, `strategy`, `sources`, `candidates.records`, `items.collapsed`, `items.returned`, `decomposer`, `subqueries`, `rerank.outcome` (`none\|ok\|error`), `rerank.error` (message), `orphans`, `hydration.reads` (canonical records read by `getById`, §4.6), `cut.name`, `cut.tokens` / `cut.budgetTokens` (cuts with `ISizeBoundedCut`, §4.10) |
+| `IRetrievalMetrics.retrievalOutcome` counter | new small interface on the same metrics backend | attrs `store`, `strategy`, `outcome` ∈ `ok`, `rerank_error`, `decompose_error`, `orphan`, `over_budget` (§4.10; replaces `empty` when the top item alone is over the budget), `empty` |
 | session step `retrieval_rerank_error` | yes (30.1.0 name kept) | unchanged; also emitted for a failed output check (§4.8) |
 | `/health` | yes | `metrics.retrievalOutcome` when the metrics implement `IRetrievalMetrics`; `components.toolCatalog.records` / `.profile` |
 | request logger | yes | reranker LLM / decision calls, as today (`component: 'rerank'`) |
 
 - **A reranker error is always observable under a profile.** A wrong or missing score count from
   any reranker (`ProbabilityReranker`, `RelevanceReranker`, LLM, or a consumer's) → `RERANK_ERROR`
-  → counted (`rerank_fallback` or `rerank_error`), on the span, as a session step. Never silent.
+  → returned and counted (`rerank_error`), on the span, as a session step. Never silent (D71).
 - With Cohere, a bad `/rerank` answer is caught twice: `SapAiCoreRelevanceDecision` returns a
   `DecisionError` (§5.3), and `RelevanceReranker`'s output check (§5.2) turns any error into
   `RERANK_ERROR`.
@@ -3159,18 +3180,20 @@ new SharedItemsProfile({
   constructor option).
 - This closes the goal's evidence item ("a fallback is only a session step") for consumers that do
   not adopt profiles.
-- **Telemetry only — no behaviour change (S4).** The §4.8 output check is **not** applied to the
-  30.1.0 strategies: there a short reranker answer is accepted as in 30.1.0 (goal 4). A failed
-  rerank is counted `rerank_fallback`, a success `ok`. The output check stays in `StagedRetrieval`.
+- **No output check (S4); a failure is an error (D71).** The §4.8 output check is **not** applied to
+  the 30.1.0 strategies: there a short reranker answer is accepted as in 30.1.0 (goal 4). A failed
+  rerank (`ok: false` or a throw) returns `RERANK_ERROR` — S4's "no behaviour change" is superseded
+  for the failure path by the goal's fail-loud decision (§10.5.5 K2) — counted `rerank_error`; a
+  success `ok`. The output check stays in `StagedRetrieval`.
 - `InMemoryMetrics` and `NoopMetrics` implement `IRetrievalMetrics`. No new log sink, no new logger.
 
 ### 9.3 Failure policy
 
-- `onFailure: 'stage1'` (default) = 30.1.0: stage-1 order, counted as `rerank_fallback`. The
-  returned scores are the stage-1 scores (never a mix with reranked ones); a `ScoreFloorCut` is
-  never combined with this fallback — rejected at construction and by the YAML validator (§4.7).
-- `onFailure: 'error'` = the strategy returns the `RagError` (counted as `rerank_error`), so the
-  stage reports it — for consumers that prefer no answer to an unranked one.
+- **One behaviour (D71):** a failed rerank — `ok: false`, a throw, or a failed output check (§4.8) —
+  makes the retrieval return `RagError('…', 'RERANK_ERROR')`, counted `rerank_error`, on the span
+  and as the session step `retrieval_rerank_error`; the stage reports it (§10.5). There is no
+  `onFailure` option and no stage-1 fallback: a consumer who wants unranked results while its
+  reranker is down injects an `IReranker` that answers them itself.
 
 ---
 
@@ -3268,8 +3291,8 @@ writes its own `IRag` wrapper.
   with a failed query: the 30.1.0 `rag-query` stage records no results for that store
   (`ragQueryCount` with `hit: false`, `logRagQuery` with `resultCount: 0`) and the request
   continues. That silent continuation is itself a fallback, which the goal's newer decision removes
-  ("No fallbacks anywhere in the pipeline", 2026-10-05 — the fail-loud sweep of this PR, not yet
-  written into this spec). Writes reach only the store they are written to; nothing is mirrored
+  ("No fallbacks anywhere in the pipeline", 2026-10-05): the stage now fails with the store's code
+  (§10.5.4 R5, D74). Writes reach only the store they are written to; nothing is mirrored
   into a copy.
 - **Effect on what the wrap touched** (each read, 2026-10-05):
   - a registry entry stays the store that was registered; `handle.ragStores.<key>` is that store,
@@ -3287,6 +3310,247 @@ writes its own `IRag` wrapper.
   a pre-wrapped store stays itself; the decorator walks run over a plain test decorator; a new test
   pins the behaviour (an open breaker → `CIRCUIT_OPEN`, no embedder call); the removed names are
   absent; the server's embedder-breaker test keeps its assertions.
+
+### 10.5 Fail loud — no fallback, no silent degradation (D69–D74)
+
+**TL;DR.** The goal's decision of 2026-10-05 ("No fallbacks anywhere in the pipeline", and "the
+fail-loud sweep is part of this PR"): a pipeline or component that finds another component not
+working **returns an error**. It never returns a fake success, an empty result, a skipped part, a
+stale cache or a substitute component. A degraded mode is the consumer's own injected strategy.
+`FallbackRag` went first (D68, §10.4); this section removes every other such path in llm-agent.
+Every item below was re-read against the code on 2026-10-05 (`493fcf17`; lines may move).
+
+#### 10.5.1 The rule and its carriers (D69)
+
+- **What counts as a failure.** A component that was configured or injected and does not do its
+  job: a call returns `ok: false`, throws, or answers in a shape its contract does not allow.
+- **What is not a failure** (kept, unchanged):
+  - **an optional capability absent by design** — no pipeline embedder (`TextOnlyEmbedding`, the
+    store embeds the text itself), a strategy that reports no readiness, a worker that declares no
+    clients of its own and so uses the shared ones (D38), a skill directory on a default search path
+    that does not exist (`ENOENT`), a directory without `SKILL.md`, the implicit `.env` missing;
+  - **an honest empty answer** — a store query that succeeds with no hits, smart tool selection
+    whose store answered and matched no tool;
+  - **best-effort cleanup on shutdown or after a request** (the close / logoff / dispose catches in
+    `stop-all.ts`, `session-graph-factory.ts`, `worker-registry.ts`, `config-route-handler.ts`,
+    `smart-server.ts`, `pg-pool.ts`, `http-mcp-server.ts`, `stdio-mcp-server.ts`,
+    `build-session-mcp-clients.ts`): the work they guard is already done or abandoned; a failed close
+    has nobody left to answer, and blocking a shutdown on it would turn one failure into two;
+  - **diagnostics-only catches** — `llm-reranker.ts` usage metering, the throttle observer
+    (`llm/throttle.ts`): a broken diagnostic is not a broken request (the request's own result is
+    untouched);
+  - **a mode the consumer chose** — listed for the user in §17.24, not decided here.
+- **Where the error surfaces.**
+  - a **pipeline stage** that cannot do its part sets `ctx.error` and returns `false`; the consumer
+    receives `{ ok: false, error: OrchestratorError }` as the stream's last item (`streamProcess`)
+    and as the result of `process()` — D70 makes that path work at all;
+  - a **component** (store, embedder, preprocessor, reranker, MCP client, provider) returns its
+    `Result` error or throws its typed error — whichever its contract already does;
+  - a **server** start that cannot build what its config asks for fails the start
+    (`ConfigValidationError` / a thrown error, exit code ≠ 0); an HTTP route whose backend failed
+    answers an error status with `jsonError` (never a 200 with a placeholder);
+  - **health**: a configured component that is not working makes `/health` not OK (D72).
+- **Which code.** The stage's `OrchestratorError` **carries the failing component's code
+  unchanged** (`CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `RERANK_ERROR`, `QUERY_EXPAND_ERROR`,
+  `SKILL_ERROR`, `LLM_ERROR`, `MCP_NOT_CONNECTED`, …) and names the stage and the component
+  (store key, client index, stage id) in its message. Existing stage codes are reused where they fit:
+  `PIPELINE_ERROR` (a handler threw), `MCP_UNAVAILABLE` (a client cannot list tools),
+  `COORDINATOR_PLAN_FAILED` / `COORDINATOR_PLAN_INVALID` / `COORDINATOR_STEP_FAILED`. **No shared set
+  is widened** (`MCP_UNAVAILABLE_CODES` and `DecisionErrorCode` are untouched). Where no component
+  code exists, the code comes from **one new set of its own**, `PIPELINE_FAILURE_CODES`
+  (`@mcp-abap-adt/llm-agent`, `interfaces/pipeline-failure-codes.ts`):
+
+  | Code | When |
+  |---|---|
+  | `RAG_STORE_MISSING` | a stage names a store the registry does not hold |
+  | `STATE_CORRUPT` | persisted state cannot be read back (a tool-loop context of another version, a session bundle, a run-scope terminal entry) |
+  | `TOOL_ARGUMENTS_JSON_PARSE_FAILED` | the LLM's tool-call arguments are not valid JSON — the string the OpenAI adapter already emits as a diagnostic, now a member of a set |
+
+- **Observability stays where it is:** every error is also on the stage span (`setStatus('error')`)
+  and in the session log (`stage_error_<id>` / the stage's existing step name). No new logger.
+
+#### 10.5.2 Pipeline core — pipeline errors reach the consumer (D70, a bug fix, highest priority)
+
+**The bug (N1).** Today a pipeline error never reaches the consumer:
+
+- `PipelineExecutor.executeStages` catches a throwing handler, marks the span and logs
+  `stage_error_<id>`, and returns `false` — `ctx.error` stays unset;
+- `DefaultPipeline.execute` catches again and returns `{ timing, error: ctx.error }`;
+- `pipelineToStream` ignores the returned `PipelineResult` (`.then(() => { done = true })`), so
+  even a `ctx.error` set by `classify`, `assemble`, `subagent`, `coordinator` or `dag-coordinator`
+  is dropped; its `.catch` (the only path that yields an error) is unreachable;
+- `SmartAgent.streamProcess` sets the root span `ok`.
+
+The consumer gets an empty (or truncated) stream that ends normally, and `process()` returns
+`ok: true` with empty content. Only handlers that `ctx.yield({ ok: false, … })` themselves
+(`tool-loop` ABORTED / LLM_ERROR, `tool-loop-core` MCP_UNAVAILABLE) get an error through.
+
+**The fix.**
+
+- the executor's catch sets `ctx.error` to an `OrchestratorError` with code `PIPELINE_ERROR` and
+  the message `stage "<id>" failed: <err>` (unless a handler already set one; a thrown
+  `OrchestratorError` is kept as it is, with its own code) before it returns `false`; an unknown
+  stage type is the same error;
+- `DefaultPipeline.execute`'s catch does the same for anything the executor let through;
+- `pipelineToStream` reads the `PipelineResult`: when `result.error` is set **and no `ok: false`
+  chunk was yielded already** (a handler that yielded its own error is not reported twice), it
+  yields `{ ok: false, error: result.error }` as the last item;
+- `streamProcess` sets the root span `error` (with the code) when the stream carried an error, `ok`
+  only otherwise;
+- `process()` already returns the first `ok: false` chunk — unchanged, it now receives one.
+
+Layer: pipelines in llm-agent (libs `pipeline/`, `agent.ts`). Behaviour: a consumer that saw an
+empty answer now sees an error (§13, behaviour table row B1).
+
+**Other pipeline-core items.**
+
+| # | Where (libs unless named) | Today | Now | Layer |
+|---|---|---|---|---|
+| N2 | `pipeline/handlers/tool-loop.ts` (~600), `agent.ts` (~1141), `adapters/llm-provider-bridge.ts` (~150), server-libs `controller/controller-coordinator-handler.ts` (~1554) | tool-call arguments that are not valid JSON become `{}`, and the tool **runs** with them | the tool does **not** run; the tool result given back to the LLM is an error naming the tool and the parse error (code `TOOL_ARGUMENTS_JSON_PARSE_FAILED`, in the tool message and as session step `tool_arguments_invalid`); the LLM may retry as with any tool error | pipelines |
+| N3 | `adapters/llm-adapter.ts` (~88) | the same, `onDiagnostic` only | the same as N2; the diagnostic stays | pipelines |
+| N13 | `policy/pending-tool-results-registry.ts` (~49) | pending tool results that reject → `results: []` | the rejection is returned: the waiting stage fails with `PIPELINE_ERROR` naming the tool calls | pipelines |
+| — | `pipeline/context/tool-loop-context/window-context-strategy.ts` (~51), `legacy-accumulate-context-strategy.ts` (~31) | a saved state of another version, or malformed, is silently replaced by `[]` | `restore` throws `OrchestratorError(…, 'STATE_CORRUPT')`, the stage fails with it | pipelines |
+
+#### 10.5.3 MCP — client, adapter, registry, tool selection (D74)
+
+| # | Where | Today | Now | Layer |
+|---|---|---|---|---|
+| M1 | `llm-agent-mcp/src/client.ts` (~426) | `listTools` fails, one reconnect fails → the cached tools (stale, or `[]`) | throws `toMcpError(err)`; the adapter's catch turns it into `{ ok: false, error: McpError }` with its existing code | framework (mcp) |
+| M2 | `llm-agent-mcp/src/adapter.ts` (~32) | a tools cache answers `ok: true` after the server went down | the cache answers only while the last health result was good; after a failed probe or call, `listTools` asks the server (and fails with `MCP_NOT_CONNECTED` when it is down) | framework (mcp) |
+| M3 | `llm-agent-mcp/src/strategies/lazy-connection-strategy.ts` (~135) | a slot that failed to connect is left out of `resolve()` (a warning only); the caller gets fewer clients | unchanged in the strategy (it already returns `configuredSlotCount`, so the gap is visible — no contract change); `McpToolRegistry.resolve` (M4) treats fewer resolved clients than `configuredSlotCount` as `MCP_UNAVAILABLE` naming the missing slots | framework (mcp) + pipelines |
+| M3b | same (~160) | `healthCheck` `{ ok: true, value: false }` counted healthy | `result.ok && result.value` | framework (mcp) |
+| M4 | libs `mcp/tool-registry.ts` (~117) | one client's `listTools` fails or throws → dropped, no log | `resolve` rejects with `OrchestratorError(…, 'MCP_UNAVAILABLE')` naming the client and carrying the `McpError` code in its message (a throw, so its signature does not change; the stage's executor keeps a thrown `OrchestratorError` as it is, D70) | pipelines |
+| M5 | libs `pipeline/handlers/tool-select.ts` (~40) | same as M4 | stage fails with `MCP_UNAVAILABLE` | pipelines |
+| M6 | libs `pipeline/handlers/tool-loop.ts` (~229, N10) | a per-iteration re-list failure → that client's tools vanish mid-run | stage fails with `MCP_UNAVAILABLE` (the tool set is never shrunk by a failure) | pipelines |
+| M7 | libs `pipeline/handlers/tool-select.ts` (~91) | a discovery store query fails → dropped; smart mode then selects zero tools and answers LLM-only | stage fails with the store's code (e.g. `CIRCUIT_OPEN`); zero tools stays possible only after a **successful** query with no match (an honest empty answer) | pipelines |
+| M8 | libs `pipeline/handlers/tool-loop.ts` (~352), `agent.ts` (~966) | a tools re-select query fails → the previous set kept, unlogged | stage fails with the store's code | pipelines |
+| M9 | server-libs `smart-agent/tools-rag-handle.ts` (~40, ~64) | a client failing `listTools` left out of the catalog, which is then cached for ever; a failed query **or zero hits** → the first N catalog tools | a client failure → `query` returns `McpError` (nothing cached); a failed query → its `RagError`; zero hits → `[]` (an honest empty answer, never an unranked prefix) | server (handle stays in server-libs, §11.2 item 2) |
+| M10 | server-libs `smart-server.ts` bridge (~740) | a `listTools` error the classifier calls a tool error → silently the next client | any `listTools` failure throws its `McpError` (a `callTool` tool error stays a tool result, as today) | server |
+| M11 | server-libs `smart-server.ts` `resolveAuthoritativeSnapshot` (~2573) | failing clients dropped (logged), the partial snapshot memoized | a failing client fails the snapshot with its `McpError`; nothing is memoized | server |
+| M12 | libs `builder.ts` (~1182) / `mcp/vectorize-mcp-tools.ts` (~198) | a client failing `listTools` at startup → counted, build continues | unchanged by decision: a store is filled once at creation and an incomplete fill is reported and stays (goal, D41); what changes is that it is **reported loudly** — `complete: false` makes `/health` answer 503 (D72), and every request whose tool selection needs that client fails with `MCP_UNAVAILABLE` (M4–M6) | framework (libs) |
+
+#### 10.5.4 RAG and embedder — incl. `FallbackQueryEmbedding` (D73, D74)
+
+| # | Where | Today | Now | Layer |
+|---|---|---|---|---|
+| R1 | `llm-agent/src/rag/query-embedding.ts` (~62) `FallbackQueryEmbedding`, used by `VectorRag`, `QdrantRag`, `PgVectorRag`, `HanaVectorRag` | **any** failure of the caller's query embedding (a broken pipeline embedder, an open breaker) → re-embedded with the store's embedder, the error discarded | **D73:** the store's embedder is used **only** when the caller's embedding carries no vector by design (`TextOnlyEmbedding` — no pipeline embedder configured, an absent capability); any other failure propagates (the store returns it as `QUERY_ERROR` / its own code). Recognised by type (`instanceof TextOnlyEmbedding`), never by message. The class keeps its name and constructor | framework (store kit in `llm-agent`) |
+| R2 | `llm-agent-rag/src/vector-rag.ts` (~181, ~220), `in-memory-rag.ts` (~103, ~180) | an enricher / preprocessor `ok: false` ignored, raw text used | the store returns that `RagError` (upsert / query fails) | framework (rag) |
+| R3 | `llm-agent-rag/src/preprocessor.ts` `TranslatePreprocessor`, `ExpandPreprocessor`, `IntentEnricher` (~96, ~153, ~227) | an LLM failure, empty content or a throw → `ok: true` with the original text | `ok: false`, `RagError(message, 'QUERY_EXPAND_ERROR')` — the code `QueryExpander` already uses for the same failure (the `TranslatePreprocessor` early `ok: true` for text needing no translation stays: not a failure) | framework (rag) |
+| R4 | libs `pipeline/handlers/rag-query.ts` (~35) | a stage names a store the registry does not hold → `return true // non-fatal, skip` | stage fails with `RAG_STORE_MISSING` naming the store | pipelines |
+| R5 | `rag-query.ts` (~115) | a store's query `ok: false` → no entry, request continues (the D68 continuation, §10.4) | stage fails with the store's code (`CIRCUIT_OPEN`, `QUERY_ERROR`, …) naming the store | pipelines |
+| R6 | libs `agent/rag-orchestrator.ts` (~150) (the non-pipeline path) | `r.ok ? r.value : []` | `orchestrate` returns the error (`OrchestratorError` with the store's code) — it already returns a `Result` | pipelines |
+| R7 | libs `builder.ts` (~830) sub-agent retrieval source | a failed query → `[]` | the source throws the `RagError`; the sub-agent context build fails with it | pipelines |
+| R8 | libs `subagent/default-context-builder.ts` (~69, ~88) | project / tool source throws → silently left out | the context build fails with that error (`COORDINATOR_STEP_FAILED` at the caller) | pipelines |
+| R9 | libs `rag/knowledge-rag.ts` (~248) | the semantic index upsert fails → the entry stays unindexed for the life of the process, debug log only | `put` rejects with `RagError(…, 'UPSERT_ERROR')` after the entry is written (the caller sees that the write is not searchable) | framework (libs) |
+| R10 | server-libs `jsonl-knowledge-backend.ts` (~72, ~108) | an embedding failure skips the entry (log only under `DEBUG_CONTROLLER`) | `build()` / `put()` reject with `UPSERT_ERROR`; nothing is marked built | server |
+| R11 | `qdrant-rag/src/qdrant-rag.ts` (~141) | reading the collection info fails → the dimension check is skipped and the collection is marked ensured for good | the read error is returned (`UPSERT_ERROR`); `collectionEnsured` is set only after a successful check; a missing / non-numeric `vectors.size` is an error too | framework (provider) |
+| R12 | `sap-aicore-embedder/src/foundation-embedder.ts` (~81, ~125, ~146) | a short batch returned short; a prediction without values → `[]` vector; missing `data` → `[]`; HTTP errors with the generic code | `RagError(…, 'EMBED_ERROR')` for a batch whose count differs from the texts, an empty vector, a missing `data`, and the HTTP failures (the code `openai-embedder` and `ollama-embedder` already use) | framework (provider) |
+| R13 | the `TextOnlyEmbedding` sites (`rag-query`, `tool-select`, `skill-select`, `tool-loop`, `agent.ts`, `rag-orchestrator`) | — | **kept**: no pipeline embedder is an absent capability; the store embeds (R1). Not a failure | — |
+
+#### 10.5.5 Reranker — incl. `onFailure` (D71)
+
+| # | Where | Today | Now | Layer |
+|---|---|---|---|---|
+| K1 | **this spec's** `StagedRetrieval` `rerank.onFailure: 'stage1'` (default), the YAML `onFailure` key, `mcpToolsVariants.facetedRerank`'s `onFailure` | a failed rerank returns the stage-1 order and scores, counted `rerank_fallback` | **removed.** `rerank` has no `onFailure`: a failed rerank (an `ok: false`, a throw, a failed output check, §4.8) returns `RagError(…, 'RERANK_ERROR')`, counted `rerank_error`, on the span, as the session step `retrieval_rerank_error`. There is one behaviour, so the `ScoreFloorCut` + `stage1` rejection and the "two scales in one run" rule (§4.6, D67) disappear: a run's scores are always one scale | framework (libs) |
+| K2 | libs `retrieval/reranked-retrieval.ts` `RerankedRetrieval`, `RerankAllRetrieval` (30.1.0) | a failed rerank → logged, `ok: true` in embedding order | returns the `RERANK_ERROR` (the session step stays). **Supersedes S4's "no behaviour change" for the failure path** — the goal's decision names the reranker explicitly; S4's other half (no §4.8 output check on these strategies) is unchanged | framework (libs) |
+| K3 | libs `pipeline/handlers/rerank.ts` (~39) | a failed rerank → original order (logged) | stage fails with `RERANK_ERROR` | pipelines |
+| K4 | libs `agent/rag-orchestrator.ts` (~171) | `rr.ok ? rr.value : results`, unlogged | `orchestrate` returns the error | pipelines |
+
+#### 10.5.6 LLM handlers and providers (D74)
+
+| # | Where | Today | Now | Layer |
+|---|---|---|---|---|
+| L1 | libs `pipeline/handlers/translate.ts` (~54) | the LLM fails → untranslated text, unlogged | stage fails with `LLM_ERROR` (the `LlmError`'s code) | pipelines |
+| L2 | `pipeline/handlers/expand.ts` (~26), `agent/rag-orchestrator.ts` (~115) | the expander fails → the original query | stage / `orchestrate` fails with the expander's code (`QUERY_EXPAND_ERROR`) | pipelines |
+| L3 | `pipeline/handlers/summarize.ts` (~65), `agent/rag-orchestrator.ts` (~69, ~447) | the summarizer fails → full history | stage / `orchestrate` fails with `LLM_ERROR` | pipelines |
+| L4 | `pipeline/handlers/history-upsert.ts` (~39, ~48, ~120) | the summarizer fails → a raw `user → assistant` line stored; an upsert failure → logged, `return true` | stage fails with the summarizer's / the store's code; nothing raw is stored as if summarized | pipelines |
+| L5 | `sap-aicore-llm/src/sap-core-ai-provider.ts` (~529) | the model catalog unreachable → `[{ id: <configured model> }]` | `getModels` returns `LlmError(…, 'LLM_ERROR')` | framework (provider) |
+| L6 | `openai-llm/src/openai-provider.ts` (~307), `anthropic-llm/src/anthropic-provider.ts` (~333) | a whole `data:` line that is not JSON is dropped; the stream ends "successfully", truncated | the stream yields `LlmError(…, 'LLM_ERROR')` naming the line's first 200 characters (lines are already split on `\n`, so a partial chunk never reaches the parser) | framework (provider) |
+| L7 | server-libs `http/models-route-handler.ts` (~17, ~48) | `getModels` / `getEmbeddingModels` `ok: false` → 200 with a placeholder / `[]` | 502 `jsonError(message, 'api_error', <code>)` | server |
+
+#### 10.5.7 Coordinator and stepper (D74)
+
+All carry the existing coordinator codes through the handlers that already wrap planner and step
+failures (`coordinator.ts`, `dag-coordinator.ts`).
+
+| # | Where (libs `coordinator/`) | Today | Now |
+|---|---|---|---|
+| C1 | `stepper/stepper-interpreter.ts` (~194) | `knowledgeRag.list` throws → the dependency's context skipped; the dependent step runs without its prerequisites | the step fails, `COORDINATOR_STEP_FAILED` |
+| C2 | `stepper/llm-stepper-planner.ts` (~77, ~96) | `toolsRag.query` / `listArtifacts` throws → that prompt section omitted | the plan fails, `COORDINATOR_PLAN_FAILED` |
+| C3 | `stepper/llm-evaluator.ts` (~63) | `toolsRag.query` throws → omitted | the step fails, `COORDINATOR_STEP_FAILED` |
+| C4 | `stepper/cyclic-react-executor.ts` (~131) | `knowledgeRag.query` throws → no facts prefix | the step fails, `COORDINATOR_STEP_FAILED` |
+| C5 | `stepper/cyclic-react-executor.ts` (~342) | the artifact store throws → a live re-fetch instead | the step fails, `COORDINATOR_STEP_FAILED` — a configured store that does not work is a failure, and a re-fetch hides it (it also repeats a call the dedup exists to avoid) |
+| C6 | `stepper/need-resolver.ts` (~43, ~49) | the classifier LLM fails, or answers malformed JSON → "no need" | the step fails, `COORDINATOR_STEP_FAILED`, with the `LlmError` / `ClassifierError` in its message |
+| C7 | `stepper/llm-task-formalizer.ts` (~37) | an LLM error, a throw or unparseable output → a raw-prompt spec | the plan fails, `COORDINATOR_PLAN_FAILED` |
+| C8 | `dag/llm-dag-planner.ts` (~108, ~242; #171) | no nodes → a one-node plan from the raw prompt (the throw branch is unreachable: the prompt is always passed as the fallback goal) | no fallback goal: no nodes → `COORDINATOR_PLAN_INVALID` |
+
+Layer: framework (libs), coordinator.
+
+#### 10.5.8 Skills (D74)
+
+| # | Where (libs unless named) | Today | Now |
+|---|---|---|---|
+| S-1 | `pipeline/handlers/skill-select.ts` (~51, ~70; N11) | a store query fails → dropped; `listSkills` fails → `skill_select_error`, continue without skills | stage fails with the store's code / `SKILL_ERROR` |
+| S-2 | `agent/rag-orchestrator.ts` (~262, ~297) | the skill query and `listSkills` failures dropped; a failing `getContent` skipped | `orchestrate` returns the error |
+| S-3 | `skills/skill-utils.ts` (~27) | **any** `readdir` error skips the directory | only `ENOENT` skips (a default search path that does not exist is absent by design); any other error → `SkillError` naming the directory |
+| S-4 | `skills/filesystem-skill.ts` (~98) | a `SKILL.md` that cannot be read or parsed → the skill silently left out | no `SKILL.md` → not a skill (unchanged); a read or frontmatter error → `listSkills` returns `SkillError` naming the file |
+| S-5 | `mcp/vectorize-mcp-tools.ts` `vectorizeSkills` (~443; N20) | `listSkills` fails → silent return | the error is thrown; `build()` fails with it (a writerless store stays skipped, as today: absent by design) |
+| S-6 | `builder.ts` (~1335; N21) | the plugin loader's `errors` never checked | `build()` fails listing every `{ file, error }` (the server's own `plugin_errors` log stays) |
+| S-7 | `skills/plugin-host/compatible-skills-rag.ts` (~89, ~110) | an incompatible generation, or an abort / timeout → `[]` | an incompatible generation throws `SkillsIncompatibleError` (as the eager path already does); an abort rethrows (the caller's cancellation, not an empty answer) |
+| S-8 | `skills/plugin-host/skill-plugin-host.ts` (~339; N17) | a group's build fails → the prior generation kept, `ok: true` when a prior exists | `ok: false`, the group in `omitted` with its reason; whether the prior generation keeps serving is the consumer's `strict` choice (§17.24 U2) |
+| S-9 | `skill-plugin-host.ts` (~236; N16) | a failed `acquire` carries the source's prior data forward under `strict: false` (the default), the reason discarded | the reason is kept and reported (`SkillLoadResult.carried: { sourceId, reason }[]`, additive); carrying forward at all is the consumer's mode — §17.24 U2 |
+| S-10 | server-libs `smart-server.ts` (~496) + `config.ts` (~280) | an unknown `skills.type` → no skill manager | `ConfigValidationError` at start (`skills.type: must be claude \| codex \| filesystem`) |
+
+Layer: framework (libs) for S-1–S-9, server for S-10.
+
+#### 10.5.9 Server (D74)
+
+| # | Where (server-libs `smart-agent/` unless named) | Today | Now |
+|---|---|---|---|
+| V1 | `session-lifecycle/session-rag-registry.ts` (~90; N22) | a persisted collection that fails to describe / open / adopt → the session starts without it | the session's creation fails with the `RagError` (`CollectionNotFoundError`, `ProviderNotFoundError`, …) naming the collection |
+| V2 | `controller/session-bundle.ts` (~57; N23) | a malformed bundle → an older or empty bundle | `STATE_CORRUPT` naming the session |
+| V3 | `controller/run-scope.ts` (~79; N24) | a malformed terminal entry skipped | `STATE_CORRUPT`; (`gcTerminal`'s catch at ~101 is cleanup — kept) |
+| V4 | `controller/artifacts.ts` (~261) | a claim without a numeric `writeOrdinal` silently dropped | `STATE_CORRUPT` naming the claim |
+| V5 | `smart-server.ts` (~3112; N25) | session metadata `recordSessionStart` / `recordSessionEnd` throws → swallowed | `recordSessionStart` failing fails the request (500 `jsonError`); `recordSessionEnd` is end-of-request cleanup — kept, but logged (`session_meta_end_failed`) |
+| V6 | `config-reload-watcher.ts` (~132; N26) | a drain / invalidate rejection logged, the reload counted applied | the reload reports failure (`config_reload_failed`, the reload entry point rejects); the old config stays live |
+| V7 | `tools-rag-handle.ts` (~90; N28) | the eager catalog load fails → logged, startup continues | the start fails with the `McpError` |
+| V8 | `llm-agent-server/src/smart-agent/cli.ts` (~146; N30) | an explicit `--env` file or `--secrets-dir` that cannot be read → a warning, startup continues | exit code 1 with the path and the reason (a missing implicit `.env` stays ignored: absent by design) |
+| V9 | `build-stepper-root.ts` (~97, ~234; N31) | a role with no resolvable LLM config → a stub OpenAI model | `ConfigValidationError` naming the role |
+
+Plus M9–M11 (§10.5.3), R10 (§10.5.4), L7 (§10.5.6), S-10 (§10.5.8). Layer: server.
+
+#### 10.5.10 Health (D72)
+
+**The rule.** `/health` answers **HTTP 200 only when every configured component works**; a
+required component that is not working ⇒ **503** (not ready). Every component the consumer
+configured is required — it would not be configured otherwise; an optional capability that is
+absent is not probed and not reported.
+
+- `HealthStatus.status`: `healthy` → 200; `degraded` (a configured component not fully working: an
+  LLM / store / MCP probe failed, a circuit open, `toolCatalog.complete: false`) → **503**;
+  `unhealthy` (unchanged, unused) → 503. The word `degraded` keeps the goal's wording for an
+  incomplete fill (D41); what changes is the HTTP code. The body is unchanged (`{ …status, ready }`).
+- `ready` (the agent's `IReadinessReporter`) still gates the chat routes (`writeNotReady`), as
+  today; `/health` answers 503 when `!ready` **or** `status !== 'healthy'`. The chat routes are not
+  gated on the full health probe (it is per `/health` call, too expensive per request): a request
+  that needs a broken component fails on its own (§10.5.2–§10.5.9).
+
+| # | Where | Today | Now |
+|---|---|---|---|
+| H1 | server-libs `http/health-route-handler.ts` (~17) | `degraded` → 200 | `degraded` → 503 (the rule) |
+| H2 | libs `health/agent-health.ts` (~57) | only the first RAG store probed; none → `rag: true` | every registered store probed; `rag: true` only when all answer; no store → `rag: true` (absent by design) |
+| H3 | `agent-health.ts` (~70) | an MCP `healthCheck` `{ ok: true, value: false }` → ok | `ok && value` (as the LLM probe already does) |
+| H4 | `agent-health.ts` (~105) | the MCP probes throw (timeout) → `mcp: []` → all OK | every client probe that did not answer is reported `ok: false` with the error |
+| H5 | `agent.ts` (~488) `isReady` true for a strategy without readiness | **kept**: absent by design; such a pipeline's MCP health comes from the probes (H3, H4) | — |
+
+Layer: framework (libs) for H2–H4, server for H1.
+
+#### 10.5.11 Already removed, or no longer present
+
+- `FallbackRag` and the builder's store wrapping — removed by D68 (§10.4).
+- `IntentToolIndexing` (`rag/tool-indexing-strategy.ts`, failure → `[]`) — the file is deleted with
+  the orphan `IToolIndexingStrategy` (§10.3); nothing to change.
+- Every other inventory item was found present on 2026-10-05.
 
 ---
 
@@ -3340,6 +3604,7 @@ concurrency (D13) and belong to no layer of this design.
 | Its own composition root: the decision seams (`makeProbabilityDecision`, `makeRelevanceDecision`), credentials, binding stores beyond `tools` (`profile.bind` + `withRetrievalStrategy`); for a builder consumer, the start at which its stores are created and filled | §6.1, §6.2, §13 |
 | Replicas over one persistent tools store: whether the reload window at each start is acceptable (§3.10) | §3.10, §6.5 |
 | Shared items: group partitions (`ISharedItemGroups`), retention and redaction policy | §8.3, §8.4, §15 |
+| Any **degraded mode** — answering while a component is down: its own injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call strategy), and the modes it opts into (§17.24 U1–U8) | §10.4, §10.5 |
 
 **2. llm-agent framework** — contracts and generic implementations:
 
@@ -3367,6 +3632,15 @@ concurrency (D13) and belong to no layer of this design.
 | `skill-select` (libs `pipeline/handlers/skill-select.ts`) | F3 (§10.2) |
 | Shared-items writers | write and remove items through `SharedItemsProfile` `index` / `remove`; what an item holds is theirs (§8.4, §15) |
 | Rerank stage, query preparation (`translate`, #323) | unchanged: `RerankHandler` precedence, `retrieval_rerank_error`; query preparation stays a pipeline stage (§12) |
+
+**Fail loud (§10.5)** — every item's layer is in its table:
+- framework — `llm-agent-mcp`: M1–M3b; the store kit, `llm-agent-rag` and the store / embedder
+  packages: R1–R3, R11, R12; libs: R9, K1, K2, C1–C8, S-3–S-9, H2–H4, M12; LLM providers: L5, L6;
+  contracts: `PIPELINE_FAILURE_CODES`, `SkillLoadResult.carried`;
+- llm-agent-server: M9–M11, R10, L7, S-10, V1–V9, H1;
+- pipelines in llm-agent: D70 (executor, `DefaultPipeline`, `pipelineToStream`, `SmartAgent`), N2,
+  N3, N13, the tool-loop context strategies, M4–M8, R4–R8, K3, K4, L1–L4, S-1, S-2;
+- the consumer: its degraded modes (above).
 
 **Outside the four layers:** the store backends (concurrency, D13); `scripts/rag-eval`, the repo's
 measurement harness (§14.3).
@@ -3608,8 +3882,9 @@ again, written either way.
 
 ## 13. Compatibility and migration
 
-- **No profile configured → no change.** Same records (golden test), same stages, same k
-  semantics, same `RerankHandler` precedence, same YAML.
+- **No profile configured → no change on the success path.** Same records (golden test), same
+  stages, same k semantics, same `RerankHandler` precedence, same YAML. A **failure** no longer
+  passes for a success anywhere (fail loud, the behaviour table B1–B11 below).
 - **This is a major release — breaking** (D57–D59, the goal's decision "No deprecated aliases").
   Old names are not kept; no package re-exports another package's names — neither the names
   this PR moves nor the pre-existing re-exports (S12, §11.4: lines 52–69); `ITextLogger`, a
@@ -3744,8 +4019,8 @@ again, written either way.
   breaker was open. Now, with the circuit breaker on, an embedder outage makes retrieval fail with
   an error instead: the open breaker throws `CIRCUIT_OPEN` without calling the provider, and the
   store's query returns that error. D68 does not change what a stage does with a failed query
-  (today the `rag-query` stage records no results for that store and the request continues; the
-  goal's fail-loud decision of 2026-10-05, not yet written into this spec, makes it an error).
+  (in 30.1.0 the `rag-query` stage records no results for that store and the request continues;
+  the fail-loud sweep makes that an error too — §10.5.4 R5, behaviour row B2).
   Registry entries
   and `handle.ragStores` are the stores as registered; `withCircuitBreaker(config)`'s
   `handle.circuitBreakers` holds the main-LLM breaker only (the embedder breaker it added was never
@@ -3755,6 +4030,24 @@ again, written either way.
   `HealthCheckerDeps.circuitBreakers`; to keep a degraded mode, write your own `IRag` wrapper
   (implement `IRagDecorator`). *Replaces the two behaviour notes on `FallbackRag`'s writer (D52,
   D62), withdrawn.*
+- **Behaviour table — fail loud** (D69–D74, §10.5). **Breaking behaviour, not names**: no import
+  changes, but a failure that a 30.1.0 consumer saw as a success (an empty, partial, stale or
+  substituted answer) is now an error. The success paths are unchanged (the golden test holds). The
+  CHANGELOG's **Breaking** section carries this table as is, after the migration table:
+
+  | # | What fails | 30.1.0 | Now | What a consumer does |
+  |---|---|---|---|---|
+  | B1 | any pipeline stage (a handler throws, or sets `ctx.error`) | an empty / truncated stream ending normally; `process()` `ok: true` | the stream's last item is `{ ok: false, error }`; `process()` returns it; root span `error` (D70) | handle `ok: false` from `streamProcess` / `process` (already in the contract — it now happens) |
+  | B2 | a RAG store's query in `rag-query`, `tool-select`, `skill-select`, a re-select, the legacy orchestrator, a sub-agent source; a store a stage names but the registry lacks | the store is skipped, the request continues | the request fails with the store's code (`CIRCUIT_OPEN`, `QUERY_ERROR`, …) or `RAG_STORE_MISSING` | for a degraded mode, inject your own `IRag` wrapper that answers what you want while the store is down (D68) |
+  | B3 | the pipeline's query embedder (a real one) | the store re-embedded the text with its own embedder | the store returns the error (`FallbackQueryEmbedding` covers only `TextOnlyEmbedding`, D73) | configure a working embedder, or none (the store then embeds) |
+  | B4 | a reranker — `RerankedRetrieval`, `RerankAllRetrieval`, the `rerank` stage, the legacy orchestrator (and `StagedRetrieval`, new in this release) | stage-1 / original order, `ok: true` | `RERANK_ERROR` (D71). `onFailure` existed only in this spec's drafts and was never released, so no config carries it | for unranked results on failure, inject a reranker (`IReranker`) that answers them itself |
+  | B5 | an MCP client's `listTools` (client, adapter cache, registry, `tool-select`, `tool-loop`, `tools-rag-handle`, the server's bridge and snapshot); a slot that failed to connect | the client's tools left out (or stale), the request continues | `MCP_UNAVAILABLE` / the client's `McpError` code | make the server reachable; a consumer that wants to run on fewer servers builds that pipeline with those clients only |
+  | B6 | an LLM step: `translate`, `expand`, `summarize`, `history-upsert`, the query preprocessors and enricher, the stepper's need-resolver / formalizer / planner sections, the DAG planner's empty plan | the original text / full history / a raw-prompt plan | the step's error (`LLM_ERROR`, `QUERY_EXPAND_ERROR`, `COORDINATOR_*`) | — (a consumer that wants untranslated text on failure injects its own handler / preprocessor) |
+  | B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
+  | B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type` | the skill (or all skills) left out | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails | fix the skill source; `strict: false` keeps its carry-forward (U2, the user's to decide) |
+  | B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK (D72) | a load balancer that treated `degraded` as up now takes the instance out — intended |
+  | B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure, the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
+  | B11 | providers: `sap-aicore-llm` `getModels`, a malformed SSE line (OpenAI, Anthropic), a short or empty SAP AI Core embedding batch, a Qdrant collection whose info cannot be read | the configured model / a silently truncated stream / short or empty vectors / the dimension check skipped for good | `LLM_ERROR` / `EMBED_ERROR` / `UPSERT_ERROR` | — |
 - **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
   `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
   requires `poolItems`. New in this release, so nothing released changes.
@@ -3884,26 +4177,23 @@ again, written either way.
   pinned item stays at the head and the replacement is merged into the rest by score; **the reranker reads the item text, never a non-canonical
   record's own text**; a non-canonical hit without `itemText` → the canonical record is read for
   its text; `getById`
-  result outside the identity filter dropped; user partition skipped without `userId`; both failure
-  policies; reranker output check (wrong count, duplicate, non-finite → `RERANK_ERROR`); the cut
+  result outside the identity filter dropped; user partition skipped without `userId`; a failed
+  rerank returns `RERANK_ERROR` (D71); reranker output check (wrong count, duplicate, non-finite → `RERANK_ERROR`); the cut
   applied once, at most `min(k, cut.limit(k))` items returned; **decomposer:** none → one run; `[]` →
   one run with the whole budget; each sub-query reranked against its own text and kept to its
   `k`; union in sub-query order, de-duplicated by owner-qualified item — **two sub-queries
   returning the same item with different scores → it is kept once, at its first position with its
   first score** (no best-score selection, no re-sort), and at most `budget` ≤ k items; **a
-  decomposer with `ScoreFloorCut` throws at construction** with its message (also with a reranker
-  under `onFailure: 'error'`); budgets summing to > k, `k < 1`, empty text or
+  decomposer with `ScoreFloorCut` throws at construction** with its message (also with a reranker); budgets summing to > k, `k < 1`, empty text or
   a decomposer error → `DECOMPOSE_ERROR`, counted, never a silent fall-back; at most `budget`
   items with any decomposer; `keepStage1Top` counted inside k; collapse keys on the owner-qualified item;
   `keepStage1Top`: pinned items first in stage-1 order, each carrying its **reranked** score (never
   the embedding score) — under a `ProbabilityReranker` and under a `RelevanceReranker` (scores
   outside [0, 1]); the rest by reranked score; `keepStage1Top` > 0 with `ScoreFloorCut` throws at
-  construction with its message; `ScoreFloorCut` with `onFailure: 'stage1'` throws with its message
-  (allowed with `'error'` and without a reranker); a failed rerank under `'stage1'` with
-  `keepStage1Top` returns the stage-1 result, ids and scores; every cut; telemetry (span
-  attributes, counter, session step).
-- Config validator: `compose` with `cut: { score-floor: … }` and a reranker refused unless
-  `onFailure: error`; `compose` with `cut: { score-floor: … }` and a decomposer (profile-level
+  construction with its message; `ScoreFloorCut` with a reranker is allowed (D71); a failed rerank —
+  `ok: false`, a throw, a failed output check, with or without `keepStage1Top` — returns
+  `RERANK_ERROR` (D71); every cut; telemetry (span attributes, counter, session step).
+- Config validator: an `onFailure` key under `compose` refused (D71); `compose` with `cut: { score-floor: … }` and a decomposer (profile-level
   `decomposer`, or `compose.decomposer` other than `none`) refused (D63).
 - `SapAiCoreRelevanceDecision` (injected `fetch`): URL, `AI-Resource-Group` header (default
   `default`), bearer asked per call, ONE call per `score`, body `{model, query, documents, top_n}`
@@ -4172,6 +4462,8 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 | A deploy-time corpus step, a record of the load in the store, resuming an interrupted load | not built (D54): the server loads the corpus at every start, from the start |
 | Tuned numbers for any shipped strategy or composition | the consumer's calibration (D55); measured with the harness in the consumer (§14.3) |
 | A degraded RAG mode — answering from a copy while the embedder is down | the consumer's own `IRag` wrapper (D68): the library ships none; `FallbackRag` is removed |
+| `SmartServer`'s `closeFns` loop (`smart-server.ts` ~1943) stops at the first throwing closer, so later closers never run | a cleanup bug found while verifying the fail-loud inventory, not a fallback: its own issue (§17.24) |
+| The consumer-chosen modes U1–U10 | the user's decision (§17.24); unchanged until decided |
 
 ---
 
@@ -4343,7 +4635,7 @@ them.
 |---|---|---|
 | D28 | **Relevance scores are comparable for the same query and model** — a cross-encoder scores each (query, passage) pair independently. `IRelevanceDecision` says so (replacing "comparable only within one call"); `RelevanceReranker` **batches by default** like `ProbabilityReranker` (`maxBatchTokens` 48000, `concurrency` 4, the same validation) and merges the batches' scores into one order; no single-call default. Closes §17.5's open choice. | §3.9, §5.2, §7.4, §14.1 |
 | D29 | **The second optional seam `makeRelevanceDecision` is approved** (was a §17.5 choice). | §3.8, §6.2 |
-| F5 (review) | **Pinned items carry reranked scores; `keepStage1Top` + `ScoreFloorCut` rejected.** A `keepStage1Top` item keeps its stage-1 place and carries the score the reranker gave it, never the embedding score; order stays pinned first, then the rest by reranked score. `keepStage1Top` > 0 with `ScoreFloorCut` is rejected at construction (keepStage1Top is unmeasured, D7). The `onFailure: 'stage1'` fallback returns stage-1 scores, so `ScoreFloorCut` with a reranker needs `onFailure: 'error'` — the same rejection, in the constructor and the YAML validator. | §4.2, §4.7, §4.9, §6.2, §9.3, §14.1 |
+| F5 (review) | **Pinned items carry reranked scores; `keepStage1Top` + `ScoreFloorCut` rejected.** A `keepStage1Top` item keeps its stage-1 place and carries the score the reranker gave it, never the embedding score; order stays pinned first, then the rest by reranked score. `keepStage1Top` > 0 with `ScoreFloorCut` is rejected at construction (keepStage1Top is unmeasured, D7). The `onFailure: 'stage1'` fallback returns stage-1 scores, so `ScoreFloorCut` with a reranker needs `onFailure: 'error'` — the same rejection, in the constructor and the YAML validator. *The `onFailure` half is withdrawn by D71 (§17.24): there is no stage-1 fallback, so no rejection is needed; the pinned-score half stands.* | §4.2, §4.7, §4.9, §6.2, §9.3, §14.1 |
 | D30 | **The released probability seam is renamed symmetric to its contract:** `BuildAgentDeps.makeDecisionModel` → **`makeProbabilityDecision`**; the app's `createMakeDecisionModel` → **`createMakeProbabilityDecision`** (`createMakeRelevanceDecision` stays). `makeDecisionModel` stays a deprecated alias until the next major; **both supplied → startup fails with an explicit error naming both** (never silently pick one); the seam-missing message names `makeProbabilityDecision`. Migration note in §13. *The alias and the both-supplied error are superseded by D58: `makeDecisionModel` is removed; the rename and the seam-missing message stand.* | §1, §3.8, §6.2, §11, §13, §14.1 |
 
 ### 17.8 Decided by the user on 2026-10-05 — the server fills a bound profile
@@ -4570,7 +4862,7 @@ Migration: 18 more lines (§13, lines 52–69; 69 with S12).
 | D64 | **An injected MCP connection strategy is owned by the agent / pipeline it is injected into** (decided by the user). `handle.close()` disposes it, and so does a `build()` that fails (it has no handle to close it then, §6.3, D47); the consumer must not reuse it after either — it injects a new one into the next builder. Stated in `docs/INTEGRATION.md` (`IMcpConnectionStrategy` → *Builder usage*) and in the `withMcpConnectionStrategy` doc comment. Before, a failed build left an injected strategy alive; no contract changes (`IMcpConnectionStrategy.dispose` is already optional and called by `close()`) | §6.3, §14.1 |
 | D65 | **A corpus is checked against every tools store it is bound to, before any store is created.** One `corpus` source binds the main store and every worker store the server builds, each from its own store config (`_workerRagInput`), but its expectation carried only the main store's `dimension`. Now the server checks the corpus's vector dimension against the main tools store's declared `dimension` **and each worker's own** when it resolves `fill` — before any store exists — and fails startup naming each differing store and both dimensions. Chosen over a per-store check at each store's creation: that keeps each store untouched until its own checks pass, but would clear and load the main store before a worker's mismatch failed the start; at resolution nothing is touched anywhere. The other identity checks (`profile`, `embedder`, the binding's `profileName`) are server-wide — one `fill`, one profile — and still run at each store's creation, before its clear. Test: main dimension 2, a worker store 3, corpus 2 → startup fails naming the worker; zero clears and writes in every store | §3.10, §6.2, §14.1 |
 | D66 | **A store is filled before skills are vectorized into it, on every path.** Skills coexist in the tools store (D4, goal 8, §7.7) and the builder writes them during `build()`; the server's fill ran after the startup `build()` on the ready-client / plugin / injected-seam paths, and the `corpus` source clears the store — erasing them. Least invasive order, no new builder behaviour: the server fills the main store right after the clients are resolved, before the startup build; the builder's own auto-connect already fills before skills; a worker's construction already fills before `subBuilder.build()`; the one store filled after its build (a worker on the shared clients under `yamlBuilderConnect`, D38) is built with `withSkillManager(m, { vectorize: false })` and its skills are vectorized right after the deferred fill (`FillToolsBindingOptions.skills`, libs, new in this PR). Rejected: running the fill inside `build()` on the `withMcpClients` path (changes §6.1's "no vectorization there" for every consumer). Tests: corpus fill + a skill manager on the ready-client path and on the deferred shared-worker path → skill records searchable after start; a live fill unaffected | §6.3, §6.4, §7.7, §14.1 |
-| D67 | **Orphans never use up the candidate pool.** `runOne` cut the collapsed units to `pool.items(k)` before any canonical record was read, so with the default `ItemPool()` (pool = k) a top orphan at k=1 dropped a valid item fetched below it. Now what was fetched beyond the pool is kept (the overflow, stage-1 order); when the ranked pool hydrates to fewer than k items, the next overflow items are ranked like the pool (the reranker on the same query, D28; no `keepStage1Top` pins) and hydrated, until k items or the overflow is spent — before the cut; no new query; the run's rerank outcome is the most severe of its calls. The replacements are **merged with the surviving pool items by descending score** (reranked, or stage-1 without a reranker — the same query, so comparable), never appended: appended, a replacement outscoring a surviving item would sit below it and `ScoreFloorCut` (it stops at the first below-floor score) would drop it; `keepStage1Top` pins keep their head places and the merge orders the rest; scores of different scales (one call fell back to stage 1) are never compared — then the replacements stay after the pool's items. Rejected: validating every pooled item before reranking — a canonical read per pooled candidate, which the `itemText` shortcut exists to avoid. Tests: default pool (omitted), k=1, a top orphan + a valid second item → the valid item; k=2, an orphan + a surviving item at 0.1 in the pool, an overflow replacement at 0.9, `ScoreFloorCut({ minItems: 0, maxItems: 2, minScore: 0.5 })` → the 0.9 item (reranked and stage-1); a pin stays at the head | §4.3, §4.4, §4.6, §14.1 |
+| D67 | **Orphans never use up the candidate pool.** `runOne` cut the collapsed units to `pool.items(k)` before any canonical record was read, so with the default `ItemPool()` (pool = k) a top orphan at k=1 dropped a valid item fetched below it. Now what was fetched beyond the pool is kept (the overflow, stage-1 order); when the ranked pool hydrates to fewer than k items, the next overflow items are ranked like the pool (the reranker on the same query, D28; no `keepStage1Top` pins) and hydrated, until k items or the overflow is spent — before the cut; no new query; the run's rerank outcome is the most severe of its calls. The replacements are **merged with the surviving pool items by descending score** (reranked, or stage-1 without a reranker — the same query, so comparable), never appended: appended, a replacement outscoring a surviving item would sit below it and `ScoreFloorCut` (it stops at the first below-floor score) would drop it; `keepStage1Top` pins keep their head places and the merge orders the rest; scores of different scales (one call fell back to stage 1) are never compared — then the replacements stay after the pool's items. Rejected: validating every pooled item before reranking — a canonical read per pooled candidate, which the `itemText` shortcut exists to avoid. Tests: default pool (omitted), k=1, a top orphan + a valid second item → the valid item; k=2, an orphan + a surviving item at 0.1 in the pool, an overflow replacement at 0.9, `ScoreFloorCut({ minItems: 0, maxItems: 2, minScore: 0.5 })` → the 0.9 item (reranked and stage-1); a pin stays at the head *D71 (§17.24): no reranker call falls back any more, so the two-scales case is gone — a run's merged scores are always one scale.* | §4.3, §4.4, §4.6, §14.1 |
 
 ### 17.23 Decided by the goal on 2026-10-05 — `FallbackRag` removed (D68)
 
@@ -4579,3 +4871,38 @@ From the goal's newest decision ("`FallbackRag` is removed", 2026-10-05).
 | # | Decision | Where |
 |---|---|---|
 | D68 | **`FallbackRag` is removed, and the builder wraps no store.** When RAG has problems they are deeper, and llm-agent cannot solve them; a fallback to an in-memory copy only hides the failure behind empty or partial results. Removed with it, because each existed only for it (checked with `git grep` over `packages/`): the builder's circuit-breaker loop over the registry and `isGuardedBy`; `SimpleRagRegistry.replaceRag`; `SmartAgentBuilder.withCircuitBreakers` with `_sharedBreakers`, and the server's call of it; the embedder breaker `withCircuitBreaker(config)` built (fed by nothing). Kept: the breakers that guard calls — `withCircuitBreaker(config)` wraps the main LLM; the server's embedder breaker wraps the retrieval embedder and is listed in `/health`; with it open, a store's query fails fast with `CIRCUIT_OPEN`. Kept: `IRagDecorator` and every walk through it (`StrategyRag` and a consumer's own wrapper). A consumer that wants a degraded mode writes its own `IRag` wrapper. **Withdrawn:** D52 (the decorator writer rule — no decorator in this design needs it — and the corpus load's resolved-backend check: the load checks the writer of the store it writes), D62, their tests, and the "behind `FallbackRag`" cases of the binding-discovery, F1 and corpus tests (a plain decorator stands in where the walk is tested). Migration lines 5 (`FallbackRag` removed), 71 (`replaceRag`), 72 (`withCircuitBreakers`): **72 lines**. Amends D53, D54, D57 (`FallbackRag` is not moved) | header, amendment (14), TL;DR, §1, §3.8, §3.10, §6.3–§6.5, §10.4, §11, §11.1–§11.3, §13, §14.1, §15 |
+
+### 17.24 Decided by the goal on 2026-10-05 — fail loud (D69–D74); open points for the user (U1–U10)
+
+From the goal's decisions "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part
+of this PR" (2026-10-05). The inventory was two read-only audits of `main`, re-verified item by item
+against `493fcf17`.
+
+| # | Decision | Where |
+|---|---|---|
+| D69 | **The rule and its carriers.** A component that finds another not working returns an error — never a fake success, an empty result, a skipped part, a stale cache or a substitute. A stage's `OrchestratorError` carries the failing component's code unchanged; existing codes are reused; no shared code set is widened; the three codes no component has (`RAG_STORE_MISSING`, `STATE_CORRUPT`, `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) form one new set of their own, `PIPELINE_FAILURE_CODES`. Kept: absent-by-design capabilities, honest empty answers, best-effort cleanup, diagnostics-only catches, the consumer's chosen modes (U1–U10) | §10.5.1, §3.8 |
+| D70 | **Pipeline errors reach the consumer (N1) — a bug fix, first in the plan.** The executor and `DefaultPipeline` set `ctx.error`; `pipelineToStream` yields `result.error` once (not when a handler already yielded its own); the root span is `error` | §10.5.2, §13 B1 |
+| D71 | **`onFailure` is removed from `StagedRetrieval`, its YAML and `facetedRerank`; the 30.1.0 rerank strategies, the `rerank` stage and the legacy orchestrator return the `RERANK_ERROR`.** The goal names the spec's own `onFailure: 'stage1'`. With one behaviour, the `ScoreFloorCut` + `stage1` rejection (F5's second half, §4.7), the "two scales in one run" case of D67 and the `rerank_fallback` outcome are gone; D63 is unchanged (it never depended on the fallback: sub-query scores are incomparable either way). **Supersedes S4 for the failure path only** — the goal's decision names the reranker; S4's "no output check on the 30.1.0 strategies" stays | §4.2, §4.6–§4.9, §6.2, §7.4, §9, §10.5.5, §13 B4, §14.1 |
+| D72 | **Health: a configured component not working ⇒ `/health` 503.** `degraded` → 503 (the word kept from D41); every RAG store probed; an MCP `value: false` or an unanswered probe is not OK. The chat routes stay gated on `ready` only | §10.5.10, §13 B9 |
+| D73 | **`FallbackQueryEmbedding` falls back only for a `TextOnlyEmbedding`** (no pipeline embedder — an absent capability), never on a failure of a real embedder | §10.5.4 R1, §13 B3 |
+| D74 | **The sweep** — every item of §10.5.3–§10.5.9 as written there | §10.5, §13 |
+
+**For the user — not decided here** (each removes or changes a mode a consumer can choose; the
+spec and the plan leave each as it is today until the user decides):
+
+| # | Mode | Today | Recommendation |
+|---|---|---|---|
+| U1 | `FallbackLlmCallStrategy` (`agent.llmCallStrategy: fallback`) | opt-in (default `streaming`): a failed stream is retried non-streaming and streaming is disabled for the instance's life, logged | **keep** — an explicitly chosen consumer strategy, which is exactly where the goal puts degraded modes. Add a session step / metric per fallback so it is countable |
+| U2 | skill plugin host `strict: false` (carry-forward) | the **default**: a failed source's prior data is carried forward; with this spec the reason is reported (`carried`, S-9) and a failed group build reports `ok: false` (S-8) | **keep `strict: false` as an explicit opt-in, change the default to `strict: true`** (a failed source fails its group) — a default that silently serves old data is the pattern the goal removes |
+| U3 | controller `onFinalizeExhausted: 'best-effort'` | opt-in, code only (default `'error'`); the answer is marked `[incomplete: …]` | **keep** — default is the error; the consumer chose it and the answer says it is incomplete |
+| U4 | `AutoActivation` coordinator (`builder.ts` ~668) | opt-in (default `ExplicitActivation`); without sub-agents or a structured skill the pipeline uses tool-loop | **keep** — routing by configuration, not a reaction to a failure |
+| U5 | `HybridDispatch` (`coordinator/dispatch/hybrid.ts`) | a step that names no agent, **or names an agent the registry lacks**, goes to the fallback dispatcher | **keep for a step that names no agent; make a named agent missing from the registry `COORDINATOR_STEP_FAILED`** (that half is a failure, silently routed) |
+| U6 | `lazy(…, { fallback })` (`utils/lazy.ts`, public, unused in the repo) | an init failure answers with the given fallback value | **remove** (a major release; unused; a consumer that wants it wraps its own) |
+| U7 | `vectorizeMcpTools` batch → per-tool embedding | a failed batch embedding retries tool by tool, noted in the summary line | **keep** — the same data is embedded, the result is complete or reported incomplete; count the batch failure in the summary (`batchFailures`) |
+| U8 | tool availability blacklist (`tool-loop-core.ts` ~383, `policy/tool-availability-registry.ts`) | on by default, no switch (legacy: TTL only): a tool error whose text matches "not found", "permission", … blocks the tool for 10 min; later calls get "temporarily unavailable" | **make it an injected policy, default none** — the first tool error already reaches the LLM; blocking the tool by a text heuristic silently shrinks the tool set. Until decided: unchanged |
+| U9 | D68's removal of the builder's never-fed embedder breaker and `withCircuitBreakers` (§10.4) | removed by the previous amendment (Task 0A) | **confirm** — it guarded nothing (the builder wraps no embedder); the server's embedder breaker and the main-LLM breaker stay |
+| U10 | a worker that declares no clients / tools store uses the parent's (`smart-server.ts` ~2240, ~2259) | by configuration (D38), unlogged | **keep** — not a failure (the worker declared none); a worker that declares its own and fails to build them already fails its construction (§6.3). Log one `worker_uses_shared_clients` debug line |
+
+Also noted, out of scope (not a fallback, found while verifying): `smart-server.ts`'s `closeFns`
+loop (~1943) stops at the first throwing closer, so later closers never run — a cleanup bug for
+its own issue.
