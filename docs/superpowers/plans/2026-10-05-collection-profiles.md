@@ -41,7 +41,7 @@
 The ten inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
 
 1. **Identical `itemId`s across owners** (users A and B both write `case-42` into one `user` store) — two separate items: A's `get` returns A's text and `data`, B's re-index and `remove` leave A untouched, A's retrieval returns only A's item. → Task 17 (`identical item ids across users stay separate`), Task 12 (`collapse keys on the owner-qualified item`).
-2. **Canonical record missing** (deleted item, interrupted replacement) — the hit is dropped, never returned with its own text, does not use up k — nor the candidate pool: the next fetched item replaces it (D67) — and is counted. → Task 12 (`a hit without its canonical record is an orphan`; `default pool, k=1: a top orphan does not use up the pool`), Task 28 (`orphan counted`).
+2. **Canonical record missing** (deleted item, interrupted replacement) — the hit is dropped, never returned with its own text, does not use up k — nor the candidate pool: the next fetched item replaces it (D67), merged by descending score so a floor cut never drops a higher-scored replacement — and is counted. → Task 12 (`a hit without its canonical record is an orphan`; `default pool, k=1: a top orphan does not use up the pool`; `replacements merge with the pool by DESCENDING stage-1 score`), Task 13 (`an orphan replacement that outscores a surviving item …`, `keepStage1Top: the pin stays at the head …`), Task 28 (`orphan counted`).
 3. **Decomposer overrunning the budget** (Σk > budget, a `k < 1`, empty text, a thrown error) — `DECOMPOSE_ERROR` returned, never a silent fall-back, never more than `budget` items. → Task 14 (`budgets summing above the budget are a DECOMPOSE_ERROR`).
 4. **Reranker returning the wrong score count** (fewer/more results, a duplicate, a non-finite score) — `RERANK_ERROR`; `stage1` keeps the stage-1 order, `error` returns the error. → Task 13 (`a reranker that drops a candidate is a RERANK_ERROR`), Task 4C (`RelevanceReranker`: wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`), Task 18 (`SapAiCoreRelevanceDecision`: a wrong `/rerank` result is a `DecisionError`, never zero-filled).
 5. **A tool definition larger than the token budget** (top item alone over budget) — empty result, never truncated, never replaced by a smaller lower-ranked tool. → Task 6 (`the top item alone over budget gives an empty result`).
@@ -5749,7 +5749,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 12: `StagedRetrieval` — sources, item pool, collapse, hydration, orphans (libs)
 
-Spec §4.1–§4.4, §4.6 (hydration), §4.9; D14, D15; D56 (`pool` optional, absent → `ItemPool()`: the caller's k; the pool is asked with each (sub-)query's k). D67 (orphans never use up the pool: what was fetched beyond it is kept, and an orphan is replaced by the next fetched unit — ranked like the pool, then hydrated — before the cut). No service-record drop: there is no service record in a store (D54, spec §17.17). Every source holds items — no `role` / `itemsOf`, no variants sources (D50, spec §17.15). The reranker (Task 13), decomposer (Task 14) and telemetry (Task 28) build on this file.
+Spec §4.1–§4.4, §4.6 (hydration), §4.9; D14, D15; D56 (`pool` optional, absent → `ItemPool()`: the caller's k; the pool is asked with each (sub-)query's k). D67 (orphans never use up the pool: what was fetched beyond it is kept, and an orphan is replaced by the next fetched unit — ranked like the pool, then hydrated — and the replacements are MERGED with the surviving pool items by descending score, never appended, before the cut; `keepStage1Top` pins keep their head places). No service-record drop: there is no service record in a store (D54, spec §17.17). Every source holds items — no `role` / `itemsOf`, no variants sources (D50, spec §17.15). The reranker (Task 13), decomposer (Task 14) and telemetry (Task 28) build on this file.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/staged-retrieval.ts`
@@ -5837,6 +5837,22 @@ export function matchesOnly(rag: IRag, seenK: number[] = []): IRag {
 export const q = (text: string) => new TextOnlyEmbedding(text);
 export const ids = (r: { ok: boolean; value?: RagResult[] }) =>
   r.ok ? (r.value ?? []).map((x) => x.metadata.id) : r;
+
+/** Sets each hit's stage-1 score by its item id (others keep theirs) and re-sorts:
+ *  the test chooses the scores. `rag` is an object-literal IRag (e.g. `matchesOnly`'s). */
+export function scored(rag: IRag, byItem: Readonly<Record<string, number>>): IRag {
+  return {
+    ...rag,
+    query: async (q, k, o) => {
+      const r = await rag.query(q, k, o);
+      if (!r.ok) return r;
+      const value = r.value
+        .map((x) => ({ ...x, score: byItem[String(x.metadata.itemId)] ?? x.score }))
+        .sort((a, b) => b.score - a.score);
+      return { ok: true, value };
+    },
+  };
+}
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -5858,10 +5874,11 @@ import {
   FixedItemsCut,
   ItemPool,
   MaxScoreCollapse,
+  ScoreFloorCut,
   StagedRetrieval,
   type StagedRetrievalOptions,
 } from '../index.js';
-import { G, ids, matchesOnly, put, q } from './staged-retrieval-helpers.js';
+import { G, ids, matchesOnly, put, q, scored } from './staged-retrieval-helpers.js';
 
 function staged(
   sources: (options?: CallOptions) => RetrievalSource[],
@@ -5943,6 +5960,32 @@ describe('StagedRetrieval — stage 1, collapse, hydration', () => {
     // pool omitted → ItemPool(): the pool is k = 1 item; Z is fetched (k × maxRecordsPerItem = 3 records) but outside it
     const r = await staged(primary(rag), { pool: undefined }).retrieve(rag, q('needle'), 1);
     assert.deepEqual(ids(r), ['Z']);
+  });
+
+  it('replacements merge with the pool by DESCENDING stage-1 score before the cut (§4.6, D67)', async () => {
+    // Default pool at k=2 = 2 items per source. 'left' pools two top orphans and keeps R (0.9) in
+    // its overflow; 'right' pools S (0.1). Appended, R would sit below S, and the floor — it stops
+    // at the first score below minScore — would return nothing.
+    const left = new InMemoryRag();
+    for (const id of ['O1', 'O2']) {
+      await put(left, id, [['full', `gone ${id}`], ['summary', 'needle']]);
+      await left.writer().deleteByIdRaw(recordId(G, id, 'full', 0));
+    }
+    await put(left, 'R', [['full', 'needle romeo']]);
+    const right = new InMemoryRag();
+    await put(right, 'S', [['full', 'needle sierra']]);
+    const by = { O1: 0.95, O2: 0.93, R: 0.9, S: 0.1 };
+    const l = scored(matchesOnly(left), by);
+    const rt = scored(matchesOnly(right), by);
+    const both = (options?: CallOptions): RetrievalSource[] => [
+      { name: 'left', rag: l, options },
+      { name: 'right', rag: rt, options },
+    ];
+    const floor = new ScoreFloorCut({ minItems: 0, maxItems: 2, minScore: 0.5 });
+    const r = await staged(both, { pool: undefined, cut: floor }).retrieve(l, q('needle'), 2);
+    assert.deepEqual(ids(r), ['R']);
+    const all = await staged(both, { pool: undefined }).retrieve(l, q('needle'), 2);
+    assert.deepEqual(ids(all), ['R', 'S'], 'one descending list, not the pool then the replacement');
   });
 
   it('a stale secondary record of a live item hydrates to the CURRENT canonical record', async () => {
@@ -6140,6 +6183,16 @@ export interface Unit {
   readonly hits: readonly RagResult[];
   /** Set for a collapsed item; absent for a pass-through record. */
   readonly item?: { readonly itemId: string; readonly canonicalId: string };
+  /** Set by the reranker (Task 13): `score` is a reranked score. Absent = a stage-1 score. */
+  readonly reranked?: boolean;
+  /** Set by the reranker (Task 13) on a `keepStage1Top` pin: it keeps its head place. */
+  readonly pinned?: boolean;
+}
+
+/** A hydrated item with the unit it came from: its scale and its pin travel with it. */
+export interface Hydrated {
+  readonly unit: Unit;
+  readonly item: RagResult;
 }
 
 /** What one run observed; emitted as telemetry (Task 28). */
@@ -6190,6 +6243,23 @@ function splitPerSource(units: readonly Unit[], n: number): { pooled: Unit[]; ov
     pooled.push(u);
   }
   return { pooled, overflow };
+}
+
+/**
+ * Spec §4.6 (D67): the pool's hydrated items and the orphans' replacements as ONE
+ * list by DESCENDING score — appended, a replacement that outscores a surviving
+ * item would sit below it, and a ScoreFloorCut (it stops at the first score below
+ * its floor) would drop it. Every score is against the same query, so one scale
+ * (D28): reranked, or stage-1 without a reranker. `keepStage1Top` pins keep their
+ * head places; scores of two scales (one reranker call fell back to stage 1) are
+ * never compared — then the rank order stays. The sort is stable: ties keep order.
+ */
+function mergeByScore(got: readonly Hydrated[]): RagResult[] {
+  const head = got.filter((h) => h.unit.pinned === true);
+  const rest = got.filter((h) => h.unit.pinned !== true);
+  const oneScale = new Set(rest.map((h) => h.unit.reranked === true)).size <= 1;
+  if (oneScale) rest.sort((a, b) => b.item.score - a.item.score);
+  return [...head, ...rest].map((h) => h.item);
 }
 
 const matchedKinds = (hits: readonly RagResult[]): string[] => [
@@ -6293,24 +6363,26 @@ export class StagedRetrieval implements IRetrievalStrategy {
     const { pooled, overflow } = splitPerSource(units, this.pool.items(poolK));
     const ranked = await this.rank(pooled, query.text, ctx, true);
     if (!ranked.ok) return ranked;
-    const out = await this.hydrate(ranked.value, keep, ctx);
-    if (!out.ok) return out;
+    const first = await this.hydrate(ranked.value, keep, ctx);
+    if (!first.ok) return first;
+    const got = first.value;
     // Orphans never use up the pool, so they never use up k (spec §4.6, D67):
     // each orphan of the pool is replaced by the next fetched unit, in stage-1
     // order — ranked like the pool (a reranker scores it against the same
     // query, D28; no keepStage1Top pins: those are the pool's stage-1 places)
     // and hydrated — until `keep` items or the overflow is spent. No new query.
     let next = 0;
-    while (out.value.length < keep && next < overflow.length) {
-      const batch = overflow.slice(next, next + keep - out.value.length);
+    while (got.length < keep && next < overflow.length) {
+      const batch = overflow.slice(next, next + keep - got.length);
       next += batch.length;
       const rankedMore = await this.rank(batch, query.text, ctx, false);
       if (!rankedMore.ok) return rankedMore;
-      const more = await this.hydrate(rankedMore.value, keep - out.value.length, ctx);
+      const more = await this.hydrate(rankedMore.value, keep - got.length, ctx);
       if (!more.ok) return more;
-      out.value.push(...more.value);
+      got.push(...more.value);
     }
-    return out;
+    // Merged by descending score, never appended (spec §4.6, D67).
+    return { ok: true, value: mergeByScore(got) };
   }
 
   /** Stage-1 order; the reranker is added in Task 13. `pin` is false for the
@@ -6329,16 +6401,17 @@ export class StagedRetrieval implements IRetrievalStrategy {
     units: readonly Unit[],
     keep: number,
     ctx: RunContext,
-  ): Promise<Result<RagResult[], RagError>> {
-    const out: RagResult[] = [];
+  ): Promise<Result<Hydrated[], RagError>> {
+    const out: Hydrated[] = [];
     let next = 0;
     while (out.length < keep && next < units.length) {
       const wave = units.slice(next, next + keep - out.length);
       next += wave.length;
       const got = await Promise.all(wave.map((u) => this.hydrateOne(u, ctx)));
-      for (const g of got) {
+      for (const [i, g] of got.entries()) {
         if (!g.ok) return g;
-        if (g.value) out.push(g.value);
+        const unit = wave[i];
+        if (g.value && unit) out.push({ unit, item: g.value });
       }
     }
     return { ok: true, value: out };
@@ -6447,6 +6520,8 @@ Spec §4.6 (reranker text: a canonical hit's text, else a non-canonical hit's `i
   // StagedRetrieval: reranker failure → session step 'retrieval_rerank_error' { store, strategy, code, message };
   //   onFailure 'stage1' → stage-1 order AND stage-1 scores (stats.rerankOutcome 'fallback'); 'error' → RagError code 'RERANK_ERROR' (stats 'error').
   // keepStage1Top n > 0 → the stage-1 top-n first, each with its RERANKED score; the rest by reranked score.
+  // rank() marks reranked units `reranked` and pins `pinned` (Task 12's Unit): the orphans' replacements
+  //   merge with the pool by descending reranked score, pins kept at the head (spec §4.6, D67).
   // constructor throws: keepStage1Top > 0 with ScoreFloorCut; ScoreFloorCut with rerank.onFailure 'stage1' (spec §4.7, F5).
   ```
 
@@ -6477,7 +6552,7 @@ import {
   StagedRetrieval,
   type StagedRetrievalOptions,
 } from '../index.js';
-import { G, ids, matchesOnly, put, q } from './staged-retrieval-helpers.js';
+import { G, ids, matchesOnly, put, q, scored } from './staged-retrieval-helpers.js';
 
 function staged(
   rag: IRag,
@@ -6673,6 +6748,50 @@ describe('StagedRetrieval — reranker', () => {
     assert.doesNotThrow(() => staged(rag, { reranker, onFailure: 'error' }, floor()));
     assert.doesNotThrow(() => staged(rag, undefined, floor()), 'without a reranker the floor cuts stage-1 scores, calibrated on them');
   });
+
+  /** O is an orphan (its canonical deleted; its itemText 'oscar' still reaches the reranker). */
+  async function orphanFixture(stage1: Record<string, number>, withPin = false) {
+    const raw = new InMemoryRag();
+    if (withPin) await put(raw, 'P', [['full', 'needle papa']]);
+    await put(raw, 'O', [['full', 'oscar'], ['summary', 'needle']]);
+    await raw.writer().deleteByIdRaw(recordId(G, 'O', 'full', 0));
+    await put(raw, 'S', [['full', 'needle sierra']]);
+    await put(raw, 'R', [['full', 'needle romeo']]);
+    return scored(matchesOnly(raw), stage1);
+  }
+  /** Scores by item text, sorted descending — as a reranker returns them. */
+  const byText = (s: Record<string, number>) =>
+    spy((c) => c.map((r) => ({ ...r, score: s[r.text] ?? 0 })).sort((a, b) => b.score - a.score));
+  const withPool = (s: StagedRetrieval, n: number) =>
+    new StagedRetrieval({ ...s.options, pool: new ItemPool(n) });
+
+  it('an orphan replacement that outscores a surviving item is merged above it before the cut (§4.6, D67)', async () => {
+    // Pool of 2: O (orphan) + S; R is the overflow. Reranked: S 0.1, R 0.9 — the same query.
+    const rag = await orphanFixture({ O: 0.95, S: 0.5, R: 0.3 });
+    const { reranker, seen } = byText({ oscar: 0.95, 'needle sierra': 0.1, 'needle romeo': 0.9 });
+    const cut = new ScoreFloorCut({ minItems: 0, maxItems: 2, minScore: 0.5 });
+    const r = await withPool(staged(rag, { reranker, onFailure: 'error' }, cut), 2).retrieve(rag, q('needle'), 2);
+    assert.deepEqual(ids(r), ['R']);
+    assert.ok(r.ok);
+    assert.equal(r.value[0].score, 0.9);
+    assert.deepEqual(
+      seen.map((x) => [x.query, x.texts]),
+      [['needle', ['oscar', 'needle sierra']], ['needle', ['needle romeo']]],
+      'the pool, then one replacement round against the same query',
+    );
+  });
+
+  it('keepStage1Top: the pin stays at the head; a replacement merges into the rest by reranked score (§4.6, §4.7, D67)', async () => {
+    // Pool of 3: P (stage-1 top, pinned), O (orphan), S; R is the overflow.
+    const rag = await orphanFixture({ P: 0.99, O: 0.95, S: 0.5, R: 0.3 }, true);
+    const { reranker } = byText({ 'needle papa': 0.05, oscar: 0.95, 'needle sierra': 0.1, 'needle romeo': 0.9 });
+    const r = await withPool(staged(rag, { reranker, onFailure: 'stage1', keepStage1Top: 1 }), 3).retrieve(rag, q('needle'), 3);
+    assert.ok(r.ok);
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.id, x.score]),
+      [['P', 0.05], ['R', 0.9], ['S', 0.1]],
+    );
+  });
 });
 
 describe('checkRerankOutput', () => {
@@ -6697,7 +6816,7 @@ Run:
 npx tsc -b packages/llm-agent-reranker
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/staged-retrieval-rerank.test.ts
 ```
-Expected: FAIL — `checkRerankOutput` not exported. (Once it is, the pinned-score cases fail on the pinned item's stage-1 score and the two rejection cases on "Missing expected exception" until Step 3 is in.)
+Expected: FAIL — `checkRerankOutput` not exported. (Once it is, the pinned-score cases fail on the pinned item's stage-1 score, the two rejection cases on "Missing expected exception", and the two orphan-merge cases on stage-1 scores until Step 3 is in.)
 
 - [ ] **Step 3: Implement**
 
@@ -6847,7 +6966,7 @@ and replace the `rank` method with:
     const reranked: Unit[] = [];
     for (const r of out) {
       const u = byKey.get(String(r.metadata.id));
-      if (u) reranked.push({ ...u, score: r.score });
+      if (u) reranked.push({ ...u, score: r.score, reranked: true });
     }
     // Pins are the POOL's stage-1 places; the replacements of orphans (Task 12,
     // `pin` false) are reranked without them (spec §4.6, §4.7, D67).
@@ -6860,7 +6979,7 @@ and replace the `rank` method with:
     const head: Unit[] = [];
     for (const u of live.slice(0, keepTop)) {
       const scored = rerankedByKey.get(u.key);
-      if (scored) head.push(scored);
+      if (scored) head.push({ ...scored, pinned: true });
     }
     const headKeys = new Set(head.map((u) => u.key));
     return {
@@ -18264,7 +18383,7 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | D64 | An injected MCP connection strategy is owned by the agent / pipeline it is injected into: `handle.close()` disposes it, and so does a failed `build()`; the consumer must not reuse it after either (the user's decision) | Task 23A (the failed-build disposal, its test named for an injected strategy); Task 33 (`docs/INTEGRATION.md` `### Builder usage`, the `withMcpConnectionStrategy` doc comment) |
 | D65 | The corpus is checked against EVERY tools store the server binds with it — the main one and each worker's own — at resolution, before any store is created: `ResolveCollectionProfilesInput.workerToolsStoreDimensions` beside `toolsStoreDimension`; a differing declared dimension → startup error naming the store and both dimensions. Chosen over a per-store check at each store's creation, which would have cleared and loaded the main store before a worker's mismatch failed the start | Task 23B (`resolveFill`, `declaredDimension`, the resolver call; tests: resolver unit case, (16b) main 2 / worker 3 / corpus 2 → zero clears and writes, no store created) |
 | D66 | A store is filled before skills are vectorized into it, on every construction path. The main store: the server fills it right after the clients are resolved, before the startup build (which vectorizes the skills) — ready clients, plugin clients, an injected seam, no MCP; `yamlBuilderConnect`: the builder's own `build()` already fills (`vectorizeMcpTools`) before `vectorizeSkills`. A worker's construction fills before `subBuilder.build()`. The one store filled after its build — a worker on the shared clients under `yamlBuilderConnect` at startup — is built with `withSkillManager(m, { vectorize: false })` (`fillsAfterBuild`), and `fillSharedClientWorkerStores` vectorizes its skills right after the fill (`FillToolsBindingOptions.skills`) | Task 23A (`fillToolsBinding`'s `skills`; `fillsAfterBuild`; the main fill moved; libs test); Task 23B (tests (16c), (16d), the D66 `yamlBuilderConnect` worker test) |
-| D67 | Orphans never use up the candidate pool: `StagedRetrieval` keeps what it fetched beyond the pool (the overflow, stage-1 order); when the ranked pool hydrates to fewer than `keep` items, the next overflow units replace the orphans — ranked like the pool (the reranker on the same query, no `keepStage1Top` pins; the run's rerank outcome is its most severe), then hydrated — before the cut. No new query; the reranker's `itemText` shortcut keeps its zero-read ranking | Task 12 (`splitPerSource`, the replacement loop, `rank(…, pin)`; test: default pool, k=1, top orphan + valid second → the valid item); Task 13 (`pin`, `recordOutcome`) |
+| D67 | Orphans never use up the candidate pool: `StagedRetrieval` keeps what it fetched beyond the pool (the overflow, stage-1 order); when the ranked pool hydrates to fewer than `keep` items, the next overflow units replace the orphans — ranked like the pool (the reranker on the same query, no `keepStage1Top` pins; the run's rerank outcome is its most severe), then hydrated — and merged with the surviving pool items by descending score (reranked, or stage-1 without a reranker; same query, comparable), never appended, before the cut; pins keep their head places; two scales (one call fell back) are never compared. No new query; the reranker's `itemText` shortcut keeps its zero-read ranking | Task 12 (`splitPerSource`, the replacement loop, `rank(…, pin)`, `Unit.reranked` / `Unit.pinned`, `mergeByScore`; tests: default pool, k=1, top orphan + valid second → the valid item; a 0.9 replacement above a surviving 0.1 item under `ScoreFloorCut` → the 0.9 item); Task 13 (`pin`, `recordOutcome`, the flags set in `rank`; tests: the reranked floor case, a pin kept at the head) |
 
 ## Self-review (done while writing)
 
