@@ -313,6 +313,7 @@
 >   skill (D75, S-5, B8); a failed bulk write fails its records and is never retried record by
 >   record (D76, §3.3); a reload whose drain or invalidation fails restores the previous config and
 >   rejects, handled once at the watcher's event boundary (`config_reload_failed`) (D77, V6);
+  reloads run one at a time — each snapshots only after the previous one settled (D80);
 > - **the root span's `error` status** is set before the error chunk is yielded, so a consumer
 >   that stops at that chunk (`process()` does) still sees it (D78, §10.5.2);
 > - **confirmed by the user:** `SmartAgentConfig.toolUnavailableTtlMs` removed, `PUT /v1/config`
@@ -327,6 +328,11 @@
 > catalog is reported incomplete with the reason (`complete: false`,
 > `ToolCatalogStatus.writeFailure`) and in the summary log line (§10.5.4 R14, §13 B16). U7's
 > batch → per-tool **embedding** retry stays, counted.
+>
+> **Amended 2026-10-06 (19)** for a review finding (§17.27, D80): **config reloads run one at a
+> time.** The watcher queues each complete reload transaction (snapshot → agent update → drain +
+> invalidation → weights or restore); the next one starts only after the previous one settled,
+> so a failed reload's restore can never overwrite a later reload's config (§10.5.9 V6).
 >
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
@@ -3579,7 +3585,7 @@ Layer: framework (libs) for S-1–S-9, server for S-10.
 | V3 | `controller/run-scope.ts` (~79; N24) | a malformed terminal entry skipped | `STATE_CORRUPT`; (`gcTerminal`'s catch at ~101 is cleanup — kept) |
 | V4 | `controller/artifacts.ts` (~261) | a claim without a numeric `writeOrdinal` silently dropped | `STATE_CORRUPT` naming the claim |
 | V5 | `smart-server.ts` (~3112; N25) | session metadata `recordSessionStart` / `recordSessionEnd` throws → swallowed | `recordSessionStart` failing fails the request (500 `jsonError`); `recordSessionEnd` is end-of-request cleanup — kept, but logged (`session_meta_end_failed`) |
-| V6 | `config-reload-watcher.ts` (~132; N26) | a drain / invalidate rejection logged, the reload counted applied | the reload reports failure and the old config stays live (D77): the reload entry point (`_onReload`) applies the agent update, runs the drain and the invalidation, and when either rejects it **restores** the agent config and the server's mirror (`cfg.agent`, `cfg.prompts`) to the values captured before the reload, does not apply the RAG weights, and **rejects** with an error naming the drain and / or invalidation failure. The file watcher's `reload` listener (an event emitter cannot await) is the boundary that handles the rejection: it logs `config_reload_failed` with the error through the server's log sink — nothing reports the reload applied; `config_reload_applied` is logged only on success. No later code path catches the rejection and resolves |
+| V6 | `config-reload-watcher.ts` (~132; N26) | a drain / invalidate rejection logged, the reload counted applied | the reload reports failure and the old config stays live (D77): the reload entry point (`_onReload`) applies the agent update, runs the drain and the invalidation, and when either rejects it **restores** the agent config and the server's mirror (`cfg.agent`, `cfg.prompts`) to the values captured before the reload, does not apply the RAG weights, and **rejects** with an error naming the drain and / or invalidation failure. The file watcher's `reload` listener (an event emitter cannot await) is the boundary that handles the rejection: it logs `config_reload_failed` with the error through the server's log sink — nothing reports the reload applied; `config_reload_applied` is logged only on success. No later code path catches the rejection and resolves. **Reloads are serialized (D80):** the entry point queues each complete reload transaction — the snapshot, the agent update and mirror, the drain and the invalidation, then the weights or the restore — behind the previous one, and starts it only after that one **settled** (resolved or rejected); so a transaction's snapshot is always the config the previous transaction left (applied, or restored). A failed transaction still rejects its own caller and is reported individually (`config_reload_failed`, one per failed reload); it never blocks the reloads queued after it. `ConfigWatcher` debounces file events but cannot await its listeners, so the queue is the watcher's, not the emitter's. `PUT /v1/config` does not pass through this entry point (`handleConfigUpdate`, `http/config-route-handler.ts`, awaits its own drain and invalidation per request) and is not in this queue |
 | V7 | `tools-rag-handle.ts` (~90; N28) | the eager catalog load fails → logged, startup continues | the start fails with the `McpError` |
 | V8 | `llm-agent-server/src/smart-agent/cli.ts` (~146; N30) | an explicit `--env` file or `--secrets-dir` that cannot be read → a warning, startup continues | exit code 1 with the path and the reason (a missing implicit `.env` stays ignored: absent by design) |
 | V9 | `build-stepper-root.ts` (~97, ~234; N31) | a role with no resolvable LLM config → a stub OpenAI model | `ConfigValidationError` naming the role |
@@ -4525,7 +4531,11 @@ again, written either way.
   (D76). A reload whose drain rejects, and one whose invalidation rejects → `_onReload` rejects
   naming it, the agent config and the server's mirror are the pre-reload values, the RAG weights
   are not applied, and through the watcher's `reload` event `config_reload_failed` is logged and
-  `config_reload_applied` is not (D77). `process()` on a pipeline that fails → the root span's
+  `config_reload_applied` is not (D77). Two reloads A then B where A's drain is still pending
+  when B is queued → B's snapshot, update and drain start only after A settled; A's drain
+  rejecting → A rejects (`config_reload_failed` for A), then B runs → the live config and the
+  server's mirror are B's, the RAG weights are B's; a failed reload followed by a successful one →
+  the first reported failed, the second applied (`config_reload_applied` once) (D80). `process()` on a pipeline that fails → the root span's
   status is `error`; a consumer that reads the stream only to the error chunk and closes it
   (`return()` on the iterator) → the root span is `error` and ended (D78).
 - The 30.1.0 tools path's bulk write (D79): `vectorizeMcpTools` on an unbound store whose
@@ -5086,3 +5096,16 @@ this PR.
 | # | Decision | Where |
 |---|---|---|
 | D79 | **The 30.1.0 tools path does not retry a failed bulk write tool by tool.** `vectorizeMcpTools` on an unbound store answered a failed `upsertManyPrecomputedRaw` (`ok: false` or a throw) by writing the same tools one by one — D76's substitution, on the path D76 did not cover. Now the batch fails: no per-tool write, every tool of it in `failed`, `complete: false` with the reason in the new optional `ToolCatalogStatus.writeFailure` (`bulk write failed: <error>`) and in the summary log line; `/health` answers 503 (D72). The per-tool write stays only where no bulk write is made. U7's batch → per-tool embedding retry is unchanged (counted). Extends D76 | §3.3, §3.8, §10.5.4 R14, §13 B16, §14.1 |
+
+### 17.27 Review finding on 2026-10-06 — reload transactions serialized (D80)
+
+D77 made a reload a transaction (snapshot → apply → drain + invalidation → weights or restore), but
+nothing ordered two of them: `ConfigWatcher` debounces file events, yet emits `reload` without
+awaiting the listener, and the listener started each `_onReload` at once. Reload A waiting on a slow
+drain, reload B snapshotted A's provisional config, applied B, succeeded and set B's RAG weights;
+A then failed and its restore wrote A's pre-reload config over B's while B's weights stayed — a
+config that no file ever held.
+
+| # | Decision | Where |
+|---|---|---|
+| D80 | **Config reloads run one at a time.** The watcher keeps one queue (a promise chain) of complete reload transactions; the entry point (`_onReload`, D39) appends the transaction and returns its own promise. A transaction takes its snapshot only after the previous one settled, so every restore returns to the config the previous transaction left. A failed transaction rejects its own promise and is reported on its own (`config_reload_failed`); the queue continues past it — a failure never blocks later reloads. `PUT /v1/config` is a separate path (`handleConfigUpdate`) and does not join this queue. Extends D77 | §10.5.9 V6, §14.1 |
