@@ -8,15 +8,15 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); the modes a consumer can choose (spec §17.24 U1–U10) are the user's to decide and stay untouched. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
-- **Nothing changes by default — on the success path.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13). **Failure paths change everywhere** (fail loud, below; spec §13 B1–B11).
+- **Nothing changes by default — on the success path.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13). **Failure paths change everywhere** (fail loud, below; spec §13 B1–B15).
 - **A major release — no deprecated aliases, no re-exports** (spec §13, D57–D59). `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `DecisionRerankerOptions` → `ProbabilityRerankerOptions`, `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`, `wrapDecisionModel` → `wrapProbabilityDecision`, `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision`) keep **no old name**; the task that renames a name switches **every in-repo use** of it in the same commit, so each commit builds (no "callers stay on the alias until Task N"). Moved names (the RAG implementations, the rerankers) are exported only by their new owner. **No `export … from '@mcp-abap-adt/…'`** in any file this plan creates or edits: every package imports a name from the package that owns it (D59). **The pre-existing re-exports go too** (S12, decided by the user; spec §11.4): Task 4D drops libs' 15 root names of `llm-agent`, server-libs' `./legacy/flat` subpath and the `legacy/{linear,dag}` re-exports, and the server's unreachable `src/index.ts`; from Task 4D on, `test/repo/no-old-names.test.ts` fails when any public entry point of any package exports a name declared in another package — every later task keeps it green. libs' internal shims that only serve libs' own files stay (spec §11.4 rule (a); kept — the user's decision). **`ITextLogger` is removed** (the user's decision, spec §11.4): Task 4E switches every in-repo use to `ILogger` imported directly from `@mcp-abap-adt/interfaces-utils` (no re-export, no exported alias) in the same commit, declares the dependency where it is used (`llm-agent` already peers on it; libs and mcp get a dev dependency for their tests), and deletes libs' two dead internal files (`adapters/index.ts`, `interfaces/model-resolver.ts`). Removed besides the 72 names of spec §13's migration table: the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3), the binary's unexported `createMakeDecisionModel` (renamed), and libs' two dead internal files (Task 4E). **No version bump in this plan**, but the docs say the release is a major (Task 34).
 - **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag` (Task 1A, D53, D57).** From Task 1A on, every code block outside `llm-agent-rag` (libs, server-libs, server, scripts, tests) imports `VectorRag`, `InMemoryRag`, `SimpleRagRegistry`, `ISearchStrategy` and the other names of spec §11.3's "moves" table from `@mcp-abap-adt/llm-agent-rag` — `@mcp-abap-adt/llm-agent` no longer exports them; contracts and the store kit (`TextOnlyEmbedding`, `QueryEmbedding`, `symmetricEmbedder`, `matchesRagIdentity`, `RagError`, `IQueryExpander`, …) stay on `@mcp-abap-adt/llm-agent`. **Nothing in `packages/llm-agent` — nor in any package `llm-agent-rag` depends on — imports `llm-agent-rag`** (a cycle; `test/repo/rag-implementations-home.test.ts` pins it). The file is at `packages/llm-agent-rag/src/vector-rag.ts` (Tasks 4, 25 edit it there; its tests are in `packages/llm-agent-rag/src/__tests__/`). A test that needs `VectorRag` / `InMemoryRag` lives in `llm-agent-rag` or a package above it — never in `llm-agent`.
 - **No store fallback, no store wrapping (D68, Task 0A).** `FallbackRag` is removed, and so are the builder's circuit-breaker loop over the registry, `isGuardedBy`, `SimpleRagRegistry.replaceRag`, `SmartAgentBuilder.withCircuitBreakers` and the server's call of it. No code block in this plan imports `FallbackRag`, calls `replaceRag` or `withCircuitBreakers`, or wraps a registered store; `withCircuitBreaker(config)` builds the main-LLM breaker only. The circuit breaker stays on the embedder (`withCircuitBreaker(embedder, breaker)`; the server's `_embedderBreaker`): with it open, a store's query fails fast with `CIRCUIT_OPEN`. `IRagDecorator` and every walk through `inner` stay — `StrategyRag` is a decorator, and a consumer's own wrapper relies on them; a test of a walk uses a plain test decorator (`{ inner, query, healthCheck, getById, writer }`). The corpus load checks the writer of the store it writes — there is no resolved-backend check (D52 withdrawn).
-- **Fail loud (D69–D74, spec §10.5; Tasks 4F–4O).** A component that finds another not working returns an **error** — a `Result` error, a thrown typed error, an `{ ok: false }` stream item, a non-200 / `/health` 503 — never a fake success, an empty result, a skipped part, a stale cache or a substitute component. A stage's `OrchestratorError` carries the failing component's code unchanged and names the stage and component; a thrown `OrchestratorError` keeps its code. Existing codes are reused; the only new codes are `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`, `TOOL_ARGUMENTS_JSON_PARSE_FAILED`, Task 4F); **no shared set is widened** (`MCP_UNAVAILABLE_CODES`, `DecisionErrorCode` unchanged). Kept: an optional capability absent by design (no pipeline embedder → `TextOnlyEmbedding`; `ENOENT` of a default skill path; no `SKILL.md`; the implicit `.env`; a worker that declares no clients), an honest empty answer (a query that succeeded with no hits), best-effort cleanup on shutdown / after a request, diagnostics-only catches. **No `onFailure` anywhere** (D71): a failed rerank is `RERANK_ERROR` in `StagedRetrieval`, the 30.1.0 rerank strategies, the `rerank` stage and the legacy orchestrator. **`/health` answers 503 unless every configured component works** (D72). No code block in this plan adds a fallback; **the modes listed for the user (spec §17.24 U1–U10) are not touched** — `FallbackLlmCallStrategy`, `strict: false`, `onFinalizeExhausted: 'best-effort'`, `AutoActivation`, `HybridDispatch`, `lazy`'s `fallback`, the batch → per-tool embedding, the tool availability blacklist, the worker's shared clients — until the user decides.
+- **Fail loud (D69–D74, spec §10.5; Tasks 4F–4O).** A component that finds another not working returns an **error** — a `Result` error, a thrown typed error, an `{ ok: false }` stream item, a non-200 / `/health` 503 — never a fake success, an empty result, a skipped part, a stale cache or a substitute component. A stage's `OrchestratorError` carries the failing component's code unchanged and names the stage and component; a thrown `OrchestratorError` keeps its code. Existing codes are reused; the only new codes are `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`, `TOOL_ARGUMENTS_JSON_PARSE_FAILED`, Task 4F); **no shared set is widened** (`MCP_UNAVAILABLE_CODES`, `DecisionErrorCode` unchanged). Kept: an optional capability absent by design (no pipeline embedder → `TextOnlyEmbedding`; `ENOENT` of a default skill path; no `SKILL.md`; the implicit `.env`; a worker that declares no clients), an honest empty answer (a query that succeeded with no hits), best-effort cleanup on shutdown / after a request, diagnostics-only catches. **No `onFailure` anywhere** (D71): a failed rerank is `RERANK_ERROR` in `StagedRetrieval`, the 30.1.0 rerank strategies, the `rerank` stage and the legacy orchestrator. **`/health` answers 503 unless every configured component works** (D72). No code block in this plan adds a fallback. **The modes a consumer chooses are decided (spec §10.5.12, U1–U10):** an explicit opt-in stays and becomes countable or visible — `FallbackLlmCallStrategy` (counted, Task 4J), the batch → per-tool embedding (`batchFailures`, Task 19B), a worker on the parent's clients (logged, Task 4M), `onFinalizeExhausted: 'best-effort'` and `AutoActivation` (unchanged); a default that degraded silently is turned around — the skill plugin host defaults to `strict: true` (Task 4L), a named agent missing from the registry fails its step (Task 4K), the tool availability blacklist is an injected policy, none by default (Task 4Q); `lazy`'s `fallback` is removed (Task 4P).
 - **A probability and a relevance are different decisions.** A relevance score is never read as a probability: no [0, 1] check on it, no default threshold on it (spec §3.9, §5). It is comparable for the same query and model, also across calls, so `RelevanceReranker` batches by default like `ProbabilityReranker` (spec §3.9, §5.2, D28).
 - **Failure handling, not concurrency.** A failed stale delete is kept (`staleRecordIds`) and retried; no generations, no locks for RAG (spec §3.3, D13). Concurrent writes to a persistent store — in one process or across processes — are the backend's responsibility; nothing in this plan serializes them. The corpus load at start (Task 19A) is not a protocol either: it clears the store and writes the corpus; an interrupted load repeats at the next start; replicas that load one persistent store at once are the backend's concern (D54), and the window in which the others read a partial store is **accepted by the user** (D60) — no marker, no coordination. Single-flight worker construction is **not** in this plan (D45: a separate issue, spec §15).
 - **Records are built only from what the provider exports — no generated records, no companion stores (D50).** No intent records, intent sources or companion stores anywhere in this plan; Task 10 (intent sources and indexers) is withdrawn and its number is not reused.
@@ -74,6 +74,8 @@ The twelve inputs the spec implies, most likely to bite a user, each pinned by a
 - `logger/text-logger.ts` — DELETED (`ITextLogger`, Task 4E); `index.ts` loses its `ITextLogger` line; `logger/normalise-logger.ts` — `AnyLogger` / `isTextLogger` over `ILogger` of `@mcp-abap-adt/interfaces-utils` (a file-local import name, it also uses the event `ILogger`); `logger/normalise-logger.test.ts`, `resilience/embedder-resilience-text-logger.test.ts`, `interfaces/mcp-connection-strategy.ts` (doc comment) switched; `logger/__tests__/text-logger-removed.typecheck.ts` — NEW (Task 4E).
 
 **Fail loud (Tasks 4F–4O, spec §10.5)** — the files each task lists: libs `pipeline/{executor,default-pipeline,pipeline-to-stream}.ts`, `agent.ts`, `adapters/{parse-tool-arguments (NEW),llm-provider-bridge,llm-adapter}.ts`, `policy/pending-tool-results-registry.ts`, the tool-loop context strategies (4F); `llm-agent-mcp` `client.ts`, `adapter.ts`, `strategies/lazy-connection-strategy.ts`, libs `mcp/tool-registry.ts`, `pipeline/handlers/{tool-select,tool-loop}.ts`, server-libs `tools-rag-handle.ts`, `smart-server.ts` bridge and snapshot (4G); `llm-agent` `rag/query-embedding.ts`, `llm-agent-rag` `vector-rag.ts`, `in-memory-rag.ts`, `preprocessor.ts`, libs `pipeline/handlers/rag-query.ts`, `agent/rag-orchestrator.ts`, `builder.ts`, `subagent/default-context-builder.ts`, `rag/knowledge-rag.ts`, server-libs `jsonl-knowledge-backend.ts`, `qdrant-rag`, `sap-aicore-embedder` `foundation-embedder.ts` (4H); libs `retrieval/reranked-retrieval.ts`, `pipeline/handlers/rerank.ts` (4I); `pipeline/handlers/{translate,expand,summarize,history-upsert}.ts` (4J); `coordinator/stepper/*`, `coordinator/dag/llm-dag-planner.ts` (4K); skills files, `vectorize-mcp-tools.ts` `vectorizeSkills`, server-libs `config-validator.ts` (4L); server-libs session / controller / reload / models-route / stepper-root files, `llm-agent-server` `cli.ts` (4M); `sap-aicore-llm`, `openai-llm`, `anthropic-llm` providers (4N); libs `health/agent-health.ts`, server-libs `http/health-route-handler.ts` (4O). Each task adds its `*-fail-loud.test.ts`.
+
+**The user's U1–U10 decisions (spec §10.5.12)** — `llm-agent` `policy/fallback-llm-call-strategy.ts` (4J, U1); libs `coordinator/dispatch/hybrid.ts` (4K, U5); libs `skills/plugin-host/skill-plugin-host.ts`, server-libs `skill-plugins-config.ts` (4L, U2); server-libs `smart-server.ts` worker wiring (4M, U10); libs `utils/lazy.ts` (4P, U6); libs `policy/tool-availability-policy.ts` (NEW), `policy/tool-availability-registry.ts`, `agent.ts`, `builder.ts`, `pipeline/{context,default-pipeline}.ts`, `pipeline/handlers/{tool-loop-core,tool-loop}.ts`, `config/config-watcher.ts`, server-libs `resolve-config-sections.ts`, `smart-server.ts`, `config-reload-watcher.ts`, `http/config-route-handler.ts`, `yaml-loader.ts` (4Q, U8); `llm-agent` `interfaces/{tool-catalog,collection-profile,health}.ts`, libs `collections/{composed-tools-profile,shared-items-profile}.ts`, `mcp/{index-tools-through-profile,vectorize-mcp-tools}.ts`, `health/health-checker.ts` (19B, U7).
 
 **`packages/llm-agent-reranker/`** — NEW package (Tasks 4B–4C): `src/probability-reranker.ts` (moved from libs `reranker/decision-reranker.ts`), `src/relevance-reranker.ts`, `src/llm-reranker.ts`, `src/noop-reranker.ts` (moved), `src/assert-positive-integer.ts` (copy), `src/index.ts`, tests; `package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`. libs' `src/reranker/` is removed; libs exports none of the names (D59) and imports `NoopReranker` from the package for its own defaults.
 
@@ -3518,7 +3520,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Fail-loud tasks 4F–4O — overview
 
-Spec §10.5 (D69–D74, §17.24), §13 (behaviour table B1–B11). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR". These ten tasks run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
+Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), §13 (behaviour table B1–B15). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR"; the user's decisions of 2026-10-05 on U1–U10. These twelve tasks (4F–4Q) run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
 
 **The same discipline in every task (TDD per item):**
 1. a failing test that shows today's fake success — the empty stream, the `ok: true` with original text, the skipped store, the 200;
@@ -3526,7 +3528,7 @@ Spec §10.5 (D69–D74, §17.24), §13 (behaviour table B1–B11). The goal's de
 3. the gate: `npx tsc -b` of the touched packages, the new tests, the touched packages' whole suites;
 4. **existing tests that pin a fallback** are part of the fix, not a regression: each task names the grep that finds them; a test asserting the old fallback is rewritten to assert the error (its name says so). A test that pins something *kept* (§10.5.1: absent by design, an honest empty answer, cleanup, diagnostics) stays as it is.
 
-**Never in these tasks:** a new shared code (only `PIPELINE_FAILURE_CODES`, Task 4F); a widened `MCP_UNAVAILABLE_CODES` / `DecisionErrorCode`; a change to the modes listed for the user (spec §17.24 U1–U10: `FallbackLlmCallStrategy`, `strict: false`, `onFinalizeExhausted: 'best-effort'`, `AutoActivation`, `HybridDispatch`, `lazy`'s `fallback`, the batch → per-tool embedding, the tool availability blacklist, the worker's shared clients) — they stay as they are until the user decides.
+**Never in these tasks:** a new shared code (only `PIPELINE_FAILURE_CODES`, Task 4F); a widened `MCP_UNAVAILABLE_CODES` / `DecisionErrorCode`; a change to a consumer-chosen mode beyond what the user decided (spec §10.5.12): U1 counted (4J), U2 default `strict: true` (4L), U5 a named missing agent fails (4K), U6 `lazy`'s `fallback` removed (4P), U8 the blacklist an injected policy, none by default (4Q), U10 logged (4M); U3 `onFinalizeExhausted: 'best-effort'` and U4 `AutoActivation` are not touched; U7 is Task 19B (it needs the profile path); U9 is Task 0A.
 
 ---
 
@@ -3958,11 +3960,14 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 4J: LLM handlers — `translate`, `expand`, `summarize`, `history-upsert` and the legacy orchestrator (libs)
 
-Spec §10.5.6 (L1–L4), §13 B6. The opt-in `FallbackLlmCallStrategy` is **not** touched (spec §17.24 U1).
+Spec §10.5.6 (L1–L4), §13 B6; §10.5.12 U1 (decided by the user on 2026-10-05): the opt-in `FallbackLlmCallStrategy` **stays** and **counts each fallback** — a log event `llm_streaming_fallback` with a running count (always) and an optional injected `ICounter` (`fallbackCount`); no span.
 
 **Files:**
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/translate.ts` (~54), `expand.ts` (~26), `summarize.ts` (~65), `history-upsert.ts` (~39, ~48, ~65, ~120), `agent/rag-orchestrator.ts` (~69, ~115, ~447)
 - Create: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/llm-stages-fail-loud.test.ts`, `packages/llm-agent-libs/src/agent/__tests__/rag-orchestrator-fail-loud.test.ts`
+- Modify (U1): `packages/llm-agent/src/policy/fallback-llm-call-strategy.ts`; extend `packages/llm-agent/src/policy/fallback-llm-call-strategy.test.ts`
+
+**Interfaces (U1):** `new FallbackLlmCallStrategy(logger?: AnyLogger, options?: { readonly fallbackCount?: ICounter })` — the second argument is new and optional (spec §3.8), so `new FallbackLlmCallStrategy(this._fileLogger)` in the server compiles unchanged. `ICounter` is `@mcp-abap-adt/llm-agent`'s existing metrics contract.
 
 - [ ] **Step 1: Write the failing tests** — through `DefaultPipeline` with a helper LLM (`makeLlm`) answering `{ ok: false, error: new LlmError('down') }`:
   - `translate` → the consumer receives `LLM_ERROR` (today: untranslated text, unlogged); empty content from a successful call → the same error (`translate: empty answer`);
@@ -3970,52 +3975,58 @@ Spec §10.5.6 (L1–L4), §13 B6. The opt-in `FallbackLlmCallStrategy` is **not*
   - `summarize` → `LLM_ERROR`; today the full history;
   - `history-upsert`: the summarizer fails → `LLM_ERROR` and **no** raw `user → assistant` line in the history store (assert the store's upsert calls are 0); the store's upsert fails → its code. Today: a raw line stored / `return true`;
   - the legacy orchestrator: a failing summarizer / expander → `process()` returns the code.
-- [ ] **Step 2: Run to see them fail** (`npx tsc -b packages/llm-agent-libs`, the two files). Expected: FAIL.
+  - **U1** (`fallback-llm-call-strategy.test.ts`): an LLM whose streaming call yields `{ ok: false }` → the non-streaming retry runs (unchanged), the logger receives one warning whose message starts with `llm_streaming_fallback cause=error fallbacks=1`, and an injected recording `ICounter` saw `add(1, { cause: 'error' })`; a second instance whose stream **throws** → `cause=throw`, `add(1, { cause: 'throw' })`; a caller's cancellation (an aborted `signal`) → no event and no `add` (pinned); without the second argument the strategy behaves as before (pinned).
+- [ ] **Step 2: Run to see them fail** (`npx tsc -b packages/llm-agent packages/llm-agent-libs`, the three files). Expected: FAIL (U1: the warning has no event name or count; the counter is not a constructor option).
 - [ ] **Step 3: Implement** — each `if (res.ok) …` with no `else` becomes `if (!res.ok) { ctx.error = new OrchestratorError(\`<stage>: ${res.error.message}\`, res.error.code); return false; }`; `history-upsert.ts` drops the raw-string branch and its `catch { … return true }` becomes a `ctx.error` with the store's / LLM's code; the orchestrator returns the same as its `Result` error.
+  - **U1** `fallback-llm-call-strategy.ts`: `import type { ICounter } from '../interfaces/metrics.js';` the constructor stores `options?.fallbackCount`; a private `fallbacks = 0`; `logFallback(cause: 'error' | 'throw', message, err)` increments `fallbacks`, calls `this.fallbackCount?.add(1, { cause })` and logs `\`llm_streaming_fallback cause=${cause} fallbacks=${this.fallbacks}: Streaming failed, falling back to non-streaming: ${message}${detail}\`` (the two call sites pass `'error'` / `'throw'`). The cancellation branches stay before it, so a cancellation is never counted.
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
-git grep -n "keep original history\|history_summarize_failed\|fallback', true\|untranslated" -- 'packages/llm-agent-libs/src'
-npx tsc -b packages/llm-agent-libs
-npm test --workspace @mcp-abap-adt/llm-agent-libs
+git grep -n "keep original history\|history_summarize_failed\|fallback', true\|untranslated\|falling back to non-streaming" -- 'packages/llm-agent-libs/src' 'packages/llm-agent/src'
+npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs
 ```
-- [ ] **Step 5: Commit** — `fix(libs): a failing LLM step is an error — no untranslated, unexpanded or unsummarized substitute` (with the two trailers).
+A test matching the old warning text exactly is updated to the event-prefixed text.
+- [ ] **Step 5: Commit** — `fix(libs): a failing LLM step is an error — no untranslated, unexpanded or unsummarized substitute; FallbackLlmCallStrategy counts each fallback (U1)` (with the two trailers; `git add packages/llm-agent packages/llm-agent-libs`).
 
 ---
 
 ## Task 4K: Coordinator and stepper (libs)
 
-Spec §10.5.7 (C1–C8), §13 B6. `AutoActivation` and `HybridDispatch` are **not** touched (spec §17.24 U4, U5).
+Spec §10.5.7 (C1–C8), §13 B6; §10.5.12 U5 (decided by the user on 2026-10-05), §13 B13. `AutoActivation` is **not** touched (U4, kept). `HybridDispatch` keeps the fallback dispatcher for a step that names **no** agent; a step that **names** an agent the registry lacks is a failed step.
 
 **Files:**
 - Modify: `packages/llm-agent-libs/src/coordinator/stepper/stepper-interpreter.ts` (~194), `llm-stepper-planner.ts` (~77, ~96), `llm-evaluator.ts` (~63), `cyclic-react-executor.ts` (~131, ~342), `need-resolver.ts` (~43, ~49), `llm-task-formalizer.ts` (~37), `coordinator/dag/llm-dag-planner.ts` (~108, ~242)
 - Create: `packages/llm-agent-libs/src/coordinator/stepper/__tests__/stepper-fail-loud.test.ts`, `packages/llm-agent-libs/src/coordinator/dag/__tests__/llm-dag-planner-no-nodes.test.ts`
+- Modify (U5): `packages/llm-agent-libs/src/coordinator/dispatch/hybrid.ts`; Create `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/hybrid-dispatch.test.ts`
 
 - [ ] **Step 1: Write the failing tests** — one per row, each with a store / LLM fake that throws or answers `ok: false`:
   - C1 `knowledgeRag.list` throws → the interpreter's step fails (the dependent step is **not** run — assert its executor was not called); C2 `toolsRag.query` / `listArtifacts` throws → `plan` rejects; C3 the evaluator rejects; C4, C5 the executor's step rejects (C5: the live tool is **not** called in place of the store); C6 the classifier LLM `ok: false`, and malformed JSON → the resolver rejects carrying the `LlmError` / `ClassifierError`; C7 an LLM error / unparseable output → the formalizer rejects;
   - at the handler level (`DagCoordinatorHandler` / the stepper's handler, through `DefaultPipeline`): the consumer receives `COORDINATOR_PLAN_FAILED` / `COORDINATOR_STEP_FAILED` (Task 4F's path);
   - C8 `LlmDagPlanner` with an LLM answering `{"nodes":[]}` → the plan rejects; through `DagCoordinatorHandler` the consumer receives `COORDINATOR_PLAN_INVALID`. Today: a one-node plan from the raw prompt (#171).
-- [ ] **Step 2: Run to see them fail.** Expected: FAIL on each omitted section / raw-prompt fallback.
-- [ ] **Step 3: Implement** — remove each swallowing `catch` (C1–C5) or turn `ok: false` / `undefined` into a thrown `OrchestratorError` with the row's code and the component's error in the message (C6, C7); `llm-dag-planner.ts`: `parseDagPlan(res.output, res.usage)` without the fallback goal, and the `fallbackGoal` parameter removed (its throw branch becomes the path: `PlanInvalidError` / `COORDINATOR_PLAN_INVALID` at the handler).
+  - **U5** `hybrid-dispatch.test.ts` (recording `primary` / `fallback` dispatchers, a registry holding `coder`): a step with no `agent` → `fallback` called once, `primary` not (pinned); `agent: 'coder'` → `primary` called (pinned); `agent: 'ghost'` → **neither** called, `{ ok: false, stepId, error }` with `error` containing `ghost` and `coder`. Today: `fallback` called. Through `CoordinatorHandler` with `failPolicy: 'abort'` and a plan step naming `ghost` (via `DefaultPipeline`) → the consumer receives `COORDINATOR_STEP_FAILED`; with `failPolicy: 'continue'` → the answer carries the failed-step note (as for any failed step, pinned).
+- [ ] **Step 2: Run to see them fail.** Expected: FAIL on each omitted section / raw-prompt fallback, and on `ghost` reaching the fallback dispatcher.
+- [ ] **Step 3: Implement** — remove each swallowing `catch` (C1–C5) or turn `ok: false` / `undefined` into a thrown `OrchestratorError` with the row's code and the component's error in the message (C6, C7); `llm-dag-planner.ts`: `parseDagPlan(res.output, res.usage)` without the fallback goal, and the `fallbackGoal` parameter removed (its throw branch becomes the path: `PlanInvalidError` / `COORDINATOR_PLAN_INVALID` at the handler). **U5** `hybrid.ts`: `if (!step.agent) return this.fallback.dispatch(step, ctx); if (!ctx.registry.has(step.agent)) return { stepId: step.id, output: '', durationMs: 0, ok: false, error: \`HybridDispatch: agent '${step.agent}' not in registry (registered: ${[...ctx.registry.keys()].join(', ') || 'none'})\` };` then `primary` as today; the class comment says a named missing agent is a failed step.
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
-git grep -n "omit\|gracefully\|fallbackGoal\|no need\|n1', goal" -- 'packages/llm-agent-libs/src/coordinator'
+git grep -n "omit\|gracefully\|fallbackGoal\|no need\|n1', goal\|HybridDispatch" -- 'packages/llm-agent-libs/src/coordinator' 'packages/llm-agent-libs/src/**/*.test.ts'
 npx tsc -b packages/llm-agent-libs
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 ```
-- [ ] **Step 5: Commit** — `fix(coordinator): a failing store, classifier or planner fails the step or the plan — no omitted context, no raw-prompt plan` (with the two trailers).
+- [ ] **Step 5: Commit** — `fix(coordinator): a failing store, classifier or planner fails the step or the plan — no omitted context, no raw-prompt plan; a named agent missing from the registry fails its step (U5)` (with the two trailers).
 
 ---
 
 ## Task 4L: Skills (llm-agent + libs + server-libs)
 
-Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8. **`strict`'s default is not changed** (spec §17.24 U2 — the user's decision); S-8 and S-9 only report.
+Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.12 U2 (decided by the user on 2026-10-05), §13 B12. **`strict` defaults to `true`** in the skill plugin host and the server's `skillPlugins` config; `strict: false` is the consumer's opt-in, and its carry-forward is reported (S-9).
 
 **Files:**
 - Modify: `packages/llm-agent/src/interfaces/skills-rag.ts` (`SkillLoadResult.carried?`)
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/skill-select.ts` (~51, ~70), `agent/rag-orchestrator.ts` (~262, ~297), `skills/skill-utils.ts` (~27), `skills/filesystem-skill.ts` (~98), `mcp/vectorize-mcp-tools.ts` (`vectorizeSkills` ~443), `builder.ts` (~1335), `skills/plugin-host/compatible-skills-rag.ts` (~89, ~110), `skills/plugin-host/skill-plugin-host.ts` (~236, ~339)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts` (`skills.type`), `smart-server.ts` (`resolveSkillManager` default branch)
+- Modify (U2): `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.ts` (~89 doc comment, ~528 default); extend `skill-plugins-config.test.ts` and `packages/llm-agent-libs/src/skills/plugin-host/skill-plugin-host.ingest.test.ts`
 - Create: `packages/llm-agent-libs/src/skills/__tests__/skills-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/skill-select-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/skills-type-validation.test.ts`
 
 **Interfaces:**
@@ -4029,30 +4040,33 @@ Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8. **`stric
   - S-5 `vectorizeSkills`: `listSkills` `ok: false` → throws; `build()` rejects with it. A writerless store → skipped (kept).
   - S-6 builder: a plugin loader returning `errors: [{ file: 'p.js', error: 'boom' }]` → `build()` rejects naming `p.js`. Today: ignored.
   - S-7 `CompatibleSkillsRag.query`: an incompatible generation → throws `SkillsIncompatibleError`; an `AbortError` → rethrown. Today: `[]`.
-  - S-8 plugin host: a group whose build fails with a prior generation present → `ok: false`, the group in `omitted` with its reason (the prior generation is still served — `strict` is the user's, U2).
+  - S-8 plugin host: a group whose build fails with a prior generation present → `ok: false`, the group in `omitted` with its reason (under `strict: false` the prior generation is still served; under the default `strict: true` the group serves nothing old — U2).
   - S-9 plugin host, `strict: false`, a source whose `acquire` rejects with `new Error('net')` → `result.carried` = `[{ sourceId, reason: 'Error: net' }]`.
   - S-10 server: `skills: { type: 'nope' }` → `ConfigValidationError` naming `skills.type` and the three values. Today: no skill manager.
+  - **U2** host: no `strict` in the deps + a source whose `acquire` rejects → the group is not committed and is in `omitted` with the reason (the `strict:true source failure` behaviour), no `carried`. Today: carried forward. `strict: false` → carried, reported (S-9, pinned). Server: `parseSkillPluginsConfig` of a block without `strict` → `strict: true`; with `strict: false` → `false` (pinned).
 - [ ] **Step 2: Run to see them fail.** Expected: FAIL.
-- [ ] **Step 3: Implement** — as the rows say; `config-validator.ts` gains the `skills.type` check (`claude | codex | filesystem`), and `resolveSkillManager`'s `default` throws (a config built in code that bypasses the validator still fails).
+- [ ] **Step 3: Implement** — as the rows say; `config-validator.ts` gains the `skills.type` check (`claude | codex | filesystem`), and `resolveSkillManager`'s `default` throws (a config built in code that bypasses the validator still fails). **U2**: `skill-plugin-host.ts` reads `const strict = deps.strict ?? true;` wherever it read `deps.strict` (the `IngestHostDeps.strict` doc: "default `true`; `false` carries a failed source's prior data forward, reported in `carried`"); `skill-plugins-config.ts`: `strict: raw.strict !== undefined ? Boolean(raw.strict) : true`, the field's doc "Default true".
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
-git grep -n "skill_select_error\|continue without skills\|Directory doesn't exist\|return \[\]; // no embed" -- 'packages/llm-agent-libs/src' 'packages/llm-agent-server-libs/src'
+git grep -n "skill_select_error\|continue without skills\|Directory doesn't exist\|return \[\]; // no embed\|strict: false\|Default false" -- 'packages/llm-agent-libs/src' 'packages/llm-agent-server-libs/src'
 npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
 npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
 ```
-- [ ] **Step 5: Commit** — `fix(skills): an unreadable skill source, a failed listing or a plugin loader error is an error` (with the two trailers).
+A test that relied on the carry-forward without passing `strict` now passes `strict: false` explicitly (its name says so).
+- [ ] **Step 5: Commit** — `fix(skills): an unreadable skill source, a failed listing or a plugin loader error is an error; the plugin host defaults to strict (U2)` (with the two trailers).
 
 ---
 
 ## Task 4M: Server (server-libs + server)
 
-Spec §10.5.9 (V1–V9), §10.5.6 L7 (models route), §13 B10. M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
+Spec §10.5.9 (V1–V9), §10.5.6 L7 (models route), §13 B10; §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` (~90), `controller/session-bundle.ts` (~57), `controller/run-scope.ts` (~79), `controller/artifacts.ts` (~261), `smart-server.ts` (~3112 session meta), `config-reload-watcher.ts` (~132), `tools-rag-handle.ts` (~90 eager load), `build-stepper-root.ts` (~97, ~234), `http/models-route-handler.ts` (~17, ~48)
 - Modify: `packages/llm-agent-server/src/smart-agent/cli.ts` (~146)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/models-route-fail-loud.test.ts`; extend `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts`
+- Modify (U10): `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (the worker wire, ~2240–2262); Create `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-shared-clients-log.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
   - V1: a session whose persisted collection's `openCollection` answers `ok: false` (`CollectionNotFoundError`) → the session's creation rejects with it. Today: the session without the collection.
@@ -4063,8 +4077,9 @@ Spec §10.5.9 (V1–V9), §10.5.6 L7 (models route), §13 B10. M9–M11 are Task
   - V8 (`cli-flags.test.ts`): `--env /no/such/file` → exit code 1 with the path in stderr; `--secrets-dir /no/such/dir` → exit code 1; no `--env` and no `.env` → starts (kept, pinned).
   - V9: a stepper role whose LLM config does not resolve → `ConfigValidationError` naming the role. Today: the stub OpenAI model.
   - L7: `getModels` `ok: false` → `GET /v1/models` answers 502 with `jsonError`; `getEmbeddingModels` `ok: false` → 502. Today: 200 with a placeholder / `[]`.
+  - **U10** (`worker-shared-clients-log.test.ts`, a server with a recording `cfg.log`): a worker declaring neither `mcp` / `mcpClients` nor `rag`, parent with clients and a tools store → each wire emits exactly one `{ event: 'worker_uses_shared_clients', worker: <name>, shared: ['toolsRag', 'mcpClients'] }`; a worker with its own store but no clients → `shared: ['mcpClients']`; a worker with both of its own → no such event (pinned); the worker's behaviour is unchanged (it still gets the parent's clients — pinned). Today: no event.
 - [ ] **Step 2: Run to see them fail.** Expected: FAIL.
-- [ ] **Step 3: Implement** — as the rows say. `STUB_LLM_CFG` is deleted with its use. `gcTerminal`'s catch (cleanup) and the shutdown closes stay (spec §10.5.1).
+- [ ] **Step 3: Implement** — as the rows say. `STUB_LLM_CFG` is deleted with its use. `gcTerminal`'s catch (cleanup) and the shutdown closes stay (spec §10.5.1). **U10**: in the worker wire, collect `shared: ('toolsRag' | 'mcpClients')[]` in the two `else if (injected?.…)` branches; after both, `if (shared.length > 0) (this.cfg.log ?? this.noop)({ event: 'worker_uses_shared_clients', worker: <the worker's name>, shared });` — one line per wire, the same event sink as `plugins_loaded`.
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
@@ -4072,7 +4087,7 @@ git grep -n "rag_hydration_failed\|emptyBundle\|STUB_LLM_CFG\|smart-agent'\|conf
 npx tsc -b packages/llm-agent-server-libs packages/llm-agent-server
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
 ```
-- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed reload, an unbuildable config or a failed backend is an error — never a placeholder` (with the two trailers).
+- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed reload, an unbuildable config or a failed backend is an error — never a placeholder; a worker on the parent's clients is logged (U10)` (with the two trailers).
 
 ---
 
@@ -4128,6 +4143,148 @@ npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-
 ```
 A test asserting 200 for a degraded body is rewritten to 503 (its name says "degraded → 503").
 - [ ] **Step 5: Commit** — `fix(health): /health answers 503 when a configured component is not working; every store and client is probed` (with the two trailers).
+
+---
+
+## Task 4P: `lazy` without `fallback` — an init failure reaches the call (U6) (libs)
+
+Spec §10.5.12 U6 (decided by the user on 2026-10-05), §3.8, §13 migration line 73, B14. A public option is removed (a major release); nothing in the repo passes it.
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/utils/lazy.ts` (`LazyOptions.fallback`, its delegation branch in the proxy's `get`, the doc comments that mention it; `LazyInitError` gains an optional `{ cause }`)
+- Modify: `packages/llm-agent-libs/src/utils/__tests__/lazy.test.ts` (the `// Fallback` block)
+- Create: `packages/llm-agent-libs/src/utils/__tests__/lazy.typecheck.ts`
+
+**Interfaces:**
+- Produces: `LazyOptions<T>` = `{ retryIntervalMs?: number; onError?: (error: unknown) => void }` (no `fallback`); `new LazyInitError(message: string, options?: { cause?: unknown })` — additive. A failed init rejects the call with `LazyInitError` whose `cause` is the factory's error and whose message names the property and the error.
+
+- [ ] **Step 1: Write the failing tests**
+  - `lazy.test.ts`: replace `delegates to fallback when factory fails` and `switches from fallback to real instance once factory succeeds` with `an init failure rejects the call with the factory error as its cause (no fallback)` — factory throws `new Error('unavailable')` → `proxy.greet('User')` rejects with `LazyInitError`, `err.cause.message === 'unavailable'`, message contains `greet` and `unavailable`; and `a later call after the retry interval reaches the real instance` (factory succeeds on the second attempt, `retryIntervalMs: 10`). Keep `throws LazyInitError when factory fails and no fallback` (rename it `throws LazyInitError when the factory fails`).
+  - `lazy.typecheck.ts`:
+    ```ts
+    import { lazy } from '../lazy.js';
+    interface IGreeter { greet(n: string): Promise<string> }
+    const g: IGreeter = { greet: async (n) => n };
+    // @ts-expect-error — `fallback` was removed (U6, migration line 73)
+    lazy<IGreeter>(() => g, { fallback: g });
+    ```
+- [ ] **Step 2: Run to see them fail**
+
+```bash
+npx tsc -b packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/utils/__tests__/lazy.test.ts
+```
+Expected: `tsc` FAILS on the unused `@ts-expect-error` (the option still exists); the cause test FAILS (`cause` undefined today).
+- [ ] **Step 3: Implement** — delete `fallback` from `LazyOptions` and `const fallback = options?.fallback;`; the slow path's `catch (err)` becomes `throw new LazyInitError(\`Lazy init failed (property: ${String(prop)}): ${err instanceof Error ? err.message : String(err)}\`, { cause: err });`; `LazyInitError`'s constructor `(message: string, options?: { cause?: unknown })` calls `super(message, options)`; the file and function doc comments drop every mention of a fallback (the proxy target comment: "delegates to `instance`").
+- [ ] **Step 4: The gate**
+
+```bash
+git grep -n "fallback" -- packages/llm-agent-libs/src/utils
+npx tsc -b packages/llm-agent-libs
+npm test --workspace @mcp-abap-adt/llm-agent-libs
+```
+Expected: the grep prints nothing; PASS.
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages/llm-agent-libs/src/utils
+git add packages/llm-agent-libs/src/utils
+git commit -m "feat(libs)!: lazy() has no fallback option — an init failure reaches the call with its cause (U6)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4Q: The tool availability blacklist is an injected policy, none by default (U8) (libs + server-libs)
+
+Spec §10.5.12 U8 (decided by the user on 2026-10-05), §3.8, §13 migration line 74, B15. Today `tool-loop-core` blocks any internal tool whose error text matches `isToolContextUnavailableError` for `toolUnavailableTtlMs` (default 10 min), on by default with no switch. Now the decision is an injected `IToolAvailabilityPolicy`; with none injected nothing is blocked and no tool is filtered by it. The per-session block state stays in the internal `ToolAvailabilityRegistry` (not exported, unchanged except its TTL default).
+
+**Files:**
+- Create: `packages/llm-agent-libs/src/policy/tool-availability-policy.ts` (`IToolAvailabilityPolicy`, `HeuristicToolAvailabilityPolicy`)
+- Modify: `packages/llm-agent-libs/src/policy/tool-availability-registry.ts` (constructor without a TTL default; `block(sessionId, toolName, reason, ttlMs, now?)` — `ttlMs` required), `policy/index.ts`, `src/index.ts` (export the policy and its implementation)
+- Modify: `packages/llm-agent-libs/src/agent.ts` (`SmartAgentConfig.toolUnavailableTtlMs` removed, ~164, ~276, ~459–468; `SmartAgentDeps.toolAvailabilityPolicy?`; passes it to the tool loop, ~718, ~1369), `builder.ts` (`withToolAvailabilityPolicy`), `pipeline/context.ts` (`toolAvailabilityPolicy?`, beside `toolAvailabilityRegistry`), `pipeline/default-pipeline.ts` (copies the policy from its deps into the context, as `toolPolicy`), `pipeline/handlers/tool-loop-core.ts` (~218 deps, ~383 the block), `pipeline/handlers/tool-loop.ts` (~907 passes it), `config/config-watcher.ts` (~22, ~128: the key removed)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts` (~456: no `600000` default — absent stays absent), `smart-server.ts` (~204 the config field stays; where the main and worker builders are made: inject `new HeuristicToolAvailabilityPolicy({ ttlMs })` only when `agent.toolUnavailableTtlMs` is set), `config-reload-watcher.ts` (~86: the key removed), `http/config-route-handler.ts` (~31: removed from `AGENT_CONFIG_FIELDS`), `yaml-loader.ts` (~52: the template line commented out — `# toolUnavailableTtlMs: 600000   # opt-in: block a tool for this long after a "not found"/"permission" error`)
+- Create: `packages/llm-agent-libs/src/policy/__tests__/tool-availability-policy.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-core-availability-policy.test.ts`, `packages/llm-agent-libs/src/__tests__/tool-availability-policy.typecheck.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/tool-availability-yaml.test.ts`
+- Modify: `packages/llm-agent-libs/src/policy/__tests__/tool-availability-registry.test.ts` (TTL passed to every `block`)
+
+**Interfaces:**
+- Produces (libs root):
+  ```ts
+  /** Decides whether a failed internal tool call hides that tool from the session. None injected → nothing is blocked. */
+  export interface IToolAvailabilityPolicy {
+    onToolError(toolName: string, errorText: string): { readonly ttlMs: number } | undefined;
+  }
+  /** 30.1.0's heuristic (isToolContextUnavailableError: "not found", "permission", …), opt-in. */
+  export class HeuristicToolAvailabilityPolicy implements IToolAvailabilityPolicy {
+    constructor(options: { readonly ttlMs: number });
+  }
+  // SmartAgentDeps.toolAvailabilityPolicy?: IToolAvailabilityPolicy
+  // SmartAgentBuilder.withToolAvailabilityPolicy(policy: IToolAvailabilityPolicy): this
+  // PipelineContext.toolAvailabilityPolicy?: IToolAvailabilityPolicy
+  // removed: SmartAgentConfig.toolUnavailableTtlMs (migration line 74)
+  ```
+- Consumes: Task 4F (the pipeline's error path — unrelated to blocking, but the tool loop it edits is Task 4F's / 4G's final shape).
+
+- [ ] **Step 1: Write the failing tests**
+  - `tool-availability-policy.test.ts`: `HeuristicToolAvailabilityPolicy({ ttlMs: 1000 })` → `onToolError('T', 'Error: object not found')` is `{ ttlMs: 1000 }`; `onToolError('T', 'syntax error in line 3')` is `undefined`; a constructor without `ttlMs` does not compile (in the typecheck file, `@ts-expect-error`).
+  - `tool-loop-core-availability-policy.test.ts` (through `DefaultPipeline`, an MCP fake whose tool `T` answers `{ ok: false }` with the text `object not found` on the first call):
+    - **no policy injected** → the tool result reaches the LLM, no `tool_blacklisted_T` session step, and in the next iteration `T` is still in the tool list given to the LLM (today: blocked for 10 min, filtered out);
+    - **`HeuristicToolAvailabilityPolicy({ ttlMs: 60_000 })` injected** → 30.1.0's behaviour: `tool_blacklisted_T` with `blockedUntil`, `T` filtered from the next iteration and from the next request of the same session (pinned);
+    - a policy answering `undefined` for everything → nothing blocked;
+    - an external (client-provided) tool is never offered to the policy (pinned, #91).
+  - `tool-availability-policy.typecheck.ts`: `// @ts-expect-error — removed (U8, migration line 74)` on `const c: SmartAgentConfig = { toolUnavailableTtlMs: 1 };`; `new SmartAgentBuilder().withToolAvailabilityPolicy(new HeuristicToolAvailabilityPolicy({ ttlMs: 1 }))` compiles.
+  - `tool-availability-yaml.test.ts` (through the real `resolveSmartServerConfig` and the server's builder wiring, with a recording builder seam as the existing server tests use): YAML without `agent.toolUnavailableTtlMs` → no policy injected into the main agent or a worker; with `toolUnavailableTtlMs: 5000` → a `HeuristicToolAvailabilityPolicy` with `ttlMs: 5000` injected into both; `PUT /v1/config` with `{ "agent": { "toolUnavailableTtlMs": 1 } }` → 400 `Unsupported agent config fields: toolUnavailableTtlMs`.
+- [ ] **Step 2: Run to see them fail**
+
+```bash
+npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/policy/__tests__/tool-availability-policy.test.ts packages/llm-agent-libs/src/pipeline/handlers/__tests__/tool-loop-core-availability-policy.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/tool-availability-yaml.test.ts
+```
+Expected: FAIL — the policy module does not exist; with no policy the tool is blocked today; the YAML default injects 600000; the PUT answers 200.
+- [ ] **Step 3: Implement**
+  - `tool-availability-policy.ts`: the interface and the class above; `onToolError` returns `isToolContextUnavailableError(errorText) ? { ttlMs: this.ttlMs } : undefined` (the function stays in `tool-availability-registry.ts`, imported).
+  - `tool-loop-core.ts` (~383): replace the `isToolContextUnavailableError(text)` condition with
+    ```ts
+    const decision =
+      !res.ok && !externalToolNames.has(tc.name)
+        ? toolAvailabilityPolicy?.onToolError(tc.name, text)
+        : undefined;
+    if (decision) {
+      const entry = toolAvailabilityRegistry.block(sessionId, tc.name, text, decision.ttlMs);
+      currentTools = currentTools.filter((t) => t.name !== tc.name);
+      options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, { reason: text, blockedUntil: entry.blockedUntil });
+    }
+    ```
+    (the deps type gains `toolAvailabilityPolicy?: IToolAvailabilityPolicy`; the registry's filtering stays — with no policy it never holds an entry, so it filters nothing);
+  - `agent.ts`: `new ToolAvailabilityRegistry()`; `toolUnavailableTtlMs` removed from `SmartAgentConfig` and from the config snapshot / update (~459–468); the tool-loop deps get `toolAvailabilityPolicy: this.deps.toolAvailabilityPolicy`;
+  - `builder.ts`: `withToolAvailabilityPolicy(policy) { this._toolAvailabilityPolicy = policy; return this; }`, passed into `SmartAgentDeps` and the pipeline's deps;
+  - `context.ts` / `default-pipeline.ts`: `toolAvailabilityPolicy?: IToolAvailabilityPolicy` on the context, copied from the deps; `tool-loop.ts` passes `ctx.toolAvailabilityPolicy`;
+  - `config-watcher.ts`, server-libs `config-reload-watcher.ts`, `config-route-handler.ts`: the key removed;
+  - server-libs `resolve-config-sections.ts`: `toolUnavailableTtlMs` read without a default (a non-number → `ConfigValidationError` naming `agent.toolUnavailableTtlMs`, as the other numeric keys); `smart-server.ts`: one helper `toolAvailabilityPolicyFor(agentCfg)` returning `agentCfg.toolUnavailableTtlMs !== undefined ? new HeuristicToolAvailabilityPolicy({ ttlMs: agentCfg.toolUnavailableTtlMs }) : undefined`, applied with `withToolAvailabilityPolicy` to the main builder and to each worker builder (a worker's own `agent.toolUnavailableTtlMs` wins, else the parent's — as the worker's other agent settings); `yaml-loader.ts`: the template line commented as above.
+- [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
+
+```bash
+git grep -n "toolUnavailableTtlMs\|tool_blacklisted_\|isToolContextUnavailableError\|block(" -- 'packages/llm-agent-libs/src' 'packages/llm-agent-server-libs/src' 'packages/llm-agent-server/src'
+npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-agent-server
+npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
+```
+A test that expected a tool to be blocked **without** injecting a policy now injects `HeuristicToolAvailabilityPolicy` (its name says "with the heuristic policy"); a test asserting the `600000` default asserts absence. Expected: PASS; `toolUnavailableTtlMs` remains only in server-libs' YAML resolution, the server's config type and the helper.
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages/llm-agent-libs/src packages/llm-agent-server-libs/src
+git add packages/llm-agent-libs packages/llm-agent-server-libs
+git commit -m "feat(libs)!: the tool availability blacklist is an injected policy, none by default (U8)
+
+SmartAgentConfig.toolUnavailableTtlMs is removed; HeuristicToolAvailabilityPolicy
+ships 30.1.0's heuristic. The server injects it only when
+agent.toolUnavailableTtlMs is set.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
 
 ---
 
@@ -11785,6 +11942,61 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
+## Task 19B: Batch embedding failures are counted — `batchFailures` (U7) (llm-agent + libs)
+
+Spec §10.5.12 U7 (decided by the user on 2026-10-05), §3.8. The batch → per-record embedding retry stays as it is; each failed batch call is now **counted** where a consumer and `/health` can see it, on both paths: the 30.1.0 path (`vectorizeMcpTools` → `listAndIndexTools`) and the profile path (`storeItems` → a binding's `index` → `indexToolsThroughProfile`). Runs after Task 19A, so `listAndIndexTools`, `indexToolsThroughProfile`, `storeItems` (Task 11), `ComposedToolsProfile` (Task 15) and `SharedItemsProfile` (Task 17) exist. Every field is optional: every earlier object literal of these types still compiles.
+
+**Files:**
+- Modify: `packages/llm-agent/src/interfaces/tool-catalog.ts` (`ToolCatalogStatus.batchFailures?`), `packages/llm-agent/src/interfaces/collection-profile.ts` (`IndexReport.batchFailures?`), `packages/llm-agent/src/interfaces/health.ts` (`HealthComponentStatus.toolCatalog.batchFailures?`)
+- Modify: `packages/llm-agent-libs/src/collections/composed-tools-profile.ts`, `collections/shared-items-profile.ts` (map `storeItems`' `batchFailure` into the report), `mcp/index-tools-through-profile.ts`, `mcp/vectorize-mcp-tools.ts` (~304, ~310–336, ~397–430), `health/health-checker.ts` (~86: copy the field)
+- Extend: `packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts`, `collections/__tests__/shared-items-profile.test.ts`, `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts`, the existing 30.1.0 `vectorize-mcp-tools` test file (`git grep -l "sequential fallback" -- 'packages/llm-agent-libs/src/**/*.test.ts'`), `packages/llm-agent-libs/src/health/health-checker.test.ts`
+
+**Interfaces:**
+- Produces (all optional, present only when > 0):
+  ```ts
+  // ToolCatalogStatus.batchFailures?: number   — failed batch embedding calls during this fill
+  // IndexReport.batchFailures?: number         — failed batch embedding calls during this index()
+  // HealthComponentStatus.toolCatalog.batchFailures?: number — copied from the status
+  ```
+
+- [ ] **Step 1: Write the failing tests**
+  - 30.1.0 path: a store whose embedder's batch call (`embedDocuments` — the existing fake `makeBatchEmbedder({ throwOnBatch: true })`) throws while the per-tool writes embed → every tool vectorized (`complete: true`), `summary.batchFailures === 1`, the summary line says `batch embedding unavailable (1 failed call), used the sequential fallback: …`; a store whose batch succeeds → `batchFailures` absent (pinned: `'batchFailures' in summary === false`).
+  - `ComposedToolsProfile.index` over a store whose batch embedding fails the same way → `r.value.batchFailures === 1`, every item indexed; success → absent. `SharedItemsProfile.index` the same (summed over the stores it writes).
+  - profile path through `vectorizeMcpTools` (a bound store, `live`) → `status.batchFailures === 1`, the line names it.
+  - health: a reporter whose status carries `batchFailures: 2` → `components.toolCatalog.batchFailures === 2`; without it → absent. (A batch failure alone does not make the catalog incomplete: the retry wrote every record — `complete` decides health, D72.)
+- [ ] **Step 2: Run to see them fail**
+
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-libs
+npm test --workspace @mcp-abap-adt/llm-agent-libs
+```
+Expected: FAIL — `batchFailures` undefined everywhere.
+- [ ] **Step 3: Implement**
+  - contracts: the three optional fields, each with a one-line doc comment;
+  - `vectorize-mcp-tools.ts` (30.1.0 path): a counter `let batchFailures = 0;` incremented where `batchFailure ??= …` is set today (every failed batch call, not only the first); the summary spreads `...(batchFailures > 0 ? { batchFailures } : {})`; `batchNote` becomes `; batch embedding unavailable (${batchFailures} failed call${batchFailures === 1 ? '' : 's'}), used the sequential fallback: ${batchFailure}` (the first message kept, so the existing `/sequential fallback: batch embed error/` assertion still holds);
+  - `composed-tools-profile.ts` / `shared-items-profile.ts`: `...(main.batchFailure !== undefined ? { batchFailures: 1 } : {})` (Shared: the sum over its `storeItems` calls) in the returned `IndexReport`;
+  - `index-tools-through-profile.ts`: `...(r.ok && r.value.batchFailures ? { batchFailures: r.value.batchFailures } : {})` in the summary, and the same note in its log line;
+  - `health-checker.ts`: copy `batchFailures` when present, as `records` / `profile`.
+- [ ] **Step 4: The gate**
+
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
+```
+A test asserting the exact old summary line is updated to the counted wording. Expected: PASS.
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages/llm-agent/src packages/llm-agent-libs/src
+git add packages/llm-agent packages/llm-agent-libs
+git commit -m "feat(libs): count failed batch embedding calls — batchFailures in the tools summary, index report and /health (U7)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
 ## Task 20: `SmartAgentBuilder.withToolsProfile` (libs)
 
 Spec §6.1 (incl. the fill source, §3.10, D42); §16 principle 6 (one call site).
@@ -18583,7 +18795,7 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 #     tools: { variant: faceted-rerank, poolItems: 30 }   # poolItems: your number
 ```
 
-- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B11)**
+- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B15)**
 
 - `docs/INTEGRATION.md`: a new `## Errors — fail loud` section (TL;DR first): a stage failure is the stream's last item `{ ok: false, error }` and `process()`'s result; the error carries the failing component's code (table of the codes a consumer meets: `PIPELINE_ERROR`, `MCP_UNAVAILABLE`, `CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `QUERY_EXPAND_ERROR`, `RERANK_ERROR`, `LLM_ERROR`, `SKILL_ERROR`, the `COORDINATOR_*` codes, and `PIPELINE_FAILURE_CODES`); **a degraded mode is your injected strategy** — an `IRag` wrapper (implement `IRagDecorator`), an `IReranker` that answers unranked, `agent.llmCallStrategy: fallback` — with one short example of an `IRag` wrapper; `FallbackQueryEmbedding` stands in only for a pipeline without an embedder. Every existing sentence that says a stage "continues", "skips", "falls back" or "keeps the original" on a failure is rewritten.
 - `docs/ARCHITECTURE.md`: the pipeline section states that a stage error reaches the consumer (executor → `ctx.error` → `pipelineToStream` → `{ ok: false }`).
@@ -18591,7 +18803,12 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 - `docs/TROUBLESHOOTING.md`: a new `## Errors instead of fallbacks` table — code → what failed → what to check (one row per code above); the `## Reranking` rows already say `rerank_error` (Step 5).
 - `docs/PERFORMANCE.md`: the rerank / translate / summarize paragraphs lose any "falls back to …" wording.
 - `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/llm-agent-mcp/README.md`, `packages/llm-agent-server-libs/README.md`: the same rewording where a fallback is described as current.
-- No page describes a U1–U10 mode differently from today (spec §17.24: the user decides them).
+- **The user's U1–U10 decisions (spec §10.5.12, §13 B12–B15)** — each mode documented where it is described, TL;DR first:
+  - `docs/INTEGRATION.md`: a `### Tool availability policy` subsection (none by default; `withToolAvailabilityPolicy(new HeuristicToolAvailabilityPolicy({ ttlMs }))` for 30.1.0's blacklist; a 5-line custom `IToolAvailabilityPolicy`); `lazy` documented without `fallback` (an init failure rejects with `LazyInitError`, `cause` = the factory's error); `HybridDispatch`: a named agent missing from the registry is a failed step; the LLM call strategy `fallback`: each fallback logged as `llm_streaming_fallback` and counted on an injected `fallbackCount` counter;
+  - `docs/EXAMPLES.md`, `docs/DEPLOYMENT.md`, `examples/docker-sap-ai-core/smart-server.yaml`: `agent.toolUnavailableTtlMs` is an **opt-in** (unset → no blacklist), and it is not accepted by `PUT /v1/config`; `skillPlugins.strict` defaults to `true` (`false` carries a failed source's old data forward, reported in `carried`);
+  - `docs/TROUBLESHOOTING.md`: rows for `llm_streaming_fallback` (streaming failed and the strategy switched to non-streaming — how to count it), `worker_uses_shared_clients` (a worker without its own clients / tools store uses the parent's — by configuration), `batchFailures` in the tools summary and `/health` (batch embedding failed, every record retried — check the embedder's batch limits), and "a tool is no longer blocked after a `not found` error" (U8: inject the heuristic policy);
+  - `packages/llm-agent-libs/README.md`: the tool availability policy and `lazy` without `fallback`;
+  - every page that mentions `toolUnavailableTtlMs` as a `SmartAgentConfig` field, a 10-minute default blacklist, `lazy`'s `fallback`, or `strict: false` as the default is rewritten.
 
 - [ ] **Step 9: Verify nothing still describes the deleted contract or the old behaviour as current**
 
@@ -18607,8 +18824,9 @@ git grep -n "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|Sta
 git grep -n "PrebuiltToolsStore\|deployToolsCorpus\|TOOLS_CORPUS_RECORD_ID\|serviceRecord\|prebuilt:\|faceted-cohere\|faceted-jev\|small-set-jev\|facetedCohere\|facetedJev\|smallSetJev\|smallSet" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
 git grep -n "FallbackRag\|withCircuitBreakers\|replaceRag" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!docs/MIGRATION-v*.md' ':!**/CHANGELOG.md'
 git grep -n -i "onFailure\|rerank_fallback\|falls back to\|non-fatal\|keeps the original\|continues without\|degraded.*200" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
+git grep -n "toolUnavailableTtlMs\|fallback:\|strict: false\|Default false" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
 ```
-Expected: the first prints nothing outside `CHANGELOG.md` history and the `### Migrating from IToolIndexingStrategy` section of `docs/INTEGRATION.md`; the fifth prints nothing (intents and companion stores were removed, spec D50); the second shows the new anchors are linked; the third prints nothing — the old names live only in the CHANGELOGs' migration tables (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28); the sixth prints only the lines that say a name was withdrawn or refused (D54, D55); the ninth prints only `docs/INTEGRATION.md`'s bullet saying they were removed (Task 0A, D68); the tenth prints only the U1–U10 modes described as the consumer's choice (`agent.llmCallStrategy: fallback`, `strict: false`, …) and the sentences saying a fallback was removed (Step 8b); the seventh and eighth print nothing (doc snippets import RAG implementations from `@mcp-abap-adt/llm-agent-rag` and rerankers from `@mcp-abap-adt/llm-agent-reranker` — check multi-line import blocks by eye in the files the third grep listed before this task). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
+Expected: the first prints nothing outside `CHANGELOG.md` history and the `### Migrating from IToolIndexingStrategy` section of `docs/INTEGRATION.md`; the fifth prints nothing (intents and companion stores were removed, spec D50); the second shows the new anchors are linked; the third prints nothing — the old names live only in the CHANGELOGs' migration tables (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28); the sixth prints only the lines that say a name was withdrawn or refused (D54, D55); the ninth prints only `docs/INTEGRATION.md`'s bullet saying they were removed (Task 0A, D68); the tenth prints only the consumer-chosen modes described as the consumer's opt-in (`agent.llmCallStrategy: fallback`, `strict: false`, `HeuristicToolAvailabilityPolicy`, …) and the sentences saying a fallback was removed (Step 8b); the eleventh prints only `toolUnavailableTtlMs` as the server's opt-in YAML key and the CHANGELOG migration line 74 (never as a `SmartAgentConfig` field or a default); the seventh and eighth print nothing (doc snippets import RAG implementations from `@mcp-abap-adt/llm-agent-rag` and rerankers from `@mcp-abap-adt/llm-agent-reranker` — check multi-line import blocks by eye in the files the third grep listed before this task). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
 
 - [ ] **Step 10: Commit**
 
@@ -18626,7 +18844,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 34: CHANGELOG, migration notes, `CLAUDE.md`
 
-Spec §13 (**a major release**: the Breaking section with the 72-line migration table, D57–D59, D68; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
+Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B15, incl. the user's U1–U10 decisions, §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
 
 **Files:**
 - Modify: `CHANGELOG.md` (`## [Unreleased]`)
@@ -18643,8 +18861,8 @@ Spec §13 (**a major release**: the Breaking section with the 72-line migration 
 ### Breaking
 
 Every line is one removed or moved name. Members and behaviour are unchanged; only the name or the
-package changes — except `FallbackRag` (line 5), `OllamaRag` (line 51) and the two members of
-lines 71–72, which are removed.
+package changes — except `FallbackRag` (line 5), `OllamaRag` (line 51) and the members of
+lines 71–74, which are removed.
 
 | # | Old name | Old import | New name | Import it from |
 |---|---|---|---|---|
@@ -18720,8 +18938,12 @@ lines 71–72, which are removed.
 | 70 | `ITextLogger` | `@mcp-abap-adt/llm-agent` | `ILogger` | `@mcp-abap-adt/interfaces-utils` |
 | 71 | `SimpleRagRegistry.replaceRag` (method) | `@mcp-abap-adt/llm-agent` | — (removed) | — register the store as it should be served |
 | 72 | `SmartAgentBuilder.withCircuitBreakers` (method) | `@mcp-abap-adt/llm-agent-libs` | — (removed) | — wrap the embedder with `withCircuitBreaker(embedder, breaker)` (`@mcp-abap-adt/llm-agent`); list the breaker in `HealthCheckerDeps.circuitBreakers` |
+| 73 | `LazyOptions.fallback` (option of `lazy`) | `@mcp-abap-adt/llm-agent-libs` | — (removed) | — an init failure rejects the call (`LazyInitError`, `cause` = the factory's error); wrap the proxy yourself for a substitute |
+| 74 | `SmartAgentConfig.toolUnavailableTtlMs` (field) | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder.withToolAvailabilityPolicy(new HeuristicToolAvailabilityPolicy({ ttlMs }))` | `@mcp-abap-adt/llm-agent-libs`; inject nothing for no blacklist (the new default) |
 
 - Line 5, lines 71–72: `FallbackRag` is removed with `SimpleRagRegistry.replaceRag` and `SmartAgentBuilder.withCircuitBreakers`, which existed only for it. The builder wraps no store; `withCircuitBreaker(config)` builds the main-LLM breaker only. **With the circuit breaker on, an embedder outage now makes retrieval fail with an error instead of falling back to an in-memory copy:** the open breaker throws `CIRCUIT_OPEN` without calling the provider and the store's query returns that error (what the pipeline then does is the fail-loud entry's, goal decision "No fallbacks anywhere in the pipeline"). To fail fast, wrap the embedder with `withCircuitBreaker(embedder, breaker)` below its document/query role and list the breaker in `HealthCheckerDeps.circuitBreakers` (the server does both); for a degraded mode, write your own `IRag` wrapper (implement `IRagDecorator`, so a strategy, a binding and a store embedder under it stay visible).
+- Line 73: `lazy(factory, { fallback })` no longer compiles; the init error reaches the call (behaviour row B14).
+- Line 74: the tool availability blacklist is no longer on by default — inject `HeuristicToolAvailabilityPolicy({ ttlMs })` to keep it (behaviour row B15). The server's YAML key `agent.toolUnavailableTtlMs` stays and now **opts in**; `PUT /v1/config` no longer accepts it.
 - Lines 1–4, 6–39: add `@mcp-abap-adt/llm-agent-rag` as a dependency. Lines 41–48: add `@mcp-abap-adt/llm-agent-reranker`.
 - Line 40: a class implementing `IDecisionModel` changes only the name it implements (same members).
 - Lines 52–66: these names were always declared in `@mcp-abap-adt/llm-agent` (which `llm-agent-libs` peers on); `llm-agent-libs` no longer re-exports them — import them from `@mcp-abap-adt/llm-agent`.
@@ -18772,10 +18994,14 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B5 | an MCP client's `listTools` (client, adapter cache, registry, `tool-select`, `tool-loop`, `tools-rag-handle`, the server's bridge and snapshot); a slot that failed to connect | the client's tools left out (or stale), the request continues | `MCP_UNAVAILABLE` / the client's `McpError` code | make the server reachable; a consumer that wants to run on fewer servers builds that pipeline with those clients only |
 | B6 | an LLM step: `translate`, `expand`, `summarize`, `history-upsert`, the query preprocessors and enricher, the stepper's need-resolver / formalizer / planner sections, the DAG planner's empty plan | the original text / full history / a raw-prompt plan | the step's error (`LLM_ERROR`, `QUERY_EXPAND_ERROR`, `COORDINATOR_*`) | — (a consumer that wants untranslated text on failure injects its own handler / preprocessor) |
 | B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
-| B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type` | the skill (or all skills) left out | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails | fix the skill source; `strict: false` keeps its carry-forward (U2, the user's to decide) |
+| B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type` | the skill (or all skills) left out | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails | fix the skill source; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
 | B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK  | a load balancer that treated `degraded` as up now takes the instance out — intended |
 | B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure, the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
 | B11 | providers: `sap-aicore-llm` `getModels`, a malformed SSE line (OpenAI, Anthropic), a short or empty SAP AI Core embedding batch, a Qdrant collection whose info cannot be read | the configured model / a silently truncated stream / short or empty vectors / the dimension check skipped for good | `LLM_ERROR` / `EMBED_ERROR` / `UPSERT_ERROR` | — |
+| B12 | a skill plugin source whose `acquire` fails | carried forward by default (`strict: false` was the default) | the default is `strict: true`: the source's group fails and is reported in `omitted` | set `strict: false` (`skillPlugins.strict: false`) to keep the carry-forward, reported in `carried` |
+| B13 | a coordinator step naming an agent the registry lacks, under `HybridDispatch` | silently run by the fallback dispatcher | a failed step naming the agent — `COORDINATOR_STEP_FAILED` under `failPolicy: 'abort'`, a reported failed step under `'continue'`; a step naming no agent still goes to the fallback | register the agent, or plan the step without one |
+| B14 | `lazy`'s factory fails while a `fallback` was given | calls went to the fallback instance | the init error reaches every call (`LazyInitError` with `cause`); the option is removed (line 73) | wrap the proxy yourself for a substitute |
+| B15 | a tool error whose text matches "not found", "permission", … | the tool blocked for the session for 10 min by default | nothing blocked unless a policy is injected; the error reaches the LLM as the tool result | inject `HeuristicToolAvailabilityPolicy({ ttlMs })`, or set `agent.toolUnavailableTtlMs` in the server YAML; `PUT /v1/config` with that key now answers 400 |
 
 New codes, in a set of their own: `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`,
 `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) from `@mcp-abap-adt/llm-agent`. Every other error carries the
@@ -18790,7 +19016,8 @@ failing component's existing code.
 - **k counts items under a profile, and the caller's k caps every cut:** a `FixedItemsCut(n)` (`maxItems`) is a ceiling — a larger caller's k does not raise it, a smaller one still wins. No shipped composition carries a tuned number: measure your catalog (`scripts/rag-eval`) and pass `poolItems` / `maxItems`.
 - **A failed stale-record cleanup is reported** (`failedItems` reason `cleanup-failed: …`) and retried by the next `index` / `remove` — not reported as indexed.
 - **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`) and ship the file; the server loads it at every start (YAML `fill: { corpus: … }`, or `ToolsCorpusLoader` in your composition root) — the store, in-memory or persistent, is **cleared** and the corpus written, so it must be a store with `clearAll` and precomputed writes (every shipped one is). There is no deploy step. The `profile` / `embedder` names must be the same in the build step and in the configuration — a mismatch fails at startup before the store is touched. Replicas over one persistent store each reload it at their start, and the others read a partial store meanwhile — accepted as the price of the simple flow (no marker, no coordination). A store is filled once; a changed tool list waits for the next instance (`live`) or the next build (`corpus`). **With a profile bound, `toolsChanged` re-indexes nothing**, whatever the source: if you plug an MCP server in at runtime, fill its tools in your own pipeline (`bound.index`). Without a profile, nothing changes.
-- **`ToolCatalogStatus` gains optional `records` / `profile`**, `MetricsSnapshot` optional `retrievalOutcome`, `HealthComponentStatus.toolCatalog` optional `records` / `profile` — an exhaustive object literal of these types needs no change.
+- **`ToolCatalogStatus` gains optional `records` / `profile` / `batchFailures`**, `IndexReport` optional `batchFailures`, `MetricsSnapshot` optional `retrievalOutcome`, `HealthComponentStatus.toolCatalog` optional `records` / `profile` / `batchFailures` — an exhaustive object literal of these types needs no change.
+- **Consumer-chosen modes, as decided (U1–U10):** `FallbackLlmCallStrategy` logs each fallback as `llm_streaming_fallback` and takes an optional `{ fallbackCount }` counter; a worker without its own clients / tools store logs `worker_uses_shared_clients`; the skill plugin host defaults to `strict: true` (B12); `HybridDispatch` fails a named missing agent (B13); `lazy` has no `fallback` (B14); the tool availability blacklist is opt-in (B15).
 - **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's probability seam function compiles unchanged under the key `makeProbabilityDecision` (Breaking line 50); to serve Cohere, supply the new `BuildAgentDeps.makeRelevanceDecision` that builds `SapAiCoreRelevanceDecision` from a bearer credential and `apiBaseUrl` (the shipped binary does).
 - If you imported `tool-indexing-strategy.ts` by deep path: use `FacetedToolIndexer` (`full` record) instead; generated intents have no replacement — fix a weak tool description at its source.
 ```
@@ -18801,11 +19028,11 @@ failing component's existing code.
 ```markdown
 ## Unreleased
 
-**Breaking (major):** `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The subpath `./legacy/flat` is removed and `./legacy/linear`, `./legacy/dag` no longer re-export `CoordinatorHandler` / `DagCoordinatorHandler` — import `SmartAgentBuilder` and both handlers from `@mcp-abap-adt/llm-agent-libs` (lines 67–69). The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). The server no longer hands its embedder breaker to the builder (`withCircuitBreakers` is removed, line 72): it still wraps the retrieval embedder and is listed in `/health`, and with it open a store's query fails fast instead of answering from an in-memory copy. See the root CHANGELOG's Breaking table.
+**Breaking (major):** `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The subpath `./legacy/flat` is removed and `./legacy/linear`, `./legacy/dag` no longer re-export `CoordinatorHandler` / `DagCoordinatorHandler` — import `SmartAgentBuilder` and both handlers from `@mcp-abap-adt/llm-agent-libs` (lines 67–69). The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). The server no longer hands its embedder breaker to the builder (`withCircuitBreakers` is removed, line 72): it still wraps the retrieval embedder and is listed in `/health`, and with it open a store's query fails fast instead of answering from an in-memory copy. `skillPlugins.strict` defaults to `true`; `agent.toolUnavailableTtlMs` now opts in to the tool availability blacklist (unset → none) and is no longer accepted by `PUT /v1/config`; a worker on the parent's clients logs `worker_uses_shared_clients`. See the root CHANGELOG's Breaking table.
 ```
 The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (major)** paragraph naming its lines of the root Breaking table):
-- `packages/llm-agent/CHANGELOG.md`: "**Breaking (major):** the RAG implementations (`VectorRag`, `InMemoryRag`, … — root CHANGELOG lines 1–4, 6–39) moved to `@mcp-abap-adt/llm-agent-rag` and are no longer exported here; `FallbackRag` and `SimpleRagRegistry.replaceRag` are removed (lines 5, 71 — with the circuit breaker on, an embedder outage makes a store's query fail with `CIRCUIT_OPEN` instead of answering from an in-memory copy); `IDecisionModel` is renamed `IProbabilityDecision` (line 40). New: the collection-profile contracts, `IRelevanceDecision`, `IToolsFillSource`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` now live in `interfaces/` (same exports); `ITextLogger` is removed — import `ILogger` from `@mcp-abap-adt/interfaces-utils` (line 70)."
-- `packages/llm-agent-libs/CHANGELOG.md`: "**Breaking (major):** the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and are not exported here (lines 41–48); `wrapDecisionModel` → `wrapProbabilityDecision` (line 49); the root no longer re-exports `@mcp-abap-adt/llm-agent`'s `AgentCallOptions`, `BaseAgentLlmBridge`, `OrchestratorError`, `SmartAgentResponse`, `StopReason`, the metrics snapshots, the stage types and the plugin-loader types — import them from `@mcp-abap-adt/llm-agent` (lines 52–66). `SmartAgentBuilder.withCircuitBreakers` is removed and the builder wraps no store (line 72); `withCircuitBreaker(config)` builds the main-LLM breaker only. New peer `@mcp-abap-adt/llm-agent-reranker`. New: collection profiles (`src/collections/`), the fill sources and the corpus API."
+- `packages/llm-agent/CHANGELOG.md`: "**Breaking (major):** the RAG implementations (`VectorRag`, `InMemoryRag`, … — root CHANGELOG lines 1–4, 6–39) moved to `@mcp-abap-adt/llm-agent-rag` and are no longer exported here; `FallbackRag` and `SimpleRagRegistry.replaceRag` are removed (lines 5, 71 — with the circuit breaker on, an embedder outage makes a store's query fail with `CIRCUIT_OPEN` instead of answering from an in-memory copy); `IDecisionModel` is renamed `IProbabilityDecision` (line 40). New: the collection-profile contracts, `IRelevanceDecision`, `IToolsFillSource`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` now live in `interfaces/` (same exports); `ITextLogger` is removed — import `ILogger` from `@mcp-abap-adt/interfaces-utils` (line 70). `FallbackLlmCallStrategy` logs each fallback as `llm_streaming_fallback` and takes an optional `{ fallbackCount }` counter; `ToolCatalogStatus`, `IndexReport` and `HealthComponentStatus.toolCatalog` gain optional `batchFailures`."
+- `packages/llm-agent-libs/CHANGELOG.md`: "**Breaking (major):** the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and are not exported here (lines 41–48); `wrapDecisionModel` → `wrapProbabilityDecision` (line 49); the root no longer re-exports `@mcp-abap-adt/llm-agent`'s `AgentCallOptions`, `BaseAgentLlmBridge`, `OrchestratorError`, `SmartAgentResponse`, `StopReason`, the metrics snapshots, the stage types and the plugin-loader types — import them from `@mcp-abap-adt/llm-agent` (lines 52–66). `SmartAgentBuilder.withCircuitBreakers` is removed and the builder wraps no store (line 72); `withCircuitBreaker(config)` builds the main-LLM breaker only. `LazyOptions.fallback` is removed (line 73); `SmartAgentConfig.toolUnavailableTtlMs` is removed — the tool availability blacklist is the injected `IToolAvailabilityPolicy`, none by default, `HeuristicToolAvailabilityPolicy` for 30.1.0's (line 74); the skill plugin host defaults to `strict: true`; `HybridDispatch` fails a step naming an agent the registry lacks. New peer `@mcp-abap-adt/llm-agent-reranker`. New: collection profiles (`src/collections/`), the fill sources and the corpus API."
 - `packages/llm-agent-rag/CHANGELOG.md`: "**Breaking (major):** now holds the RAG implementations moved from `@mcp-abap-adt/llm-agent` (lines 1–4, 6–39; `FallbackRag` is removed, not moved — line 5) — import them from here; it exports only its own code."
 - `packages/ollama-embedder/CHANGELOG.md`: "**Breaking (major):** `OllamaRag` removed (line 51) — use `new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)` with `VectorRag` from `@mcp-abap-adt/llm-agent-rag`."
 - `packages/typesafe-decision/CHANGELOG.md`: "**Breaking (major):** `TypeSafeDecisionModel` implements `IProbabilityDecision` (was `IDecisionModel`, line 40); behaviour unchanged."
@@ -18829,7 +19056,7 @@ The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (
   `- No shipped strategy or named composition carries a tuned number: pools and cuts default to the caller's k; measured numbers are the consumer's.`
   `- No store fallback: FallbackRag is removed and the builder wraps no registered store (withCircuitBreaker(config) = the main-LLM breaker). An embedder breaker (withCircuitBreaker(embedder, breaker)) fails fast — a store's query returns CIRCUIT_OPEN. IRagDecorator stays: a wrapper exposes inner so strategies, bindings and store embedders under it stay visible.`
 - `### Key API notes`: add —
-  `- Fail loud: a component that finds another not working returns an error (stream { ok: false }, process() ok: false, a thrown typed error, /health 503) — never a fake success, an empty result, a skipped part, a stale cache or a substitute. A stage's OrchestratorError carries the component's code; PIPELINE_FAILURE_CODES (RAG_STORE_MISSING, STATE_CORRUPT, TOOL_ARGUMENTS_JSON_PARSE_FAILED) are the only new codes. No onFailure: a failed rerank is RERANK_ERROR. FallbackQueryEmbedding stands in only for a TextOnlyEmbedding. A degraded mode is the consumer's injected strategy.`
+  `- Fail loud: a component that finds another not working returns an error (stream { ok: false }, process() ok: false, a thrown typed error, /health 503) — never a fake success, an empty result, a skipped part, a stale cache or a substitute. A stage's OrchestratorError carries the component's code; PIPELINE_FAILURE_CODES (RAG_STORE_MISSING, STATE_CORRUPT, TOOL_ARGUMENTS_JSON_PARSE_FAILED) are the only new codes. No onFailure: a failed rerank is RERANK_ERROR. FallbackQueryEmbedding stands in only for a TextOnlyEmbedding. A degraded mode is the consumer's injected strategy; an opt-in that degrades is counted or logged (llm_streaming_fallback, batchFailures, worker_uses_shared_clients). Defaults never degrade silently: skill plugin host strict: true; no tool availability blacklist unless an IToolAvailabilityPolicy is injected (HeuristicToolAvailabilityPolicy = 30.1.0's); HybridDispatch fails a named agent missing from the registry; lazy() has no fallback.`
 - `### Key layers` table, `llm-agent-libs` row: append `, collection profiles (StagedRetrieval, ComposedToolsProfile, mcpToolsVariants, SharedItemsProfile)`; `llm-agent-rag` row: append `, the RAG implementations (VectorRag, InMemoryRag, …)`; `@mcp-abap-adt/llm-agent` row: drop any RAG implementation it lists; the `ollama-embedder` mention: `OllamaEmbedder` only.
 - `## Environment` table: add `| DECISION_SERVICE_KEY | SAP AI Core service key of the decision: section with provider: sap-aicore and no credentialRef (Cohere Rerank, a relevance decision); read only when a decision reranker builds it |`, and widen the `DECISION_API_KEY` row's wording to "provider: typesafe".
 
@@ -18837,7 +19064,7 @@ The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (
 
 ```bash
 git add CHANGELOG.md CLAUDE.md packages/*/CHANGELOG.md
-git commit -m "docs: changelog (major: Breaking table, 72 lines) and migration notes for collection profiles; CLAUDE.md key API notes
+git commit -m "docs: changelog (major: Breaking table, 74 lines) and migration notes for collection profiles; CLAUDE.md key API notes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -19088,7 +19315,22 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | D73 | `FallbackQueryEmbedding` only for a `TextOnlyEmbedding` | Task 4H |
 | D74 | The sweep — spec §10.5.3–§10.5.9 | Tasks 4G (MCP), 4H (RAG, embedder, stores), 4J (LLM handlers), 4K (coordinator), 4L (skills), 4M (server), 4N (providers) |
 
-**For the user — not decided, not touched by any task** (spec §17.24): U1 `FallbackLlmCallStrategy` (keep), U2 skill plugin host `strict: false` default (keep as opt-in, default `strict: true`), U3 `onFinalizeExhausted: 'best-effort'` (keep), U4 `AutoActivation` (keep), U5 `HybridDispatch` (keep for no agent named; a named agent missing → error), U6 `lazy`'s `fallback` (remove), U7 batch → per-tool embedding (keep, count it), U8 the tool availability blacklist (an injected policy, default none), U9 D68's removed builder embedder breaker and `withCircuitBreakers` (confirm), U10 a worker on the shared clients (keep, log one line). A decision on any of them comes back as a spec amendment first, then a task.
+**Decided by the user on 2026-10-05 — U1–U10, every recommendation approved** (spec §10.5.12, §17.24):
+
+| # | Decision | Done in |
+|---|---|---|
+| U1 | `FallbackLlmCallStrategy` kept; each fallback counted — log event `llm_streaming_fallback` with a running count, optional injected `ICounter` (`fallbackCount`); no span | Task 4J |
+| U2 | skill plugin host defaults to `strict: true`; `strict: false` only when the consumer sets it | Task 4L |
+| U3 | `onFinalizeExhausted: 'best-effort'` kept | — (unchanged) |
+| U4 | `AutoActivation` kept | — (unchanged) |
+| U5 | `HybridDispatch` kept for no agent named; a named agent missing → a failed step (`COORDINATOR_STEP_FAILED` under `failPolicy: 'abort'`) | Task 4K |
+| U6 | `lazy`'s `fallback` removed (migration line 73) | Task 4P |
+| U7 | batch → per-tool embedding kept; failed batch calls counted (`batchFailures`) | Task 19B |
+| U8 | tool availability blacklist = injected `IToolAvailabilityPolicy`, none by default; `HeuristicToolAvailabilityPolicy` ships 30.1.0's; `SmartAgentConfig.toolUnavailableTtlMs` removed (migration line 74) | Task 4Q |
+| U9 | D68's removal of the builder's unused embedder breaker and `withCircuitBreakers` confirmed | Task 0A (done) |
+| U10 | a worker on the parent's clients / tools store kept; one `worker_uses_shared_clients` line per wire | Task 4M |
+
+The `closeFns` loop bug (spec §15) is tracked in fr0ster/llm-agent#330 — not in this plan.
 
 ## Self-review (done while writing)
 
@@ -19105,3 +19347,4 @@ Recommendations applied to the earlier open choices (the user may still overrule
 - **Review finding on 2026-10-05 — guards vs the intentional negative fixtures.** Task 1A's repo guard (`no file imports a moved name from @mcp-abap-adt/llm-agent`) scans every package source file, `__typechecks__` included, so it would have failed Step 10's `npm test` on Step 9's `rag-implementations-moved.ts`, which imports `VectorRag` / `ISearchStrategy` from `@mcp-abap-adt/llm-agent` on purpose under `@ts-expect-error`. The guard now skips an **exact-path** allow-list `NEGATIVE_IMPORT_FIXTURES` (that one file — no directory or pattern), and gains two tests: an ordinary stale import (built from a string, also in a file beside the fixture) still fails while the listed path passes the same content; each listed fixture exists, still imports a moved name, has `// @ts-expect-error` directly above each such import, and is in `tsconfig.typecheck.json` (so `npm run typecheck` keeps checking it). Steps 2, 8 and 9 state when the fixture test fails (`ENOENT` before Step 9) and passes. Every other guard was checked against every negative fixture the plan creates (`rag-implementations-moved.ts`, `decision-model.typecheck.ts`, `collection-profile.typecheck.ts` of `llm-agent` (Tasks 2–3) and of libs (Task 16), the `@ts-expect-error` cases in the tests of Tasks 17 and 20 (`shared-items-profile.test.ts`, `builder-tools-profile.test.ts`), `text-logger-removed.typecheck.ts`, the `_removedSeam` of `construction-seams.ts`, the `'makeDecisionModel' in deps` assertion, the `REMOVED` table of `no-old-names.test.ts`, the `OllamaRag` test of `rag-implementations-home.test.ts`): Task 1A's "nothing below `llm-agent-rag` imports it" and "`OllamaRag` removed" scans and Task 4B/4D's `no-old-names` tests (runtime namespaces, the re-export scan, the checker over built `exports`) meet no fixture — none imports `llm-agent-rag` from below, names `OllamaRag` under `packages/`, re-exports a package, or reaches `dist/`; the line-exact greps of Tasks 4A, 4E and 20A already list their fixture lines. Fixed besides: Task 4B's reranker-name grep now expects the `REMOVED` literals of `no-old-names.test.ts` (created in the same step); Task 35's old-name grep lists every expected file and line (it missed `rag-implementations-home.test.ts`'s two `OllamaRag` lines, the `REMOVED` literals and the `import type` / `_Removed` lines of `decision-model.typecheck.ts`); Task 35's `ITextLogger` grep expects three lines, as Task 4E does (it said two); Task 35's `rag-implementations` grep excludes exact paths instead of `**/` patterns.
 - **Rework for D68 (spec §17.23 — `FallbackRag` removed).** New Task 0A, right after Task 0 and before Task 1A: it deletes `FallbackRag` and its test, `replaceRag`, `withCircuitBreakers` / `_sharedBreakers` / `isGuardedBy` and the builder's store-wrapping loop (keeping the main-LLM breaker), and the server's `withCircuitBreakers` call; it rewrites every test that built or expected a `FallbackRag` (a plain test decorator where a walk is tested), adds `open-breaker-query.test.ts` (the new behaviour) and fixes the docs that described the fallback — **in one commit, which builds** (`noUnusedLocals` proves the dropped imports: `FallbackRag`, `isRagDecorator` in `builder.ts`; `CircuitBreaker` / `FallbackRag` / `InMemoryRag` and the hydrated-collection test's imports in the tests). Supersedes the D52 / D62 work: Task 19A loses Steps 0a–0d (no `fix(llm-agent-rag)` commit), the five `FallbackRag` / claiming-decorator cases and `resolvedBackend` (its `isRagDecorator` import goes too; `corpusWriter` checks the store's writer); Task 1A moves no `fallback-rag.ts` (its counts: 27 tests, with `open-breaker-query.test.ts` in place of `fallback-rag.test.ts` — the re-check grep matches `../../rag/vector-rag`; 34 codemod files, since `strategy-rag.test.ts` imports no moved name any more; `fakes.ts` copies `makeLlm` only; the stay-target `resilience/circuit-breaker.js` is no longer imported by a moved file); Tasks 19 and 25 replace their `FallbackRag` wrapper with a plain decorator and drop the `CircuitBreaker` / `FallbackRag` / `InMemoryRag` imports they no longer use; Task 11's table loses its `FallbackRag` row. **Kept, checked:** `IRagDecorator` and `isRagDecorator` (`StrategyRag`; `hasRetrievalStrategy`, `ownBuiltInStore`, `retrievalEmbedderOf`, `toolsBindingOf` / `boundToolsOf`, `findWeightedStore` — a consumer's wrapper relies on them; the migration note tells a consumer who wants a degraded mode to write one); `CircuitBreakerEmbedder` / `withCircuitBreaker` and the server's `_embedderBreaker` (fails fast with an error). The Review Focus gains line 11 (an embedder outage with the breaker on); Task 34's table has 72 lines (lines 5, 71, 72 say *removed*, one note line); Task 35 greps that nothing of the removal is left.
 - **Rework for the fail-loud sweep (spec §10.5, §13 B1–B11, §17.24 — D69–D74).** Ten new tasks, 4F–4O, after Task 4E (every file they touch is in its final package: `preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` since Task 1A; the rerankers in `llm-agent-reranker` since Task 4B) and before Task 5, so every later task builds on code that fails loud; 4F (N1) first, because no later stage error reaches a consumer without it. Each item: a failing test showing today's fake success, the fix, the gate; each task names the grep for existing tests that pinned the fallback. `onFailure` is removed **in place** (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33): no task introduces it to remove it later; Task 12's `Unit.reranked` and the two-scales branch of `mergeByScore` go with it (one scale per run); Task 29 counts `rerank_error` from `rerankOrError` (Task 4I's rename). The carriers keep signatures: `McpToolRegistry.resolve` throws (Task 4F's executor keeps a thrown `OrchestratorError`'s code) instead of growing an error branch; the only contract additions are `PIPELINE_FAILURE_CODES` and `SkillLoadResult.carried?` (spec §3.8). U1–U10 untouched (Global Constraints). Review Focus 12 added. Every commit builds: 4F adds the codes before any task uses them; 4G–4O touch disjoint files except `agent.ts` / `rag-orchestrator.ts` / `tool-loop.ts` / `smart-server.ts`, edited in different functions in task order.
+- **Rework for the user's U1–U10 decisions (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24).** Extended in place: Task 4J (U1 — `FallbackLlmCallStrategy`'s second, optional constructor argument; the server's call compiles unchanged), Task 4K (U5 — `HybridDispatch`), Task 4L (U2 — the `strict` default in the host and the server's config), Task 4M (U10 — one event in the worker wire). New: Task 4P (U6 — `lazy` without `fallback`, after 4O), Task 4Q (U8 — `IToolAvailabilityPolicy`, after 4P and before Task 5), Task 19B (U7 — `batchFailures`, after 19A because it needs `storeItems`, both bindings and `indexToolsThroughProfile`). Each: failing tests first (incl. `@ts-expect-error` typechecks for the two removed members), the gate (`tsc -b` + the touched packages' suites), one commit. Compile order holds: 4P and 4Q touch files no earlier task leaves half-done; 4Q's `tool-loop-core.ts` / `tool-loop.ts` / `agent.ts` edits come after 4F–4G's in those files; every field 19B adds is optional, so the object literals of Tasks 3, 15, 17, 19 and 19A keep compiling. Task 33 Step 8b documents every mode as decided (and a new grep for `toolUnavailableTtlMs` / `fallback:` / `strict: false`); Task 34's Breaking table has 74 lines and the behaviour table B12–B15. U3, U4 untouched; U9 is Task 0A.
